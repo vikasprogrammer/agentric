@@ -1,0 +1,21 @@
+{
+  "name": "agent-os",
+  "version": "0.1.0",
+  "description": "A generic operating system for running autonomous agents safely, unattended, across multiple brands.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "demo": "ts-node src/demo.ts",
+    "dev": "ts-node src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "keywords": ["agents", "agent-os", "orchestration", "ai", "governance", "claude"],
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  }
+}

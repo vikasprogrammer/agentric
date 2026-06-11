@@ -1,0 +1,9 @@
+{
+  "id": "example-refunder",
+  "version": "1.0.0",
+  "description": "Issues refunds. Demonstrates yellow (head-approved) and red (owner-approved) effect gating.",
+  "principal": "svc-billing",
+  "policyContext": "default@v1",
+  "runtime": "mock",
+  "budget": { "usdCap": 1.0, "tokenCap": 200000, "wallClockMs": 300000 }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "default@v1",
+  "description": "Default risk policy. green = auto, yellow = head approves, red = owner approves, deny = blocked outright.",
+  "defaultRisk": "yellow",
+  "approvalRouting": { "yellow": "head", "red": "owner" },
+  "rules": [
+    { "match": { "capability": "echo.*" }, "risk": "green" },
+    { "match": { "capability": "slack.post" }, "risk": "green" },
+    { "match": { "capability": "paid.*" }, "risk": "green" },
+
+    { "match": { "capability": "stripe.refund", "when": { "arg": "amountUsd", "op": "gt", "value": 1000 } }, "risk": "red" },
+    { "match": { "capability": "stripe.refund" }, "risk": "yellow" },
+
+    { "match": { "capability": "*.delete" }, "risk": "red" },
+    { "match": { "capability": "prod.*" }, "risk": "deny" }
+  ]
+}
