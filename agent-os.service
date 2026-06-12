@@ -13,7 +13,8 @@ Environment=NODE_ENV=production
 Environment=PORT=3010
 # node is installed via nvm on this host; point at the absolute binary.
 # If node is upgraded, update this path (and PATH below).
-Environment=PATH=/home/agent-os/.nvm/versions/node/v22.22.0/bin:/usr/bin:/usr/local/bin
+# ~/.local/bin holds the `claude` CLI that claude-code agents launch.
+Environment=PATH=/home/agent-os/.local/bin:/home/agent-os/.nvm/versions/node/v22.22.0/bin:/usr/bin:/usr/local/bin
 ExecStart=/home/agent-os/.nvm/versions/node/v22.22.0/bin/node dist/cli.js serve
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
@@ -30,6 +31,8 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/agent-os/tools/agent-os/data
 ReadWritePaths=/tmp
+# claude-code agents run the `claude` CLI, which writes session state/transcripts here.
+ReadWritePaths=/home/agent-os/.claude
 
 # Resource limits
 LimitNOFILE=65536

@@ -12,6 +12,9 @@
 #   AGENT_DIR  the agent's folder — claude opens here and writes its memory/scratch here
 #   HOOK       absolute path to gate-hook.sh (the PreToolUse gate)
 set -u
+# The `claude` CLI is commonly installed under ~/.local/bin; make sure it's findable even
+# when the parent process (e.g. a hardened systemd unit) ships a minimal PATH.
+export PATH="$HOME/.local/bin:$PATH"
 TASK=$(printf '%s' "${TASK_B64:-}" | base64 -d 2>/dev/null)
 
 cyan() { printf '\033[36m%s\033[0m\n' "$1"; }
