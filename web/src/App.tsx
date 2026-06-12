@@ -6,12 +6,22 @@ import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, type StateResp, type Session, type Msg } from '@/lib/api'
+import { api, type StateResp, type AgentInfo, type Session, type Msg } from '@/lib/api'
 
-const EXAMPLES: Record<string, string> = {
-  'Marketing Agent': 'Blog post <xyz> write and publish',
-  'Engg Agent': 'Fix toggle logic, open a PR, deploy',
-  'CEO Agent': 'Post an update and process a refund',
+const exampleTask = (a?: AgentInfo): string =>
+  !a
+    ? ''
+    : a.runtime === 'claude-code'
+      ? 'List the files in this folder and tell me what this agent is for.'
+      : 'Run the agent and handle its actions.'
+
+function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
+  const claude = runtime === 'claude-code'
+  return (
+    <Badge variant={claude ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
+      {claude ? 'claude' : 'mock'}
+    </Badge>
+  )
 }
 
 export default function App() {
@@ -26,9 +36,9 @@ export default function App() {
   useEffect(() => {
     api.state().then((s) => {
       setState(s)
-      const a = s.terminalAgents[0] ?? ''
-      setAgent(a)
-      setTask(EXAMPLES[a] ?? '')
+      const first = s.agents[0]
+      setAgent(first?.id ?? '')
+      setTask(exampleTask(first))
     })
   }, [])
 
@@ -42,9 +52,9 @@ export default function App() {
     return () => clearInterval(t)
   }, [])
 
-  const pick = (a: string) => {
-    setAgent(a)
-    setTask(EXAMPLES[a] ?? '')
+  const pick = (id: string) => {
+    setAgent(id)
+    setTask(exampleTask(state?.agents.find((x) => x.id === id)))
   }
 
   const run = async () => {
@@ -65,16 +75,19 @@ export default function App() {
         </button>
         <Separator />
         <div className="mb-2 mt-4 text-[11px] uppercase tracking-wider text-muted-foreground">Agents</div>
-        {state?.terminalAgents.map((a) => (
-          <div key={a} className="mb-3">
+        {state?.agents.map((a) => (
+          <div key={a.id} className="mb-3">
             <div className="flex items-center justify-between">
-              <span className="text-sm font-medium">{a}</span>
-              <Button size="icon" variant="ghost" className="h-6 w-6 text-emerald-600" onClick={() => pick(a)} title="new session">
+              <span className="flex items-center gap-1.5 text-sm font-medium">
+                {a.id}
+                <RuntimeBadge runtime={a.runtime} />
+              </span>
+              <Button size="icon" variant="ghost" className="h-6 w-6 text-emerald-600" onClick={() => pick(a.id)} title="new session">
                 <Plus className="h-4 w-4" />
               </Button>
             </div>
             <div className="mt-1 space-y-0.5">
-              {sessions.filter((s) => s.agent === a).map((s) => (
+              {sessions.filter((s) => s.agent === a.id).map((s) => (
                 <button
                   key={s.id}
                   onClick={() => setSelected({ tmux: s.tmux, title: s.agent + ' · ' + s.id })}
@@ -109,9 +122,12 @@ export default function App() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {state?.terminalAgents.map((a) => (
-                      <SelectItem key={a} value={a}>
-                        {a}
+                    {state?.agents.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        <span className="flex items-center gap-1.5">
+                          {a.id}
+                          <RuntimeBadge runtime={a.runtime} />
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>

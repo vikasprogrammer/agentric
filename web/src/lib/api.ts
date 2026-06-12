@@ -1,7 +1,14 @@
+export interface AgentInfo {
+  id: string
+  description: string
+  runtime: 'mock' | 'claude-code'
+}
 export interface StateResp {
   tenant: string
   policy: string
+  home?: string
   terminalAgents: string[]
+  agents: AgentInfo[]
   capabilities: { id: string; description: string; defaultRisk: string }[]
 }
 export interface Session {
