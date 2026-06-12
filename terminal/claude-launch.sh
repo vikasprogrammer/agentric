@@ -55,4 +55,10 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 # Interactive session in this folder, seeded with the task, governed by the local hook.
-exec claude --settings .claude/settings.json "$TASK"
+# NOTE: do NOT `exec` claude. When claude exits we want to fall back to a live shell so the
+# tmux session stays alive — otherwise the pane dies, tmux drops the session, and the browser
+# terminal (ttyd) reconnect-loops forever showing "Reconnecting".
+claude --settings .claude/settings.json "$TASK"
+echo
+dim "claude session ended — this pane stays live. Attach and type, or close the tab."
+exec bash
