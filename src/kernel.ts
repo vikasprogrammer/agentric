@@ -29,12 +29,15 @@ import { HealthMonitor } from './observability/monitor';
 import { MockAdapter, MockBehavior } from './runtime/mock-adapter';
 import { ClaudeCodeAdapter } from './runtime/claude-code-adapter';
 import { Orchestrator } from './core/orchestrator';
+import { Paths, resolvePaths } from './home';
 
 export interface AgentOSOptions {
   tenant: string;
   policy: PolicyEngine;
   /** Durable audit dir; pass null to keep audit in-memory only (tests/demo). */
   auditDir?: string | null;
+  /** Resolved instance paths (data home + derived). Optional for tests/demo. */
+  paths?: Paths;
 }
 
 export class AgentOS {
@@ -54,10 +57,13 @@ export class AgentOS {
   readonly adapters = new Map<AgentManifest['runtime'], RuntimeAdapter>();
   readonly gateway: Gateway;
   readonly orchestrator: Orchestrator;
+  /** Where this instance's user-owned data lives (set when built from config). */
+  readonly paths?: Paths;
 
   constructor(opts: AgentOSOptions) {
     this.tenant = opts.tenant;
     this.policy = opts.policy;
+    this.paths = opts.paths;
 
     const sinks: AuditSink[] = [this.memoryAudit];
     if (opts.auditDir) sinks.push(new JsonlAuditSink(opts.auditDir));
@@ -104,31 +110,49 @@ export class AgentOS {
 
 interface RootConfig {
   tenant: string;
-  policyDir: string;
-  agentsDir: string;
-  auditDir: string;
+  /** User data home (env AGENT_OS_HOME overrides). Default: ./data. */
+  home?: string;
+  /** Bundled example agents that ship with the software. Default: config/agents. */
+  agentsDir?: string;
+  /** Bundled default policy dir. Default: config/policy. */
+  policyDir?: string;
 }
 
-/** Build an AgentOS from the config tree. Paths in the config are resolved against `baseDir`. */
+/**
+ * Build an AgentOS from the config tree.
+ *   - The SOFTWARE's bundled examples (agents + default policy) come from the repo (`baseDir`).
+ *   - The USER's data — their agents, their policy override, audit — comes from the data home
+ *     (`$AGENT_OS_HOME` / config `home` / `./data`). User agents win on id collision.
+ */
 export function loadAgentOS(configPath = 'config/agent-os.config.json', baseDir = process.cwd()): AgentOS {
   const cfg = readJson<RootConfig>(path.resolve(baseDir, configPath));
-  const policyDoc = readJson<PolicyDocument>(path.resolve(baseDir, cfg.policyDir, 'default.policy.json'));
+  const paths = resolvePaths(baseDir, cfg);
+  const policyDoc = readJson<PolicyDocument>(paths.policyFile);
 
   const os = new AgentOS({
     tenant: cfg.tenant,
     policy: new JsonPolicyEngine(policyDoc),
-    auditDir: path.resolve(baseDir, cfg.auditDir),
+    auditDir: paths.audit,
+    paths,
   });
 
-  const agentsDir = path.resolve(baseDir, cfg.agentsDir);
-  if (fs.existsSync(agentsDir)) {
-    for (const entry of fs.readdirSync(agentsDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const manifestPath = path.join(agentsDir, entry.name, 'agent.json');
-      if (fs.existsSync(manifestPath)) os.registerAgent(readJson<AgentManifest>(manifestPath));
-    }
-  }
+  // Bundled examples first, then the user's agents (which override examples by id).
+  loadAgentsFrom(os, paths.bundledAgents);
+  loadAgentsFrom(os, paths.userAgents);
   return os;
+}
+
+/** Register every `<dir>/<id>/agent.json` found, tagging each manifest with its absolute folder. */
+function loadAgentsFrom(os: AgentOS, dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const folder = path.join(dir, entry.name);
+    const manifestPath = path.join(folder, 'agent.json');
+    if (!fs.existsSync(manifestPath)) continue;
+    const manifest = readJson<AgentManifest>(manifestPath);
+    os.registerAgent({ ...manifest, dir: folder });
+  }
 }
 
 function readJson<T>(p: string): T {

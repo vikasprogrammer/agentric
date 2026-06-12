@@ -63,14 +63,73 @@ Durable audit is written to `data/audit/<tenant>/<run_id>.jsonl` — one append-
 
 ---
 
+## Where agents live — software vs. data
+
+`agent-os` (this repo) is the **software**. Your agents and their runtime state are **your data**,
+and they live in a separate, configurable **data home** — so you can keep them in their own private
+git repo and contribute to the open-source software without ever committing your agents.
+
+```
+agent-os/                      # the SOFTWARE (this repo; you contribute here)
+  src/  web/  terminal/        #   the mechanism
+  config/agents/example-*/     #   bundled example agents (read-only seeds/fixtures)
+  config/policy/               #   bundled default policy
+
+$AGENT_OS_HOME  (default ./data, gitignored — can be its OWN private repo)
+  agents/<id>/                 #   YOUR agent = one folder
+    agent.json   CLAUDE.md     #     definition (tracked)
+    .claude/  memory/          #     runtime state Claude writes (gitignored)
+  policy/default.policy.json   #   your policy override (optional; else the bundled one)
+  audit/  *.log  tmux.sock     #   per-instance runtime
+```
+
+Resolution order for the home: **`$AGENT_OS_HOME`** → `home` in `agent-os.config.json` → `./data`.
+On load, bundled example agents and your home's agents are both registered; **your agents win** on id.
+
+```bash
+agent-os init ./my-brand          # scaffold a data home (its own .gitignore + git repo + a starter agent)
+AGENT_OS_HOME=./my-brand agent-os serve --port=3010
+```
+
+**Run several instances on one machine** — give each a distinct home + `PORT` (the tmux socket and
+logs live *inside* the home, and `TTYD_PORT` defaults to `PORT+1`, so instances never collide):
+
+```bash
+AGENT_OS_HOME=./brand-a PORT=3010 agent-os serve
+AGENT_OS_HOME=./brand-b PORT=3020 agent-os serve
+```
+
+### Opening Claude directly in an agent's folder
+
+An agent's `runtime` (in `agent.json`) selects how a terminal session is driven:
+
+- **`runtime: "mock"`** → the scripted `terminal/agent-runner.sh` demo (no API keys; shows the gate).
+- **`runtime: "claude-code"`** → a **real `claude` session opened in the agent's own folder**
+  (`$AGENT_OS_HOME/agents/<id>/`). `terminal/claude-launch.sh` `cd`s into the folder, writes a
+  project-local `.claude/settings.json` wiring a **`PreToolUse` gate hook** (`terminal/gate-hook.sh`),
+  and execs `claude` seeded with the task. Every `Bash` call the agent makes is classified by the same
+  gateway — risky ones (`rm`, `deploy`, `prod`, `stripe`…) pause and surface as an inbox approval.
+
+The bundled `sandbox` agent (created in `./data/agents/sandbox/` — i.e. your data, not committed)
+demonstrates the `claude-code` path end to end.
+
+---
+
 ## Repository layout
 
 ```
 agent-os/
-├── config/                     # DECLARATIVE — the brand's rules (policy + manifests)
-│   ├── agent-os.config.json    #   tenant, dirs, defaults
+├── config/                     # BUNDLED examples that ship with the software
+│   ├── agent-os.config.json    #   tenant, home, dirs, defaults
 │   ├── policy/default.policy.json   # green/yellow/red/deny rules (policy is DATA)
-│   └── agents/<id>/            #   agent.json manifest + CLAUDE.md
+│   └── agents/<id>/            #   example agent.json manifest + CLAUDE.md (seeds/fixtures)
+│
+├── terminal/                   # how a terminal session is driven + governed
+│   ├── agent-runner.sh         #   runtime:mock  → scripted demo
+│   ├── claude-launch.sh        #   runtime:claude-code → real claude, opened in the agent's folder
+│   └── gate-hook.sh            #   PreToolUse gate the launched claude is wired to
+│
+├── src/home.ts                 # resolves the data home ($AGENT_OS_HOME → config → ./data)
 │
 ├── src/
 │   ├── types.ts                # the only contracts the core depends on

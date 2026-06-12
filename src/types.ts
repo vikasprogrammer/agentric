@@ -222,6 +222,8 @@ export interface AgentManifest {
   maxTurns?: number;
   allowedTools?: string[];
   path?: string;
+  /** Absolute folder the manifest was loaded from — the cwd a claude-code session opens in. Set at load. */
+  dir?: string;
 }
 
 /** A runtime drives an agent and routes its side effects through `act`. */

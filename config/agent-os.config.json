@@ -1,8 +1,8 @@
 {
   "tenant": "acme",
-  "policyDir": "config/policy",
+  "home": "data",
   "agentsDir": "config/agents",
-  "auditDir": "data/audit",
+  "policyDir": "config/policy",
   "concurrency": 5,
   "defaults": {
     "budget": { "usdCap": 2.0, "tokenCap": 400000, "wallClockMs": 1800000 }

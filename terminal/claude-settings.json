@@ -1,0 +1,13 @@
+{
+  "_comment": "Drop-in Claude Code settings for an AUTHENTIC governed session. Launch claude with --settings pointing here (and AOS_URL/SESSION/AGENT exported). Every Bash tool call runs through the Agent OS gate; risky ones pause for inbox approval.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash /home/agent-os/tools/agent-os/terminal/gate-hook.sh" }
+        ]
+      }
+    ]
+  }
+}
