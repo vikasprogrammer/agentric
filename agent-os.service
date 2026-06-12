@@ -1,0 +1,39 @@
+[Unit]
+Description=Agent OS - governed agent runtime + web console
+Documentation=https://github.com/Globex/agent-os
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=vikas
+Group=vikas
+WorkingDirectory=/home/agent-os/tools/agent-os
+Environment=NODE_ENV=production
+Environment=PORT=3010
+# node is installed via nvm on this host; point at the absolute binary.
+# If node is upgraded, update this path (and PATH below).
+Environment=PATH=/home/agent-os/.nvm/versions/node/v22.22.0/bin:/usr/bin:/usr/local/bin
+ExecStart=/home/agent-os/.nvm/versions/node/v22.22.0/bin/node dist/cli.js serve
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutStopSec=10
+SyslogIdentifier=agent-os
+Restart=always
+RestartSec=10
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/agent-os/tools/agent-os/data
+ReadWritePaths=/tmp
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

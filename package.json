@@ -1,18 +1,22 @@
 {
   "name": "agent-os",
   "version": "0.1.0",
-  "description": "A generic operating system for running autonomous agents safely, unattended, across multiple brands.",
+  "description": "A generic, governed operating system for running autonomous agents safely across brands. Ships with a local web console.",
   "license": "MIT",
   "type": "commonjs",
   "main": "dist/index.js",
+  "bin": { "agent-os": "bin/agent-os" },
+  "files": ["dist", "public", "config", "docs"],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "demo": "ts-node src/demo.ts",
-    "dev": "ts-node src/index.ts",
-    "start": "node dist/index.js"
+    "serve": "node dist/cli.js serve",
+    "start": "node dist/cli.js serve",
+    "demo": "node dist/cli.js demo",
+    "dev": "ts-node src/cli.ts serve",
+    "demo:dev": "ts-node src/demo.ts"
   },
-  "keywords": ["agents", "agent-os", "orchestration", "ai", "governance", "claude"],
+  "keywords": ["agents", "agent-os", "orchestration", "ai", "governance", "claude", "globex"],
   "devDependencies": {
     "@types/node": "^20.11.0",
     "ts-node": "^10.9.2",

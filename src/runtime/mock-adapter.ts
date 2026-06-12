@@ -68,3 +68,24 @@ export const spenderBehavior: MockBehavior = async (_ctx, act) => {
   }
   return { outcome: done > 0 ? 'success' : 'failure', result: { completed: done } };
 };
+
+/** Issues ONE refund for the amount you pass in — lets you watch policy route by amount
+ *  (≤$1000 → yellow → head; >$1000 → red → owner). Used by the `refund-desk` agent. */
+export const refundDeskBehavior: MockBehavior = async (ctx, act) => {
+  const customer = String(ctx.run.inputs.customer ?? 'cus_demo');
+  const amountUsd = Number(ctx.run.inputs.amountUsd ?? 0);
+  const r = await act({
+    capabilityId: 'stripe.refund',
+    args: { customer, amountUsd },
+    reasoning: 'refund requested via console',
+  });
+  return { outcome: r.ok ? 'success' : 'failure', result: r.ok ? r.data : r.error };
+};
+
+/** Tries to restart a production service (denied by policy), then a harmless echo. */
+export const opsBehavior: MockBehavior = async (ctx, act) => {
+  const service = String(ctx.run.inputs.service ?? 'api');
+  const denied = await act({ capabilityId: 'prod.restart', args: { service }, reasoning: 'restart prod service' });
+  await act({ capabilityId: 'echo.run', args: { message: `carrying on after ${denied.ok ? 'restart' : 'the denial'}` } });
+  return { outcome: denied.ok ? 'success' : 'failure', result: { prodRestart: denied.ok } };
+};

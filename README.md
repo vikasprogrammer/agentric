@@ -36,10 +36,18 @@ Agent wants to act ──► [ GATEWAY ] ──► external system
 
 ```bash
 npm install
-npm run demo       # drives 4 runs through the gateway — no API keys needed
+npm run build
+npm run serve      # web console + API → http://localhost:3010
+npm run demo       # or: scripted 4-run governance demo in the terminal (no API keys)
 npm run typecheck  # tsc --noEmit
-npm run dev        # boot the OS from config and report readiness
 ```
+
+### Web console
+
+`npm run serve` (or `agent-os serve`) starts a zero-dependency web console — built on Node's
+built-in `http`, no framework — where you can launch agents, **approve / reject** risky actions in a
+human queue, and watch each run's live audit trail. Configure the port with `PORT` (default `3010`).
+A hosted instance runs behind HTTPS + basic-auth at **https://agent-os.agents.globex.net**.
 
 `npm run demo` exercises the whole trust layer against mock capabilities and prints the exact
 append-only audit trail the gateway wrote for each run:

@@ -1,0 +1,3 @@
+#!/usr/bin/env node
+// agent-os launcher — runs the compiled CLI. Build first with `npm run build`.
+require('../dist/cli.js');
