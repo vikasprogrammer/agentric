@@ -63,9 +63,33 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${escaped}$`);
 }
 
-function evalWhen(when: NonNullable<PolicyRule['match']['when']>, args: Record<string, unknown>): boolean {
+/**
+ * A `when.value` of the form `"$name"` is a reference to a named governance threshold (e.g.
+ * `"$moneyCapUsd"`), resolved live from the engine's thresholds provider at classify time. This keeps
+ * the numeric caps editable in Settings → Governance without rewriting policy rules. The kernel always
+ * wires a provider backed by defaults (500 / 25), so a reference normally resolves; an UNwired engine
+ * (e.g. an isolated test) yields `undefined`, in which case the rule simply does not match and the
+ * attempt flows on through the remaining rules (mutations still hit their risky→approval rule). We
+ * deliberately don't treat "unknown cap" as match-and-deny, since the same `$ref` mechanism may feed
+ * non-deny rules; the cap is guaranteed present in the real system.
+ */
+function resolveValue(value: number | string | boolean, thresholds: Record<string, number>): number | string | boolean | undefined {
+  if (typeof value === 'string' && value.startsWith('$')) {
+    const resolved = thresholds[value.slice(1)];
+    return typeof resolved === 'number' && Number.isFinite(resolved) ? resolved : undefined;
+  }
+  return value;
+}
+
+function evalWhen(
+  when: NonNullable<PolicyRule['match']['when']>,
+  args: Record<string, unknown>,
+  thresholds: Record<string, number>,
+): boolean {
   const actual = args[when.arg];
-  const { op, value } = when;
+  const { op } = when;
+  const value = resolveValue(when.value, thresholds);
+  if (value === undefined) return false; // unresolved threshold ref → fail closed (no match)
   if (op === 'eq') return actual === value;
   if (op === 'ne') return actual !== value;
   const a = Number(actual);
@@ -79,8 +103,16 @@ function evalWhen(when: NonNullable<PolicyRule['match']['when']>, args: Record<s
 
 export class JsonPolicyEngine implements PolicyEngine {
   private doc: PolicyDocument;
+  /** Live provider for named numeric thresholds (`$moneyCapUsd`, …). Wired by the kernel after the
+   *  AgentOS (and thus its settings store) exists; until then rules referencing thresholds fail closed. */
+  private thresholdsProvider: () => Record<string, number> = () => ({});
   constructor(doc: PolicyDocument) {
     this.doc = doc;
+  }
+
+  /** Inject the threshold resolver (e.g. `() => os.settings.governanceThresholds()`). */
+  setThresholds(fn: () => Record<string, number>): void {
+    this.thresholdsProvider = fn;
   }
 
   /** Ruleset id — read live so a hot reload is reflected everywhere `os.policy.id` is used. */
@@ -100,9 +132,10 @@ export class JsonPolicyEngine implements PolicyEngine {
   }
 
   classify(attempt: ActionAttempt, _ctx: RunContext): Decision {
+    const thresholds = this.thresholdsProvider();
     const rule = this.doc.rules.find((r) => {
       if (!globToRegExp(r.match.capability).test(attempt.capabilityId)) return false;
-      if (r.match.when && !evalWhen(r.match.when, attempt.args)) return false;
+      if (r.match.when && !evalWhen(r.match.when, attempt.args, thresholds)) return false;
       return true;
     });
     const risk = rule?.risk ?? this.doc.defaultRisk;

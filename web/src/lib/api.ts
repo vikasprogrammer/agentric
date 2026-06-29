@@ -7,6 +7,15 @@ export interface Member {
   status: 'invited' | 'active'
   createdAt: number
 }
+export type IdentityProvider = 'slack' | 'discord' | 'email' | 'github'
+export const IDENTITY_PROVIDERS: IdentityProvider[] = ['slack', 'discord', 'email', 'github']
+export interface MemberIdentity {
+  memberId: string
+  provider: IdentityProvider
+  externalId: string
+  createdAt: number
+  createdBy?: string
+}
 export interface AgentAccess {
   allowedRoles: Role[]
   allowedMembers: string[]
@@ -37,6 +46,8 @@ export interface AgentInfo {
 }
 export interface StateResp {
   tenant: string
+  /** Human label for the tenant (branding); falls back to the tenant id server-side. */
+  tenantName?: string
   policy: string
   home?: string
   me: Member
@@ -48,6 +59,8 @@ export interface TeamResp {
   me: Member
   members: Member[]
   assignments: Record<string, AgentAccess>
+  /** member id → their linked external accounts (Slack/Discord/email/github), for chat run-as. */
+  identities: Record<string, MemberIdentity[]>
   agents: AgentInfo[]
 }
 export interface Session {
@@ -60,6 +73,19 @@ export interface Session {
   spawnedBy?: string
   spawnedByLabel?: string
   createdAt: number
+}
+export interface AuditEvent {
+  id: number
+  ts: number
+  runId: string
+  type: string
+  principal?: string
+  data: Record<string, unknown>
+}
+export interface AuditResp {
+  events: AuditEvent[]
+  types: string[]
+  error?: string
 }
 export interface Artifact {
   id: string
@@ -140,7 +166,7 @@ export interface Automation {
   id: string
   agentId: string
   name: string
-  type: 'cron' | 'webhook' | 'composio' | 'slack'
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord'
   mode: ExecMode
   schedule?: string
   /** composio: trigger slug. slack: event type (app_mention/message) or channel id. '' = any. */
@@ -156,7 +182,7 @@ export interface Automation {
 export interface AddAutomationReq {
   agentId: string
   name: string
-  type: 'cron' | 'webhook' | 'composio' | 'slack'
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord'
   mode: ExecMode
   schedule?: string
   filter?: string
@@ -178,6 +204,8 @@ export interface Connector {
   enabled: boolean
   scope: ConnectorScope
   ownerMemberId?: string
+  /** personal-only: shared with the whole team (injected into everyone's sessions, as the owner). */
+  shared: boolean
   createdAt: number
   envKeys: string[]
   headerKeys: string[]
@@ -313,6 +341,12 @@ export interface CompanySettings {
   error?: string
 }
 
+/** Numeric governance caps the never-tier policy rules read ($moneyCapUsd / $bulkDeleteCount). */
+export interface GovernanceThresholds {
+  moneyCapUsd: number
+  bulkDeleteCount: number
+}
+
 export interface IntegrationsResp {
   /** Never the raw key — only whether it's set and a masked hint (••••last4). */
   composio: { set: boolean; hint: string }
@@ -320,6 +354,8 @@ export interface IntegrationsResp {
   webhook: { set: boolean }
   /** Native Slack (Socket Mode) — which tokens are set; never the tokens. */
   slack: { appToken: boolean; botToken: boolean; configured: boolean }
+  /** Native Discord (Gateway) — whether the bot token is set; never the token. */
+  discord: { botToken: boolean; configured: boolean }
   updatedAt?: number
   updatedBy?: string
   error?: string
@@ -332,6 +368,9 @@ export interface SlackStatus {
   lastError?: string
   error?: string
 }
+
+/** Live Discord Gateway status — same shape as SlackStatus. */
+export type DiscordStatus = SlackStatus
 
 export interface ComposioConnection {
   id: string
@@ -353,6 +392,7 @@ export interface ConnectionsResp {
 export interface IntegrationsOverview {
   composio: { keySet: boolean; entity: string; apps: { id: string; toolkit: string; status: string }[] }
   slack: { configured: boolean; connected: boolean; botUserId: string }
+  discord: { configured: boolean; connected: boolean; botUserId: string }
   custom: { label: string; type: string; enabled: boolean }[]
   error?: string
 }
@@ -429,11 +469,21 @@ export const api = {
   dismissMessage: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/dismiss`),
 
   team: () => call<TeamResp>('GET', '/api/team'),
+  audit: (f: { session?: string; type?: string; principal?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (f.session) q.set('session', f.session)
+    if (f.type) q.set('type', f.type)
+    if (f.principal) q.set('principal', f.principal)
+    if (f.limit) q.set('limit', String(f.limit))
+    return call<AuditResp>('GET', '/api/audit' + (q.toString() ? `?${q}` : ''))
+  },
   invite: (email: string, role: Role) => call<{ member: Member; link: string; error?: string }>('POST', '/api/team/invite', { email, role }),
   setRole: (id: string, role: Role) => call<Member | { error: string }>('POST', `/api/team/${id}/role`, { role }),
   removeMember: (id: string) => call<{ ok: boolean; reason?: string }>('DELETE', '/api/team/' + id),
   loginLink: (id: string) => call<{ link: string; error?: string }>('POST', `/api/team/${id}/login-link`),
   setAssignment: (agentId: string, access: AgentAccess) => call<{ ok: boolean; assignment: AgentAccess }>('PUT', '/api/team/assignments/' + agentId, access),
+  setIdentity: (id: string, provider: IdentityProvider, externalId: string) => call<{ ok: boolean; identities: MemberIdentity[]; error?: string }>('POST', `/api/team/${id}/identities`, { provider, externalId }),
+  clearIdentity: (id: string, provider: IdentityProvider) => call<{ ok: boolean; identities: MemberIdentity[]; error?: string }>('DELETE', `/api/team/${id}/identities/${provider}`),
 
   automations: () => call<{ automations: Automation[] }>('GET', '/api/automations'),
   addAutomation: (a: AddAutomationReq) => call<Automation & { error?: string }>('POST', '/api/automations', a),
@@ -478,6 +528,9 @@ export const api = {
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
 
+  governance: () => call<GovernanceThresholds & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
+  saveGovernance: (t: GovernanceThresholds) => call<{ ok: boolean; error?: string } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
+
   settings: () => call<CompanySettings>('GET', '/api/settings'),
   saveCompany: (companyMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/company', { companyMd }),
   connections: () => call<ConnectionsResp>('GET', '/api/connections'),
@@ -488,8 +541,9 @@ export const api = {
   disconnectApp: (body: { id: string; scope: 'company' | 'personal' }) =>
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   slackStatus: () => call<SlackStatus>('GET', '/api/settings/slack/status'),
+  discordStatus: () => call<DiscordStatus>('GET', '/api/settings/discord/status'),
 
   skills: () => call<SkillsResp>('GET', '/api/skills'),
   skill: (name: string) => call<SkillDetail & { error?: string }>('GET', '/api/skills/' + encodeURIComponent(name)),
@@ -517,4 +571,5 @@ export const api = {
   addConnector: (c: AddConnectorReq) => call<Connector | { error: string }>('POST', '/api/connectors', c),
   deleteConnector: (id: string) => call<{ ok: boolean }>('DELETE', '/api/connectors/' + id),
   toggleConnector: (id: string, enabled: boolean) => call<Connector>('PATCH', '/api/connectors/' + id, { enabled }),
+  shareConnector: (id: string, shared: boolean) => call<Connector>('PATCH', '/api/connectors/' + id, { shared }),
 }

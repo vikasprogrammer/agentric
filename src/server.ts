@@ -15,11 +15,12 @@ import { evaluate } from './observability/evaluation';
 import { TerminalManager } from './terminal';
 import { Automation, Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
+import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
 import { CATALOG, redact } from './connectors/connectors';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument } from './governance/policy';
-import { AgentManifest, ApprovalRequest, EmbeddingsConfig, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeExamplePrompts, sanitizeRuntimeTuning } from './types';
+import { AgentManifest, ApprovalRequest, EmbeddingsConfig, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeExamplePrompts, sanitizeRuntimeTuning } from './types';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
 interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -84,7 +85,7 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     }
     const rt = resolveRuntime(registry, req);
     if (!rt) return sendJson(res, 404, { error: 'no such workspace' });
-    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack).catch((err) =>
+    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack, rt.discord).catch((err) =>
       sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }),
     );
   });
@@ -188,7 +189,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   return server;
 }
 
-async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket): Promise<void> {
+async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const p = url.pathname;
   const method = req.method || 'GET';
@@ -203,7 +204,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const idx = path.join(WEB_DIST, 'index.html');
     return sendFile(res, fs.existsSync(idx) ? idx : CONSOLE_HTML, 'text/html; charset=utf-8');
   }
-  if (method === 'GET' && p === '/health') return sendJson(res, 200, { ok: true, tenant: os.tenant });
+  if (method === 'GET' && p === '/health') return sendJson(res, 200, { ok: true, tenant: os.tenant, name: os.tenantName });
   // static assets from the built React app (web/dist)
   if (method === 'GET' && (p.startsWith('/assets/') || /\.(js|css|svg|png|ico|woff2?|json|map)$/.test(p))) {
     const file = path.join(WEB_DIST, p.replace(/^\/+/, ''));
@@ -286,6 +287,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
   // Policy preview: the agent asks what it's allowed to do BEFORE attempting it. Pure dry-run of the
   // same classify() the gate uses — no approval card, no audit, no side effect.
+  // Directory lookup (the `directory_lookup` OS tool): a session resolves teammates by name/email →
+  // member + their external accounts (slack/discord/github/email), so an agent knows who to reach on
+  // which channel. Session-secret gated like the other agent loopback routes; read-only.
+  if (method === 'GET' && p === '/api/agent/directory') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const q = url.searchParams.get('q') || '';
+    const members = os.team.searchMembers(q, Number(url.searchParams.get('limit')) || 10).map((m) => ({
+      id: m.id,
+      name: m.name,
+      email: m.email,
+      role: m.role,
+      identities: os.team.externalIdsFor(m.id).map((i) => ({ provider: i.provider, externalId: i.externalId })),
+    }));
+    return sendJson(res, 200, { members });
+  }
   if (method === 'GET' && p === '/api/agent/policy') {
     const session = url.searchParams.get('session') || '';
     const agent = tm.sessionAgent(session);
@@ -407,6 +425,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = await slack.reply(session, String(b.text || ''));
     return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
   }
+  // native Discord egress: the analogue of slack/reply. Channel/message come from the server-side
+  // binding (discord_threads) — the agent only sends text.
+  if (method === 'POST' && p === '/api/agent/discord/reply') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!discord) return sendJson(res, 503, { error: 'discord not available' });
+    const out = await discord.reply(session, String(b.text || ''));
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+  }
   // launcher signal that the claude process exited (→ completion fallback + mark idle).
   if (method === 'POST' && p === '/api/ended') {
     const b = await readBody(req);
@@ -477,6 +506,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agents = terminalAgents(os).filter((a) => os.team.canRun(me, a.id));
     return sendJson(res, 200, {
       tenant: os.tenant,
+      tenantName: os.tenantName,
       policy: os.policy.id,
       home: os.paths?.home,
       me,
@@ -508,6 +538,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       me,
       members: os.team.listMembers(),
       assignments: os.team.listAssignments(),
+      identities: os.team.identitiesByMember(), // member id → external accounts (chat run-as join keys)
       agents: terminalAgents(os), // ALL agents, so owner/admin can assign access
     });
   }
@@ -539,6 +570,36 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const issued = os.team.issueLoginLink(target.email)!;
     return sendJson(res, 200, { link: linkFor(req, issued.token) });
   }
+  // Identity map: link/unlink the external accounts a member is known by (Slack/Discord/email/github),
+  // the join key chat triggers use for run-as. Owner/admin only. The id segment excludes the literal
+  // "identities"-suffixed paths from the single-segment member routes below.
+  const teamIdentSet = p.match(/^\/api\/team\/([\w-]+)\/identities$/);
+  if (method === 'POST' && teamIdentSet) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const provider = String(b.provider || '') as IdentityProvider;
+    if (!IDENTITY_PROVIDERS.includes(provider)) return sendJson(res, 400, { error: 'unknown provider' });
+    const externalId = String(b.externalId || '').trim();
+    if (!os.team.getMember(teamIdentSet[1])) return sendJson(res, 404, { error: 'not found' });
+    // Empty externalId clears the handle (the UI sends '' on blur of an emptied field).
+    if (!externalId) {
+      os.team.clearIdentity(teamIdentSet[1], provider);
+    } else {
+      const out = os.team.setIdentity(teamIdentSet[1], provider, externalId, me.email);
+      if (!out) return sendJson(res, 400, { error: 'could not link identity' });
+    }
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'identity.linked', data: { member: teamIdentSet[1], provider, set: !!externalId } });
+    return sendJson(res, 200, { ok: true, identities: os.team.externalIdsFor(teamIdentSet[1]) });
+  }
+  const teamIdentDel = p.match(/^\/api\/team\/([\w-]+)\/identities\/([\w-]+)$/);
+  if (method === 'DELETE' && teamIdentDel) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const provider = teamIdentDel[2] as IdentityProvider;
+    if (!IDENTITY_PROVIDERS.includes(provider)) return sendJson(res, 400, { error: 'unknown provider' });
+    os.team.clearIdentity(teamIdentDel[1], provider);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'identity.unlinked', data: { member: teamIdentDel[1], provider } });
+    return sendJson(res, 200, { ok: true, identities: os.team.externalIdsFor(teamIdentDel[1]) });
+  }
   const teamMember = p.match(/^\/api\/team\/([\w-]+)$/);
   if (method === 'DELETE' && teamMember) {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
@@ -568,7 +629,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const b = await readBody(req);
     try {
-      const type = b.type === 'webhook' ? 'webhook' : b.type === 'composio' ? 'composio' : b.type === 'slack' ? 'slack' : 'cron';
+      const type = b.type === 'webhook' ? 'webhook' : b.type === 'composio' ? 'composio' : b.type === 'slack' ? 'slack' : b.type === 'discord' ? 'discord' : 'cron';
       const created = autos.add({
         agentId: String(b.agentId || ''),
         name: String(b.name || ''),
@@ -967,6 +1028,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...saved });
   }
 
+  // ── governance thresholds (the numeric caps the never-tier policy rules read) ──
+  if (method === 'GET' && p === '/api/settings/governance') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { ...os.settings.governanceThresholds(), ...os.settings.governanceMeta() });
+  }
+  if (method === 'PUT' && p === '/api/settings/governance') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const saved = os.settings.setGovernanceThresholds(
+      { moneyCapUsd: Number(b.moneyCapUsd), bulkDeleteCount: Number(b.bulkDeleteCount) },
+      me.email,
+    );
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.governance.updated', data: { ...saved } });
+    return sendJson(res, 200, { ok: true, ...saved });
+  }
+
   // ── company settings (workspace-wide context injected into every claude-code agent) ──
   if (method === 'GET' && p === '/api/settings') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -1004,12 +1081,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
     }
     if (slackTouched && slack) void slack.restart();
-    return sendJson(res, 200, { ok: true, removedSlackAutomations, ...integrationsView(os) });
+    // Discord bot token: the analogue of the Slack tokens — changing it re-dials (or tears down) the
+    // Gateway connection, and clearing it orphans discord automations the same way.
+    const discordTouched = typeof b.discordBotToken === 'string';
+    if (typeof b.discordBotToken === 'string') os.settings.setDiscordBotToken(b.discordBotToken, me.email);
+    let removedDiscordAutomations = 0;
+    if (discordTouched && !os.settings.discordConfigured()) {
+      for (const a of autos.list()) {
+        if (a.type === 'discord' && autos.remove(a.id)) removedDiscordAutomations++;
+      }
+    }
+    if (discordTouched && discord) void discord.restart();
+    return sendJson(res, 200, { ok: true, removedSlackAutomations, removedDiscordAutomations, ...integrationsView(os) });
   }
   // Live Slack Socket-Mode connection status (owner/admin) — for the Integrations panel.
   if (method === 'GET' && p === '/api/settings/slack/status') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, slack ? slack.status() : { configured: os.settings.slackConfigured(), connected: false, botUserId: '' });
+  }
+  // Live Discord Gateway connection status (owner/admin) — for the Integrations panel.
+  if (method === 'GET' && p === '/api/settings/discord/status') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, discord ? discord.status() : { configured: os.settings.discordConfigured(), connected: false, botUserId: '' });
   }
 
   // ── memory backend (sqlite / libsql / automem) — owner/admin, applied live without a restart ──
@@ -1232,6 +1325,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         connected: slack ? slack.status().connected : false,
         botUserId: slack ? slack.status().botUserId : '',
       },
+      discord: {
+        configured: os.settings.discordConfigured(),
+        connected: discord ? discord.status().connected : false,
+        botUserId: discord ? discord.status().botUserId : '',
+      },
       custom: os.connectors
         .list()
         .filter((c) => c.scope === 'org')
@@ -1344,12 +1442,40 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
     if (method === 'PATCH') {
       const b = await readBody(req);
+      // Share/un-share a personal connector with the team (owner or admin, enforced by canManage above).
+      if (typeof b.shared === 'boolean') {
+        const c = os.connectors.get(id);
+        if (c && c.scope !== 'personal') return sendJson(res, 400, { error: 'only personal connectors can be shared' });
+        const updated = os.connectors.setShared(id, b.shared);
+        if (updated) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.shared', data: { connector: id, shared: b.shared } });
+        return sendJson(res, updated ? 200 : 404, updated ? redact(updated) : { error: 'not found' });
+      }
       const updated = os.connectors.setEnabled(id, !!b.enabled);
       return sendJson(res, updated ? 200 : 404, updated ? redact(updated) : { error: 'not found' });
     }
   }
 
   // ── approvals (shared with the console) ──────────────────────────────────────
+  // ── audit viewer (owner/admin): the queryable SQLite mirror of the JSONL system-of-record ──
+  if (method === 'GET' && p === '/api/audit') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const session = url.searchParams.get('session') || '';
+    const type = url.searchParams.get('type') || '';
+    const principal = url.searchParams.get('principal') || '';
+    const limit = Math.max(1, Math.min(Number(url.searchParams.get('limit')) || 200, 1000));
+    const where = ['tenant = ?'];
+    const params: unknown[] = [os.tenant];
+    if (session) { where.push('run_id = ?'); params.push(session); }
+    if (type) { where.push('type LIKE ?'); params.push(type.replace(/[%_]/g, (c) => '\\' + c) + '%'); }
+    if (principal) { where.push('principal = ?'); params.push(principal); }
+    const rows = os.db
+      .prepare(`SELECT id, ts, run_id, type, principal, data FROM audit_events WHERE ${where.join(' AND ')} ORDER BY ts DESC, id DESC LIMIT ?`)
+      .all<{ id: number; ts: number; run_id: string; type: string; principal: string | null; data: string }>(...params, limit);
+    const events = rows.map((r) => ({ id: r.id, ts: r.ts, runId: r.run_id, type: r.type, principal: r.principal ?? undefined, data: safeJson(r.data) }));
+    // Distinct types (capped) for the filter dropdown.
+    const types = os.db.prepare('SELECT DISTINCT type FROM audit_events WHERE tenant = ? ORDER BY type LIMIT 200').all<{ type: string }>(os.tenant).map((t) => t.type);
+    return sendJson(res, 200, { events, types });
+  }
   if (method === 'GET' && p === '/api/approvals') return sendJson(res, 200, os.approvals.pending(os.tenant).filter((a) => tm.canViewSession(a.runId, me)).map(approvalView));
   const apMatch = p.match(/^\/api\/approvals\/([\w-]+)$/);
   if (method === 'POST' && apMatch) {
@@ -1378,6 +1504,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
 function runView(r: Run) {
   return { id: r.id, agent: r.agent.id, status: r.status, outcome: r.outcome, cost: r.cost, createdAt: r.createdAt };
+}
+
+/** Parse a stored JSON column, degrading to a `{ raw }` wrapper rather than throwing on bad data. */
+function safeJson(s: string): Record<string, unknown> {
+  try { const v = JSON.parse(s); return v && typeof v === 'object' ? v : { value: v }; } catch { return { raw: s }; }
 }
 function approvalView(a: ApprovalRequest) {
   return { id: a.id, runId: a.runId, level: a.level, capability: a.attempt.capabilityId, args: a.attempt.args, reason: a.reason };
@@ -1506,15 +1637,18 @@ function integrationsView(os: AgentOS): {
   composio: { set: boolean; hint: string };
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
+  discord: { botToken: boolean; configured: boolean };
   updatedAt?: number;
   updatedBy?: string;
 } {
   const meta = os.settings.composioMeta();
   const slack = os.settings.slackMeta();
+  const discord = os.settings.discordMeta();
   return {
     composio: { set: meta.set, hint: redactSecret(os.settings.composioApiKey()) },
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
+    discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
     updatedAt: meta.updatedAt,
     updatedBy: meta.updatedBy,
   };

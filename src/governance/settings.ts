@@ -17,6 +17,7 @@ const COMPOSIO_KEY = 'composio_api_key';
 const COMPOSIO_WEBHOOK_KEY = 'composio_webhook_secret';
 const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connections:write)
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
+const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
 const MEMORY_KEY = 'memory_config'; // the live memory backend (JSON MemoryConfig; overrides the file default)
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
@@ -24,6 +25,18 @@ const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state 
 const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives injected into every agent's prompt
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
+const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
+
+/** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
+ *  Live-editable in Settings → Governance; resolved at classify time by the policy engine. */
+export interface GovernanceThresholds {
+  /** A single payment/refund at or below this (USD) may be approved; above it is refused outright. */
+  moneyCapUsd: number;
+  /** A delete of at most this many items may be approved; above it is refused outright. */
+  bulkDeleteCount: number;
+}
+
+export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd: 500, bulkDeleteCount: 25 };
 
 export interface CompanySettings {
   /** The company-wide markdown context. Empty string when unset. */
@@ -126,6 +139,28 @@ export class SettingsStore {
   }
   setSlackBotToken(token: string, by?: string): void {
     this.set(SLACK_BOT_TOKEN_KEY, token.trim(), by);
+  }
+
+  // ── native Discord (Gateway) ───────────────────────────────────────────────────
+  // One company Discord bot, configured once here, shared across the whole workspace. The single bot
+  // token both opens the outbound Gateway WebSocket (no public URL needed) and posts replies. Unlike
+  // Slack there is no separate app-level token — Discord uses one bot token for both.
+
+  /** Bot token (`Bot …`) for the Gateway + posting messages, or '' when unset. */
+  discordBotToken(): string {
+    return this.getRow(DISCORD_BOT_TOKEN_KEY)?.value?.trim() ?? '';
+  }
+  /** The bot token present — the minimum to open a Gateway connection and reply. */
+  discordConfigured(): boolean {
+    return !!this.discordBotToken();
+  }
+  /** Whether the Discord token is set + who last touched it (never returns the token itself). */
+  discordMeta(): { botToken: boolean; updatedAt?: number; updatedBy?: string } {
+    const bot = this.getRow(DISCORD_BOT_TOKEN_KEY);
+    return { botToken: !!bot?.value, updatedAt: bot?.updated_at ?? undefined, updatedBy: bot?.updated_by ?? undefined };
+  }
+  setDiscordBotToken(token: string, by?: string): void {
+    this.set(DISCORD_BOT_TOKEN_KEY, token.trim(), by);
   }
 
   // ── memory backend ───────────────────────────────────────────────────────────────
@@ -241,5 +276,45 @@ export class SettingsStore {
   }
   setRecommendations(value: { open: Recommendation[]; dismissed: string[] }, by?: string): void {
     this.set(RECOMMENDATIONS_KEY, JSON.stringify(value), by);
+  }
+
+  // ── governance thresholds ────────────────────────────────────────────────────────
+  // Numeric caps the never-tier policy rules reference by name ($moneyCapUsd / $bulkDeleteCount).
+  // Kept here (not hard-coded in the policy JSON) so an owner can retune the caps live without
+  // editing rules; the policy engine resolves them at classify time. Unset → DEFAULT_*.
+
+  /** The live governance caps, merged over the defaults so a partial save can't drop a field. */
+  governanceThresholds(): GovernanceThresholds {
+    const raw = this.getRow(GOVERNANCE_KEY)?.value;
+    if (!raw) return { ...DEFAULT_GOVERNANCE_THRESHOLDS };
+    try {
+      const v = JSON.parse(raw) as Partial<GovernanceThresholds>;
+      return {
+        moneyCapUsd: Number.isFinite(v.moneyCapUsd) ? Number(v.moneyCapUsd) : DEFAULT_GOVERNANCE_THRESHOLDS.moneyCapUsd,
+        bulkDeleteCount: Number.isFinite(v.bulkDeleteCount) ? Number(v.bulkDeleteCount) : DEFAULT_GOVERNANCE_THRESHOLDS.bulkDeleteCount,
+      };
+    } catch {
+      return { ...DEFAULT_GOVERNANCE_THRESHOLDS };
+    }
+  }
+
+  governanceMeta(): { updatedAt?: number; updatedBy?: string } {
+    const row = this.getRow(GOVERNANCE_KEY);
+    return { updatedAt: row?.updated_at, updatedBy: row?.updated_by ?? undefined };
+  }
+
+  /** Persist new caps (clamped to non-negative integers) and return the resolved set. */
+  setGovernanceThresholds(t: Partial<GovernanceThresholds>, by?: string): GovernanceThresholds {
+    const cur = this.governanceThresholds();
+    const clamp = (n: unknown, fallback: number) => {
+      const v = Number(n);
+      return Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback;
+    };
+    const next: GovernanceThresholds = {
+      moneyCapUsd: clamp(t.moneyCapUsd, cur.moneyCapUsd),
+      bulkDeleteCount: clamp(t.bulkDeleteCount, cur.bulkDeleteCount),
+    };
+    this.set(GOVERNANCE_KEY, JSON.stringify(next), by);
+    return next;
   }
 }

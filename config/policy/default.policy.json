@@ -1,9 +1,13 @@
 {
   "id": "default@v1",
-  "description": "What your agents may do on their own vs. what needs a human. Allow = runs immediately; Ask = pauses for an admin/owner to approve; Block = never. These cover what real agents actually do (shell + tools); add Advanced rules for finer control.",
+  "description": "What your agents may do on their own vs. what needs a human. Allow = runs immediately; Ask = pauses for an admin/owner to approve; Never = refused outright, regardless of who approves (irreversible actions). The Never rules read the caps in Settings → Governance ($moneyCapUsd / $bulkDeleteCount).",
   "defaultRisk": "yellow",
   "approvalRouting": { "yellow": "head", "red": "owner" },
   "rules": [
+    { "match": { "capability": "*", "when": { "arg": "destructive", "op": "eq", "value": true } }, "risk": "deny" },
+    { "match": { "capability": "*", "when": { "arg": "amountUsd", "op": "gt", "value": "$moneyCapUsd" } }, "risk": "deny" },
+    { "match": { "capability": "*", "when": { "arg": "deleteCount", "op": "gt", "value": "$bulkDeleteCount" } }, "risk": "deny" },
+
     { "match": { "capability": "shell.exec", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "red" },
     { "match": { "capability": "shell.exec" }, "risk": "green" },
 
