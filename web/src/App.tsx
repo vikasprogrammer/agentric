@@ -3267,28 +3267,90 @@ function GovernanceSettings({ me }: { me: Member }) {
   }
 
   return (
-    <Card>
-      <CardContent className="space-y-4 p-4">
-        <p className="text-sm text-muted-foreground">
-          The caps the policy's <strong>never</strong> tier enforces. At or below the limit an action can still be{' '}
-          <em>approved</em> by a human; <strong>above</strong> it the action is <strong>refused outright</strong> — no approver,
-          attended or not, can override. These feed the deny rules as <span className="font-mono text-xs">$moneyCapUsd</span> /{' '}
-          <span className="font-mono text-xs">$bulkDeleteCount</span> and apply live.
-        </p>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Money cap (USD)" help="A single payment/refund above this is never allowed.">
-            <Input type="number" min={0} value={t.moneyCapUsd}
-              onChange={(e) => setT({ ...t, moneyCapUsd: Number(e.target.value) })} disabled={!canEdit} />
-          </Field>
-          <Field label="Bulk-delete cap (items)" help="A delete of more than this many items is never allowed.">
-            <Input type="number" min={0} value={t.bulkDeleteCount}
-              onChange={(e) => setT({ ...t, bulkDeleteCount: Number(e.target.value) })} disabled={!canEdit} />
-          </Field>
+    <div className="space-y-4">
+      <KillSwitchCard me={me} />
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <p className="text-sm text-muted-foreground">
+            The caps the policy's <strong>never</strong> tier enforces. At or below the limit an action can still be{' '}
+            <em>approved</em> by a human; <strong>above</strong> it the action is <strong>refused outright</strong> — no approver,
+            attended or not, can override. These feed the deny rules as <span className="font-mono text-xs">$moneyCapUsd</span> /{' '}
+            <span className="font-mono text-xs">$bulkDeleteCount</span> and apply live.
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Money cap (USD)" help="A single payment/refund above this is never allowed.">
+              <Input type="number" min={0} value={t.moneyCapUsd}
+                onChange={(e) => setT({ ...t, moneyCapUsd: Number(e.target.value) })} disabled={!canEdit} />
+            </Field>
+            <Field label="Bulk-delete cap (items)" help="A delete of more than this many items is never allowed.">
+              <Input type="number" min={0} value={t.bulkDeleteCount}
+                onChange={(e) => setT({ ...t, bulkDeleteCount: Number(e.target.value) })} disabled={!canEdit} />
+            </Field>
+          </div>
+          <div className="flex items-center gap-3">
+            <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save caps' : 'Saved'}</Button>
+            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+/** The workspace emergency stop. Engaging it makes the gate deny EVERY agent action fleet-wide (and,
+ *  by default, halts running sessions). Reversible — release it and agents can run again. */
+function KillSwitchCard({ me }: { me: Member }) {
+  const [engaged, setEngaged] = useState(false)
+  const [reason, setReason] = useState('')
+  const [halt, setHalt] = useState(true)
+  const [by, setBy] = useState<string | undefined>()
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const canEdit = me.role === 'owner' || me.role === 'admin'
+
+  const refresh = () => api.killSwitch().then((r) => { if (!r.error) { setEngaged(r.engaged); setReason(r.reason || ''); setBy(r.updatedBy) } }).catch(() => {})
+  useEffect(() => { refresh() }, [])
+
+  const toggle = async (next: boolean) => {
+    setBusy(true); setHint('')
+    const r = await api.setKillSwitch(next, reason, halt)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setEngaged(r.engaged); setBy(r.updatedBy)
+    setHint(next ? `engaged${r.halted ? ` — halted ${r.halted} session(s)` : ''}` : 'released'); setTimeout(() => setHint(''), 4000)
+  }
+
+  return (
+    <Card className={engaged ? 'border-red-500 bg-red-50' : 'border-red-200'}>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <span className={engaged ? 'text-red-700' : 'text-red-600'}>⛔ Emergency stop</span>
+              {engaged && <span className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold uppercase text-white">engaged</span>}
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              While engaged, the gate <strong>denies every agent action</strong> across the whole workspace — the hard stop above all policy.
+            </p>
+          </div>
+          <Button variant={engaged ? 'outline' : 'destructive'} disabled={!canEdit || busy} onClick={() => toggle(!engaged)}>
+            {engaged ? 'Release' : 'Engage'}
+          </Button>
         </div>
+        {!engaged && (
+          <div className="space-y-2">
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (optional — recorded in the audit log)" disabled={!canEdit} className="h-8 text-xs" />
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={halt} onChange={(e) => setHalt(e.target.checked)} disabled={!canEdit} />
+              Also halt running sessions immediately (otherwise they stop at their next gated action)
+            </label>
+          </div>
+        )}
+        {engaged && reason && <p className="text-xs text-red-700">Reason: {reason}</p>}
         <div className="flex items-center gap-3">
-          <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save caps' : 'Saved'}</Button>
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
-          {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
+          {!hint && by && <span className="text-[11px] text-muted-foreground">last changed by {by}</span>}
         </div>
       </CardContent>
     </Card>

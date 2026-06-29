@@ -649,6 +649,11 @@ export class TerminalManager {
   /** The gate. Same policy brain as the console — allow flows, ask → inbox approval (auto-cleared for
    *  an attended approver), never → deny. Args are enriched into facts first (the single classifier). */
   gate(sessionId: string, agent: string, capability: string, rawArgs: Record<string, unknown>, reasoning: string): GateResult {
+    // Workspace emergency stop — deny every action before classifying anything.
+    if (this.os.settings.killSwitch().engaged) {
+      this.audit(sessionId, agent, 'gate.killswitch', { capability });
+      return { decision: 'deny' };
+    }
     const args = enrichArgs(capability, rawArgs);
     const attempt: ActionAttempt = { capabilityId: capability, args, reasoning };
     const decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
@@ -704,7 +709,17 @@ export class TerminalManager {
    * string — classify falls back to the ruleset's defaultRisk for ones with no matching rule.
    */
   policyCheck(sessionId: string, agent: string, capability: string, args: Record<string, unknown>): Decision {
+    if (this.os.settings.killSwitch().engaged) return { effect: 'deny', reason: 'workspace emergency stop is engaged' };
     return this.os.policy.classify({ capabilityId: capability, args: enrichArgs(capability, args), reasoning: '' }, this.ctx(sessionId, agent));
+  }
+
+  /** Halt every running session (used when the kill switch is engaged with "stop running sessions").
+   *  Returns the count halted. Each is stopped via the normal path so its inbox/audit reflect it. */
+  stopAllRunning(by: string): number {
+    const rows = this.db.prepare("SELECT id FROM term_sessions WHERE status = 'running'").all<{ id: string }>();
+    let n = 0;
+    for (const r of rows) if (this.stopSession(r.id, by)) n++;
+    return n;
   }
 
   /**

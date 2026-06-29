@@ -1044,6 +1044,24 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...saved });
   }
 
+  // ── kill switch (workspace emergency stop — gate denies everything while engaged) ──
+  if (method === 'GET' && p === '/api/settings/kill-switch') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, os.settings.killSwitch());
+  }
+  if (method === 'POST' && p === '/api/settings/kill-switch') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const engaged = b.engaged === true;
+    const state = os.settings.setKillSwitch(engaged, typeof b.reason === 'string' ? b.reason : undefined, me.email);
+    // On engage, optionally halt running sessions (default true) so nothing keeps running mid-task —
+    // a frozen gate only stops the NEXT gated action. Releasing leaves sessions stopped; respawn to resume.
+    let halted = 0;
+    if (engaged && b.haltSessions !== false) halted = tm.stopAllRunning(me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: engaged ? 'killswitch.engaged' : 'killswitch.released', data: { reason: state.reason, halted } });
+    return sendJson(res, 200, { ok: true, ...state, halted });
+  }
+
   // ── company settings (workspace-wide context injected into every claude-code agent) ──
   if (method === 'GET' && p === '/api/settings') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
