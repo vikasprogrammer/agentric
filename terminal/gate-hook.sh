@@ -3,8 +3,8 @@
 #
 # Wire this in a session's settings.json (see terminal/claude-settings.json) so a REAL
 # `claude` agent running in tmux is governed by Agent OS: before every tool call, Claude
-# runs this hook. We classify the call; green → exit 0 (allow); risky → create an inbox
-# approval and BLOCK here until a human decides, then exit 0 (allow) or 2 (deny).
+# runs this hook. The server decides: allow → exit 0; ask → create an inbox approval and
+# BLOCK here until a human decides (then exit 0/2); never → exit 2 (denied outright).
 #
 # Contract: PreToolUse hook reads a JSON event on stdin; exit 0 lets the tool run, exit 2
 # blocks it (reason on stderr is shown to Claude).
@@ -13,7 +13,11 @@
 set -u
 EVENT=$(cat)
 
-read -r TOOL CMD <<<"$(printf '%s' "$EVENT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const e=JSON.parse(d||"{}");const t=e.tool_name||"";const i=e.tool_input||{};const cmd=(i.command||i.file_path||i.url||"").toString().replace(/\s+/g," ");console.log(t+" "+cmd)})')"
+# This hook is now DUMB TRANSPORT (governance PR #2): it only routes the tool to a capability and ships
+# the FULL tool_input to the server, which enriches it into facts (case-insensitive, argument-aware —
+# it sees the SQL inside db_query/execute_php, the dollar amount, the delete count) and classifies.
+# Tab-separated so the JSON input survives `read` on one line (JSON.stringify escapes tabs/newlines).
+IFS=$'\t' read -r TOOL INPUT <<<"$(printf '%s' "$EVENT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const e=JSON.parse(d||"{}");process.stdout.write((e.tool_name||"")+"\t"+JSON.stringify(e.tool_input||{}))})')"
 
 # The OS-owned tools (memory recall/remember, ask/report, policy preview) are internal and never
 # touch the outside world, so they bypass the gate entirely.
@@ -21,51 +25,18 @@ case "$TOOL" in
   mcp__agentos__*) exit 0 ;;
 esac
 
-# Classify the attempt into an Agent OS capability + two flags the policy routes on:
-#   risky       → mutation that needs human approval (yellow/red)
-#   destructive → IRREVERSIBLE op that the never-tier denies outright (drop db, delete site, rm -rf…)
-# Matching is case-INSENSITIVE (SQL/flags are written in any case): `drop database` must catch `DROP`.
-# NOTE: we only see the Bash command string and the MCP tool NAME here — not MCP call arguments, so
-# destructive SQL passed *inside* a tool like db_query/execute_php is not yet caught. That argument-aware
-# classification is the server-side enricher (governance PR #2); this hook is the first, name/command cut.
-RISKY=false
-DESTRUCTIVE=false
-shopt -s nocasematch 2>/dev/null || true
+# Route the tool to an Agent OS capability (structural — the only thing the hook still decides). All
+# riskiness/destructiveness classification now happens server-side in the enricher + policy.
 case "$TOOL" in
-  Bash)
-    CAP="shell.exec"
-    case "$CMD" in
-      *"drop database"*|*"drop table"*|*"drop schema"*|*truncate*|*"rm -rf"*|*"rm -fr"*|*"rm -r "*|*mkfs*|*"dd if="*|*"dd of="*|*"terraform destroy"*|*"kubectl delete"*|*"git push --force"*|*"git push -f"*) DESTRUCTIVE=true ;;
-    esac
-    case "$CMD" in
-      *stripe*|*refund*|*" rm "*|*deploy*|*prod*|*drop*|*delete*|*kubectl*|*systemctl*|*shutdown*) RISKY=true ;;
-    esac
-    ;;
-  mcp__*)
-    # A connector tool (Slack / GitHub / Composio / …). We can't see inside the call, so we classify
-    # by the tool NAME: mutation verbs (create/send/update/delete/…) are writes → need approval; the
-    # rest (get/list/search/read/…) are reads → auto-allow. Composio names tools like SLACK_SEND_MESSAGE.
-    CAP="connector.call"
-    UPPER=$(printf '%s' "$TOOL" | tr '[:lower:]' '[:upper:]')
-    # Irreversible by name: deleting a whole site or dropping a database → never tier.
-    case "$UPPER" in
-      *DELETE_SITE*|*DROP_DATABASE*|*DROP_TABLE*|*DROP_SCHEMA*) DESTRUCTIVE=true ;;
-    esac
-    case "$UPPER" in
-      *CREATE*|*SEND*|*UPDATE*|*DELETE*|*REMOVE*|*WRITE*|*POST*|*PUT*|*PATCH*|*MERGE*|*PUBLISH*|*UPLOAD*|*DEPLOY*|*PAY*|*REFUND*|*ARCHIVE*|*INVITE*|*EXECUTE*) RISKY=true ;;
-    esac
-    # Managing/reconnecting a COMPANY-wide connection (the composio-company entity) grants the whole
-    # fleet access to an app — an owner/admin decision. Route it to approval so a non-admin's agent
-    # run can't silently wire or replace company-wide access. (Personal-entity connects stay as-is.)
-    case "$TOOL" in
-      mcp__composio-company__*MANAGE_CONNECTION*|mcp__composio-company__*INITIATE_CONNECTION*) CAP="connector.connect"; RISKY=true ;;
-    esac
-    ;;
+  Bash) CAP="shell.exec" ;;
+  mcp__composio-company__*MANAGE_CONNECTION*|mcp__composio-company__*INITIATE_CONNECTION*)
+    # Managing a COMPANY-wide connection grants the whole fleet access to an app — an owner/admin call.
+    CAP="connector.connect" ;;
+  mcp__*) CAP="connector.call" ;;
   *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
 esac
-shopt -u nocasematch 2>/dev/null || true
 
-payload=$(node -e 'const[s,a,cap,t,c,r,d]=process.argv.slice(1);console.log(JSON.stringify({sessionId:s,agent:a,capability:cap,args:{tool:t,command:c,risky:r==="true",destructive:d==="true"},reasoning:"claude PreToolUse: "+t+(c?" "+c:"")}))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$CMD" "$RISKY" "$DESTRUCTIVE")
+payload=$(node -e 'const[s,a,cap,t,inp]=process.argv.slice(1);let input={};try{input=JSON.parse(inp||"{}")}catch(e){};console.log(JSON.stringify({sessionId:s,agent:a,capability:cap,args:{tool:t,input},reasoning:"claude PreToolUse: "+t}))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$INPUT")
 
 # FAIL-CLOSED classify. Retry the gate until it returns a usable decision; a transient failure (server
 # restart, network blip, the documented stale-server 401/404 window) must NEVER fall through to "allow".

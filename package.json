@@ -21,7 +21,8 @@
     "start": "node dist/cli.js serve",
     "demo": "node dist/cli.js demo",
     "dev": "ts-node src/cli.ts serve",
-    "demo:dev": "ts-node src/demo.ts"
+    "demo:dev": "ts-node src/demo.ts",
+    "test:governance": "node scripts/governance-conformance.cjs"
   },
   "keywords": [
     "agents",

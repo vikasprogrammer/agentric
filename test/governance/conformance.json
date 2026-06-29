@@ -1,0 +1,42 @@
+{
+  "_about": "Golden governance fixture: the single source of truth for what the gate decides. `decisions` feed enrichArgs() → JsonPolicyEngine.classify() (the brain tm.gate uses); `context` feed autoClearsApproval(). Run with `node scripts/governance-conformance.cjs` (exits non-zero on any mismatch). Add a case here before changing the enricher or the default policy.",
+  "thresholdsDefault": { "moneyCapUsd": 500, "bulkDeleteCount": 25 },
+
+  "decisions": [
+    { "name": "bash read is allowed", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "ls -la /var/www" } }, "expect": "allow" },
+    { "name": "bash deploy needs owner", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "npm run deploy:prod" } }, "expect": "ask:owner" },
+    { "name": "rm -rf data is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "rm -rf /var/lib/data" } }, "expect": "never" },
+    { "name": "lowercase drop database is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"drop database production\"" } }, "expect": "never" },
+    { "name": "TRUNCATE is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "mysql -e 'TRUNCATE TABLE users'" } }, "expect": "never" },
+    { "name": "delete from with no where is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"delete from sessions\"" } }, "expect": "never" },
+    { "name": "delete from with where is just risky", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"delete from sessions where id=1\"" } }, "expect": "ask:owner" },
+    { "name": "terraform destroy is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "terraform destroy -auto-approve" } }, "expect": "never" },
+    { "name": "force push is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "git push --force origin main" } }, "expect": "never" },
+
+    { "name": "connector read is allowed", "capability": "connector.call", "args": { "tool": "mcp__globex__list_sites", "input": {} }, "expect": "allow" },
+    { "name": "connector send needs approval", "capability": "connector.call", "args": { "tool": "mcp__slack__SLACK_SEND_MESSAGE", "input": { "text": "hi" } }, "expect": "ask:head" },
+    { "name": "delete_site is never (by name)", "capability": "connector.call", "args": { "tool": "mcp__globex__delete_site", "input": { "site_id": 5 } }, "expect": "never" },
+    { "name": "db_query DROP TABLE is never (argument-aware — the closed hole)", "capability": "connector.call", "args": { "tool": "mcp__globex__db_query", "input": { "sql": "DROP TABLE wp_posts" } }, "expect": "never" },
+    { "name": "execute_php with rm -rf is never", "capability": "connector.call", "args": { "tool": "mcp__site__execute_php", "input": { "code": "shell_exec('rm -rf /var/www')" } }, "expect": "never" },
+    { "name": "db_query SELECT is just a read-ish call", "capability": "connector.call", "args": { "tool": "mcp__globex__db_query", "input": { "sql": "SELECT * FROM wp_posts LIMIT 10" } }, "expect": "allow" },
+
+    { "name": "refund under cap → approval", "capability": "connector.call", "args": { "tool": "mcp__stripe__REFUND_CHARGE", "input": { "amount": 200 } }, "expect": "ask:head" },
+    { "name": "refund over cap → never", "capability": "connector.call", "args": { "tool": "mcp__stripe__REFUND_CHARGE", "input": { "amount": 600 } }, "expect": "never" },
+    { "name": "explicit amount_usd over cap → never", "capability": "connector.call", "args": { "tool": "mcp__billing__charge_customer", "input": { "amount_usd": 1000 } }, "expect": "never" },
+
+    { "name": "bulk delete over cap → never", "capability": "connector.call", "args": { "tool": "mcp__globex__delete_content", "input": { "ids": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26] } }, "expect": "never" },
+    { "name": "small delete under cap → approval", "capability": "connector.call", "args": { "tool": "mcp__globex__delete_content", "input": { "ids": [1,2,3] } }, "expect": "ask:head" },
+
+    { "name": "company connection management → owner", "capability": "connector.connect", "args": { "tool": "mcp__composio-company__GMAIL_MANAGE_CONNECTION", "input": {} }, "expect": "ask:owner" }
+  ],
+
+  "context": [
+    { "name": "owner attended clears head", "level": "head", "ctx": { "initiatorRole": "owner", "attended": true }, "expectAutoClear": true },
+    { "name": "admin attended clears head", "level": "head", "ctx": { "initiatorRole": "admin", "attended": true }, "expectAutoClear": true },
+    { "name": "owner attended clears owner", "level": "owner", "ctx": { "initiatorRole": "owner", "attended": true }, "expectAutoClear": true },
+    { "name": "admin attended CANNOT clear owner", "level": "owner", "ctx": { "initiatorRole": "admin", "attended": true }, "expectAutoClear": false },
+    { "name": "member attended cannot clear head", "level": "head", "ctx": { "initiatorRole": "member", "attended": true }, "expectAutoClear": false },
+    { "name": "owner UNattended (automation) cannot clear", "level": "head", "ctx": { "initiatorRole": "owner", "attended": false }, "expectAutoClear": false },
+    { "name": "no initiator role cannot clear", "level": "head", "ctx": { "initiatorRole": null, "attended": true }, "expectAutoClear": false }
+  ]
+}

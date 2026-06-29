@@ -150,22 +150,27 @@ blocked-then-retry waste that itself pushes agents toward edge cases.
 ## Where we are vs. the north star
 
 The hard parts already exist: a single conceptual gateway, policy-as-data with a live console editor,
-audit-at-every-step, idempotency, and an initiator signal (`term_sessions.spawned_by`). The gaps are
-all *"a principle not yet wired,"* not *"a layer that needs inventing":*
+audit-at-every-step, idempotency, and an initiator signal (`term_sessions.spawned_by`). Most gaps were
+*"a principle not yet wired,"* not *"a layer that needs inventing"* — and three PRs have now wired them:
 
-| Gap (today) | Principle violated | Direction |
+| Gap | Principle | Status |
 |---|---|---|
-| `classify(attempt, _ctx)` ignores context | Core reframing | thread actor / context / target into the decision |
-| No `deny` tier in `default.policy.json` — worst case is `approve(owner)` | P1 reversibility | add an irreversible tier that denies regardless of approver |
-| Owner is asked to approve their own attended agent | P1 + P5 | context-aware auto-approve for the recoverable tier, fenced from irreversible |
-| Classification by tool *name* — `db_query` / `execute_php` args unseen | P3 classifier split | server-side, argument-aware enricher |
-| Case-sensitive substring matching in the hook (`*DROP*` misses `drop`) | P3 + P4 | move classification off the shell, make it deterministic + tested |
-| Two decision paths (`gateway.ts` vs `gate-hook.sh`) | P4 one chokepoint | one shared decision function |
-| `*) exit 0` fail-open fallback | P4 fail-closed | deny on error and on unknown |
-| Agents hold the same creds regardless of environment | P2 defense in depth | least privilege / environment-scoped identity |
+| `classify` ignored context | Core reframing | ✅ the decision *pipeline* now uses all four inputs — `enrichArgs` derives action/target facts, `attendedApprover` adds actor/context; `classify` itself stays a pure facts→risk function |
+| No `deny` tier — worst case was `approve(owner)` | P1 reversibility | ✅ PR #1 — never-tier deny rules in `default.policy.json`, refused regardless of approver |
+| Owner asked to approve their own attended agent | P1 + P5 | ✅ PR #3 — `autoClearsApproval` clears the `ask` tier for an attended owner/admin, fenced out of the never tier |
+| Classification by tool *name* — `db_query`/`execute_php` args unseen | P3 classifier split | ✅ PR #2 — `src/governance/enricher.ts` inspects arguments (the SQL inside the call, the amount, the count) |
+| Case-sensitive substring matching in the shell | P3 + P4 | ✅ PR #2 — classification moved off bash into the deterministic, case-insensitive enricher |
+| Two decision paths (`gateway.ts` vs `gate-hook.sh`) | P4 one chokepoint | 🟡 the live gate-hook path is now one brain (`enrich → classify → context`, pinned by the conformance suite); the mock `gateway.ts` demo path still classifies without the enricher — fold it in next |
+| `*) exit 0` fail-open fallback | P4 fail-closed | ✅ PR #1 — retries until the gate answers; never falls through to allow |
+| Agents hold the same creds regardless of environment | P2 defense in depth | ⬜ open — least privilege / environment-scoped identity (future) |
 
-None of this is a rewrite. It is threading inputs we already collect into a decision we already make,
-then refusing to fail open.
+The brain is now testable and pinned: **`test/governance/conformance.json`** is a golden table of
+`(call → decision)` and `(approval context → auto-clear?)` cases; `node scripts/governance-conformance.cjs`
+(`npm run test:governance`) drives the exact functions the live gate uses and fails CI on any drift.
+Add a case there before changing the enricher or the default policy.
+
+What remains is genuinely additive: route `gateway.ts` through the enricher too (one brain everywhere),
+environment-scoped least privilege (P2), hash-chained audit, and the kill switch — none a rewrite.
 
 ---
 
