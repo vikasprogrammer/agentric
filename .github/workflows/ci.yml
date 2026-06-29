@@ -1,0 +1,32 @@
+name: CI
+
+# Gate every push and PR on the governance conformance suite (plus a typecheck), so the policy brain
+# can't drift unnoticed: test/governance/conformance.json is the golden (call → decision) table the
+# live gate must satisfy. The runner needs dist/, so we build first.
+on:
+  push:
+  pull_request:
+
+jobs:
+  governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22 # node:sqlite is built in here (the project's zero-dep store)
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Governance conformance
+        run: npm run test:governance
