@@ -40,6 +40,8 @@ export interface GatewayDeps {
   approvals: Approvals;
   identity: Identity;
   idempotency: IdempotencyStore;
+  /** Workspace emergency stop. When it returns true, every effect is denied before policy runs. */
+  killSwitch?: () => boolean;
 }
 
 export class Gateway {
@@ -57,6 +59,13 @@ export class Gateway {
 
     const cap = this.deps.registry.get(attempt.capabilityId);
     emit('action.attempt', { capability: attempt.capabilityId, args: attempt.args, reasoning: attempt.reasoning });
+
+    // 0. KILL SWITCH — workspace emergency stop. Denies every effect before ANY other step (even an
+    // unknown capability), so engaging it is an absolute, fleet-wide freeze.
+    if (this.deps.killSwitch?.()) {
+      emit('gate.killswitch', { capability: attempt.capabilityId });
+      return { ok: false, error: 'denied: workspace emergency stop is engaged' };
+    }
 
     if (!cap) {
       emit('action.error', { capability: attempt.capabilityId, error: 'unknown capability' });

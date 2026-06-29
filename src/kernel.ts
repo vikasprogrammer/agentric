@@ -123,6 +123,7 @@ export class AgentOS {
       approvals: this.approvals,
       identity: this.identity,
       idempotency: this.idempotency,
+      killSwitch: () => this.settings.killSwitch().engaged,
     });
 
     this.adapters.set('mock', this.mock);

@@ -38,6 +38,16 @@ export interface GovernanceThresholds {
 
 export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd: 500, bulkDeleteCount: 25 };
 
+const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
+
+/** The workspace emergency stop. When engaged, the gate denies EVERY action, fleet-wide, until cleared. */
+export interface KillSwitchState {
+  engaged: boolean;
+  reason?: string;
+  updatedAt?: number;
+  updatedBy?: string;
+}
+
 export interface CompanySettings {
   /** The company-wide markdown context. Empty string when unset. */
   companyMd: string;
@@ -316,5 +326,27 @@ export class SettingsStore {
     };
     this.set(GOVERNANCE_KEY, JSON.stringify(next), by);
     return next;
+  }
+
+  // ── kill switch (workspace emergency stop) ───────────────────────────────────────
+  // A single boolean that, when engaged, makes the gate deny EVERY action across the whole workspace
+  // (governance-model.md — the operational control we lacked). Reversible: clear it and agents resume.
+
+  /** Current emergency-stop state (defaults to disengaged). */
+  killSwitch(): KillSwitchState {
+    const row = this.getRow(KILL_SWITCH_KEY);
+    if (!row?.value) return { engaged: false };
+    try {
+      const v = JSON.parse(row.value) as { engaged?: boolean; reason?: string };
+      return { engaged: !!v.engaged, reason: v.reason, updatedAt: row.updated_at, updatedBy: row.updated_by ?? undefined };
+    } catch {
+      return { engaged: false, updatedAt: row.updated_at, updatedBy: row.updated_by ?? undefined };
+    }
+  }
+
+  /** Engage or release the emergency stop. */
+  setKillSwitch(engaged: boolean, reason: string | undefined, by?: string): KillSwitchState {
+    this.set(KILL_SWITCH_KEY, JSON.stringify({ engaged: !!engaged, reason: reason?.trim() || undefined }), by);
+    return this.killSwitch();
   }
 }

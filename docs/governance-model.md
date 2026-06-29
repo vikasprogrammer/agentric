@@ -169,8 +169,13 @@ The brain is now testable and pinned: **`test/governance/conformance.json`** is 
 (`npm run test:governance`) drives the exact functions the live gate uses and fails CI on any drift.
 Add a case there before changing the enricher or the default policy.
 
-What remains is genuinely additive: environment-scoped least privilege (P2), hash-chained audit, and
-the kill switch — none a rewrite.
+**Kill switch (shipped).** A workspace emergency stop (`settings.killSwitch()`) — when engaged, both
+decision paths (`gateway.ts` step 0 and `tm.gate`) deny *every* action before any other step, fleet-wide,
+and engaging it optionally halts running sessions. Reversible; owner/admin only; engage/release audited
+(`killswitch.engaged`/`released`, `gate.killswitch`). Lives in Settings → Governance.
+
+What remains is genuinely additive: environment-scoped least privilege (P2) and hash-chained audit —
+neither a rewrite.
 
 ---
 
@@ -270,7 +275,8 @@ Four things worth taking from the landscape, none of which compromise the zero-d
    of the previous one (`crypto`), so the JSONL system-of-record becomes append-only-provable (P4 / the
    Repudiation threat).
 3. **Kill switch + denylist.** AGT's runtime has a global stop-all and a hard command denylist. The
-   denylist *is* the irreversible tier (P1); the kill switch is an operational control we lack.
+   denylist *is* the irreversible tier (P1, shipped); the kill switch (the global stop-all) is now
+   shipped too — see "Kill switch" below.
 4. **`require_approval` as a first-class action + richer conditions.** AGT's YAML treats approval as a
    policy outcome with expressive conditions (`action.type in ['drop','delete','truncate']`). Our JSON
    `when` (single arg, one comparison) should grow toward this. Note Cedar *cannot* express an approval
