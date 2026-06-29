@@ -1,5 +1,16 @@
 # Connectors & Triggers — ingress, egress, and identity
 
+> **⚠ As-built note (2026-06-29).** This is the *original design spec*; the shipped implementation on
+> `main` **diverged** and is the source of truth. Differences: chat ingress is **native Socket Mode
+> (Slack) / Gateway (Discord)** over an outbound WebSocket — **not** the HTTP `POST /triggers/slack`
+> adapters, signing-secret HMAC, or `alias`/`run_as` columns described below. Run-as is backed by the
+> **`member_identities`** table (P1 — built, generalised to `slack|discord|email|github`), reached via
+> `TeamStore.memberByExternalId`, **not** `slack_user_id` columns on `members`. Reply targeting uses
+> the **`slack_threads` / `discord_threads`** tables + the `slack_reply` / `discord_reply` MCP tools,
+> **not** a `term_sessions.reply_to` JSON column. P2/P3/P4 are still pending. See
+> `docs/v1-mvp-scope.md` (the live tracker) and the modules `src/edge/{slack,discord}-socket.ts` +
+> `src/connectors/{slack,discord}.ts`. The reframe + use cases below remain the useful conceptual map.
+
 The build spec for how Agent OS talks to the outside world in **both directions**, and whose name is
 on each action. Pairs with `docs/scoping-model.md` (what's scoped to whom) and
 `docs/per-user-isolation-plan.md` (the uid mechanism that makes personal privacy *real*). This doc

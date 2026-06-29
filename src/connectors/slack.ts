@@ -58,6 +58,24 @@ export async function postMessage(
   }
 }
 
+/** Open (or fetch) the DM channel with a Slack user, returning its channel id to post into. Used to
+ *  DM an approver a notification. Returns `{ error }` (never throws) so a flaky call degrades quietly. */
+export async function openDmChannel(botToken: string, userId: string): Promise<{ channel: string } | { error: string }> {
+  if (!botToken || !userId) return { error: 'missing token or user' };
+  try {
+    const res = await fetch(`${SLACK_API}/conversations.open`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${botToken}`, 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ users: userId }),
+    });
+    const j: any = await res.json().catch(() => ({}));
+    if (j?.ok && j.channel?.id) return { channel: String(j.channel.id) };
+    return { error: String(j?.error || `conversations.open failed (${res.status})`) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'conversations.open failed' };
+  }
+}
+
 /** Resolve a Slack user id (e.g. `U123`) to their profile email — the join key for member run-as.
  *  Returns '' on any error/missing email (the dispatcher then falls back to the company identity). */
 export async function lookupUserEmail(botToken: string, userId: string): Promise<string> {

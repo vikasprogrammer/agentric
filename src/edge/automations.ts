@@ -91,7 +91,7 @@ export interface Automation {
   id: string;
   agentId: string;
   name: string;
-  type: 'cron' | 'webhook' | 'composio' | 'slack';
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord';
   /** How the fired session runs (interactive TUI vs headless `claude -p`). */
   mode: ExecMode;
   /** Cron expression (cron type only). */
@@ -114,7 +114,7 @@ interface AutomationRow {
   id: string;
   agent_id: string;
   name: string;
-  type: 'cron' | 'webhook' | 'composio' | 'slack';
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord';
   mode: ExecMode | null;
   schedule: string | null;
   secret: string | null;
@@ -149,7 +149,7 @@ function toAutomation(r: AutomationRow): Automation {
 export interface AddAutomationInput {
   agentId: string;
   name: string;
-  type: 'cron' | 'webhook' | 'composio' | 'slack';
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord';
   mode?: ExecMode;
   schedule?: string;
   /** composio: trigger slug to match. slack: event type / channel id to match. ('' / omitted = any). */
@@ -203,8 +203,11 @@ export class Automations {
     } else if (input.type === 'slack') {
       filter = (input.filter || '').trim(); // event type (app_mention/message) or channel id; '' = any
       if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
+    } else if (input.type === 'discord') {
+      filter = (input.filter || '').trim(); // event type (mention/direct_message) or channel id; '' = any
+      if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
     } else {
-      throw new Error('type must be cron, webhook, composio, or slack');
+      throw new Error('type must be cron, webhook, composio, slack, or discord');
     }
     const a: Automation = {
       id: 'au_' + randomUUID().slice(0, 8),
@@ -252,16 +255,16 @@ export class Automations {
    * Spawn the automation's session. `guard: true` skips when the previous spawn is still alive —
    * the no-pile-ups rule for cron/webhook; "Run now" from the console passes guard: false.
    */
-  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; slack?: { channel: string; threadTs: string } } = { guard: true }): FireResult {
+  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string } } = { guard: true }): FireResult {
     if (opts.guard && a.lastSessionId && this.tm.isAlive(a.lastSessionId)) {
       return { ok: false, reason: 'previous session still running' };
     }
     const task = opts.extra ? `${a.task}\n\n${opts.extra}` : a.task;
-    // run-as: when a trigger resolves the actor to a member (e.g. the Slack user who @-mentioned the
-    // bot), spawn the session AS that member so it binds their personal connectors + lands in their
-    // inbox. Otherwise the system provenance `automation:<id>` (company entity, no personal creds).
-    const spawnedBy = opts.runAs || `automation:${a.id}`;
-    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, a.mode === 'headless', opts.slack);
+    // Provenance is ALWAYS the automation (`spawned_by`); the run-as member (when a trigger resolved
+    // one, e.g. the Slack user who @-mentioned the bot) is passed separately so the session binds their
+    // connectors/Composio + lands in their inbox, while the audit/label still show what fired it.
+    const spawnedBy = `automation:${a.id}`;
+    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, a.mode === 'headless', opts.slack, opts.discord, opts.runAs);
     this.db.prepare('UPDATE automations SET last_fired_at = ?, last_session_id = ? WHERE id = ?').run(Date.now(), s.id, a.id);
     this.os.audit.append({
       ts: Date.now(),
@@ -333,6 +336,33 @@ export class Automations {
         `Slack thread (you don't need a channel id). Keep it concise.\n\n` +
         `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs } });
+      if (r.ok) sessions.push(r.sessionId);
+    }
+    return { fired: sessions.length, sessions };
+  }
+
+  /**
+   * Inbound native Discord message (Gateway; the bot was @-mentioned or DMed). The exact analogue of
+   * `fireSlack`: fire every enabled `discord` automation whose `filter` matches the event type or
+   * channel ('' / '*' = any). `runAsMember` runs the session AS that member; absent → the company
+   * identity (the current default for Discord — see DiscordSocket.resolveMember). No pile-up guard.
+   */
+  fireDiscord(
+    event: { eventType: string; channel: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown },
+    runAsMember?: string,
+  ): { fired: number; sessions: string[] } {
+    const sessions: string[] = [];
+    for (const a of this.list()) {
+      if (!a.enabled || a.type !== 'discord') continue;
+      const f = (a.filter || '').trim().toLowerCase();
+      if (f && f !== '*' && f !== event.eventType.toLowerCase() && f !== event.channel.toLowerCase()) continue;
+      const extra =
+        `Triggered from Discord by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}.\n` +
+        `Message:\n${event.text}\n\n` +
+        `When you're done, call the \`discord_reply\` tool with your answer — it posts back to this exact ` +
+        `Discord channel as a reply (you don't need a channel id). Keep it concise.\n\n` +
+        `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
+      const r = this.fire(a, { guard: false, extra, runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId } });
       if (r.ok) sessions.push(r.sessionId);
     }
     return { fired: sessions.length, sessions };

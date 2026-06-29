@@ -36,6 +36,25 @@ export interface Member {
   createdAt: number;
 }
 
+/**
+ * The external accounts a member is known by on other platforms — the join key that lets a chat
+ * trigger (Slack/Discord) run AS the right person. One external id maps to at most one member
+ * (enforced by the table's `(provider, external_id)` primary key), so run-as is never ambiguous.
+ */
+export type IdentityProvider = 'slack' | 'discord' | 'email' | 'github';
+
+/** The set of providers the identity map accepts — used to validate API input. */
+export const IDENTITY_PROVIDERS: readonly IdentityProvider[] = ['slack', 'discord', 'email', 'github'];
+
+export interface MemberIdentity {
+  memberId: string;
+  provider: IdentityProvider;
+  /** The provider-side id/handle (e.g. a Slack `U…` id, a Discord snowflake, a secondary email). */
+  externalId: string;
+  createdAt: number;
+  createdBy?: string;
+}
+
 /** Which roles / members may run a given agent. Empty/absent → owner & admin only. */
 export interface AgentAccess {
   allowedRoles: Role[];

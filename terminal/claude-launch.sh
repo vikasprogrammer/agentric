@@ -44,7 +44,7 @@ mkdir -p .claude
 cat > .claude/settings.json <<JSON
 {
   "permissions": {
-    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check"]
+    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check", "mcp__agentos__directory_lookup"]
   },
   "hooks": {
     "PreToolUse": [
