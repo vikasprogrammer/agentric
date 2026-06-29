@@ -13,7 +13,8 @@ import * as path from 'path';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, AuditEvent, Decision, Member, RunContext, resolveRuntimeTuning } from './types';
+import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, Role, RunContext, resolveRuntimeTuning } from './types';
+import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { LauncherClient } from './edge/launcher';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
 
@@ -112,6 +113,7 @@ interface SessionRow {
   tmux: string;
   status: 'running' | 'idle';
   spawned_by: string | null;
+  run_as: string | null;
   created_at: number;
 }
 interface MessageRow {
@@ -138,6 +140,17 @@ interface MessageRow {
   question_answered_by: string | null;
   /** The spawning member/automation of this message's session — for per-member inbox scoping. */
   session_spawned_by?: string | null;
+  /** The run-as member of this message's session (P2) — also grants that member inbox visibility. */
+  session_run_as?: string | null;
+}
+
+/** What the approval-notifier sink receives when a risky action lands an approval card. */
+export interface ApprovalNotice {
+  sessionId: string;
+  agent: string;
+  capability: string;
+  level: ApprovalLevel;
+  reason?: string;
 }
 
 export class TerminalManager {
@@ -158,6 +171,10 @@ export class TerminalManager {
   private readonly uidIsolation = process.env.AOS_UID_ISOLATION === '1';
   /** Idle grace before a member's uid/ttyd is reclaimed once they have no running sessions (A5). */
   private readonly idleGraceMs = Number(process.env.AOS_IDLE_GRACE_MS) || 15 * 60_000;
+  /** Optional sink notified when an approval card lands, so an out-of-band channel (Slack/Discord DM)
+   *  can ping the approver. Set by the registry once the chat sockets exist; absent = no notifications. */
+  private approvalNotifier?: (notice: ApprovalNotice) => void;
+  setApprovalNotifier(fn: (notice: ApprovalNotice) => void): void { this.approvalNotifier = fn; }
 
   constructor(
     private readonly os: AgentOS,
@@ -185,10 +202,10 @@ export class TerminalManager {
   reapIdleSpaces(): void {
     const spaces = this.backend.managedSpaces();
     if (!spaces.length) return;
-    const rows = this.db.prepare('SELECT spawned_by, status, created_at FROM term_sessions').all<{ spawned_by: string | null; status: string; created_at: number }>();
+    const rows = this.db.prepare('SELECT spawned_by, run_as, status, created_at FROM term_sessions').all<{ spawned_by: string | null; run_as: string | null; status: string; created_at: number }>();
     const now = Date.now();
     for (const space of spaces) {
-      const inSpace = rows.filter((r) => this.spaceFor(r.spawned_by) === space);
+      const inSpace = rows.filter((r) => this.spaceFor(r.run_as ?? r.spawned_by) === space);
       if (inSpace.some((r) => r.status === 'running')) continue; // still active
       const latest = inSpace.reduce((m, r) => Math.max(m, r.created_at), 0);
       if (latest && now - latest < this.idleGraceMs) continue; // keep warm — recent activity
@@ -218,8 +235,8 @@ export class TerminalManager {
         }
       }
     }
-    const visible = viewer ? rows.filter((r) => this.canViewSpawn(r.spawned_by, viewer)) : rows;
-    return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by) }));
+    const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+    return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as) }));
   }
 
   /**
@@ -238,10 +255,20 @@ export class TerminalManager {
     return false;
   }
 
-  /** Whether `viewer` may see a specific session (resolves its spawned_by, then applies the rule). */
+  /**
+   * The full visibility rule including run-as (P2): a session is visible to the member it ACTED AS
+   * (`run_as`), on top of the provenance rule (`canViewSpawn`). So a chat-triggered session — whose
+   * `spawned_by` is the automation — still lands in the inbox of the person it ran as.
+   */
+  private canViewRow(spawnedBy: string | null, runAs: string | null, viewer: Member): boolean {
+    if (runAs && runAs === viewer.id) return true;
+    return this.canViewSpawn(spawnedBy, viewer);
+  }
+
+  /** Whether `viewer` may see a specific session (resolves its provenance + run-as, then the rule). */
   canViewSession(sessionId: string, viewer: Member): boolean {
-    const r = this.db.prepare('SELECT spawned_by FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null }>(sessionId);
-    return this.canViewSpawn(r ? r.spawned_by : null, viewer);
+    const r = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
+    return this.canViewRow(r ? r.spawned_by : null, r ? r.run_as : null, viewer);
   }
 
   /** Whether `viewer` may act on a pending question (resolves its session, then the inbox rule). */
@@ -256,9 +283,9 @@ export class TerminalManager {
    * `/terminal/<space>/?arg=…` that the app reverse-proxies to that member's port. null if unknown.
    */
   async attachUrl(sessionId: string): Promise<string | null> {
-    const r = this.db.prepare('SELECT tmux, spawned_by FROM term_sessions WHERE id = ?').get<{ tmux: string; spawned_by: string | null }>(sessionId);
+    const r = this.db.prepare('SELECT tmux, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ tmux: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return null;
-    return this.backend.attachUrl(this.spaceFor(r.spawned_by), r.tmux);
+    return this.backend.attachUrl(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
   }
 
   /**
@@ -272,12 +299,15 @@ export class TerminalManager {
     return this.backend.ttydPortFor(space) ?? null;
   }
 
-  /** Resolve a session's `spawned_by` to a console-friendly label: member name/email, or automation. */
-  private spawnedByLabel(spawnedBy: string | null): string | undefined {
-    if (!spawnedBy) return undefined;
+  /** Resolve a session's provenance (+ run-as) to a console-friendly label: member name/email, or
+   *  automation — and "Automation · X · as Alice" when it ran as a resolved member. */
+  private spawnedByLabel(spawnedBy: string | null, runAs?: string | null): string | undefined {
+    const asMember = runAs ? this.os.team.getMember(runAs) : undefined;
+    const asSuffix = asMember && asMember.id !== spawnedBy ? ` · as ${asMember.name || asMember.email}` : '';
+    if (!spawnedBy) return asMember ? `as ${asMember.name || asMember.email}` : undefined;
     if (spawnedBy.startsWith('automation:')) {
       const auto = this.db.prepare('SELECT name FROM automations WHERE id = ?').get<{ name: string }>(spawnedBy.slice('automation:'.length));
-      return auto ? `Automation · ${auto.name}` : 'Automation';
+      return `${auto ? `Automation · ${auto.name}` : 'Automation'}${asSuffix}`;
     }
     const m = this.os.team.getMember(spawnedBy);
     return m ? m.name || m.email : spawnedBy;
@@ -300,7 +330,7 @@ export class TerminalManager {
       .prepare(
         `SELECT m.*, a.status AS approval_status, a.reason AS approval_reason, a.resolved_by AS approval_resolved_by,
                 q.status AS question_status, q.answer AS question_answer, q.answered_by AS question_answered_by,
-                ts.spawned_by AS session_spawned_by
+                ts.spawned_by AS session_spawned_by, ts.run_as AS session_run_as
          FROM messages m
          LEFT JOIN approvals a ON m.approval_id = a.id
          LEFT JOIN questions q ON m.question_id = q.id
@@ -309,7 +339,7 @@ export class TerminalManager {
          ORDER BY m.created_at DESC`,
       )
       .all<MessageRow>();
-    const visible = viewer ? rows.filter((r) => this.canViewSpawn(r.session_spawned_by ?? null, viewer)) : rows;
+    const visible = viewer ? rows.filter((r) => this.canViewRow(r.session_spawned_by ?? null, r.session_run_as ?? null, viewer)) : rows;
     return visible.map(toMessage);
   }
 
@@ -321,16 +351,16 @@ export class TerminalManager {
   dismissMessage(id: string, viewer: Member): 'ok' | 'not_found' | 'forbidden' | 'pending' {
     const row = this.db
       .prepare(
-        `SELECT m.type, a.status AS approval_status, q.status AS question_status, ts.spawned_by AS session_spawned_by
+        `SELECT m.type, a.status AS approval_status, q.status AS question_status, ts.spawned_by AS session_spawned_by, ts.run_as AS session_run_as
          FROM messages m
          LEFT JOIN approvals a ON m.approval_id = a.id
          LEFT JOIN questions q ON m.question_id = q.id
          LEFT JOIN term_sessions ts ON m.session_id = ts.id
          WHERE m.id = ?`,
       )
-      .get<{ type: FeedMessage['type']; approval_status: string | null; question_status: string | null; session_spawned_by: string | null }>(id);
+      .get<{ type: FeedMessage['type']; approval_status: string | null; question_status: string | null; session_spawned_by: string | null; session_run_as: string | null }>(id);
     if (!row) return 'not_found';
-    if (!this.canViewSpawn(row.session_spawned_by ?? null, viewer)) return 'forbidden';
+    if (!this.canViewRow(row.session_spawned_by ?? null, row.session_run_as ?? null, viewer)) return 'forbidden';
     const stillWaiting =
       (row.type === 'approval' && (row.approval_status ?? 'pending') === 'pending') ||
       (row.type === 'question' && (row.question_status ?? 'pending') === 'pending');
@@ -345,16 +375,24 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
-  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }): Session {
+  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string): Session {
     const id = randomUUID().slice(0, 8);
     const tmux = `aos-${id}`;
+    // P2 — provenance vs identity:
+    //   `spawnedBy`     = what TRIGGERED this run (an `automation:<id>` or the console member). Stays
+    //                     provenance: drives the inbox source label, the audit principal, isolation
+    //                     fallback, and the automation-creator's visibility.
+    //   `actingMember`  = whose IDENTITY the agent acts under (connectors / Composio / inbox / uid).
+    //                     `runAs` when a trigger resolved a member, else the console member who spawned.
+    // When no runAs is given this collapses to today's behavior (identity = the spawning member).
+    const actingMember = runAs ?? (spawnedBy && !spawnedBy.startsWith('automation:') ? spawnedBy : undefined);
     // Per-session bearer (0d): exported into the session env and required on the loopback agent
     // endpoints, so one session's runtime can't gate/recall/report AS another by forging its id.
     const secret = randomBytes(24).toString('hex');
     const session: Session = { id, agent, title, task, tmux, status: 'running', createdAt: Date.now() };
     this.db
-      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, secret, session.createdAt);
+      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, session.createdAt);
     this.addMessage({ type: 'task', sessionId: id, agent, title: `(New Session) ${agent}`, body: task, status: 'open', source: spawnedBy });
 
     // Native Slack egress: bind this session to the channel/thread it should reply into, so the
@@ -363,12 +401,19 @@ export class TerminalManager {
       this.db.prepare('INSERT OR REPLACE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)')
         .run(id, slack.channel, slack.threadTs || '', Date.now());
     }
+    // Native Discord egress: the exact analogue — bind the channel + triggering message for discord_reply.
+    if (discord?.channel) {
+      this.db.prepare('INSERT OR REPLACE INTO discord_threads (session_id, channel, message_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(id, discord.channel, discord.messageId || '', Date.now());
+    }
 
     // Pick the runtime from the agent's manifest: claude-code → real claude in its folder;
     // anything else (incl. unknown/demo names) → the scripted mock runner.
     const manifest = this.os.agents.get(agent);
     const runtime = manifest?.runtime ?? 'mock';
-    this.audit(id, agent, 'session.created', { tmux, task, runtime, dir: manifest?.dir, headless });
+    // Audit records BOTH provenance and the run-as principal — when they differ (a trigger acting as
+    // a member), the trail shows what fired it AND whose identity it used.
+    this.audit(id, agent, 'session.created', { tmux, task, runtime, dir: manifest?.dir, headless, spawnedBy: spawnedBy ?? null, runAs: actingMember ?? null });
 
     if (runtime === 'claude-code' && manifest?.dir) {
       // Real claude in the agent's own folder, governed by the gate hook. Memory and connectors
@@ -377,7 +422,7 @@ export class TerminalManager {
       // agent's own decision, guided by its CLAUDE.md and the tools' own descriptions.
       const env = this.sessionEnv(id, agent, task, secret);
       // Build the per-session connector + company payloads once (Composio is minted here).
-      const mcpJson = this.buildMcpConfigJson(id, agent, spawnedBy, secret, !!slack?.channel);
+      const mcpJson = this.buildMcpConfigJson(id, agent, actingMember, secret, !!slack?.channel, !!discord?.channel);
       const companyMd = this.buildCompanyMd();
       this.materializeSkills(id, agent, manifest.dir);
       if (headless) env.HEADLESS = '1';
@@ -399,7 +444,7 @@ export class TerminalManager {
         // Flag on: the launcher writes the files INTO the member's home (member-readable), copies the
         // agent dir to a per-member working copy (AGENT_DIR override), and sets MCP_CONFIG/COMPANY_FILE/
         // LOG_DIR itself — the app dir is unreadable/unwritable by the member uid.
-        this.backend.spawn(this.spaceFor(spawnedBy), { sessionId: id, agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined }, agentSrc: manifest.dir });
+        this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined }, agentSrc: manifest.dir });
       } else {
         // Flag off: materialise into the app's connectors dir (the session runs as the app uid, so it
         // can read them), set the env, and persist the launch context so the ttyd attach wrapper can
@@ -410,10 +455,10 @@ export class TerminalManager {
         if (companyFile) env.COMPANY_FILE = companyFile;
         if (headless) env.LOG_DIR = this.os.paths?.connectors ?? '/tmp';
         if (!headless) this.writeEnvFile(id, env);
-        this.backend.spawn(this.spaceFor(spawnedBy), { sessionId: id, agent, tmuxName: tmux, env, argv: ['bash', this.launcher] });
+        this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env, argv: ['bash', this.launcher] });
       }
     } else {
-      this.backend.spawn(this.spaceFor(spawnedBy), { sessionId: id, agent, tmuxName: tmux, env: this.sessionEnv(id, agent, task, secret), argv: ['bash', this.runner] });
+      this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env: this.sessionEnv(id, agent, task, secret), argv: ['bash', this.runner] });
     }
     return session;
   }
@@ -511,11 +556,11 @@ export class TerminalManager {
    * session can read it: the app's connectors dir (local), or the member's home (launcher). The
    * memory server is ALWAYS included and scoped to this session+agent. '' when there's no data home.
    */
-  private buildMcpConfigJson(sessionId: string, agent: string, spawnedBy: string | undefined, secret: string, slackReply = false): string {
+  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false): string {
     if (!this.os.paths) return '';
-    // Resolve the spawning HUMAN, if any: automation/system spawns (`automation:<id>`) have no member,
-    // so they bind to org connectors only — never a person's personal credentials.
-    const memberId = spawnedBy && !spawnedBy.startsWith('automation:') ? spawnedBy : undefined;
+    // `actingMember` is the identity the session runs AS (runAs ?? the spawning member). Undefined for a
+    // pure automation/system spawn → org + shared connectors only, never a person's private credentials.
+    const memberId = actingMember;
     const config = this.os.connectors.mcpConfig(memberId);
 
     // Composio (egress) is driven by the workspace key in Settings → Integrations — NOT by connector
@@ -528,7 +573,7 @@ export class TerminalManager {
       // → apps connected under the shared service entity, usable by every agent. Automation/system spawns
       // get only the company entity (no person's personal credentials).
       const sessions = [{ id: 'composio-company', userId: serviceUserId(this.os.tenant), scope: 'company' }];
-      if (memberId) sessions.unshift({ id: 'composio', userId: this.composioUserId(spawnedBy, agent), scope: 'personal' });
+      if (memberId) sessions.unshift({ id: 'composio', userId: this.composioUserId(memberId, agent), scope: 'personal' });
       for (const s of sessions) {
         const res = mintToolRouterSession(apiKey, s.userId);
         if ('url' in res) {
@@ -545,9 +590,10 @@ export class TerminalManager {
     config.mcpServers.agentos = {
       command: 'node',
       args: [this.memoryMcp],
-      // SLACK_REPLY: '1' makes the agentos server expose the native `slack_reply` tool — only for
-      // Slack-triggered sessions (which have a bound thread), so other agents aren't cluttered by it.
-      env: { AOS_URL: this.baseUrl, AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret, ...(slackReply ? { SLACK_REPLY: '1' } : {}) },
+      // SLACK_REPLY / DISCORD_REPLY: '1' makes the agentos server expose the native `slack_reply` /
+      // `discord_reply` tool — only for chat-triggered sessions (which have a bound thread/channel),
+      // so other agents aren't cluttered by it.
+      env: { AOS_URL: this.baseUrl, AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret, ...(slackReply ? { SLACK_REPLY: '1' } : {}), ...(discordReply ? { DISCORD_REPLY: '1' } : {}) },
     };
     return JSON.stringify(config, null, 2);
   }
@@ -557,9 +603,9 @@ export class TerminalManager {
    * sees exactly the apps that member connected on composio.dev. An automation/system spawn has no
    * member, so we fall back to a stable per-agent id (consistent across that agent's runs).
    */
-  private composioUserId(spawnedBy: string | undefined, agent: string): string {
-    if (spawnedBy && !spawnedBy.startsWith('automation:')) {
-      const email = this.os.team.getMember(spawnedBy)?.email;
+  private composioUserId(memberId: string | undefined, agent: string): string {
+    if (memberId) {
+      const email = this.os.team.getMember(memberId)?.email;
       if (email) return email;
     }
     return `agent-os:${this.os.tenant}:${agent}`;
@@ -600,8 +646,10 @@ export class TerminalManager {
     this.addMessage({ type: 'update', sessionId, agent: s.agent, title: `Task Update (${s.agent})`, body, status: 'open' });
   }
 
-  /** The gate. Same policy brain as the console — green allows, risky → inbox approval + block. */
-  gate(sessionId: string, agent: string, capability: string, args: Record<string, unknown>, reasoning: string): GateResult {
+  /** The gate. Same policy brain as the console — allow flows, ask → inbox approval (auto-cleared for
+   *  an attended approver), never → deny. Args are enriched into facts first (the single classifier). */
+  gate(sessionId: string, agent: string, capability: string, rawArgs: Record<string, unknown>, reasoning: string): GateResult {
+    const args = enrichArgs(capability, rawArgs);
     const attempt: ActionAttempt = { capabilityId: capability, args, reasoning };
     const decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
     this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning });
@@ -609,6 +657,15 @@ export class TerminalManager {
 
     if (decision.effect === 'allow') return { decision: 'allow' };
     if (decision.effect === 'deny') return { decision: 'deny' };
+
+    // Context-aware `ask` (governance P5): if an attended human who can approve this level started the
+    // run, clear it without a self-addressed card — audited as auto-approved. The never tier (deny)
+    // already returned above, so this can never auto-clear an irreversible action.
+    const approver = this.attendedApprover(sessionId, decision.level);
+    if (approver) {
+      this.audit(sessionId, agent, 'approval.auto_approved', { capability, level: decision.level, by: approver.email, reason: decision.reason });
+      return { decision: 'allow' };
+    }
 
     const { req, decision: settle } = this.os.approvals.request({
       runId: sessionId,
@@ -630,6 +687,8 @@ export class TerminalManager {
       level: decision.level,
     });
     this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability });
+    // Out-of-band ping (Slack/Discord DM to whoever can approve) — best-effort, never blocks the gate.
+    try { this.approvalNotifier?.({ sessionId, agent, capability, level: decision.level, reason: decision.reason }); } catch { /* notifications are advisory */ }
 
     // The message + gate status are derived from the approvals table at read time, so all this
     // waiter has to do is leave an audit trail. (It won't fire across a restart — that's fine.)
@@ -645,7 +704,22 @@ export class TerminalManager {
    * string — classify falls back to the ruleset's defaultRisk for ones with no matching rule.
    */
   policyCheck(sessionId: string, agent: string, capability: string, args: Record<string, unknown>): Decision {
-    return this.os.policy.classify({ capabilityId: capability, args, reasoning: '' }, this.ctx(sessionId, agent));
+    return this.os.policy.classify({ capabilityId: capability, args: enrichArgs(capability, args), reasoning: '' }, this.ctx(sessionId, agent));
+  }
+
+  /**
+   * The attended approver for the `ask` tier, or null. A run is "attended" when a human member (not an
+   * `automation:`) started it; if that member already holds approval authority for `level`, their own
+   * recoverable actions clear without a self-addressed card (governance P5). Automation-fired and
+   * member-can't-approve runs return null → the normal human approval flow.
+   */
+  private attendedApprover(sessionId: string, level: ApprovalLevel): Member | null {
+    const r = this.db.prepare('SELECT spawned_by FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null }>(sessionId);
+    const sb = r?.spawned_by;
+    if (!sb || sb.startsWith('automation:')) return null; // unattended / automation → always ask
+    const m = this.os.team.getMember(sb);
+    const role: Role | undefined = m?.role;
+    return m && autoClearsApproval(level, { initiatorRole: role, attended: true }) ? m : null;
   }
 
   /** Gate status for the PreToolUse hook — derived from the approval's live row. */
@@ -712,7 +786,10 @@ export class TerminalManager {
     if (!agent) return { ok: false, error: 'unknown session' };
     const manifest = this.os.agents.get(agent);
     if (!manifest?.dir) return { ok: false, error: 'agent has no working folder' };
-    const source = this.db.prepare('SELECT spawned_by FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null }>(sessionId)?.spawned_by ?? undefined;
+    // Provenance for the gallery's per-member visibility: the member the session acted as (so they see
+    // their own deliverable), falling back to the trigger provenance for pure automation runs.
+    const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
+    const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
     const title = (input.title || '').trim() || path.basename(input.path);
     const r = this.os.artifacts.publish({
       sessionId, agent, source, title, description: input.description,
@@ -799,9 +876,9 @@ export class TerminalManager {
    * Emits a 'completed'/stopped card so the inbox reflects the interruption. No-op on unknown id.
    */
   stopSession(sessionId: string, by: string): boolean {
-    const r = this.db.prepare('SELECT agent, tmux, status, spawned_by FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null }>(sessionId);
+    const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return false;
-    this.backend.kill(this.spaceFor(r.spawned_by), r.tmux);
+    this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
     if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'idle' WHERE id = ?").run(sessionId);
     // Halting kills the tmux shell, so the launcher's /api/ended never fires — capture the episode
     // here instead, BEFORE the 'Stopped' card so it summarises the work done (audit stream) rather
@@ -820,9 +897,9 @@ export class TerminalManager {
    * system-of-record) is preserved — a `session.deleted` event is appended. No-op on unknown id.
    */
   deleteSession(sessionId: string, by: string): boolean {
-    const r = this.db.prepare('SELECT agent, tmux, spawned_by FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; spawned_by: string | null }>(sessionId);
+    const r = this.db.prepare('SELECT agent, tmux, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return false;
-    this.backend.kill(this.spaceFor(r.spawned_by), r.tmux);
+    this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
     this.removeSessionFiles(sessionId);
     this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM questions WHERE run_id = ?').run(sessionId);
