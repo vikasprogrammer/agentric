@@ -20,6 +20,11 @@ There is no test runner. Validate changes by: `npm run typecheck`, `cd web && np
 `npm run demo`, and — for server/store logic — small in-process Node scripts that `require('./dist/...')`
 (spin up `createHttpServer` on an ephemeral port and drive it with `fetch`; avoids tmux/ttyd and port
 conflicts). Don't rely on backgrounding `agent-os serve` inside one shell call — it's flaky here.
+**⚠ Isolate test scripts:** `loadAgentOS()` with no env resolves the home to **`./data` — the LIVE
+default-tenant DB** (config `tenant` = `northwind`), NOT an ephemeral `:memory:` one (only the
+demo/`AgentOS` with no `paths` is in-memory). A throwaway `loadAgentOS()` smoke test will therefore
+write test rows into the real DB. Always `export AGENT_OS_HOME=<scratch dir>` (and `rm -rf` it) before
+running such a script, or you will pollute live data.
 
 **What a change needs to take effect (the long-running server holds old code in memory):**
 - **Server/API or store code (`src/server.ts`, `src/state/*`, `src/kernel.ts`, loopback routes like
@@ -119,10 +124,19 @@ Key modules:
   Slack app (app-level `xapp-…` + bot `xoxb-…` tokens in Settings → Integrations) opens an OUTBOUND
   WebSocket to Slack — **no public URL needed** (works on a Tailscale-private/on-prem box that can reach
   `*.slack.com` outbound). On @mention/DM it fires `slack` automations **as the member who sent the
-  message** (Slack user email → `getMemberByEmail` → run-as: their connectors + inbox; unmapped → company
-  identity). The bot posts an immediate in-thread ack; the agent replies via its own Slack egress tools
-  (the Composio company Slackbot). The socket re-dials when tokens change; uses the Node 22+ global
-  `WebSocket` (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
+  message** (run-as resolution: the **identity map** `slack` handle first, then Slack profile email →
+  `getMemberByEmail`; unmapped → company identity). The bot posts an immediate in-thread ack; the agent
+  replies via its own Slack egress tools (the Composio company Slackbot). The socket re-dials when tokens
+  change; uses the Node 22+ global `WebSocket` (no `ws` dep). Slack here is INGRESS-native; Composio
+  remains the webhook ingress lane.
+- `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a
+  one-for-one mirror of the Slack path. One company bot (single `Bot …` token in Settings → Integrations)
+  opens an OUTBOUND Gateway WebSocket — **no public URL** — handling the heartbeat/IDENTIFY/READY state
+  machine (intents incl. the **privileged MESSAGE_CONTENT**). On @mention/DM it fires `discord`
+  automations; run-as resolves the Discord user id via the **identity map** (`memberByExternalId('discord', …)`;
+  unmapped → company identity — Discord exposes no user email, so there's no email fallback). Bot posts an
+  in-thread reply-ack; the agent replies via the `discord_reply` MCP tool (bound to `discord_threads`).
+  `DISCORD_REPLY=1` exposes that tool. Reconnect backoff + zombie detection mirror SlackSocket.
   Per-automation **execution mode**: `headless` (default) runs `claude -p --dangerously-skip-permissions`
   (the PreToolUse gate hook still runs + blocks risky Bash under that flag) and exits so the session goes
   `idle` and the guard releases; `interactive` keeps the attachable TUI (a cron won't re-fire while it's
@@ -134,7 +148,8 @@ Key modules:
   `fuse`, `planConsolidation`, the `rerank` recency/importance nudge). Backend + ranking + maintenance
   (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in **Settings → Memory**, hot-swapped
   live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session (`recall`/`remember`,
-  the `kb_*` tools, `ask`/`report`/`publish`, policy preview). See `docs/memory-layer-plan.md`.
+  the `kb_*` tools, `ask`/`report`/`publish`, `directory_lookup` (team/identity-map search), policy
+  preview; `slack_reply`/`discord_reply` when chat-triggered). See `docs/memory-layer-plan.md`.
 - `src/state/kb.ts` — the **Knowledge Base plane** (`os.kb`): the shared, tenant-wide *living* wiki agents
   + humans co-author. Markdown on disk (`<home>/kb/<section>/<slug>.md`) + SQLite/FTS mirror, full
   **revision chain + revert**, auto-apply + audit (no gate). Agent tools `kb_search`/`kb_read`/`kb_write`;
@@ -159,8 +174,10 @@ Key modules:
 Everything the live console touches persists in one SQLite DB per data home, via Node's **built-in
 `node:sqlite`** (keeps the zero-dependency stance; `@types/node` v20 lacks the types, so
 `src/state/sqlite.d.ts` declares the subset we use). Tables: `members`, `invites`, `auth_sessions`,
-`assignments`, `connectors`, `term_sessions`, `messages` (the inbox feed), `questions`, `approvals`,
-`automations`, `slack_threads`, `artifacts`, `audit_events`, `settings` (key→value: company context,
+`assignments`, `member_identities` (external accounts → member, the chat run-as join key; PK
+`(provider, external_id)`), `connectors`, `term_sessions`, `messages` (the inbox feed), `questions`,
+`approvals`, `automations`, `slack_threads`, `discord_threads`, `artifacts`, `audit_events`,
+`settings` (key→value: company context,
 runtime defaults, memory config, **self-learning state/guidance/recommendations**, …), `memories`
 (+ `memories_fts`; columns incl. `embedding`, `recall_count`, `last_recalled_at`, `scope`), and the
 KB: `kb_pages` (+ `kb_fts`) + `kb_revisions`.
@@ -172,7 +189,10 @@ Conventions when touching the DB:
 - Approval **records** persist, but the blocking `decision` promise is an in-memory waiter; a gate
   suspended across a restart stays pending and the gate-hook keeps polling. The inbox derives an
   approval message's status from the `approvals` table at read time (a JOIN), so it self-heals.
-- JSONL remains the durable system-of-record for audit; the `audit_events` table is a queryable mirror.
+- JSONL remains the durable system-of-record for audit; the `audit_events` table is a queryable mirror,
+  surfaced read-only at `GET /api/audit` (owner/admin; filter by session/type/principal) + the console
+  **Audit** page. Approval cards also DM whoever can approve them via Slack/Discord
+  (`TerminalManager.setApprovalNotifier` → `notifyApprovers` → identity map → `dmUser`; audited `approval.notified`).
 
 ## Team / roles / login
 
@@ -185,6 +205,18 @@ in `src/types.ts` and `TeamStore.canRun()`.
   default `owner@localhost`); the one-time link is printed to the console + `data/server.log`. Others
   get a link from the Team page or the CLI (`agent-os invite|login-link|members`). Accepting a token
   (`GET /accept?token=…`) mints a 30-day `aos_sid` cookie session.
+- **Identity map (chat run-as).** A member can be linked to external accounts — `member_identities`
+  (provider ∈ `slack|discord|email|github`), edited on the Team page (**Chat IDs**) or via
+  `POST /api/team/:id/identities` + `DELETE …/:provider`. `TeamStore.memberByExternalId(provider, id)`
+  is the join key chat triggers use to run a session AS the right person (one handle per provider; PK
+  `(provider, external_id)` keeps it unambiguous; cascades on member removal). Discord depends on it
+  (no email); Slack prefers it, then falls back to profile-email matching.
+- **Run-as vs provenance (P2).** A session row separates **`spawned_by`** (PROVENANCE — `automation:<id>`
+  or the console member that triggered it) from **`run_as`** (the IDENTITY it acts under). `createSession`
+  takes an explicit `runAs`; identity = `runAs ?? memberOf(spawnedBy)` drives connectors/Composio/the
+  isolation uid, and `canViewRow` grants the run-as member inbox/session/artifact visibility on top of
+  the provenance rule (automation creator + owner/admin). So a chat-triggered run is owned by the
+  automation for provenance yet acts as — and is visible to — the member who sent the message.
 - **Auth in `server.ts`:** public routes are the app/assets, `/health`, `/accept`, `/hooks/<id>`
   (webhooks carry their own secret key), `/api/auth/me`, `/api/auth/logout`; every other `/api/*`
   requires a session (else 401). Role gates: approvals → `canApprove`; spawn → `canRun`;

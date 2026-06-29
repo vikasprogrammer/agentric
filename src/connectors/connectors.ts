@@ -62,6 +62,9 @@ export interface McpConnector {
   scope: ConnectorScope;
   /** The owning member id (personal scope only). undefined for org connectors. */
   ownerMemberId?: string;
+  /** Personal-only: the owner shared it team-wide, so it's injected into EVERY member's sessions
+   *  (acting as the owner via the stored creds). Ignored for org connectors. */
+  shared: boolean;
   createdAt: number;
 }
 
@@ -147,6 +150,7 @@ interface ConnectorRow {
   enabled: number;
   scope: string | null;
   owner_member_id: string | null;
+  shared: number | null;
   created_at: number;
 }
 
@@ -166,6 +170,7 @@ function toConnector(r: ConnectorRow): McpConnector {
     enabled: !!r.enabled,
     scope: r.scope === 'personal' ? 'personal' : 'org',
     ownerMemberId: r.owner_member_id ?? undefined,
+    shared: !!r.shared,
     createdAt: r.created_at,
   };
 }
@@ -226,6 +231,7 @@ export class ConnectorStore {
       enabled: true,
       scope,
       ownerMemberId,
+      shared: false,
       createdAt: Date.now(),
     };
     this.db
@@ -241,6 +247,14 @@ export class ConnectorStore {
   setEnabled(id: string, enabled: boolean): McpConnector | undefined {
     const res = this.db.prepare('UPDATE connectors SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id);
     return res.changes ? this.get(id) : undefined;
+  }
+
+  /** Share (or un-share) a PERSONAL connector with the whole team. No-op (undefined) for org connectors. */
+  setShared(id: string, shared: boolean): McpConnector | undefined {
+    const c = this.get(id);
+    if (!c || c.scope !== 'personal') return undefined;
+    this.db.prepare('UPDATE connectors SET shared = ? WHERE id = ?').run(shared ? 1 : 0, id);
+    return this.get(id);
   }
 
   remove(id: string): boolean {
@@ -259,12 +273,16 @@ export class ConnectorStore {
   }
 
   /**
-   * Does this connector belong in `memberId`'s sessions? Org connectors bind to everyone; a personal
-   * connector binds ONLY to its owner. A spawn with no member (automation/system, memberId undefined)
-   * gets org connectors only — never someone's personal credentials.
+   * Does this connector belong in `memberId`'s sessions?
+   *   - `org`                  → everyone (one shared company identity).
+   *   - `personal` + `shared`  → everyone, acting as the owner (the owner explicitly shared their own
+   *     credentials team-wide); also injected into automation/system spawns (memberId undefined).
+   *   - `personal` + private   → ONLY its owner; never another member's or a system spawn's session.
    */
   private boundTo(c: McpConnector, memberId?: string): boolean {
-    return c.scope !== 'personal' || (!!memberId && c.ownerMemberId === memberId);
+    if (c.scope !== 'personal') return true;
+    if (c.shared) return true;
+    return !!memberId && c.ownerMemberId === memberId;
   }
 
   /**
@@ -296,12 +314,13 @@ export class ConnectorStore {
   }
 
   /**
-   * Connectors a console viewer may see: every org connector, plus personal connectors — their own
-   * only for a regular member, or everyone's for an owner/admin (governance oversight). Secrets are
-   * still redacted by the caller; this only decides which rows are listed.
+   * Connectors a console viewer may see: every org connector + every SHARED personal connector (the
+   * whole team gets them, so the team can see they exist), plus PRIVATE personal connectors — their
+   * own only for a regular member, or everyone's for an owner/admin (governance oversight). Secrets
+   * are still redacted by the caller; this only decides which rows are listed.
    */
   listForConsole(viewerId: string, isAdmin: boolean): McpConnector[] {
-    return this.list().filter((c) => c.scope !== 'personal' || isAdmin || c.ownerMemberId === viewerId);
+    return this.list().filter((c) => c.scope !== 'personal' || c.shared || isAdmin || c.ownerMemberId === viewerId);
   }
 
   hasEnabled(): boolean {

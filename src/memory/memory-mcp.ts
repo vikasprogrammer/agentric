@@ -51,6 +51,23 @@ const SLACK_REPLY_TOOL = {
   },
 };
 
+// Native Discord reply tool — the exact analogue of slack_reply, offered only for Discord-triggered
+// sessions (DISCORD_REPLY=1), which have a channel/message bound server-side.
+const DISCORD_REPLY = process.env.DISCORD_REPLY === '1';
+
+const DISCORD_REPLY_TOOL = {
+  name: 'discord_reply',
+  description:
+    'Reply in the Discord channel that triggered this session. Posts your message back as a reply to ' +
+    'the exact message the user wrote — you do NOT pass a channel id. Call this when you have your ' +
+    'answer (you can call it more than once for progress updates). This is the way to talk back to Discord.',
+  inputSchema: {
+    type: 'object',
+    properties: { text: { type: 'string', description: 'The message to post (Discord markdown supported).' } },
+    required: ['text'],
+  },
+};
+
 const TOOLS = [
   {
     name: 'recall',
@@ -206,6 +223,20 @@ const TOOLS = [
       required: ['capability'],
     },
   },
+  {
+    name: 'directory_lookup',
+    description:
+      'Look up people on the team by name or email. Returns each match with their role and the external ' +
+      'accounts they are known by (Slack/Discord user id, GitHub login, email) — so you can figure out ' +
+      'WHO to reach and on WHICH channel (e.g. to DM someone on Slack or @-mention them). Leave the query ' +
+      'blank to list the whole team. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'A name or email (substring match). Blank = list everyone.' },
+      },
+    },
+  },
 ];
 
 function send(msg: JsonRpc): void {
@@ -263,6 +294,18 @@ async function slackReply(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; error?: string };
   return d.ok ? 'Posted to Slack.' : `Could not post to Slack: ${d.error ?? 'unknown error'}`;
+}
+
+async function discordReply(args: Record<string, unknown>): Promise<string> {
+  const text = String(args.text ?? '').trim();
+  if (!text) return 'Nothing to post (text is required).';
+  const res = await fetch(AOS_URL + '/api/agent/discord/reply', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, text }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  return d.ok ? 'Posted to Discord.' : `Could not post to Discord: ${d.error ?? 'unknown error'}`;
 }
 
 async function report(args: Record<string, unknown>): Promise<string> {
@@ -409,6 +452,26 @@ async function policyCheck(args: Record<string, unknown>): Promise<string> {
   return `NEEDS APPROVAL — "${capability}" would pause for ${d.level ?? 'human'} approval${why}.`;
 }
 
+async function directoryLookup(args: Record<string, unknown>): Promise<string> {
+  const u = new URL(AOS_URL + '/api/agent/directory');
+  u.searchParams.set('session', SESSION);
+  if (args.query) u.searchParams.set('q', String(args.query));
+  const res = await fetch(u, { headers: H() });
+  const data = (await res.json()) as {
+    members?: Array<{ name: string; email: string; role: string; identities: Array<{ provider: string; externalId: string }> }>;
+    error?: string;
+  };
+  if (data.error) return `Could not look up the directory: ${data.error}`;
+  const members = data.members ?? [];
+  if (!members.length) return args.query ? `No team members match "${String(args.query)}".` : 'No team members found.';
+  return members
+    .map((m) => {
+      const ids = m.identities.map((i) => `${i.provider}:${i.externalId}`).join(', ');
+      return `- ${m.name} <${m.email}> (${m.role})${ids ? ` — ${ids}` : ' — no linked chat accounts'}`;
+    })
+    .join('\n');
+}
+
 async function handle(req: JsonRpc): Promise<void> {
   const { id, method, params } = req;
 
@@ -428,7 +491,7 @@ async function handle(req: JsonRpc): Promise<void> {
   if (method && method.startsWith('notifications/')) return;
 
   if (method === 'tools/list') {
-    send({ jsonrpc: '2.0', id, result: { tools: SLACK_REPLY ? [...TOOLS, SLACK_REPLY_TOOL] : TOOLS } });
+    send({ jsonrpc: '2.0', id, result: { tools: [...TOOLS, ...(SLACK_REPLY ? [SLACK_REPLY_TOOL] : []), ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : [])] } });
     return;
   }
 
@@ -446,8 +509,10 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'report' ? await report(args)
         : name === 'publish' ? await publish(args)
         : name === 'slack_reply' ? await slackReply(args)
+        : name === 'discord_reply' ? await discordReply(args)
         : name === 'list_capabilities' ? await listCapabilities()
         : name === 'policy_check' ? await policyCheck(args)
+        : name === 'directory_lookup' ? await directoryLookup(args)
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
     } catch (e) {

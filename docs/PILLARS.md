@@ -1,7 +1,14 @@
 # Agent OS — Product Pillars & Implementation Status
 
 The platform decomposes into these pillars. Status is graded against the code as of 2026-06-13;
-pillars 6–13 re-verified against source on 2026-06-21 (all grades + narratives still hold):
+pillars 6–13 re-verified against source on 2026-06-21. **Reconciled against the code again on
+2026-06-29:** the summary table held, but two detail sections had drifted behind it and are now
+rewritten to match — **§10 Dreaming** (the compounding self-learning engine had shipped; the section
+still read 🌱 Seed) and **§15 Knowledge Base** (graded ✅ in the table but had no detail section). Then,
+as the **chat-channels v1** work landed, **§4 Team** (added the `member_identities` identity map) and
+**§7 Automations** (added native **Slack + Discord** ingress, run-as the sending member; regraded ✅)
+were updated. All other grades + narratives still hold. Live v1 milestone tracker:
+`docs/v1-mvp-scope.md`.
 
 - ✅ **Working** — usable end-to-end today
 - 🟡 **Partial** — core exists, meaningful gaps remain
@@ -13,10 +20,10 @@ pillars 6–13 re-verified against source on 2026-06-21 (all grades + narratives
 | 1 | Agents & Sessions | ✅ | Manifest-driven agents, real Claude in tmux, persisted sessions |
 | 2 | Inbox | ✅ | Tasks · updates · approval cards, SQLite-backed, role-aware |
 | 3 | Connectors | ✅ | MCP catalog → per-session `.mcp.json`, every call still gated |
-| 4 | Team | ✅ | Roles (owner/admin/member), magic-link login, agent assignment |
+| 4 | Team | ✅ | Roles (owner/admin/member), magic-link login, agent assignment, identity map (external accounts → member) |
 | 5 | Policy | ✅ | JSON rule engine + console editor (owner-edit, live hot-reload, persisted). Single ruleset per workspace; no dry-run simulator |
-| 6 | Audit Logs | ✅/🟡 | JSONL system-of-record + SQLite mirror; no console viewer yet |
-| 7 | Automations | ✅/🟡 | Cron + webhook triggers spawn governed sessions; no Slack/email inbound yet |
+| 6 | Audit Logs | ✅ | JSONL system-of-record + SQLite mirror + console **Audit** viewer (filter by session/type/principal) |
+| 7 | Automations | ✅ | Cron + webhook + native **Slack & Discord** triggers spawn governed sessions, run-as the sending member; email inbound still out |
 | 8 | Secrets | 🌱 | Env-lookup vault stub; connector creds sit in the workspace DB |
 | 9 | Memory layer | 🟡 | Per-agent + **shared workspace-wide** `remember`/`recall` MCP server + console Memory page live; three backends — sqlite (keyword, or hybrid keyword+vector with embeddings), libsql (native vectors), automem — switchable live in Settings → Memory. Auto session-end episodes, recency/importance recall ranking, prune+dedupe maintenance, and tenant-scoped sharing land; ANN + a full KB (documents/revisions/wiki) still pending |
 | 10 | Dreaming / Self-learning | 🟡 | A periodic Dreamer reflects on recent episodes + outcomes + friction, **compounds** them into persisted cumulative state (growing KB page + shared memory Insight), and closes the loop two ways: (a) distilled **guidance injected into every agent's prompt** at launch, and (b) **approval-gated config recommendations** (e.g. raise default effort) a human Applies/Dismisses — Apply makes a concrete, reversible, audited settings change. Both toggleable/visible in Settings → Self-learning. Deterministic; policy/budget recs are advisory. LLM gardener = richer follow-up |
@@ -89,9 +96,14 @@ governance events.
 The OS-owned MCP server (`agentos`) carries `recall`/`remember`/`ask`/`report`, materialised into every
 claude-code session. UI has read/unread (per-browser `lastSeen`) and an action-required count badge.
 
-**Gaps.** Read/unread is client-side only (not per-member server state); no filtering by agent/type; no
-notification push (Slack/email) when an action card lands — you still have to open the console. No
-standalone surfacing of policy denials (folded into session outcome for now).
+**Chat notifications.** When an approval card lands, the OS DMs everyone who can approve it
+(`canApprove(role, level)`) on their linked **Slack/Discord** account (identity map → `dmUser`), so an
+approver is pinged out-of-band instead of having to watch the console. Best-effort + audited
+(`approval.notified`); the Inbox card stays the source of truth.
+
+**Gaps.** Read/unread is client-side only (not per-member server state); no filtering by agent/type;
+chat push covers approvals only (not questions/updates) and needs the approver's chat handle mapped;
+no standalone surfacing of policy denials (folded into session outcome for now).
 
 ## 3. Connectors — ✅ Working
 
@@ -109,6 +121,14 @@ the PreToolUse matcher covers `mcp__*`, and `gate-hook.sh` classifies each call 
 mutation verbs (create/send/update/delete/…) route to approval, reads auto-allow; the OS-owned
 `mcp__agentos__*` tools pass straight through. Add/enable/disable/remove from the console (owner/admin only).
 
+**Ownership scopes.** A connector is `org` (company-wide, fanned into every session — one shared
+identity) or `personal` (owned by one member, `ownerMemberId`, injected only into that member's
+sessions). A personal connector can also be **shared** (`connectors.shared`): the owner shares it
+team-wide, so it's injected into everyone's sessions **acting as the owner** (the stored creds are
+theirs) — `boundTo` resolves org → all, personal+shared → all, private personal → owner only.
+Toggled from the console (**Share with team**); `removeByOwner` still purges a departing member's
+personal connectors, shared or not.
+
 **Gaps.** Secrets are plaintext in the workspace DB (should move behind the Secrets vault) — and for
 Composio the OAuth grants additionally live in Composio's cloud; the per-app OAuth connect step still
 happens on composio.dev (we don't yet initiate it from our own UI); no health check ("is this token
@@ -124,8 +144,15 @@ boot, CLI recovery path (`agent-os invite|login-link|members`). Agent assignment
 members only see and run assigned agents. Approval authority: `head`→admin+, `owner`→owner only
 (`canApprove` in `src/types.ts`). Team page in the console for all of it.
 
+**Identity map.** Members carry external-account links — `member_identities` (provider ∈
+`slack|discord|email|github`), edited on the Team page (**Chat IDs**). `memberByExternalId(provider, id)`
+is the join key chat triggers (Pillar 7) use to run a session AS the right person — one handle per
+provider, PK `(provider, external_id)` so it's unambiguous, cascades on member removal. This is what
+makes Slack/Discord ingress *per-member* rather than always-company.
+
 **Gaps.** No email delivery of invites (copy/paste links); single workspace per instance (no org →
-multiple workspaces); no SSO/password option.
+multiple workspaces); no SSO/password option. The identity map has no per-provider OAuth verify (an
+admin asserts the handle — trusted input).
 
 ## 5. Policy — ✅ Working
 
@@ -142,7 +169,7 @@ written to the home override file, surviving restart. `validatePolicyDocument` r
 **Gaps.** One ruleset per workspace (no per-agent policy contexts despite `policyContext` existing on
 manifests); no policy versioning/history; no dry-run "what would this classify as" simulator.
 
-## 6. Audit Logs — ✅ pipeline / 🟡 surface
+## 6. Audit Logs — ✅ Working
 
 **Today.** Every gateway step and terminal gate decision emits an `AuditEvent`
 (`src/governance/audit.ts`), composed as a `TeeAuditSink` (`src/kernel.ts`): append-only JSONL per run
@@ -151,10 +178,14 @@ queries + in-memory for the demo console. Console mutations now emit through the
 (`agent.created/deleted`, `skill.*`, `policy.updated`, `file.edited`, `memory.stored`, `session.ended`),
 so the trail covers operator actions, not just agent effects. Approvals record who resolved (member email).
 
-**Gaps.** No audit viewer in the web console for terminal sessions (only the legacy mock-run view);
-no retention policy; JSONL and SQLite can drift if one write fails (no transactional tee).
+**Console viewer.** An **Audit** page (Manage nav, owner/admin) queries the `audit_events` mirror via
+`GET /api/audit` — filter by session / type-prefix / principal, newest-first, capped, with a distinct-types
+dropdown. So the trail is now browsable in-app, not just on disk.
 
-## 7. Automations — ✅ cron + webhook / 🟡 inbound
+**Gaps.** No retention policy / archival; no CSV export or time-range filter yet; JSONL and SQLite can
+drift if one write fails (no transactional tee).
+
+## 7. Automations — ✅ cron + webhook + chat ingress
 
 Naming: an **Automation** = a trigger + an agent + a task template (the user-facing object); a
 **Trigger** is its firing condition (`TriggerRef` in `types.ts`); the **Orchestrator**
@@ -168,6 +199,16 @@ A pile-up guard skips firing while the previous spawn's tmux session is still al
 lazy liveness checks — dead ones flip to `idle`). Console page: list/create/enable/disable/run-now,
 webhook URL copy; owner/admin mutate, run-now follows `canRun`.
 
+**Chat ingress (native, no public URL).** Two more trigger types spawn sessions from chat, each over an
+OUTBOUND WebSocket so a Tailscale-private box works with zero ingress: **`slack`** (Socket Mode,
+`src/edge/slack-socket.ts`) and **`discord`** (the Gateway, `src/edge/discord-socket.ts`, a one-for-one
+mirror). On @mention/DM the matching automations fire **as the member who sent the message** — resolved
+through the **identity map** (`member_identities`, Pillar 4): Slack by `slack` handle then profile email,
+Discord by `discord` handle (no email on Discord). Unmapped → company identity. The bot acks in-thread;
+the agent replies via the `slack_reply` / `discord_reply` MCP tools bound to its `*_threads` row. Tokens
+live in Settings → Integrations (one Slack app: `xapp-`+`xoxb-`; one Discord bot token). Composio remains
+the webhook ingress lane.
+
 **Execution mode** (per automation, chosen at creation): **headless** (default, recommended) runs
 `claude -p --dangerously-skip-permissions` in the agent folder — works the task to completion and
 exits, so the pane dies → session flips to `idle` → the pile-up guard releases and the next cron
@@ -178,7 +219,7 @@ good for babysitting, but a cron trigger won't re-fire while its last run is sti
 the UI). Mode is `terminal.createSession(..., headless)` → `HEADLESS=1` to `claude-launch.sh`, which
 branches to the `-p` lane and tees a transcript to `<home>/connectors/session-<id>.log`.
 
-**Gaps.** Connector-inbound listeners (Slack mention → run, email → run); agent-spawns-agent;
+**Gaps.** Email inbound (Mailgun) still out; agent-spawns-agent;
 retry/backoff policies; catch-up for schedules missed while the server was down; firing history view
 (today: `lastFiredAt` + the audit stream); a long headless run blocked on an approval holds the guard
 until resolved or the hook times out.
@@ -247,15 +288,28 @@ path at scale). No full **KB plane** (documents, revisions, multi-writer editing
 memory is the cheaper bet until that demand is real. automem is **parked** (carries `scope` but doesn't share);
 its ops doc is unwritten.
 
-## 10. Dreaming / Self-learning — 🌱 Seed
+## 10. Dreaming / Self-learning — 🟡 Partial
 
-**Today.** `src/observability/evaluation.ts` corroborates an agent's claimed outcome against the audit
-stream (effects attempted/succeeded, rejections, budget stops, `suspicious` flag). Shown on the legacy
-run view. `HealthMonitor` (`src/observability/monitor.ts`) tracks liveness separately.
+**Plan: [`self-learning-plan.md`](./self-learning-plan.md).**
 
-**Gaps.** The loop itself: periodically read eval signals + episodes → propose CLAUDE.md/knowledge/
-policy improvements → land them as *approval cards in the Inbox* (human-gated self-improvement, reusing
-the existing approvals plane). Nothing consumes the eval signal today.
+**Today.** `src/edge/dreaming.ts` is a periodic, deterministic, **compounding** pass. Each run reflects
+on activity since the last pass — the per-session **episodes** agents wrote, run **outcomes**
+(corroborated against the audit stream by `src/observability/evaluation.ts`), and **friction**
+(approvals rejected, budget stops, errors) — and **folds it into a cumulative state** persisted in
+`settings: dreaming_state`. From that state it re-renders a living KB page (`operations/fleet-learnings`)
+and a tenant-shared memory **Insight**, so the page grows (cumulative totals, a deduped table of
+recurring topics with counts + last-seen, a rolling log of recent passes) rather than snapshotting one
+window. It then **closes the loop two ways**: (a) distilled **guidance is injected into every agent's
+prompt** at launch (`buildCompanyMd`, toggleable), and (b) **approval-gated config recommendations**
+(e.g. raise default effort) are proposed for a human to Apply/Dismiss — Apply makes a concrete,
+reversible, audited settings change. Both are visible/toggleable in **Settings → Self-learning**;
+driven by `GET/PUT /api/dreaming` + `POST /api/dreaming/run`. Deterministic and zero-cost — the
+always-on baseline. `HealthMonitor` (`src/observability/monitor.ts`) tracks liveness separately.
+
+**Gaps.** The deterministic pass only counts/dedupes/recommends from structured signals — it doesn't
+write prose insight. The richer **LLM "kb-gardener"** (a scheduled agent that distils narrative
+learnings via `kb_write`) is the planned follow-up. Policy/budget recommendations are advisory; no
+auto-apply.
 
 ## 11. Company Settings — 🟡 Partial
 
@@ -335,11 +389,36 @@ Sessions page yet (the data supports it).
 
 ---
 
+## 15. Knowledge Base — ✅ Working
+
+**Plan: [`knowledge-base-plan.md`](./knowledge-base-plan.md).**
+
+**The idea.** A shared, tenant-wide **living wiki** agents and humans co-author — distinct from Memory
+(private, per-agent scratch). The company accumulates up-to-date knowledge that's rewritten in place
+over time, without humans touching it unless something needs review.
+
+**Today.** `src/state/kb.ts` (`KbStore`): each page is markdown stored both as the `kb_pages` body
+column (feeding an FTS5 mirror + the API) and, when a data home exists, as a `kb/<section>/<slug>.md`
+file on disk (human/git-friendly) — written together on the single mutating path so they never diverge.
+Safety is by **reversibility, not approval**: every `write` snapshots a full revision into
+`kb_revisions`, so any edit (agent or human) is auditable and one-click revertable; auto-apply + audit,
+no gate. Agents reach it through the OS-owned MCP tools `kb_search` / `kb_read` / `kb_write`
+(`src/memory/memory-mcp.ts`), materialised into every claude-code session. The console **Knowledge**
+page browses/views/edits/history/reverts. The Dreaming engine (Pillar 10) is one of its authors —
+it renders `operations/fleet-learnings` from cumulative state.
+
+**Gaps.** No deep hierarchy (flat section/slug); no diff view between revisions (revert is whole-page);
+no inbound-link/backlink graph; mock-runtime agents don't get the tools.
+
+---
+
 ## Suggested build order (dependency-aware)
 
-1. ~~**Automations** (cron + webhook → terminal sessions)~~ — ✅ shipped (v1); inbound listeners remain.
-2. **Company Settings** — cheap (one file + injection point), immediately improves every agent.
-3. **Memory persistence + injection** — the DB layer now exists; episodes are nearly free off the audit stream.
-4. **Secrets vault** (encrypted in DB) + move connector creds behind it — debt that gets worse the longer it waits.
-5. **Dreaming v1** — eval → proposed improvements as Inbox approval cards (reuses pillars 2, 5, 9).
-6. **Skills, Tools/Apps** — bigger product surfaces; design after the above settle.
+1. ~~**Automations** (cron + webhook → terminal sessions)~~ — ✅ shipped; inbound chat listeners remain (see `docs/v1-mvp-scope.md`).
+2. ~~**Company Settings** (one file + injection point)~~ — ✅ shipped.
+3. ~~**Memory persistence + injection**~~ — ✅ shipped (Pillar 9); episodes auto-distilled off the audit stream.
+4. ~~**Dreaming v1**~~ — ✅ shipped (Pillar 10, deterministic compounding pass + Inbox config recommendations).
+5. ~~**Knowledge Base**~~ — ✅ shipped (Pillar 15).
+6. **Secrets vault** (encrypted in DB) + move connector creds behind it — debt that gets worse the longer it waits (Pillar 8 still 🌱).
+7. **Chat channels + identity (v1)** — Slack (Socket Mode, ✅) + Discord + act-as-member + audit viewer; tracked in `docs/v1-mvp-scope.md`.
+8. **Tools/Apps, per-agent grants** — bigger product surfaces; design after the above settle.

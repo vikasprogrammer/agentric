@@ -14,9 +14,11 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager } from './terminal';
+import { TerminalManager, ApprovalNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
+import { DiscordSocket } from './edge/discord-socket';
+import { canApprove } from './types';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantRecord, TenantStore } from './state/control';
 
@@ -26,6 +28,7 @@ export interface TenantRuntime {
   tm: TerminalManager;
   autos: Automations;
   slack: SlackSocket;
+  discord: DiscordSocket;
   ttyd: ChildProcess | null;
   ttydPort: number;
   /** The owner's one-time login token, set only when this build seeded a fresh tenant DB. */
@@ -136,6 +139,7 @@ export class TenantRegistry {
     if (rt) {
       try { rt.ttyd?.kill(); } catch { /* best-effort */ }
       try { rt.slack.stop(); } catch { /* best-effort */ }
+      try { rt.discord.stop(); } catch { /* best-effort */ }
       try { rt.autos.stop(); } catch { /* best-effort */ }
       this.runtimes.delete(slug);
     }
@@ -147,6 +151,7 @@ export class TenantRegistry {
     for (const rt of this.runtimes.values()) {
       try { rt.ttyd?.kill(); } catch { /* best-effort */ }
       try { rt.slack.stop(); } catch { /* best-effort */ }
+      try { rt.discord.stop(); } catch { /* best-effort */ }
       try { rt.autos.stop(); } catch { /* best-effort */ }
     }
   }
@@ -159,7 +164,9 @@ export class TenantRegistry {
     fs.mkdirSync(paths.audit, { recursive: true });
     fs.mkdirSync(paths.skills, { recursive: true });
 
-    const os = loadAgentOS(this.configPath, this.baseDir, { tenant: rec.slug, paths });
+    // Human label: AGENT_OS_TENANT_NAME (process-per-tenant) wins, else the control-plane display name.
+    const tenantName = process.env.AGENT_OS_TENANT_NAME || rec.displayName;
+    const os = loadAgentOS(this.configPath, this.baseDir, { tenant: rec.slug, tenantName, paths });
     os.registerCapabilities(exampleCapabilities);
 
     const firstLogin = os.team.bootstrapOwner(rec.ownerEmail, 'Owner');
@@ -175,9 +182,14 @@ export class TenantRegistry {
     autos.start();
     const slack = new SlackSocket(os, autos);
     void slack.start();
+    const discord = new DiscordSocket(os, autos);
+    void discord.start();
+    // Chat approval notifications (M5): when a risky action lands an approval card, DM whoever can
+    // approve it — via their linked Slack/Discord account (identity map). Best-effort, off the hot path.
+    tm.setApprovalNotifier((notice) => { void notifyApprovers(os, slack, discord, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
-    return { record: rec, os, tm, autos, slack, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
+    return { record: rec, os, tm, autos, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
   }
 
   /** Build a tenant's accept-link. Default tenant → apex localhost; others → its subdomain. */
@@ -186,6 +198,30 @@ export class TenantRegistry {
     if (this.cfg.baseDomain) return `https://${slug}.${this.cfg.baseDomain}/accept?token=${token}`;
     return `http://${slug}.localhost:${this.basePort}/accept?token=${token}`;
   }
+}
+
+/**
+ * DM everyone who can approve a freshly-raised approval, on their linked Slack/Discord account. Best-
+ * effort: resolves approvers by `canApprove(role, level)`, looks up each one's chat handle in the
+ * identity map, and DMs them. Off the gate's hot path (the caller fires-and-forgets). Audited once.
+ */
+export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: ApprovalNotice): Promise<void> {
+  const approvers = os.team.listMembers().filter((m) => m.status === 'active' && canApprove(m.role, notice.level));
+  if (!approvers.length) return;
+  // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
+  const text =
+    `🔔 Approval needed — \`${notice.capability}\` (${notice.level}) requested by agent ${notice.agent}.` +
+    (notice.reason ? `\n${notice.reason}` : '') +
+    `\nOpen the Agent OS console → Inbox to approve or reject.`;
+  let dms = 0;
+  for (const m of approvers) {
+    const ids = os.team.externalIdsFor(m.id);
+    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
+    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
+    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
+    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
+  }
+  os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'approval.notified', data: { capability: notice.capability, level: notice.level, approvers: approvers.length, dms } });
 }
 
 /** Launch a ttyd bound to one tenant's tmux socket on `ttydPort`. (Moved verbatim from server.ts.) */

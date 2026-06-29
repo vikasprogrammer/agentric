@@ -62,6 +62,20 @@ function migrate(db: Db): void {
       allowed_members TEXT NOT NULL       -- JSON string[] (member ids)
     );
 
+    -- The identity map: external accounts (Slack/Discord/email/github) a member is known by. This is
+    -- the join key a chat trigger uses to run AS the right person. PRIMARY KEY (provider, external_id)
+    -- guarantees one external id resolves to at most ONE member, so run-as is never ambiguous. Cleaned
+    -- up when the member is removed (TeamStore.removeMember).
+    CREATE TABLE IF NOT EXISTS member_identities (
+      provider    TEXT NOT NULL,          -- slack | discord | email | github
+      external_id TEXT NOT NULL,          -- the provider-side id/handle
+      member_id   TEXT NOT NULL,
+      created_at  INTEGER NOT NULL,
+      created_by  TEXT,
+      PRIMARY KEY (provider, external_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_member_identities_member ON member_identities (member_id);
+
     -- User-registered MCP connectors (Slack / GitHub / Composio / …) + the credentials they carry.
     -- stdio connectors use command/args/env; remote (http|sse) connectors use url/headers.
     CREATE TABLE IF NOT EXISTS connectors (
@@ -164,6 +178,17 @@ function migrate(db: Db): void {
       session_id TEXT PRIMARY KEY,
       channel    TEXT NOT NULL,
       thread_ts  TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    -- Native Discord egress binding (the analogue of slack_threads): the channel + message a
+    -- Discord-triggered session should reply into. Written when a discord automation spawns a session;
+    -- read by the agentos discord_reply tool so the agent posts back to the SAME channel as a reply to
+    -- the triggering message, without ever being handed (or able to spoof) a channel id.
+    CREATE TABLE IF NOT EXISTS discord_threads (
+      session_id TEXT PRIMARY KEY,
+      channel    TEXT NOT NULL,
+      message_id TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
 
@@ -310,9 +335,19 @@ function migrate(db: Db): void {
   addColumn(db, 'connectors', 'scope', "TEXT NOT NULL DEFAULT 'org'");
   addColumn(db, 'connectors', 'owner_member_id', 'TEXT');
 
+  // A personal connector the owner has SHARED with the whole team: injected into every member's
+  // sessions (acting as the owner, since the stored creds are theirs), not just the owner's own.
+  // Default 0 = private (today's behavior). Only meaningful for scope='personal'.
+  addColumn(db, 'connectors', 'shared', 'INTEGER NOT NULL DEFAULT 0');
+
   // Per-session bearer secret for the loopback agent endpoints (0d). Older rows have none → the
   // server fails open for them (they predate the secret), but every new session mints one.
   addColumn(db, 'term_sessions', 'secret', 'TEXT');
+
+  // Run-as identity (P2): the member a session ACTS AS (their connectors/Composio/inbox/isolation),
+  // distinct from `spawned_by` which stays PROVENANCE (the automation/console that triggered it).
+  // NULL → identity falls back to memberOf(spawned_by). Older rows predate it → NULL (no change).
+  addColumn(db, 'term_sessions', 'run_as', 'TEXT');
 
   // Optional embedding for semantic recall on the (zero-dep) sqlite backend: a packed Float32
   // vector. NULL when no embedder is configured (→ keyword-only) or the row predates one.

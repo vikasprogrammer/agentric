@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'crypto';
 import { Db } from '../state/db';
-import { AgentAccess, Member, Role, ApprovalLevel, canApprove } from '../types';
+import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove } from '../types';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // login cookie valid for 30 days
@@ -21,6 +21,14 @@ interface MemberRow {
   role: Role;
   status: 'invited' | 'active';
   created_at: number;
+}
+
+interface IdentityRow {
+  provider: IdentityProvider;
+  external_id: string;
+  member_id: string;
+  created_at: number;
+  created_by: string | null;
 }
 
 const token = (): string => randomBytes(32).toString('hex');
@@ -45,6 +53,24 @@ export class TeamStore {
   }
   count(): number {
     return this.db.prepare('SELECT COUNT(*) AS n FROM members').get<{ n: number }>()!.n;
+  }
+
+  /**
+   * Directory search for the `directory_lookup` agent tool: match members by name/email substring
+   * (case-insensitive); empty query → the whole team. Capped. Returns members only — the route joins
+   * each with `externalIdsFor` so the agent learns who to reach on Slack/Discord/etc.
+   */
+  searchMembers(q: string, limit = 10): Member[] {
+    const cap = Math.max(1, Math.min(limit, 50));
+    const term = (q || '').trim().toLowerCase();
+    if (!term) {
+      return this.db.prepare('SELECT * FROM members ORDER BY name LIMIT ?').all<MemberRow>(cap).map(toMember);
+    }
+    const like = `%${term.replace(/[%_]/g, (c) => '\\' + c)}%`;
+    return this.db
+      .prepare("SELECT * FROM members WHERE lower(name) LIKE ? ESCAPE '\\' OR lower(email) LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?")
+      .all<MemberRow>(like, like, cap)
+      .map(toMember);
   }
 
   /** Seed the owner on first boot. Returns a one-time login token, or null if a member exists. */
@@ -98,8 +124,55 @@ export class TeamStore {
         this.setAssignment(agentId, { ...access, allowedMembers: access.allowedMembers.filter((x) => x !== id) });
       }
     }
+    // Drop their external-account links so a freed id can be re-mapped to someone else cleanly.
+    this.db.prepare('DELETE FROM member_identities WHERE member_id = ?').run(id);
     this.db.prepare('DELETE FROM members WHERE id = ?').run(id);
     return { ok: true };
+  }
+
+  // ── identity map (external accounts → member, for chat-trigger run-as) ─────────
+  /** Resolve a provider-side external id (Slack `U…`, Discord snowflake, …) to its member, if mapped. */
+  memberByExternalId(provider: IdentityProvider, externalId: string): Member | undefined {
+    const ext = normalizeExternalId(provider, externalId);
+    if (!ext) return undefined;
+    const row = this.db
+      .prepare('SELECT member_id FROM member_identities WHERE provider = ? AND external_id = ?')
+      .get<{ member_id: string }>(provider, ext);
+    return row ? this.getMember(row.member_id) : undefined;
+  }
+  /** Every external identity linked to one member. */
+  externalIdsFor(memberId: string): MemberIdentity[] {
+    return this.db
+      .prepare('SELECT * FROM member_identities WHERE member_id = ? ORDER BY provider')
+      .all<IdentityRow>(memberId)
+      .map(toIdentity);
+  }
+  /** All identities, grouped by member id — the shape the Team page consumes. */
+  identitiesByMember(): Record<string, MemberIdentity[]> {
+    const out: Record<string, MemberIdentity[]> = {};
+    for (const r of this.db.prepare('SELECT * FROM member_identities ORDER BY provider').all<IdentityRow>()) {
+      (out[r.member_id] ??= []).push(toIdentity(r));
+    }
+    return out;
+  }
+  /**
+   * Link an external account to a member. A member holds at most one id per provider (the UI is one
+   * handle per provider), so this replaces any existing handle for that (member, provider). The new
+   * external id is claimed exclusively: if another member held it, they lose it (the PK reassigns).
+   */
+  setIdentity(memberId: string, provider: IdentityProvider, externalId: string, by?: string): MemberIdentity | undefined {
+    if (!this.getMember(memberId)) return undefined;
+    const ext = normalizeExternalId(provider, externalId);
+    if (!ext) return undefined;
+    this.db.prepare('DELETE FROM member_identities WHERE member_id = ? AND provider = ?').run(memberId, provider);
+    this.db
+      .prepare('INSERT OR REPLACE INTO member_identities (provider, external_id, member_id, created_at, created_by) VALUES (?, ?, ?, ?, ?)')
+      .run(provider, ext, memberId, Date.now(), by ?? null);
+    return { memberId, provider, externalId: ext, createdAt: Date.now(), createdBy: by };
+  }
+  /** Remove a member's handle for one provider. */
+  clearIdentity(memberId: string, provider: IdentityProvider): void {
+    this.db.prepare('DELETE FROM member_identities WHERE member_id = ? AND provider = ?').run(memberId, provider);
   }
 
   // ── login / sessions ─────────────────────────────────────────────────────────
@@ -207,4 +280,14 @@ export class TeamStore {
 
 function toMember(r: MemberRow): Member {
   return { id: r.id, email: r.email, name: r.name, role: r.role, status: r.status, createdAt: r.created_at };
+}
+
+function toIdentity(r: IdentityRow): MemberIdentity {
+  return { memberId: r.member_id, provider: r.provider, externalId: r.external_id, createdAt: r.created_at, createdBy: r.created_by ?? undefined };
+}
+
+/** Trim, and lowercase case-insensitive providers (email) so lookups match regardless of casing. */
+function normalizeExternalId(provider: IdentityProvider, externalId: string): string {
+  const ext = (externalId || '').trim();
+  return provider === 'email' ? ext.toLowerCase() : ext;
 }

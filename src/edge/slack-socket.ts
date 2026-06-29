@@ -16,7 +16,7 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations } from './automations';
-import { lookupBotUserId, lookupUserEmail, openSocketConnection, parseSlackEvent, postMessage } from '../connectors/slack';
+import { lookupBotUserId, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -137,14 +137,22 @@ export class SlackSocket {
     if (ev.fromBot || (this.botUserId && ev.user === this.botUserId)) return; // ignore self / other bots
     if (!ev.channel) return;
 
-    // Resolve the triggering Slack user → an Agent OS member (per-member run-as). Email is the join key.
+    // Resolve the triggering Slack user → an Agent OS member (per-member run-as). Prefer an explicit
+    // identity-map link (provider `slack`, set on the Team page); fall back to matching the Slack
+    // profile email to a member. The map wins so a workspace can override / cover users whose Slack
+    // email differs from their login email (or when the bot lacks the email scope).
     let runAsMember: string | undefined;
     let actorLabel = ev.user || 'someone';
     if (ev.user) {
-      const email = await this.resolveEmail(ev.user);
-      if (email) {
-        const m = this.os.team.getMemberByEmail(email);
-        if (m) { runAsMember = m.id; actorLabel = m.name || m.email; }
+      const mapped = this.os.team.memberByExternalId('slack', ev.user);
+      if (mapped) {
+        runAsMember = mapped.id; actorLabel = mapped.name || mapped.email;
+      } else {
+        const email = await this.resolveEmail(ev.user);
+        if (email) {
+          const m = this.os.team.getMemberByEmail(email);
+          if (m) { runAsMember = m.id; actorLabel = m.name || m.email; }
+        }
       }
     }
 
@@ -197,6 +205,17 @@ export class SlackSocket {
     }
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.reply', data: { channel: row.channel, ts: res.ts, chars: body.length } });
     return { ok: true };
+  }
+
+  /** DM a Slack user (by their Slack user id) — best-effort, used for approval notifications.
+   *  Returns ok / a reason; never throws. No-op when Slack isn't configured. */
+  async dmUser(slackUserId: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const token = this.os.settings.slackBotToken();
+    if (!token || !slackUserId) return { ok: false, error: 'slack not configured' };
+    const ch = await openDmChannel(token, slackUserId);
+    if ('error' in ch) return { ok: false, error: ch.error };
+    const res = await postMessage(token, ch.channel, text);
+    return 'error' in res ? { ok: false, error: res.error } : { ok: true };
   }
 
   private async resolveEmail(userId: string): Promise<string> {
