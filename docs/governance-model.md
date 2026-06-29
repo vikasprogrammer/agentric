@@ -160,7 +160,7 @@ audit-at-every-step, idempotency, and an initiator signal (`term_sessions.spawne
 | Owner asked to approve their own attended agent | P1 + P5 | ✅ PR #3 — `autoClearsApproval` clears the `ask` tier for an attended owner/admin, fenced out of the never tier |
 | Classification by tool *name* — `db_query`/`execute_php` args unseen | P3 classifier split | ✅ PR #2 — `src/governance/enricher.ts` inspects arguments (the SQL inside the call, the amount, the count) |
 | Case-sensitive substring matching in the shell | P3 + P4 | ✅ PR #2 — classification moved off bash into the deterministic, case-insensitive enricher |
-| Two decision paths (`gateway.ts` vs `gate-hook.sh`) | P4 one chokepoint | 🟡 the live gate-hook path is now one brain (`enrich → classify → context`, pinned by the conformance suite); the mock `gateway.ts` demo path still classifies without the enricher — fold it in next |
+| Two decision paths (`gateway.ts` vs `gate-hook.sh`) | P4 one chokepoint | ✅ both paths now classify over `enrichArgs` — one brain everywhere, pinned by the conformance suite. (The gateway enriches for the decision only; execution/idempotency/audit keep the original args.) |
 | `*) exit 0` fail-open fallback | P4 fail-closed | ✅ PR #1 — retries until the gate answers; never falls through to allow |
 | Agents hold the same creds regardless of environment | P2 defense in depth | ⬜ open — least privilege / environment-scoped identity (future) |
 
@@ -169,8 +169,8 @@ The brain is now testable and pinned: **`test/governance/conformance.json`** is 
 (`npm run test:governance`) drives the exact functions the live gate uses and fails CI on any drift.
 Add a case there before changing the enricher or the default policy.
 
-What remains is genuinely additive: route `gateway.ts` through the enricher too (one brain everywhere),
-environment-scoped least privilege (P2), hash-chained audit, and the kill switch — none a rewrite.
+What remains is genuinely additive: environment-scoped least privilege (P2), hash-chained audit, and
+the kill switch — none a rewrite.
 
 ---
 

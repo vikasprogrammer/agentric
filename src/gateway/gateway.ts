@@ -31,6 +31,7 @@ import {
 } from '../types';
 import { CapabilityRegistry } from '../capabilities/registry';
 import { stableHash } from './idempotency';
+import { enrichArgs } from '../governance/enricher';
 
 export interface GatewayDeps {
   registry: CapabilityRegistry;
@@ -62,8 +63,10 @@ export class Gateway {
       return { ok: false, error: `unknown capability: ${attempt.capabilityId}` };
     }
 
-    // 1. POLICY
-    const decision = this.deps.policy.classify(attempt, ctx);
+    // 1. POLICY — classify over ENRICHED facts (destructive/risky/amountUsd/deleteCount), the same
+    // classifier the live gate-hook path uses, so there is one decision brain everywhere. Enrichment
+    // feeds the decision only; execution, idempotency and audit below use the original attempt.args.
+    const decision = this.deps.policy.classify({ ...attempt, args: enrichArgs(attempt.capabilityId, attempt.args) }, ctx);
     emit('policy.decision', { capability: cap.id, decision, policy: this.deps.policy.id });
     if (decision.effect === 'deny') {
       return { ok: false, error: `denied by policy: ${decision.reason}` };
