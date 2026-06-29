@@ -1,9 +1,0 @@
-{
-  "id": "ops",
-  "version": "1.0.0",
-  "description": "Tries to restart a production service — blocked outright by policy (prod.* = deny).",
-  "principal": "svc-ops",
-  "policyContext": "default@v1",
-  "runtime": "mock",
-  "budget": { "usdCap": 1.0, "tokenCap": 200000, "wallClockMs": 300000 }
-}

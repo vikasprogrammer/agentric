@@ -1,0 +1,249 @@
+# Connectors & Triggers — ingress, egress, and identity
+
+The build spec for how Agent OS talks to the outside world in **both directions**, and whose name is
+on each action. Pairs with `docs/scoping-model.md` (what's scoped to whom) and
+`docs/per-user-isolation-plan.md` (the uid mechanism that makes personal privacy *real*). This doc
+supersedes the connector half of the scoping doc's Decision #2: the old "org vs personal" split was
+conflating two unrelated planes. They are separated here.
+
+## The reframe: two planes, one identity question
+
+The old word "connector" smuggled together two opposite things. Split them:
+
+- **Triggers (ingress)** — how the outside world *starts/feeds* an agent: a Slack slash command, a
+  Slack DM, an inbound email, a ClickUp/webhook POST. **Company-owned**, configured once by
+  owner/admin. This is what the "company Slack/Gmail bot" is really for.
+- **Connectors (egress)** — what an agent *uses to act*: post to Slack, send email, read a repo.
+  Already an MCP server materialised into the session's `.mcp.json` (`connectors.ts`), already
+  passing the gate hook (`terminal/gate-hook.sh` matches `mcp__*`).
+
+Every *egress* action is the same shape — an MCP tool call through the gate — so the only real
+variable is **whose identity it acts as**, which is exactly the connector's class:
+
+| Class | Identity | Example | Selection |
+|---|---|---|---|
+| **service** (today's `org`) | the company bot — one shared account | "AgentOS posts to #status" | always present |
+| **personal** | one member's own account | "email from vikas@…" | only in that member's runs |
+| **personal + shared** | the *owner's* account, lent to the team | "use my Salesforce seat" | any run; acts as the owner |
+
+The **company app is bidirectional**: the same Slack bot token that *receives* slash commands and
+DM events (ingress) is the `service` Slack connector that *sends* notifications (egress). One app,
+two directions. Likewise one Mailgun domain receives inbound mail and sends company-identity mail.
+
+## Foundational primitives (build these once; all five use cases need them)
+
+### P1 — Identity map `member ↔ {slack_user_id, email}`
+
+New table; supports both directions (Slack user → member for run-as; member → Slack id/email for
+addressing). Extensible to more providers.
+
+```sql
+CREATE TABLE IF NOT EXISTS member_identities (
+  member_id   TEXT NOT NULL,
+  provider    TEXT NOT NULL,          -- 'slack' | 'email' | 'github' | …
+  external_id TEXT NOT NULL,          -- Slack U0123, email addr (lowercased), …
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ident_member ON member_identities(member_id);
+```
+`email` is already on `members` (the natural email-ingress key); the table adds `slack_user_id` etc.
+`TeamStore` gains `memberByExternalId(provider, id)` and `externalIdsFor(memberId)`.
+
+### P2 — `runAs` threaded into the spawn
+
+Today `TerminalManager.createSession(agent, title, task, spawnedBy, headless)` derives the member
+from `spawnedBy` (`terminal.ts:388`) and Composio scopes to that member's email (`:425`). A
+*triggered* run currently passes `automation:<id>` → no member → service connectors only.
+
+Add an explicit run-as so a triggered run can act as a person:
+
+```ts
+createSession(agent, title, task, spawnedBy?, headless?, runAs?: string /* member id */)
+```
+`buildMcpConfigJson` uses `runAs ?? memberOf(spawnedBy)` to select connectors. `spawnedBy` stays the
+*provenance* (`automation:<id>` / member id) for inbox visibility; `runAs` is the *identity* for
+connector selection and audit principal. When they differ, audit records both.
+
+### P3 — `service` class + `shared` personal connectors
+
+Storage stays `scope IN ('org','personal')` (no rename migration); **`org` ≡ the service/company
+class**. Add a `shared` flag so a personal connector can be lent to the team:
+
+```sql
+-- ALTER (via ensureColumn, db.ts:236):
+ALTER TABLE connectors ADD COLUMN shared INTEGER NOT NULL DEFAULT 0;
+```
+
+`ConnectorStore.boundTo` (`connectors.ts:297`) generalises:
+```ts
+private boundTo(c, runAs?) {
+  if (c.scope !== 'personal') return true;        // service: everyone
+  if (c.shared) return true;                       // shared personal: any run, acts as owner
+  return !!runAs && c.ownerMemberId === runAs;     // private personal: owner only
+}
+```
+
+**Composio user_id becomes per-connector, not per-session.** `composioUserId` (`terminal.ts:420`)
+must scope each minted Tool-Router session to the *connector's* identity:
+- private/shared **personal** → the connector's **owner** email (a shared connector still acts as
+  its owner, never the borrower);
+- **service** → a fixed entity, `service:<tenant>`.
+
+### P4 — Directory lookup (OS tool)
+
+A new tool in the OS MCP server (`src/memory/memory-mcp.ts`, alongside `recall`/`ask`/`report`):
+`directory_lookup(name|email)` → `{ memberId, name, email, slackUserId }`, backed by a session-secret
+loopback route `GET /api/agent/directory?q=` (same `x-aos-secret` auth as the other agent routes,
+`server.ts:193`). Lets an agent resolve "DM Bob" / "email Bob" → a real handle without hardcoding.
+
+## Layer A — Triggers (ingress)
+
+Generalises `src/edge/automations.ts`. An **Automation** = agent + task template + trigger; we add a
+**dispatch alias** so name-routed channels (Slack/email) can find it, plus a **run-as policy**.
+
+```sql
+ALTER TABLE automations ADD COLUMN alias   TEXT;     -- 'migration-agent' (Slack cmd / email local-part)
+ALTER TABLE automations ADD COLUMN run_as  TEXT NOT NULL DEFAULT 'trigger-user';
+                                                     -- 'trigger-user' | 'owner' | 'service'
+```
+
+**Adapters** (new `src/edge/triggers/{slack,email}.ts`), each a thin translator → `Automations.fire`:
+
+| Channel | Route (public) | Auth | Dispatch | Identity (run-as) |
+|---|---|---|---|---|
+| Slack slash | `POST /triggers/slack` | Slack signing secret (HMAC, 5-min window) | command name → `automations.alias` | `command.user_id` → member (P1) |
+| Slack DM/mention | `POST /triggers/slack/events` | signing secret + URL-verify challenge | conversational (see UC3) | DM author → member |
+| Email | `POST /triggers/email` | Mailgun HMAC (`timestamp+token`, 5-min) | `aos+<alias>@` local-part → `automations.alias` | verified `sender` → member |
+| Webhook (ClickUp) | `POST /hooks/<id>?key=` *(exists)* | per-automation secret | URL identifies the automation | `run_as` (no human) → `owner`/`service` |
+
+**run-as resolution** (the bridge to Layer B):
+```
+resolve(trigger, automation):
+  m = mapHuman(trigger)                      // P1: slack_user_id / verified sender → member
+  if m and canRun(m, automation.agentId):    // existing TeamStore.canRun — triggers obey access!
+     return m
+  if automation.run_as == 'owner':  return automation.created_by
+  if automation.run_as == 'service': return null   // service connectors + service Composio entity only
+  reject("not permitted")                    // mapped human lacks access, or no fallback
+```
+This is the one thing agent-orch never did: it captured `command.user_id`/`sender` and threw them
+away (anyone could trigger anything). We *use* them — both to pick connectors and to enforce
+`canRun`.
+
+**Reply path & continuity.** Sessions gain a reply context and threads get a resumable session:
+```sql
+ALTER TABLE term_sessions ADD COLUMN reply_to TEXT;   -- JSON: {channel,'slack'|'email', …targeting}
+CREATE TABLE IF NOT EXISTS trigger_threads (
+  channel      TEXT NOT NULL,      -- 'slack' | 'email'
+  external_key TEXT NOT NULL,      -- slack channel+thread_ts | email Message-Id thread root
+  agent_id     TEXT NOT NULL,
+  member_id    TEXT,
+  session_id   TEXT,
+  claude_session_id TEXT,          -- for `claude -p --resume`
+  created_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
+  PRIMARY KEY (channel, external_key)
+);
+```
+One-shot triggers (UC2/UC4): the agent's `report(outcome, summary)` tool, when the session has
+`reply_to`, also posts the summary back to the Slack thread / email reply (extend
+`/api/report` in `server.ts:295`). Conversational triggers (UC3/email-reply): each inbound message
+runs a headless turn `claude -p --resume <claude_session_id>` and posts the model's answer back —
+the agent-orch `emailSessions`/`clickupSessions` pattern, on our headless lane
+(`HEADLESS=1`, `claude-launch.sh`).
+
+## Layer B — Connectors (egress)
+
+Unchanged machinery (`connectors.ts` → `.mcp.json` → gate hook), plus P3. Selection at launch:
+`(service connectors) ∪ (shared personal) ∪ (run-as member's own personal)`, each Composio connector
+minted to its own identity (P3). **Personal connectors should prefer Composio** so no durable token
+lands on disk — only a short-lived minted URL — which keeps the pre-Tier-A privacy gap small (see
+scoping doc Decision #5).
+
+---
+
+## The five use cases
+
+### UC1 — Agent → Slack channel / DM a user *(egress, company identity)*
+A **service** Slack connector holding the company bot token; fanned into every session, so the agent
+gets `slack post`/`slack dm` tools acting as the company. Recipient resolved via **P4** (`directory_lookup`
+→ `slackUserId`). Reuses the **same bot token** as the Slack ingress app (one app).
+*Policy:* `mcp__slack__post_message` → gate classifies — `#agent-status` green, `@channel`/customer
+channel yellow. *Alt (locked-down):* expose only `slack_notify(channel,text)` as an OS tool over a
+loopback route, instead of the full Slack toolset. **Build:** add a `service` Slack connector; no new
+transport. Net-new only if choosing the OS-tool alt.
+
+### UC2 — Slack → agent, one-shot *(ingress)*
+`/migration-agent <prompt>` → `POST /triggers/slack` (signing-secret verified) → dispatch by alias →
+`fire` with **run-as = the Slack user mapped to a member** (P1/P2), gated by `canRun`. Ack
+synchronously ("on it 👍"); result posts to the thread via UC1's service connector / `report`.
+**Build:** Slack adapter + alias + run-as resolution.
+
+### UC3 — Chat with an agent in Slack DMs *(ingress + continuity)*
+Subscribe to Events API `message.im` on the same app → `POST /triggers/slack/events`. `trigger_threads`
+binds `(slack, channel)` → a resumable session; first DM starts it, each later DM runs a headless
+`--resume` turn and posts the reply. run-as = the D'Ming member → the agent gets **their** connectors
+(your personal assistant with your Gmail). Which agent a DM talks to: default a per-member assistant
+agent, switchable via `/use <agent>`. **Build:** Events subscription + URL-verify + `trigger_threads`
++ turn-per-message loop (most net-new of the five).
+
+### UC4 — Trigger via email *(ingress — already designed)*
+Mailgun inbound → `POST /triggers/email` (HMAC + 5-min), dispatch by `aos+<alias>@`, **run-as =
+verified sender → member**, reply on-thread (`In-Reply-To`/`References` → `trigger_threads` resume,
+same as UC3). **Build:** email adapter; reuses everything from UC2/UC3.
+
+### UC5 — Agent emails an org user *from the managing member* *(egress, member identity)*
+**Already solved by P2+P3.** A **personal** Gmail connector OAuth'd as the member via Composio
+(`user_id` = their email) → the agent's `send_email` goes out *genuinely from* `you@example.com`
+and lands in his real Sent — not a spoofed header. Recipient resolved via P4. run-as picks whose
+Gmail. Fails closed if the member hasn't connected Gmail.
+*Why not set `From:` on company Mailgun?* That's in-domain spoofing — survives DKIM only if aligned,
+breaks "lands in their Sent," gives no real mailbox. The member's own mailbox is the honest impl, and
+it's the entire point of personal connectors. *Policy:* internal recipient green; external yellow/red.
+**Build:** none beyond P2/P3/P4 + the per-connector Composio user_id fix.
+
+**UC1 vs UC5 is the proof of the model:** same verb ("send a message"), opposite identity — company
+vs member — riding *one* connector+gate system, distinguished only by `scope` and run-as.
+
+## Governance
+
+Every egress (UC1, UC5) and every triggered run flows the gate hook → policy → audit, because each is
+an `mcp__*` call — the thing agent-orch's `--permission-mode bypassPermissions` skipped entirely.
+Rules key off capability id **and args** (the gate passes tool input), e.g.:
+- `mcp__slack__post_message` to a non-status channel → `yellow`.
+- `email.send` (Composio Gmail / `send_email`) where recipient domain ∉ org → `yellow`/`red`.
+- Triggered runs additionally obey `canRun(runAsMember, agentId)` *before* firing.
+
+## Security notes
+
+- **Ingress auth is per-channel and non-negotiable:** Slack signing-secret HMAC (+5-min replay
+  window), Mailgun HMAC over `timestamp+token` (+5-min), per-automation key for raw webhooks. Lift
+  agent-orch's exact recipes (`src/webhooks/mailgun.ts`, Slack Bolt).
+- **sender→member trust:** email mapping is only as trustworthy as SPF/DKIM/DMARC on the sender's
+  domain — require alignment before honouring a verified-sender run-as; otherwise fall back to
+  `owner`/`service`. Slack user ids are authenticated by the signed request.
+- **A shared personal connector acts as its OWNER, never the borrower** (P3 mint rule) — surface this
+  in the "Share with team" UI so a member knows lending = others act as them.
+- **Pre-Tier-A caveat still holds:** until per-member uids (`per-user-isolation-plan.md`), a
+  member's shell could read another's session files; Composio-minted personal connectors (no durable
+  token on disk) are the interim softener. The existing non-admin custom-connector guard
+  (scoping doc Decision #2) stays.
+
+## Build order
+
+1. **P1 + P2 + P3** — identity map, `runAs` seam, `shared` flag + per-connector Composio user_id.
+   Unlocks UC2/UC4/UC5 and is pure groundwork (no external app yet). *Lowest risk; do first.*
+2. **P4** — `directory_lookup` OS tool. Small; UC1/UC5 addressing.
+3. **UC5** — verify member-identity email end-to-end (mostly falls out of 1–2).
+4. **Slack service connector (UC1)** + **Slack slash adapter (UC2)** — first external app; one Slack
+   app configured by owner/admin.
+5. **Email adapter (UC4)** — Mailgun inbound + reply.
+6. **Slack DM chat (UC3)** — Events API + `trigger_threads` + turn loop. Most new surface; last.
+
+## Open decisions to confirm
+
+- **Default `run_as`** — spec assumes `trigger-user` (map the human; fall back to `owner`). Confirm vs
+  defaulting to `owner`.
+- **UC3 agent binding** — a default per-member "assistant" agent vs. always require `/use <agent>`.
+- **UC1 transport** — full service Slack connector (recommended) vs. narrow `slack_notify` OS tool.
+- **Rename `org`→`service` in storage?** Spec keeps `org` to avoid a migration; relabel in UI only.

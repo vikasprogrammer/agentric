@@ -1,0 +1,8 @@
+{
+  "_comment": "Process-per-tenant manifest. Copy to tenants.json and edit. Each tenant is its own self-contained process (own home + port). Tailscale serves HTTPS on 3 ports max (443/8443/10000), so ≤3 tenants map cleanly onto one Mac Mini's MagicDNS name. See docs/process-per-tenant.md.",
+  "tenants": [
+    { "slug": "acme",   "home": "~/aos/acme",   "port": 3010, "owner": "you@acme.com",   "tailscalePort": 443 },
+    { "slug": "globex", "home": "~/aos/globex", "port": 3020, "owner": "you@globex.com", "tailscalePort": 8443 },
+    { "slug": "initech","home": "~/aos/initech","port": 3030, "owner": "you@initech.com","tailscalePort": 10000 }
+  ]
+}

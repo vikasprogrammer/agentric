@@ -24,14 +24,26 @@ export interface Paths {
   bundledAgents: string;
   /** The user's own agents — each a folder Claude can open and write into. */
   userAgents: string;
+  /** The user's connectors (MCP server configs + their credentials). */
+  connectors: string;
+  /** The workspace skills library — global Claude Code Skills materialised into every agent. */
+  skills: string;
+  /** The deliverables gallery: snapshotted artifacts agents publish (`<id>/<filename>`). */
+  artifacts: string;
+  /** The company knowledge base: living wiki pages (`kb/<section>/<slug>.md`). */
+  kb: string;
   /** Append-only audit event store for this instance. */
   audit: string;
+  /** Per-workspace SQLite database (team/login, connectors, sessions, approvals, audit mirror). */
+  db: string;
   /** Per-instance tmux socket (under the home → instances don't collide). */
   tmuxSocket: string;
   /** Per-instance server log. */
   logFile: string;
   /** Resolved policy file: the user's if present, else the bundled default. */
   policyFile: string;
+  /** Where a console-edited policy override is written (the user's policy file in the home). */
+  policyOverride: string;
 }
 
 export interface HomeConfig {
@@ -40,12 +52,34 @@ export interface HomeConfig {
   policyDir?: string;
 }
 
-export function resolvePaths(baseDir: string, cfg: HomeConfig = {}): Paths {
+/** The data-home ROOT for this process (`$AGENT_OS_HOME` → config `home` → `<baseDir>/data`). */
+export function homeRoot(baseDir: string, cfg: HomeConfig = {}): string {
   const fromEnv = process.env.AGENT_OS_HOME;
-  const home = fromEnv
-    ? path.resolve(process.cwd(), fromEnv)
-    : path.resolve(baseDir, cfg.home || 'data');
+  return fromEnv ? path.resolve(process.cwd(), fromEnv) : path.resolve(baseDir, cfg.home || 'data');
+}
 
+/**
+ * Per-tenant paths for the multi-tenant registry. Every per-instance path nests under
+ * `<home>/tenants/<tenantId>/` so many tenants share one process without colliding (each gets its
+ * own DB, tmux socket, audit dir, connectors, skills, artifacts, kb, log). The DEFAULT tenant keeps
+ * the legacy un-nested home via `resolvePaths`, so existing single-tenant installs need no migration.
+ */
+export function resolveTenantPaths(baseDir: string, cfg: HomeConfig, tenantId: string): Paths {
+  const tenantHome = path.join(homeRoot(baseDir, cfg), 'tenants', tenantId);
+  return pathsUnder(baseDir, cfg, tenantHome);
+}
+
+/** The control-plane home — `<home>/control/` — holds the tenant registry DB (never a tenant's). */
+export function controlHome(baseDir: string, cfg: HomeConfig = {}): string {
+  return path.join(homeRoot(baseDir, cfg), 'control');
+}
+
+export function resolvePaths(baseDir: string, cfg: HomeConfig = {}): Paths {
+  return pathsUnder(baseDir, cfg, homeRoot(baseDir, cfg));
+}
+
+/** Derive the full Paths tree rooted at `home` (shared by the default + per-tenant resolvers). */
+function pathsUnder(baseDir: string, cfg: HomeConfig, home: string): Paths {
   const bundledAgents = path.resolve(baseDir, cfg.agentsDir || 'config/agents');
   const userPolicy = path.join(home, 'policy', 'default.policy.json');
   const bundledPolicy = path.resolve(baseDir, cfg.policyDir || 'config/policy', 'default.policy.json');
@@ -54,9 +88,15 @@ export function resolvePaths(baseDir: string, cfg: HomeConfig = {}): Paths {
     home,
     bundledAgents,
     userAgents: path.join(home, 'agents'),
+    connectors: path.join(home, 'connectors'),
+    skills: path.join(home, 'skills'),
+    artifacts: path.join(home, 'artifacts'),
+    kb: path.join(home, 'kb'),
     audit: path.join(home, 'audit'),
+    db: path.join(home, 'agent-os.db'),
     tmuxSocket: path.join(home, 'tmux.sock'),
     logFile: path.join(home, 'server.log'),
     policyFile: fs.existsSync(userPolicy) ? userPolicy : bundledPolicy,
+    policyOverride: userPolicy,
   };
 }

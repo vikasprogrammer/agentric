@@ -1,0 +1,36 @@
+# The Phase A privileged session launcher — the ONE component allowed to run code as another uid.
+# Runs as root, listens on a group-gated unix socket; the unprivileged agent-os app (User=vikas,
+# in group `aos`) connects to it. Keep this unit minimal — it is the trust root.
+#
+# Install:
+#   sudo groupadd -f aos && sudo usermod -aG aos vikas      # app user joins the `aos` group
+#   sudo install -m 644 deploy/aos-launcher.service /etc/systemd/system/aos-launcher.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aos-launcher.service
+#   # then restart agent-os so it picks up group membership / can reach the socket.
+
+[Unit]
+Description=Agent OS - privileged per-member session launcher (Phase A trust root)
+Documentation=https://github.com/Globex/agent-os
+After=network.target
+
+[Service]
+Type=simple
+# Absolute node path (nvm) + the compiled CLI — match agent-os.service's node version.
+ExecStart=/home/agent-os/.nvm/versions/node/v22.22.0/bin/node /home/agent-os/tools/agent-os/dist/cli.js launcher --socket=/run/aos/launcher.sock --group=aos --trusted-dir=/home/agent-os/tools/agent-os/terminal
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=aos-launcher
+
+# It must run as root: it creates per-member DynamicUser holders, chowns seeded creds (A3), and
+# signals foreign uids. Keep its filesystem write surface tight to what it manages.
+RuntimeDirectory=aos
+RuntimeDirectoryMode=0755
+StateDirectory=aos
+ReadWritePaths=/run/aos /var/lib/aos
+# Hardening (it shells out to systemctl/systemd-run/tmux/ttyd, so it can't be fully locked down):
+NoNewPrivileges=false
+ProtectHome=read-only
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

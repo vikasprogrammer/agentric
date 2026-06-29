@@ -186,8 +186,8 @@ responsibilities. The **"Not this"** column is the important one.
 | Component | Owns | Not this | Today |
 |---|---|---|---|
 | **Tasks / Trackers / DB** | *Operational* state: what work exists, its status, the queue. | What happened historically; how to do the work. | `data/jobs.json` + `JobStatus` map. |
-| **Memory (episodic)** | *What happened*: past runs, outcomes, decisions, per agent + cross-agent. | SOPs / rules / facts. | Implicit in job-logs; not queryable as memory. |
-| **Knowledge base (semantic)** | *Durable facts*: SOPs, brand voice, customer history, playbooks. Retrievable. | Run state; episodic history. | Lives in each `CLAUDE.md`; not shared/retrievable. **Gap.** |
+| **Memory (episodic)** | *What happened*: past runs, outcomes, decisions, per agent + cross-agent. | SOPs / rules / facts. | Per-agent `remember`/`recall` store (`MemoryProvider`), queryable + ranked, with **auto session-end episodes**, recency/importance ranking, and a shared `scope` (agent\|tenant). **Done.** |
+| **Knowledge base (semantic)** | *Durable facts*: SOPs, brand voice, customer history, playbooks. Retrievable. | Run state; episodic history. | A real **KB plane** (`KbStore`, `os.kb`): shared tenant-wide *living* wiki — markdown+FTS, revision chain + revert, agent `kb_*` tools + console page; the **self-learning** pass auto-maintains pages. Memory is also semantically retrievable (hybrid vectors). **Done** (no diff/wiki-hierarchy yet). |
 
 > The advisor's sharpest catch: your "Database/Tracker" is **task state**, not Memory or Knowledge.
 > Three stores, three lifecycles. Tasks churn; Memory accretes; Knowledge is curated.
@@ -200,7 +200,13 @@ responsibilities. The **"Not this"** column is the important one.
 | **Approvals / HITL** | The queue, routing (yellow→head, red→you), and **decision capture**. | Classifying risk (Policy). | Seed exists: `slack/learnings-approval.ts`. Generalize it. |
 | **Budgets / cost** | Per-agent/tenant $ + token caps, hard-stops, model routing. | Wall-clock timeout only. | `timeout`/`maxTurns`/`maxConcurrentJobs` — resource caps, **no $**. |
 | **Identity** | The principal a run acts as; least privilege per agent; non-repudiation. | Storing keys (Secrets). | None — runs are anonymous. **Gap.** |
-| **Audit log** | Append-only record of every action + reasoning + result. System of record. | Deciding/allowing (Policy). | `appendJobLog` → `*.jsonl`. **Promote to authoritative + immutable.** |
+| **Team / Membership** | The *humans* with access: members + roles (owner/admin/member), invite-token login, agent assignment. Gives Policy's `head`/`owner` levels real people behind them. | The service-account a run acts *as* (Identity). | `governance/team.ts` over the per-workspace SQLite DB; magic-link login + cookie sessions; `head`→admin, `owner`→owner approval authority. |
+| **Audit log** | Append-only record of every action + reasoning + result. System of record. | Deciding/allowing (Policy). | `appendJobLog` → `*.jsonl`, now mirrored into the SQLite `audit_events` table for queries. |
+
+> **Per-workspace SQLite (`<home>/agent-os.db`).** Everything the live console touches — members &
+> login sessions, agent assignments, connectors, terminal sessions, the inbox feed, approvals, and an
+> audit mirror — persists in one DB per data home (Node's built-in `node:sqlite`, zero new deps). One DB
+> per home keeps instances isolated, exactly like the tmux socket and audit dir.
 
 ### Plane E — Observability & learning (the differentiator)
 

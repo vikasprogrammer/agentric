@@ -12,15 +12,26 @@ import {
   AgentManifest,
   AuditSink,
   Capability,
+  MemoryConfig,
+  MemoryMaintenanceResult,
+  MemoryProvider,
   PolicyEngine,
   RunRequest,
   RuntimeAdapter,
 } from './types';
+import { createMemoryProvider } from './memory';
 import { CapabilityRegistry } from './capabilities/registry';
+import { ConnectorStore } from './connectors/connectors';
 import { Gateway } from './gateway/gateway';
-import { InMemoryAuditSink, JsonlAuditSink, TeeAuditSink } from './governance/audit';
+import { InMemoryAuditSink, JsonlAuditSink, SqliteAuditSink, TeeAuditSink } from './governance/audit';
 import { InMemoryBudgetLedger } from './governance/budget';
-import { InMemoryApprovals } from './governance/approvals';
+import { SqliteApprovals } from './governance/approvals';
+import { TeamStore } from './governance/team';
+import { SettingsStore } from './governance/settings';
+import { SkillsStore } from './governance/skills';
+import { Db, openDb } from './state/db';
+import { ArtifactStore } from './state/artifacts';
+import { KbStore } from './state/kb';
 import { StubIdentity } from './governance/identity';
 import { InMemoryIdempotencyStore } from './gateway/idempotency';
 import { JsonPolicyEngine, PolicyDocument } from './governance/policy';
@@ -38,6 +49,8 @@ export interface AgentOSOptions {
   auditDir?: string | null;
   /** Resolved instance paths (data home + derived). Optional for tests/demo. */
   paths?: Paths;
+  /** Which memory backend to use. Default: sqlite (no external services). */
+  memory?: MemoryConfig;
 }
 
 export class AgentOS {
@@ -46,7 +59,19 @@ export class AgentOS {
   readonly memoryAudit = new InMemoryAuditSink();
   readonly audit: AuditSink;
   readonly budget = new InMemoryBudgetLedger();
-  readonly approvals = new InMemoryApprovals();
+  /** Per-workspace SQLite database shared by the team, connectors, approvals & audit stores. */
+  readonly db: Db;
+  readonly approvals: SqliteApprovals;
+  /** The humans with access to this workspace, their roles, sessions and agent assignments. */
+  readonly team: TeamStore;
+  /** Workspace-wide settings — incl. the Company context injected into every claude-code agent. */
+  readonly settings: SettingsStore;
+  /** Global skills library — Claude Code Skills materialised into every claude-code agent at launch. */
+  readonly skills: SkillsStore;
+  /** The deliverables gallery — artifacts agents publish (PDF/Markdown/image), snapshotted + governed. */
+  readonly artifacts: ArtifactStore;
+  /** The company knowledge base — the shared, living wiki agents + humans co-author (revision-chained). */
+  readonly kb: KbStore;
   readonly identity = new StubIdentity();
   readonly idempotency = new InMemoryIdempotencyStore();
   readonly secrets = new EnvSecretsVault();
@@ -54,6 +79,13 @@ export class AgentOS {
   readonly policy: PolicyEngine;
   readonly mock = new MockAdapter();
   readonly agents = new Map<string, AgentManifest>();
+  /** User-registered connectors (MCP servers) the claude-code runtime exposes to agents. */
+  readonly connectors: ConnectorStore;
+  /**
+   * Persistent agent memory (recall across sessions). SQLite by default; libsql/automem optional.
+   * Mutable so Settings → Memory can hot-swap the backend live (new requests use the new provider).
+   */
+  memory: MemoryProvider;
   readonly adapters = new Map<AgentManifest['runtime'], RuntimeAdapter>();
   readonly gateway: Gateway;
   readonly orchestrator: Orchestrator;
@@ -64,8 +96,18 @@ export class AgentOS {
     this.tenant = opts.tenant;
     this.policy = opts.policy;
     this.paths = opts.paths;
+    // The per-workspace DB backs everything user-facing. No paths (tests/demo) → ephemeral in-memory.
+    this.db = openDb(opts.paths?.db ?? ':memory:');
+    this.connectors = new ConnectorStore(this.db);
+    this.approvals = new SqliteApprovals(this.db);
+    this.team = new TeamStore(this.db);
+    this.settings = new SettingsStore(this.db);
+    this.skills = new SkillsStore(opts.paths?.skills);
+    this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);
+    this.kb = new KbStore(this.db, opts.paths?.kb);
+    this.memory = createMemoryProvider(opts.memory ?? { backend: 'sqlite' }, this.db);
 
-    const sinks: AuditSink[] = [this.memoryAudit];
+    const sinks: AuditSink[] = [this.memoryAudit, new SqliteAuditSink(this.db)];
     if (opts.auditDir) sinks.push(new JsonlAuditSink(opts.auditDir));
     this.audit = new TeeAuditSink(sinks);
 
@@ -91,6 +133,30 @@ export class AgentOS {
     });
   }
 
+  /** Build a memory provider from a config without swapping the live one (for a pre-save Test). */
+  buildMemory(cfg: MemoryConfig): MemoryProvider {
+    return createMemoryProvider(cfg, this.db);
+  }
+  /** Hot-swap the live memory backend. Throws on invalid config (missing required fields). */
+  applyMemory(cfg: MemoryConfig): MemoryProvider {
+    this.memory = createMemoryProvider(cfg, this.db);
+    return this.memory;
+  }
+
+  /**
+   * Run one memory-maintenance pass (prune + consolidate) using the saved `maintenance` policy, and
+   * audit it if anything changed. No-op when the backend doesn't support it or no policy is set.
+   */
+  async runMemoryMaintenance(by = 'system'): Promise<MemoryMaintenanceResult> {
+    const opts = this.settings.memoryConfig()?.maintenance;
+    if (!this.memory.maintain || !opts) return { pruned: 0, merged: 0 };
+    const res = await this.memory.maintain(opts);
+    if (res.pruned || res.merged) {
+      this.audit.append({ ts: Date.now(), runId: '-', tenant: this.tenant, principal: by, type: 'memory.maintained', data: { ...res } });
+    }
+    return res;
+  }
+
   registerCapabilities(caps: Capability[]): this {
     this.registry.registerAll(caps);
     return this;
@@ -98,6 +164,10 @@ export class AgentOS {
   registerAgent(manifest: AgentManifest): this {
     this.agents.set(manifest.id, manifest);
     return this;
+  }
+  /** Drop an agent from the live registry (the on-disk folder is removed by the caller). */
+  deregisterAgent(id: string): boolean {
+    return this.agents.delete(id);
   }
   registerMockBehavior(agentId: string, behavior: MockBehavior): this {
     this.mock.register(agentId, behavior);
@@ -108,14 +178,19 @@ export class AgentOS {
   }
 }
 
-interface RootConfig {
+export interface RootConfig {
+  /** The SEED/DEFAULT tenant id. In multi-tenant mode this is the slug of the legacy un-nested home. */
   tenant: string;
+  /** Base domain for subdomain routing (e.g. `agent-os.example.com`); tenants live at `<slug>.<base>`. */
+  baseDomain?: string;
   /** User data home (env AGENT_OS_HOME overrides). Default: ./data. */
   home?: string;
   /** Bundled example agents that ship with the software. Default: config/agents. */
   agentsDir?: string;
   /** Bundled default policy dir. Default: config/policy. */
   policyDir?: string;
+  /** Memory backend. Default: sqlite (no external services). */
+  memory?: MemoryConfig;
 }
 
 /**
@@ -124,17 +199,39 @@ interface RootConfig {
  *   - The USER's data — their agents, their policy override, audit — comes from the data home
  *     (`$AGENT_OS_HOME` / config `home` / `./data`). User agents win on id collision.
  */
-export function loadAgentOS(configPath = 'config/agent-os.config.json', baseDir = process.cwd()): AgentOS {
+/**
+ * Build an AgentOS for ONE tenant. `overrides` lets the multi-tenant registry point a single
+ * config at a per-tenant `tenant` id + `paths` (its own home/DB/socket); omitted = the single-tenant
+ * default (legacy behavior, used by the demo/CLI and the seed tenant).
+ */
+export function loadAgentOS(
+  configPath = 'config/agent-os.config.json',
+  baseDir = process.cwd(),
+  overrides?: { tenant?: string; paths?: Paths },
+): AgentOS {
   const cfg = readJson<RootConfig>(path.resolve(baseDir, configPath));
-  const paths = resolvePaths(baseDir, cfg);
+  const paths = overrides?.paths ?? resolvePaths(baseDir, cfg);
   const policyDoc = readJson<PolicyDocument>(paths.policyFile);
 
   const os = new AgentOS({
-    tenant: cfg.tenant,
+    tenant: overrides?.tenant ?? cfg.tenant,
     policy: new JsonPolicyEngine(policyDoc),
     auditDir: paths.audit,
     paths,
+    memory: cfg.memory,
   });
+
+  // A backend saved from Settings → Memory (DB) overrides the file default and survives restarts.
+  // Build it synchronously here (no health check) so boot never blocks on a network call; a broken
+  // stored config falls back to whatever the constructor already built from the file.
+  const stored = os.settings.memoryConfig();
+  if (stored) {
+    try {
+      os.applyMemory(stored);
+    } catch (e) {
+      console.error(`[memory] stored backend config invalid, using file default: ${e instanceof Error ? e.message : e}`);
+    }
+  }
 
   // Bundled examples first, then the user's agents (which override examples by id).
   loadAgentsFrom(os, paths.bundledAgents);
@@ -157,4 +254,9 @@ function loadAgentsFrom(os: AgentOS, dir: string): void {
 
 function readJson<T>(p: string): T {
   return JSON.parse(fs.readFileSync(p, 'utf8')) as T;
+}
+
+/** Read the root config (tenant/home/baseDomain/memory) — used by the multi-tenant registry. */
+export function readRootConfig(configPath = 'config/agent-os.config.json', baseDir = process.cwd()): RootConfig {
+  return readJson<RootConfig>(path.resolve(baseDir, configPath));
 }

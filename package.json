@@ -5,8 +5,15 @@
   "license": "MIT",
   "type": "commonjs",
   "main": "dist/index.js",
-  "bin": { "agent-os": "bin/agent-os" },
-  "files": ["dist", "public", "config", "docs"],
+  "bin": {
+    "agent-os": "bin/agent-os"
+  },
+  "files": [
+    "dist",
+    "public",
+    "config",
+    "docs"
+  ],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
@@ -16,7 +23,18 @@
     "dev": "ts-node src/cli.ts serve",
     "demo:dev": "ts-node src/demo.ts"
   },
-  "keywords": ["agents", "agent-os", "orchestration", "ai", "governance", "claude", "globex"],
+  "keywords": [
+    "agents",
+    "agent-os",
+    "orchestration",
+    "ai",
+    "governance",
+    "claude",
+    "globex"
+  ],
+  "optionalDependencies": {
+    "@libsql/client": "^0.14.0"
+  },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "ts-node": "^10.9.2",

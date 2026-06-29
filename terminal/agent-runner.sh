@@ -28,7 +28,7 @@ say() { # post an update message to the inbox
 gate() {
   local cap="$1" args="$2" reason="$3"
   dim "   → requesting: $cap $args"
-  local resp; resp=$(curl -s -X POST "$AOS_URL/api/gate" -H 'content-type: application/json' \
+  local resp; resp=$(curl -s -X POST "$AOS_URL/api/gate" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" \
     -d "$(node -e 'const[c,a,r,s,ag]=process.argv.slice(1);console.log(JSON.stringify({sessionId:s,agent:ag,capability:c,args:JSON.parse(a),reasoning:r}))' "$cap" "$args" "$reason" "$SESSION" "$AGENT")")
   local dec gid; dec=$(printf '%s' "$resp" | jsonget decision); gid=$(printf '%s' "$resp" | jsonget gateId)
   case "$dec" in

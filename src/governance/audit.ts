@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { AuditEvent, AuditSink } from '../types';
+import { Db } from '../state/db';
 
 /** Keeps events in memory — handy for tests, demos, and the Console to read back. */
 export class InMemoryAuditSink implements AuditSink {
@@ -24,6 +25,16 @@ export class JsonlAuditSink implements AuditSink {
     const dir = path.join(this.baseDir, event.tenant);
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(path.join(dir, `${event.runId}.jsonl`), JSON.stringify(event) + '\n');
+  }
+}
+
+/** A queryable mirror in the per-workspace SQLite DB (JSONL stays the durable system of record). */
+export class SqliteAuditSink implements AuditSink {
+  constructor(private readonly db: Db) {}
+  append(event: AuditEvent): void {
+    this.db
+      .prepare('INSERT INTO audit_events (ts, run_id, tenant, type, principal, data) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(event.ts, event.runId, event.tenant, event.type, event.principal ?? null, JSON.stringify(event.data));
   }
 }
 

@@ -10,7 +10,10 @@
  *
  *   $ npm run demo
  */
+import * as fs from 'fs';
+import * as path from 'path';
 import { AgentOS, loadAgentOS } from './kernel';
+import { JsonPolicyEngine } from './governance/policy';
 import { exampleCapabilities } from './capabilities/examples';
 import {
   greeterBehavior,
@@ -33,6 +36,11 @@ const opsBehavior: MockBehavior = async (_ctx, act) => {
 
 async function main(): Promise<void> {
   const os = loadAgentOS();
+  // The bundled default policy is now the lean real-world ruleset (shell + tools). The demo exercises
+  // the mock example capabilities (echo/refund/deploy/prod…), so it loads its own showcase ruleset.
+  if (os.policy instanceof JsonPolicyEngine) {
+    os.policy.update(JSON.parse(fs.readFileSync(path.resolve(__dirname, '../config/policy/demo.policy.json'), 'utf8')));
+  }
   os.registerCapabilities(exampleCapabilities);
 
   // Plugin code: agent behaviors.
@@ -41,7 +49,9 @@ async function main(): Promise<void> {
   os.registerMockBehavior('example-spender', spenderBehavior);
   os.registerMockBehavior('example-ops', opsBehavior);
 
-  // Two agents registered in code; the other two are loaded from config/agents/*.
+  // All demo agents are registered in code so the showcase is self-contained (no config/agents/*).
+  os.registerAgent({ id: 'example-greeter', version: '1.0.0', description: 'says hello and posts to Slack — the all-green happy path', principal: 'svc-greeter', policyContext: 'default@v1', runtime: 'mock', budget: FULL_BUDGET });
+  os.registerAgent({ id: 'example-refunder', version: '1.0.0', description: 'issues refunds — yellow/red effect gating', principal: 'svc-billing', policyContext: 'default@v1', runtime: 'mock', budget: FULL_BUDGET });
   os.registerAgent({ id: 'example-spender', version: '1.0.0', description: 'spends until budget stops it', principal: 'svc-worker', policyContext: 'default@v1', runtime: 'mock', budget: FULL_BUDGET });
   os.registerAgent({ id: 'example-ops', version: '1.0.0', description: 'tries a forbidden prod action', principal: 'svc-ops', policyContext: 'default@v1', runtime: 'mock', budget: FULL_BUDGET });
 

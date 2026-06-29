@@ -5,15 +5,12 @@
  */
 import { loadAgentOS } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { greeterBehavior, refunderBehavior } from './runtime/mock-adapter';
 
 function main(): void {
   const os = loadAgentOS();
 
-  // Plugin code: register capability implementations + agent behaviors.
+  // Plugin code: register capability implementations.
   os.registerCapabilities(exampleCapabilities);
-  os.registerMockBehavior('example-greeter', greeterBehavior);
-  os.registerMockBehavior('example-refunder', refunderBehavior);
 
   console.log(`Agent OS ready — tenant=${os.tenant}`);
   console.log(`  agents:       ${[...os.agents.keys()].join(', ') || '(none)'}`);

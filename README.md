@@ -47,7 +47,9 @@ npm run typecheck  # tsc --noEmit
 `npm run serve` (or `agent-os serve`) starts a zero-dependency web console — built on Node's
 built-in `http`, no framework — where you can launch agents, **approve / reject** risky actions in a
 human queue, and watch each run's live audit trail. Configure the port with `PORT` (default `3010`).
-A hosted instance runs behind HTTPS + basic-auth at **https://agent-os.agents.globex.net**.
+Deploy it behind a reverse proxy (nginx/Tailscale) for HTTPS; the app's own invite/cookie login gates
+everything, so no extra basic-auth is needed. See `docs/process-per-tenant.md` (Mac/Tailscale) or the
+Linux/systemd runbook in `CLAUDE.md`.
 
 `npm run demo` exercises the whole trust layer against mock capabilities and prints the exact
 append-only audit trail the gateway wrote for each run:
@@ -60,6 +62,25 @@ append-only audit trail the gateway wrote for each run:
 | **4. Policy deny** | `prod.*` is **denied outright**; the capability never executes. |
 
 Durable audit is written to `data/audit/<tenant>/<run_id>.jsonl` — one append-only file per run.
+
+### Login & team
+
+The console is invite-gated. On first boot the **owner** is seeded automatically (set
+`AGENT_OS_OWNER_EMAIL`, default `owner@localhost`) and a one-time magic-link login URL is printed to
+the server console and `data/server.log`. Everyone else signs in via an invite link the owner/admins
+generate. Three roles: **owner** (runs everything, approves red/`owner` requests, manages the team),
+**admin** (approves yellow/`head` requests, manages team & assignments, runs any agent), and
+**member** (runs only assigned agents, never approves). Manage it on the **Team** page, or from the box:
+
+```bash
+agent-os invite teammate@company.com member   # mint a magic link to copy/send
+agent-os login-link you@company.com            # fresh link for an existing member (recovery)
+agent-os members                               # list members + roles
+```
+
+State lives in a **per-workspace SQLite DB** (`<home>/agent-os.db`, via Node's built-in `node:sqlite` —
+no new deps): members & sessions, agent assignments, connectors, terminal sessions, the inbox feed,
+approvals, and an audit mirror. One DB per data home keeps instances isolated.
 
 ---
 
@@ -99,6 +120,30 @@ AGENT_OS_HOME=./brand-a PORT=3010 agent-os serve
 AGENT_OS_HOME=./brand-b PORT=3020 agent-os serve
 ```
 
+### Multi-tenant — two models
+
+A **tenant** is one workspace (its own DB, members, agents, connectors, audit). There are two ways to
+run more than one; the **DB file is always the isolation boundary**.
+
+- **Process-per-tenant (recommended).** Each tenant is its own self-contained `agent-os serve` process
+  — the model above, with `AGENT_OS_TENANT` naming each one. Simplest and fully isolated. On a single
+  host (e.g. a Mac Mini over Tailscale) front them with `scripts/run-tenant.sh` + `scripts/tailscale-serve.sh`;
+  the full runbook is [`docs/process-per-tenant.md`](docs/process-per-tenant.md).
+
+  ```bash
+  scripts/run-tenant.sh acme   ~/aos/acme   3010  you@acme.com
+  scripts/run-tenant.sh globex ~/aos/globex 3020  you@globex.com
+  scripts/tailscale-serve.sh 3010 3020      # → separate https origins, clean cookie isolation
+  ```
+
+- **Many tenants in one process (`src/tenant-registry.ts`).** A registry builds one isolated runtime
+  per tenant (own DB/tmux/ttyd/cron/Slack), routed by **subdomain** (`<slug>.<baseDomain>`) or the
+  loopback `x-aos-tenant` header, listed in a control plane (`src/state/control.ts`). Provisioning is
+  superadmin-only (`agent-os tenant create <slug> --owner <email>` / `POST /api/admin/tenants`, gated
+  by `AOS_SUPERADMIN_TOKEN`). Needs wildcard DNS + a `baseDomain`; pick this when you outgrow a handful
+  of tenants. The seed tenant (config `tenant`) keeps the legacy un-nested home, so existing installs
+  need no migration. See [`docs/scoping-model.md`](docs/scoping-model.md).
+
 ### Opening Claude directly in an agent's folder
 
 An agent's `runtime` (in `agent.json`) selects how a terminal session is driven:
@@ -112,6 +157,22 @@ An agent's `runtime` (in `agent.json`) selects how a terminal session is driven:
 
 The bundled `sandbox` agent (created in `./data/agents/sandbox/` — i.e. your data, not committed)
 demonstrates the `claude-code` path end to end.
+
+#### Per-agent runtime tuning (model / effort / permission)
+
+Each `claude-code` agent can pin its own **`model`**, **`effort`** (`low`…`max`), and **`permissionMode`**
+(`default`/`acceptEdits`/`plan`/`auto`/`dontAsk`/`bypassPermissions`) in `agent.json` — editable from the
+agent's console page (`GET/PUT /api/agents/:id/config`). Any field left blank inherits a **workspace
+default** set once in **Settings → Runtime defaults** (`GET/PUT /api/settings/runtime-defaults`); a field
+blank there too falls through to the `claude` CLI's own default. At launch the server resolves
+agent → workspace → CLI default and `claude-launch.sh` maps the result onto `--model` / `--effort` /
+`--permission-mode`. `permissionMode` only changes the **agent's own** prompt posture — the `PreToolUse`
+gate hook still blocks risky effects for inbox approval underneath it, even under `bypassPermissions`
+(which is why the headless automation lane can safely run `--dangerously-skip-permissions`).
+
+> Swapping the foreign CLI (Codex/Gemini/etc.) is **not** wired up: the launcher seam is generic enough,
+> but those CLIs have no `PreToolUse`-hook equivalent, so the gateway invariant would need an
+> MCP-fronted-only or sandbox enforcement model first. See `docs/PILLARS.md` (Pillar 1).
 
 ---
 

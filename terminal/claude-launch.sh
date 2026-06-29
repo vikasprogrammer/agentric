@@ -11,7 +11,18 @@
 #   TASK_B64   base64-encoded task text (becomes claude's opening prompt)
 #   AGENT_DIR  the agent's folder — claude opens here and writes its memory/scratch here
 #   HOOK       absolute path to gate-hook.sh (the PreToolUse gate)
+#   HEADLESS   "1" → run non-interactively (`claude -p`) and exit when done (automations);
+#              unset/empty → interactive attachable TUI that stays live (manual spawns)
+#   LOG_DIR    where to tee the headless run transcript (headless only)
 set -u
+# RESUME path: ttyd's attach wrapper (attach.sh) re-launches us against a session whose tmux shell
+# was killed (stopped/ended). The new tmux session does NOT inherit the original launch env, so
+# recover it from the persisted file before doing anything else. Sets AGENT_DIR/HOOK/AOS_*/
+# MCP_CONFIG/COMPANY_FILE/CLAUDE_SESSION_ID exactly as the first launch had them.
+if [ "${RESUME:-}" = "1" ] && [ -n "${ENV_FILE:-}" ] && [ -f "${ENV_FILE}" ]; then
+  # shellcheck disable=SC1090
+  . "$ENV_FILE"
+fi
 # The `claude` CLI is commonly installed under ~/.local/bin; make sure it's findable even
 # when the parent process (e.g. a hardened systemd unit) ships a minimal PATH.
 export PATH="$HOME/.local/bin:$PATH"
@@ -26,12 +37,18 @@ cd "$AGENT_DIR" 2>/dev/null || { red "agent folder not found: $AGENT_DIR"; exec 
 # Wire the gate as a project-local PreToolUse hook. claude inherits AOS_URL/SESSION/AGENT from
 # this shell's env, so the hook can reach the gateway and tag the right session. We regenerate
 # the settings each launch so the hook path is always correct (and portable across machines).
+# Pre-allow the OS-owned tools (memory, ask/report, policy preview) so they're friction-free — they're
+# internal and safe (memory reads/writes only this agent's own namespace; policy_check/list_capabilities
+# are pure dry-runs; all go through the loopback API, which derives identity from the session row).
 mkdir -p .claude
 cat > .claude/settings.json <<JSON
 {
+  "permissions": {
+    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check"]
+  },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
+      { "matcher": "Bash|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
     ]
   }
 }
@@ -54,11 +71,107 @@ if ! command -v claude >/dev/null 2>&1; then
   exec bash
 fi
 
-# Interactive session in this folder, seeded with the task, governed by the local hook.
-# NOTE: do NOT `exec` claude. When claude exits we want to fall back to a live shell so the
-# tmux session stays alive — otherwise the pane dies, tmux drops the session, and the browser
-# terminal (ttyd) reconnect-loops forever showing "Reconnecting".
-claude --settings .claude/settings.json "$TASK"
+# Connectors: if the OS materialised an .mcp.json for this session, hand it to claude so the
+# agent gains the user's Slack/Gmail/etc. tools. --strict-mcp-config = use ONLY this config.
+MCP_ARGS=()
+if [ -n "${MCP_CONFIG:-}" ] && [ -f "${MCP_CONFIG}" ]; then
+  MCP_ARGS=(--mcp-config "$MCP_CONFIG" --strict-mcp-config)
+  dim "connectors: $(grep -o '"[a-z0-9-]*": {' "$MCP_CONFIG" | tr -d '":{ ' | paste -sd, -)"
+fi
+
+# Company context: the workspace-wide CLAUDE.md (voice, facts, conventions) every agent inherits.
+# Appended to claude's system prompt so it doesn't have to live in each agent's folder.
+SYS_ARGS=()
+if [ -n "${COMPANY_FILE:-}" ] && [ -s "${COMPANY_FILE}" ]; then
+  SYS_ARGS=(--append-system-prompt-file "$COMPANY_FILE")
+  dim "company context: applied"
+fi
+
+# Skills: the OS synced the global skills library into .claude/skills/ before launch (there's no
+# per-invocation skills flag — claude auto-discovers project-level .claude/skills/<name>/SKILL.md).
+if [ -d .claude/skills ]; then
+  # Portable directory listing — BSD `find` (macOS) has no GNU `-printf`, so iterate with a shell glob.
+  SKILLS=$(cd .claude/skills 2>/dev/null && for d in */; do [ -d "$d" ] && printf '%s\n' "${d%/}"; done | sort | paste -sd, -)
+  [ -n "$SKILLS" ] && dim "skills: $SKILLS"
+fi
+
+# Tell Agent OS the run ended → the Inbox shows a completion card (unless the agent already
+# reported a richer outcome via the `report` tool) and the session is marked idle.
+notify_ended() {
+  curl -s -X POST "$AOS_URL/api/ended" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" \
+    -d "$(node -e 'console.log(JSON.stringify({session:process.argv[1]}))' "$SESSION")" >/dev/null 2>&1 || true
+}
+
+# Tell Agent OS a stopped session was reconnected → flip the row back to running in the console.
+notify_resumed() {
+  curl -s -X POST "$AOS_URL/api/resumed" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" \
+    -d "$(node -e 'console.log(JSON.stringify({session:process.argv[1]}))' "$SESSION")" >/dev/null 2>&1 || true
+}
+
+# Per-agent runtime tuning, resolved by the server (agent manifest → workspace default) and passed
+# in as env. Model + effort apply to BOTH lanes; permission-mode only to the interactive lane (the
+# headless lane needs --dangerously-skip-permissions, since no human can answer a prompt). An empty
+# var means "inherit" — we add no flag, so the claude CLI's own default stands.
+RUNTIME_ARGS=()
+[ -n "${CLAUDE_MODEL:-}" ]  && RUNTIME_ARGS+=(--model "$CLAUDE_MODEL")
+[ -n "${CLAUDE_EFFORT:-}" ] && RUNTIME_ARGS+=(--effort "$CLAUDE_EFFORT")
+PERM_ARGS=()
+[ -n "${CLAUDE_PERMISSION_MODE:-}" ] && PERM_ARGS+=(--permission-mode "$CLAUDE_PERMISSION_MODE")
+[ -n "${CLAUDE_MODEL:-}${CLAUDE_EFFORT:-}${CLAUDE_PERMISSION_MODE:-}" ] && \
+  dim "tuning: model=${CLAUDE_MODEL:-default} effort=${CLAUDE_EFFORT:-default} permission=${CLAUDE_PERMISSION_MODE:-default}"
+
+# bash 3.2 (macOS default) errors on expanding an EMPTY array under `set -u`; the `[@]+` guard
+# expands to nothing when MCP_ARGS/SYS_ARGS are empty instead of tripping "unbound variable".
+COMMON_ARGS=(--settings .claude/settings.json "${MCP_ARGS[@]+"${MCP_ARGS[@]}"}" "${SYS_ARGS[@]+"${SYS_ARGS[@]}"}" "${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"}")
+
+if [ "${HEADLESS:-}" = "1" ]; then
+  # Headless lane (automations): run the task to completion non-interactively, then EXIT. The pane
+  # dies → tmux drops the session → Agent OS marks it idle and the pile-up guard releases, so the
+  # next cron/webhook firing isn't skipped. No TUI, so the interactive-scroll issues don't apply.
+  #
+  # --dangerously-skip-permissions: there's no human to answer permission prompts here, and in -p
+  # mode an unapproved tool would otherwise ABORT the run. The SAME PreToolUse gate hook still runs
+  # and still BLOCKS risky Bash for inbox approval even under this flag — so Bash stays governed;
+  # the flag only removes the prompts claude can't ask non-interactively.
+  LOG="${LOG_DIR:-/tmp}/session-$SESSION.log"
+  # Create the transcript 0600 before writing — it can contain connector output / secrets, so it must
+  # not be world-readable (matches the 0600 .mcp.json the server writes). umask in a subshell so the
+  # restriction applies only to this file, not to anything claude writes during the run.
+  ( umask 077; : > "$LOG" ) 2>/dev/null || true
+  dim "headless run — transcript → $LOG. This pane closes when the task completes."
+  echo
+  claude -p "$TASK" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
+  notify_ended
+  exit 0
+fi
+
+# Fullscreen rendering for the TUI. Inside tmux, claude's normal renderer degrades — the scrollbar
+# vanishes and the mouse wheel scrolls the input history instead of the conversation. Fullscreen mode
+# draws to the alternate screen and restores proper mouse-wheel scroll + selection in the browser
+# terminal. Harmless in the headless lane above (no TUI), so exporting it here in the interactive
+# path keeps it scoped to the sessions that actually render a TUI.
+export CLAUDE_CODE_NO_FLICKER=1
+
+# Interactive session in this folder, governed by the local hook. We pin claude to a session id
+# WE chose (CLAUDE_SESSION_ID) so a stopped session can later be resumed in-place by that id.
+# NOTE: do NOT `exec` claude. When claude exits we fall back to a live shell so the tmux session
+# stays alive — otherwise the pane dies and ttyd would loop showing "Reconnecting".
+if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+  # Reconnect to a stopped session: reopen the SAME conversation (no task re-seed — it's already
+  # in the transcript). If resume fails (e.g. claude never persisted a turn before it was stopped),
+  # fall back to a fresh session under the same id, seeded with the original task.
+  notify_resumed
+  dim "resuming claude session $CLAUDE_SESSION_ID …"
+  echo
+  claude --resume "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" \
+    || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" "$TASK"
+elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+  claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" "$TASK"
+else
+  claude "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" "$TASK"
+fi
+notify_ended
+
 echo
 dim "claude session ended — this pane stays live. Attach and type, or close the tab."
 exec bash

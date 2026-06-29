@@ -1,0 +1,334 @@
+/**
+ * The per-workspace database. One SQLite file per data home (`<home>/agent-os.db`), opened
+ * through Node's built-in `node:sqlite` — so the OS keeps its zero-dependency stance while
+ * gaining real, queryable, restart-surviving storage for everything the live console touches:
+ * the team & login tables, agent assignments, connectors, terminal sessions, the inbox feed,
+ * approvals, and an audit mirror.
+ *
+ * The DB is per home (like the tmux socket and audit dir) so multiple instances never collide.
+ * It is the single connection the stores share; each store owns its own tables.
+ */
+import { DatabaseSync } from 'node:sqlite';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export type Db = DatabaseSync;
+
+/** Open (creating if needed) the workspace DB at `file` and run idempotent migrations. */
+export function openDb(file: string): Db {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+  migrate(db);
+  return db;
+}
+
+/** All tables, created if absent. Adding a column later = a new `ALTER TABLE … IF NOT…` here. */
+function migrate(db: Db): void {
+  db.exec(`
+    -- People with access to this workspace.
+    CREATE TABLE IF NOT EXISTS members (
+      id         TEXT PRIMARY KEY,
+      email      TEXT UNIQUE NOT NULL,
+      name       TEXT NOT NULL,
+      role       TEXT NOT NULL,           -- owner | admin | member
+      status     TEXT NOT NULL,           -- invited | active
+      created_at INTEGER NOT NULL
+    );
+
+    -- One-time magic-link tokens (invite a new member OR re-auth an existing one).
+    CREATE TABLE IF NOT EXISTS invites (
+      token       TEXT PRIMARY KEY,
+      email       TEXT NOT NULL,
+      role        TEXT NOT NULL,
+      invited_by  TEXT,
+      created_at  INTEGER NOT NULL,
+      expires_at  INTEGER NOT NULL,
+      accepted_at INTEGER
+    );
+
+    -- Login sessions (the aos_sid cookie). Distinct from terminal/tmux sessions below.
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      sid        TEXT PRIMARY KEY,
+      member_id  TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
+    -- Which roles / members may run a given agent. JSON-text arrays.
+    CREATE TABLE IF NOT EXISTS assignments (
+      agent_id        TEXT PRIMARY KEY,
+      allowed_roles   TEXT NOT NULL,      -- JSON string[]
+      allowed_members TEXT NOT NULL       -- JSON string[] (member ids)
+    );
+
+    -- User-registered MCP connectors (Slack / GitHub / Composio / …) + the credentials they carry.
+    -- stdio connectors use command/args/env; remote (http|sse) connectors use url/headers.
+    CREATE TABLE IF NOT EXISTS connectors (
+      id          TEXT PRIMARY KEY,
+      type        TEXT NOT NULL,
+      label       TEXT NOT NULL,
+      description TEXT NOT NULL,
+      transport   TEXT NOT NULL DEFAULT 'stdio',  -- stdio | http | sse
+      command     TEXT NOT NULL,
+      args        TEXT NOT NULL,          -- JSON string[]
+      url         TEXT NOT NULL DEFAULT '',       -- remote: MCP endpoint URL
+      headers     TEXT NOT NULL DEFAULT '{}',     -- remote: JSON Record<string,string> (auth headers)
+      env         TEXT NOT NULL,          -- JSON Record<string,string>
+      enabled     INTEGER NOT NULL,       -- 0 | 1
+      scope       TEXT NOT NULL DEFAULT 'org',    -- org (company-wide) | personal (one member's own)
+      owner_member_id TEXT,               -- the owning member (personal scope only; NULL for org)
+      created_at  INTEGER NOT NULL
+    );
+
+    -- Terminal-native agent sessions (each a tmux shell).
+    CREATE TABLE IF NOT EXISTS term_sessions (
+      id         TEXT PRIMARY KEY,
+      agent      TEXT NOT NULL,
+      title      TEXT NOT NULL,
+      task       TEXT NOT NULL,
+      tmux       TEXT NOT NULL,
+      status     TEXT NOT NULL,           -- running | idle
+      spawned_by TEXT,                    -- member id
+      secret     TEXT,                    -- per-session bearer for the loopback agent endpoints (0d)
+      created_at INTEGER NOT NULL
+    );
+
+    -- The inbox feed: tasks · updates · approvals.
+    CREATE TABLE IF NOT EXISTS messages (
+      id          TEXT PRIMARY KEY,
+      type        TEXT NOT NULL,          -- task | update | approval
+      session_id  TEXT NOT NULL,
+      agent       TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      body        TEXT NOT NULL,
+      status      TEXT NOT NULL,          -- open | pending | approved | rejected
+      approval_id TEXT,
+      capability  TEXT,
+      args        TEXT,                   -- JSON
+      level       TEXT,                   -- head | owner
+      created_at  INTEGER NOT NULL
+    );
+
+    -- Agent→human questions (the ask-human channel). Like approvals, the blocking promise is an
+    -- in-memory waiter; status/answer derive from this row so the inbox self-heals across restarts.
+    CREATE TABLE IF NOT EXISTS questions (
+      id          TEXT PRIMARY KEY,
+      run_id      TEXT NOT NULL,           -- session id
+      tenant      TEXT NOT NULL,
+      agent       TEXT NOT NULL,
+      prompt      TEXT NOT NULL,
+      status      TEXT NOT NULL,           -- pending | answered
+      answer      TEXT,
+      answered_by TEXT,
+      created_at  INTEGER NOT NULL,
+      answered_at INTEGER
+    );
+
+    -- Approval requests routed by policy and resolved by an owner/admin.
+    CREATE TABLE IF NOT EXISTS approvals (
+      id          TEXT PRIMARY KEY,
+      run_id      TEXT NOT NULL,
+      tenant      TEXT NOT NULL,
+      level       TEXT NOT NULL,          -- head | owner
+      capability  TEXT NOT NULL,
+      args        TEXT NOT NULL,          -- JSON
+      reasoning   TEXT,
+      reason      TEXT NOT NULL,
+      status      TEXT NOT NULL,          -- pending | approved | rejected
+      resolved_by TEXT,
+      created_at  INTEGER NOT NULL
+    );
+
+    -- Automations: triggers that auto-invoke agent sessions (cron schedule or inbound webhook).
+    CREATE TABLE IF NOT EXISTS automations (
+      id              TEXT PRIMARY KEY,
+      agent_id        TEXT NOT NULL,
+      name            TEXT NOT NULL,
+      type            TEXT NOT NULL,      -- cron | webhook | composio | slack
+      schedule        TEXT,               -- 5-field cron expression (cron type)
+      secret          TEXT,               -- shared key for /hooks/<id> (webhook type)
+      task            TEXT NOT NULL,      -- task template for the spawned session
+      enabled         INTEGER NOT NULL,   -- 0 | 1
+      mode            TEXT NOT NULL DEFAULT 'interactive',  -- interactive | headless
+      created_by      TEXT,               -- member id
+      created_at      INTEGER NOT NULL,
+      last_fired_at   INTEGER,
+      last_session_id TEXT
+    );
+
+    -- Native Slack egress binding: the channel/thread a Slack-triggered session should reply into.
+    -- Written when a slack automation spawns a session; read by the agentos slack_reply tool so the
+    -- agent posts back to the SAME thread without ever being handed (or able to spoof) a channel id.
+    CREATE TABLE IF NOT EXISTS slack_threads (
+      session_id TEXT PRIMARY KEY,
+      channel    TEXT NOT NULL,
+      thread_ts  TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    -- The deliverables gallery: artifacts agents explicitly publish (a PDF/Markdown/image now;
+    -- a multi-file site/app later). Each row is a snapshot copied into <home>/artifacts/<id>/.
+    -- Carries full provenance (session + agent + source) — the SAME shape as the messages table, so
+    -- the inbox per-member visibility rule (canViewSpawn) scopes the gallery with no new logic.
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id          TEXT PRIMARY KEY,
+      session_id  TEXT NOT NULL,           -- which run produced it
+      agent       TEXT NOT NULL,           -- which agent
+      source      TEXT,                    -- member id | automation:<id> (the session's spawned_by)
+      kind        TEXT NOT NULL,           -- 'file' now; 'site'/'app' later (multi-file/interactive)
+      title       TEXT NOT NULL,
+      description TEXT,
+      filename    TEXT NOT NULL,           -- original basename / entry file (e.g. index.html)
+      rel_path    TEXT NOT NULL,           -- path under <home>/artifacts/ (<id>/<filename>)
+      mime        TEXT NOT NULL,
+      bytes       INTEGER NOT NULL,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at);
+
+    -- A queryable mirror of the audit event stream (JSONL remains the durable system of record).
+    CREATE TABLE IF NOT EXISTS audit_events (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts        INTEGER NOT NULL,
+      run_id    TEXT NOT NULL,
+      tenant    TEXT NOT NULL,
+      type      TEXT NOT NULL,
+      principal TEXT,
+      data      TEXT NOT NULL             -- JSON
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_run ON audit_events(run_id);
+
+    -- Workspace-wide settings (key→value). Holds the Company context injected into every
+    -- claude-code agent, and a home for future instance-level config.
+    CREATE TABLE IF NOT EXISTS settings (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT
+    );
+
+    -- Persistent agent memory (the SQLite backend of the memory plane). One row per memory,
+    -- namespaced by (tenant, agent_id) so an agent only ever recalls its own.
+    CREATE TABLE IF NOT EXISTS memories (
+      id         TEXT PRIMARY KEY,
+      tenant     TEXT NOT NULL,
+      agent_id   TEXT NOT NULL,          -- the AUTHOR (provenance), even for shared rows
+      content    TEXT NOT NULL,
+      tags       TEXT NOT NULL,          -- JSON string[]
+      type       TEXT,
+      importance REAL,
+      metadata   TEXT,                   -- JSON
+      created_at INTEGER NOT NULL,
+      scope      TEXT NOT NULL DEFAULT 'agent'  -- 'agent' (private to agent_id) | 'tenant' (shared tenant-wide)
+    );
+    CREATE INDEX IF NOT EXISTS idx_mem_agent ON memories(tenant, agent_id, created_at);
+
+    -- Full-text index over content+tags for ranked (bm25) recall. External-content FTS5:
+    -- the virtual table holds only the index; triggers keep it in sync with the memories table.
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+      content, tags, content='memories', content_rowid='rowid'
+    );
+    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+      INSERT INTO memories_fts(rowid, content, tags) VALUES (new.rowid, new.content, new.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content, tags) VALUES('delete', old.rowid, old.content, old.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+      INSERT INTO memories_fts(memories_fts, rowid, content, tags) VALUES('delete', old.rowid, old.content, old.tags);
+      INSERT INTO memories_fts(rowid, content, tags) VALUES (new.rowid, new.content, new.tags);
+    END;
+
+    -- Knowledge base: the shared, tenant-wide, LIVING wiki (vs. memory's private per-agent state).
+    -- One row per current page; the body also lives on disk at rel_path. Edits are non-destructive —
+    -- every version is snapshotted into kb_revisions, so any change is auditable + revertable.
+    CREATE TABLE IF NOT EXISTS kb_pages (
+      id         TEXT PRIMARY KEY,
+      tenant     TEXT NOT NULL,
+      section    TEXT NOT NULL,            -- flat folder namespace, e.g. 'engineering'
+      slug       TEXT NOT NULL,            -- url-safe; unique within (tenant, section)
+      title      TEXT NOT NULL,
+      tags       TEXT NOT NULL,            -- JSON string[]
+      body       TEXT NOT NULL,            -- current markdown (mirror of the .md file for FTS + speed)
+      rel_path   TEXT NOT NULL,            -- kb/<section>/<slug>.md
+      rev        INTEGER NOT NULL,         -- current revision number (starts at 1)
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT NOT NULL             -- member id | agent:<id> | automation:<id>
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_slug ON kb_pages(tenant, section, slug);
+
+    -- Every prior version of a page. Append-only — the rollback + audit backbone.
+    CREATE TABLE IF NOT EXISTS kb_revisions (
+      id         TEXT PRIMARY KEY,
+      page_id    TEXT NOT NULL,
+      rev        INTEGER NOT NULL,
+      title      TEXT NOT NULL,
+      tags       TEXT NOT NULL,
+      body       TEXT NOT NULL,            -- full snapshot (pages are small; cheap + simple)
+      summary    TEXT,                     -- one-line "what changed" from the writer
+      author     TEXT NOT NULL,            -- member id | agent:<id> | automation:<id>
+      created_at INTEGER NOT NULL,
+      UNIQUE(page_id, rev)
+    );
+    CREATE INDEX IF NOT EXISTS idx_kb_rev_page ON kb_revisions(page_id, rev);
+
+    -- FTS5 over title+tags+body for ranked search (mirrors memories_fts).
+    CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
+      title, tags, body, content='kb_pages', content_rowid='rowid'
+    );
+    CREATE TRIGGER IF NOT EXISTS kb_ai AFTER INSERT ON kb_pages BEGIN
+      INSERT INTO kb_fts(rowid, title, tags, body) VALUES (new.rowid, new.title, new.tags, new.body);
+    END;
+    CREATE TRIGGER IF NOT EXISTS kb_ad AFTER DELETE ON kb_pages BEGIN
+      INSERT INTO kb_fts(kb_fts, rowid, title, tags, body) VALUES('delete', old.rowid, old.title, old.tags, old.body);
+    END;
+    CREATE TRIGGER IF NOT EXISTS kb_au AFTER UPDATE ON kb_pages BEGIN
+      INSERT INTO kb_fts(kb_fts, rowid, title, tags, body) VALUES('delete', old.rowid, old.title, old.tags, old.body);
+      INSERT INTO kb_fts(rowid, title, tags, body) VALUES (new.rowid, new.title, new.tags, new.body);
+    END;
+  `);
+
+  // Idempotent column additions for the inbox feed (older DBs won't have these).
+  addColumn(db, 'messages', 'source', 'TEXT');        // provenance: member id | automation:<id>
+  addColumn(db, 'messages', 'question_id', 'TEXT');   // links a 'question' message to its row
+  addColumn(db, 'messages', 'outcome', 'TEXT');       // for 'completed' messages: success|failure|partial|unknown
+  addColumn(db, 'messages', 'dismissed_at', 'INTEGER'); // when a human dismissed it from the inbox (NULL = visible)
+
+  // Execution mode for automations (older DBs predate it — default preserves their interactive behavior).
+  addColumn(db, 'automations', 'mode', "TEXT NOT NULL DEFAULT 'interactive'");
+  addColumn(db, 'automations', 'filter', 'TEXT'); // composio: trigger slug / slack: event type|channel to match ('' = any)
+
+  // Remote-MCP transport for connectors (older DBs are all stdio: command/args/env).
+  addColumn(db, 'connectors', 'transport', "TEXT NOT NULL DEFAULT 'stdio'");
+  addColumn(db, 'connectors', 'url', "TEXT NOT NULL DEFAULT ''");
+  addColumn(db, 'connectors', 'headers', "TEXT NOT NULL DEFAULT '{}'");
+
+  // Connector ownership (older DBs predate org/personal split — all existing rows default to org,
+  // i.e. company-wide, preserving today's "shared by everyone" behavior).
+  addColumn(db, 'connectors', 'scope', "TEXT NOT NULL DEFAULT 'org'");
+  addColumn(db, 'connectors', 'owner_member_id', 'TEXT');
+
+  // Per-session bearer secret for the loopback agent endpoints (0d). Older rows have none → the
+  // server fails open for them (they predate the secret), but every new session mints one.
+  addColumn(db, 'term_sessions', 'secret', 'TEXT');
+
+  // Optional embedding for semantic recall on the (zero-dep) sqlite backend: a packed Float32
+  // vector. NULL when no embedder is configured (→ keyword-only) or the row predates one.
+  addColumn(db, 'memories', 'embedding', 'BLOB');
+
+  // Usage tracking for memory maintenance (prune the never-recalled & stale; keep what's used).
+  addColumn(db, 'memories', 'recall_count', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'memories', 'last_recalled_at', 'INTEGER');
+  // Visibility scope: 'agent' (private, the default & today's behavior) | 'tenant' (shared workspace-wide).
+  // The index must come AFTER addColumn — on an existing DB the column doesn't exist until now.
+  addColumn(db, 'memories', 'scope', "TEXT NOT NULL DEFAULT 'agent'");
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mem_scope ON memories(tenant, scope, created_at)');
+}
+
+/** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */
+function addColumn(db: Db, table: string, col: string, decl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
+}

@@ -1,0 +1,29 @@
+{
+  "id": "default@v1",
+  "description": "Demo showcase policy — exercises green/yellow/red/deny across the mock example capabilities.",
+  "defaultRisk": "yellow",
+  "approvalRouting": { "yellow": "head", "red": "owner" },
+  "rules": [
+    { "match": { "capability": "echo.*" }, "risk": "green" },
+    { "match": { "capability": "slack.post" }, "risk": "green" },
+    { "match": { "capability": "paid.*" }, "risk": "green" },
+    { "match": { "capability": "draft.*" }, "risk": "green" },
+    { "match": { "capability": "repo.read" }, "risk": "green" },
+
+    { "match": { "capability": "cms.publish" }, "risk": "yellow" },
+    { "match": { "capability": "github.openPR" }, "risk": "yellow" },
+
+    { "match": { "capability": "stripe.refund", "when": { "arg": "amountUsd", "op": "gt", "value": 1000 } }, "risk": "red" },
+    { "match": { "capability": "stripe.refund" }, "risk": "yellow" },
+
+    { "match": { "capability": "shell.exec", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "red" },
+    { "match": { "capability": "shell.exec" }, "risk": "green" },
+
+    { "match": { "capability": "connector.call", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "yellow" },
+    { "match": { "capability": "connector.call" }, "risk": "green" },
+
+    { "match": { "capability": "deploy.*" }, "risk": "red" },
+    { "match": { "capability": "*.delete" }, "risk": "red" },
+    { "match": { "capability": "prod.*" }, "risk": "deny" }
+  ]
+}

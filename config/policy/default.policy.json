@@ -1,26 +1,15 @@
 {
   "id": "default@v1",
-  "description": "Default risk policy. green = auto, yellow = head approves, red = owner approves, deny = blocked outright.",
+  "description": "What your agents may do on their own vs. what needs a human. Allow = runs immediately; Ask = pauses for an admin/owner to approve; Block = never. These cover what real agents actually do (shell + tools); add Advanced rules for finer control.",
   "defaultRisk": "yellow",
   "approvalRouting": { "yellow": "head", "red": "owner" },
   "rules": [
-    { "match": { "capability": "echo.*" }, "risk": "green" },
-    { "match": { "capability": "slack.post" }, "risk": "green" },
-    { "match": { "capability": "paid.*" }, "risk": "green" },
-    { "match": { "capability": "draft.*" }, "risk": "green" },
-    { "match": { "capability": "repo.read" }, "risk": "green" },
-
-    { "match": { "capability": "cms.publish" }, "risk": "yellow" },
-    { "match": { "capability": "github.openPR" }, "risk": "yellow" },
-
-    { "match": { "capability": "stripe.refund", "when": { "arg": "amountUsd", "op": "gt", "value": 1000 } }, "risk": "red" },
-    { "match": { "capability": "stripe.refund" }, "risk": "yellow" },
-
     { "match": { "capability": "shell.exec", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "red" },
     { "match": { "capability": "shell.exec" }, "risk": "green" },
 
-    { "match": { "capability": "deploy.*" }, "risk": "red" },
-    { "match": { "capability": "*.delete" }, "risk": "red" },
-    { "match": { "capability": "prod.*" }, "risk": "deny" }
+    { "match": { "capability": "connector.call", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "yellow" },
+    { "match": { "capability": "connector.call" }, "risk": "green" },
+
+    { "match": { "capability": "connector.connect" }, "risk": "red" }
   ]
 }
