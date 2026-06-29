@@ -44,6 +44,8 @@ import { Paths, resolvePaths } from './home';
 
 export interface AgentOSOptions {
   tenant: string;
+  /** Optional human label for the tenant (e.g. "Northwind"); defaults to `tenant`. Display only. */
+  tenantName?: string;
   policy: PolicyEngine;
   /** Durable audit dir; pass null to keep audit in-memory only (tests/demo). */
   auditDir?: string | null;
@@ -55,6 +57,8 @@ export interface AgentOSOptions {
 
 export class AgentOS {
   readonly tenant: string;
+  /** Human-facing tenant label (branding); falls back to the tenant id. */
+  readonly tenantName: string;
   readonly registry = new CapabilityRegistry();
   readonly memoryAudit = new InMemoryAuditSink();
   readonly audit: AuditSink;
@@ -94,6 +98,7 @@ export class AgentOS {
 
   constructor(opts: AgentOSOptions) {
     this.tenant = opts.tenant;
+    this.tenantName = opts.tenantName || opts.tenant;
     this.policy = opts.policy;
     this.paths = opts.paths;
     // The per-workspace DB backs everything user-facing. No paths (tests/demo) → ephemeral in-memory.
@@ -207,19 +212,25 @@ export interface RootConfig {
 export function loadAgentOS(
   configPath = 'config/agent-os.config.json',
   baseDir = process.cwd(),
-  overrides?: { tenant?: string; paths?: Paths },
+  overrides?: { tenant?: string; tenantName?: string; paths?: Paths },
 ): AgentOS {
   const cfg = readJson<RootConfig>(path.resolve(baseDir, configPath));
   const paths = overrides?.paths ?? resolvePaths(baseDir, cfg);
   const policyDoc = readJson<PolicyDocument>(paths.policyFile);
 
+  const policyEngine = new JsonPolicyEngine(policyDoc);
   const os = new AgentOS({
     tenant: overrides?.tenant ?? cfg.tenant,
-    policy: new JsonPolicyEngine(policyDoc),
+    tenantName: overrides?.tenantName ?? process.env.AGENT_OS_TENANT_NAME,
+    policy: policyEngine,
     auditDir: paths.audit,
     paths,
     memory: cfg.memory,
   });
+
+  // The never-tier rules reference governance caps by name ($moneyCapUsd / $bulkDeleteCount); resolve
+  // them live from the settings store (editable in Settings → Governance) now that `os` exists.
+  policyEngine.setThresholds(() => os.settings.governanceThresholds() as unknown as Record<string, number>);
 
   // A backend saved from Settings → Memory (DB) overrides the file default and survives restarts.
   // Build it synchronously here (no health check) so boot never blocks on a network call; a broken

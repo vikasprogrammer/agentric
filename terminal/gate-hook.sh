@@ -21,13 +21,24 @@ case "$TOOL" in
   mcp__agentos__*) exit 0 ;;
 esac
 
-# Classify the attempt into an Agent OS capability + a riskiness flag the policy routes on.
+# Classify the attempt into an Agent OS capability + two flags the policy routes on:
+#   risky       → mutation that needs human approval (yellow/red)
+#   destructive → IRREVERSIBLE op that the never-tier denies outright (drop db, delete site, rm -rf…)
+# Matching is case-INSENSITIVE (SQL/flags are written in any case): `drop database` must catch `DROP`.
+# NOTE: we only see the Bash command string and the MCP tool NAME here — not MCP call arguments, so
+# destructive SQL passed *inside* a tool like db_query/execute_php is not yet caught. That argument-aware
+# classification is the server-side enricher (governance PR #2); this hook is the first, name/command cut.
 RISKY=false
+DESTRUCTIVE=false
+shopt -s nocasematch 2>/dev/null || true
 case "$TOOL" in
   Bash)
     CAP="shell.exec"
-    case " $CMD " in
-      *stripe*|*refund*|*" rm "*|*deploy*|*prod*|*DROP*|*DELETE*|*kubectl*|*systemctl*|*shutdown*) RISKY=true ;;
+    case "$CMD" in
+      *"drop database"*|*"drop table"*|*"drop schema"*|*truncate*|*"rm -rf"*|*"rm -fr"*|*"rm -r "*|*mkfs*|*"dd if="*|*"dd of="*|*"terraform destroy"*|*"kubectl delete"*|*"git push --force"*|*"git push -f"*) DESTRUCTIVE=true ;;
+    esac
+    case "$CMD" in
+      *stripe*|*refund*|*" rm "*|*deploy*|*prod*|*drop*|*delete*|*kubectl*|*systemctl*|*shutdown*) RISKY=true ;;
     esac
     ;;
   mcp__*)
@@ -36,6 +47,10 @@ case "$TOOL" in
     # rest (get/list/search/read/…) are reads → auto-allow. Composio names tools like SLACK_SEND_MESSAGE.
     CAP="connector.call"
     UPPER=$(printf '%s' "$TOOL" | tr '[:lower:]' '[:upper:]')
+    # Irreversible by name: deleting a whole site or dropping a database → never tier.
+    case "$UPPER" in
+      *DELETE_SITE*|*DROP_DATABASE*|*DROP_TABLE*|*DROP_SCHEMA*) DESTRUCTIVE=true ;;
+    esac
     case "$UPPER" in
       *CREATE*|*SEND*|*UPDATE*|*DELETE*|*REMOVE*|*WRITE*|*POST*|*PUT*|*PATCH*|*MERGE*|*PUBLISH*|*UPLOAD*|*DEPLOY*|*PAY*|*REFUND*|*ARCHIVE*|*INVITE*|*EXECUTE*) RISKY=true ;;
     esac
@@ -48,22 +63,30 @@ case "$TOOL" in
     ;;
   *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
 esac
+shopt -u nocasematch 2>/dev/null || true
 
-resp=$(curl -s -X POST "$AOS_URL/api/gate" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" \
-  -d "$(node -e 'const[s,a,cap,t,c,r]=process.argv.slice(1);console.log(JSON.stringify({sessionId:s,agent:a,capability:cap,args:{tool:t,command:c,risky:r==="true"},reasoning:"claude PreToolUse: "+t+(c?" "+c:"")}))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$CMD" "$RISKY")")
-gid=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.gateId||"")})')
-dec=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.decision||"")})')
+payload=$(node -e 'const[s,a,cap,t,c,r,d]=process.argv.slice(1);console.log(JSON.stringify({sessionId:s,agent:a,capability:cap,args:{tool:t,command:c,risky:r==="true",destructive:d==="true"},reasoning:"claude PreToolUse: "+t+(c?" "+c:"")}))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$CMD" "$RISKY" "$DESTRUCTIVE")
 
-case "$dec" in
-  allow) exit 0 ;;
-  deny)  echo "Agent OS policy: denied." >&2; exit 2 ;;
-  pending)
-    echo "Agent OS: this action needs approval — see the inbox. Waiting…" >&2
-    while :; do
-      sleep 1
-      st=$(curl -s "$AOS_URL/api/gate/$gid" -H "x-aos-tenant: ${AOS_TENANT:-}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.status||"")})')
-      [ "$st" = "allow" ] && exit 0
-      [ "$st" = "deny" ]  && { echo "Agent OS: rejected by human." >&2; exit 2; }
-    done ;;
-  *) exit 0 ;;  # fail-open in demo; flip to exit 2 to fail-closed
-esac
+# FAIL-CLOSED classify. Retry the gate until it returns a usable decision; a transient failure (server
+# restart, network blip, the documented stale-server 401/404 window) must NEVER fall through to "allow".
+# The agent simply waits here, ungoverned action impossible, until the gate answers.
+while :; do
+  resp=$(curl -s --max-time 10 -X POST "$AOS_URL/api/gate" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" -d "$payload")
+  dec=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.decision||"")})')
+  gid=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.gateId||"")})')
+  case "$dec" in
+    allow) exit 0 ;;
+    deny)  echo "Agent OS policy: denied — this action is blocked (irreversible or not permitted)." >&2; exit 2 ;;
+    pending) break ;;
+    *) echo "Agent OS: gate unreachable — blocking this action until it responds…" >&2; sleep 2 ;;
+  esac
+done
+
+echo "Agent OS: this action needs approval — see the inbox. Waiting…" >&2
+while :; do
+  sleep 1
+  st=$(curl -s --max-time 10 "$AOS_URL/api/gate/$gid" -H "x-aos-tenant: ${AOS_TENANT:-}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.status||"")})')
+  [ "$st" = "allow" ] && exit 0
+  [ "$st" = "deny" ]  && { echo "Agent OS: rejected by human." >&2; exit 2; }
+  # any other status (pending / empty / gate momentarily unreachable) → keep waiting, never proceed
+done

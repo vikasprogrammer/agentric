@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, BookText, History as HistoryIcon } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, BookText, History as HistoryIcon, ScrollText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
@@ -10,9 +10,9 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { api, EFFORTS, PERMISSION_MODES, type StateResp, type AgentInfo, type Session, type Msg, type ConnectorsResp, type CatalogEntry, type AddConnectorReq, type Connector, type ConnectorScope, type Member, type Role, type TeamResp, type Automation, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type RiskClass, type PolicyOp, type DirListing, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type IntegrationsResp, type SlackStatus, type ConnectionsResp, type IntegrationsOverview, type Effort, type PermissionMode, type RuntimeTuning } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type StateResp, type AgentInfo, type Session, type Msg, type ConnectorsResp, type CatalogEntry, type AddConnectorReq, type Connector, type ConnectorScope, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type RiskClass, type PolicyOp, type DirListing, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type ConnectionsResp, type IntegrationsOverview, type Effort, type PermissionMode, type RuntimeTuning } from '@/lib/api'
 
-type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'agent'
+type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent'
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -201,9 +201,7 @@ function Console({ me }: { me: Member }) {
           <nav className="space-y-1">
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} onClick={() => nav('inbox')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} onClick={() => nav('agents')} />
-            <NavItem icon={<TerminalSquare className="h-4 w-4" />} label="Sessions" active={route === 'sessions'} badge={runningSessions || undefined} onClick={() => nav('sessions')} />
             <NavItem icon={<Package className="h-4 w-4" />} label="Artifacts" active={route === 'artifacts'} onClick={() => nav('artifacts')} />
-            <NavItem icon={<BookText className="h-4 w-4" />} label="Knowledge" active={route === 'kb'} onClick={() => nav('kb')} />
           </nav>
         </div>
 
@@ -211,7 +209,16 @@ function Console({ me }: { me: Member }) {
         <div className="min-h-0 flex-1 overflow-y-auto px-4">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Sessions</span>
-            <Button size="icon" variant="ghost" className="h-5 w-5 text-emerald-600" onClick={() => nav('agents')} title="spawn an agent"><Plus className="h-3.5 w-3.5" /></Button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => { setSelected(null); nav('sessions') }}
+                className={`flex items-center gap-1 text-[11px] uppercase tracking-wider hover:text-foreground ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`}
+                title="all sessions"
+              >
+                All{runningSessions ? <span className="rounded-full bg-emerald-500/15 px-1 text-[10px] font-medium text-emerald-600">{runningSessions}</span> : null}
+              </button>
+              <Button size="icon" variant="ghost" className="h-5 w-5 text-emerald-600" onClick={() => nav('agents')} title="spawn an agent"><Plus className="h-3.5 w-3.5" /></Button>
+            </div>
           </div>
           {mySessions.length === 0 && (
             <div className="text-xs text-muted-foreground">
@@ -251,6 +258,7 @@ function Console({ me }: { me: Member }) {
           {manageOpen && (
             <nav className="mb-1 space-y-1">
               <NavItem icon={<Zap className="h-4 w-4" />} label="Automations" active={route === 'automations'} onClick={() => nav('automations')} />
+              <NavItem icon={<BookText className="h-4 w-4" />} label="Knowledge" active={route === 'kb'} onClick={() => nav('kb')} />
               <NavItem icon={<Brain className="h-4 w-4" />} label="Memory" active={route === 'memory'} onClick={() => nav('memory')} />
               {(me.role === 'owner' || me.role === 'admin') && (
                 <NavItem icon={<Sparkles className="h-4 w-4" />} label="Skills" active={route === 'skills'} onClick={() => nav('skills')} />
@@ -259,6 +267,9 @@ function Console({ me }: { me: Member }) {
               <NavItem icon={<Users className="h-4 w-4" />} label="Team" active={route === 'team'} onClick={() => nav('team')} />
               {(me.role === 'owner' || me.role === 'admin') && (
                 <NavItem icon={<FolderTree className="h-4 w-4" />} label="Files" active={route === 'files'} onClick={() => nav('files')} />
+              )}
+              {(me.role === 'owner' || me.role === 'admin') && (
+                <NavItem icon={<ScrollText className="h-4 w-4" />} label="Audit" active={route === 'audit'} onClick={() => nav('audit')} />
               )}
               {(me.role === 'owner' || me.role === 'admin') && (
                 <NavItem icon={<Building2 className="h-4 w-4" />} label="Settings" active={route === 'settings'} onClick={() => nav('settings')} />
@@ -288,11 +299,11 @@ function Console({ me }: { me: Member }) {
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <h1 className="text-lg font-semibold">
-            {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'settings' ? 'Company settings' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+            {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
           </h1>
           {state && (
             <span className="text-xs text-muted-foreground">
-              tenant={state.tenant} · policy={state.policy}
+              tenant={state.tenantName || state.tenant} · policy={state.policy}
               {state.home ? ' · home=' + state.home : ''}
             </span>
           )}
@@ -311,6 +322,7 @@ function Console({ me }: { me: Member }) {
           {route === 'skills' && <SkillsPage />}
           {route === 'files' && <FilesPage />}
           {route === 'artifacts' && <ArtifactsPage me={me} initialId={artifactFocus} />}
+          {route === 'audit' && <AuditPage />}
           {route === 'settings' && <SettingsPage me={me} />}
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} />}
         </div>
@@ -333,8 +345,10 @@ function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; lab
 }
 
 // ── Agents ─────────────────────────────────────────────────────────────────────
-/** The agent catalog: one card per agent — give it a task and Run to spawn a session,
- *  or (owner/admin) edit its CLAUDE.md. This is where spawning lives now. */
+/** Spawning, ChatGPT-style: one big centered composer. Pick an agent from the dropdown,
+ *  type a task, hit Run to spawn a live session. Owner/admin can tune the selected agent's
+ *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
+ *  just scoped to the chosen agent instead of a grid of cards. */
 function AgentsPage({
   me, agents, run, onEdit, onNew, onDelete,
 }: {
@@ -346,107 +360,112 @@ function AgentsPage({
   onDelete: (id: string) => void
 }) {
   const canEdit = me.role === 'owner' || me.role === 'admin'
-  return (
-    <div className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          Your agents. Give one a task and hit Run to spawn a session — it opens in a live terminal and every
-          effect it has still passes the gate. Owners and admins can edit an agent's{' '}
-          <span className="font-mono text-xs">CLAUDE.md</span> (its system prompt).
-        </p>
-        {canEdit && (
-          <Button size="sm" className="shrink-0 gap-1" onClick={onNew}>
-            <Plus className="h-4 w-4" /> New agent
-          </Button>
-        )}
-      </div>
-      {agents.length === 0 ? (
-        <div className="text-sm text-muted-foreground">
-          {canEdit ? 'No agents yet — create one to get started.' : 'No agents assigned to you.'}
-        </div>
-      ) : (
-        <div className="grid gap-3 lg:grid-cols-2">
-          {agents.map((a) => (
-            <AgentCard key={a.id} agent={a} canEdit={canEdit} run={run} onEdit={onEdit} onDelete={onDelete} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function AgentCard({
-  agent, canEdit, run, onEdit, onDelete,
-}: {
-  agent: AgentInfo
-  canEdit: boolean
-  run: (agentId: string, task: string) => Promise<string | null>
-  onEdit: (id: string) => void
-  onDelete: (id: string) => void
-}) {
-  const [task, setTask] = useState(exampleTask(agent))
+  const [agentId, setAgentId] = useState('')
+  const [task, setTask] = useState('')
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
+
+  // Keep the selection valid as the agent list loads/changes; default to the first agent.
+  useEffect(() => {
+    if (agents.length === 0) { if (agentId) setAgentId(''); return }
+    if (!agents.some((a) => a.id === agentId)) setAgentId(agents[0].id)
+  }, [agents, agentId])
+
+  const agent = agents.find((a) => a.id === agentId)
+  // Switching agents prefills its first starter prompt and clears any stale hint.
+  useEffect(() => { setTask(exampleTask(agent)); setHint('') }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const spawn = async () => {
+    if (!agent || !task.trim()) return
     setBusy(true); setHint('spawning…')
     const err = await run(agent.id, task)
     setBusy(false)
     setHint(err ? '⚠ ' + err : '')
   }
+
+  if (agents.length === 0) {
+    return (
+      <div className="flex min-h-full flex-col items-center justify-center gap-3 text-center">
+        <p className="text-sm text-muted-foreground">{canEdit ? 'No agents yet — create one to get started.' : 'No agents assigned to you.'}</p>
+        {canEdit && <Button size="sm" className="gap-1" onClick={onNew}><Plus className="h-4 w-4" /> New agent</Button>}
+      </div>
+    )
+  }
+
   return (
-    <Card>
-      <CardContent className="flex h-full flex-col gap-2 p-4">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-sm font-medium">
-              {agent.id}
-              <RuntimeBadge runtime={agent.runtime} />
+    <div className="flex min-h-full flex-col items-center justify-center">
+      <div className="w-full max-w-2xl space-y-5">
+        <h1 className="text-center text-xl font-semibold tracking-tight">What should an agent do?</h1>
+
+        <Card className="shadow-sm">
+          <CardContent className="flex flex-col gap-3 p-4">
+            {/* agent picker + per-agent actions */}
+            <div className="flex items-center gap-2">
+              <Select value={agentId} onValueChange={(v) => v && setAgentId(v)}>
+                <SelectTrigger className="h-9 min-w-0 flex-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {agents.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      <span className="flex items-center gap-1.5">{a.id}<RuntimeBadge runtime={a.runtime} /></span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {canEdit && agent?.runtime === 'claude-code' && (
+                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={() => onEdit(agent.id)} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
+                  <SlidersHorizontal className="h-4 w-4" />
+                </Button>
+              )}
+              {canEdit && agent?.deletable && (
+                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-destructive" onClick={() => onDelete(agent.id)} title="delete agent (removes its folder)">
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
+              {canEdit && (
+                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={onNew} title="new agent">
+                  <Plus className="h-4 w-4" />
+                </Button>
+              )}
             </div>
-            {agent.description && <div className="mt-0.5 text-xs text-muted-foreground">{agent.description}</div>}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {canEdit && agent.runtime === 'claude-code' && (
-              <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs text-muted-foreground" onClick={() => onEdit(agent.id)} title="edit CLAUDE.md">
-                <FileText className="h-3.5 w-3.5" /> CLAUDE.md
-              </Button>
+
+            {agent?.description && <p className="text-xs text-muted-foreground">{agent.description}</p>}
+
+            {agent?.examplePrompts && agent.examplePrompts.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {agent.examplePrompts.map((p, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setTask(p)}
+                    title={p}
+                    className="max-w-full truncate rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
             )}
-            {canEdit && agent.deletable && (
-              <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => onDelete(agent.id)} title="delete agent (removes its folder)">
-                <Trash2 className="h-3.5 w-3.5" />
+
+            <Textarea
+              value={task}
+              onChange={(e) => setTask(e.target.value)}
+              onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') spawn() }}
+              className="min-h-[140px] text-sm"
+              placeholder="Describe the task…  (⌘/Ctrl+Enter to Run)"
+            />
+
+            <div className="flex items-center gap-3">
+              <Button onClick={spawn} disabled={busy || !task.trim()}>
+                <Play className="mr-1 h-4 w-4" /> Run
               </Button>
-            )}
-          </div>
-        </div>
-        {agent.examplePrompts && agent.examplePrompts.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {agent.examplePrompts.map((p, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => setTask(p)}
-                title={p}
-                className="max-w-full truncate rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-        )}
-        <Textarea
-          value={task}
-          onChange={(e) => setTask(e.target.value)}
-          onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') spawn() }}
-          className="min-h-[60px] text-sm"
-          placeholder="Describe the task…"
-        />
-        <div className="mt-auto flex items-center gap-3">
-          <Button size="sm" onClick={spawn} disabled={busy || !task.trim()}>
-            <Play className="mr-1 h-4 w-4" /> Run
-          </Button>
-          {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
-        </div>
-      </CardContent>
-    </Card>
+              {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            </div>
+          </CardContent>
+        </Card>
+
+        <p className="text-center text-xs text-muted-foreground">Run spawns a live session — every effect still passes the gate.</p>
+      </div>
+    </div>
   )
 }
 
@@ -893,7 +912,10 @@ function MessageCard({ m, me, onOpen, onOpenArtifact, unread }: { m: Msg; me: Me
 const TYPE_ICON: Record<string, string> = { slack: '💬', github: '🐙', gdrive: '📁', gmail: '✉️', composio: '🧩', custom: '🔌', 'custom-remote': '🌐' }
 
 /** One connector row — reused across the Company / My / team-members sections. */
-function ConnectorCard({ c, busy, onToggle, onRemove }: { c: Connector; busy: string; onToggle: (id: string, enabled: boolean) => void; onRemove: (id: string) => void }) {
+function ConnectorCard({ c, me, busy, onToggle, onRemove, onShare }: { c: Connector; me?: Member | null; busy: string; onToggle: (id: string, enabled: boolean) => void; onRemove: (id: string) => void; onShare?: (id: string, shared: boolean) => void }) {
+  const isAdmin = me?.role === 'owner' || me?.role === 'admin'
+  // The owner of a personal connector (or an admin) may share it with the whole team.
+  const canShare = c.scope === 'personal' && !!onShare && (isAdmin || c.ownerMemberId === me?.id)
   return (
     <Card>
       <CardContent className="flex items-center justify-between gap-4 p-4">
@@ -904,6 +926,9 @@ function ConnectorCard({ c, busy, onToggle, onRemove }: { c: Connector; busy: st
             <Badge variant={c.enabled ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px]">
               {c.enabled ? 'enabled' : 'disabled'}
             </Badge>
+            {c.scope === 'personal' && c.shared && (
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-emerald-600" title="Shared with the whole team — runs as you">shared with team</Badge>
+            )}
           </div>
           <div className="mt-0.5 truncate text-xs text-muted-foreground">{c.description}</div>
           <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
@@ -913,6 +938,11 @@ function ConnectorCard({ c, busy, onToggle, onRemove }: { c: Connector; busy: st
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {canShare && (
+            <Button size="sm" variant="outline" disabled={busy === c.id} onClick={() => onShare!(c.id, !c.shared)} title={c.shared ? 'Stop sharing with the team' : 'Share with the whole team (agents act as you)'}>
+              {c.shared ? 'Unshare' : 'Share with team'}
+            </Button>
+          )}
           <Button size="sm" variant="outline" disabled={busy === c.id} onClick={() => onToggle(c.id, !c.enabled)}>
             {c.enabled ? 'Disable' : 'Enable'}
           </Button>
@@ -1018,7 +1048,7 @@ function CompanySection({ me, custom, catalog, cardProps, onPickCatalog }: {
   me: Member | null
   custom: Connector[]
   catalog: CatalogEntry[]
-  cardProps: { busy: string; onToggle: (id: string, enabled: boolean) => void; onRemove: (id: string) => void }
+  cardProps: { me: Member | null; busy: string; onToggle: (id: string, enabled: boolean) => void; onRemove: (id: string) => void; onShare: (id: string, shared: boolean) => void }
   onPickCatalog: (t: CatalogEntry) => void
 }) {
   const isAdmin = me?.role === 'owner' || me?.role === 'admin'
@@ -1080,6 +1110,22 @@ function CompanySection({ me, custom, catalog, cardProps, onPickCatalog }: {
           {ov?.slack.connected
             ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">connected{ov.slack.botUserId ? ` · ${ov.slack.botUserId}` : ''}</Badge>
             : ov?.slack.configured
+              ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-amber-600">configured · not connected</Badge>
+              : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
+          {isAdmin
+            ? <a href="#/settings" className="text-[11px] text-muted-foreground underline hover:text-foreground">set up in Settings → Integrations</a>
+            : <span className="text-[11px] text-muted-foreground">managed by an admin</span>}
+        </div>
+      </div>
+
+      {/* Native Discord */}
+      <div>
+        <div className="mb-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">Discord (native)</div>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-medium">Discord bot</span>
+          {ov?.discord?.connected
+            ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">connected{ov.discord.botUserId ? ` · ${ov.discord.botUserId}` : ''}</Badge>
+            : ov?.discord?.configured
               ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-amber-600">configured · not connected</Badge>
               : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
           {isAdmin
@@ -1194,12 +1240,18 @@ function ConnectorsPage({ me }: { me: Member | null }) {
     await load()
     setBusy('')
   }
+  const share = async (id: string, shared: boolean) => {
+    setBusy(id)
+    await api.shareConnector(id, shared)
+    await load()
+    setBusy('')
+  }
 
   const conns = data?.connectors ?? []
   // The only connector ROWS are bespoke custom MCP servers (the escape hatch); Composio apps + native
   // Slack are surfaced live inside <CompanySection/> and <MyConnections/>.
   const custom = conns.filter((c) => c.type === 'custom' || c.type === 'custom-remote')
-  const cardProps = { busy, onToggle: toggle, onRemove: remove }
+  const cardProps = { me, busy, onToggle: toggle, onRemove: remove, onShare: share }
 
   return (
     <div className="max-w-4xl space-y-6">
@@ -1814,6 +1866,102 @@ function SlackSetupGuide() {
   )
 }
 
+// Discord's analogue of the Slack setup guide. Discord has no app manifest deep-link, so it's a short
+// portal walkthrough: create the app, enable the MESSAGE CONTENT privileged intent, copy the bot token,
+// and invite the bot with the right scopes. The server then dials out over the Gateway — no public URL.
+const DISCORD_BOT_PERMISSIONS = '274877991936' // View Channels + Send Messages + Read Message History
+function DiscordSetupGuide() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-md border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-muted/40"
+      >
+        {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+        Setup steps — create the Discord bot (~3 min)
+      </button>
+      {open && (
+        <div className="space-y-3 border-t px-4 py-3 text-xs text-muted-foreground">
+          <ol className="list-decimal space-y-2 pl-4">
+            <li>
+              <strong className="text-foreground">Create the application.</strong> Open the
+              <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer" className="mx-1 font-medium text-foreground underline">Discord Developer Portal</a>
+              → <strong>New Application</strong> → name it "Agent OS".
+            </li>
+            <li><strong>Bot</strong> tab → <strong>Reset Token</strong> → copy it into <strong>Bot token</strong> below.</li>
+            <li>
+              On the same <strong>Bot</strong> tab, under <strong>Privileged Gateway Intents</strong>, turn ON
+              <strong> MESSAGE CONTENT INTENT</strong> (and Server Members if you'll map members later), then save. Without it the
+              bot receives empty message text.
+            </li>
+            <li>
+              <strong>Invite the bot</strong> to your server: OAuth2 → URL Generator → scopes <code className="text-[11px]">bot</code>,
+              permissions <em>View Channels · Send Messages · Read Message History</em> — or use this link template (swap in your
+              application id):
+              <div className="mt-2"><CopyBlock text={`https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permissions=${DISCORD_BOT_PERMISSIONS}`} label="Copy invite URL" /></div>
+            </li>
+            <li><strong>Save</strong> below. The status badge flips to <strong className="text-emerald-600">connected</strong> within a second or two. Then add a <strong>Discord message</strong> automation on the Automations page.</li>
+          </ol>
+          <p className="border-t pt-2">
+            The bot connects over Discord's <strong>Gateway</strong> (an outbound WebSocket) and routes <code className="text-[11px]">mention</code> +
+            <code className="text-[11px]"> direct_message</code> events — no request URL or public endpoint needed; the server dials out to Discord.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const PROVIDER_META: Record<IdentityProvider, { label: string; placeholder: string }> = {
+  slack: { label: 'Slack user ID', placeholder: 'U0123ABCD' },
+  discord: { label: 'Discord user ID', placeholder: '123456789012345678' },
+  email: { label: 'Alt email', placeholder: 'name@other.com' },
+  github: { label: 'GitHub login', placeholder: 'octocat' },
+}
+
+// Per-member identity map editor: the external account ids (Slack/Discord/email/github) that let a chat
+// trigger run AS this member. One handle per provider; saved on blur (empty clears it).
+function IdentityEditor({ member, identities, onChange }: { member: Member; identities: MemberIdentity[]; onChange: () => void }) {
+  const current = (p: IdentityProvider) => identities.find((i) => i.provider === p)?.externalId ?? ''
+  const [vals, setVals] = useState<Record<string, string>>(() => Object.fromEntries(IDENTITY_PROVIDERS.map((p) => [p, current(p)])))
+  const [busy, setBusy] = useState('')
+  useEffect(() => { setVals(Object.fromEntries(IDENTITY_PROVIDERS.map((p) => [p, current(p)]))) }, [identities]) // eslint-disable-line react-hooks/exhaustive-deps
+  const save = async (p: IdentityProvider) => {
+    const v = (vals[p] ?? '').trim()
+    if (v === current(p)) return // no change → skip the round-trip
+    setBusy(p)
+    await api.setIdentity(member.id, p, v)
+    setBusy('')
+    onChange()
+  }
+  return (
+    <div className="mt-2 rounded-md border bg-muted/30 p-3">
+      <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Chat identities — run-as for Slack / Discord triggers</div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {IDENTITY_PROVIDERS.map((p) => (
+          <Field key={p} label={PROVIDER_META[p].label}>
+            <Input
+              value={vals[p] ?? ''}
+              onChange={(e) => setVals((s) => ({ ...s, [p]: e.target.value }))}
+              onBlur={() => save(p)}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+              placeholder={PROVIDER_META[p].placeholder}
+              className="font-mono text-xs"
+              disabled={busy === p}
+            />
+          </Field>
+        ))}
+      </div>
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        When a Slack/Discord message triggers an automation, the OS runs it <strong>as the member whose handle matches the sender</strong>
+        {' '}— their connectors + inbox. Slack also falls back to matching the sender's profile email.
+      </p>
+    </div>
+  )
+}
+
 function TeamPage({ me }: { me: Member }) {
   const [data, setData] = useState<TeamResp | null>(null)
   const [links, setLinks] = useState<Record<string, string>>({})
@@ -1821,6 +1969,7 @@ function TeamPage({ me }: { me: Member }) {
   const [role, setRole] = useState<Role>('member')
   const [inviteLink, setInviteLink] = useState('')
   const [hint, setHint] = useState('')
+  const [identOpen, setIdentOpen] = useState<Record<string, boolean>>({})
 
   const load = () => api.team().then(setData)
   useEffect(() => { load() }, [])
@@ -1895,6 +2044,9 @@ function TeamPage({ me }: { me: Member }) {
                     </Select>
                   )}
                   {isAdmin && (
+                    <Button size="sm" variant="outline" onClick={() => setIdentOpen((p) => ({ ...p, [m.id]: !p[m.id] }))}>Chat IDs</Button>
+                  )}
+                  {isAdmin && (
                     <Button size="sm" variant="outline" onClick={() => loginLink(m.id)}>Login link</Button>
                   )}
                   {isOwner && m.id !== me.id && (
@@ -1903,6 +2055,11 @@ function TeamPage({ me }: { me: Member }) {
                     </Button>
                   )}
                 </div>
+                {isAdmin && identOpen[m.id] && (
+                  <div className="w-full">
+                    <IdentityEditor member={m} identities={data.identities?.[m.id] ?? []} onChange={load} />
+                  </div>
+                )}
                 {links[m.id] && <div className="w-full"><CopyLink link={links[m.id]} /></div>}
               </CardContent>
             </Card>
@@ -1978,7 +2135,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
   // create form
   const [name, setName] = useState('')
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
-  const [type, setType] = useState<'cron' | 'webhook' | 'composio' | 'slack'>('cron')
+  const [type, setType] = useState<'cron' | 'webhook' | 'composio' | 'slack' | 'discord'>('cron')
   const [mode, setMode] = useState<'interactive' | 'headless'>('headless')
   const [schedule, setSchedule] = useState('*/30 * * * *')
   const [filter, setFilter] = useState('')
@@ -1991,7 +2148,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
 
   const create = async () => {
     setHint('')
-    const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' ? filter : undefined, task })
+    const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task })
     if (r.error) return setHint('⚠ ' + r.error)
     setName(''); setTask('')
     load()
@@ -2014,8 +2171,8 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
     <div className="max-w-4xl space-y-6">
       <p className="text-sm text-muted-foreground">
         Automations run agents without you: on a <strong>cron schedule</strong>, when an external service hits a
-        <strong> webhook</strong>, on a <strong>Composio event</strong>, or on a <strong>Slack message</strong> (the
-        company Slack app @-mentioned or DMed → run an agent, as the member who sent it). Each firing spawns a normal
+        <strong> webhook</strong>, on a <strong>Composio event</strong>, or on a <strong>Slack</strong> / <strong>Discord
+        message</strong> (the company bot @-mentioned or DMed → run an agent, as the member who sent it). Each firing spawns a normal
         session — its task lands in the Inbox and any risky action still waits for approval.
       </p>
 
@@ -2037,7 +2194,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     {a.agentId}
                     {a.type === 'cron' && <span className="ml-2 font-mono">{a.schedule}</span>}
-                    {(a.type === 'composio' || a.type === 'slack') && <span className="ml-2 font-mono">{a.filter || 'any event'}</span>}
+                    {(a.type === 'composio' || a.type === 'slack' || a.type === 'discord') && <span className="ml-2 font-mono">{a.filter || 'any event'}</span>}
                     {a.lastFiredAt ? <span className="ml-2">last fired {new Date(a.lastFiredAt).toLocaleString()}</span> : <span className="ml-2">never fired</span>}
                   </div>
                   {a.type === 'cron' && a.mode === 'interactive' && (
@@ -2095,12 +2252,13 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                   </Select>
                 </Field>
                 <Field label="Trigger">
-                  <Select value={type} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack')}>
+                  <Select value={type} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord')}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="cron">Schedule (cron)</SelectItem>
                       <SelectItem value="webhook">Webhook</SelectItem>
                       <SelectItem value="slack">Slack message (native)</SelectItem>
+                      <SelectItem value="discord">Discord message (native)</SelectItem>
                       <SelectItem value="composio">Composio event</SelectItem>
                     </SelectContent>
                   </Select>
@@ -2125,6 +2283,10 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                 ) : type === 'slack' ? (
                   <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Needs Slack tokens in Settings → Integrations.">
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="app_mention  ·  or a channel id  (blank = any)" />
+                  </Field>
+                ) : type === 'discord' ? (
+                  <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a channel id. Blank = any Discord message the bot receives. Needs a bot token in Settings → Integrations.">
+                    <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="mention  ·  or a channel id  (blank = any)" />
                   </Field>
                 ) : (
                   <Field label="Trigger filter" help="Composio trigger slug to match — e.g. SLACK_DIRECT_MESSAGE_RECEIVED. Blank = any Composio event. Needs a webhook secret in Settings → Integrations.">
@@ -2990,8 +3152,68 @@ function DreamingSettings({ me }: { me: Member }) {
   )
 }
 
+function AuditPage() {
+  const [events, setEvents] = useState<AuditEvent[]>([])
+  const [types, setTypes] = useState<string[]>([])
+  const [type, setType] = useState('')
+  const [session, setSession] = useState('')
+  const [principal, setPrincipal] = useState('')
+  const [loading, setLoading] = useState(false)
+  const load = (over: { type?: string } = {}) => {
+    setLoading(true)
+    api.audit({ type: over.type ?? type, session: session.trim(), principal: principal.trim(), limit: 300 })
+      .then((r) => { if (!r.error) { setEvents(r.events ?? []); if (r.types?.length) setTypes(r.types) } })
+      .finally(() => setLoading(false))
+  }
+  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="max-w-5xl space-y-4">
+      <p className="text-sm text-muted-foreground">
+        The append-only <strong>audit trail</strong> — every gateway/gate decision, approval, and console mutation.
+        The per-run JSONL is the durable system of record; this is its queryable mirror (owner/admin only).
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <Field label="Type">
+          <Select value={type || '__all'} onValueChange={(v) => { const t = !v || v === '__all' ? '' : v; setType(t); load({ type: t }) }}>
+            <SelectTrigger className="h-8 w-56"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all">All types</SelectItem>
+              {types.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="Session"><Input value={session} onChange={(e) => setSession(e.target.value)} placeholder="session id" className="h-8 w-36 font-mono text-xs" /></Field>
+        <Field label="Principal"><Input value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="email / agent / system" className="h-8 w-48 font-mono text-xs" /></Field>
+        <Button size="sm" variant="outline" onClick={() => load()} disabled={loading}>{loading ? 'Loading…' : 'Apply'}</Button>
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          {events.length === 0 ? (
+            <div className="p-6 text-sm text-muted-foreground">{loading ? 'Loading…' : 'No matching audit events.'}</div>
+          ) : (
+            <div className="divide-y">
+              {events.map((e) => (
+                <div key={e.id} className="flex items-start gap-3 px-3 py-2 text-xs">
+                  <span className="w-36 shrink-0 text-muted-foreground">{new Date(e.ts).toLocaleString()}</span>
+                  <Badge variant="outline" className="shrink-0 px-1.5 py-0 font-mono text-[10px]">{e.type}</Badge>
+                  <span className="w-40 shrink-0 truncate font-mono text-[11px] text-muted-foreground" title={e.principal}>{e.principal || '—'}</span>
+                  <span className="w-20 shrink-0 truncate font-mono text-[11px] text-muted-foreground" title={e.runId}>{e.runId === '-' ? '' : e.runId}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={JSON.stringify(e.data)}>{JSON.stringify(e.data)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+      <p className="text-[11px] text-muted-foreground">Showing up to 300 most-recent events{events.length ? ` · ${events.length} shown` : ''}.</p>
+    </div>
+  )
+}
+
 function SettingsPage({ me }: { me: Member }) {
-  const [tab, setTab] = useState<'company' | 'runtime' | 'integrations' | 'memory' | 'dreaming' | 'policy'>('company')
+  const [tab, setTab] = useState<'company' | 'runtime' | 'integrations' | 'memory' | 'dreaming' | 'policy' | 'governance'>('company')
   if (me.role !== 'owner' && me.role !== 'admin') return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
   return (
     <div className="max-w-3xl space-y-4">
@@ -3001,6 +3223,7 @@ function SettingsPage({ me }: { me: Member }) {
         <TabButton on={tab === 'integrations'} onClick={() => setTab('integrations')}>Integrations</TabButton>
         <TabButton on={tab === 'memory'} onClick={() => setTab('memory')}>Memory</TabButton>
         <TabButton on={tab === 'dreaming'} onClick={() => setTab('dreaming')}>Self-learning</TabButton>
+        <TabButton on={tab === 'governance'} onClick={() => setTab('governance')}>Governance</TabButton>
         <TabButton on={tab === 'policy'} onClick={() => setTab('policy')}>Policy</TabButton>
       </div>
       {tab === 'company' ? <CompanySettings me={me} />
@@ -3008,8 +3231,67 @@ function SettingsPage({ me }: { me: Member }) {
         : tab === 'integrations' ? <IntegrationsSettings me={me} />
         : tab === 'memory' ? <MemorySettings me={me} />
         : tab === 'dreaming' ? <DreamingSettings me={me} />
+        : tab === 'governance' ? <GovernanceSettings me={me} />
         : <PolicyEditor me={me} />}
     </div>
+  )
+}
+
+/** Settings → Governance — the numeric caps the policy's "never" tier enforces. A single payment at or
+ *  below the money cap, or a delete of at most the bulk count, can still be approved; anything above is
+ *  refused outright (no approver can override). Editing these retunes the deny rules live — no restart. */
+function GovernanceSettings({ me }: { me: Member }) {
+  const [t, setT] = useState<{ moneyCapUsd: number; bulkDeleteCount: number }>({ moneyCapUsd: 500, bulkDeleteCount: 25 })
+  const [saved, setSaved] = useState(t)
+  const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const canEdit = me.role === 'owner' || me.role === 'admin'
+
+  useEffect(() => {
+    api.governance().then((r) => {
+      if (r.error) return
+      const v = { moneyCapUsd: r.moneyCapUsd, bulkDeleteCount: r.bulkDeleteCount }
+      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
+    }).catch(() => {})
+  }, [])
+
+  const dirty = JSON.stringify(t) !== JSON.stringify(saved)
+  const save = async () => {
+    setBusy(true); setHint('')
+    const r = await api.saveGovernance(t)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    const v = { moneyCapUsd: r.moneyCapUsd, bulkDeleteCount: r.bulkDeleteCount }
+    setT(v); setSaved(v); setHint('saved — applies to the policy immediately'); setTimeout(() => setHint(''), 3000)
+  }
+
+  return (
+    <Card>
+      <CardContent className="space-y-4 p-4">
+        <p className="text-sm text-muted-foreground">
+          The caps the policy's <strong>never</strong> tier enforces. At or below the limit an action can still be{' '}
+          <em>approved</em> by a human; <strong>above</strong> it the action is <strong>refused outright</strong> — no approver,
+          attended or not, can override. These feed the deny rules as <span className="font-mono text-xs">$moneyCapUsd</span> /{' '}
+          <span className="font-mono text-xs">$bulkDeleteCount</span> and apply live.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Money cap (USD)" help="A single payment/refund above this is never allowed.">
+            <Input type="number" min={0} value={t.moneyCapUsd}
+              onChange={(e) => setT({ ...t, moneyCapUsd: Number(e.target.value) })} disabled={!canEdit} />
+          </Field>
+          <Field label="Bulk-delete cap (items)" help="A delete of more than this many items is never allowed.">
+            <Input type="number" min={0} value={t.bulkDeleteCount}
+              onChange={(e) => setT({ ...t, bulkDeleteCount: Number(e.target.value) })} disabled={!canEdit} />
+          </Field>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save caps' : 'Saved'}</Button>
+          {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+          {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -3399,23 +3681,31 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [webhook, setWebhook] = useState<{ set: boolean }>({ set: false })
   const [slack, setSlack] = useState<IntegrationsResp['slack']>({ appToken: false, botToken: false, configured: false })
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
+  const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
+  const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
   const [key, setKey] = useState('')
   const [wh, setWh] = useState('')
   const [appTok, setAppTok] = useState('')
   const [botTok, setBotTok] = useState('')
+  const [discordTok, setDiscordTok] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
   // Defensive defaults so an older backend (one that predates a field) never white-screens the page.
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
+  const DISCORD_DEFAULT = { botToken: false, configured: false }
   const apply = (r: IntegrationsResp) => {
     if (r.composio) setComposio(r.composio)
     if (r.webhook) setWebhook(r.webhook)
     setSlack(r.slack ?? SLACK_DEFAULT)
+    setDiscord(r.discord ?? DISCORD_DEFAULT)
     setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
   }
-  const loadStatus = () => api.slackStatus().then((s) => { if (s && !s.error) setSlackState(s) }).catch(() => {})
+  const loadStatus = () => {
+    api.slackStatus().then((s) => { if (s && !s.error) setSlackState(s) }).catch(() => {})
+    api.discordStatus().then((s) => { if (s && !s.error) setDiscordState(s) }).catch(() => {})
+  }
   useEffect(() => {
     api.integrations().then((r) => {
       if (r.error) return setHint('⚠ ' + r.error)
@@ -3424,16 +3714,16 @@ function IntegrationsSettings({ me }: { me: Member }) {
     loadStatus()
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
-    // The Socket-Mode connection re-dials on the server when tokens change — poll the new state.
-    if (body.slackAppToken !== undefined || body.slackBotToken !== undefined) setTimeout(loadStatus, 1200)
+    // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll the new state.
+    if (body.slackAppToken !== undefined || body.slackBotToken !== undefined || body.discordBotToken !== undefined) setTimeout(loadStatus, 1200)
   }
 
   if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
@@ -3540,6 +3830,47 @@ function IntegrationsSettings({ me }: { me: Member }) {
             >Save</Button>
             {(slack.appToken || slack.botToken) && (
               <Button variant="ghost" onClick={() => save({ slackAppToken: '', slackBotToken: '' }, 'removed')} disabled={busy}>Remove</Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              Discord (native, Gateway)
+              {discordState && (discordState.connected
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">connected{discordState.botUserId ? ` · ${discordState.botUserId}` : ''}</Badge>
+                : discord.configured
+                  ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-amber-600">configured · not connected</Badge>
+                  : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>)}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              One company Discord bot, configured once and shared across the workspace — no public URL needed (the server
+              dials out to Discord over the Gateway). When the bot is @-mentioned or DMed, matching <strong>Discord</strong>
+              automations run. <span className="text-foreground">Note:</span> Discord can't expose a user's email, so triggered
+              runs currently act as the <strong>company identity</strong> (per-member run-as lands with the identity map).
+            </p>
+            {discordState?.lastError && <p className="mt-1 font-mono text-[11px] text-destructive">last error: {discordState.lastError}</p>}
+          </div>
+          <DiscordSetupGuide />
+          <Field label="Bot token" help="Discord Developer Portal → your app → Bot → Reset/Copy Token. Enable the MESSAGE CONTENT privileged intent on the same page.">
+            <Input
+              type="password"
+              value={discordTok}
+              onChange={(e) => setDiscordTok(e.target.value)}
+              placeholder={discord.botToken ? '•••• (saved) — type a new token to replace' : 'bot token (MTI…/…)'}
+              className="font-mono text-xs"
+            />
+          </Field>
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={() => save({ discordBotToken: discordTok.trim() }, 'saved')}
+              disabled={busy || !discordTok.trim()}
+            >Save</Button>
+            {discord.botToken && (
+              <Button variant="ghost" onClick={() => save({ discordBotToken: '' }, 'removed')} disabled={busy}>Remove</Button>
             )}
           </div>
         </CardContent>
