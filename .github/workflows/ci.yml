@@ -5,6 +5,7 @@ name: CI
 # live gate must satisfy. The runner needs dist/, so we build first.
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
