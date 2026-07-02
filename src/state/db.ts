@@ -102,7 +102,7 @@ function migrate(db: Db): void {
       title      TEXT NOT NULL,
       task       TEXT NOT NULL,
       tmux       TEXT NOT NULL,
-      status     TEXT NOT NULL,           -- running | idle
+      status     TEXT NOT NULL,           -- running | done | stopped | crashed
       spawned_by TEXT,                    -- member id
       secret     TEXT,                    -- per-session bearer for the loopback agent endpoints (0d)
       created_at INTEGER NOT NULL
@@ -233,6 +233,19 @@ function migrate(db: Db): void {
       updated_by TEXT
     );
 
+    -- The secrets vault — credentials encrypted at rest (AES-256-GCM; see src/edge/secret-crypto.ts).
+    -- Namespaced by (tenant, principal, key); principal '*' = tenant-wide. Values are NEVER stored or
+    -- returned in plaintext; value_enc is base64(iv ‖ tag ‖ ciphertext) under the workspace master key.
+    CREATE TABLE IF NOT EXISTS secrets (
+      tenant     TEXT NOT NULL,
+      principal  TEXT NOT NULL,            -- agent/member principal, or '*' for tenant-wide
+      key        TEXT NOT NULL,
+      value_enc  TEXT NOT NULL,            -- base64(iv ‖ tag ‖ ciphertext)
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT,                     -- the member email that set it
+      PRIMARY KEY (tenant, principal, key)
+    );
+
     -- Persistent agent memory (the SQLite backend of the memory plane). One row per memory,
     -- namespaced by (tenant, agent_id) so an agent only ever recalls its own.
     CREATE TABLE IF NOT EXISTS memories (
@@ -313,6 +326,74 @@ function migrate(db: Db): void {
       INSERT INTO kb_fts(kb_fts, rowid, title, tags, body) VALUES('delete', old.rowid, old.title, old.tags, old.body);
       INSERT INTO kb_fts(rowid, title, tags, body) VALUES (new.rowid, new.title, new.tags, new.body);
     END;
+
+    -- Tasks: the shared, tenant-wide, durable UNIT OF WORK — the noun between "a trigger fired" and
+    -- "a session ran". Humans + agents co-own one board; a task with an agent assignee + auto_dispatch
+    -- spawns a governed session that works it to completion. State is structured (status machine +
+    -- activity log), so — unlike KB — there's no on-disk markdown mirror; the DB is the record.
+    CREATE TABLE IF NOT EXISTS tasks (
+      id            TEXT PRIMARY KEY,               -- short uuid (8)
+      tenant        TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      body          TEXT NOT NULL DEFAULT '',       -- markdown description / acceptance criteria
+      status        TEXT NOT NULL DEFAULT 'todo',   -- todo | doing | blocked | done | cancelled
+      priority      INTEGER NOT NULL DEFAULT 2,     -- 0 urgent … 3 low (sort key)
+      labels        TEXT NOT NULL DEFAULT '[]',     -- JSON string[]
+      assignee      TEXT,                           -- NULL (unassigned) | member id | 'agent:<id>'
+      owner         TEXT,                           -- member id the dispatched session runs AS (run_as); NULL = company
+      parent_id     TEXT,                           -- sub-task parent (nullable)
+      mode          TEXT NOT NULL DEFAULT 'headless',-- how a dispatched session runs: headless | interactive
+      auto_dispatch INTEGER NOT NULL DEFAULT 0,     -- 1 = the tick may spawn a session for it
+      due_at        INTEGER,                        -- optional soft deadline (epoch ms)
+      attempts      INTEGER NOT NULL DEFAULT 0,     -- dispatch attempts (backoff / give-up guard)
+      last_session_id TEXT,                         -- the session currently/last working it (pile-up guard)
+      created_by    TEXT NOT NULL,                  -- member id | 'agent:<id>'
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      updated_by    TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(tenant, status, priority);
+    CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(tenant, assignee);
+    CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+
+    -- Append-only activity log: comments, status changes, claims, dispatches, links. The Tasks analog
+    -- of kb_revisions — a timeline, not full snapshots. This is the reversibility/audit backbone.
+    CREATE TABLE IF NOT EXISTS task_events (
+      id         TEXT PRIMARY KEY,
+      task_id    TEXT NOT NULL,
+      kind       TEXT NOT NULL,                     -- comment | status | claim | dispatch | assign | link
+      body       TEXT,                              -- note text, or "todo→doing", or "task:<child>"
+      author     TEXT NOT NULL,                     -- member id | 'agent:<id>' | 'automation:<id>' | 'system'
+      session_id TEXT,                              -- the run that produced this event, when applicable
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_events ON task_events(task_id, created_at);
+
+    -- FTS5 over title+body+labels for board search (mirrors kb_fts exactly).
+    CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+      title, body, labels, content='tasks', content_rowid='rowid'
+    );
+    CREATE TRIGGER IF NOT EXISTS tasks_ai AFTER INSERT ON tasks BEGIN
+      INSERT INTO tasks_fts(rowid, title, body, labels) VALUES (new.rowid, new.title, new.body, new.labels);
+    END;
+    CREATE TRIGGER IF NOT EXISTS tasks_ad AFTER DELETE ON tasks BEGIN
+      INSERT INTO tasks_fts(tasks_fts, rowid, title, body, labels) VALUES('delete', old.rowid, old.title, old.body, old.labels);
+    END;
+    CREATE TRIGGER IF NOT EXISTS tasks_au AFTER UPDATE ON tasks BEGIN
+      INSERT INTO tasks_fts(tasks_fts, rowid, title, body, labels) VALUES('delete', old.rowid, old.title, old.body, old.labels);
+      INSERT INTO tasks_fts(rowid, title, body, labels) VALUES (new.rowid, new.title, new.body, new.labels);
+    END;
+
+    -- Which agents a library skill is scoped to (the skill artifact itself stays on disk under
+    -- home/skills/name). Same join-table shape as assignments (members->agents). A skill with
+    -- NO rows here is materialised into EVERY claude-code agent (the default & today's behavior);
+    -- rows present scope it to exactly those agent ids. Rows referencing a since-deleted agent are
+    -- harmless -- they simply never match a launch. Cleaned up when the skill is removed.
+    CREATE TABLE IF NOT EXISTS skill_assignments (
+      skill TEXT NOT NULL,
+      agent TEXT NOT NULL,
+      PRIMARY KEY (skill, agent)
+    );
   `);
 
   // Idempotent column additions for the inbox feed (older DBs won't have these).
@@ -324,6 +405,9 @@ function migrate(db: Db): void {
   // Execution mode for automations (older DBs predate it — default preserves their interactive behavior).
   addColumn(db, 'automations', 'mode', "TEXT NOT NULL DEFAULT 'interactive'");
   addColumn(db, 'automations', 'filter', 'TEXT'); // composio: trigger slug / slack: event type|channel to match ('' = any)
+  // One-shot scheduled tasks (type 'once'): when to fire, and the run-as identity to fire it under.
+  addColumn(db, 'automations', 'run_at', 'INTEGER'); // fire time for a one-shot 'once' automation (epoch ms)
+  addColumn(db, 'automations', 'run_as', 'TEXT');    // member id the fired session should act as (one-shot)
 
   // Remote-MCP transport for connectors (older DBs are all stdio: command/args/env).
   addColumn(db, 'connectors', 'transport', "TEXT NOT NULL DEFAULT 'stdio'");
@@ -349,6 +433,11 @@ function migrate(db: Db): void {
   // NULL → identity falls back to memberOf(spawned_by). Older rows predate it → NULL (no change).
   addColumn(db, 'term_sessions', 'run_as', 'TEXT');
 
+  // Session status vocabulary widened: running|idle → running|done|stopped|crashed. Legacy terminal
+  // rows collapsed every non-running end state into 'idle'; we can't retro-classify how they actually
+  // ended, so map them to the benign 'done'. Idempotent — after the first boot there are no 'idle' rows.
+  db.exec("UPDATE term_sessions SET status = 'done' WHERE status = 'idle'");
+
   // Optional embedding for semantic recall on the (zero-dep) sqlite backend: a packed Float32
   // vector. NULL when no embedder is configured (→ keyword-only) or the row predates one.
   addColumn(db, 'memories', 'embedding', 'BLOB');
@@ -360,6 +449,10 @@ function migrate(db: Db): void {
   // The index must come AFTER addColumn — on an existing DB the column doesn't exist until now.
   addColumn(db, 'memories', 'scope', "TEXT NOT NULL DEFAULT 'agent'");
   db.exec('CREATE INDEX IF NOT EXISTS idx_mem_scope ON memories(tenant, scope, created_at)');
+
+  // How a dispatched task session runs (headless work-to-completion vs. an attachable interactive TUI).
+  // Older `tasks` rows (created before this column) default to today's behavior: headless.
+  addColumn(db, 'tasks', 'mode', "TEXT NOT NULL DEFAULT 'headless'");
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

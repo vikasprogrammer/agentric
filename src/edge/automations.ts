@@ -91,11 +91,16 @@ export interface Automation {
   id: string;
   agentId: string;
   name: string;
-  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord';
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord';
   /** How the fired session runs (interactive TUI vs headless `claude -p`). */
   mode: ExecMode;
   /** Cron expression (cron type only). */
   schedule?: string;
+  /** One-shot fire time in epoch ms (`once` type only); disabled after it fires. */
+  runAt?: number;
+  /** Member id the fired session should act as (`once` type) — carried so a deferred task runs as the
+   *  same identity that scheduled it. */
+  runAs?: string;
   /** Shared key for POST /hooks/<id> (webhook type only). */
   secret?: string;
   /** Match filter. composio: the trigger slug (e.g. SLACK_DIRECT_MESSAGE_RECEIVED). slack: an event
@@ -114,7 +119,7 @@ interface AutomationRow {
   id: string;
   agent_id: string;
   name: string;
-  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord';
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord';
   mode: ExecMode | null;
   schedule: string | null;
   secret: string | null;
@@ -125,6 +130,8 @@ interface AutomationRow {
   created_at: number;
   last_fired_at: number | null;
   last_session_id: string | null;
+  run_at: number | null;
+  run_as: string | null;
 }
 
 function toAutomation(r: AutomationRow): Automation {
@@ -143,6 +150,8 @@ function toAutomation(r: AutomationRow): Automation {
     createdAt: r.created_at,
     lastFiredAt: r.last_fired_at ?? undefined,
     lastSessionId: r.last_session_id ?? undefined,
+    runAt: r.run_at ?? undefined,
+    runAs: r.run_as ?? undefined,
   };
 }
 
@@ -163,6 +172,31 @@ export type FireResult =
   | { ok: false; reason: string };
 
 const MAX_PAYLOAD_CHARS = 4000; // keep webhook payloads from flooding the task prompt
+
+// Bounds for agent-scheduled one-shot tasks (`type: 'once'`). A scheduled run is a time-shift of work
+// the agent is already authorized to do, so it needs no fresh approval — but it is bounded so an agent
+// can't schedule into the far future or pile up unbounded pending runs.
+export const SCHEDULE_MIN_MS = 60_000;            // ≥ 1 minute (the scheduler tick is minute-grained)
+export const SCHEDULE_MAX_MS = 30 * 86_400_000;   // ≤ 30 days out
+export const SCHEDULE_MAX_PENDING = 25;           // per agent: pending (enabled, unfired) one-shots
+
+// A task that fails to complete N times stops being auto-dispatched and is parked `blocked` for a human,
+// so a broken task can't spin the scheduler forever (the Tasks analog of the automation pile-up guard).
+export const TASK_MAX_ATTEMPTS = 3;
+
+/**
+ * The prompt a dispatched session runs: the task, plus the tools to close its own loop. Mirrors how the
+ * KB gardener writes back what it learned — the run is self-closing, so no human has to reconcile status.
+ */
+export function buildTaskPrompt(t: { id: string; title: string; body: string }): string {
+  return (
+    `You are working task ${t.id}: ${t.title}\n\n` +
+    `${t.body || '(no description provided)'}\n\n` +
+    `When finished, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }).\n` +
+    `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n` +
+    `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`
+  );
+}
 
 export class Automations {
   private readonly db: Db;
@@ -229,6 +263,55 @@ export class Automations {
     return a;
   }
 
+  /** How many pending (enabled, not-yet-fired) one-shot tasks an agent has — the runaway cap. */
+  pendingScheduled(agentId: string): number {
+    return this.db
+      .prepare("SELECT COUNT(*) AS n FROM automations WHERE agent_id = ? AND type = 'once' AND enabled = 1 AND last_fired_at IS NULL")
+      .get<{ n: number }>(agentId)!.n;
+  }
+
+  /**
+   * Schedule a one-shot deferred task: a single future run of `agentId`, at `runAt` (epoch ms), acting
+   * as `runAs` (the identity that scheduled it). Stored as a `once` automation so it shows up in the
+   * console, is auditable, and a human can cancel it. Bounded by SCHEDULE_* and the per-agent cap.
+   */
+  schedule(input: { agentId: string; name: string; task: string; runAt: number; runAs?: string; createdBy?: string }): Automation {
+    if (!this.os.agents.has(input.agentId)) throw new Error(`unknown agent: ${input.agentId}`);
+    if (!input.task.trim()) throw new Error('a task is required');
+    const now = Date.now();
+    if (!Number.isFinite(input.runAt)) throw new Error('a valid fire time is required');
+    if (input.runAt < now + SCHEDULE_MIN_MS) throw new Error('schedule must be at least 1 minute from now');
+    if (input.runAt > now + SCHEDULE_MAX_MS) throw new Error('schedule must be within 30 days');
+    if (this.pendingScheduled(input.agentId) >= SCHEDULE_MAX_PENDING) {
+      throw new Error(`too many pending scheduled tasks (max ${SCHEDULE_MAX_PENDING}) — cancel one first`);
+    }
+    const a: Automation = {
+      id: 'au_' + randomUUID().slice(0, 8),
+      agentId: input.agentId,
+      name: input.name.trim() || 'Scheduled task',
+      type: 'once',
+      mode: 'headless', // deferred runs are unattended
+      task: input.task,
+      runAt: input.runAt,
+      runAs: input.runAs,
+      enabled: true,
+      createdBy: input.createdBy,
+      createdAt: now,
+    };
+    this.db
+      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_at, run_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(a.id, a.agentId, a.name, a.type, a.mode, null, null, null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAt!, a.runAs ?? null);
+    return a;
+  }
+
+  /** Cancel a pending one-shot, scoped to its agent (an agent may only cancel its own schedules). Returns
+   *  false if it doesn't exist, isn't a one-shot for that agent, or has already fired. */
+  cancelScheduled(id: string, agentId: string): boolean {
+    const a = this.get(id);
+    if (!a || a.type !== 'once' || a.agentId !== agentId || a.lastFiredAt) return false;
+    return this.remove(id);
+  }
+
   update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; task?: string; enabled?: boolean }): Automation | undefined {
     const a = this.get(id);
     if (!a) return undefined;
@@ -273,6 +356,83 @@ export class Automations {
       principal: opts.runAs ? `member:${opts.runAs}` : `automation:${a.id}`,
       type: 'automation.fired',
       data: { automation: a.id, name: a.name, agent: a.agentId, trigger: a.type, mode: a.mode, runAs: opts.runAs ?? null },
+    });
+    return { ok: true, sessionId: s.id, tmux: s.tmux };
+  }
+
+  // ── tasks ────────────────────────────────────────────────────────────────────────
+  /**
+   * Dispatch a task: spawn a governed headless session that works it to completion. Provenance is
+   * `task:<id>` (visible to the task owner + owner/admin); the session runs AS the task `owner` (run_as —
+   * human passthrough, so budget/approvals ladder to the accountable person), or the company identity when
+   * ownerless. The dispatched agent closes its own loop via `task_update` (see buildTaskPrompt). Guarded
+   * against pile-ups (never two live sessions for one task) and an attempts ceiling (park `blocked` after
+   * TASK_MAX_ATTEMPTS so a failing task can't spin). Every effect the session has still passes the gateway,
+   * so "start work" adds no new trust surface. Audited `task.dispatched`.
+   */
+  dispatchTask(id: string, opts: { guard?: boolean; by?: string } = {}): FireResult {
+    const guard = opts.guard ?? true;
+    const t = this.os.tasks.get(id);
+    if (!t) return { ok: false, reason: 'task not found' };
+    if (t.status === 'done' || t.status === 'cancelled') return { ok: false, reason: `task is ${t.status}` };
+    const agentId = (t.assignee || '').startsWith('agent:') ? t.assignee!.slice('agent:'.length) : '';
+    if (!agentId) return { ok: false, reason: 'task has no agent assignee' };
+    if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown agent: ${agentId}` };
+    if (guard && t.lastSessionId && this.tm.isAlive(t.lastSessionId)) {
+      return { ok: false, reason: 'a session is already working this task' };
+    }
+    if (t.attempts >= TASK_MAX_ATTEMPTS) {
+      this.os.tasks.update(id, { status: 'blocked', note: `auto-dispatch gave up after ${t.attempts} attempts`, by: 'system' });
+      return { ok: false, reason: `attempt ceiling reached (${TASK_MAX_ATTEMPTS})` };
+    }
+    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner);
+    this.os.tasks.markDispatched(t.id, s.id);
+    this.os.audit.append({
+      ts: Date.now(),
+      runId: s.id,
+      tenant: this.os.tenant,
+      principal: t.owner ? `member:${t.owner}` : 'task',
+      type: 'task.dispatched',
+      data: { task: t.id, title: t.title, agent: agentId, mode: t.mode, runAs: t.owner ?? null, by: opts.by ?? 'system' },
+    });
+    return { ok: true, sessionId: s.id, tmux: s.tmux };
+  }
+
+  /**
+   * Generic chat router (no per-agent automation). Parse a leading `/agent-name` from the message; if
+   * it names a known claude-code agent, return it, else return a help list of addressable agents. This
+   * is the fallback used by fireSlack/fireDiscord when NO automation matched, so connecting the bot once
+   * makes the whole fleet reachable ("/pod-troubleshooter why is X down?").
+   */
+  private routeChat(text: string): { agentId?: string; help?: string } {
+    const chatAgents = [...this.os.agents.values()].filter((a) => a.runtime === 'claude-code').map((a) => a.id);
+    const m = (text || '').trim().match(/^\/([A-Za-z0-9][\w-]*)\b\s*([\s\S]*)$/);
+    if (m && chatAgents.includes(m[1])) return { agentId: m[1] };
+    const list = chatAgents.length ? chatAgents.map((id) => `• \`/${id}\``).join('\n') : '_(no agents available)_';
+    const help = m
+      ? `I don't have an agent named \`/${m[1]}\`. Address one with \`/<agent>\` and your request:\n${list}`
+      : `👋 Address an agent with \`/<agent>\` followed by your request. Available:\n${list}`;
+    return { help };
+  }
+
+  /**
+   * Spawn a one-off chat run for an explicitly-addressed agent (the `/name` router) — no automation row.
+   * Same governance path as fire(): provenance `chat:<agent>`, run-as the sender, reply bound to the
+   * thread, every effect still gated. Audited as `chat.routed`.
+   */
+  private spawnChatAgent(
+    agentId: string,
+    task: string,
+    opts: { runAs?: string; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string } },
+  ): FireResult {
+    const s = this.tm.createSession(agentId, `Chat → ${agentId}`, task, `chat:${agentId}`, true, opts.slack, opts.discord, opts.runAs);
+    this.os.audit.append({
+      ts: Date.now(),
+      runId: s.id,
+      tenant: this.os.tenant,
+      principal: opts.runAs ? `member:${opts.runAs}` : 'chat',
+      type: 'chat.routed',
+      data: { agent: agentId, runAs: opts.runAs ?? null, channel: opts.slack?.channel ?? opts.discord?.channel ?? null },
     });
     return { ok: true, sessionId: s.id, tmux: s.tmux };
   }
@@ -322,23 +482,35 @@ export class Automations {
   fireSlack(
     event: { eventType: string; channel: string; threadTs: string; user: string; actorLabel: string; text: string; raw: unknown },
     runAsMember?: string,
-  ): { fired: number; sessions: string[] } {
+  ): { fired: number; sessions: string[]; reply?: string } {
     const sessions: string[] = [];
+    const extra =
+      `Triggered from Slack by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}` +
+      (event.threadTs ? ` (thread ${event.threadTs})` : '') + `.\n` +
+      `Message:\n${event.text}\n\n` +
+      `When you're done, call the \`slack_reply\` tool with your answer — it posts back to this exact ` +
+      `Slack thread (you don't need a channel id). Keep it concise.\n\n` +
+      `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
     for (const a of this.list()) {
       if (!a.enabled || a.type !== 'slack') continue;
       const f = (a.filter || '').trim().toLowerCase();
       if (f && f !== '*' && f !== event.eventType.toLowerCase() && f !== event.channel.toLowerCase()) continue;
-      const extra =
-        `Triggered from Slack by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}` +
-        (event.threadTs ? ` (thread ${event.threadTs})` : '') + `.\n` +
-        `Message:\n${event.text}\n\n` +
-        `When you're done, call the \`slack_reply\` tool with your answer — it posts back to this exact ` +
-        `Slack thread (you don't need a channel id). Keep it concise.\n\n` +
-        `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs } });
       if (r.ok) sessions.push(r.sessionId);
     }
-    return { fired: sessions.length, sessions };
+    // No specific automation matched → the generic `/agent` router (if enabled) makes the whole fleet
+    // reachable without one. A named agent runs; an unaddressed/unknown name gets a help list to post back.
+    let reply: string | undefined;
+    if (sessions.length === 0 && this.os.settings.chatRouterEnabled()) {
+      const routed = this.routeChat(event.text);
+      if (routed.agentId) {
+        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs } });
+        if (r.ok) sessions.push(r.sessionId);
+      } else {
+        reply = routed.help;
+      }
+    }
+    return { fired: sessions.length, sessions, reply };
   }
 
   /**
@@ -350,22 +522,33 @@ export class Automations {
   fireDiscord(
     event: { eventType: string; channel: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown },
     runAsMember?: string,
-  ): { fired: number; sessions: string[] } {
+  ): { fired: number; sessions: string[]; reply?: string } {
     const sessions: string[] = [];
+    const extra =
+      `Triggered from Discord by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}.\n` +
+      `Message:\n${event.text}\n\n` +
+      `When you're done, call the \`discord_reply\` tool with your answer — it posts back to this exact ` +
+      `Discord channel as a reply (you don't need a channel id). Keep it concise.\n\n` +
+      `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
     for (const a of this.list()) {
       if (!a.enabled || a.type !== 'discord') continue;
       const f = (a.filter || '').trim().toLowerCase();
       if (f && f !== '*' && f !== event.eventType.toLowerCase() && f !== event.channel.toLowerCase()) continue;
-      const extra =
-        `Triggered from Discord by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}.\n` +
-        `Message:\n${event.text}\n\n` +
-        `When you're done, call the \`discord_reply\` tool with your answer — it posts back to this exact ` +
-        `Discord channel as a reply (you don't need a channel id). Keep it concise.\n\n` +
-        `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId } });
       if (r.ok) sessions.push(r.sessionId);
     }
-    return { fired: sessions.length, sessions };
+    // No specific automation matched → the generic `/agent` router (if enabled). See fireSlack.
+    let reply: string | undefined;
+    if (sessions.length === 0 && this.os.settings.chatRouterEnabled()) {
+      const routed = this.routeChat(event.text);
+      if (routed.agentId) {
+        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId } });
+        if (r.ok) sessions.push(r.sessionId);
+      } else {
+        reply = routed.help;
+      }
+    }
+    return { fired: sessions.length, sessions, reply };
   }
 
   // ── scheduler ──────────────────────────────────────────────────────────────────
@@ -384,7 +567,19 @@ export class Automations {
   tick(now: Date): void {
     const minute = Math.floor(now.getTime() / 60_000);
     for (const a of this.list()) {
-      if (!a.enabled || a.type !== 'cron' || !a.schedule) continue;
+      if (!a.enabled) continue;
+      // One-shot deferred tasks: fire once when due, then disable so they never re-fire.
+      if (a.type === 'once') {
+        if (!a.runAt || a.lastFiredAt || now.getTime() < a.runAt) continue;
+        try {
+          this.fire(a, { guard: false, runAs: a.runAs });
+        } catch {
+          // a one-shot that errors on spawn shouldn't loop forever — fall through and disable it
+        }
+        this.db.prepare('UPDATE automations SET enabled = 0 WHERE id = ?').run(a.id);
+        continue;
+      }
+      if (a.type !== 'cron' || !a.schedule) continue;
       let spec: CronSpec;
       try {
         spec = parseCron(a.schedule);
@@ -394,6 +589,33 @@ export class Automations {
       if (!cronMatches(spec, now)) continue;
       if (a.lastFiredAt && Math.floor(a.lastFiredAt / 60_000) === minute) continue; // already fired this minute
       this.fire(a, { guard: true });
+    }
+    this.dispatchTasks();
+  }
+
+  /**
+   * The Tasks half of the tick: auto-dispatch eligible work off the shared board. Scan `todo` tasks with
+   * an agent assignee + `auto_dispatch`, highest-priority first, and spawn at most ONE session per agent
+   * per tick (don't stack a second on an agent already running a task session — the per-agent concurrency
+   * cap). Guarded + attempt-ceilinged inside dispatchTask. Wrapped so a bad row never kills the scheduler.
+   */
+  private dispatchTasks(): void {
+    try {
+      // Agents already running a task session (their `task:<id>` spawn is still alive) — skip this tick.
+      const busy = new Set<string>();
+      for (const r of this.db
+        .prepare("SELECT id, agent FROM term_sessions WHERE spawned_by LIKE 'task:%' AND status = 'running'")
+        .all<{ id: string; agent: string }>()) {
+        if (this.tm.isAlive(r.id)) busy.add(r.agent);
+      }
+      for (const t of this.os.tasks.dispatchable(this.os.tenant)) {
+        const agentId = t.assignee!.slice('agent:'.length);
+        if (busy.has(agentId)) continue;
+        const r = this.dispatchTask(t.id, { guard: true });
+        if (r.ok) busy.add(agentId); // one per agent per tick
+      }
+    } catch {
+      // never let the task sweep take down the automation scheduler
     }
   }
 }

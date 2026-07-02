@@ -32,10 +32,12 @@ import { SkillsStore } from './governance/skills';
 import { Db, openDb } from './state/db';
 import { ArtifactStore } from './state/artifacts';
 import { KbStore } from './state/kb';
+import { TaskStore } from './state/tasks';
 import { StubIdentity } from './governance/identity';
 import { InMemoryIdempotencyStore } from './gateway/idempotency';
 import { JsonPolicyEngine, PolicyDocument } from './governance/policy';
-import { EnvSecretsVault } from './edge/secrets';
+import { EnvSecretsVault, SqliteSecretsVault } from './edge/secrets';
+import { resolveMasterKey } from './edge/secret-crypto';
 import { HealthMonitor } from './observability/monitor';
 import { MockAdapter, MockBehavior } from './runtime/mock-adapter';
 import { ClaudeCodeAdapter } from './runtime/claude-code-adapter';
@@ -76,9 +78,12 @@ export class AgentOS {
   readonly artifacts: ArtifactStore;
   /** The company knowledge base — the shared, living wiki agents + humans co-author (revision-chained). */
   readonly kb: KbStore;
+  /** The shared work queue — durable tasks humans + agents create, claim, and drain (auto-dispatchable). */
+  readonly tasks: TaskStore;
   readonly identity = new StubIdentity();
   readonly idempotency = new InMemoryIdempotencyStore();
-  readonly secrets = new EnvSecretsVault();
+  /** The secrets vault: encrypted-at-rest in the workspace DB, with the env vault as a fallback. */
+  readonly secrets: SqliteSecretsVault;
   readonly monitor = new HealthMonitor();
   readonly policy: PolicyEngine;
   readonly mock = new MockAdapter();
@@ -103,13 +108,15 @@ export class AgentOS {
     this.paths = opts.paths;
     // The per-workspace DB backs everything user-facing. No paths (tests/demo) → ephemeral in-memory.
     this.db = openDb(opts.paths?.db ?? ':memory:');
+    this.secrets = new SqliteSecretsVault(this.db, resolveMasterKey(opts.paths?.home), new EnvSecretsVault());
     this.connectors = new ConnectorStore(this.db);
     this.approvals = new SqliteApprovals(this.db);
     this.team = new TeamStore(this.db);
     this.settings = new SettingsStore(this.db);
-    this.skills = new SkillsStore(opts.paths?.skills);
+    this.skills = new SkillsStore(opts.paths?.skills, this.db, opts.paths?.bundledSkills);
     this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);
     this.kb = new KbStore(this.db, opts.paths?.kb);
+    this.tasks = new TaskStore(this.db); // db-only (structured state, no on-disk mirror — see tasks-plan.md §Decision 2)
     this.memory = createMemoryProvider(opts.memory ?? { backend: 'sqlite' }, this.db);
 
     const sinks: AuditSink[] = [this.memoryAudit, new SqliteAuditSink(this.db)];

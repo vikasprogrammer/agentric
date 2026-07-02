@@ -12,10 +12,11 @@
 #   scripts/run-tenant.sh globex ~/aos/globex 3020  you@globex.com
 set -euo pipefail
 
-SLUG="${1:?usage: run-tenant.sh <slug> <home-dir> <port> [owner-email]}"
+SLUG="${1:?usage: run-tenant.sh <slug> <home-dir> <port> [owner-email] [display-name]}"
 HOME_DIR="${2:?home dir required}"
 PORT="${3:?port required}"
 OWNER="${4:-owner@${SLUG}.local}"
+DISPLAY_NAME="${5:-}"                    # optional human label (e.g. "Northwind"); falls back to slug
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$REPO/dist/cli.js" ] || { echo "build first: npm run build" >&2; exit 1; }
@@ -26,6 +27,18 @@ export AGENT_OS_TENANT="$SLUG"          # this process's self-contained tenant i
 export AGENT_OS_OWNER_EMAIL="$OWNER"
 export PORT="$PORT"
 export TTYD_PORT="$((PORT + 1))"        # one ttyd per process, alongside its server
+[ -n "$DISPLAY_NAME" ] && export AGENT_OS_TENANT_NAME="$DISPLAY_NAME"
 
-echo "▶ tenant=$SLUG  home=$HOME_DIR  port=$PORT  ttyd=$TTYD_PORT  owner=$OWNER"
+# Non-fatal preflight: warn (never block) if a port is already held — usually means two tenants were
+# given ports <2 apart, so a server collides with another's PORT+1 ttyd. Logged to server.log; the
+# bind itself still decides the outcome (so a fast launchd self-restart can't be wedged by this).
+if command -v lsof >/dev/null 2>&1; then
+  for p in "$PORT" "$TTYD_PORT"; do
+    if lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "⚠ port $p already in use — tenant '$SLUG' may fail to bind (space tenant ports ≥2 apart)" >&2
+    fi
+  done
+fi
+
+echo "▶ tenant=$SLUG  home=$HOME_DIR  port=$PORT  ttyd=$TTYD_PORT  owner=$OWNER${DISPLAY_NAME:+  name=$DISPLAY_NAME}"
 exec node "$REPO/dist/cli.js" serve --port="$PORT"

@@ -17,14 +17,23 @@ const DAY_MS = 86_400_000;
 export function rerank(records: MemoryRecord[], ranking: MemoryRanking | undefined, now: number): MemoryRecord[] {
   const half = ranking?.halfLifeDays && ranking.halfLifeDays > 0 ? ranking.halfLifeDays : 0;
   const byImportance = !!ranking?.weightByImportance;
-  if (!half && !byImportance) return records;
+  const byUsage = !!ranking?.weightByUsage;
+  if (!half && !byImportance && !byUsage) return records;
   const ln2 = Math.log(2);
   return records
     .map((r) => {
       const base = Math.max(0, r.score ?? 0); // clamp: a negative (poor) match shouldn't flip sign under a weight
       let w = 1;
       if (byImportance) w *= 0.5 + 0.5 * Math.min(1, Math.max(0, r.importance ?? 0.5)); // unset → neutral 0.5
-      if (half) w *= Math.exp((-ln2 * Math.max(0, now - r.ts)) / (half * DAY_MS)); // weight halves every `half` days
+      // Retrieval reinforcement: a memory that keeps getting recalled ranks higher. Diminishing (0 → ×1,
+      // 1 → ×1.25, → ×1.5 asymptote) so it nudges, never dominates.
+      if (byUsage) w *= 1 + 0.5 * (1 - 1 / (1 + Math.max(0, r.recallCount ?? 0)));
+      // Recency decays from LAST USE when there is one (else creation) — so used memories stay fresh and
+      // the never-recalled fade. Pairs with prune, which deletes the old + never-recalled outright.
+      if (half) {
+        const anchor = Math.max(r.ts, r.lastRecalledAt ?? 0);
+        w *= Math.exp((-ln2 * Math.max(0, now - anchor)) / (half * DAY_MS)); // weight halves every `half` days
+      }
       return { ...r, score: base * w };
     })
     .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));

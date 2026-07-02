@@ -36,8 +36,30 @@ scripts/run-tenant.sh globex  ~/aos/globex  3020  you@globex.com
 scripts/run-tenant.sh initech ~/aos/initech 3030  you@initech.com
 ```
 
-Space ports by ≥2 (each process also binds `PORT+1` for its ttyd). Run them in three terminals/tabs,
-or under launchd to survive reboots (template below).
+Space ports by ≥2 (each process also binds `PORT+1` for its ttyd) — `run-tenant.sh` logs a warning if
+a port is already taken. Run them in terminals, or use the fleet helper below to put them under launchd.
+
+An optional 5th arg sets a human display name (`AGENT_OS_TENANT_NAME`), surfaced in `/health`,
+`/api/state`, and the console header — otherwise it falls back to the slug.
+
+## Manage the fleet — `scripts/tenants.cjs`
+
+Drive everything from one manifest instead of hand-writing plists. Copy `config/tenants.example.json`
+→ `config/tenants.json` (gitignored) and list your tenants (`slug`, `home`, `port`, `owner`, optional
+`name`/`tailscalePort`). Then:
+
+```bash
+node scripts/tenants.cjs list                # tenants in the manifest
+node scripts/tenants.cjs status              # launchd state + /health per tenant
+node scripts/tenants.cjs install [slug]      # generate + load a launchd plist (skips already-loaded)
+node scripts/tenants.cjs restart [slug]      # kickstart -k (after a rebuild)
+node scripts/tenants.cjs uninstall [slug]    # unload + remove the plist (data left on disk)
+node scripts/tenants.cjs tailscale           # map each tenant's port → Tailscale HTTPS (443/8443/10000)
+```
+
+`install` writes `~/Library/LaunchAgents/com.agentos.<slug>.plist` (KeepAlive, a sane `PATH` so launchd
+finds node/tmux/ttyd/claude) and loads it. Omit the slug to act on the whole manifest. This supersedes
+the manual `run-tenant.sh` + plist dance below — that's the underlying mechanism the helper automates.
 
 ## Publish over Tailscale
 

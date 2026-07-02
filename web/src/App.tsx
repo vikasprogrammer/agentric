@@ -1,23 +1,39 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, BookText, History as HistoryIcon, ScrollText } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Button } from '@/components/ui/button'
+import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { api, EFFORTS, PERMISSION_MODES, type StateResp, type AgentInfo, type Session, type Msg, type ConnectorsResp, type CatalogEntry, type AddConnectorReq, type Connector, type ConnectorScope, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type RiskClass, type PolicyOp, type DirListing, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type ConnectionsResp, type IntegrationsOverview, type Effort, type PermissionMode, type RuntimeTuning } from '@/lib/api'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { api, EFFORTS, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta } from '@/lib/api'
+import { ConnectorsPage } from '@/connectors'
 
-type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent'
+type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent'
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
 const canApprove = (role: Role, level: 'head' | 'owner'): boolean =>
   role === 'owner' || (role === 'admin' && level === 'head')
+
+/** A session is "live" when its tmux pane is alive now (`alive`), OR — when the server couldn't poll
+ *  tmux (`alive` undefined) — when its stored status is still `running`. This is the source of truth
+ *  for the green dot: an interactive session that reported `done` but keeps an attachable pane is live. */
+const isLive = (s: Session): boolean => Boolean(s.alive) || s.status === 'running'
+
+/** Status dot colour for a session: live=emerald, done=muted, stopped=amber, crashed=red. */
+const statusDot = (s: Session): string =>
+  isLive(s) ? 'bg-emerald-500'
+    : s.status === 'stopped' ? 'bg-amber-500'
+    : s.status === 'crashed' ? 'bg-red-500'
+    : 'bg-muted-foreground/40' // done (and any unknown legacy value)
+
+/** The status word shown next to the dot. A live pane whose stored status is a terminal state (a
+ *  `done` interactive session still running) reads "live" so the label never contradicts a green dot. */
+const statusLabel = (s: Session): string => (isLive(s) && s.status !== 'running' ? 'live' : s.status)
 
 const ROLE_LABEL: Record<Role, string> = { owner: 'owner', admin: 'admin', member: 'member' }
 
@@ -30,6 +46,22 @@ function RoleBadge({ role }: { role: Role }) {
  *  starts empty and shows its "Describe the task…" placeholder — no generic filler. */
 const exampleTask = (a?: AgentInfo): string => a?.examplePrompts?.[0] ?? ''
 
+/** Bucket agents by their category label for the grouped picker. Uncategorised agents fall into a
+ *  trailing "Uncategorized" group; named categories sort alphabetically, each group keeping list order. */
+function groupByCategory(agents: AgentInfo[]): [string, AgentInfo[]][] {
+  const UNCATEGORIZED = 'Uncategorized'
+  const buckets = new Map<string, AgentInfo[]>()
+  for (const a of agents) {
+    const cat = a.category?.trim() || UNCATEGORIZED
+    ;(buckets.get(cat) ?? buckets.set(cat, []).get(cat)!).push(a)
+  }
+  return [...buckets.entries()].sort(([a], [b]) => {
+    if (a === UNCATEGORIZED) return 1
+    if (b === UNCATEGORIZED) return -1
+    return a.localeCompare(b)
+  })
+}
+
 function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
   const claude = runtime === 'claude-code'
   return (
@@ -39,9 +71,10 @@ function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
   )
 }
 
-/** The model / effort / permission-mode trio, reused by the create form, the agent editor, and the
- *  workspace defaults panel. Empty model/effort/permission = "inherit" (the placeholder/option says so).
- *  These map 1:1 to `claude --model/--effort/--permission-mode`; Agent OS's gate-hook governs underneath. */
+/** The model / effort pair, reused by the create form, the agent editor, and the workspace defaults
+ *  panel. Empty model/effort = "inherit" (the placeholder/option says so). These map 1:1 to
+ *  `claude --model/--effort`. Permission posture is NOT a knob — the gate hook governs every side
+ *  effect authoritatively, so there's no `--permission-mode` to tune. */
 function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritLabel = 'inherit' }: {
   tuning: RuntimeTuning
   onChange: (t: RuntimeTuning) => void
@@ -50,7 +83,7 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
 }) {
   const selCls = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
   return (
-    <div className="grid gap-3 sm:grid-cols-3">
+    <div className="grid gap-3 sm:grid-cols-2">
       <div className="space-y-1">
         <label className="text-xs font-medium">Model</label>
         <Input value={tuning.model ?? ''} onChange={(e) => onChange({ ...tuning, model: e.target.value || undefined })} placeholder={modelPlaceholder} className="h-8 font-mono text-xs" />
@@ -62,13 +95,6 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
           {EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}
         </select>
       </div>
-      <div className="space-y-1">
-        <label className="text-xs font-medium">Permission</label>
-        <select className={selCls} value={tuning.permissionMode ?? ''} onChange={(e) => onChange({ ...tuning, permissionMode: (e.target.value || undefined) as PermissionMode | undefined })}>
-          <option value="">{inheritLabel}</option>
-          {PERMISSION_MODES.map((x) => <option key={x} value={x}>{x}</option>)}
-        </select>
-      </div>
     </div>
   )
 }
@@ -77,7 +103,7 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
 function useHashRoute(): [Route, (r: Route) => void] {
   const parse = (): Route => {
     const h = window.location.hash.replace(/^#\/?/, '')
-    return h === 'sessions' || h === 'agents' || h === 'new-agent' || h === 'connectors' || h === 'team' || h === 'automations' || h === 'memory' || h === 'kb' || h === 'skills' || h === 'files' || h === 'artifacts' || h === 'settings' || h === 'agent' ? h : 'inbox'
+    return h === 'sessions' || h === 'agents' || h === 'new-agent' || h === 'connectors' || h === 'team' || h === 'automations' || h === 'tasks' || h === 'memory' || h === 'kb' || h === 'skills' || h === 'files' || h === 'artifacts' || h === 'settings' || h === 'agent' ? h : 'inbox'
   }
   const [route, setRoute] = useState<Route>(parse())
   useEffect(() => {
@@ -100,6 +126,15 @@ export default function App() {
   return <Console me={me} />
 }
 
+/** The per-session "Claude is waiting on you" indicator (shown in the sidebar + session lists). */
+function WaitingBell({ className = 'h-3.5 w-3.5' }: { className?: string }) {
+  return (
+    <span title="Claude is waiting for your input" className="inline-flex shrink-0 text-indigo-600">
+      <Bell className={className} />
+    </span>
+  )
+}
+
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
@@ -114,6 +149,8 @@ function Console({ me }: { me: Member }) {
   const onManage = manageRoutes.includes(route)
   const [manageOpen, setManageOpen] = useState(onManage)
   useEffect(() => { if (onManage) setManageOpen(true) }, [onManage])
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('aos_sidebar_collapsed') === '1')
+  useEffect(() => { localStorage.setItem('aos_sidebar_collapsed', sidebarCollapsed ? '1' : '0') }, [sidebarCollapsed])
 
   useEffect(() => {
     api.state().then(setState)
@@ -129,6 +166,13 @@ function Console({ me }: { me: Member }) {
     return () => clearInterval(t)
   }, [])
 
+  // Browser-tab badge: a 🔔 + count of sessions where Claude is waiting on you (one open
+  // notification per session), so the tab nags even when the console isn't focused.
+  useEffect(() => {
+    const n = messages.filter((m) => m.type === 'notification' && m.status === 'open').length
+    document.title = n > 0 ? `🔔 (${n}) Agent OS` : 'Agent OS'
+  }, [messages])
+
   const refreshState = () => api.state().then(setState)
   const deleteAgent = async (id: string) => {
     if (!confirm(`Delete agent "${id}"? Its folder (agent.json + CLAUDE.md) is permanently removed. Its memory and audit history are kept.`)) return
@@ -143,6 +187,14 @@ function Console({ me }: { me: Member }) {
   const openTerminal = (tmux: string, title: string) => {
     setSelected({ tmux, title })
     nav('sessions')
+    // Opening a session means you're attending to it → clear its "waiting" bell, same as Dismiss.
+    // Optimistically drop it from state so the icon/tab/badge update instantly; persist via dismiss.
+    const sid = tmux.replace(/^aos-/, '')
+    const toClear = messages.filter((m) => m.type === 'notification' && m.status === 'open' && m.sessionId === sid)
+    if (toClear.length > 0) {
+      setMessages((ms) => ms.filter((m) => !toClear.some((c) => c.id === m.id)))
+      toClear.forEach((m) => { void api.dismissMessage(m.id) })
+    }
   }
   // Deep-link from an inbox 'artifact' card into the gallery, pre-opening that artifact's preview.
   const [artifactFocus, setArtifactFocus] = useState<string | undefined>(undefined)
@@ -182,25 +234,54 @@ function Console({ me }: { me: Member }) {
     return null
   }
 
-  const pendingApprovals = messages.filter((m) => (m.type === 'approval' || m.type === 'question') && m.status === 'pending').length
-  const runningSessions = sessions.filter((s) => s.status === 'running').length
+  const pendingApprovals = messages.filter(isActionRequired).length
+  // Sessions where Claude is blocked waiting on the human — drives the per-session bell everywhere.
+  const waiting = new Set(messages.filter((m) => m.type === 'notification' && m.status === 'open').map((m) => m.sessionId))
+  const runningSessions = sessions.filter(isLive).length
   // The sidebar is a switcher over the sessions *I* started (spawnedBy is the member id),
   // running first, then newest first.
   const mySessions = sessions
     .filter((s) => s.spawnedBy === me.id)
-    .sort((a, b) => (a.status === b.status ? b.createdAt - a.createdAt : a.status === 'running' ? -1 : 1))
+    .sort((a, b) => {
+      const rank = (s: Session) => (isLive(s) ? 0 : 1) // live first; all terminal (dead) states tie
+      return rank(a) - rank(b) || b.createdAt - a.createdAt
+    })
   // A live terminal takes the whole content area (no padding/scroll wrapper).
   const fullBleed = route === 'sessions' && !!selected
 
   return (
     <div className="flex h-screen bg-muted/30 text-foreground">
-      <aside className="flex w-72 shrink-0 flex-col border-r bg-background">
+      {sidebarCollapsed && (
+        <aside className="flex w-12 shrink-0 flex-col items-center gap-1 border-r bg-background py-3">
+          <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" title="expand sidebar" onClick={() => setSidebarCollapsed(false)}>
+            <PanelLeftOpen className="h-4 w-4" />
+          </Button>
+          <div className="mt-1 text-base" title={state?.tenantName || state?.tenant || 'Agent OS'}>⚙️</div>
+          <nav className="mt-2 flex flex-col items-center gap-1">
+            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={() => nav('inbox')}><InboxIcon className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={() => nav('agents')}><Bot className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'tasks' ? 'text-primary' : 'text-muted-foreground'}`} title="Tasks" onClick={() => nav('tasks')}><ListChecks className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Artifacts" onClick={() => nav('artifacts')}><Package className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={() => { setSelected(null); nav('sessions') }}><TerminalSquare className="h-4 w-4" /></Button>
+          </nav>
+        </aside>
+      )}
+      <aside className={`${sidebarCollapsed ? 'hidden' : 'flex'} w-72 shrink-0 flex-col border-r bg-background`}>
         {/* Top: brand + primary nav (fixed) */}
         <div className="p-4 pb-2">
-          <div className="mb-4 flex items-center gap-2 text-[15px] font-semibold">⚙️ Agent OS</div>
+          <div className="mb-4 flex items-start justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-[15px] font-semibold">⚙️ Agent OS</div>
+              {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title="tenant">{state.tenantName || state.tenant}</div>}
+            </div>
+            <Button size="icon" variant="ghost" className="-mr-1 h-7 w-7 shrink-0 text-muted-foreground" title="collapse sidebar" onClick={() => setSidebarCollapsed(true)}>
+              <PanelLeftClose className="h-4 w-4" />
+            </Button>
+          </div>
           <nav className="space-y-1">
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} onClick={() => nav('inbox')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} onClick={() => nav('agents')} />
+            <NavItem icon={<ListChecks className="h-4 w-4" />} label="Tasks" active={route === 'tasks'} onClick={() => nav('tasks')} />
             <NavItem icon={<Package className="h-4 w-4" />} label="Artifacts" active={route === 'artifacts'} onClick={() => nav('artifacts')} />
           </nav>
         </div>
@@ -234,9 +315,12 @@ function Console({ me }: { me: Member }) {
                   onClick={() => openTerminal(s.tmux, s.agent + ' · ' + s.id)}
                   className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted ${active ? 'bg-muted' : ''}`}
                 >
-                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.status === 'running' ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(s)}`} />
                   <span className="min-w-0 flex-1">
-                    <span className={`block truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
+                    <span className="flex items-center gap-1">
+                      <span className={`min-w-0 flex-1 truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
+                      {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
+                    </span>
                     <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
                   </span>
                 </button>
@@ -299,32 +383,27 @@ function Console({ me }: { me: Member }) {
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <h1 className="text-lg font-semibold">
-            {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+            {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
           </h1>
-          {state && (
-            <span className="text-xs text-muted-foreground">
-              tenant={state.tenantName || state.tenant} · policy={state.policy}
-              {state.home ? ' · home=' + state.home : ''}
-            </span>
-          )}
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); openAgent(id) }} />}
-          {route === 'sessions' && <SessionsPage sessions={sessions} selected={selected} onOpen={openTerminal} onSpawn={() => nav('agents')} onClose={() => setSelected(null)} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
+          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onSpawn={() => nav('agents')} onClose={() => setSelected(null)} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} />}
+          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} />}
           {route === 'skills' && <SkillsPage />}
           {route === 'files' && <FilesPage />}
           {route === 'artifacts' && <ArtifactsPage me={me} initialId={artifactFocus} />}
           {route === 'audit' && <AuditPage />}
-          {route === 'settings' && <SettingsPage me={me} />}
-          {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} />}
+          {route === 'settings' && <SettingsPage me={me} state={state} />}
+          {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
       </main>
     </div>
@@ -404,10 +483,15 @@ function AgentsPage({
               <Select value={agentId} onValueChange={(v) => v && setAgentId(v)}>
                 <SelectTrigger className="h-9 min-w-0 flex-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {agents.map((a) => (
-                    <SelectItem key={a.id} value={a.id}>
-                      <span className="flex items-center gap-1.5">{a.id}<RuntimeBadge runtime={a.runtime} /></span>
-                    </SelectItem>
+                  {groupByCategory(agents).map(([cat, list]) => (
+                    <SelectGroup key={cat}>
+                      <SelectLabel>{cat}</SelectLabel>
+                      {list.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          <span className="flex items-center gap-1.5">{a.id}<RuntimeBadge runtime={a.runtime} /></span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
                   ))}
                 </SelectContent>
               </Select>
@@ -501,13 +585,170 @@ function TerminalFrame({ session, tmux }: { session?: Session; tmux: string }) {
   }, [session?.id, tmux])
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!src) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
-  return <iframe title="terminal" src={src} className="min-h-0 w-full flex-1 border-0 bg-black" />
+  // allow clipboard-write so ttyd's copy-on-select (document.execCommand("copy") on the xterm.js
+  // selection) isn't blocked by the frame's Permissions Policy; clipboard-read pairs it for paste.
+  return (
+    <ImageDropZone session={session}>
+      <iframe title="terminal" src={src} allow="clipboard-write; clipboard-read" className="min-h-0 w-full flex-1 border-0 bg-black" />
+    </ImageDropZone>
+  )
+}
+
+/** Wraps the terminal iframe so the operator can get an image INTO the remote session — which the pty
+ *  can't carry. Three ways in (the iframe is a separate document, so we can only intercept events that
+ *  reach OUR document): a 📎 button (always works), drag-and-drop onto the pane (always works), and
+ *  Cmd/Ctrl+V (best-effort — only fires when focus is on the console, not inside the terminal iframe;
+ *  while you're typing in the terminal the paste goes to ttyd). Each path uploads the bytes; the server
+ *  saves them in the agent's folder and types the path into the running claude. */
+function ImageDropZone({ session, children }: { session?: Session; children: ReactNode }) {
+  const [drag, setDrag] = useState(false)
+  const [toast, setToast] = useState<{ kind: 'ok' | 'err' | 'busy'; text: string } | null>(null)
+  const live = session?.status === 'running'
+  const wrapRef = useRef<HTMLDivElement>(null)
+  // Keep the latest upload closure reachable from imperative (addEventListener) handlers without
+  // re-binding them every render.
+  const uploadRef = useRef<(file: File) => void>(() => {})
+
+  const upload = async (file: File) => {
+    if (!session?.id) return
+    if (!live) { setToast({ kind: 'err', text: 'session is not live — start it first' }); return }
+    if (!file.type.startsWith('image/')) { setToast({ kind: 'err', text: 'only images can be attached' }); return }
+    setToast({ kind: 'busy', text: `uploading ${file.name || 'image'}…` })
+    try {
+      const buf = await file.arrayBuffer()
+      let bin = ''
+      const bytes = new Uint8Array(buf)
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+      const dataB64 = btoa(bin)
+      const ext = (file.type.split('/')[1] || 'png').split('+')[0]
+      const r = await api.attachFile(session.id, dataB64, ext)
+      setToast(r.ok ? { kind: 'ok', text: `attached → ${r.path} (added to the prompt)` } : { kind: 'err', text: r.error || 'upload failed' })
+    } catch (e) {
+      setToast({ kind: 'err', text: e instanceof Error ? e.message : 'upload failed' })
+    }
+  }
+
+  // Document-level paste: works when focus is on the console (not the terminal iframe).
+  useEffect(() => {
+    if (!session?.id) return
+    const onPaste = (e: ClipboardEvent) => {
+      const item = Array.from(e.clipboardData?.items || []).find((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      const file = item?.getAsFile()
+      if (file) { e.preventDefault(); void upload(file) }
+    }
+    window.addEventListener('paste', onPaste)
+    return () => window.removeEventListener('paste', onPaste)
+  }, [session?.id, live])
+
+  // Drag detection at the WINDOW level. The terminal iframe is a separate document that swallows
+  // dragover/drop while the cursor is over it, so handlers UNDER the iframe never fire. Instead we
+  // watch the window: when a file-drag enters, raise a transparent overlay ON TOP of the iframe (below)
+  // which then catches the drop. We preventDefault on window dragover/drop too, so a near-miss drop
+  // doesn't make the browser navigate to the image file.
+  useEffect(() => {
+    if (!session?.id) return
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files')
+    const onEnter = (e: DragEvent) => { if (hasFiles(e)) { e.preventDefault(); setDrag(true) } }
+    const onOver = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault() }
+    const onDropWin = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); setDrag(false) }
+    const onLeaveWin = (e: DragEvent) => { if (e.relatedTarget === null) setDrag(false) } // left the window entirely
+    window.addEventListener('dragenter', onEnter)
+    window.addEventListener('dragover', onOver)
+    window.addEventListener('drop', onDropWin)
+    window.addEventListener('dragleave', onLeaveWin)
+    return () => {
+      window.removeEventListener('dragenter', onEnter)
+      window.removeEventListener('dragover', onOver)
+      window.removeEventListener('drop', onDropWin)
+      window.removeEventListener('dragleave', onLeaveWin)
+    }
+  }, [session?.id])
+
+  uploadRef.current = upload
+
+  // The terminal grabs focus the moment a session opens, so a drag/paste DIRECTLY over it lands in the
+  // iframe's own document — the parent-window handlers above never see it. The terminal is served from
+  // OUR origin, so we can reach into its document and listen there too: a file-drag entering the iframe
+  // flips `drag` on (which raises the parent overlay above the iframe to catch the drop), and an image
+  // paste is intercepted (capture phase) before xterm.js so Cmd/Ctrl+V works while the terminal is focused.
+  useEffect(() => {
+    if (!session?.id) return
+    const iframe = wrapRef.current?.querySelector('iframe')
+    if (!iframe) return
+    let doc: Document | null = null
+    const onEnter = (e: DragEvent) => { if (Array.from(e.dataTransfer?.types || []).includes('Files')) { e.preventDefault(); setDrag(true) } }
+    const onPaste = (e: ClipboardEvent) => {
+      const item = Array.from(e.clipboardData?.items || []).find((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      const file = item?.getAsFile()
+      if (file) { e.preventDefault(); e.stopPropagation(); uploadRef.current(file) }
+    }
+    const attach = () => {
+      try {
+        doc = iframe.contentDocument
+        if (!doc) return
+        doc.addEventListener('dragenter', onEnter)
+        doc.addEventListener('paste', onPaste, true) // capture: run before xterm's own paste handler
+      } catch { /* cross-origin or not ready — parent-window handlers still cover the console chrome */ }
+    }
+    attach()
+    iframe.addEventListener('load', attach)
+    return () => {
+      iframe.removeEventListener('load', attach)
+      try { doc?.removeEventListener('dragenter', onEnter); doc?.removeEventListener('paste', onPaste, true) } catch { /* doc gone */ }
+    }
+  }, [session?.id])
+
+  // auto-dismiss the toast (keep errors a touch longer)
+  useEffect(() => {
+    if (!toast || toast.kind === 'busy') return
+    const t = setTimeout(() => setToast(null), toast.kind === 'err' ? 5000 : 3500)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  return (
+    <div ref={wrapRef} className="relative flex min-h-0 w-full flex-1">
+      {children}
+      {/* 📎 attach button — opens a file picker; always works regardless of focus */}
+      <label
+        className="absolute right-2 top-2 z-10 flex cursor-pointer items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+        title="attach an image to this session (or drag-drop / paste one onto the terminal)"
+      >
+        <ImageIcon className="h-3.5 w-3.5" /> Attach image
+        <input type="file" accept="image/*" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = '' }} />
+      </label>
+      {/* drag overlay — raised ON TOP of the iframe (z-30, interactive) only while a file-drag is in
+          progress, so it catches the drop the iframe would otherwise swallow */}
+      {drag && (
+        <div
+          className="absolute inset-0 z-30 flex items-center justify-center border-2 border-dashed border-emerald-400/70 bg-black/60 text-sm font-medium text-emerald-300"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault(); setDrag(false)
+            const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'))
+            if (file) void upload(file)
+          }}
+        >
+          Drop image to send it to the agent
+        </div>
+      )}
+      {/* result toast */}
+      {toast && (
+        <div className={`absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded px-3 py-1.5 text-xs shadow ${
+          toast.kind === 'ok' ? 'bg-emerald-700 text-emerald-50' : toast.kind === 'err' ? 'bg-red-700 text-red-50' : 'bg-neutral-700 text-neutral-100'
+        }`}>
+          {toast.text}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function SessionsPage({
-  sessions, selected, onOpen, onSpawn, onClose, onStop, onDelete, onBulkStop, onBulkDelete,
+  sessions, waiting, selected, onOpen, onSpawn, onClose, onStop, onDelete, onBulkStop, onBulkDelete,
 }: {
   sessions: Session[]
+  waiting: Set<string>
   selected: Selected
   onOpen: (tmux: string, title: string) => void
   onSpawn: () => void
@@ -534,7 +775,7 @@ function SessionsPage({
     setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n })
   const allSelected = sessions.length > 0 && sel.size === sessions.length
   const toggleAll = () => setSel(allSelected ? new Set() : new Set(sessions.map((s) => s.id)))
-  const selectedRunning = sessions.filter((s) => sel.has(s.id) && s.status === 'running')
+  const selectedRunning = sessions.filter((s) => sel.has(s.id) && isLive(s))
   const bulkStop = () => onBulkStop(selectedRunning.map((s) => s.id))
   const bulkDelete = () => { onBulkDelete([...sel]); setSel(new Set()) }
 
@@ -554,12 +795,13 @@ function SessionsPage({
                 }`}
               >
                 <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5">
-                  <span className={`h-1.5 w-1.5 rounded-full ${s.status === 'running' ? 'bg-emerald-500' : 'bg-neutral-500'}`} />
+                  <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
                   <span className="max-w-[180px] truncate">{s.title}</span>
+                  {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
                 </button>
                 {/* per-tab controls — stop (running only) + delete, revealed on hover or when active */}
                 <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
-                  {s.status === 'running' && (
+                  {isLive(s) && (
                     <button className="rounded p-0.5 text-amber-400 hover:bg-neutral-600 hover:text-amber-300" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
                       <Square className="h-3 w-3" />
                     </button>
@@ -638,14 +880,15 @@ function SessionsPage({
               />
               <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} className="pr-6 text-left">
                 <div className="flex items-center gap-2">
-                  <span className={`h-1.5 w-1.5 rounded-full ${s.status === 'running' ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
+                  <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
                   <span className="truncate text-sm font-medium">{s.title}</span>
+                  {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 </div>
-                <div className="mt-1 truncate text-xs text-muted-foreground">{s.agent} · {s.status}</div>
+                <div className="mt-1 truncate text-xs text-muted-foreground">{s.agent} · {statusLabel(s)} · <span className="font-mono">{s.id}</span></div>
                 <div className="mt-1"><StartedBy label={s.spawnedByLabel} /></div>
               </button>
               <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                {s.status === 'running' && (
+                {isLive(s) && (
                   <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-amber-600" onClick={() => onStop(s.id)} title="kill this session's shell">
                     <X className="h-3 w-3" /> Stop
                   </Button>
@@ -669,14 +912,16 @@ function SessionsPage({
                 className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-primary"
               />
               <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                <span className={`h-2 w-2 shrink-0 rounded-full ${s.status === 'running' ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
+                <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot(s)}`} />
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
+                {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{s.agent}</span>
+                <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground md:block" title={s.id}>{s.id}</span>
                 <StartedBy label={s.spawnedByLabel} className="w-40 shrink-0" />
-                <span className="w-16 shrink-0 text-xs text-muted-foreground">{s.status}</span>
+                <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
               <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                {s.status === 'running' && (
+                {isLive(s) && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
                     <Square className="h-3.5 w-3.5" />
                   </Button>
@@ -695,9 +940,44 @@ function SessionsPage({
 
 // ── Inbox ──────────────────────────────────────────────────────────────────────
 const SEEN_KEY = 'aos_inbox_seen'
-/** An item needs the human: an unresolved approval or an unanswered question. */
+/** An item needs the human: an unresolved approval, an unanswered question, or a session that fired a
+ *  Notification (Claude is blocked waiting on a permission prompt / idle input). */
 const isActionRequired = (m: Msg): boolean =>
-  (m.type === 'approval' || m.type === 'question') && m.status === 'pending'
+  ((m.type === 'approval' || m.type === 'question') && m.status === 'pending') ||
+  (m.type === 'notification' && m.status === 'open')
+
+/** An agent flagged a progress update as a key milestone / heads-up (carried in `args.important`). */
+const isImportant = (m: Msg): boolean =>
+  m.type === 'update' && !!(m.args as { important?: boolean } | undefined)?.important
+
+/** Compact relative time for the feed: 12s · 5m · 3h · 2d · 4w. */
+function timeAgo(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60); if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24); if (d < 7) return `${d}d`
+  return `${Math.floor(d / 7)}w`
+}
+
+/** The inbox heading for a message: the session's live display name, falling back to the agent id if a
+ *  run hasn't been named yet. Every card leads with this; the agent is shown as a secondary line. */
+const sessionName = (m: Msg): string => (m.sessionTitle || '').trim() || m.agent
+
+/** Shared two-tier heading: the session name (primary) with the agent id as a secondary line below.
+ *  Inline status badges/verb sit on the agent line so the session name always reads as the title. */
+function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate text-sm font-medium leading-snug">{sessionName(m)}</div>
+      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+        <Bot className="h-3 w-3 shrink-0" />
+        <span className="min-w-0 max-w-full truncate">{m.agent}</span>
+        {children}
+      </div>
+    </div>
+  )
+}
 
 function InboxPage({ messages, me, onOpen, onOpenArtifact }: { messages: Msg[]; me: Member; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void }) {
   const [seen, setSeen] = useState<number>(() => Number(localStorage.getItem(SEEN_KEY) || 0))
@@ -711,48 +991,52 @@ function InboxPage({ messages, me, onOpen, onOpenArtifact }: { messages: Msg[]; 
   }
   const action = messages.filter(isActionRequired)
   const activity = messages.filter((m) => !isActionRequired(m) && !dismissed.has(m.id))
+  const dismissAll = async () => {
+    const ids = activity.map((m) => m.id)
+    if (ids.length === 0) return
+    setDismissed((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n })
+    const r = await api.dismissAllMessages()
+    if (r.error) { setDismissed((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n }); alert(r.error) }
+  }
   const unread = activity.filter((m) => m.createdAt > seen).length
   const markRead = () => {
     const latest = messages.reduce((mx, m) => Math.max(mx, m.createdAt), seen)
     localStorage.setItem(SEEN_KEY, String(latest)); setSeen(latest)
   }
 
-  if (messages.length === 0) return <div className="text-sm text-muted-foreground">No messages yet. Spawn an agent to start.</div>
+  if (messages.length === 0)
+    return <div className="mx-auto max-w-xl pt-10 text-center text-sm text-muted-foreground">No messages yet. Spawn an agent to start.</div>
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-2xl space-y-7">
       <section>
-        <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wider text-muted-foreground">
-          Action required {action.length > 0 && <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">{action.length}</Badge>}
+        <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          Needs you {action.length > 0 && <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">{action.length}</Badge>}
         </div>
         {action.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">Nothing waiting on you. 🎉</div>
+          <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">Nothing waiting on you. 🎉</div>
         ) : (
-          <div className="space-y-3">
-            {action.map((m) => <MessageCard key={m.id} m={m} me={me} onOpen={onOpen} onOpenArtifact={onOpenArtifact} unread={m.createdAt > seen} />)}
+          <div className="space-y-2">
+            {action.map((m) => <ActionItem key={m.id} m={m} me={me} onOpen={onOpen} onDismiss={dismiss} />)}
           </div>
         )}
       </section>
 
       <section>
         <div className="mb-2 flex items-center justify-between">
-          <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Activity{unread > 0 ? ` · ${unread} new` : ''}</span>
-          {unread > 0 && <button className="text-[11px] text-muted-foreground underline hover:text-foreground" onClick={markRead}>mark all read</button>}
+          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity{unread > 0 ? ` · ${unread} new` : ''}</span>
+          <div className="flex items-center gap-3">
+            {unread > 0 && <button className="text-[11px] text-muted-foreground underline hover:text-foreground" onClick={markRead}>mark all read</button>}
+            {activity.length > 0 && <button className="text-[11px] text-muted-foreground underline hover:text-foreground" onClick={dismissAll}>dismiss all</button>}
+          </div>
         </div>
-        <div className="space-y-2">
-          {activity.map((m) => (
-            <div key={m.id} className="group relative">
-              <MessageCard m={m} me={me} onOpen={onOpen} onOpenArtifact={onOpenArtifact} unread={m.createdAt > seen} />
-              <button
-                className="absolute right-1 top-1 hidden rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:block"
-                onClick={() => dismiss(m.id)}
-                title="dismiss from inbox"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
+        {activity.length === 0 ? (
+          <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">No activity yet.</div>
+        ) : (
+          <div className="divide-y divide-border/60 overflow-hidden rounded-lg border">
+            {activity.map((m) => <FeedItem key={m.id} m={m} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onDismiss={dismiss} unread={m.createdAt > seen} />)}
+          </div>
+        )}
       </section>
     </div>
   )
@@ -765,644 +1049,171 @@ const OUTCOME_STYLE: Record<string, { cls: string; label: string }> = {
   unknown: { cls: 'border-neutral-300 text-neutral-600', label: 'ended' },
 }
 
-function MessageCard({ m, me, onOpen, onOpenArtifact, unread }: { m: Msg; me: Member; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; unread?: boolean }) {
+/** An action-required item (approval · question · waiting-notification) — a compact, coloured card with
+ *  its controls inline. Pending only; once resolved the item drops into the read-only Activity feed. */
+function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: (tmux: string, title: string) => void; onDismiss: (id: string) => void }) {
   const [busy, setBusy] = useState(false)
   const [answer, setAnswer] = useState('')
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
-  const dot = unread ? <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" /> : null
+  const time = <span className="shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">{timeAgo(m.createdAt)}</span>
 
-  // ── Artifact (a published deliverable) ──
-  if (m.type === 'artifact') {
-    const meta = (m.args ?? {}) as { artifactId?: string; filename?: string }
+  // ── Notification (Claude is waiting on you — permission prompt / idle input) ──
+  if (m.type === 'notification') {
     return (
-      <Card>
-        <CardContent className="flex items-start justify-between gap-4 p-3">
-          <div className="flex min-w-0 gap-2">
-            {dot}
-            <Package className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm">
-                <span className="font-medium">{m.agent} published</span>
-                {meta.filename && <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{meta.filename}</Badge>}
-              </div>
-              <div className="mt-0.5 truncate text-sm text-muted-foreground">{m.body}</div>
-            </div>
-          </div>
-          {meta.artifactId && onOpenArtifact
-            ? <Button size="sm" variant="secondary" onClick={() => onOpenArtifact(meta.artifactId!)}>View</Button>
-            : <Button size="sm" variant="secondary" onClick={open}>Open</Button>}
-        </CardContent>
-      </Card>
+      <div className="flex items-start gap-2.5 rounded-lg border border-indigo-300 bg-indigo-50/40 px-3 py-2.5">
+        <Bell className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
+        <div className="min-w-0 flex-1">
+          <MsgHeading m={m}><span className="shrink-0 text-indigo-600">· waiting for you</span></MsgHeading>
+          <div className="mt-1 break-words text-xs text-muted-foreground">{m.body}</div>
+        </div>
+        {time}
+        <div className="flex shrink-0 gap-1">
+          <Button size="sm" className="h-7 px-2.5 text-xs" onClick={open}>Open</Button>
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDismiss(m.id)}>Dismiss</Button>
+        </div>
+      </div>
     )
   }
 
-  // ── Approval (action required) ──
+  // ── Approval (pending) ──
   if (m.type === 'approval') {
-    const done = m.status === 'approved' || m.status === 'rejected'
     const mayApprove = canApprove(me.role, (m.level ?? 'head') as 'head' | 'owner')
     const resolve = async (approved: boolean) => { setBusy(true); const r = await api.resolve(m.approvalId!, approved); if (r.error) setBusy(false) }
     return (
-      <Card className={done ? '' : 'border-amber-300 bg-amber-50/40'}>
-        <CardContent className="flex justify-between gap-4 p-4">
-          <div className="min-w-0">
-            <div className="mb-1 flex items-center gap-2">
-              <Badge variant={m.level === 'owner' ? 'destructive' : 'secondary'}>{m.level === 'owner' ? 'owner' : 'admin'} approval</Badge>
-              <span className="text-sm font-medium">{m.title}</span>
-            </div>
-            <div className="break-all font-mono text-xs text-muted-foreground">{JSON.stringify(m.args ?? {})}</div>
-            {m.body && <div className="mt-1 text-xs text-muted-foreground">{m.body}</div>}
-            {m.policyReason && (
-              <div className="mt-1 text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {m.policyReason}</div>
-            )}
+      <div className="rounded-lg border border-amber-300 bg-amber-50/40 px-3 py-2.5">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+          <div className="min-w-0 flex-1">
+            <MsgHeading m={m}>
+              <Badge variant={m.level === 'owner' ? 'destructive' : 'secondary'} className="px-1.5 py-0 text-[10px]">{m.level === 'owner' ? 'owner' : 'admin'} approval</Badge>
+            </MsgHeading>
+            <div className="mt-1 break-words text-sm font-medium">{m.title}</div>
+            {m.policyReason && <div className="mt-0.5 break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {m.policyReason}</div>}
+            {m.body && <div className="mt-0.5 break-words text-xs text-muted-foreground">{m.body}</div>}
+            <div className="mt-1 break-all font-mono text-[10px] text-muted-foreground/80">{JSON.stringify(m.args ?? {})}</div>
           </div>
-          <div className="flex shrink-0 flex-col items-end gap-1">
-            {done ? (
-              <>
-                <Badge variant={m.status === 'approved' ? 'default' : 'destructive'}>{m.status}</Badge>
-                {m.resolvedBy && <span className="text-[10px] text-muted-foreground">by {m.resolvedBy}</span>}
-              </>
-            ) : mayApprove ? (
-              <div className="flex gap-2">
-                <Button size="sm" disabled={busy} onClick={() => resolve(true)}><Check className="mr-1 h-4 w-4" />Approve</Button>
-                <Button size="sm" variant="destructive" disabled={busy} onClick={() => resolve(false)}><X className="mr-1 h-4 w-4" />Reject</Button>
-              </div>
-            ) : (
-              <span className="text-xs text-muted-foreground">{m.level === 'owner' ? 'owner' : 'admin'} approval required</span>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-    )
-  }
-
-  // ── Question (ask-human) ──
-  if (m.type === 'question') {
-    const answered = m.status === 'answered'
-    const send = async () => { if (!answer.trim()) return; setBusy(true); const r = await api.answerQuestion(m.questionId!, answer.trim()); if (r.error) setBusy(false) }
-    return (
-      <Card className={answered ? '' : 'border-sky-300 bg-sky-50/40'}>
-        <CardContent className="p-4">
-          <div className="flex items-center gap-2">
-            <HelpCircle className="h-4 w-4 shrink-0 text-sky-600" />
-            <span className="text-sm font-medium">{m.agent} asks</span>
-            <button className="ml-auto text-xs text-muted-foreground underline hover:text-foreground" onClick={open}>open session</button>
-          </div>
-          <div className="mt-1 text-sm">{m.body}</div>
-          {answered ? (
-            <div className="mt-2 rounded-md bg-muted px-3 py-2 text-sm"><span className="text-xs text-muted-foreground">{m.answeredBy ? `${m.answeredBy} answered: ` : 'answer: '}</span>{m.answer}</div>
+          {time}
+        </div>
+        <div className="mt-2 flex justify-end gap-1.5">
+          {mayApprove ? (
+            <>
+              <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => resolve(true)}><Check className="mr-1 h-3.5 w-3.5" />Approve</Button>
+              <Button size="sm" variant="destructive" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => resolve(false)}><X className="mr-1 h-3.5 w-3.5" />Reject</Button>
+            </>
           ) : (
-            <div className="mt-2 flex gap-2">
-              <Input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="Type your answer — the agent is waiting…" />
-              <Button size="sm" disabled={busy || !answer.trim()} onClick={send}><Send className="mr-1 h-3.5 w-3.5" />Reply</Button>
-            </div>
+            <span className="text-xs text-muted-foreground">{m.level === 'owner' ? 'owner' : 'admin'} approval required</span>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     )
   }
 
-  // ── Completed ──
+  // ── Question (pending) ──
+  const send = async () => { if (!answer.trim()) return; setBusy(true); const r = await api.answerQuestion(m.questionId!, answer.trim()); if (r.error) setBusy(false) }
+  return (
+    <div className="rounded-lg border border-sky-300 bg-sky-50/40 px-3 py-2.5">
+      <div className="flex items-start gap-2.5">
+        <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+        <div className="min-w-0 flex-1">
+          <MsgHeading m={m}><span className="shrink-0 text-sky-600">· asks</span></MsgHeading>
+          <div className="mt-1 break-words text-sm">{m.body}</div>
+        </div>
+        <button className="shrink-0 pt-0.5 text-[11px] text-muted-foreground underline hover:text-foreground" onClick={open}>open</button>
+        {time}
+      </div>
+      <div className="mt-2 flex gap-1.5">
+        <Input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="Type your answer — the agent is waiting…" className="h-8 text-sm" />
+        <Button size="sm" className="h-8 px-2.5 text-xs" disabled={busy || !answer.trim()} onClick={send}><Send className="mr-1 h-3.5 w-3.5" />Reply</Button>
+      </div>
+    </div>
+  )
+}
+
+/** One read-only Activity-feed row — completion · artifact · progress update · resolved approval ·
+ *  answered question · (legacy) start. Compact, the whole row opens the session (artifacts open the
+ *  gallery); the timestamp swaps to a dismiss button on hover. */
+function FeedItem({ m, onOpen, onOpenArtifact, onDismiss, unread }: { m: Msg; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
+  const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
+  const meta = (m.args ?? {}) as { artifactId?: string; filename?: string }
+  const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
+
+  let Icon = Clock
+  let iconCls = 'text-muted-foreground'
+  let verb: ReactNode = null      // the action, on the agent line ("finished", "published", …)
+  let badge: ReactNode = null     // status/outcome badge, on the session-name line
+  let detail: ReactNode = null    // the body / specifics, muted
+  let extra: ReactNode = null     // optional block below (e.g. an answer)
+  let highlight = false
+
   if (m.type === 'completed') {
     const o = OUTCOME_STYLE[m.outcome ?? 'unknown'] ?? OUTCOME_STYLE.unknown
-    const Icon = m.outcome === 'failure' ? XCircle : CheckCircle2
-    return (
-      <Card>
-        <CardContent className="flex items-start justify-between gap-4 p-3">
-          <div className="flex min-w-0 gap-2">
-            {dot}
-            <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${m.outcome === 'failure' ? 'text-red-600' : 'text-emerald-600'}`} />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm">
-                <span className="font-medium">{m.agent} finished</span>
-                <Badge variant="outline" className={`px-1.5 py-0 text-[10px] font-normal ${o.cls}`}>{o.label}</Badge>
-              </div>
-              <div className="mt-0.5 text-sm text-muted-foreground">{m.body}</div>
-            </div>
-          </div>
-          <Button size="sm" variant="secondary" onClick={open}>Open</Button>
-        </CardContent>
-      </Card>
-    )
+    Icon = m.outcome === 'failure' ? XCircle : CheckCircle2
+    iconCls = m.outcome === 'failure' ? 'text-red-600' : 'text-emerald-600'
+    verb = 'finished'; detail = m.body
+    badge = <Badge variant="outline" className={`px-1.5 py-0 text-[10px] font-normal ${o.cls}`}>{o.label}</Badge>
+  } else if (m.type === 'artifact') {
+    Icon = Package; iconCls = 'text-violet-600'
+    verb = 'published'; detail = m.body
+    badge = meta.filename ? <Badge variant="outline" className="max-w-[40%] px-1.5 py-0 text-[10px] font-normal">{meta.filename}</Badge> : null
+  } else if (m.type === 'approval') {
+    Icon = m.status === 'approved' ? CheckCircle2 : XCircle
+    iconCls = m.status === 'approved' ? 'text-emerald-600' : 'text-red-600'
+    verb = <>{m.title}{m.resolvedBy && <span className="text-muted-foreground"> · by {m.resolvedBy}</span>}</>
+    badge = <Badge variant={m.status === 'approved' ? 'default' : 'destructive'} className="px-1.5 py-0 text-[10px]">{m.status}</Badge>
+  } else if (m.type === 'question') {
+    Icon = HelpCircle; iconCls = 'text-sky-600'
+    verb = 'asked'; detail = m.body
+    extra = m.answer ? <div className="mt-1 rounded bg-muted px-2 py-1 text-xs"><span className="text-muted-foreground">{m.answeredBy ? `${m.answeredBy}: ` : 'answer: '}</span>{m.answer}</div> : null
+  } else if (isImportant(m)) {
+    Icon = AlertTriangle; iconCls = 'text-amber-600'; highlight = true
+    detail = m.body
+    badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">important</Badge>
+  } else if (m.type === 'update') {
+    Icon = Activity; iconCls = 'text-muted-foreground'
+    detail = m.body
+  } else {
+    // legacy 'task' (started) rows from older runs — kept renderable
+    Icon = Rocket; iconCls = 'text-muted-foreground'
+    verb = 'started'; detail = m.body
   }
 
-  // ── Task (started) + Update (progress) ──
-  const started = m.type === 'task'
-  const provenance = started ? (m.source?.startsWith('automation:') ? '⏱ automation' : 'manual') : null
   return (
-    <Card>
-      <CardContent className="flex items-start justify-between gap-4 p-3">
-        <div className="flex min-w-0 gap-2">
-          {dot}
-          {started ? <Rocket className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" /> : <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="font-medium">{started ? `${m.agent} started` : `${m.agent} update`}</span>
-              {provenance && <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{provenance}</Badge>}
-            </div>
-            <div className="mt-0.5 truncate text-sm text-muted-foreground">{m.body}</div>
-          </div>
+    <div
+      onClick={goArtifact ?? open}
+      className={`group relative flex cursor-pointer items-start gap-2.5 px-3 py-2 hover:bg-muted/50 ${highlight ? 'bg-amber-50/40' : ''}`}
+    >
+      <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${unread ? 'bg-primary' : 'bg-transparent'}`} />
+      <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${iconCls}`} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-sm leading-snug">
+          <span className="min-w-0 truncate font-medium">{sessionName(m)}</span>
+          {badge}
         </div>
-        <Button size="sm" variant="secondary" onClick={open}>Open</Button>
-      </CardContent>
-    </Card>
-  )
-}
-
-// ── Connectors ───────────────────────────────────────────────────────────────────
-const TYPE_ICON: Record<string, string> = { slack: '💬', github: '🐙', gdrive: '📁', gmail: '✉️', composio: '🧩', custom: '🔌', 'custom-remote': '🌐' }
-
-/** One connector row — reused across the Company / My / team-members sections. */
-function ConnectorCard({ c, me, busy, onToggle, onRemove, onShare }: { c: Connector; me?: Member | null; busy: string; onToggle: (id: string, enabled: boolean) => void; onRemove: (id: string) => void; onShare?: (id: string, shared: boolean) => void }) {
-  const isAdmin = me?.role === 'owner' || me?.role === 'admin'
-  // The owner of a personal connector (or an admin) may share it with the whole team.
-  const canShare = c.scope === 'personal' && !!onShare && (isAdmin || c.ownerMemberId === me?.id)
-  return (
-    <Card>
-      <CardContent className="flex items-center justify-between gap-4 p-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span>{TYPE_ICON[c.type] ?? '🔌'}</span>
-            <span className="text-sm font-medium">{c.label}</span>
-            <Badge variant={c.enabled ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px]">
-              {c.enabled ? 'enabled' : 'disabled'}
-            </Badge>
-            {c.scope === 'personal' && c.shared && (
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-emerald-600" title="Shared with the whole team — runs as you">shared with team</Badge>
-            )}
-          </div>
-          <div className="mt-0.5 truncate text-xs text-muted-foreground">{c.description}</div>
-          <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
-            {c.transport === 'stdio'
-              ? `${c.command} ${c.args.join(' ')}${c.envKeys.length ? ` · ${c.envKeys.join(', ')}` : ''}`
-              : `${c.transport} · ${c.url || 'per-user session, auto-minted at launch'}${c.headerKeys.length ? ` · ${c.headerKeys.join(', ')}` : ''}`}
-          </div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <Bot className="h-3 w-3 shrink-0" />
+          <span className="max-w-[50%] shrink-0 truncate">{m.agent}</span>
+          {verb && <span className="min-w-0 truncate">· {verb}</span>}
+          {detail && <span className="min-w-0 truncate">· {detail}</span>}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {canShare && (
-            <Button size="sm" variant="outline" disabled={busy === c.id} onClick={() => onShare!(c.id, !c.shared)} title={c.shared ? 'Stop sharing with the team' : 'Share with the whole team (agents act as you)'}>
-              {c.shared ? 'Unshare' : 'Share with team'}
-            </Button>
-          )}
-          <Button size="sm" variant="outline" disabled={busy === c.id} onClick={() => onToggle(c.id, !c.enabled)}>
-            {c.enabled ? 'Disable' : 'Enable'}
-          </Button>
-          <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === c.id} onClick={() => onRemove(c.id)} title="remove">
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-/** A clickable catalog tile that opens the add dialog at the given scope. */
-function CatalogTile({ t, onPick }: { t: CatalogEntry; onPick: () => void }) {
-  return (
-    <button onClick={onPick} className="rounded-lg border p-3 text-left hover:bg-muted">
-      <div className="flex items-center gap-2 text-sm font-medium">
-        <span>{TYPE_ICON[t.type] ?? '🔌'}</span>
-        {t.label}
-        <Plus className="ml-auto h-4 w-4 text-emerald-600" />
+        {extra}
       </div>
-      <div className="mt-1 text-xs text-muted-foreground">{t.description}</div>
-    </button>
-  )
-}
-
-/** Initiate connecting an app via Composio → opens the hosted OAuth link. Company scope is gated to
- *  owner/admin by the server; personal scope is the member's own. */
-// The Composio toolkit catalog (~1000 apps) for the connect autocomplete — fetched once per page load
-// and shared by every ConnectApp instance via a module-level promise.
-let toolkitsPromise: Promise<{ slug: string; name: string }[]> | null = null
-function useComposioToolkits(): { slug: string; name: string }[] {
-  const [list, setList] = useState<{ slug: string; name: string }[]>([])
-  useEffect(() => {
-    if (!toolkitsPromise) toolkitsPromise = api.composioToolkits().then((r) => r.toolkits ?? []).catch(() => [])
-    let alive = true
-    toolkitsPromise.then((t) => { if (alive) setList(t) })
-    return () => { alive = false }
-  }, [])
-  return list
-}
-const FALLBACK_TOOLKITS = ['slackbot', 'slack', 'gmail', 'github', 'googledrive', 'googlesheets', 'googlecalendar', 'notion', 'linear', 'jira', 'hubspot']
-
-function ConnectApp({ scope, onDone }: { scope: 'company' | 'personal'; onDone: () => void }) {
-  const [toolkit, setToolkit] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [hint, setHint] = useState('')
-  const toolkits = useComposioToolkits()
-  const connect = async () => {
-    const t = toolkit.trim().toLowerCase()
-    if (!t) return
-    setBusy(true); setHint('')
-    const r = await api.connectApp({ toolkit: t, scope })
-    setBusy(false)
-    if (r.error) return setHint('⚠ ' + r.error)
-    if (r.redirectUrl) {
-      window.open(r.redirectUrl, '_blank', 'noopener')
-      setToolkit(''); setHint('Authorize in the opened tab, then Refresh.')
-    }
-  }
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2">
-      <input
-        list="composio-toolkits"
-        value={toolkit}
-        onChange={(e) => setToolkit(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && connect()}
-        placeholder={`connect ${scope === 'company' ? 'a company' : 'your'} app — type to search ${toolkits.length || ''} apps…`}
-        className="h-8 w-[280px] rounded-md border bg-background px-2 text-sm"
-      />
-      <datalist id="composio-toolkits">
-        {(toolkits.length ? toolkits : FALLBACK_TOOLKITS.map((s) => ({ slug: s, name: s }))).map((t) => <option key={t.slug} value={t.slug}>{t.name}</option>)}
-      </datalist>
-      <Button size="sm" onClick={connect} disabled={busy || !toolkit.trim()}>Connect</Button>
-      <Button size="sm" variant="ghost" onClick={onDone}>Refresh</Button>
-      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
-    </div>
-  )
-}
-
-/** Live Composio connections (read from composio.dev) — company-wide + the member's own apps. */
-/** A small chip for a connected app / server (toolkit or label + a status badge + optional remove). */
-function AppChip({ name, badge, badgeVariant = 'secondary', onRemove, removing }: { name: string; badge?: string; badgeVariant?: 'secondary' | 'outline'; onRemove?: () => void; removing?: boolean }) {
-  return (
-    <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-1.5 text-sm">
-      <span className="font-medium capitalize">{name}</span>
-      {badge && <Badge variant={badgeVariant} className="px-1.5 py-0 text-[10px]">{badge}</Badge>}
-      {onRemove && (
-        <button onClick={onRemove} disabled={removing} title="disconnect" className="-mr-1 ml-0.5 text-muted-foreground hover:text-destructive disabled:opacity-40">
-          <X className="h-3.5 w-3.5" />
-        </button>
-      )}
-    </div>
-  )
-}
-
-/**
- * The COMPANY section — everything wired at the company level, shared by every agent: Composio company
- * apps, the native Slack app, and custom MCP servers. Owner/admin get the edit controls; members see
- * the same picture read-only. One place, no duplication.
- */
-function CompanySection({ me, custom, catalog, cardProps, onPickCatalog }: {
-  me: Member | null
-  custom: Connector[]
-  catalog: CatalogEntry[]
-  cardProps: { me: Member | null; busy: string; onToggle: (id: string, enabled: boolean) => void; onRemove: (id: string) => void; onShare: (id: string, shared: boolean) => void }
-  onPickCatalog: (t: CatalogEntry) => void
-}) {
-  const isAdmin = me?.role === 'owner' || me?.role === 'admin'
-  const [ov, setOv] = useState<IntegrationsOverview | null>(null)
-  const [showCustom, setShowCustom] = useState(false)
-  const [busyId, setBusyId] = useState('')
-  const reload = () => api.integrationsOverview().then(setOv).catch(() => {})
-  useEffect(() => { reload() }, [])
-  const disconnect = async (id: string, label: string) => {
-    if (!window.confirm(`Disconnect ${label} for the whole company? Every agent loses access.`)) return
-    setBusyId(id)
-    const r = await api.disconnectApp({ id, scope: 'company' })
-    setBusyId('')
-    if (r.error) return window.alert('Could not disconnect: ' + r.error)
-    reload()
-  }
-  return (
-    <section className="space-y-5 rounded-lg border p-4">
-      <div className="flex items-center gap-2">
-        <Building2 className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium">Company</span>
-        <span className="text-[11px] text-muted-foreground">— shared by every agent{isAdmin ? '' : ' · read-only'}</span>
-      </div>
-
-      {/* Composio apps (company entity) */}
-      <div>
-        <div className="mb-1.5 flex items-center gap-2">
-          <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Apps via Composio</span>
-          {ov?.composio.keySet && <code className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground" title="Composio user_id for company-wide apps">{ov.composio.entity}</code>}
-        </div>
-        {!ov ? (
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        ) : !ov.composio.keySet ? (
-          <p className="text-xs text-muted-foreground">No Composio API key yet{isAdmin ? ' — add one in Settings → Integrations to connect company apps.' : ' (an admin sets this up in Settings).'}</p>
-        ) : ov.composio.apps.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No company apps connected yet.</p>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {ov.composio.apps.map((a) => (
-              <AppChip
-                key={a.id}
-                name={a.toolkit}
-                badge={a.status.toLowerCase()}
-                badgeVariant={a.status === 'ACTIVE' ? 'secondary' : 'outline'}
-                onRemove={isAdmin ? () => disconnect(a.id, a.toolkit) : undefined}
-                removing={busyId === a.id}
-              />
-            ))}
-          </div>
-        )}
-        {isAdmin && ov?.composio.keySet && <ConnectApp scope="company" onDone={reload} />}
-      </div>
-
-      {/* Native Slack */}
-      <div>
-        <div className="mb-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">Slack (native)</div>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="font-medium">Slack app</span>
-          {ov?.slack.connected
-            ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">connected{ov.slack.botUserId ? ` · ${ov.slack.botUserId}` : ''}</Badge>
-            : ov?.slack.configured
-              ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-amber-600">configured · not connected</Badge>
-              : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
-          {isAdmin
-            ? <a href="#/settings" className="text-[11px] text-muted-foreground underline hover:text-foreground">set up in Settings → Integrations</a>
-            : <span className="text-[11px] text-muted-foreground">managed by an admin</span>}
-        </div>
-      </div>
-
-      {/* Native Discord */}
-      <div>
-        <div className="mb-1.5 text-[11px] uppercase tracking-wider text-muted-foreground">Discord (native)</div>
-        <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="font-medium">Discord bot</span>
-          {ov?.discord?.connected
-            ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">connected{ov.discord.botUserId ? ` · ${ov.discord.botUserId}` : ''}</Badge>
-            : ov?.discord?.configured
-              ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-amber-600">configured · not connected</Badge>
-              : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
-          {isAdmin
-            ? <a href="#/settings" className="text-[11px] text-muted-foreground underline hover:text-foreground">set up in Settings → Integrations</a>
-            : <span className="text-[11px] text-muted-foreground">managed by an admin</span>}
-        </div>
-      </div>
-
-      {/* Custom MCP servers (org scope) — collapsed by default; the power-user escape hatch for
-          anything not in Composio (internal/self-hosted servers). Hidden for members with none. */}
-      {(isAdmin || custom.length > 0) && (
-        <div>
+      <div className="relative shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">
+        <span className={onDismiss ? 'group-hover:invisible' : undefined}>{timeAgo(m.createdAt)}</span>
+        {onDismiss && (
           <button
-            type="button"
-            onClick={() => setShowCustom((v) => !v)}
-            className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
+            className="absolute right-0 top-0 hidden rounded p-0.5 hover:bg-muted hover:text-foreground group-hover:block"
+            onClick={(e) => { e.stopPropagation(); onDismiss(m.id) }}
+            title="dismiss from inbox"
           >
-            {showCustom ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            Custom MCP servers{custom.length ? ` (${custom.length})` : ''}
+            <X className="h-3.5 w-3.5" />
           </button>
-          {showCustom && (
-            <div className="mt-2">
-              {isAdmin ? (
-                <>
-                  <p className="mb-2 text-xs text-muted-foreground">For anything Composio doesn’t cover — an internal or self-hosted MCP server (a local command or a remote URL). Added <b>company-wide</b> (every agent gets it).</p>
-                  {custom.length > 0 && <div className="mb-2 space-y-2">{custom.map((c) => <ConnectorCard key={c.id} c={c} {...cardProps} />)}</div>}
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                    {catalog.map((t) => <CatalogTile key={t.type} t={t} onPick={() => onPickCatalog(t)} />)}
-                  </div>
-                </>
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {custom.map((c) => <AppChip key={c.id} name={c.label} badge={c.enabled ? c.type : `${c.type} · off`} badgeVariant="outline" />)}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </section>
-  )
-}
-
-/** The MINE section — the member's own Composio connections; they only load in sessions they start. */
-function MyConnections() {
-  const [data, setData] = useState<ConnectionsResp | null>(null)
-  const [busyId, setBusyId] = useState('')
-  const reload = () => api.connections().then(setData).catch(() => {})
-  useEffect(() => { reload() }, [])
-  const disconnect = async (id: string, label: string) => {
-    if (!window.confirm(`Disconnect your ${label} connection?`)) return
-    setBusyId(id)
-    const r = await api.disconnectApp({ id, scope: 'personal' })
-    setBusyId('')
-    if (r.error) return window.alert('Could not disconnect: ' + r.error)
-    reload()
-  }
-  return (
-    <section className="space-y-2 rounded-lg border p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <User className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium">Mine</span>
-        <span className="text-[11px] text-muted-foreground">— your own apps, only load in sessions you start</span>
-        {data?.me && <code className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground" title="your Composio user_id">{data.me}</code>}
+        )}
       </div>
-      {!data ? (
-        <p className="text-xs text-muted-foreground">Loading…</p>
-      ) : !data.keySet ? (
-        <p className="text-xs text-muted-foreground">Connecting your own apps needs a company Composio key (an admin adds it in Settings → Integrations).</p>
-      ) : (
-        <>
-          {data.mine.length === 0 ? (
-            <p className="text-xs text-muted-foreground">You haven’t connected any personal apps yet.</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {data.mine.map((c) => <AppChip key={c.id} name={c.toolkit} badge={c.status.toLowerCase()} badgeVariant={c.status === 'ACTIVE' ? 'secondary' : 'outline'} onRemove={() => disconnect(c.id, c.toolkit)} removing={busyId === c.id} />)}
-            </div>
-          )}
-          <ConnectApp scope="personal" onDone={reload} />
-        </>
-      )}
-    </section>
-  )
-}
-
-function ConnectorsPage({ me }: { me: Member | null }) {
-  const [data, setData] = useState<ConnectorsResp | null>(null)
-  const [adding, setAdding] = useState<{ template: CatalogEntry; scope: ConnectorScope } | null>(null)
-  const [busy, setBusy] = useState('')
-
-  // Coerce any non-conforming response (e.g. a 404 from an older server build) into an empty,
-  // well-shaped value so the page degrades gracefully instead of crashing on `.length`/`.map`.
-  const load = () =>
-    api.connectors().then((d) =>
-      setData({
-        connectors: Array.isArray(d?.connectors) ? d.connectors : [],
-        catalog: Array.isArray(d?.catalog) ? d.catalog : [],
-        native: Array.isArray(d?.native) ? d.native : [],
-      }),
-    )
-  useEffect(() => { load() }, [])
-
-  const remove = async (id: string) => {
-    setBusy(id)
-    await api.deleteConnector(id)
-    await load()
-    setBusy('')
-  }
-  const toggle = async (id: string, enabled: boolean) => {
-    setBusy(id)
-    await api.toggleConnector(id, enabled)
-    await load()
-    setBusy('')
-  }
-  const share = async (id: string, shared: boolean) => {
-    setBusy(id)
-    await api.shareConnector(id, shared)
-    await load()
-    setBusy('')
-  }
-
-  const conns = data?.connectors ?? []
-  // The only connector ROWS are bespoke custom MCP servers (the escape hatch); Composio apps + native
-  // Slack are surfaced live inside <CompanySection/> and <MyConnections/>.
-  const custom = conns.filter((c) => c.type === 'custom' || c.type === 'custom-remote')
-  const cardProps = { me, busy, onToggle: toggle, onRemove: remove, onShare: share }
-
-  return (
-    <div className="max-w-4xl space-y-6">
-      <p className="text-sm text-muted-foreground">
-        Connectors give your claude-code agents real tools. <b>Company</b> integrations are shared by every agent;
-        <b> your</b> connections only load in sessions you start. Every call still passes the gate, so risky actions
-        land in the Inbox for approval.
-      </p>
-
-      <CompanySection me={me} custom={custom} catalog={data?.catalog ?? []} cardProps={cardProps} onPickCatalog={(t) => setAdding({ template: t, scope: 'org' })} />
-
-      <MyConnections />
-
-      {adding && (
-        <AddConnectorDialog
-          template={adding.template}
-          scope={adding.scope}
-          onClose={() => setAdding(null)}
-          onAdded={async () => { setAdding(null); await load() }}
-        />
-      )}
     </div>
   )
 }
 
-function AddConnectorDialog({ template, scope, onClose, onAdded }: { template: CatalogEntry; scope: ConnectorScope; onClose: () => void; onAdded: () => void }) {
-  const isStdioCustom = template.type === 'custom'
-  const isRemoteCustom = template.type === 'custom-remote'
-  const isCustom = isStdioCustom || isRemoteCustom
-  const isRemote = template.transport !== 'stdio'
-  const [vals, setVals] = useState<Record<string, string>>({}) // structured field values, keyed by field.key
-  const [label, setLabel] = useState(isCustom ? '' : template.label)
-  const [command, setCommand] = useState(template.command ?? 'npx')
-  const [argsText, setArgsText] = useState((template.args ?? []).join(' '))
-  const [url, setUrl] = useState('')
-  const [customEnv, setCustomEnv] = useState('') // KEY=value per line (stdio custom)
-  const [customHeaders, setCustomHeaders] = useState('') // Name: value per line (remote custom)
-  const [hint, setHint] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const submit = async () => {
-    setBusy(true)
-    setHint('')
-    const req: AddConnectorReq = { type: template.type, label: label || undefined, transport: template.transport, scope }
-    if (isStdioCustom) {
-      const env: Record<string, string> = {}
-      for (const line of customEnv.split('\n')) {
-        const i = line.indexOf('=')
-        if (i > 0) env[line.slice(0, i).trim()] = line.slice(i + 1).trim()
-      }
-      req.command = command
-      req.args = argsText.split(/\s+/).filter(Boolean)
-      req.env = env
-    } else if (isRemoteCustom) {
-      const headers: Record<string, string> = {}
-      for (const line of customHeaders.split('\n')) {
-        const i = line.indexOf(':')
-        if (i > 0) headers[line.slice(0, i).trim()] = line.slice(i + 1).trim()
-      }
-      req.url = url
-      req.headers = headers
-    } else {
-      // A structured template (slack/github/composio/…): route each field's value by its target.
-      const env: Record<string, string> = {}
-      const headers: Record<string, string> = {}
-      for (const f of template.fields) {
-        const v = vals[f.key]
-        if (!v) continue
-        if (f.target === 'url') req.url = v
-        else if (f.target === 'header') headers[f.key] = v
-        else env[f.key] = v
-      }
-      if (Object.keys(env).length) req.env = env
-      if (Object.keys(headers).length) req.headers = headers
-    }
-    const res = await api.addConnector(req)
-    setBusy(false)
-    if ('error' in res) return setHint('⚠ ' + res.error)
-    onAdded()
-  }
-
-  return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <span>{TYPE_ICON[template.type] ?? '🔌'}</span> Add {template.label}
-            <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{scope === 'personal' ? 'personal · only you' : 'company · whole team'}</Badge>
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="space-y-3">
-          <p className="text-xs text-muted-foreground">{template.description}</p>
-
-          <Field label="Name">
-            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={template.label} />
-          </Field>
-
-          {isStdioCustom ? (
-            <>
-              <Field label="Command">
-                <Input value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npx" />
-              </Field>
-              <Field label="Arguments">
-                <Input value={argsText} onChange={(e) => setArgsText(e.target.value)} placeholder="-y @scope/server-name" />
-              </Field>
-              <Field label="Environment (KEY=value per line)">
-                <Textarea value={customEnv} onChange={(e) => setCustomEnv(e.target.value)} className="min-h-[72px] font-mono text-xs" placeholder={'API_TOKEN=…\nWORKSPACE=…'} />
-              </Field>
-            </>
-          ) : isRemoteCustom ? (
-            <>
-              <Field label="Server URL" help="The MCP server's HTTP/SSE endpoint">
-                <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com/mcp" />
-              </Field>
-              <Field label="Headers (Name: value per line)">
-                <Textarea value={customHeaders} onChange={(e) => setCustomHeaders(e.target.value)} className="min-h-[72px] font-mono text-xs" placeholder={'Authorization: Bearer …\nX-API-Key: …'} />
-              </Field>
-            </>
-          ) : (
-            template.fields.map((f) => (
-              <Field key={f.key} label={f.label} help={f.help}>
-                <Input
-                  value={vals[f.key] ?? ''}
-                  onChange={(e) => setVals((p) => ({ ...p, [f.key]: e.target.value }))}
-                  placeholder={f.placeholder}
-                  type={f.target === 'url' ? 'text' : /token|secret|key|password/i.test(f.key) ? 'password' : 'text'}
-                />
-              </Field>
-            ))
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            {isRemote ? (
-              <>Connects to a remote MCP endpoint over <span className="font-mono">{template.transport}</span>.</>
-            ) : (
-              <>Runs <span className="font-mono">{isStdioCustom ? command || 'npx' : template.command} {isStdioCustom ? argsText : (template.args ?? []).join(' ')}</span>.</>
-            )}{' '}
-            Credentials are stored locally in your data home.
-          </p>
-        </div>
-
-        <DialogFooter>
-          {hint && <span className="mr-auto self-center font-mono text-xs text-destructive">{hint}</span>}
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={busy}><Plug className="mr-1 h-4 w-4" />Connect</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
+// Connectors UI lives in ./connectors.tsx (ConnectorsPage imported above).
 function Field({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
   return (
     <div>
@@ -1418,7 +1229,8 @@ const fmtSize = (n: number): string =>
   n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
 
 /** Browse + edit files in the instance's data home. The server confines every path to the
- *  home root; this is just navigation (folders/breadcrumb) + a text editor for the open file. */
+ *  home root; navigation (folders/breadcrumb) + a text editor, plus upload (button or drag-drop),
+ *  download, new-folder and delete. */
 function FilesPage() {
   const [dir, setDir] = useState('')
   const [listing, setListing] = useState<DirListing | null>(null)
@@ -1427,6 +1239,9 @@ function FilesPage() {
   const [content, setContent] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  const [dragging, setDragging] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const dragDepth = useRef(0)
 
   const loadDir = (rel: string) => {
     setHint('')
@@ -1436,6 +1251,7 @@ function FilesPage() {
     })
   }
   useEffect(() => { loadDir('') }, [])
+  const reload = () => loadDir(dir)
 
   const join = (name: string) => (dir ? `${dir}/${name}` : name)
   const open = (name: string) => {
@@ -1456,6 +1272,48 @@ function FilesPage() {
     setHint('saved'); setTimeout(() => setHint(''), 1500)
   }
 
+  const uploadFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files)
+    if (!list.length) return
+    setBusy(true); setHint(`uploading ${list.length} file${list.length === 1 ? '' : 's'}…`)
+    let ok = 0; let err = ''
+    for (const f of list) {
+      const r = await api.files.upload(dir, f)
+      if (r.error) err = r.error; else ok++
+    }
+    setBusy(false)
+    setHint(err ? `⚠ ${err}` : `uploaded ${ok} file${ok === 1 ? '' : 's'}`)
+    if (!err) setTimeout(() => setHint(''), 1500)
+    reload()
+  }
+
+  const newFolder = async () => {
+    const name = prompt('New folder name')?.trim()
+    if (!name) return
+    setBusy(true); setHint('')
+    const r = await api.files.mkdir(join(name))
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    reload()
+  }
+
+  const removeEntry = async (e: FileEntry) => {
+    const what = e.type === 'dir' ? 'folder (and everything in it)' : 'file'
+    if (!confirm(`Delete ${what} "${e.name}"? This cannot be undone.`)) return
+    setBusy(true); setHint('')
+    const rel = join(e.name)
+    const r = await api.files.remove(rel)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    if (openPath === rel) { setOpenPath(null); setFile(null); setContent('') }
+    reload()
+  }
+
+  const onDrop = (ev: ReactDragEvent) => {
+    ev.preventDefault(); dragDepth.current = 0; setDragging(false)
+    if (ev.dataTransfer.files?.length) void uploadFiles(ev.dataTransfer.files)
+  }
+
   const segments = dir ? dir.split('/') : []
   const parent = segments.slice(0, -1).join('/')
   const dirty = file?.content !== undefined && content !== file.content
@@ -1463,47 +1321,85 @@ function FilesPage() {
   return (
     <div className="space-y-3">
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Browse and edit files in this instance's data home
+        Browse, edit and manage files in this instance's data home
         {listing && <> (<span className="font-mono text-xs">{listing.root}</span>)</>} — its agents, policy,
-        audit logs and connector configs. Confined to the home; you can view and save text files (no create or delete).
+        audit logs and connector configs. Confined to the home; upload, download, create folders and delete here.
       </p>
 
-      {/* breadcrumb */}
-      <div className="flex flex-wrap items-center gap-0.5 text-sm">
-        <button className="rounded px-1.5 py-0.5 font-medium hover:bg-muted" onClick={() => loadDir('')}>home</button>
-        {segments.map((s, i) => (
-          <span key={i} className="flex items-center gap-0.5">
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-            <button className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => loadDir(segments.slice(0, i + 1).join('/'))}>{s}</button>
-          </span>
-        ))}
+      {/* breadcrumb + toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-0.5 text-sm">
+          <button className="rounded px-1.5 py-0.5 font-medium hover:bg-muted" onClick={() => loadDir('')}>home</button>
+          {segments.map((s, i) => (
+            <span key={i} className="flex items-center gap-0.5">
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+              <button className="rounded px-1.5 py-0.5 hover:bg-muted" onClick={() => loadDir(segments.slice(0, i + 1).join('/'))}>{s}</button>
+            </span>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={newFolder} disabled={busy}>
+            <FolderPlus className="h-3.5 w-3.5" /> New folder
+          </Button>
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={() => fileInput.current?.click()} disabled={busy}>
+            <Upload className="h-3.5 w-3.5" /> Upload
+          </Button>
+          <input ref={fileInput} type="file" multiple className="hidden"
+            onChange={(e) => { if (e.target.files) void uploadFiles(e.target.files); e.currentTarget.value = '' }} />
+        </div>
       </div>
       {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
 
       <div className="grid gap-3 lg:grid-cols-[320px_1fr]">
-        {/* directory listing */}
-        <div className="h-fit divide-y rounded-lg border">
+        {/* directory listing — drop a file anywhere here to upload into the current folder */}
+        <div
+          className={`relative h-fit divide-y rounded-lg border ${dragging ? 'ring-2 ring-primary ring-offset-2' : ''}`}
+          onDragEnter={(e) => { e.preventDefault(); dragDepth.current++; setDragging(true) }}
+          onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
+          onDragLeave={(e) => { e.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false) } }}
+          onDrop={onDrop}
+        >
+          {dragging && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-primary/10 text-sm font-medium text-primary">
+              <Upload className="mr-1.5 h-4 w-4" /> Drop to upload here
+            </div>
+          )}
           {dir && (
             <button className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-muted-foreground hover:bg-muted" onClick={() => loadDir(parent)}>
               <Folder className="h-4 w-4 shrink-0" /> ..
             </button>
           )}
-          {listing && listing.entries.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">Empty folder.</div>}
+          {listing && listing.entries.length === 0 && <div className="px-3 py-2 text-xs text-muted-foreground">Empty folder — drop files here to upload.</div>}
           {listing?.entries.map((e) => {
             const isOpen = openPath === join(e.name)
             return (
-              <button
-                key={e.name}
-                disabled={e.type === 'other'}
-                onClick={() => (e.type === 'dir' ? loadDir(join(e.name)) : open(e.name))}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted disabled:opacity-50 ${isOpen ? 'bg-muted' : ''}`}
-              >
-                {e.type === 'dir'
-                  ? <Folder className="h-4 w-4 shrink-0 text-sky-600" />
-                  : <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />}
-                <span className={`min-w-0 flex-1 truncate ${isOpen ? 'font-medium text-primary' : ''}`}>{e.name}</span>
-                {e.type === 'file' && <span className="shrink-0 text-[11px] text-muted-foreground">{fmtSize(e.size)}</span>}
-              </button>
+              <div key={e.name} className={`group flex items-center gap-1 pr-1.5 hover:bg-muted ${isOpen ? 'bg-muted' : ''}`}>
+                <button
+                  disabled={e.type === 'other'}
+                  onClick={() => (e.type === 'dir' ? loadDir(join(e.name)) : open(e.name))}
+                  className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left text-sm disabled:opacity-50"
+                >
+                  {e.type === 'dir'
+                    ? <Folder className="h-4 w-4 shrink-0 text-sky-600" />
+                    : <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />}
+                  <span className={`min-w-0 flex-1 truncate ${isOpen ? 'font-medium text-primary' : ''}`}>{e.name}</span>
+                  {e.type === 'file' && <span className="shrink-0 text-[11px] text-muted-foreground">{fmtSize(e.size)}</span>}
+                </button>
+                <div className="flex shrink-0 items-center opacity-0 group-hover:opacity-100">
+                  {e.type === 'file' && (
+                    <a href={api.files.downloadUrl(join(e.name))} download={e.name} title="download"
+                      className="rounded p-1 text-muted-foreground hover:bg-neutral-200 hover:text-foreground dark:hover:bg-neutral-700">
+                      <Download className="h-3.5 w-3.5" />
+                    </a>
+                  )}
+                  {e.type !== 'other' && (
+                    <button title="delete" onClick={() => removeEntry(e)}
+                      className="rounded p-1 text-muted-foreground hover:bg-neutral-200 hover:text-red-500 dark:hover:bg-neutral-700">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
             )
           })}
         </div>
@@ -1896,13 +1792,14 @@ function DiscordSetupGuide() {
               <strong> MESSAGE CONTENT INTENT</strong> (and Server Members if you'll map members later), then save. Without it the
               bot receives empty message text.
             </li>
+            <li><strong>Save</strong> the bot token below. The status badge flips to <strong className="text-emerald-600">connected</strong> within a second or two.</li>
             <li>
-              <strong>Invite the bot</strong> to your server: OAuth2 → URL Generator → scopes <code className="text-[11px]">bot</code>,
-              permissions <em>View Channels · Send Messages · Read Message History</em> — or use this link template (swap in your
-              application id):
-              <div className="mt-2"><CopyBlock text={`https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot&permissions=${DISCORD_BOT_PERMISSIONS}`} label="Copy invite URL" /></div>
+              <strong>Invite the bot to your server</strong> with the <strong>Invite bot to your server</strong> button below (it
+              appears once the bot connects — the application id is auto-detected — or paste the Application ID to invite before
+              connecting). This grants <em>View Channels · Send Messages · Read Message History</em>. <span className="text-foreground">Skipping
+              this is the usual "connected but nothing happens" cause</span> — the bot is on the Gateway but in no server, so it sees no messages.
             </li>
-            <li><strong>Save</strong> below. The status badge flips to <strong className="text-emerald-600">connected</strong> within a second or two. Then add a <strong>Discord message</strong> automation on the Automations page.</li>
+            <li>Finally, add a <strong>Discord message</strong> automation on the Automations page — the bot stays silent on a mention unless one matches.</li>
           </ol>
           <p className="border-t pt-2">
             The bot connects over Discord's <strong>Gateway</strong> (an outbound WebSocket) and routes <code className="text-[11px]">mention</code> +
@@ -1927,7 +1824,12 @@ function IdentityEditor({ member, identities, onChange }: { member: Member; iden
   const current = (p: IdentityProvider) => identities.find((i) => i.provider === p)?.externalId ?? ''
   const [vals, setVals] = useState<Record<string, string>>(() => Object.fromEntries(IDENTITY_PROVIDERS.map((p) => [p, current(p)])))
   const [busy, setBusy] = useState('')
-  useEffect(() => { setVals(Object.fromEntries(IDENTITY_PROVIDERS.map((p) => [p, current(p)]))) }, [identities]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Re-sync from the server ONLY when the identity VALUES change — not on every render. The parent passes
+  // `data.identities?.[m.id] ?? []`, a fresh array each render, so depending on the array reference would
+  // re-run this effect on any parent re-render and wipe what the user just typed (the "it clears immediately"
+  // bug). Keying on the serialized values makes the reset fire only on a real change.
+  const identKey = identities.map((i) => `${i.provider}=${i.externalId}`).sort().join('|')
+  useEffect(() => { setVals(Object.fromEntries(IDENTITY_PROVIDERS.map((p) => [p, current(p)]))) }, [identKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const save = async (p: IdentityProvider) => {
     const v = (vals[p] ?? '').trim()
     if (v === current(p)) return // no change → skip the round-trip
@@ -2127,6 +2029,263 @@ function TeamPage({ me }: { me: Member }) {
   )
 }
 
+// ── Tasks ──────────────────────────────────────────────────────────────────────
+const TASK_COLUMNS: { status: TaskStatus; label: string }[] = [
+  { status: 'todo', label: 'Todo' },
+  { status: 'doing', label: 'Doing' },
+  { status: 'blocked', label: 'Blocked' },
+  { status: 'done', label: 'Done' },
+]
+const PRIORITY_LABEL = ['Urgent', 'High', 'Normal', 'Low']
+const priorityTone = (p: number) => ['text-red-600', 'text-amber-600', 'text-muted-foreground', 'text-muted-foreground/70'][p] ?? 'text-muted-foreground'
+
+function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void }) {
+  const [tasks, setTasks] = useState<Task[] | null>(null)
+  const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
+  const [q, setQ] = useState('')
+  const [selId, setSelId] = useState<string | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[] } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  // create form
+  const [showNew, setShowNew] = useState(false)
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [assignee, setAssignee] = useState('') // '' = unassigned, else 'agent:<id>'
+  const [priority, setPriority] = useState(2)
+  const [autoDispatch, setAutoDispatch] = useState(false)
+  const [mode, setMode] = useState<'headless' | 'interactive'>('headless')
+
+  const isAdmin = me.role === 'owner' || me.role === 'admin'
+  const chatAgents = agents.filter((a) => a.runtime === 'claude-code')
+
+  const load = async () => {
+    const r = await api.tasks(q)
+    setTasks(r.tasks ?? [])
+    if (r.counts) setCounts(r.counts)
+  }
+  useEffect(() => { load() }, [q])
+  useEffect(() => {
+    if (!selId) { setDetail(null); return }
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [] }) })
+  }, [selId, tasks])
+
+  const create = async () => {
+    setHint('')
+    const req: AddTaskReq = { title, body: body || undefined, assignee: assignee || undefined, priority, mode, autoDispatch: autoDispatch && assignee.startsWith('agent:') }
+    const r = await api.addTask(req)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setShowNew(false)
+    load()
+  }
+  const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); setBusy(false) }
+  const dispatch = async (t: Task) => {
+    setBusy(true); setHint('')
+    const r = await api.dispatchTask(t.id)
+    setBusy(false)
+    if (!r.ok) return setHint('⚠ ' + (r.error || 'could not dispatch'))
+    await load()
+    if (r.sessionId) onOpen('aos-' + r.sessionId, 'Task · ' + t.title)
+  }
+  const remove = async (id: string) => { setBusy(true); await api.deleteTask(id); setSelId(null); await load(); setBusy(false) }
+
+  if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="mr-auto max-w-2xl text-sm text-muted-foreground">
+          The shared work queue humans and agents drain together. Assign a task to an agent (with <strong>auto-dispatch</strong>)
+          and it spawns a governed session that works it and closes its own loop — the safe way for one agent to hand work to another.
+        </p>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks…" className="h-8 w-52 pl-7" />
+        </div>
+        <Button size="sm" onClick={() => setShowNew((v) => !v)}><Plus className="mr-1 h-3.5 w-3.5" />New task</Button>
+      </div>
+
+      {showNew && (
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Fix null-deref in billing.ts" /></Field>
+            <Field label="Details"><Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Context, acceptance criteria — enough for whoever works it." /></Field>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Assign to">
+                <Select value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Unassigned</SelectItem>
+                    {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>agent · {a.id}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Priority">
+                <Select value={String(priority)} onValueChange={(v) => v && setPriority(Number(v))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
+                </Select>
+              </Field>
+              <Field label="Auto-dispatch">
+                <label className={`flex h-9 items-center gap-2 text-sm ${assignee.startsWith('agent:') ? '' : 'opacity-40'}`}>
+                  <input type="checkbox" checked={autoDispatch} disabled={!assignee.startsWith('agent:')} onChange={(e) => setAutoDispatch(e.target.checked)} />
+                  spawn a session
+                </label>
+              </Field>
+            </div>
+            {assignee.startsWith('agent:') && (
+              <Field label="Run mode">
+                <Select value={mode} onValueChange={(v) => v && setMode(v as 'headless' | 'interactive')}>
+                  <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="headless">Headless — works to completion, then exits</SelectItem>
+                    <SelectItem value="interactive">Interactive — attachable TUI you can watch/drive</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            )}
+            <div className="flex items-center gap-2">
+              <Button size="sm" disabled={!title.trim()} onClick={create}>Create task</Button>
+              {hint && <span className="font-mono text-xs text-destructive">{hint}</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="flex gap-4">
+        <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {TASK_COLUMNS.map((col) => {
+            const inCol = tasks.filter((t) => t.status === col.status || (col.status === 'done' && t.status === 'cancelled'))
+            return (
+              <div key={col.status} className="min-w-0">
+                <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-muted-foreground">
+                  <span>{col.label}</span><span>{counts[col.status] + (col.status === 'done' ? counts.cancelled : 0)}</span>
+                </div>
+                <div className="space-y-2">
+                  {inCol.length === 0 && <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">—</div>}
+                  {inCol.map((t) => (
+                    <button key={t.id} onClick={() => setSelId(t.id)} className={`w-full rounded-md border p-2.5 text-left hover:bg-muted ${selId === t.id ? 'ring-1 ring-primary' : ''}`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <span className={`truncate text-sm font-medium ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
+                        <span className={`shrink-0 text-[10px] font-medium ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+                        {t.assignee && <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{t.assignee}</Badge>}
+                        {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
+                        {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
+                        <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        {detail && (
+          <Card className="w-[26rem] shrink-0 self-start">
+            <CardContent className="space-y-3.5 p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-base font-semibold leading-snug">{detail.task.title}</div>
+                  <div className="mt-0.5 font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${detail.task.owner}` : ''}</div>
+                </div>
+                <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => setSelId(null)}><X className="h-4 w-4" /></Button>
+              </div>
+              {detail.task.body && <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/30 p-3 text-sm leading-relaxed text-foreground">{detail.task.body}</div>}
+
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Status">
+                  <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
+                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                    <SelectContent>{(['todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Priority">
+                  <Select value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
+                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                    <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
+                  </Select>
+                </Field>
+              </div>
+              <Field label="Assignee">
+                <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
+                  <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Unassigned</SelectItem>
+                    {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>agent · {a.id}</SelectItem>)}
+                    {detail.task.assignee && !detail.task.assignee.startsWith('agent:') && <SelectItem value={detail.task.assignee}>{detail.task.assignee}</SelectItem>}
+                  </SelectContent>
+                </Select>
+              </Field>
+              {(detail.task.assignee || '').startsWith('agent:') && (
+                <Field label="Run mode">
+                  <Select value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
+                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="headless">Headless — runs to completion, then exits</SelectItem>
+                      <SelectItem value="interactive">Interactive — attachable TUI you drive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              )}
+
+              {(detail.task.assignee || '').startsWith('agent:') && (detail.task.status === 'todo' || detail.task.status === 'blocked') && (
+                <Button size="sm" className="w-full" disabled={busy} onClick={() => dispatch(detail.task)}>
+                  <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
+                </Button>
+              )}
+              {detail.task.lastSessionId && (
+                <Button size="sm" variant="outline" className="w-full" onClick={() => onOpen('aos-' + detail.task.lastSessionId, 'Task · ' + detail.task.title)}>
+                  <TerminalSquare className="mr-1 h-3.5 w-3.5" />View session
+                </Button>
+              )}
+              {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
+
+              <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await api.task(detail.task.id).then((r) => r.task && setDetail({ task: r.task, events: r.events ?? [] })) }} />
+
+              <div>
+                <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity</div>
+                <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
+                  {detail.events.slice().reverse().map((e) => (
+                    <div key={e.id} className="rounded-md border bg-muted/20 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
+                        <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+                      </div>
+                      {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
+                      <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{e.author}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {isAdmin && (
+                <Button size="sm" variant="ghost" className="w-full text-destructive" disabled={busy} onClick={() => remove(detail.task.id)}>
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
+                </Button>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CommentBox({ onSubmit }: { onSubmit: (text: string) => Promise<void> }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className="flex items-end gap-2">
+      <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={1} placeholder="Add a comment…" className="min-h-8 text-xs" />
+      <Button size="sm" disabled={!text.trim() || busy} onClick={async () => { setBusy(true); await onSubmit(text); setText(''); setBusy(false) }}><Send className="h-3.5 w-3.5" /></Button>
+    </div>
+  )
+}
+
 // ── Automations ──────────────────────────────────────────────────────────────────
 function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void }) {
   const [items, setItems] = useState<Automation[] | null>(null)
@@ -2313,6 +2472,40 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
 /** Internal namespace tags the OS adds (agent:<id> / tenant:<t>) aren't shown to the user. */
 const visibleTags = (tags: string[]): string[] => tags.filter((t) => !t.startsWith('agent:') && !t.startsWith('tenant:'))
 
+/** The display "kind" of a memory. Episodes (end-of-session recaps the OS writes) are called out
+ *  specially; everything else falls back to its stored type (Insight / Decision / Context / …). */
+function memoryKind(m: MemoryRecord): { key: string; label: string; episode: boolean } {
+  if (m.tags.includes('episode')) return { key: 'episode', label: 'Episode', episode: true }
+  if (m.tags.includes('lesson')) return { key: 'lesson', label: 'Lesson', episode: false }
+  const t = (m.type || 'Note').trim() || 'Note'
+  return { key: t.toLowerCase(), label: t, episode: false }
+}
+
+/** Tailwind text colour for an episode outcome, so success/failure/stopped read at a glance. */
+function outcomeTone(outcome?: string): string {
+  switch ((outcome || '').toLowerCase()) {
+    case 'success': return 'text-emerald-600'
+    case 'partial':
+    case 'stopped': return 'text-amber-600'
+    case 'failure':
+    case 'error':
+    case 'crashed': return 'text-red-600'
+    default: return 'text-muted-foreground'
+  }
+}
+
+/** A small pill toggle for the memory kind filter (Episode / Insight / …). */
+function KindChip({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground'}`}
+    >
+      {children}
+    </button>
+  )
+}
+
 function KnowledgeBasePage({ me }: { me: Member }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const [pages, setPages] = useState<KbPage[] | null>(null)
@@ -2459,13 +2652,118 @@ function KnowledgeBasePage({ me }: { me: Member }) {
   )
 }
 
+/** The Memory hub: a tabbed home for the whole learning system. Overview = pipeline + activity;
+ *  Memories = per-agent browse (with a cross-agent Shared scope); Self-learning = the engine controls. */
 function MemoryPage({ agents, me }: { agents: AgentInfo[]; me: Member }) {
+  const isAdmin = me.role === 'owner' || me.role === 'admin'
+  const [tab, setTab] = useState<'overview' | 'browse' | 'learning'>(isAdmin ? 'overview' : 'browse')
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 rounded-lg border bg-background p-1 w-fit">
+        {isAdmin && <TabButton on={tab === 'overview'} onClick={() => setTab('overview')}>Overview</TabButton>}
+        <TabButton on={tab === 'browse'} onClick={() => setTab('browse')}>Memories</TabButton>
+        {isAdmin && <TabButton on={tab === 'learning'} onClick={() => setTab('learning')}>Self-learning</TabButton>}
+      </div>
+      {tab === 'overview' && isAdmin ? <MemoryOverview />
+        : tab === 'learning' && isAdmin ? <DreamingSettings me={me} />
+        : <MemoryBrowse agents={agents} me={me} />}
+    </div>
+  )
+}
+
+/** The learning Overview: the memory pipeline at a glance, a recent learning-activity feed, and the
+ *  self-learning engine controls (relocated here from Settings — the engine lives with what it produces). */
+function MemoryOverview() {
+  const [counts, setCounts] = useState<{ memories: number; episodes: number; lessons: number; shared: number; kbPages: number } | null>(null)
+  const [activity, setActivity] = useState<{ ts: number; runId: string; type: string; principal?: string; data: Record<string, unknown> }[]>([])
+  const refresh = () => api.memoryOverview().then((r) => { if (r.error) return; setCounts(r.counts); setActivity(r.activity ?? []) }).catch(() => {})
+  useEffect(() => { refresh() }, [])
+
+  const stats: { label: string; value: number; hint: string }[] = counts ? [
+    { label: 'Memories', value: counts.memories, hint: 'all durable memories across the fleet' },
+    { label: 'Episodes', value: counts.episodes, hint: 'auto session recaps (episodic)' },
+    { label: 'Lessons', value: counts.lessons, hint: 'deliberate notes agents kept at report time (semantic)' },
+    { label: 'Shared', value: counts.shared, hint: 'workspace-wide knowledge every agent recalls' },
+    { label: 'KB pages', value: counts.kbPages, hint: 'living Knowledge-base pages' },
+  ] : []
+
+  return (
+    <div className="max-w-3xl space-y-5">
+      <p className="text-sm text-muted-foreground">
+        How the fleet learns: agents capture <strong>episodes</strong> (what happened) and <strong>lessons</strong> (what they
+        chose to keep); the <strong>reflection</strong> pass distils recurring signal into guidance injected back into every
+        agent; and the <strong>memory gardener</strong> consolidates it into <strong>shared</strong> knowledge + <a className="underline" href="#/kb">Knowledge</a> pages.
+      </p>
+
+      {/* Pipeline at a glance */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+        {stats.map((s) => (
+          <Card key={s.label} title={s.hint}>
+            <CardContent className="p-3">
+              <div className="text-2xl font-semibold tabular-nums">{s.value}</div>
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{s.label}</div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* Recent learning activity — the automation, made legible */}
+      <section>
+        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Recent learning activity</div>
+        <Card>
+          <CardContent className="p-0">
+            {activity.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">No learning activity yet. As agents finish sessions they leave episodes/lessons; reflection + consolidation events show here.</div>
+            ) : (
+              <div className="divide-y">
+                {activity.map((e, i) => (
+                  <div key={i} className="flex items-start gap-3 px-3 py-2 text-xs">
+                    <span className="w-32 shrink-0 text-muted-foreground">{new Date(e.ts).toLocaleString()}</span>
+                    <span className="shrink-0">{learningLabel(e.type)}</span>
+                    <span className="min-w-0 flex-1 text-muted-foreground">{learningDetail(e)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      <p className="text-[11px] text-muted-foreground">Manage cadence, run a reflection pass, consolidate, and the injected guidance in the <strong>Self-learning</strong> tab.</p>
+    </div>
+  )
+}
+
+/** A short human label + tone for a learning-activity audit event. */
+function learningLabel(type: string): ReactNode {
+  const map: Record<string, { text: string; cls: string }> = {
+    'episode.stored': { text: 'Episode', cls: 'text-violet-600' },
+    'lesson.stored': { text: 'Lesson', cls: 'text-emerald-600' },
+    'learning.dreamed': { text: 'Reflection', cls: 'text-sky-600' },
+    'learning.consolidated': { text: 'Consolidation', cls: 'text-amber-600' },
+  }
+  const m = map[type] ?? { text: type, cls: 'text-muted-foreground' }
+  return <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] font-normal ${m.cls}`}>{m.text}</Badge>
+}
+
+function learningDetail(e: { type: string; principal?: string; data: Record<string, unknown> }): string {
+  const d = e.data || {}
+  if (e.type === 'episode.stored') return `${e.principal ?? 'agent'} — outcome ${String(d.outcome ?? '?')} (via ${String(d.source ?? '?')})`
+  if (e.type === 'lesson.stored') return `${e.principal ?? 'agent'} kept a lesson (outcome ${String(d.outcome ?? '?')})`
+  if (e.type === 'learning.dreamed') return `reflected on ${Number(d.sessions ?? 0)} sessions / ${Number(d.episodes ?? 0)} episodes → pass ${Number(d.pass ?? 0)}`
+  if (e.type === 'learning.consolidated') return `gardener spawned over ${Number(d.items ?? 0)} episodes/lessons`
+  return ''
+}
+
+function MemoryBrowse({ agents, me }: { agents: AgentInfo[]; me: Member }) {
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<MemoryRecord[] | null>(null)
   const [health, setHealth] = useState<MemoryHealth | null>(null)
   const [scopeFilter, setScopeFilter] = useState<'all' | 'agent' | 'tenant'>('all')
+  const [kind, setKind] = useState('all') // client-side filter over the loaded set (Episode / Insight / …)
   // add form
+  const [showAdd, setShowAdd] = useState(false)
   const [content, setContent] = useState('')
   const [tags, setTags] = useState('')
   const [shareNew, setShareNew] = useState(false)
@@ -2477,10 +2775,10 @@ function MemoryPage({ agents, me }: { agents: AgentInfo[]; me: Member }) {
 
   const load = (q = query) => {
     if (!agentId) return
-    api.memory(agentId, q, 50, scopeFilter).then((r) => setItems(r.memories ?? [])).catch(() => setItems([]))
+    api.memory(agentId, q, 100, scopeFilter).then((r) => setItems(r.memories ?? [])).catch(() => setItems([]))
   }
   // Reload whenever the selected agent or the scope filter changes (keeps the current search).
-  useEffect(() => { setItems(null); load(query) /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [agentId, scopeFilter])
+  useEffect(() => { setItems(null); setKind('all'); load(query) /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [agentId, scopeFilter])
 
   const add = async () => {
     if (!content.trim() || !agentId) return
@@ -2496,14 +2794,58 @@ function MemoryPage({ agents, me }: { agents: AgentInfo[]; me: Member }) {
     return <div className="text-sm text-muted-foreground">No agents you can run yet — memory is scoped per agent.</div>
   }
 
+  // Kind chips (Episode / Insight / …) with live counts, derived from the loaded set. Episodes sort first.
+  const kindCounts = new Map<string, { label: string; count: number }>()
+  for (const m of items ?? []) {
+    const k = memoryKind(m)
+    const cur = kindCounts.get(k.key) ?? { label: k.label, count: 0 }
+    kindCounts.set(k.key, { label: cur.label, count: cur.count + 1 })
+  }
+  const kindChips = [...kindCounts.entries()].sort((a, b) =>
+    a[0] === 'episode' ? -1 : b[0] === 'episode' ? 1 : b[1].count - a[1].count)
+  const shown = (items ?? []).filter((m) => kind === 'all' || memoryKind(m).key === kind)
+  const sharedCount = (items ?? []).filter((m) => m.scope === 'tenant').length
+
   return (
     <div className="max-w-4xl space-y-6">
-      <p className="text-sm text-muted-foreground">
-        Each agent keeps a persistent memory across its sessions — decisions, fixes, gotchas, preferences. Agents
-        <span className="font-mono text-xs"> recall</span> it themselves — when a task calls for it — and
-        <span className="font-mono text-xs"> remember</span> new facts as they work. Browse and curate that memory
-        here; what you add is recalled just like what the agent stored.
-      </p>
+      <div className="flex items-start justify-between gap-4">
+        <p className="max-w-2xl text-sm text-muted-foreground">
+          Each agent keeps a persistent memory across its sessions — decisions, fixes, gotchas, preferences. Agents
+          <span className="font-mono text-xs"> recall</span> it themselves — when a task calls for it — and
+          <span className="font-mono text-xs"> remember</span> new facts as they work. Browse and curate that memory
+          here; what you add is recalled just like what the agent stored.
+        </p>
+        <Button size="sm" variant={showAdd ? 'secondary' : 'outline'} className="shrink-0" onClick={() => setShowAdd((v) => !v)}>
+          <Plus className="mr-1 h-4 w-4" />Add memory
+        </Button>
+      </div>
+
+      {/* Add a memory (curated knowledge — same store the agent recalls from) — opens at the top. */}
+      {showAdd && (
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <Field label="Content">
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                className="min-h-[64px]"
+                placeholder="A self-contained fact for this agent to recall — e.g. “Prod deploys require running migrate after merge to main.”"
+              />
+            </Field>
+            <Field label="Tags" help="Comma-separated, e.g. deploy, gotcha">
+              <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="deploy, gotcha" />
+            </Field>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={shareNew} onChange={(e) => setShareNew(e.target.checked)} />
+              Share with the whole workspace <span className="text-[11px] text-muted-foreground">— every agent can recall it (otherwise private to {agentId})</span>
+            </label>
+            <div className="flex items-center gap-3">
+              <Button onClick={add} disabled={busy || !content.trim()}><Plus className="mr-1 h-4 w-4" />Remember</Button>
+              {hint && <span className="font-mono text-xs text-destructive">{hint}</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Agent picker + search + backend health */}
       <div className="flex flex-wrap items-end gap-3">
@@ -2537,7 +2879,7 @@ function MemoryPage({ agents, me }: { agents: AgentInfo[]; me: Member }) {
           <div className="mt-1 flex gap-1 rounded-lg border bg-background p-1 w-fit">
             <TabButton on={scopeFilter === 'all'} onClick={() => setScopeFilter('all')}>All</TabButton>
             <TabButton on={scopeFilter === 'agent'} onClick={() => setScopeFilter('agent')}>This agent</TabButton>
-            <TabButton on={scopeFilter === 'tenant'} onClick={() => setScopeFilter('tenant')}>Shared</TabButton>
+            <TabButton on={scopeFilter === 'tenant'} onClick={() => setScopeFilter('tenant')}>Shared (all agents)</TabButton>
           </div>
         </div>
         {health && (
@@ -2547,51 +2889,41 @@ function MemoryPage({ agents, me }: { agents: AgentInfo[]; me: Member }) {
         )}
       </div>
 
+      {/* Kind filter chips — Episode / Insight / Decision / … with live counts over the loaded set. */}
+      {items !== null && items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <KindChip on={kind === 'all'} onClick={() => setKind('all')}>All <span className="opacity-60">{items.length}</span></KindChip>
+          {kindChips.map(([key, v]) => (
+            <KindChip key={key} on={kind === key} onClick={() => setKind(key)}>
+              {v.label} <span className="opacity-60">{v.count}</span>
+            </KindChip>
+          ))}
+          {sharedCount > 0 && <span className="ml-auto text-[11px] text-muted-foreground">{sharedCount} shared workspace-wide</span>}
+        </div>
+      )}
+
       {/* Memories */}
       <section>
-        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">
-          {query ? 'Matches' : 'Recent'}
+        <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-wider text-muted-foreground">
+          <span>{query ? 'Matches' : 'Recent'}</span>
+          {items !== null && <span className="normal-case tracking-normal text-muted-foreground/70">· {shown.length} shown</span>}
         </div>
         {items === null && <div className="text-sm text-muted-foreground">Loading…</div>}
         {items !== null && items.length === 0 && (
-          <div className="text-sm text-muted-foreground">
-            {query ? 'No memories match that search.' : 'No memories yet — the agent will accrete them as it works, or add one below.'}
+          <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+            {query ? 'No memories match that search.' : 'No memories yet — the agent accretes them as it works (episodes at session end, facts it chooses to remember), or add one with “Add memory” above.'}
           </div>
         )}
+        {items !== null && items.length > 0 && shown.length === 0 && (
+          <div className="text-sm text-muted-foreground">No {kindCounts.get(kind)?.label ?? kind} memories in this view.</div>
+        )}
         <div className="space-y-2">
-          {items?.map((m) => (
+          {shown.map((m) => (
             <MemoryCard key={m.id} m={m} agentId={agentId} me={me} onChanged={() => load()} />
           ))}
         </div>
       </section>
 
-      {/* Add a memory (curated knowledge — same store the agent recalls from) */}
-      <section>
-        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Add a memory</div>
-        <Card>
-          <CardContent className="space-y-3 p-4">
-            <Field label="Content">
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                className="min-h-[64px]"
-                placeholder="A self-contained fact for this agent to recall — e.g. “Prod deploys require running migrate after merge to main.”"
-              />
-            </Field>
-            <Field label="Tags" help="Comma-separated, e.g. deploy, gotcha">
-              <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="deploy, gotcha" />
-            </Field>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={shareNew} onChange={(e) => setShareNew(e.target.checked)} />
-              Share with the whole workspace <span className="text-[11px] text-muted-foreground">— every agent can recall it (otherwise private to {agentId})</span>
-            </label>
-            <div className="flex items-center gap-3">
-              <Button onClick={add} disabled={busy || !content.trim()}><Plus className="mr-1 h-4 w-4" />Remember</Button>
-              {hint && <span className="font-mono text-xs text-destructive">{hint}</span>}
-            </div>
-          </CardContent>
-        </Card>
-      </section>
     </div>
   )
 }
@@ -2640,11 +2972,27 @@ function MemoryCard({ m, agentId, me, onChanged }: { m: MemoryRecord; agentId: s
   }
 
   const tagsShown = visibleTags(m.tags)
+  const kind = memoryKind(m)
+  const outcome = m.metadata && typeof m.metadata.outcome === 'string' ? m.metadata.outcome : ''
+  const source = m.metadata && typeof m.metadata.source === 'string' ? m.metadata.source : ''
+  const sal = m.metadata && typeof m.metadata.salience === 'object' && m.metadata.salience ? m.metadata.salience as Record<string, number> : null
+  const impTitle = sal
+    ? `importance ${(m.importance ?? 0).toFixed(2)} — graded by salience: ${sal.actions ?? 0} governed actions${sal.rejected ? `, ${sal.rejected} rejected` : ''}${sal.errors ? `, ${sal.errors} errors` : ''}${sal.budgetStops ? `, ${sal.budgetStops} budget stops` : ''}${sal.killswitch ? `, ${sal.killswitch} blocked` : ''}`
+    : 'importance (how strongly this is weighted in recall)'
   return (
     <Card className="group">
       <CardContent className="p-3">
-        <div className="flex items-start justify-between gap-2">
-          <div className="text-sm">{m.content}</div>
+        {/* Header: kind + (episode) outcome + shared, with edit/delete on hover. */}
+        <div className="mb-1.5 flex items-start justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <Badge variant="secondary" className={`px-1.5 py-0 text-[10px] font-medium ${kind.episode ? 'text-violet-600' : ''}`}>{kind.label}</Badge>
+            {kind.episode && outcome && (
+              <Badge variant="outline" className={`px-1.5 py-0 text-[10px] font-normal ${outcomeTone(outcome)}`} title="session outcome">{outcome}</Badge>
+            )}
+            {m.scope === 'tenant' && (
+              <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal text-sky-600" title={`shared workspace-wide · authored by ${m.agentId}`}>shared</Badge>
+            )}
+          </div>
           {canEdit && (
             <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
               <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="edit" onClick={() => setEditing(true)}><Pencil className="h-3.5 w-3.5" /></Button>
@@ -2652,14 +3000,17 @@ function MemoryCard({ m, agentId, me, onChanged }: { m: MemoryRecord; agentId: s
             </div>
           )}
         </div>
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-          {m.scope === 'tenant' && (
-            <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal text-sky-600" title={`shared workspace-wide · authored by ${m.agentId}`}>shared</Badge>
-          )}
-          {m.type && <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{m.type}</Badge>}
+        {/* Content — whitespace-pre-wrap so multi-line episodes (Task / Outcome / summary) stay readable. */}
+        <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{m.content}</div>
+        {/* Footer: tags · importance · source · match · timestamp. */}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
           {tagsShown.map((t) => (
             <Badge key={t} variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{t}</Badge>
           ))}
+          {typeof m.importance === 'number' && (
+            <span title={impTitle}>imp {m.importance.toFixed(2)}</span>
+          )}
+          {kind.episode && source && <span title="how the episode was composed">via {source}</span>}
           {typeof m.score === 'number' && (
             <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal text-emerald-600" title="search relevance (keyword + vector, higher = better match)">
               match {m.score.toFixed(3)}
@@ -2694,6 +3045,7 @@ Recall relevant context before non-trivial work; remember durable decisions, fix
 function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) => void }) {
   const [id, setId] = useState('')
   const [description, setDescription] = useState('')
+  const [category, setCategory] = useState('')
   const [tuning, setTuning] = useState<RuntimeTuning>({ model: 'claude-opus-4-8' })
   const [claudeMd, setClaudeMd] = useState(NEW_AGENT_CLAUDE_TEMPLATE)
   const [prompts, setPrompts] = useState('')
@@ -2711,7 +3063,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const create = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
-    const r = await api.createAgent({ id: slug, description: description.trim(), claudeMd, examplePrompts, ...tuning })
+    const r = await api.createAgent({ id: slug, description: description.trim(), category: category.trim(), claudeMd, examplePrompts, ...tuning })
     setBusy(false)
     if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed to create agent'))
     onCreated(r.id || slug)
@@ -2739,6 +3091,11 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
           <div className="space-y-1">
             <label className="text-xs font-medium">Description</label>
             <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="one line shown on the agent card" className="text-sm" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Category</label>
+            <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Engineering, Marketing" className="text-sm" />
+            <p className="text-[11px] text-muted-foreground">Optional. Groups the agent in the picker. Leave blank for “Uncategorized”.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium">Starter prompts</label>
@@ -2770,33 +3127,42 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
 
 /** Per-agent model / effort / permission + starter prompts editor — rewrites agent.json; applies on
  *  the next session (prompts take effect immediately on the spawn card after the state refreshes). */
-function AgentTuningCard({ agentId }: { agentId: string }) {
+function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () => void }) {
   const [tuning, setTuning] = useState<RuntimeTuning>({})
   const [saved, setSaved] = useState<RuntimeTuning>({})
+  const [description, setDescription] = useState('')
+  const [savedDescription, setSavedDescription] = useState('')
   const [prompts, setPrompts] = useState('')
   const [savedPrompts, setSavedPrompts] = useState('')
+  const [category, setCategory] = useState('')
+  const [savedCategory, setSavedCategory] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
   useEffect(() => {
     api.agentConfig(agentId).then((r) => {
       if (r.error) return
-      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
+      const t: RuntimeTuning = { model: r.model, effort: r.effort }
+      const d = r.description ?? ''
       const p = (r.examplePrompts ?? []).join('\n')
-      setTuning(t); setSaved(t); setPrompts(p); setSavedPrompts(p)
+      const c = r.category ?? ''
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || prompts !== savedPrompts
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
-    const r = await api.saveAgentConfig(agentId, { ...tuning, examplePrompts })
+    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, category: category.trim() })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
+    const t: RuntimeTuning = { model: r.model, effort: r.effort }
+    const d = r.description ?? ''
     const p = (r.examplePrompts ?? []).join('\n')
-    setTuning(t); setSaved(t); setPrompts(p); setSavedPrompts(p); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    const c = r.category ?? ''
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    onSaved?.()
   }
 
   return (
@@ -2804,6 +3170,14 @@ function AgentTuningCard({ agentId }: { agentId: string }) {
       <CardContent className="space-y-3 p-4">
         <div className="flex items-center gap-2 text-xs font-medium"><SlidersHorizontal className="h-3.5 w-3.5" /> Runtime tuning</div>
         <TuningFields tuning={tuning} onChange={setTuning} />
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Description</label>
+          <Input value={description} onChange={(e) => setDescription(e.target.value)} className="text-sm" placeholder="one line shown on the agent card" />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Category</label>
+          <Input value={category} onChange={(e) => setCategory(e.target.value)} className="text-sm" placeholder="e.g. Engineering, Marketing — blank for Uncategorized" />
+        </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">Starter prompts</label>
           <Textarea value={prompts} onChange={(e) => setPrompts(e.target.value)} className="min-h-[70px] text-sm" placeholder={'One per line — clickable chips on the spawn card (up to 6).'} />
@@ -2818,7 +3192,7 @@ function AgentTuningCard({ agentId }: { agentId: string }) {
   )
 }
 
-function AgentPage({ agentId, agents }: { agentId: string; agents: AgentInfo[] }) {
+function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: AgentInfo[]; onSaved?: () => void }) {
   const [content, setContent] = useState('')
   const [saved, setSaved] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -2854,7 +3228,7 @@ function AgentPage({ agentId, agents }: { agentId: string; agents: AgentInfo[] }
         system prompt: its role, conventions, and how it should use its tools (including when to
         <span className="font-mono text-xs"> recall</span>/<span className="font-mono text-xs">remember</span>). Applied on the agent's next session.
       </p>
-      {info?.runtime === 'claude-code' && <AgentTuningCard agentId={agentId} />}
+      {info?.runtime === 'claude-code' && <AgentTuningCard agentId={agentId} onSaved={onSaved} />}
       <Card>
         <CardContent className="space-y-3 p-4">
           {!loaded && !hint ? (
@@ -2884,20 +3258,48 @@ function AgentPage({ agentId, agents }: { agentId: string; agents: AgentInfo[] }
  *  claude-code agent at launch. Per-agent skills live in the agent's own folder (see Files). */
 function SkillsPage() {
   const [resp, setResp] = useState<SkillsResp | null>(null)
+  const [agents, setAgents] = useState<string[]>([])
   const [creating, setCreating] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadMsg, setUploadMsg] = useState('')
+  const fileInput = useRef<HTMLInputElement>(null)
   const load = () => api.skills().then(setResp).catch(() => setResp({ enabled: false, skills: [] }))
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    api.state().then((s) => setAgents(s.agents.filter((a) => a.runtime === 'claude-code').map((a) => a.id))).catch(() => {})
+  }, [])
+
+  // Drag-and-drop / file-picker install: upload each dropped .zip, then refresh the library.
+  const uploadZips = async (files: FileList | File[]) => {
+    const zips = Array.from(files).filter((f) => f.name.toLowerCase().endsWith('.zip'))
+    if (zips.length === 0) return setUploadMsg('⚠ drop a .zip skill file')
+    setUploading(true); setUploadMsg('')
+    const installed: string[] = []
+    for (const f of zips) {
+      const r = await api.uploadSkillZip(f).catch(() => ({ ok: false, error: 'upload failed' } as Awaited<ReturnType<typeof api.uploadSkillZip>>))
+      if (!r.ok || r.error) { setUploading(false); load(); return setUploadMsg(`⚠ ${f.name}: ${r.error || 'upload failed'}`) }
+      installed.push(...(r.skills || []).map((s) => s.name))
+    }
+    setUploading(false)
+    setUploadMsg(installed.length ? `✓ Installed ${installed.join(', ')}` : '✓ Uploaded')
+    load()
+  }
+  const onDrop = (e: ReactDragEvent) => {
+    e.preventDefault(); setDragOver(false)
+    if (e.dataTransfer?.files?.length) uploadZips(e.dataTransfer.files)
+  }
 
   if (!resp) return <div className="text-sm text-muted-foreground">Loading…</div>
 
   return (
-    <div className="max-w-4xl space-y-6">
+    <div className="max-w-6xl space-y-6">
       <p className="text-sm text-muted-foreground">
         Skills are reusable, named playbooks in Claude Code's native <span className="font-mono text-xs">.claude/skills</span> format.
-        Every skill here is synced into <span className="font-medium text-foreground">every claude-code agent</span> at launch — an agent
-        auto-invokes one when its <span className="font-mono text-xs">description</span> matches the task, or you can call it with <span className="font-mono text-xs">/name</span>.
-        To give just one agent a skill, drop it in that agent's folder (browse via{' '}
-        <button className="underline hover:text-foreground" onClick={() => { window.location.hash = '/files' }}>Files</button>); a same-named agent skill shadows the global one.
+        A skill is synced into its assigned claude-code agents at launch — an agent auto-invokes one when its <span className="font-mono text-xs">description</span> matches
+        the task, or you can call it with <span className="font-mono text-xs">/name</span>. By default a skill reaches <span className="font-medium text-foreground">every agent</span>;
+        use <span className="font-medium text-foreground">Assign</span> on a skill to scope it to specific agents. (A hand-authored skill dropped in an agent's own folder via{' '}
+        <button className="underline hover:text-foreground" onClick={() => { window.location.hash = '/files' }}>Files</button> still shadows the global one.)
       </p>
 
       {!resp.enabled && (
@@ -2906,22 +3308,305 @@ function SkillsPage() {
         </div>
       )}
 
-      <section>
-        <div className="mb-2 flex items-center justify-between">
-          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Library · {resp.skills.length}</div>
-          {resp.enabled && !creating && (
-            <Button size="sm" variant="outline" onClick={() => setCreating(true)}><Plus className="mr-1 h-4 w-4" />New skill</Button>
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
+        {/* Left: this tenant's installed library — also the drop target for skill .zips */}
+        <section
+          className={`relative min-w-0 rounded-lg transition-colors ${dragOver ? 'outline-dashed outline-2 outline-primary/60 bg-primary/5' : ''}`}
+          onDragOver={resp.enabled ? (e) => { e.preventDefault(); setDragOver(true) } : undefined}
+          onDragLeave={resp.enabled ? (e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false) } : undefined}
+          onDrop={resp.enabled ? onDrop : undefined}
+        >
+          <div className="mb-2 flex items-center justify-between">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Library · {resp.skills.length}</div>
+            {resp.enabled && !creating && (
+              <div className="flex items-center gap-2">
+                <input ref={fileInput} type="file" accept=".zip,application/zip" multiple className="hidden"
+                  onChange={(e) => { if (e.target.files?.length) uploadZips(e.target.files); e.target.value = '' }} />
+                <Button size="sm" variant="outline" disabled={uploading} onClick={() => fileInput.current?.click()}>
+                  <Upload className="mr-1 h-4 w-4" />{uploading ? 'Uploading…' : 'Upload skill'}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setCreating(true)}><Plus className="mr-1 h-4 w-4" />New skill</Button>
+              </div>
+            )}
+          </div>
+          {uploadMsg && <div className={`mb-2 text-xs ${uploadMsg.startsWith('⚠') ? 'text-destructive' : 'text-muted-foreground'}`}>{uploadMsg}</div>}
+          {creating && <NewSkillForm onCancel={() => setCreating(false)} onCreated={() => { setCreating(false); load() }} />}
+          {resp.skills.length === 0 && !creating && (
+            <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
+              No skills yet — drag a skill <span className="font-mono text-xs">.zip</span> here, use <span className="font-medium text-foreground">Upload skill</span>, install one from the right, or add your own.
+            </div>
+          )}
+          <div className="space-y-2">
+            {resp.skills.map((s) => <SkillCard key={s.name} s={s} agents={agents} onChanged={load} />)}
+          </div>
+          {dragOver && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/70 text-sm font-medium text-foreground">
+              <Upload className="mr-2 h-5 w-5" />Drop skill .zip to install
+            </div>
+          )}
+        </section>
+
+        {/* Right: add skills — bundled catalog + install straight from a repo */}
+        {resp.enabled && (
+          <aside className="min-w-0 space-y-3 lg:sticky lg:top-4">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Add skills</div>
+            <SkillCatalog onInstalled={load} />
+            <SkillshSearch onInstalled={load} />
+            <RemoteSkillInstaller onInstalled={load} />
+          </aside>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** The bundled skill library — skills that ship with the software, one-click installable into the
+ *  tenant's own library. Collapsed by default; install copies the playbook (+ its files) into <home>/skills. */
+function SkillCatalog({ onInstalled }: { onInstalled: () => void }) {
+  const [catalog, setCatalog] = useState<CatalogSkill[] | null>(null)
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => api.skillCatalog().then((r) => setCatalog(r.catalog ?? [])).catch(() => setCatalog([]))
+  useEffect(() => { load() }, [])
+
+  const install = async (name: string) => {
+    setBusy(name); setHint('')
+    const r = await api.installSkill(name)
+    setBusy('')
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed to install'))
+    setHint(`Installed "${name}" — reaches its agents on their next session.`); setTimeout(() => setHint(''), 3000)
+    load(); onInstalled()
+  }
+
+  if (!catalog || catalog.length === 0) return null
+  const available = catalog.filter((c) => !c.installed).length
+
+  return (
+    <section className="rounded-md border bg-muted/30">
+      <button className="flex w-full items-center justify-between gap-2 p-3 text-left" onClick={() => setOpen((v) => !v)}>
+        <span className="flex items-center gap-2 text-sm font-medium">
+          <Package className="h-4 w-4 text-muted-foreground" />
+          Skill library
+          <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{available} to install</Badge>
+        </span>
+        <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t p-3">
+          <p className="text-xs text-muted-foreground">Curated playbooks bundled with Agent OS. Install one to copy it into your library — then edit, assign, or delete it like any other skill.</p>
+          {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
+          {catalog.map((c) => (
+            <Card key={c.name}>
+              <CardContent className="flex items-start justify-between gap-3 p-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-mono text-sm font-medium">{c.name}</span>
+                    {c.files.length > 0 && (
+                      <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">+{c.files.length} file{c.files.length > 1 ? 's' : ''}</Badge>
+                    )}
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground">{c.description || <span className="italic">no description</span>}</div>
+                </div>
+                {c.installed ? (
+                  <Badge variant="secondary" className="shrink-0 gap-1"><Check className="h-3 w-3" />Installed</Badge>
+                ) : (
+                  <Button size="sm" variant="outline" className="shrink-0" disabled={!!busy} onClick={() => install(c.name)}>
+                    <Download className="mr-1 h-3.5 w-3.5" />{busy === c.name ? 'Installing…' : 'Install'}
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/** Search the whole skills.sh directory (every indexed repo) and install any hit. Separate from the
+ *  repo-browse panel: this is keyword search across thousands of skills, ranked by install count. */
+function SkillshSearch({ onInstalled }: { onInstalled: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [hits, setHits] = useState<SkillshHit[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [installing, setInstalling] = useState('')
+  const [err, setErr] = useState('')
+
+  const search = async () => {
+    if (!q.trim()) return
+    setSearching(true); setErr(''); setHits(null)
+    const r = await api.searchSkillsh(q)
+    setSearching(false)
+    if (r.error) return setErr('⚠ ' + r.error)
+    setHits(r.hits)
+  }
+  const install = async (h: SkillshHit) => {
+    setInstalling(h.source + '/' + h.skillId); setErr('')
+    const r = await api.installRemoteSkill(h.source, '', h.skillId)
+    setInstalling('')
+    if (!r.ok || r.error) return setErr('⚠ ' + (r.error || 'install failed'))
+    setHits((cur) => cur?.map((x) => x === h ? { ...x, installed: true } : x) ?? cur)
+    onInstalled()
+  }
+
+  return (
+    <section className="rounded-md border bg-muted/30">
+      <button className="flex w-full items-center justify-between gap-2 p-3 text-left" onClick={() => setOpen((v) => !v)}>
+        <span className="flex items-center gap-2 text-sm font-medium">
+          <Search className="h-4 w-4 text-muted-foreground" />
+          Search skills.sh
+          <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">directory</Badge>
+        </span>
+        <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="space-y-3 border-t p-3">
+          <p className="text-xs text-muted-foreground">
+            Keyword-search the entire <a className="underline hover:text-foreground" href="https://skills.sh" target="_blank" rel="noreferrer">skills.sh</a> directory
+            (thousands of skills across every indexed repo), ranked by installs. Install pulls from the source repo on GitHub.
+          </p>
+          <div className="flex items-center gap-2">
+            <Input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') search() }}
+              placeholder="search skills… (seo, copywriting, testing)" className="text-sm" />
+            <Button size="sm" variant="outline" disabled={searching || !q.trim()} onClick={search}>{searching ? 'Searching…' : 'Search'}</Button>
+          </div>
+          {err && <div className="font-mono text-xs text-destructive">{err}</div>}
+          {hits && hits.length === 0 && <div className="text-sm text-muted-foreground">No skills found for “{q}”.</div>}
+          {hits && hits.length > 0 && (
+            <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{hits.length} result{hits.length === 1 ? '' : 's'}</div>
+              {hits.map((h) => (
+                <Card key={h.source + '/' + h.skillId}>
+                  <CardContent className="flex items-start justify-between gap-3 p-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-mono text-sm font-medium">{h.name}</span>
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{h.installs.toLocaleString()} installs</Badge>
+                      </div>
+                      <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{h.source}</div>
+                    </div>
+                    {h.installed ? (
+                      <Badge variant="secondary" className="shrink-0 gap-1"><Check className="h-3 w-3" />Installed</Badge>
+                    ) : (
+                      <Button size="sm" variant="outline" className="shrink-0" disabled={!!installing} onClick={() => install(h)}>
+                        <Download className="mr-1 h-3.5 w-3.5" />{installing === h.source + '/' + h.skillId ? 'Installing…' : 'Install'}
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
           )}
         </div>
-        {creating && <NewSkillForm onCancel={() => setCreating(false)} onCreated={() => { setCreating(false); load() }} />}
-        {resp.skills.length === 0 && !creating && (
-          <div className="text-sm text-muted-foreground">No skills yet — add one to give every agent a shared playbook.</div>
-        )}
-        <div className="space-y-2">
-          {resp.skills.map((s) => <SkillCard key={s.name} s={s} onChanged={load} />)}
+      )}
+    </section>
+  )
+}
+
+/** Install skills straight from a public GitHub repo — featured presets (the marketing set, a
+ *  skills.sh starter) plus a free-form owner/repo box. Covers any skills.sh entry, since those are
+ *  just GitHub repos. Browsing lists the repo's skills; each installs into this tenant's library. */
+function RemoteSkillInstaller({ onInstalled }: { onInstalled: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [presets, setPresets] = useState<SkillSource[]>([])
+  const [repo, setRepo] = useState('')
+  const [browsing, setBrowsing] = useState(false)
+  const [result, setResult] = useState<{ repo: string; ref: string; repoDescription: string; skills: RemoteSkill[] } | null>(null)
+  const [installing, setInstalling] = useState('')
+  const [err, setErr] = useState('')
+  useEffect(() => { if (open && presets.length === 0) api.skillSources().then((r) => setPresets(r.presets ?? [])).catch(() => {}) }, [open])
+
+  const browse = async (r?: string) => {
+    const target = (r ?? repo).trim()
+    if (!target) return
+    setRepo(target); setBrowsing(true); setErr(''); setResult(null)
+    const resp = await api.browseSkillRepo(target)
+    setBrowsing(false)
+    if (resp.error) return setErr('⚠ ' + resp.error)
+    setResult(resp)
+  }
+  const install = async (s: RemoteSkill) => {
+    if (!result) return
+    setInstalling(s.name); setErr('')
+    const resp = await api.installRemoteSkill(result.repo, s.path, s.name)
+    setInstalling('')
+    if (!resp.ok || resp.error) return setErr('⚠ ' + (resp.error || 'install failed'))
+    setResult({ ...result, skills: result.skills.map((x) => x.name === s.name ? { ...x, installed: true } : x) })
+    onInstalled()
+  }
+
+  return (
+    <section className="rounded-md border bg-muted/30">
+      <button className="flex w-full items-center justify-between gap-2 p-3 text-left" onClick={() => setOpen((v) => !v)}>
+        <span className="flex items-center gap-2 text-sm font-medium">
+          <Download className="h-4 w-4 text-muted-foreground" />
+          Install from a repo
+          <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">GitHub · skills.sh</Badge>
+        </span>
+        <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="space-y-3 border-t p-3">
+          <p className="text-xs text-muted-foreground">
+            Pull skills from any public GitHub repo of <span className="font-mono">SKILL.md</span> folders — including every{' '}
+            <a className="underline hover:text-foreground" href="https://skills.sh" target="_blank" rel="noreferrer">skills.sh</a> entry
+            (those are just repos; paste <span className="font-mono">owner/repo</span>).
+          </p>
+          {presets.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {presets.map((s) => (
+                <button key={s.repo} title={s.description} onClick={() => browse(s.repo)}
+                  className="rounded-md border bg-background px-2.5 py-1.5 text-left text-xs hover:border-foreground/30">
+                  <div className="font-medium">{s.label}</div>
+                  <div className="font-mono text-[10px] text-muted-foreground">{s.repo}</div>
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Input value={repo} onChange={(e) => setRepo(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') browse() }}
+              placeholder="owner/repo  (e.g. coreyhaines31/marketingskills)" className="font-mono text-sm" />
+            <Button size="sm" variant="outline" disabled={browsing || !repo.trim()} onClick={() => browse()}>
+              {browsing ? 'Browsing…' : 'Browse'}
+            </Button>
+          </div>
+          {err && <div className="font-mono text-xs text-destructive">{err}</div>}
+          {browsing && <div className="text-sm text-muted-foreground">Fetching skills from GitHub…</div>}
+          {result && (
+            <div className="space-y-2">
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                {result.repo}<span className="lowercase"> @ {result.ref}</span> · {result.skills.length} skill{result.skills.length === 1 ? '' : 's'}
+              </div>
+              {result.skills.length === 0 && <div className="text-sm text-muted-foreground">No SKILL.md folders found in this repo.</div>}
+              {result.skills.map((s) => (
+                <Card key={s.name}>
+                  <CardContent className="flex items-start justify-between gap-3 p-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-mono text-sm font-medium">{s.name}</span>
+                        {s.files.length > 0 && (
+                          <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">+{s.files.length} file{s.files.length > 1 ? 's' : ''}</Badge>
+                        )}
+                      </div>
+                      <div className="mt-1 text-sm text-muted-foreground">{s.description || <span className="italic">no description</span>}</div>
+                    </div>
+                    {s.installed ? (
+                      <Badge variant="secondary" className="shrink-0 gap-1"><Check className="h-3 w-3" />Installed</Badge>
+                    ) : (
+                      <Button size="sm" variant="outline" className="shrink-0" disabled={!!installing} onClick={() => install(s)}>
+                        <Download className="mr-1 h-3.5 w-3.5" />{installing === s.name ? 'Installing…' : 'Install'}
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
-      </section>
-    </div>
+      )}
+    </section>
   )
 }
 
@@ -2968,8 +3653,11 @@ function NewSkillForm({ onCancel, onCreated }: { onCancel: () => void; onCreated
   )
 }
 
-function SkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void }) {
+function SkillCard({ s, agents, onChanged }: { s: SkillSummary; agents: string[]; onChanged: () => void }) {
   const [editing, setEditing] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [assigning, setAssigning] = useState(false)
+  const [sel, setSel] = useState<string[]>(s.agents)
   const [content, setContent] = useState('')
   const [saved, setSaved] = useState('')
   const [busy, setBusy] = useState(false)
@@ -2997,6 +3685,17 @@ function SkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void })
     if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed'))
     onChanged()
   }
+  const openAssign = () => { setSel(s.agents); setAssigning((v) => !v); setHint('') }
+  const toggle = (id: string) => setSel((cur) => cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id])
+  // "Specific" with nothing checked = every agent (an empty assignment), so guard against that footgun.
+  const all = sel.length === 0
+  const saveAssign = async () => {
+    setBusy(true); setHint('')
+    const r = await api.setSkillAgents(s.name, sel)
+    setBusy(false)
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed'))
+    setAssigning(false); setHint('audience saved'); setTimeout(() => setHint(''), 2000); onChanged()
+  }
 
   return (
     <Card className="group">
@@ -3009,14 +3708,64 @@ function SkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void })
               {s.files.length > 0 && (
                 <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">+{s.files.length} file{s.files.length > 1 ? 's' : ''}</Badge>
               )}
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal" title={s.agents.length ? s.agents.join(', ') : 'every claude-code agent'}>
+                {s.agents.length === 0 ? 'All agents' : s.agents.length === 1 ? s.agents[0] : `${s.agents.length} agents`}
+              </Badge>
             </div>
-            <div className="mt-1 text-sm text-muted-foreground">{s.description || <span className="italic">no description</span>}</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              {s.description ? (() => {
+                const LIMIT = 140
+                const long = s.description.length > LIMIT
+                return (
+                  <>
+                    {long && !expanded ? s.description.slice(0, LIMIT).trimEnd() + '…' : s.description}
+                    {long && (
+                      <span role="button" tabIndex={0}
+                        className="ml-1 font-medium text-foreground/70 underline underline-offset-2 hover:text-foreground"
+                        onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v) }}>
+                        {expanded ? 'less' : 'more'}
+                      </span>
+                    )}
+                  </>
+                )
+              })() : <span className="italic">no description</span>}
+            </div>
           </button>
           <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+            <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="assign to agents" onClick={openAssign}><Bot className="h-3.5 w-3.5" /></Button>
             <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="edit" onClick={editing ? () => setEditing(false) : open}><Pencil className="h-3.5 w-3.5" /></Button>
             <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="delete" disabled={busy} onClick={remove}><Trash2 className="h-3.5 w-3.5" /></Button>
           </div>
         </div>
+        {assigning && (
+          <div className="mt-3 space-y-2 rounded-md border bg-muted/30 p-3">
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Assign to agents</div>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="radio" checked={all} onChange={() => setSel([])} />
+              <span>All agents <span className="text-muted-foreground">(default)</span></span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="radio" checked={!all} onChange={() => setSel(agents.length ? [agents[0]] : [])} disabled={agents.length === 0} />
+              <span>Specific agents</span>
+            </label>
+            {!all && (
+              <div className="ml-6 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+                {agents.map((id) => (
+                  <label key={id} className="flex items-center gap-1.5 text-sm">
+                    <input type="checkbox" checked={sel.includes(id)} onChange={() => toggle(id)} />
+                    <span className="truncate font-mono text-xs" title={id}>{id}</span>
+                  </label>
+                ))}
+                {agents.length === 0 && <span className="text-xs text-muted-foreground">no claude-code agents</span>}
+              </div>
+            )}
+            <div className="flex items-center gap-2 pt-1">
+              <Button size="sm" onClick={saveAssign} disabled={busy}>Save</Button>
+              <Button size="sm" variant="ghost" onClick={() => setAssigning(false)}>Cancel</Button>
+              {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            </div>
+          </div>
+        )}
         {editing && (
           <div className="mt-3 space-y-2">
             <Textarea value={content} onChange={(e) => setContent(e.target.value)} className="min-h-[320px] font-mono text-xs leading-relaxed" />
@@ -3027,7 +3776,7 @@ function SkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void })
             </div>
           </div>
         )}
-        {!editing && hint && <div className="mt-1 font-mono text-xs text-destructive">{hint}</div>}
+        {!editing && !assigning && hint && <div className="mt-1 font-mono text-xs text-destructive">{hint}</div>}
       </CardContent>
     </Card>
   )
@@ -3039,18 +3788,20 @@ function SkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void })
  * and writes a shared memory Insight + a living KB page (operations/fleet-learnings). Set a cadence to
  * automate it, or run a pass now.
  */
-function DreamingSettings({ me }: { me: Member }) {
+function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => void }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const [everyHours, setEveryHours] = useState('0')
   const [last, setLast] = useState<number | undefined>(undefined)
   const [apply, setApply] = useState(true)
   const [guidance, setGuidance] = useState('')
   const [recs, setRecs] = useState<Recommendation[]>([])
+  const [consolidateAuto, setConsolidateAuto] = useState(false)
+  const [lastConsolidated, setLastConsolidated] = useState<number | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
 
-  const refresh = () => api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []) }).catch(() => {})
+  const refresh = () => api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setConsolidateAuto(r.consolidateAuto === true); setLastConsolidated(r.lastConsolidatedAt) }).catch(() => {})
   const applyRec = async (id: string) => { setBusy(true); const r = await api.applyRecommendation(id); setBusy(false); if (r.error) return setHint('⚠ ' + r.error); setHint('applied'); setTimeout(() => setHint(''), 1500); refresh() }
   const dismissRec = async (id: string) => { setBusy(true); await api.dismissRecommendation(id); setBusy(false); refresh() }
   useEffect(() => { refresh() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
@@ -3069,7 +3820,18 @@ function DreamingSettings({ me }: { me: Member }) {
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     setResult(r.skipped ? 'No new activity since the last pass — nothing to learn.' : `Reflected on ${r.sessions ?? 0} sessions / ${r.episodes ?? 0} episodes → updated the KB page${r.insightId ? ' + a shared memory insight' : ''}${r.guidance ? ' + refreshed the agent guidance below' : ''}.`)
-    refresh()
+    refresh(); onChanged?.()
+  }
+  const toggleConsolidate = async (on: boolean) => { setConsolidateAuto(on); await api.setConsolidateAuto(on) }
+  const consolidateNow = async () => {
+    setBusy(true); setHint(''); setResult('')
+    const r = await api.consolidate()
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setResult(r.spawned
+      ? `Memory-gardener spawned over ${r.items ?? 0} recent episodes/lessons (session ${r.sessionId}). Watch the Sessions/Audit pages — it writes shared memories + KB pages, then reports.`
+      : `Nothing to consolidate — ${r.reason ?? 'too little new activity'}.`)
+    refresh(); onChanged?.()
   }
 
   if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
@@ -3096,6 +3858,27 @@ function DreamingSettings({ me }: { me: Member }) {
             {Number(everyHours) > 0 ? ` Scheduled every ${Number(everyHours)}h.` : ' Automatic passes are off.'}
           </div>
           {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
+        </CardContent>
+      </Card>
+
+      {/* Consolidation (lever 4): the memory-gardener turns raw episodes into durable shared knowledge. */}
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="text-sm font-medium">Consolidate memory <span className="text-[11px] font-normal text-muted-foreground">— the memory gardener</span></div>
+            <p className="text-xs text-muted-foreground">Spawns a governed <strong>headless agent</strong> that reads the recent fleet <strong>episodes + lessons</strong> and distils the recurring, durable patterns into <strong>shared memories</strong> + <a className="underline" href="#/kb">Knowledge</a> pages every agent can recall. Unlike the reflection pass above, this spends a real agent run.</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Button variant="outline" onClick={consolidateNow} disabled={busy}><Brain className="mr-1 h-4 w-4" />Consolidate now</Button>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={consolidateAuto} onChange={(e) => toggleConsolidate(e.target.checked)} />
+              Auto-consolidate after each scheduled learning pass
+            </label>
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            {lastConsolidated ? `Last consolidation: ${new Date(lastConsolidated).toLocaleString()}.` : 'No consolidation has run yet.'}
+            {consolidateAuto ? '' : ' Auto-consolidation is off.'}
+          </div>
         </CardContent>
       </Card>
 
@@ -3212,27 +3995,149 @@ function AuditPage() {
   )
 }
 
-function SettingsPage({ me }: { me: Member }) {
-  const [tab, setTab] = useState<'company' | 'runtime' | 'integrations' | 'memory' | 'dreaming' | 'policy' | 'governance'>('company')
+function SettingsPage({ me, state }: { me: Member; state: StateResp | null }) {
+  const [tab, setTab] = useState<'company' | 'runtime' | 'integrations' | 'secrets' | 'memory' | 'policy' | 'governance' | 'system'>('company')
   if (me.role !== 'owner' && me.role !== 'admin') return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
   return (
-    <div className="max-w-3xl space-y-4">
-      <div className="flex gap-1 rounded-lg border bg-background p-1 w-fit">
+    <div className="flex gap-6">
+      <div className="flex w-48 shrink-0 flex-col gap-1 rounded-lg border bg-background p-1 self-start [&_button]:text-left">
         <TabButton on={tab === 'company'} onClick={() => setTab('company')}>Company context</TabButton>
         <TabButton on={tab === 'runtime'} onClick={() => setTab('runtime')}>Runtime defaults</TabButton>
         <TabButton on={tab === 'integrations'} onClick={() => setTab('integrations')}>Integrations</TabButton>
-        <TabButton on={tab === 'memory'} onClick={() => setTab('memory')}>Memory</TabButton>
-        <TabButton on={tab === 'dreaming'} onClick={() => setTab('dreaming')}>Self-learning</TabButton>
+        <TabButton on={tab === 'secrets'} onClick={() => setTab('secrets')}>Secrets</TabButton>
+        <TabButton on={tab === 'memory'} onClick={() => setTab('memory')}>Memory backend</TabButton>
         <TabButton on={tab === 'governance'} onClick={() => setTab('governance')}>Governance</TabButton>
         <TabButton on={tab === 'policy'} onClick={() => setTab('policy')}>Policy</TabButton>
+        <TabButton on={tab === 'system'} onClick={() => setTab('system')}>System</TabButton>
       </div>
-      {tab === 'company' ? <CompanySettings me={me} />
-        : tab === 'runtime' ? <RuntimeDefaultsSettings me={me} />
-        : tab === 'integrations' ? <IntegrationsSettings me={me} />
-        : tab === 'memory' ? <MemorySettings me={me} />
-        : tab === 'dreaming' ? <DreamingSettings me={me} />
-        : tab === 'governance' ? <GovernanceSettings me={me} />
-        : <PolicyEditor me={me} />}
+      <div className="min-w-0 flex-1">
+        {tab === 'company' ? <CompanySettings me={me} />
+          : tab === 'runtime' ? <RuntimeDefaultsSettings me={me} />
+          : tab === 'integrations' ? <IntegrationsSettings me={me} />
+          : tab === 'secrets' ? <SecretsSettings me={me} />
+          : tab === 'memory' ? <MemorySettings me={me} />
+          : tab === 'governance' ? <GovernanceSettings me={me} />
+          : tab === 'system' ? <SystemSettings state={state} />
+          : <PolicyEditor me={me} />}
+      </div>
+    </div>
+  )
+}
+
+/** Settings → System — read-only workspace runtime facts (the same tenant/policy/home shown top-right). */
+function SystemSettings({ state }: { state: StateResp | null }) {
+  if (!state) return <div className="text-sm text-muted-foreground">Loading…</div>
+  const rows: [string, ReactNode][] = [
+    ['Tenant', <>{state.tenantName || state.tenant}{state.tenantName ? <span className="text-muted-foreground"> ({state.tenant})</span> : null}</>],
+    ['Policy', state.policy],
+    ['Data home', state.home || '—'],
+  ]
+  return (
+    <Card>
+      <CardContent className="space-y-4 p-4">
+        <p className="text-sm text-muted-foreground">
+          Workspace runtime facts for this instance. One data home + one port = one isolated tenant.
+        </p>
+        <dl className="divide-y rounded-md border">
+          {rows.map(([label, value]) => (
+            <div key={label} className="flex items-baseline gap-4 px-3 py-2">
+              <dt className="w-28 shrink-0 text-xs font-medium text-muted-foreground">{label}</dt>
+              <dd className="min-w-0 break-all font-mono text-sm">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      </CardContent>
+    </Card>
+  )
+}
+
+/** Settings → Secrets — the encrypted-at-rest vault. Credentials are sealed (AES-256-GCM) under the
+ *  workspace master key and read only INSIDE the gateway by capabilities; agents never see raw values.
+ *  The console can set/replace/delete a secret but can never read one back — only its key + provenance. */
+function SecretsSettings({ me }: { me: Member }) {
+  const [secrets, setSecrets] = useState<SecretMeta[]>([])
+  const [loading, setLoading] = useState(true)
+  const [key, setKey] = useState('')
+  const [principal, setPrincipal] = useState('')
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const canEdit = me.role === 'owner' || me.role === 'admin'
+
+  const refresh = () => api.secrets().then((r) => { if (!r.error) setSecrets(r.secrets); setLoading(false) }).catch(() => setLoading(false))
+  useEffect(() => { refresh() }, [])
+
+  const save = async () => {
+    const k = key.trim()
+    if (!k || !value) return
+    setBusy(true); setHint('')
+    const r = await api.setSecret(k, value, principal.trim() || undefined)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setKey(''); setPrincipal(''); setValue(''); setHint('saved'); setTimeout(() => setHint(''), 2500)
+    refresh()
+  }
+  const del = async (s: SecretMeta) => {
+    if (!confirm(`Delete secret "${s.key}"${s.principal !== '*' ? ` (${s.principal})` : ''}? This can't be undone.`)) return
+    const r = await api.deleteSecret(s.key, s.principal === '*' ? undefined : s.principal)
+    if (!r.error) refresh()
+  }
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <p className="text-sm text-muted-foreground">
+            Credentials are <strong>encrypted at rest</strong> (AES-256-GCM) in the workspace database and read only{' '}
+            <em>inside the gateway</em> by governed capabilities — <strong>agents never see raw values</strong>. The console
+            can set, replace, or delete a secret, but can <strong>never read one back</strong>. Leave{' '}
+            <span className="font-mono text-xs">principal</span> blank for a tenant-wide secret, or scope it to one agent/member.
+          </p>
+          <div className="grid grid-cols-[1fr_1fr] gap-3">
+            <Field label="Key" help="e.g. STRIPE_API_KEY — how a capability looks it up.">
+              <Input value={key} onChange={(e) => setKey(e.target.value)} placeholder="STRIPE_API_KEY" disabled={!canEdit} />
+            </Field>
+            <Field label="Principal (optional)" help="Blank = tenant-wide. Else an agent/member id to scope it to.">
+              <Input value={principal} onChange={(e) => setPrincipal(e.target.value)} placeholder="* (tenant-wide)" disabled={!canEdit} />
+            </Field>
+          </div>
+          <Field label="Value" help="Write-only — stored sealed, never shown again.">
+            <Input type="password" value={value} onChange={(e) => setValue(e.target.value)} placeholder="paste the secret value" disabled={!canEdit}
+              onKeyDown={(e) => { if (e.key === 'Enter') save() }} />
+          </Field>
+          <div className="flex items-center gap-3">
+            <Button onClick={save} disabled={!canEdit || busy || !key.trim() || !value}>Save secret</Button>
+            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-0">
+          {loading ? <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+            : secrets.length === 0 ? <p className="p-4 text-sm text-muted-foreground">No secrets stored yet.</p>
+            : <div className="divide-y">
+                {secrets.map((s) => (
+                  <div key={`${s.principal}:${s.key}`} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-sm">{s.key}</span>
+                        {s.principal !== '*' && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{s.principal}</span>}
+                      </div>
+                      <span className="text-[11px] text-muted-foreground">
+                        updated {timeAgo(s.updatedAt)}{s.updatedBy ? ` by ${s.updatedBy}` : ''}
+                      </span>
+                    </div>
+                    {canEdit && (
+                      <button onClick={() => del(s)} className="shrink-0 text-muted-foreground hover:text-destructive" title="Delete secret">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>}
+        </CardContent>
+      </Card>
     </div>
   )
 }
@@ -3357,7 +4262,7 @@ function KillSwitchCard({ me }: { me: Member }) {
   )
 }
 
-/** Settings → Runtime defaults — the fleet-wide model / effort / permission-mode that every
+/** Settings → Runtime defaults — the fleet-wide model / effort that every
  *  claude-code agent inherits unless its own manifest overrides the field. Retune the whole fleet
  *  from one place; per-agent overrides live on each agent's page. */
 function RuntimeDefaultsSettings({ me }: { me: Member }) {
@@ -3371,7 +4276,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
   useEffect(() => {
     api.runtimeDefaults().then((r) => {
       if (r.error) return
-      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
+      const t: RuntimeTuning = { model: r.model, effort: r.effort }
       setTuning(t); setSaved(t); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
     }).catch(() => {})
   }, [])
@@ -3382,7 +4287,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
     const r = await api.saveRuntimeDefaults(tuning)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
+    const t: RuntimeTuning = { model: r.model, effort: r.effort }
     setTuning(t); setSaved(t); setHint('saved — applies to every agent that doesn\'t override the field'); setTimeout(() => setHint(''), 3000)
   }
 
@@ -3446,6 +4351,7 @@ function MemorySettings({ me }: { me: Member }) {
 
   const [halfLife, setHalfLife] = useState('0') // recall recency half-life in days; 0 = off
   const [weightImp, setWeightImp] = useState(false)
+  const [weightUse, setWeightUse] = useState(false)
   // maintenance
   const [pruneDays, setPruneDays] = useState('0') // 0 = never prune
   const [keepImp, setKeepImp] = useState('0.5')
@@ -3465,6 +4371,7 @@ function MemorySettings({ me }: { me: Member }) {
     if (e) { setProvider(e.provider); setEmbUrl(e.url); setModel(e.model); if (e.dimensions != null) setDims(String(e.dimensions)) }
     setHalfLife(String(v.ranking?.halfLifeDays ?? 0))
     setWeightImp(!!v.ranking?.weightByImportance)
+    setWeightUse(!!v.ranking?.weightByUsage)
     const m = v.maintenance
     setPruneDays(String(m?.pruneAfterDays ?? 0))
     setKeepImp(String(m?.keepImportance ?? 0.5))
@@ -3483,7 +4390,7 @@ function MemorySettings({ me }: { me: Member }) {
   }
 
   const emb = () => ({ enabled: embedOn, provider, url: embUrl.trim(), model: model.trim(), dimensions: Number(dims) || undefined, ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}) })
-  const ranking = () => ({ halfLifeDays: Number(halfLife) || 0, weightByImportance: weightImp })
+  const ranking = () => ({ halfLifeDays: Number(halfLife) || 0, weightByImportance: weightImp, weightByUsage: weightUse })
   const maintenance = () => ({ pruneAfterDays: Number(pruneDays) || 0, keepImportance: Number(keepImp), everyHours: Number(everyHours) || 24, ...(dedupeOn ? { dedupeThreshold: Number(dedupeThresh) } : {}) })
   const sharedWrites = (): 'open' | 'curated' => (curated ? 'curated' : 'open')
   const body = (): MemorySettingsReq => {
@@ -3662,6 +4569,10 @@ function MemorySettings({ me }: { me: Member }) {
                 <input type="checkbox" checked={weightImp} onChange={(e) => setWeightImp(e.target.checked)} />
                 Weight by importance <span className="text-[11px] text-muted-foreground">— uses each memory's 0–1 score</span>
               </label>
+              <label className="flex items-center gap-2 self-end pb-2 text-sm">
+                <input type="checkbox" checked={weightUse} onChange={(e) => setWeightUse(e.target.checked)} />
+                Reinforce by usage <span className="text-[11px] text-muted-foreground">— boost frequently-recalled memories; recency counts from last use</span>
+              </label>
             </div>
           </CardContent>
         </Card>
@@ -3745,12 +4656,14 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
+  const [chatRouter, setChatRouter] = useState(true)
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
   const [key, setKey] = useState('')
   const [wh, setWh] = useState('')
   const [appTok, setAppTok] = useState('')
   const [botTok, setBotTok] = useState('')
   const [discordTok, setDiscordTok] = useState('')
+  const [discordAppId, setDiscordAppId] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
@@ -3762,6 +4675,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     if (r.webhook) setWebhook(r.webhook)
     setSlack(r.slack ?? SLACK_DEFAULT)
     setDiscord(r.discord ?? DISCORD_DEFAULT)
+    if (typeof r.chatRouter === 'boolean') setChatRouter(r.chatRouter)
     setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
   }
   const loadStatus = () => {
@@ -3776,7 +4690,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     loadStatus()
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
@@ -3916,6 +4830,24 @@ function IntegrationsSettings({ me }: { me: Member }) {
             </p>
             {discordState?.lastError && <p className="mt-1 font-mono text-[11px] text-destructive">last error: {discordState.lastError}</p>}
           </div>
+
+          {/* Generic /agent chat router — shared by Slack + Discord. When on, a message that matches no
+              automation reaches ANY agent by name (/pod-troubleshooter …); unknown/unaddressed gets a help list. */}
+          <label className="flex items-start gap-2 rounded-md border bg-muted/20 p-3 text-xs">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={chatRouter}
+              disabled={busy}
+              onChange={(e) => { setChatRouter(e.target.checked); save({ chatRouter: e.target.checked }, e.target.checked ? 'router on' : 'router off') }}
+            />
+            <span>
+              <span className="font-medium text-foreground">Generic <code className="text-[11px]">/agent</code> router</span> (Slack + Discord) —
+              when no automation matches a message, let the sender reach <strong>any agent by name</strong>
+              {' '}(e.g. <code className="text-[11px]">/pod-troubleshooter why is pod X down?</code>). An unaddressed or unknown name gets a
+              help list of available agents. Runs go through the same gate + run-as as everything else. No per-agent automation needed.
+            </span>
+          </label>
           <DiscordSetupGuide />
           <Field label="Bot token" help="Discord Developer Portal → your app → Bot → Reset/Copy Token. Enable the MESSAGE CONTENT privileged intent on the same page.">
             <Input
@@ -3935,6 +4867,42 @@ function IntegrationsSettings({ me }: { me: Member }) {
               <Button variant="ghost" onClick={() => save({ discordBotToken: '' }, 'removed')} disabled={busy}>Remove</Button>
             )}
           </div>
+
+          {/* Invite the bot. A bot's user id IS its application (client) id, so once it connects we build
+              the invite link with zero extra input; before the first connect, the admin can paste the
+              Application ID to invite early. Without this step the bot is on the Gateway but in no server,
+              so it receives no messages — the most common "connected but nothing happens" trap. */}
+          {(() => {
+            const inviteClientId = (discordState?.botUserId || discordAppId).trim()
+            const inviteUrl = `https://discord.com/oauth2/authorize?client_id=${inviteClientId}&scope=bot&permissions=${DISCORD_BOT_PERMISSIONS}`
+            return (
+              <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+                <div className="text-xs font-medium text-foreground">Invite the bot to a server</div>
+                {!discordState?.botUserId && (
+                  <Field label="Application ID" help="Developer Portal → your app → General Information → Application ID. Auto-detected once the bot connects (a bot's user id is its application id).">
+                    <Input
+                      value={discordAppId}
+                      onChange={(e) => setDiscordAppId(e.target.value.trim())}
+                      placeholder="123456789012345678"
+                      className="font-mono text-xs"
+                    />
+                  </Field>
+                )}
+                {inviteClientId ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a href={inviteUrl} target="_blank" rel="noreferrer" className={buttonVariants({ size: 'sm' })}>
+                      Invite bot to your server ↗
+                    </a>
+                    <span className="text-[11px] text-muted-foreground">
+                      Grants View Channels · Send Messages · Read Message History{discordState?.botUserId ? ' · app id auto-detected' : ''}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted-foreground">Save the bot token so it connects (app id auto-detected), or paste the Application ID above, to enable the invite link.</p>
+                )}
+              </div>
+            )
+          })()}
         </CardContent>
       </Card>
     </div>
@@ -4014,30 +4982,29 @@ function CompanySettings({ me }: { me: Member }) {
 // ── Policy editor ──────────────────────────────────────────────────────────────
 const OPS: PolicyOp[] = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte']
 
-// The UI speaks plain outcomes instead of risk colors + a routing table. Each outcome maps onto the
-// engine's (risk + fixed routing): Allow=green, Ask admin=yellow→head, Ask owner=red→owner, Block=deny.
-type Outcome = 'allow' | 'ask-admin' | 'ask-owner' | 'block'
+// The UI speaks the exact three outcomes the policy now stores: allow / ask (admin|owner) / never.
+type Outcome = 'allow' | 'ask-admin' | 'ask-owner' | 'never'
 const OUTCOMES: { key: Outcome; label: string }[] = [
   { key: 'allow', label: 'Allow' },
   { key: 'ask-admin', label: 'Ask admin' },
   { key: 'ask-owner', label: 'Ask owner' },
-  { key: 'block', label: 'Block' },
+  { key: 'never', label: 'Never' },
 ]
 const POLICY_OUTCOME_STYLE: Record<Outcome, string> = {
   'allow': 'border-emerald-300 bg-emerald-50 text-emerald-700',
   'ask-admin': 'border-amber-300 bg-amber-50 text-amber-700',
   'ask-owner': 'border-red-300 bg-red-50 text-red-700',
-  'block': 'border-neutral-400 bg-neutral-100 text-neutral-700',
+  'never': 'border-neutral-400 bg-neutral-100 text-neutral-700',
 }
-const CANON_ROUTING = { yellow: 'head' as const, red: 'owner' as const } // Ask admin→yellow, Ask owner→red
-function riskToOutcome(risk: RiskClass, routing: { yellow: 'head' | 'owner'; red: 'head' | 'owner' }): Outcome {
-  if (risk === 'green') return 'allow'
-  if (risk === 'deny') return 'block'
-  const level = risk === 'yellow' ? routing.yellow : routing.red
-  return level === 'owner' ? 'ask-owner' : 'ask-admin'
+function outcomeOf(o: PolicyOutcome): Outcome {
+  if (o.action === 'allow') return 'allow'
+  if (o.action === 'never') return 'never'
+  return o.approver === 'owner' ? 'ask-owner' : 'ask-admin'
 }
-function outcomeToRisk(o: Outcome): RiskClass {
-  return o === 'allow' ? 'green' : o === 'block' ? 'deny' : o === 'ask-admin' ? 'yellow' : 'red'
+function toPolicyOutcome(o: Outcome): PolicyOutcome {
+  if (o === 'allow') return { action: 'allow' }
+  if (o === 'never') return { action: 'never' }
+  return { action: 'ask', approver: o === 'ask-owner' ? 'owner' : 'admin' }
 }
 
 // The capabilities real (claude-code) agents actually emit — the curated, plain-English surface that
@@ -4083,10 +5050,9 @@ function PolicyEditor({ me }: { me: Member }) {
   if (!doc) return <div className="text-sm text-muted-foreground">Loading…</div>
 
   const dirty = JSON.stringify(doc) !== saved
-  const routing = doc.approvalRouting ?? CANON_ROUTING
   const set = (patch: Partial<PolicyDocument>) => setDoc({ ...doc, ...patch })
   const setRule = (i: number, r: PolicyRule) => set({ rules: doc.rules.map((x, j) => (j === i ? r : x)) })
-  const addRule = () => set({ rules: [...doc.rules, { match: { capability: '' }, risk: 'yellow' }], approvalRouting: CANON_ROUTING })
+  const addRule = () => set({ rules: [...doc.rules, { match: { capability: '' }, action: 'ask', approver: 'admin' }] })
   const removeRule = (i: number) => set({ rules: doc.rules.filter((_, j) => j !== i) })
   const move = (i: number, d: -1 | 1) => {
     const j = i + d
@@ -4101,33 +5067,33 @@ function PolicyEditor({ me }: { me: Member }) {
   // risky variant ahead of its broad sibling so first-match-wins stays correct.
   const permOutcome = (perm: { cap: string; risky: boolean }): { outcome: Outcome; fromDefault: boolean } => {
     const idx = permRuleIndex(doc.rules, perm)
-    if (idx >= 0) return { outcome: riskToOutcome(doc.rules[idx].risk, routing), fromDefault: false }
-    return { outcome: riskToOutcome(doc.defaultRisk, routing), fromDefault: true }
+    if (idx >= 0) return { outcome: outcomeOf(doc.rules[idx]), fromDefault: false }
+    return { outcome: outcomeOf(doc.default), fromDefault: true }
   }
   const setPerm = (perm: { cap: string; risky: boolean }, outcome: Outcome) => {
-    const risk = outcomeToRisk(outcome)
+    const out = toPolicyOutcome(outcome)
     const rules = [...doc.rules]
     const idx = permRuleIndex(rules, perm)
     if (idx >= 0) {
-      rules[idx] = { ...rules[idx], risk }
+      // Rebuild from match + the new outcome so a stale `approver` never lingers when switching to allow/never.
+      rules[idx] = { match: rules[idx].match, ...out }
     } else {
-      const rule: PolicyRule = { match: { capability: perm.cap, ...(perm.risky ? { when: { arg: 'risky', op: 'eq', value: true } } : {}) }, risk }
+      const rule: PolicyRule = { match: { capability: perm.cap, ...(perm.risky ? { when: { arg: 'risky', op: 'eq', value: true } } : {}) }, ...out }
       if (perm.risky) {
         const broad = rules.findIndex((r) => r.match.capability === perm.cap && !r.match.when)
         rules.splice(broad >= 0 ? broad : 0, 0, rule)
       } else rules.push(rule)
     }
-    set({ rules, approvalRouting: CANON_ROUTING })
+    set({ rules })
   }
-  const setDefault = (outcome: Outcome) => set({ defaultRisk: outcomeToRisk(outcome) })
+  const setDefault = (outcome: Outcome) => set({ default: toPolicyOutcome(outcome) })
 
   const save = async () => {
     setBusy(true); setHint('')
-    const normalized: PolicyDocument = { ...doc, approvalRouting: CANON_ROUTING }
-    const r = await api.savePolicy(normalized)
+    const r = await api.savePolicy(doc)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setDoc(normalized); setSaved(JSON.stringify(normalized)); setHint('saved — applied live to all sessions')
+    setSaved(JSON.stringify(doc)); setHint('saved — applied live to all sessions')
     setTimeout(() => setHint(''), 2500)
   }
 
@@ -4135,7 +5101,7 @@ function PolicyEditor({ me }: { me: Member }) {
     <>
       <p className="text-sm text-muted-foreground">
         What your agents may do on their own — and what needs a human. <strong>Allow</strong> runs immediately,
-        <strong> Ask</strong> pauses for an admin or owner to approve in the Inbox, <strong>Block</strong> never runs.
+        <strong> Ask</strong> pauses for an admin or owner to approve in the Inbox, <strong>Never</strong> is refused outright.
         {canEdit ? ' Changes apply live to every running session.' : ' Only an owner can edit the policy.'}
       </p>
 
@@ -4160,7 +5126,7 @@ function PolicyEditor({ me }: { me: Member }) {
               <div className="text-sm font-medium">Anything else</div>
               <div className="text-xs text-muted-foreground">any action no rule above matches</div>
             </div>
-            <OutcomeSelect value={riskToOutcome(doc.defaultRisk, routing)} disabled={!canEdit} onChange={setDefault} />
+            <OutcomeSelect value={outcomeOf(doc.default)} disabled={!canEdit} onChange={setDefault} />
           </div>
         </CardContent>
       </Card>
@@ -4198,7 +5164,7 @@ function PolicyEditor({ me }: { me: Member }) {
                       placeholder="capability glob — e.g. stripe.* or *.delete"
                       className="font-mono text-xs"
                     />
-                    <OutcomeSelect value={riskToOutcome(r.risk, routing)} disabled={!canEdit} onChange={(v) => setRule(i, { ...r, risk: outcomeToRisk(v) })} />
+                    <OutcomeSelect value={outcomeOf(r)} disabled={!canEdit} onChange={(v) => setRule(i, { match: r.match, ...toPolicyOutcome(v) })} />
                     {canEdit && (
                       <div className="flex shrink-0 items-center">
                         <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="up" onClick={() => move(i, -1)}>↑</Button>

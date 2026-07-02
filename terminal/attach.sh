@@ -16,9 +16,12 @@ NAME="${2:-}"
 # No target (e.g. a ttyd asset probe) → nothing to attach to; exit cleanly.
 [ -z "$SOCK" ] || [ -z "$NAME" ] && exit 0
 
+# `tmux -u` on every attach/new-session below: this client is ttyd's xterm.js, which is always UTF-8,
+# but ttyd is launched by the (launchd/systemd) server that may carry no locale — without -u tmux would
+# infer non-UTF-8 from the empty LANG and mangle claude's wide chars (box-drawing / emoji / spinner).
 # Alive → ordinary attach (the common case: open / re-open a running session).
 if tmux -S "$SOCK" has-session -t "$NAME" 2>/dev/null; then
-  exec tmux -S "$SOCK" attach -t "$NAME"
+  exec tmux -u -S "$SOCK" attach -t "$NAME"
 fi
 
 # Not alive (yet). This is EITHER a brand-new session whose server-side `tmux new-session` simply
@@ -30,7 +33,7 @@ i=0
 while [ "$i" -lt 12 ]; do
   sleep 0.25
   if tmux -S "$SOCK" has-session -t "$NAME" 2>/dev/null; then
-    exec tmux -S "$SOCK" attach -t "$NAME"
+    exec tmux -u -S "$SOCK" attach -t "$NAME"
   fi
   i=$((i + 1))
 done
@@ -43,10 +46,10 @@ LAUNCHER="$(cd "$(dirname "$0")" && pwd)/claude-launch.sh"
 ENV_FILE="${AOS_SESSION_DIR:-}/session-$ID.env"
 if [ -n "${AOS_SESSION_DIR:-}" ] && [ -f "$ENV_FILE" ] && [ -f "$LAUNCHER" ]; then
   # new-session -A: attach if it raced back to life, else create running the resume launcher.
-  exec tmux -S "$SOCK" new-session -A -s "$NAME" \
+  exec tmux -u -S "$SOCK" new-session -A -s "$NAME" \
     "RESUME=1 ENV_FILE='$ENV_FILE' exec bash '$LAUNCHER'"
 fi
 
 # No context to resume from (e.g. a deleted session, or a mock/agent-runner session) → behave
 # like before: a plain attach, which fails cleanly and shows ttyd's disconnect.
-exec tmux -S "$SOCK" attach -t "$NAME"
+exec tmux -u -S "$SOCK" attach -t "$NAME"

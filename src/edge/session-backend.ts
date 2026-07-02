@@ -34,6 +34,10 @@ export type SpawnErrorSink = (sessionId: string, agent: string, error: string) =
 export interface SessionBackend {
   spawn(space: string, spec: SpawnSpec): void;
   kill(space: string, tmuxName: string): void;
+  /** Type `text` into a live session's pty (tmux send-keys), optionally pressing Enter to submit.
+   *  Used to hand a running claude a reference (e.g. the path of a console-uploaded image). Returns
+   *  false if the inject couldn't be delivered (no session, or backend can't reach the socket). */
+  injectText(space: string, tmuxName: string, text: string, submit: boolean): boolean;
   /** Live tmux session names, or null when liveness can't be polled (→ rely on end signals). */
   aliveNames(): Set<string> | null;
   /**
@@ -70,19 +74,30 @@ export class LocalSessionBackend implements SessionBackend {
   constructor(private readonly tmuxSocket: string, private readonly onError: SpawnErrorSink) {}
 
   spawn(_space: string, spec: SpawnSpec): void {
-    const envPrefix = Object.entries(spec.env).map(([k, v]) => `${k}=${sq(v)}`).join(' ');
+    // tmux + the claude TUI need a UTF-8 locale or wide chars (the ┌─ banners, ✅⛔ glyphs, the spinner)
+    // get mangled — tmux decides UTF-8 mode by string-matching LC_ALL/LC_CTYPE/LANG for "UTF-8". A
+    // launchd/systemd-launched server inherits a minimal env with no LANG (→ C/POSIX = ASCII), so
+    // default one here unless the caller set it. This covers the pane + claude; the rendering client
+    // (ttyd's `tmux attach`) is forced UTF-8 separately via `tmux -u` in attach.sh.
+    const env = { LANG: 'en_US.UTF-8', ...spec.env };
+    const envPrefix = Object.entries(env).map(([k, v]) => `${k}=${sq(v)}`).join(' ');
     const cmd = spec.argv.map((a, i) => (i === 0 ? a : sq(a))).join(' '); // argv[0] (bash) bare, rest quoted
     const full = envPrefix ? `${envPrefix} ${cmd}` : cmd;
-    const args = ['-S', this.tmuxSocket, 'new-session', '-d', '-s', spec.tmuxName, ...TMUX_GEOMETRY, full];
+    // -u: assert the terminal is UTF-8 regardless of the locale tmux itself was started under.
+    const args = ['-u', '-S', this.tmuxSocket, 'new-session', '-d', '-s', spec.tmuxName, ...TMUX_GEOMETRY, full];
     const child = spawn('tmux', args, { stdio: 'ignore' });
     child.on('error', (e) => this.onError(spec.sessionId, spec.agent, String(e)));
     // Server-wide tmux tuning recommended for the claude TUI: allow-passthrough lets the agent's
     // progress/notification escapes reach the browser terminal instead of being swallowed; the
-    // extended-keys pair lets tmux distinguish Shift+Enter from Enter so the newline shortcut works.
-    // Global + idempotent, so re-applying per spawn is harmless; older tmux may reject an option →
-    // stdio is ignored so it can't break a session. (Mouse-wheel scroll is fixed separately by
-    // CLAUDE_CODE_NO_FLICKER in claude-launch.sh, which puts the TUI on the alternate screen.)
+    // extended-keys pair lets tmux distinguish Shift+Enter from Enter so the newline shortcut works;
+    // set-clipboard on lets claude's copy-on-select OSC 52 escape reach ttyd/xterm.js so a selection
+    // in the TUI lands on the USER's browser clipboard (claude DCS-wraps it for the passthrough path,
+    // and forwards the raw variant too — this covers both). Global + idempotent, so re-applying per
+    // spawn is harmless; older tmux may reject an option → stdio is ignored so it can't break a
+    // session. (Mouse-wheel scroll is fixed separately by CLAUDE_CODE_NO_FLICKER in claude-launch.sh,
+    // which puts the TUI on the alternate screen.)
     for (const opt of [['set', '-g', 'allow-passthrough', 'on'], ['set', '-s', 'extended-keys', 'on'],
+                       ['set', '-g', 'set-clipboard', 'on'],
                        ['set', '-as', 'terminal-features', 'xterm*:extkeys']]) {
       spawnSync('tmux', ['-S', this.tmuxSocket, ...opt], { stdio: 'ignore' });
     }
@@ -92,10 +107,25 @@ export class LocalSessionBackend implements SessionBackend {
     spawnSync('tmux', ['-S', this.tmuxSocket, 'kill-session', '-t', tmuxName], { stdio: 'ignore' });
   }
 
+  injectText(_space: string, tmuxName: string, text: string, submit: boolean): boolean {
+    // `-l` = literal: send the bytes as typed, not as tmux key names (a path could contain `;`, `-`,
+    // etc.). Submit is a SEPARATE send-keys with the `Enter` key name so it's interpreted as a return.
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, '-l', text], { stdio: 'ignore' });
+    if (r.status !== 0) return false;
+    if (submit) spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, 'Enter'], { stdio: 'ignore' });
+    return true;
+  }
+
   aliveNames(): Set<string> | null {
     const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-sessions', '-F', '#S'], { encoding: 'utf8' });
-    if (r.status !== 0 || !r.stdout) return new Set();
-    return new Set(r.stdout.split('\n').filter(Boolean));
+    // Distinguish "couldn't run the poll" from "tmux answered, no sessions". A transient spawn
+    // failure (EAGAIN/ENOMEM/EMFILE under fork/memory pressure) sets r.error; treat that as UNKNOWN
+    // (null) so the caller does NOT reap — otherwise one hiccup flips every live session to idle and,
+    // since the sweep only ever goes running→idle, they stay falsely gray. A non-zero exit with no
+    // error is tmux itself reporting no server/sessions → genuinely empty, safe to reap.
+    if (r.error) return null;
+    if (r.status !== 0) return new Set();
+    return new Set((r.stdout || '').split('\n').filter(Boolean));
   }
 
   async attachUrl(_space: string, tmuxName: string): Promise<string> {
@@ -146,6 +176,13 @@ export class LauncherSessionBackend implements SessionBackend {
 
   kill(space: string, tmuxName: string): void {
     void this.client.stopSession(space, tmuxName).catch(() => undefined);
+  }
+
+  injectText(_space: string, _tmuxName: string, _text: string, _submit: boolean): boolean {
+    // Under uid isolation the session's tmux lives on a member-private (0700) socket the app can't
+    // reach; injecting would need a launcher verb. Not yet supported — callers degrade gracefully
+    // (the file is still saved; only the auto-typed reference is skipped).
+    return false;
   }
 
   aliveNames(): Set<string> | null {

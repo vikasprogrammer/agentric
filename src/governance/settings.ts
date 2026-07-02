@@ -25,6 +25,7 @@ const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state 
 const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives injected into every agent's prompt
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
+const CONSOLIDATE_AUTO_KEY = 'consolidate_auto'; // 'on' to spawn the memory-gardener after each auto dream pass (default off)
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
@@ -34,10 +35,14 @@ export interface GovernanceThresholds {
   moneyCapUsd: number;
   /** A delete of at most this many items may be approved; above it is refused outright. */
   bulkDeleteCount: number;
+  /** An email to more than this many EXTERNAL recipients escalates to the red (owner) approval tier. */
+  emailBulkCap: number;
 }
 
-export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd: 500, bulkDeleteCount: 25 };
+export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd: 500, bulkDeleteCount: 25, emailBulkCap: 10 };
 
+const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JSON string[]); email.send to these is green
+const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 
 /** The workspace emergency stop. When engaged, the gate denies EVERY action, fleet-wide, until cleared. */
@@ -202,7 +207,7 @@ export class SettingsStore {
   }
 
   // ── runtime defaults ───────────────────────────────────────────────────────────
-  // The workspace-wide model / effort / permission-mode applied to every claude-code agent that
+  // The workspace-wide model / effort applied to every claude-code agent that
   // doesn't override the field in its own manifest. One place to retune the whole fleet (e.g. drop
   // everyone to a cheaper model, or raise effort) without editing each agent.json. An empty/missing
   // setting means "no workspace default" → each unset field falls through to the claude CLI's own default.
@@ -272,6 +277,16 @@ export class SettingsStore {
     this.set(LEARNED_APPLY_KEY, on ? 'on' : 'off', by);
   }
 
+  /** Whether the memory-gardener (lever 4 consolidation) runs automatically after each scheduled dream
+   *  pass. Default OFF — it spawns a real headless agent run (spends tokens), so it's opt-in. Manual
+   *  "Consolidate now" works regardless. */
+  consolidateAuto(): boolean {
+    return this.getRow(CONSOLIDATE_AUTO_KEY)?.value === 'on';
+  }
+  setConsolidateAuto(on: boolean, by?: string): void {
+    this.set(CONSOLIDATE_AUTO_KEY, on ? 'on' : 'off', by);
+  }
+
   /** Open config recommendations + dismissed ids. The dreamer regenerates `open` each pass (minus the
    *  dismissed); a human Applies or Dismisses each — nothing auto-applies. */
   recommendations(): { open: Recommendation[]; dismissed: string[] } {
@@ -302,6 +317,7 @@ export class SettingsStore {
       return {
         moneyCapUsd: Number.isFinite(v.moneyCapUsd) ? Number(v.moneyCapUsd) : DEFAULT_GOVERNANCE_THRESHOLDS.moneyCapUsd,
         bulkDeleteCount: Number.isFinite(v.bulkDeleteCount) ? Number(v.bulkDeleteCount) : DEFAULT_GOVERNANCE_THRESHOLDS.bulkDeleteCount,
+        emailBulkCap: Number.isFinite(v.emailBulkCap) ? Number(v.emailBulkCap) : DEFAULT_GOVERNANCE_THRESHOLDS.emailBulkCap,
       };
     } catch {
       return { ...DEFAULT_GOVERNANCE_THRESHOLDS };
@@ -323,9 +339,58 @@ export class SettingsStore {
     const next: GovernanceThresholds = {
       moneyCapUsd: clamp(t.moneyCapUsd, cur.moneyCapUsd),
       bulkDeleteCount: clamp(t.bulkDeleteCount, cur.bulkDeleteCount),
+      emailBulkCap: clamp(t.emailBulkCap, cur.emailBulkCap),
     };
     this.set(GOVERNANCE_KEY, JSON.stringify(next), by);
     return next;
+  }
+
+  // ── email org domains (internal recipients for the email.send policy tier) ───────
+  // The workspace's own email domains. An `email.send` to one of these classifies internal (green);
+  // anything else is external (yellow — needs approval). Explicit config wins; when unset the gate
+  // derives a sensible default from members' own (non-public) email domains. `@` and case ignored.
+
+  /** The configured internal domains (may be empty → the gate falls back to member-derived domains). */
+  emailOrgDomains(): string[] {
+    const raw = this.getRow(EMAIL_ORG_DOMAINS_KEY)?.value;
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw) as unknown;
+      return Array.isArray(v) ? this.normalizeDomains(v.map(String)) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  emailOrgDomainsMeta(): { updatedAt?: number; updatedBy?: string } {
+    const row = this.getRow(EMAIL_ORG_DOMAINS_KEY);
+    return { updatedAt: row?.updated_at, updatedBy: row?.updated_by ?? undefined };
+  }
+
+  /** Persist the internal-domain list (deduped, lowercased, `@`/whitespace stripped). */
+  setEmailOrgDomains(domains: string[], by?: string): string[] {
+    const clean = this.normalizeDomains(domains);
+    this.set(EMAIL_ORG_DOMAINS_KEY, JSON.stringify(clean), by);
+    return clean;
+  }
+
+  private normalizeDomains(domains: string[]): string[] {
+    return [...new Set(domains.map((d) => String(d).trim().toLowerCase().replace(/^@/, '')).filter(Boolean))];
+  }
+
+  // ── chat router (generic Slack/Discord front door) ───────────────────────────────
+  // When ON (default), a Slack/Discord message that matches NO automation falls back to the generic
+  // `/agent` router: the sender addresses any claude-code agent by name; an unaddressed/unknown name
+  // gets a help list. Lets the whole fleet be reachable without a per-agent automation.
+
+  /** Whether the generic `/agent` chat router handles unmatched Slack/Discord messages (default true). */
+  chatRouterEnabled(): boolean {
+    return this.getRow(CHAT_ROUTER_KEY)?.value !== 'off';
+  }
+
+  setChatRouterEnabled(on: boolean, by?: string): boolean {
+    this.set(CHAT_ROUTER_KEY, on ? 'on' : 'off', by);
+    return this.chatRouterEnabled();
   }
 
   // ── kill switch (workspace emergency stop) ───────────────────────────────────────
@@ -349,4 +414,5 @@ export class SettingsStore {
     this.set(KILL_SWITCH_KEY, JSON.stringify({ engaged: !!engaged, reason: reason?.trim() || undefined }), by);
     return this.killSwitch();
   }
+
 }

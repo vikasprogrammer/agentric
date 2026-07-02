@@ -57,6 +57,33 @@ export async function getGatewayUrl(botToken: string): Promise<{ url: string } |
 
 /** Post a message as the bot. `replyToMessageId` renders it as an in-channel reply to that message —
  *  the natural place to answer a mention (Discord's analogue of Slack's `thread_ts`). */
+/**
+ * Start a thread hanging off an existing message (guild channels only — DMs have no threads). Returns
+ * the new thread's channel id, which you then post into like any channel. Used to keep a triggered
+ * exchange contained in its own thread instead of scattering replies across the parent channel.
+ */
+export async function startThread(
+  botToken: string,
+  channelId: string,
+  messageId: string,
+  name: string,
+): Promise<{ ok: true; id: string } | { error: string }> {
+  if (!botToken) return { error: 'no Discord bot token' };
+  try {
+    const res = await fetch(`${DISCORD_API}/channels/${encodeURIComponent(channelId)}/messages/${encodeURIComponent(messageId)}/threads`, {
+      method: 'POST',
+      headers: { authorization: `Bot ${botToken}`, 'content-type': 'application/json' },
+      // 1440 min = 24h auto-archive; name is capped at Discord's 100-char limit.
+      body: JSON.stringify({ name: (name || 'Agent OS').slice(0, 100), auto_archive_duration: 1440 }),
+    });
+    const j: any = await res.json().catch(() => ({}));
+    if (res.ok && j?.id) return { ok: true, id: String(j.id) };
+    return { error: String(j?.message || `start thread failed (${res.status})`) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'start thread failed' };
+  }
+}
+
 export async function postMessage(
   botToken: string,
   channelId: string,

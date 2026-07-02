@@ -2,7 +2,7 @@
 
 > **Status (2026-06-23): backend shipped ✅ · console UI pending.** Built per this design: `kb_pages`/
 > `kb_revisions`/`kb_fts` (`db.ts`), `KbStore` (`src/state/kb.ts`, wired as `os.kb`), the loopback +
-> console routes (`src/server.ts`), and the `kb_search`/`kb_read`/`kb_write` MCP tools (`memory-mcp.ts`,
+> console routes (`src/server.ts`), and the `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert` MCP tools (`memory-mcp.ts`,
 > allowlisted in `claude-launch.sh`). Decisions held: auto-apply + audit (no gate), markdown-on-disk +
 > SQLite/FTS mirror, section/slug pages with a full revision chain + revert. **Tested:** 13/13 store
 > assertions (create→edit→history→revert→search→tenant-isolation→remove) + a live loopback smoke
@@ -227,9 +227,9 @@ TeeAuditSink (JSONL + `audit_events` mirror) as everything else.
 
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`
 
-Add three tools to the existing OS-owned MCP server (so every claude-code session gets them with no
-new server wiring — the launcher already injects `agentos`). They follow the `recall`/`remember`
-pattern and call the loopback routes above:
+Five tools on the OS-owned MCP server (so every claude-code session gets them with no new server
+wiring — the launcher already injects `agentos`). They follow the `recall`/`remember` pattern and
+call the loopback routes above:
 
 - **`kb_search({ query, section?, tags?, limit? })`** → ranked page list (slug, title, section,
   snippet). "Search the company knowledge base before answering or starting work."
@@ -237,6 +237,10 @@ pattern and call the loopback routes above:
 - **`kb_write({ section, slug, body, title?, tags?, summary? }`)** → create or update a page.
   "Record durable, company-wide knowledge others will reuse. Editing an existing page is encouraged —
   your change is versioned and revertable."
+- **`kb_history({ section, slug })`** → revision list (newest first: rev, author, summary) — what a
+  write would clobber / what to restore. *(shipped)*
+- **`kb_revert({ section, slug, rev })`** → restore an earlier revision; itself a new, auditable,
+  revertable write. *(shipped)*
 
 Tool guidance must draw the **KB-vs-Memory line** explicitly in the descriptions, or agents will
 conflate them: *Memory = your own private notes for your own future runs; KB = shared canonical

@@ -3,15 +3,30 @@
 #
 # Wire this in a session's settings.json (see terminal/claude-settings.json) so a REAL
 # `claude` agent running in tmux is governed by Agent OS: before every tool call, Claude
-# runs this hook. The server decides: allow → exit 0; ask → create an inbox approval and
-# BLOCK here until a human decides (then exit 0/2); never → exit 2 (denied outright).
+# runs this hook. The server decides: allow / ask (create an inbox approval and BLOCK here
+# until a human decides) / never (denied outright).
 #
-# Contract: PreToolUse hook reads a JSON event on stdin; exit 0 lets the tool run, exit 2
-# blocks it (reason on stderr is shown to Claude).
+# Contract (AUTHORITATIVE-DECISION mode): for the capabilities Agent OS governs (Bash,
+# connector.*), the hook emits a PreToolUse `permissionDecision` on stdout and exits 0.
+# `permissionDecision:"allow"` makes Agent OS the SOLE authority — it BYPASSES Claude Code's
+# own permission engine (the `auto`-mode classifier never runs, so there's no second, hidden
+# denial layered on top of ours). `"deny"` blocks the call. An approval that's still pending
+# blocks the hook synchronously (polling) until a human resolves it, then emits allow/deny —
+# so a headless `-p` run is governed identically to an interactive one with NO
+# `--dangerously-skip-permissions` (there's no prompt to answer; the hook itself is the gate).
+# Built-in Read/Glob/Grep and the OS-owned mcp__agentos__* tools aren't world side effects, so
+# the hook stays silent (bare exit 0) and defers to Claude's normal permission flow — that's
+# what keeps the crown-jewel `permissions.deny` Read rules in force for the built-in Read tool.
 #
 # Env: AOS_URL, SESSION, AGENT  (exported when the claude session is launched)
 set -u
 EVENT=$(cat)
+
+# Emit an authoritative PreToolUse decision and exit 0. $1 = allow|deny, $2 = reason (shown to Claude).
+emit() {
+  node -e 'const[d,r]=process.argv.slice(1);console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:d,permissionDecisionReason:r}}))' "$1" "$2"
+  exit 0
+}
 
 # This hook is now DUMB TRANSPORT (governance PR #2): it only routes the tool to a capability and ships
 # the FULL tool_input to the server, which enriches it into facts (case-insensitive, argument-aware —
@@ -29,6 +44,9 @@ esac
 # riskiness/destructiveness classification now happens server-side in the enricher + policy.
 case "$TOOL" in
   Bash) CAP="shell.exec" ;;
+  # File writes go through the gateway too (the enricher decides inside-vs-outside the agent's folder
+  # from the path in tool_input). The hook stays dumb transport — it only names the capability.
+  Edit|Write|MultiEdit|NotebookEdit) CAP="file.write" ;;
   mcp__composio-company__*MANAGE_CONNECTION*|mcp__composio-company__*INITIATE_CONNECTION*)
     # Managing a COMPANY-wide connection grants the whole fleet access to an app — an owner/admin call.
     CAP="connector.connect" ;;
@@ -46,8 +64,8 @@ while :; do
   dec=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.decision||"")})')
   gid=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.gateId||"")})')
   case "$dec" in
-    allow) exit 0 ;;
-    deny)  echo "Agent OS policy: denied — this action is blocked (irreversible or not permitted)." >&2; exit 2 ;;
+    allow) emit allow "Agent OS: allowed by policy." ;;
+    deny)  emit deny "Agent OS policy: denied — this action is blocked (irreversible or not permitted)." ;;
     pending) break ;;
     *) echo "Agent OS: gate unreachable — blocking this action until it responds…" >&2; sleep 2 ;;
   esac
@@ -57,7 +75,7 @@ echo "Agent OS: this action needs approval — see the inbox. Waiting…" >&2
 while :; do
   sleep 1
   st=$(curl -s --max-time 10 "$AOS_URL/api/gate/$gid" -H "x-aos-tenant: ${AOS_TENANT:-}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.status||"")})')
-  [ "$st" = "allow" ] && exit 0
-  [ "$st" = "deny" ]  && { echo "Agent OS: rejected by human." >&2; exit 2; }
+  [ "$st" = "allow" ] && emit allow "Agent OS: approved by human."
+  [ "$st" = "deny" ]  && emit deny "Agent OS: rejected by human."
   # any other status (pending / empty / gate momentarily unreachable) → keep waiting, never proceed
 done

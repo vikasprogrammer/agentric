@@ -51,6 +51,10 @@ export interface ComposioConnection {
   status: string;
   createdAt: string;
   userId: string;
+  /** A human-distinguishable label for THIS connection (so two Gmail accounts aren't both just "gmail").
+   *  The account's real address isn't in the list payload — this is the user-set `alias` if any, else
+   *  Composio's auto handle (`word_id`, e.g. `gmail_comma-hugh`), else the connection id. */
+  name: string;
 }
 
 /** One Composio toolkit (app) from the catalog — what a user can connect. */
@@ -120,6 +124,7 @@ export async function listConnectedAccounts(apiKey: string, userId: string): Pro
       status: String(a.status ?? a.state ?? 'UNKNOWN'),
       createdAt: String(a.created_at ?? a.createdAt ?? ''),
       userId: String(a.user_id ?? a.userId ?? userId),
+      name: String(a.alias || a.word_id || a.wordId || a.id || ''),
     }));
   } catch {
     return [];

@@ -3,3 +3,6 @@ dist/
 data/
 .env
 *.log
+
+# Local process-per-tenant manifest (instance-specific; copy from config/tenants.example.json)
+config/tenants.json

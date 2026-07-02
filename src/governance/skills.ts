@@ -20,6 +20,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import { Db } from '../state/db';
 
 /** Marker file written into every skill we materialise, so a re-sync only touches our own. */
 const MARKER = '.aos-managed';
@@ -36,11 +37,31 @@ export interface SkillSummary {
   updatedAt: number;
   /** Extra files alongside SKILL.md (templates/scripts) — names only, for display. */
   files: string[];
+  /**
+   * Agent ids this skill is scoped to (the `skill_assignments` join table). EMPTY = every agent
+   * (the default & today's behavior); non-empty = only these agents get it materialised at launch.
+   */
+  agents: string[];
 }
 
 /** A skill plus the full SKILL.md text (for the editor). */
 export interface SkillDetail extends SkillSummary {
   content: string;
+}
+
+/**
+ * A skill in the BUNDLED catalog (the software's `config/skills`), as offered for install. Mirrors
+ * `SkillSummary` minus the per-agent `agents` audience (catalog skills have no assignments — that's a
+ * property of an installed skill), plus `installed`: whether the tenant's library already has it.
+ */
+export interface CatalogSkill {
+  name: string;
+  description: string;
+  bytes: number;
+  /** Extra files alongside SKILL.md (templates/scripts) — names only, for display. */
+  files: string[];
+  /** True when the tenant's library already contains a skill of this name. */
+  installed: boolean;
 }
 
 export interface CreateSkillInput {
@@ -58,8 +79,18 @@ export function validSkillName(name: string): boolean {
 }
 
 export class SkillsStore {
-  /** `<home>/skills` — undefined in tests/demo (no data home), where the library is simply empty. */
-  constructor(private readonly dir?: string) {}
+  /**
+   * `<home>/skills` — undefined in tests/demo (no data home), where the library is simply empty.
+   * `db` backs the per-agent assignment join table (`skill_assignments`); when absent (no db), every
+   * skill is treated as "all agents" — the assignment feature is simply inert.
+   * `catalogDir` = the SOFTWARE's bundled skill catalog (`config/skills`), read-only and shared across
+   * tenants; a tenant `install`s a catalog skill into its own `dir`. Undefined ⇒ empty catalog.
+   */
+  constructor(
+    private readonly dir?: string,
+    private readonly db?: Db,
+    private readonly catalogDir?: string,
+  ) {}
 
   /** Is a real library configured (i.e. is there a data home)? */
   get enabled(): boolean {
@@ -113,7 +144,74 @@ export class SkillsStore {
     const folder = path.join(this.dir, name);
     if (!fs.existsSync(folder)) return false;
     fs.rmSync(folder, { recursive: true, force: true });
+    this.db?.prepare('DELETE FROM skill_assignments WHERE skill = ?').run(name); // drop orphan assignment rows
     return true;
+  }
+
+  // ── bundled catalog (the software's config/skills) → install into the library ─
+  /**
+   * The bundled skill catalog: every skill that ships with the software, each flagged with whether
+   * the tenant's library already has it. Empty when no catalog dir is configured (tests/demo) or the
+   * dir is absent. Read-only — the catalog is software, not user data.
+   */
+  catalog(): CatalogSkill[] {
+    if (!this.catalogDir || !fs.existsSync(this.catalogDir)) return [];
+    const installed = new Set(this.list().map((s) => s.name));
+    const out: CatalogSkill[] = [];
+    for (const entry of fs.readdirSync(this.catalogDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !validSkillName(entry.name)) continue;
+      const c = this.readCatalog(entry.name);
+      if (c) out.push({ ...c, installed: installed.has(entry.name) });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Install a bundled catalog skill into the tenant's library (a deep copy of its folder, minus any
+   * `node_modules`/marker). Throws on a bad/unknown name or if the library already has it. The fresh
+   * copy reaches agents on their next session via `materialize`. Returns the installed detail.
+   */
+  install(name: string): SkillDetail {
+    if (!this.dir) throw new Error('a data home is required to install skills');
+    if (!this.catalogDir) throw new Error('no skill catalog is configured');
+    if (!validSkillName(name)) throw new Error('invalid skill name');
+    const src = path.join(this.catalogDir, name);
+    if (!fs.existsSync(path.join(src, 'SKILL.md'))) throw new Error(`"${name}" is not in the skill catalog`);
+    const dest = path.join(this.dir, name);
+    if (fs.existsSync(dest)) throw new Error(`a skill named "${name}" already exists`);
+    fs.mkdirSync(dest, { recursive: true });
+    fs.cpSync(src, dest, {
+      recursive: true,
+      filter: (s) => path.basename(s) !== 'node_modules' && path.basename(s) !== MARKER,
+    });
+    return this.read(name)!;
+  }
+
+  /**
+   * Install a skill from an in-memory set of files (used by the remote-repo installer in
+   * `skill-registry.ts`). `files` are paths relative to the skill folder; one must be `SKILL.md`.
+   * Throws on a bad/duplicate name or a missing/escaping path. Returns the installed detail.
+   */
+  installFiles(name: string, files: { rel: string; data: Buffer }[]): SkillDetail {
+    if (!this.dir) throw new Error('a data home is required to install skills');
+    name = name.trim().toLowerCase();
+    if (!validSkillName(name)) throw new Error('invalid skill name');
+    if (!files.some((f) => f.rel === 'SKILL.md')) throw new Error('the skill is missing a SKILL.md');
+    const dest = path.join(this.dir, name);
+    if (fs.existsSync(dest)) throw new Error(`a skill named "${name}" already exists`);
+    fs.mkdirSync(dest, { recursive: true });
+    for (const f of files) {
+      // Defend against path traversal: every file must resolve inside dest.
+      const target = path.resolve(dest, f.rel);
+      if (target !== dest && !target.startsWith(dest + path.sep)) {
+        fs.rmSync(dest, { recursive: true, force: true });
+        throw new Error(`unsafe path in skill: ${f.rel}`);
+      }
+      if (path.basename(f.rel) === MARKER) continue; // never import a managed marker
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, f.data);
+    }
+    return this.read(name)!;
   }
 
   // ── materialise into an agent at launch ──────────────────────────────────────
@@ -122,8 +220,13 @@ export class SkillsStore {
    * any skill WE previously materialised (marked) that's no longer in the library, (re)writes every
    * current global skill, and never touches a skill the agent authored itself (no marker). A
    * hand-authored skill SHADOWS a same-named global one. Returns the names actually materialised.
+   *
+   * When `agent` is given, only skills scoped to it (empty assignment ⇒ all agents, or its id is in
+   * the list) are materialised — and a skill that was previously synced but is no longer assigned to
+   * this agent is pruned by the same managed-skill cleanup below. When `agent` is undefined, every
+   * library skill is synced (back-compat for non-agent callers).
    */
-  materialize(claudeDir: string): string[] {
+  materialize(claudeDir: string, agent?: string): string[] {
     if (!this.dir) return [];
     const target = path.join(claudeDir, 'skills');
     const managed = new Set<string>(); // names we own in the target right now
@@ -136,7 +239,10 @@ export class SkillsStore {
       }
     }
 
-    const library = this.list();
+    // Only skills targeting this agent (empty audience ⇒ all agents). Undefined agent ⇒ keep all.
+    const library = this.list().filter(
+      (s) => agent === undefined || s.agents.length === 0 || s.agents.includes(agent),
+    );
     const wanted = new Set(library.map((s) => s.name));
 
     // Drop managed skills that have left the library (or are now shadowed by a hand-authored one).
@@ -179,8 +285,55 @@ export class SkillsStore {
       bytes: stat.size,
       updatedAt: stat.mtimeMs,
       files,
+      agents: this.assignmentsFor(name),
       content,
     };
+  }
+
+  /** Read a catalog skill's frontmatter + file list from the bundled catalog dir. */
+  private readCatalog(name: string): Omit<CatalogSkill, 'installed'> | undefined {
+    if (!this.catalogDir) return undefined;
+    const folder = path.join(this.catalogDir, name);
+    const file = path.join(folder, 'SKILL.md');
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(file);
+      if (!stat.isFile()) return undefined;
+    } catch {
+      return undefined;
+    }
+    const fm = parseFrontmatter(fs.readFileSync(file, 'utf8'));
+    const files = fs
+      .readdirSync(folder, { withFileTypes: true })
+      .filter((e) => !(e.isFile() && e.name === 'SKILL.md') && e.name !== MARKER && e.name !== 'node_modules')
+      .map((e) => (e.isDirectory() ? e.name + '/' : e.name));
+    return { name, description: fm.description ?? '', bytes: stat.size, files };
+  }
+
+  // ── per-agent assignment (skill_assignments join table) ──────────────────────
+  /** Agent ids this skill is scoped to. Empty ⇒ all agents (no rows / no db). */
+  assignmentsFor(name: string): string[] {
+    if (!this.db) return [];
+    return this.db
+      .prepare('SELECT agent FROM skill_assignments WHERE skill = ? ORDER BY agent')
+      .all<{ agent: string }>(name)
+      .map((r) => r.agent);
+  }
+
+  /** Set the skill's audience. An empty list clears all rows ⇒ "all agents". No-op without a db. */
+  setAssignment(name: string, agents: string[]): void {
+    if (!this.db || !validSkillName(name)) return;
+    const ids = [...new Set(agents.map((a) => a.trim()).filter(Boolean))];
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare('DELETE FROM skill_assignments WHERE skill = ?').run(name);
+      const ins = this.db.prepare('INSERT OR IGNORE INTO skill_assignments (skill, agent) VALUES (?, ?)');
+      for (const agent of ids) ins.run(name, agent);
+      this.db.exec('COMMIT');
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   /** Copy a library skill's whole folder into `dest`, then stamp the managed marker. */

@@ -98,6 +98,28 @@ export interface CatalogEntry {
  */
 export const CATALOG: CatalogEntry[] = [
   {
+    type: 'resend',
+    label: 'Resend (email)',
+    description: 'Send transactional & marketing email via the official resend-mcp server. Needs only a Resend API key.',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', 'resend-mcp'],
+    fields: [
+      {
+        key: 'RESEND_API_KEY',
+        label: 'API key',
+        placeholder: 're_…',
+        help: 'Create one at resend.com/api-keys. Tip: enter secret:RESEND_API_KEY to pull it from the encrypted vault instead of storing it here.',
+      },
+      {
+        key: 'SENDER_EMAIL_ADDRESS',
+        label: 'Default sender (optional)',
+        placeholder: 'you@yourdomain.com',
+        help: 'An address on a domain you have verified in Resend, used as the default From when the agent omits one.',
+      },
+    ],
+  },
+  {
     type: 'custom',
     label: 'Custom (local)',
     description: 'Bring any stdio MCP server — supply its launch command, args, and environment.',

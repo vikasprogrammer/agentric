@@ -53,8 +53,9 @@ self-learning, multi-tenancy, and native Slack via Socket Mode. Graded against t
 | **Cron** | scheduled fire | n/a | ✅ today |
 | **Webhook** | `POST /hooks/<id>?key=` | n/a | ✅ today |
 | **Slack** | **Socket Mode** @mention/DM, run-as member | post / DM via bot (service) or member (personal) | ✅ shipped (`src/edge/slack-socket.ts`) |
-| **Discord** | **Gateway** @mention/DM, run-as member (identity map) | post / reply via bot (service) | 🟡 code-complete (`src/edge/discord-socket.ts`) |
-| **Email** | — | send-as-member via Composio Gmail (UC5) | egress 🟡 (works for console spawns; needs policy rules); ingress OUT |
+| **Discord** | **Gateway** @mention/DM, run-as member (identity map) | reply in a **thread** off the message (bot) | ✅ live-connected + threaded (`src/edge/discord-socket.ts`); full agent-run e2e pending |
+| **Any channel → any agent** | `/agent-name …` (Slack + Discord, no automation) | agent's own reply tool | ✅ shipped (`Automations.routeChat`) |
+| **Email** | — | send-as-member via Composio Gmail (UC5) | egress 🟡 (recipient-aware `email.send` policy + fail-closed shipped; live e2e left); ingress OUT |
 
 ## Milestones — status vs. this repo
 
@@ -100,7 +101,7 @@ posts an in-thread ack, and the agent replies via its Slack egress tools.
 - *Remaining:* back run-as with **M1/P1** for members whose Slack email doesn't resolve; confirm
   `canRun` gating on the run-as principal. (Decision D4 below is satisfied — Socket Mode chosen.)
 
-### M3 — Discord channel — 🟡 Code-complete, untested live
+### M3 — Discord channel — 🟡 Live-connected; end-to-end pending an automation/router run
 Built as a **one-for-one mirror of the Slack Socket-Mode path** (decision **D-Discord = gateway**, not
 the HTTP Interactions fallback). New `src/connectors/discord.ts` (REST + `parseDiscordMessage` + intents)
 and `src/edge/discord-socket.ts` (the Gateway state machine: HELLO/heartbeat/IDENTIFY/READY/MESSAGE_CREATE,
@@ -112,15 +113,50 @@ console (Integrations Discord card + `DiscordSetupGuide` + automation type).
 - *Verified:* backend `tsc` + web build clean; unit smoke tests pass (intents bitfield, opcodes, message
   routing for DM / guild-mention / non-mention / bot / webhook; settings round-trip; `discord_threads`
   table; socket status).
-- *Per-member run-as:* ✅ wired — `resolveMember` resolves the Discord sender via the M1/P1 identity map
-  (`memberByExternalId('discord', id)`); map a member's Discord user id on the Team page (Chat IDs) and
-  triggered runs act as them. Unmapped senders fall back to the company identity.
-- *Remaining:* live e2e against a real Discord app (token + MESSAGE_CONTENT intent + invite).
+- *Per-member run-as:* ✅ wired + **verified live** — `resolveMember` resolves the Discord sender via the
+  M1/P1 identity map (`memberByExternalId('discord', id)`); a real DM ran as the mapped member (`trigger.discord`
+  `runAs` populated). Map the Discord user id on the Team page (Chat IDs). Unmapped → company identity.
+  *(Fixed a Team-UI bug where pasting a Chat ID cleared instantly — the editor re-synced on every parent
+  render; now keyed on the identity values.)*
+- *Live status:* ✅ bot connects over the Gateway (`discord.connected` records the READY guild count) and
+  **receives messages** (a DM produced a `trigger.discord` event). The console now shows an **auto-detected
+  invite button** (bot user id = application id) so inviting the bot into a server is one click.
+- **Threading — ✅ done.** A guild @mention branches a real **thread** off the user's message (`startThread`);
+  the ack + all `discord_reply` output stay inside it. DMs reply-reference in the DM; a thread-create failure
+  falls back to the channel. A leading `<@BOTID>` mention is stripped so the `/agent` prefix parses.
+- **Reachable without an automation — ✅ done** via the generic `/agent` router (see below).
+- *Remaining:* a full agent run e2e — @mention `/​<agent>` in the bot's server (it's in 1 guild) or DM it,
+  and confirm the threaded reply + the `chat:<agent>` session in the console.
 
-### M4 — Act-as-member email (UC5) — 🟡 Partial *(mostly falls out of M1)*
+### Generic `/agent` chat router (Slack + Discord) — ✅ done
+So the whole fleet is reachable **without creating a per-agent automation**. When a Slack/Discord message
+matches no automation, `Automations.routeChat` parses a leading `/agent-name`; a known claude-code agent is
+spawned by `spawnChatAgent` (provenance `chat:<agent>`, run-as the sender, thread-bound, fully gated,
+labeled "Chat · <agent> · as <member>" and visible on the Sessions page + Inbox); an unaddressed/unknown name
+posts a help list of available agents. Toggle `chatRouterEnabled` (Settings → Integrations, default on).
+Verified by an isolated `Automations` test (addressed→spawns, unknown→help, bare→help, disabled→silent, Slack
+mirrors) and a fetch-mocked Discord dispatch test (thread creation, thread binding, mention-strip, DM path).
+
+### M4 — Act-as-member email (UC5) — 🟡 Partial *(mostly falls out of M1; policy now landed)*
 Personal Gmail via Composio (`user_id` = member email) already works for console spawns.
-- *Remaining:* `email.send` policy rules (internal recipient green, external yellow/red); fail-closed
-  when the run-as member hasn't connected Gmail; confirm e2e for a triggered (non-console) run.
+- **`email.send` policy rules — ✅ done.** An outbound email is now its own governed capability: the
+  enricher (`src/governance/enricher.ts`) detects a Gmail/`send_email` connector call, parses the
+  recipient domains, and marks `emailExternal`; `tm.gate` reclassifies the call to **`email.send`** so
+  the default policy gates it by audience — **internal recipient → green, external → yellow, and a
+  bulk external blast (more than `$emailBulkCap` outside recipients, default 10) → red (owner)**
+  (`config/policy/default.policy.json`; the cap is live-editable in Settings → Governance). The
+  enricher counts only *external* recipients, so a large internal fan-out stays green. Opaque/no
+  recipients → treated as external (safe, but not "bulk"). Internal
+  domains come from **Settings → email-domains** (`emailOrgDomains`, `GET/PUT /api/settings/email-domains`,
+  owner/admin) and, when unset, are derived from members' own non-public email domains (zero-config).
+  Golden cases pinned in `test/governance/conformance.json`.
+- **Fail-closed — ✅ done.** A session running **as a member** that reaches for the **company** Gmail
+  tool is denied (`gate.email.blocked`) rather than silently sending from the company identity — the
+  member simply hasn't connected their own Gmail. Company/automation runs (no `run_as`) use the company
+  account normally. The *personal* path is fail-closed by construction: without the member's Gmail grant
+  Composio exposes no personal Gmail tool to call.
+- *Remaining:* a console Settings card for the org-domain list (API-only today); confirm e2e for a
+  triggered (non-console) run against a real Composio Gmail grant.
 
 ### M5 — Audit viewer + chat approval notifications — ✅ Done *(10/10 smoke tests)*
 - **Audit viewer** — `GET /api/audit` (owner/admin; filters by session / type-prefix / principal, capped
@@ -150,8 +186,9 @@ mode (`LocalSessionBackend`), flag off.
 | M0 Foundation (pillars 1–5) | both | ✅ done | — |
 | M1 Identity map (P1/P2/P3/P4) | frozen plan | ✅ done (P1–P4) | — |
 | M2 Slack (Socket Mode) | this repo | ✅ done | back run-as with P1 |
-| M3 Discord | frozen plan | 🟡 code-complete (Socket-Mode mirror) | live e2e; per-member run-as via M1 |
-| M4 Act-as-member email (UC5) | frozen plan | 🟡 partial | `email.send` rules + fail-closed |
+| M3 Discord | frozen plan | 🟡 live-connected + threaded; run-as verified via DM | full agent-run e2e (@mention `/agent` or DM) |
+| Generic `/agent` router | this repo | ✅ done (Slack + Discord) | — |
+| M4 Act-as-member email (UC5) | frozen plan | 🟡 partial | ~~`email.send` rules + fail-closed~~ ✅ landed; Settings UI + live e2e left |
 | M5 Audit viewer + chat notify | frozen plan | ✅ done (10/10 tests) | live e2e of DMs with a real app |
 | M6 Phase A deploy | frozen plan | 🟡 code-complete | ops + 2-member e2e |
 | Memory / KB / Dreaming / Multi-tenant | this repo | ✅ done | (was "OUT" in the frozen plan) |
@@ -159,9 +196,9 @@ mode (`LocalSessionBackend`), flag off.
 ## Build order
 
 1. ~~**M1** (identity groundwork — P1/P2/P3/P4)~~ — ✅ **done**; foundation Discord + UC5 ride on.
-2. **M4** (act-as-member email) — nearly free now M1 landed; add `email.send` policy rules.
+2. ~~**M4** (act-as-member email) — `email.send` policy rules~~ — ✅ rules + fail-closed landed; only a Settings UI + live e2e remain.
 3. ~~**M5** (audit viewer + chat notifications)~~ — ✅ **done**.
-4. **M3** (Discord) — on the M1 plumbing; settle transport (D-Discord) first.
+4. ~~**M3** (Discord) — settle transport (D-Discord) first~~ — ✅ Gateway transport chosen + live-connected + threaded, generic `/agent` router shipped; only a full agent-run e2e remains.
 5. **M6** (Phase A deploy) — parallel ops track throughout; flip the flag for the final team e2e.
 
 ## Open decisions
@@ -170,7 +207,7 @@ mode (`LocalSessionBackend`), flag off.
   subscription login (seat/concurrency risk).
 - **D2 — Default `run_as`:** `trigger-user` (map the human, fall back to owner) — recommended;
   implemented this way for Slack.
-- **D-Discord — Discord transport:** **Socket-Mode-style gateway** (recommended — matches Slack, no
-  public URL) vs the frozen plan's HTTP Interactions endpoint + Ed25519 (fallback).
+- **D-Discord — Discord transport:** ✅ **resolved — Gateway** (matches Slack, no public URL; shipped and
+  live-connected). The frozen plan's HTTP Interactions + Ed25519 was the fallback, not needed.
 - **D4 — Slack transport:** ✅ **resolved — Socket Mode.**
 - **D5 — Storage label:** keep `org` in storage, relabel **service** in the UI only (no migration).

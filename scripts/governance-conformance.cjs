@@ -36,8 +36,10 @@ for (const c of fixture.decisions) {
   const engine = new JsonPolicyEngine(policyDoc);
   const thresholds = c.thresholds || fixture.thresholdsDefault;
   engine.setThresholds(() => thresholds);
-  const args = enrichArgs(c.capability, c.args);
-  const got = tag(engine.classify({ capabilityId: c.capability, args, reasoning: '' }, ctx));
+  const args = enrichArgs(c.capability, c.args, c.orgDomains || [], c.workdir);
+  // Mirror tm.gate: an email send is reclassified to its own capability so the recipient-aware rules apply.
+  const capability = args.emailSend === true ? 'email.send' : c.capability;
+  const got = tag(engine.classify({ capabilityId: capability, args, reasoning: '' }, ctx));
   if (got === c.expect) pass++;
   else failures.push(`decision  ✗ ${c.name}\n            expected ${c.expect}, got ${got}  (facts: destructive=${args.destructive} risky=${args.risky} amountUsd=${args.amountUsd} deleteCount=${args.deleteCount})`);
 }
