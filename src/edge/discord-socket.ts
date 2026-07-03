@@ -21,10 +21,16 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations } from './automations';
-import { GATEWAY_INTENTS, OP, getGatewayUrl, openDmChannel, parseDiscordMessage, postMessage } from '../connectors/discord';
+import { GATEWAY_INTENTS, OP, getGatewayUrl, openDmChannel, parseDiscordMessage, postMessage, startThread } from '../connectors/discord';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
+
+/** A concise Discord thread title from the triggering message (Discord caps names at 100 chars). */
+function threadName(text: string, actor: string): string {
+  const t = (text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return t || `Agent OS — ${actor}`;
+}
 
 export class DiscordSocket {
   private ws?: WebSocket;
@@ -144,7 +150,8 @@ export class DiscordSocket {
       case OP.DISPATCH:
         if (msg.t === 'READY') {
           this.botUserId = String(msg?.d?.user?.id || '');
-          this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'discord', type: 'discord.connected', data: { botUserId: this.botUserId } });
+          const guildCount = Array.isArray(msg?.d?.guilds) ? msg.d.guilds.length : 0;
+          this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'discord', type: 'discord.connected', data: { botUserId: this.botUserId, guilds: guildCount } });
         } else if (msg.t === 'MESSAGE_CREATE') {
           void this.dispatch(msg.d).catch(() => { /* never let one event kill the socket */ });
         }
@@ -201,15 +208,32 @@ export class DiscordSocket {
     // member_identities map lands.
     const runAsMember = this.resolveMember(ev.user);
     const actorLabel = ev.username || ev.user || 'someone';
+    // A guild @mention arrives as `<@botid> /agent …` — strip the leading bot mention so the message
+    // (and the `/agent` router prefix) starts clean. `<@!id>` is the legacy nickname-mention form.
+    const text = (ev.text || '').replace(new RegExp(`^\\s*<@!?${this.botUserId}>\\s*`), '').trim();
+
+    // Keep the whole exchange in ONE thread. For a guild @mention, branch a thread off the user's
+    // message so the ack, the agent's replies, and everything after live together (not scattered as
+    // channel replies). DMs have no threads → post back in the DM channel as before. If thread creation
+    // fails (perms), fall back to the parent channel with a reply-reference. `channel` is what we bind to
+    // the session + post into; `replyRef` inline-references the original message only when NOT in a thread.
+    let channel = ev.channel;
+    let replyRef: string | undefined = ev.messageId;
+    if (ev.eventType === 'mention' && ev.guildId) {
+      const th = await startThread(this.os.settings.discordBotToken(), ev.channel, ev.messageId, threadName(text, actorLabel));
+      if ('id' in th) { channel = th.id; replyRef = undefined; }
+    }
 
     const result = this.autos.fireDiscord(
       {
         eventType: ev.eventType,
-        channel: ev.channel,
-        messageId: ev.messageId,
+        // Bind the THREAD (when we made one) so `discord_reply` posts back into it. Inside a thread we
+        // don't need a per-message reply-reference, so clear messageId there.
+        channel,
+        messageId: channel === ev.channel ? ev.messageId : '',
         user: ev.user,
         actorLabel,
-        text: ev.text,
+        text,
         raw: ev.raw,
       },
       runAsMember,
@@ -221,13 +245,16 @@ export class DiscordSocket {
       tenant: this.os.tenant,
       principal: runAsMember ? `member:${runAsMember}` : 'discord',
       type: 'trigger.discord',
-      data: { eventType: ev.eventType, channel: ev.channel, runAs: runAsMember ?? null, fired: result.fired },
+      data: { eventType: ev.eventType, channel, thread: channel !== ev.channel, runAs: runAsMember ?? null, fired: result.fired },
     });
 
-    // Immediate in-channel feedback so the user sees the trigger landed. The agent posts the real
-    // answer via its own `discord_reply` tool. No matching automation → stay quiet.
+    // Immediate feedback so the user sees the trigger landed (in the thread when we made one). The agent
+    // posts the real answer via its own `discord_reply` tool, bound to the same thread/channel. If nothing
+    // fired but the generic router returned a help list, post that so the sender learns how to reach the fleet.
     if (result.fired > 0) {
-      await postMessage(this.os.settings.discordBotToken(), ev.channel, '🤖 On it — working on this now.', ev.messageId);
+      await postMessage(this.os.settings.discordBotToken(), channel, '🤖 On it — working on this now.', replyRef);
+    } else if (result.reply) {
+      await postMessage(this.os.settings.discordBotToken(), channel, result.reply, replyRef);
     }
   }
 

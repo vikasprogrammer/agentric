@@ -1,19 +1,25 @@
 {
   "id": "default@v1",
-  "description": "What your agents may do on their own vs. what needs a human. Allow = runs immediately; Ask = pauses for an admin/owner to approve; Never = refused outright, regardless of who approves (irreversible actions). The Never rules read the caps in Settings → Governance ($moneyCapUsd / $bulkDeleteCount).",
-  "defaultRisk": "yellow",
-  "approvalRouting": { "yellow": "head", "red": "owner" },
+  "description": "What your agents may do on their own vs. what needs a human. allow = runs immediately; ask = pauses for the named approver (admin or owner); never = refused outright, regardless of who approves (irreversible actions). The never rules read the caps in Settings → Governance ($moneyCapUsd / $bulkDeleteCount).",
+  "default": { "action": "ask", "approver": "admin" },
   "rules": [
-    { "match": { "capability": "*", "when": { "arg": "destructive", "op": "eq", "value": true } }, "risk": "deny" },
-    { "match": { "capability": "*", "when": { "arg": "amountUsd", "op": "gt", "value": "$moneyCapUsd" } }, "risk": "deny" },
-    { "match": { "capability": "*", "when": { "arg": "deleteCount", "op": "gt", "value": "$bulkDeleteCount" } }, "risk": "deny" },
+    { "match": { "capability": "*", "when": { "arg": "destructive", "op": "eq", "value": true } }, "action": "never" },
+    { "match": { "capability": "*", "when": { "arg": "amountUsd", "op": "gt", "value": "$moneyCapUsd" } }, "action": "never" },
+    { "match": { "capability": "*", "when": { "arg": "deleteCount", "op": "gt", "value": "$bulkDeleteCount" } }, "action": "never" },
 
-    { "match": { "capability": "shell.exec", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "red" },
-    { "match": { "capability": "shell.exec" }, "risk": "green" },
+    { "match": { "capability": "shell.exec", "when": { "arg": "risky", "op": "eq", "value": true } }, "action": "ask", "approver": "owner" },
+    { "match": { "capability": "shell.exec" }, "action": "allow" },
 
-    { "match": { "capability": "connector.call", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "yellow" },
-    { "match": { "capability": "connector.call" }, "risk": "green" },
+    { "match": { "capability": "file.write", "when": { "arg": "outsideWorkdir", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
+    { "match": { "capability": "file.write" }, "action": "allow" },
 
-    { "match": { "capability": "connector.connect" }, "risk": "red" }
+    { "match": { "capability": "email.send", "when": { "arg": "emailExternalCount", "op": "gt", "value": "$emailBulkCap" } }, "action": "ask", "approver": "owner" },
+    { "match": { "capability": "email.send", "when": { "arg": "emailExternal", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
+    { "match": { "capability": "email.send" }, "action": "allow" },
+
+    { "match": { "capability": "connector.call", "when": { "arg": "risky", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
+    { "match": { "capability": "connector.call" }, "action": "allow" },
+
+    { "match": { "capability": "connector.connect" }, "action": "ask", "approver": "owner" }
   ]
 }

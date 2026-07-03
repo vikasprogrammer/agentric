@@ -37,9 +37,11 @@ running such a script, or you will pollute live data.
   KeepAlive, `./data` on :3010, fronted by `tailscale serve` http→3010): rebuild + bounce with
   `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at `data/server.log`;
   load/unload with `launchctl load -w|unload <plist>`.)
-- **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`ask`/`report`/`publish`):**
-  `npm run build` **+ relaunch the session** — claude spawns the MCP server fresh per session, so a
-  live session keeps the old tool list until it's respawned.
+- **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`revise`/`forget`, the
+  `kb_*` tools, `ask`/`check_inbox`/`report`/`update`/`publish`/`artifacts_list`, `schedule`/`unschedule`,
+  …; full list in `docs/agent-mcp-tools.md`):** changing a tool's SCHEMA needs `npm run build` **+ relaunch
+  the session** (claude spawns the MCP server fresh per session, so a live session keeps the old tool list
+  until respawned). Changing a tool's server-side `/api/*` HANDLER also needs the **server restart** above.
 - **The web console (`web/src`):** `cd web && npm run build` (no server restart needed — the Node
   server serves `web/dist` off disk; just reload the browser).
 
@@ -116,27 +118,41 @@ Key modules:
   `settings.ts` (Company context **+ workspace runtime defaults**: the fleet-wide model/effort/permission
   fallback, `runtimeDefaults`/`setRuntimeDefaults`), `skills.ts` (global `.claude/skills` library,
   materialised into every claude-code agent at launch by `TerminalManager`), budget, identity.
-- `src/edge/automations.ts` — Automations: cron/webhook/composio/**slack** triggers that spawn agent
-  sessions unattended (zero-dep cron parser, scheduler tick, pile-up guard via tmux liveness, public
+- `src/edge/automations.ts` — Automations: cron/webhook/composio/**slack**/**discord** triggers that spawn
+  agent sessions unattended (zero-dep cron parser, scheduler tick, pile-up guard via tmux liveness, public
   `/hooks/<id>?key=`). Naming: Automation = user-facing object; Trigger = firing condition; Orchestrator
-  = internal run engine. `fireSlack`/`fireComposio` dispatch inbound events to matching automations.
+  = internal run engine. `fireSlack`/`fireComposio` dispatch inbound events to matching automations. When
+  a Slack/Discord message matches **no** automation, a **generic `/agent` chat router** (`routeChat` +
+  `spawnChatAgent`, toggle `chatRouterEnabled`, default on) is the fallback: the sender addresses any
+  claude-code agent by name (`/pod-troubleshooter …`) and it spawns as a one-off run (provenance
+  `chat:<agent>`, run-as the sender, same gate); an unaddressed/unknown name posts a help list back. So the
+  whole fleet is reachable **without** a per-agent automation — automations become optional overrides. Also
+  hosts **agent-scheduled one-shots** (`type:'once'` + `run_at`/`run_as`): the `schedule`/`unschedule` MCP
+  tools call `Automations.schedule`/`cancelScheduled` so an agent can defer a future run of itself (same
+  agent + run-as identity); `tick()` fires it once when due then disables it. Bounded by `SCHEDULE_*`
+  (1 min–30 days, ≤25 pending/agent) — see the governance note in `docs/agent-mcp-tools.md`.
 - `src/edge/slack-socket.ts` + `src/connectors/slack.ts` — **native Slack via Socket Mode**: one company
   Slack app (app-level `xapp-…` + bot `xoxb-…` tokens in Settings → Integrations) opens an OUTBOUND
   WebSocket to Slack — **no public URL needed** (works on a Tailscale-private/on-prem box that can reach
   `*.slack.com` outbound). On @mention/DM it fires `slack` automations **as the member who sent the
   message** (run-as resolution: the **identity map** `slack` handle first, then Slack profile email →
-  `getMemberByEmail`; unmapped → company identity). The bot posts an immediate in-thread ack; the agent
-  replies via its own Slack egress tools (the Composio company Slackbot). The socket re-dials when tokens
-  change; uses the Node 22+ global `WebSocket` (no `ws` dep). Slack here is INGRESS-native; Composio
-  remains the webhook ingress lane.
+  `getMemberByEmail`; unmapped → company identity). A leading bot-mention (`<@BOTID>`) is stripped before
+  routing so the `/agent` prefix parses. The bot posts an immediate in-thread ack (replies thread on
+  `thread_ts ?? ts`, so a mention starts a thread); the agent replies via its own Slack egress tools (the
+  Composio company Slackbot). The socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
+  (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
 - `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a
   one-for-one mirror of the Slack path. One company bot (single `Bot …` token in Settings → Integrations)
   opens an OUTBOUND Gateway WebSocket — **no public URL** — handling the heartbeat/IDENTIFY/READY state
   machine (intents incl. the **privileged MESSAGE_CONTENT**). On @mention/DM it fires `discord`
   automations; run-as resolves the Discord user id via the **identity map** (`memberByExternalId('discord', …)`;
-  unmapped → company identity — Discord exposes no user email, so there's no email fallback). Bot posts an
-  in-thread reply-ack; the agent replies via the `discord_reply` MCP tool (bound to `discord_threads`).
-  `DISCORD_REPLY=1` exposes that tool. Reconnect backoff + zombie detection mirror SlackSocket.
+  unmapped → company identity — Discord exposes no user email, so there's no email fallback). A leading
+  `<@BOTID>` mention is stripped before routing (so the `/agent` prefix parses). For a **guild @mention** the
+  socket branches a real **thread** off the user's message (`startThread`), binds the *thread* to the session,
+  and posts the ack + all `discord_reply` output **inside it** (DMs have no threads → reply-reference in the DM;
+  thread-create failure → channel fallback). The `discord_reply` MCP tool is bound to `discord_threads`;
+  `DISCORD_REPLY=1` exposes it. `discord.connected` records the READY guild count. Reconnect backoff + zombie
+  detection mirror SlackSocket.
   Per-automation **execution mode**: `headless` (default) runs `claude -p --dangerously-skip-permissions`
   (the PreToolUse gate hook still runs + blocks risky Bash under that flag) and exits so the session goes
   `idle` and the guard releases; `interactive` keeps the attachable TUI (a cron won't re-fire while it's
@@ -147,13 +163,38 @@ Key modules:
   `automem-provider.ts` (REST; parked), shared `embedding.ts` (`Embedder` openai/ollama, cosine, RRF
   `fuse`, `planConsolidation`, the `rerank` recency/importance nudge). Backend + ranking + maintenance
   (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in **Settings → Memory**, hot-swapped
-  live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session (`recall`/`remember`,
-  the `kb_*` tools, `ask`/`report`/`publish`, `directory_lookup` (team/identity-map search), policy
-  preview; `slack_reply`/`discord_reply` when chat-triggered). See `docs/memory-layer-plan.md`.
+  live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 27 always-on tools
+  + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
+  handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
+  `ask`/`check_inbox`/`report`/`update`/`publish`/`artifacts_list`. Scheduling: `schedule`/`unschedule`
+  (one-shot deferred self-run via a `type:'once'` automation). Tasks (shared work queue):
+  `task_create`/`task_list`/`task_get`/`task_claim`/`task_update` (file/claim/drain durable work; an
+  agent-assigned `autoDispatch` task spawns a governed session — the A2A delegation path; per-task `mode`
+  headless/interactive; owner = run-as passthrough so a hand-off keeps the accountable human). Plus
+  `directory_lookup` (team/identity-map
+  search), `list_capabilities`/`policy_check` (policy preview), and `slack_reply`/`discord_reply` when
+  chat-triggered. Each tool is a session-secret-gated loopback call to an `/api/*` route that sits BEFORE
+  the member-auth gate. Canonical tool↔route↔store matrix + the governance notes:
+  `docs/agent-mcp-tools.md`. See also `docs/memory-layer-plan.md`.
 - `src/state/kb.ts` — the **Knowledge Base plane** (`os.kb`): the shared, tenant-wide *living* wiki agents
   + humans co-author. Markdown on disk (`<home>/kb/<section>/<slug>.md`) + SQLite/FTS mirror, full
-  **revision chain + revert**, auto-apply + audit (no gate). Agent tools `kb_search`/`kb_read`/`kb_write`;
-  console **Knowledge** page. See `docs/knowledge-base-plan.md`.
+  **revision chain + revert**, auto-apply + audit (no gate). Agent tools `kb_search`/`kb_read`/`kb_write`/
+  `kb_history`/`kb_revert`; console **Knowledge** page. See `docs/knowledge-base-plan.md`.
+- `src/state/tasks.ts` — the **Tasks plane** (`os.tasks`): the shared, tenant-wide **work queue** humans +
+  agents drain together — the durable *unit of work* between "a trigger fired" (Automation) and "a session
+  ran" (Session). `TaskStore` is **db-only** (no on-disk mirror — a task is structured state: status machine
+  `todo→doing→blocked→done|cancelled`, priority, labels, single assignee, `owner`=run-as, per-task `mode`
+  headless/interactive, `parent_id`, `auto_dispatch`) over `tasks`/`task_events`/`tasks_fts`. Edits are
+  **auto-apply + audit** (safety net = the append-only `task_events` log, like KB — no approval gate); the
+  atomic `claim` is the multi-worker race resolver. The **dispatcher lives on the edge**
+  (`Automations.dispatchTask` + `buildTaskPrompt`): an agent-assigned `auto_dispatch` task is spawned by the
+  scheduler `tick()` as a governed session (provenance `task:<id>`, `run_as = owner`, `headless = mode !==
+  'interactive'`), guarded by `isAlive` (pile-up) + a `TASK_MAX_ATTEMPTS` ceiling (park `blocked`), and the
+  agent **closes its own loop** with `task_update(done)`. This is the **A2A delegation path** (support→coding
+  = a task assigned to `agent:<id>`; run-as passthrough keeps the accountable human). Agent tools
+  `task_create`/`task_list`/`task_get`/`task_claim`/`task_update` (author/assignee server-derived); console
+  **Tasks** Kanban board (primary nav, under Agents). §9 futures: pool auto-assignment, agent-triggered
+  `task_dispatch`, a policy brake on dispatch. See `docs/tasks-plan.md`.
 - `src/edge/dreaming.ts` — the **self-learning ("Dreaming")** engine: a periodic deterministic pass that
   reflects on recent episodes + outcomes + friction, **compounds** them into `settings: dreaming_state`,
   emits a living KB page + a tenant-shared memory Insight, and **closes the loop** — distilled guidance is
@@ -253,3 +294,7 @@ in `src/types.ts` and `TeamStore.canRun()`.
   `data/.gitignore`.
 - `Date.now()`/`Math.random()`/argless `new Date()` are fine in app code, but tokens/sids use
   `crypto.randomBytes`.
+- **Secrets vault master key** (`src/edge/secret-crypto.ts`): `$AGENT_OS_SECRET_KEY` (32 bytes hex/base64)
+  wins; else an auto-generated `0600` `<home>/secret.key` (gitignored). **Don't lose/rotate it** — every
+  value sealed under the old key fails to decrypt (and the vault fails closed → reads as unset). For tests,
+  isolate `AGENT_OS_HOME` (a `loadAgentOS()` with no env writes `secret.key` into the LIVE `./data` home).

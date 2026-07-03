@@ -22,8 +22,9 @@ in-the-box with zero infra and can be upgraded to the automem graph+vector backe
 - **Backend:** pluggable provider — native SQLite by default, automem REST driver optional.
 - **Isolation:** one shared store; each agent namespaced by an `agent:<id>` tag (single
   automem container / single SQLite table — no per-agent provisioning).
-- **Delivery:** agents get a `remember` / `recall` MCP tool (OS-owned), plus relevant
-  memory auto-injected into the opening prompt; the console can browse/curate.
+- **Delivery:** agents get `remember` / `recall` MCP tools (OS-owned), plus `revise` / `forget` for
+  self-correction (`recall` returns each memory's id as the handle; author-guarded server-side), plus
+  relevant memory auto-injected into the opening prompt; the console can browse/curate.
 
 ---
 

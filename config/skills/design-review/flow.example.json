@@ -1,0 +1,10 @@
+{
+  "name": "example-signup-flow",
+  "description": "Optional multi-step journey. Each step is screenshotted and reviewed as a sequence. Remove this file or pass your own with --flow.",
+  "steps": [
+    { "label": "landing", "action": "goto", "value": "/" },
+    { "label": "open-pricing", "action": "click", "selector": "a[href*='pricing']" },
+    { "label": "start-signup", "action": "click", "selector": "text=Create a site" },
+    { "label": "fill-email", "action": "fill", "selector": "input[type=email]", "value": "test@example.com" }
+  ]
+}

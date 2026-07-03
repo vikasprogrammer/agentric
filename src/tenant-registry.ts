@@ -232,6 +232,12 @@ export function launchTtyd(tmuxSocket: string, ttydPort: number, sessionDir: str
       'ttyd',
       ['-p', String(ttydPort), '-i', '127.0.0.1', '-b', '/terminal', '-a', '-W',
        '-t', 'disableReconnect=true', '-t', 'disableLeaveAlert=true', '-t', 'fontSize=14',
+       // Pass-through xterm.js option: while claude has mouse events active (we keep the wheel for
+       // in-app scroll via CLAUDE_CODE_DISABLE_MOUSE_CLICKS), xterm.js disables selection unless the
+       // user holds the force-selection modifier — on macOS that's Option, and ONLY when this option
+       // is on. Without it there's no way to select text on a Mac, so copy is impossible. ttyd forwards
+       // any unknown -t key onto terminal.options[key], so this reaches xterm.js directly.
+       '-t', 'macOptionClickForcesSelection=true',
        'bash', attach, tmuxSocket],
       { stdio: 'ignore', env: { ...process.env, AOS_SESSION_DIR: sessionDir } },
     );

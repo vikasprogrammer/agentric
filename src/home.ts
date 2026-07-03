@@ -22,6 +22,8 @@ export interface Paths {
   home: string;
   /** Bundled example agents that ship with the software (read-only fixtures/seeds). */
   bundledAgents: string;
+  /** Bundled skill catalog that ships with the software — installable into a tenant's library. */
+  bundledSkills: string;
   /** The user's own agents — each a folder Claude can open and write into. */
   userAgents: string;
   /** The user's connectors (MCP server configs + their credentials). */
@@ -50,6 +52,7 @@ export interface HomeConfig {
   home?: string;
   agentsDir?: string;
   policyDir?: string;
+  skillsDir?: string;
 }
 
 /** The data-home ROOT for this process (`$AGENT_OS_HOME` → config `home` → `<baseDir>/data`). */
@@ -81,12 +84,14 @@ export function resolvePaths(baseDir: string, cfg: HomeConfig = {}): Paths {
 /** Derive the full Paths tree rooted at `home` (shared by the default + per-tenant resolvers). */
 function pathsUnder(baseDir: string, cfg: HomeConfig, home: string): Paths {
   const bundledAgents = path.resolve(baseDir, cfg.agentsDir || 'config/agents');
+  const bundledSkills = path.resolve(baseDir, cfg.skillsDir || 'config/skills');
   const userPolicy = path.join(home, 'policy', 'default.policy.json');
   const bundledPolicy = path.resolve(baseDir, cfg.policyDir || 'config/policy', 'default.policy.json');
 
   return {
     home,
     bundledAgents,
+    bundledSkills,
     userAgents: path.join(home, 'agents'),
     connectors: path.join(home, 'connectors'),
     skills: path.join(home, 'skills'),

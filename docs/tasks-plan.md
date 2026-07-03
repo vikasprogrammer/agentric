@@ -1,0 +1,497 @@
+# Agent OS Tasks / Work Queue — Implementation Plan
+
+> **Status (2026-07-02): SHIPPED (v1).** Built per the §8 build order — `tasks`/`task_events`/`tasks_fts`
+> tables + `TaskStore` (`src/state/tasks.ts`, `os.tasks`), the tick-driven dispatcher
+> (`Automations.dispatchTask` + `buildTaskPrompt`, provenance `task:<id>`), the agent-loopback +
+> member-console `/api/tasks/*` routes, the five `task_*` MCP tools, and the console **Tasks** Kanban
+> board. Run-as is **human passthrough**: a task's `owner` = the member the dispatched session acts as,
+> defaulting to the creating agent's run-as, so a support→coding hand-off keeps the accountable human.
+> Pillar 16 is regraded ✅. The §9 items (pool auto-assignment, agent-triggered `task_dispatch`, policy
+> brake on dispatch) remain deliberate v1 cuts. The sections below are the as-built design of record.
+
+Ship a **backlog the fleet works from**. Today Agent OS has firing conditions (Automations), ephemeral
+runs (Sessions), and a shared wiki (KB) — but no durable **unit of work**. A task's state lives nowhere:
+it's implicit in a cron, a memory, or a human's head. The Tasks plane makes the *goal* a first-class,
+persistent object with a lifecycle (`todo → doing → blocked → done`), an owner + assignee, an activity
+timeline, and — the active part — the ability to **spawn an agent session that works it to completion**
+and closes the loop by updating its own task.
+
+## 0. Where Tasks sit relative to Automations, Sessions, and KB
+
+Tasks are the missing **noun between "a trigger fired" and "a session ran"** — the persistent goal that
+outlives any single session. They reuse the existing run engine rather than inventing a second one.
+
+| | Automation | Session | KB | **Task** |
+|---|---|---|---|---|
+| What it is | a firing *condition* | an ephemeral *run* | a *document* | a durable *unit of work* |
+| Lifetime | standing | dies when done | living, rewritten | **open → done, outlives sessions** |
+| Scope | one agent | one spawn | tenant-wide | **tenant-wide, shared board** |
+| Writers | owner/admin | — | many agents + humans | **many agents + humans** |
+| State | enabled/disabled | running/idle | revision chain | **status machine + activity log** |
+| Spawns work? | yes (its whole job) | — | no | **yes — auto-dispatch a session** |
+| Governance | ungated create; **spawned run is gated** | gated (gateway) | ungated (auto-apply + audit) | **ungated task edits; spawned run is gated** |
+
+The important line: **task edits are auto-apply + audit** (like KB — cheap, reversible via the activity
+log, no approval gate), but a task **dispatching a session inherits the full gateway** — that session's
+effects pass Policy/Approvals/Budget/Audit exactly like any other run. So the Tasks plane adds **no new
+trust surface**: it's a durable to-do list bolted onto the run engine that already exists.
+
+## Decisions (locked)
+
+1. **Governance: task edits auto-apply + audit; dispatched work stays gated.** Creating/claiming/updating
+   a task is ungated and audited, like KB writes — the safety net is the append-only activity log
+   (`task_events`), not a human in the loop. When a task **dispatches an agent session**, that session
+   runs through the normal PreToolUse gate + gateway, so every *effect* the agent has is still classified,
+   approved, budgeted, and audited. We govern the *effects*, not the *intent to work*. *(An optional
+   policy brake on dispatch — "this task may spend budget, needs approval to start" — is a one-line hook in
+   the dispatcher; designed for, off in v1. See §9.)*
+2. **Storage: SQLite-only, no on-disk mirror.** Unlike KB (markdown documents humans git-diff), a task is
+   **structured state** — status, assignee, priority, an event log. There's no document to co-author on
+   disk, so we skip the `<home>/kb/<section>/<slug>.md`-style mirror and keep everything in the workspace
+   DB. `TaskStore`'s constructor is just `(db)`; no `paths.tasks`. (This is the one place we deliberately
+   diverge from the KB pattern — noted so a future reader doesn't "fix" it.)
+3. **Model: one shared board, statuses + labels, shallow hierarchy.** A task carries a `status`
+   (`todo|doing|blocked|done|cancelled`), a `priority`, freeform `labels[]`, an optional single `assignee`
+   (a member **or** an agent), an `owner` (the member the dispatched session runs *as*), a `mode`
+   (`headless` default / `interactive`, governing how a dispatched session runs), and an optional
+   `parent_id` for sub-tasks (one level in v1 UI; the column supports deeper). No projects/epics/swimlanes
+   in v1.
+4. **Active queue = assigned auto-dispatch + in-session claim.** Two ways work actually happens (§4):
+   (a) a task with `assignee = agent:<id>` + `auto_dispatch = 1` is picked up by the scheduler tick and
+   **spawned as a headless session**, guarded so it never double-fires; (b) a running agent session
+   **claims** open tasks off the board via `task_claim` and drains them. Full *pool auto-assignment* of
+   unassigned tasks to a worker agent is a deliberate v1 cut (§9) — it's the agent-spawns-agent frontier
+   Automations also parks.
+
+---
+
+## 1. Data model
+
+### 1.1 SQLite — `src/state/db.ts` `migrate()`
+
+Add to the single idempotent `db.exec(\`...\`)` block in `migrate(db)` (`src/state/db.ts:27-340`, right
+after the KB block at `:281-328`), following the exact conventions there — `CREATE TABLE IF NOT EXISTS`,
+plus the FTS5 external-content table and its `_ai`/`_ad`/`_au` trigger trio copied from `kb_fts`
+(`db.ts:315-328`). Older DBs pick up any later columns through the `addColumn()` helper (`db.ts:397-401`).
+
+```sql
+-- A task: shared, tenant-wide, durable unit of work. One row per task.
+CREATE TABLE IF NOT EXISTS tasks (
+  id            TEXT PRIMARY KEY,          -- short uuid (8)
+  tenant        TEXT NOT NULL,
+  title         TEXT NOT NULL,
+  body          TEXT NOT NULL DEFAULT '',  -- markdown description / acceptance criteria
+  status        TEXT NOT NULL DEFAULT 'todo',   -- todo | doing | blocked | done | cancelled
+  priority      INTEGER NOT NULL DEFAULT 2,     -- 0 urgent … 3 low (sort key)
+  labels        TEXT NOT NULL DEFAULT '[]',     -- JSON string[]
+  assignee      TEXT,                      -- NULL (unassigned) | member id | 'agent:<id>'
+  owner         TEXT,                      -- member id the dispatched session runs AS (run_as); NULL = company
+  parent_id     TEXT,                      -- sub-task parent (nullable)
+  mode          TEXT NOT NULL DEFAULT 'headless', -- how a dispatched session runs: headless | interactive
+  auto_dispatch INTEGER NOT NULL DEFAULT 0,-- 1 = tick may spawn a session for it
+  due_at        INTEGER,                   -- optional soft deadline (epoch ms)
+  attempts      INTEGER NOT NULL DEFAULT 0,-- dispatch attempts (backoff / give-up guard)
+  last_session_id TEXT,                    -- the session currently/last working it (pile-up guard)
+  created_by    TEXT NOT NULL,             -- member id | 'agent:<id>'
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  updated_by    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_board ON tasks(tenant, status, priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(tenant, assignee);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
+
+-- Append-only activity log: comments, status changes, claims, dispatches, links.
+-- This is the Tasks analog of kb_revisions — a timeline, not full snapshots.
+CREATE TABLE IF NOT EXISTS task_events (
+  id         TEXT PRIMARY KEY,
+  task_id    TEXT NOT NULL,
+  kind       TEXT NOT NULL,               -- comment | status | claim | dispatch | assign | link
+  body       TEXT,                        -- note text, or "todo→doing", or "task:<child>"
+  author     TEXT NOT NULL,               -- member id | 'agent:<id>' | 'automation:<id>' | 'system'
+  session_id TEXT,                        -- the run that produced this event, when applicable
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_events ON task_events(task_id, created_at);
+
+-- FTS5 over title + body + labels (mirrors kb_fts exactly).
+CREATE VIRTUAL TABLE IF NOT EXISTS tasks_fts USING fts5(
+  title, body, labels, content='tasks', content_rowid='rowid'
+);
+-- + tasks_ai / tasks_ad / tasks_au triggers keeping tasks_fts in sync (copy kb_ai/kb_ad/kb_au).
+```
+
+### 1.2 Types — `src/types.ts`
+
+Add after the KB block (`types.ts:483-529`):
+
+```ts
+export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled';
+
+export interface Task {
+  id: string;
+  tenant: string;
+  title: string;
+  body: string;
+  status: TaskStatus;
+  priority: number;              // 0 urgent … 3 low
+  labels: string[];
+  assignee?: string;             // member id | 'agent:<id>'
+  owner?: string;                // member id → run_as of the dispatched session
+  parentId?: string;
+  mode: 'headless' | 'interactive';  // how a dispatched session runs (default headless)
+  autoDispatch: boolean;
+  dueAt?: number;
+  attempts: number;
+  lastSessionId?: string;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+  updatedBy: string;
+}
+
+export interface TaskEvent {
+  id: string; taskId: string;
+  kind: 'comment' | 'status' | 'claim' | 'dispatch' | 'assign' | 'link';
+  body?: string; author: string; sessionId?: string; createdAt: number;
+}
+
+export interface TaskCreateInput {
+  tenant: string;
+  title: string;
+  body?: string;
+  assignee?: string;
+  owner?: string;
+  priority?: number;
+  labels?: string[];
+  parentId?: string;
+  mode?: 'headless' | 'interactive'; // default headless
+  autoDispatch?: boolean;
+  dueAt?: number;
+  createdBy: string;             // member id | 'agent:<id>'
+}
+
+export interface TaskUpdateInput {
+  status?: TaskStatus;
+  assignee?: string | null;
+  priority?: number;
+  labels?: string[];
+  note?: string;                 // free-text comment → appended as a task_event
+  by: string;                    // author (member id | 'agent:<id>')
+}
+
+export interface TaskQuery {
+  tenant: string;
+  status?: TaskStatus;
+  assignee?: string;             // member id | 'agent:<id>'
+  label?: string;
+  query?: string;                // FTS over title/body/labels
+  limit?: number;
+}
+```
+
+---
+
+## 2. The store — `src/state/tasks.ts`
+
+A `TaskStore` class mirroring `KbStore` (`src/state/kb.ts`) but **db-only** (no `dir`):
+
+```ts
+export class TaskStore {
+  constructor(private readonly db: Db) {}
+  // ...
+}
+```
+
+Public surface:
+
+- `create(input: TaskCreateInput): Task` — insert a row (rev-free), append a `task_events` `status`
+  row (`→todo`), and if `parentId` is set append a `link` event on the parent. Returns the task.
+- `get(id): Task | undefined` and `withEvents(id): { task, events }` — a task + its timeline.
+- `list(q: TaskQuery): Task[]` — board query. FTS via `bm25(tasks_fts)` when `query` is set
+  (mirroring `KbStore.search`, `kb.ts:81-100`); otherwise ordered by `status`, then `priority`, then
+  `updated_at DESC`. `assignee`/`label`/`status` filter in SQL/JS.
+- `update(id, input: TaskUpdateInput): Task | null` — the one mutating path for edits: apply changed
+  fields, bump `updated_*`, and **append one `task_events` row per meaningful change** (a `status` event
+  on transition, an `assign` event on reassignment, a `comment` event for `note`). Marking `done`/
+  `cancelled` is just a status transition (no separate close call).
+- `claim(id, agentId, sessionId): Task | null` — the pool-drain primitive. Atomically: if the task is
+  `todo` (or already assigned to this agent) and not terminal, set `assignee = agent:<id>`,
+  `status = doing`, `last_session_id = sessionId`, append a `claim` event. Returns null if it was already
+  claimed by someone else (loser sees null and moves on — the race resolver).
+- `markDispatched(id, sessionId): void` — set `last_session_id`, `status = doing`, `attempts += 1`,
+  append a `dispatch` event. Called by the dispatcher (§4), not by agents.
+- `remove(id): boolean` — hard delete (owner/admin at the route layer); the activity log makes soft-delete
+  unnecessary, but cascade `task_events` on remove.
+- `counts(tenant): Record<TaskStatus, number>` — for the board column headers.
+
+FTS stays in sync **via the `tasks_ai/_ad/_au` triggers only** — the store never writes `tasks_fts`
+directly (same as `KbStore`).
+
+Wire into the kernel exactly like KB (`src/kernel.ts`):
+
+```ts
+import { TaskStore } from './state/tasks';   // near :34
+readonly tasks: TaskStore;                    // near :79
+this.tasks = new TaskStore(this.db);          // near :115 — note: no paths arg (§Decision 2)
+```
+
+No `src/home.ts` change (db-only). Consumers reach it as **`os.tasks`**.
+
+---
+
+## 3. The dispatcher — reusing the run engine
+
+The "active" half. A task becomes work by **spawning a governed session** whose provenance is the task.
+We reuse the existing spawn seam rather than a parallel engine.
+
+### 3.1 The spawn call
+
+`TerminalManager.createSession(agent, title, task, spawnedBy?, headless?, slack?, discord?, runAs?)`
+(`src/terminal.ts:468`) already takes a **free-form `spawnedBy`** string. So the dispatcher calls:
+
+```ts
+tm.createSession(
+  t.assignee!.replace(/^agent:/, ''),        // the agent id
+  `Task: ${t.title}`,                        // session title
+  buildTaskPrompt(t),                        // §3.2
+  `task:${t.id}`,                            // provenance — flows through cleanly (only 'automation:' is special-cased at terminal.ts:478)
+  t.mode !== 'interactive',                  // headless (default): work-to-completion, then the pane dies → session idle.
+                                             //   interactive: an attachable TUI a human drives; the isAlive guard blocks re-dispatch while it lives
+  undefined, undefined,
+  t.owner,                                   // run_as = the task owner (member); undefined → company identity
+);
+```
+
+Provenance `task:<id>` is new. **As built:** `spaceFor` (`terminal.ts`) was extended to treat a `task:`
+prefix like `automation:` — an ownerless task spawn shares the `automations` system space rather than
+minting a per-task uid (a `task:<id>` is unique per task, so bucketing by it would leak a space per task);
+a task WITH an owner passes `run_as` there, so its space keys off the member. Visibility: `canViewSpawn`
+grants owner/admin, and the P2 run_as rule grants the task **owner**. To make sure a non-admin creator can
+always see the run, the member-console create route **defaults `owner` to the creator** — so a human-filed
+task dispatches as them AND stays visible to them (agent-filed tasks default `owner` to the caller's run-as,
+the delegation passthrough). `spawnedByLabel` renders `task:<id>` as "Task · <id>".
+
+Two implementation options, in order of preference:
+
+- **Preferred — a `Tasks.dispatch(id)` method** on the Automations/edge layer that calls `createSession`
+  directly with `spawnedBy = task:<id>`, reusing `TerminalManager.isAlive` (`terminal.ts:355-362`) for the
+  pile-up guard and appending a `task.dispatched` audit event. This keeps Tasks self-contained.
+- **Alternative — extend `Automations.fire`** with an optional `spawnedBy` override (today hardcoded to
+  `automation:${a.id}` at `automations.ts:331`). That inherits the guard + `last_session_id` tracking +
+  audit for free, but bends a task through an automation row it doesn't have. Only worth it if we want
+  tasks to share the `once`/cron scheduler verbatim. **Recommendation: the dedicated `Tasks.dispatch`** —
+  it's ~15 lines and avoids overloading the automation record.
+
+### 3.2 The prompt — closing the loop
+
+`buildTaskPrompt(t)` hands the agent the task **and** the tools to close it:
+
+```
+You are working task <id>: <title>
+
+<body>
+
+When finished, call task_update({ id: "<id>", status: "done", note: "<what you did>" }).
+If you cannot proceed, call task_update({ id: "<id>", status: "blocked", note: "<why>" }).
+Break large work into sub-tasks with task_create({ parentId: "<id>", ... }).
+```
+
+So the dispatched agent updates its own task — the loop is self-closing, exactly like the KB gardener
+writes back what it learned.
+
+### 3.3 When dispatch fires
+
+Three triggers, all guarded by `isAlive(t.lastSessionId)` (never double-spawn a live task) and an
+`attempts` ceiling (give up + `blocked` after N, so a failing task doesn't spin):
+
+1. **Scheduler tick.** Piggyback the Automations `tick()` cadence (~20s, `automations.ts:449-475`): scan
+   `tasks` where `status='todo' AND assignee LIKE 'agent:%' AND auto_dispatch=1 AND` no live session,
+   respecting a **per-agent concurrency cap** (don't spawn a 2nd session for an agent already running one
+   for a task). Dispatch the highest-priority eligible task per agent per tick.
+2. **On create**, when `auto_dispatch=1` and an agent assignee is set — dispatch immediately rather than
+   waiting for the tick.
+3. **Console "Dispatch" / "Run now"** button (§6) — manual kick, owner/admin or a member with `canRun` on
+   the assignee agent.
+
+Agents do **not** get a dispatch MCP tool in v1 (spawning a *new* session is the agent-spawns-agent
+frontier). They participate by `task_claim`-ing work into their *own* running session and by `task_create`
+for sub-tasks. Pool auto-assignment + agent-triggered dispatch are §9 futures.
+
+---
+
+## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`
+
+Five tools on the OS-owned MCP server (every claude-code session already gets `agentos` injected — no new
+server wiring). Each is a `TOOLS` declaration (`memory-mcp.ts:71-407`) + an async handler doing a loopback
+`fetch` with the session-secret header `H(...)` (`memory-mcp.ts:24-26`), injecting `session: SESSION`, +
+a branch in the `tools/call` dispatch ternary (`memory-mcp.ts:808-835`). They follow the `kb_*` / `schedule`
+pattern verbatim.
+
+| Tool | Input | Does |
+|---|---|---|
+| **`task_create`** | `{ title, body?, assignee?, priority?, labels?, parentId?, autoDispatch?, mode? }` | Create a task. "File durable work others (or you) will pick up." Author = the calling agent, server-derived; owner = the caller's run-as (delegation passthrough). `mode` = headless (default) / interactive for a dispatched session. |
+| **`task_list`** | `{ status?, assignee?, label?, query?, limit? }` | Query the board. `assignee: "me"` resolves server-side to the calling agent. "Check the queue before starting or duplicating work." (`readOnlyHint`) |
+| **`task_get`** | `{ id }` | Full task + activity timeline. (`readOnlyHint`) |
+| **`task_claim`** | `{ id }` | Atomically take an open task (assign to me + `doing`). Returns the task, or an already-claimed error. "Claim before working so two agents don't collide." |
+| **`task_update`** | `{ id, status?, note?, assignee?, priority?, labels? }` | Update status/fields + append a comment. Marking `done`/`blocked` is how a dispatched agent closes its loop. |
+
+The **assignee/author are always server-derived** from the session row via `tm.sessionAgent(session)`
+(`terminal.ts:601-603`) — the agent id the MCP process claims in its body is never trusted for authz,
+exactly as the `kb_write`/`schedule` routes do it. `task_claim` records the claimer from that
+server-resolved agent; the human run-as (for `owner`) comes from `tm.sessionRunAs(session)`
+(`terminal.ts:607-609`).
+
+Tool descriptions must draw the **Task-vs-Memory-vs-KB line** so agents don't conflate them: *Memory = my
+private notes; KB = shared canonical knowledge; **Task = a unit of work with a lifecycle someone will
+act on**.* Reinforce in agent `CLAUDE.md` guidance.
+
+> **Rebuild rules (CLAUDE.md).** New tool **schemas** need `npm run build` + **session relaunch** (claude
+> spawns the MCP server fresh per session). New `/api/*` **routes/handlers** need `npm run build` + **server
+> restart**. Since these are both-new, until the server restarts the loopback call 404-falls-through to the
+> member gate and returns **401 "not authenticated"** — the stale-server symptom, not an auth bug. Sanity
+> check after restart: `curl -XPOST localhost:3010/api/tasks/create -d '{"session":"nope"}'` → **404**.
+
+---
+
+## 5. Server routes — `src/server.ts`
+
+Two tiers, identical to KB/Memory. Agent loopback routes go in the pre-auth block (`server.ts:265-654`,
+before the member gate at `:656`); each does `readBody` → `tm.sessionAgent(session)` (404 unknown) →
+`sessionSecretOk(session)` (403 bad secret) → validate → store call → `os.audit.append` → `sendJson`.
+
+### 5.1 Session-scoped loopback (agents — `x-aos-secret`)
+
+```
+POST /api/tasks/create   { session, title, body?, assignee?, priority?, labels?, parentId?, autoDispatch?, mode? }
+                                                         → { ok, id }            + audit 'task.created'
+GET  /api/tasks/list?session=&status=&assignee=&label=&q=&limit=   → { tasks }
+GET  /api/tasks/get?session=&id=                          → { task, events }
+POST /api/tasks/claim    { session, id }                  → { ok, task } | { error:'already claimed' }
+                                                                                  + audit 'task.claimed'
+POST /api/tasks/update   { session, id, status?, note?, assignee?, priority?, labels? }
+                                                         → { ok, task }          + audit 'task.updated' | 'task.completed'
+```
+
+`author`/`assignee:"me"` are derived server-side (`agent:<agentId>`), never trusted from the agent.
+
+### 5.2 Member-scoped console (humans — cookie session)
+
+```
+GET    /api/tasks                     → { tasks, counts, agents, enabled }   (any logged-in member)
+GET    /api/tasks/:id                 → { task, events }
+POST   /api/tasks          { title, body?, assignee?, owner?, priority?, labels?, parentId?, autoDispatch?, mode? }
+                                                          → human create (author = member id; owner defaults to the creator)
+PATCH  /api/tasks/:id      { status?, assignee?, priority?, labels?, mode?, note? }   → human edit
+POST   /api/tasks/:id/comment  { body }                   → append a comment event
+POST   /api/tasks/:id/dispatch                            → spawn the session now  + audit 'task.dispatched'
+DELETE /api/tasks/:id      (owner/admin only)             → audit 'task.deleted'
+```
+
+Tasks are tenant-wide, so **reads are open to any member of the tenant** (like KB — no `canRun`/
+`canViewSpawn` filter; those are per-agent/per-spawn). Writes/claims are open to any member; **dispatch**
+follows `canRun` on the assignee agent (spawning a session is a run); **delete** is owner/admin.
+
+Audit event types (→ the same `TeeAuditSink`, JSONL + `audit_events` mirror): `task.created`,
+`task.updated`, `task.claimed`, `task.dispatched`, `task.completed`, `task.deleted`.
+
+---
+
+## 6. The autonomy loop — "the fleet drains its own backlog"
+
+Three mechanisms make the board self-working:
+
+1. **In-flight capture.** Any agent doing real work files follow-ups with `task_create` and closes its own
+   task with `task_update(done)`. A dispatched session is prompted to do exactly this (§3.2) — the steady
+   drip that keeps the queue honest.
+2. **Assigned auto-dispatch.** A task with `assignee = agent:<id>` + `auto_dispatch = 1` is spawned by the
+   tick (§3.3), works headless to completion, and idles — the pile-up guard + `attempts` ceiling keep it
+   from thrashing.
+3. **A long-running "worker" session drains the pool.** A manually-started (or automation-started) agent
+   session loops `task_list({ status:'todo' }) → task_claim → …work… → task_update(done)`, pulling open
+   items off the shared board. The atomic `claim` (§2) is the race resolver when two workers reach for the
+   same task.
+
+Humans engage only to triage (create/prioritise/assign), to unblock a `blocked` task, or when they spot
+something in the activity log. Everything else drains autonomously — and because a dispatched session is
+fully gated, "let agents work the queue" is safe without a per-task approval.
+
+---
+
+## 7. Console UI — `web/src`
+
+A new **Tasks** page (a Kanban board), added to the single-file SPA `web/src/App.tsx`. Five touch points
+(mirroring how the Knowledge page is wired):
+
+1. `Route` union — add `'tasks'` (`App.tsx:15`).
+2. Hash-parser whitelist — add `|| h === 'tasks'` (`App.tsx:112`, inside `useHashRoute`).
+3. Nav item — a `<NavItem>` in the "Manage" nav next to Knowledge (`App.tsx:328`); add to `manageRoutes`
+   (`App.tsx:154`) so the section auto-expands. Pick a `lucide-react` icon (e.g. `ListChecks`).
+4. Header title map — `route === 'tasks' ? 'Tasks' : …` (`App.tsx:369`).
+5. View render — `{route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} />}`
+   (`App.tsx:373-389`).
+
+Client calls in `web/src/lib/api.ts` — add a `Task`/`AddTaskReq` interface near the `Automation` block
+(`api.ts:172-197`) and one-line methods in the `api` object (`api.ts:497-667`) in the existing `call<T>()`
+style (`api.ts:488-495`): `tasks()`, `task(id)`, `addTask(b)`, `patchTask(id,b)`, `commentTask(id,b)`,
+`dispatchTask(id)`, `deleteTask(id)`. Auth is the session cookie — no client-side token handling.
+
+`TasksPage` component (`App.tsx`) — a Kanban board in the **primary** sidebar nav directly under **Agents**
+(not the Manage group — Tasks is a working surface). Layout: **columns by status** (Todo / Doing / Blocked /
+Done; cancelled folds under Done) of priority-sorted cards (title · assignee · labels · id); a **detail
+drawer** with the markdown body, the **activity timeline** (`task_events`), status/assignee/priority controls,
+a **Run mode** selector (headless / interactive — shown when the assignee is an agent), a **Dispatch now**
+button (only for `todo` / `blocked`, so it doesn't linger after auto-dispatch flips a task to `doing`; reads
+"Re-dispatch" on a `blocked` task), and a **View session** shortcut (opens the dispatched run's terminal via
+`last_session_id`). The create form exposes title / details / assignee / priority / auto-dispatch / run mode.
+Reuse the imported `Card`/`Input`/`Textarea`/`Button`/`Badge`/`Field`/`Select` primitives.
+
+> Web-only changes: `cd web && npm run build`, reload — no server restart. But Tasks needs new `/api/*`
+> routes, so a full `npm run build` + server bounce is required regardless (locally
+> `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`).
+
+---
+
+## 8. Build order & validation
+
+1. `db.ts` migration (`tasks`, `task_events`, `tasks_fts` + triggers) → `src/types.ts` types.
+2. `src/state/tasks.ts` `TaskStore` (+ kernel wiring; **no** home path).
+3. `Tasks.dispatch(id)` + the tick sweep + `buildTaskPrompt` (edge layer, reusing `createSession` +
+   `isAlive`). Verify `canViewSpawn`/`spaceFor` treat `task:<id>` provenance correctly (§3.1).
+4. Server routes — session loopback tier + member console tier + audit events.
+5. MCP tools in `memory-mcp.ts` (`task_create/list/get/claim/update`) + launcher tool-allow (mirror how
+   `kb_*` are allowlisted in `claude-launch.sh`).
+6. Console **Tasks** board + api client methods.
+7. Agent `CLAUDE.md` guidance (the Task-vs-Memory-vs-KB line) + a doc row in `docs/agent-mcp-tools.md`
+   (update the always-on tool count) + regrade Pillar 16 in `docs/PILLARS.md`.
+
+Validate the usual way (no test runner): `npm run typecheck`, `cd web && npm run build`, `npm run demo`,
+and a small in-process Node script that spins `createHttpServer` on an ephemeral port and drives the
+`/api/tasks/*` routes with `fetch` — **create → list → claim → update(done) → get(events)** — plus a
+dispatch smoke test (create an `auto_dispatch` task assigned to an agent, tick once, assert a `task:<id>`
+session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME`** to a scratch dir first
+(a bare `loadAgentOS()` writes into the live `./data`).
+
+---
+
+## 9. Future (not v1)
+
+- **Pool auto-assignment.** Route unassigned `auto_dispatch` tasks to a workspace **default worker agent**
+  (or a small pool), so a human can drop tasks on the board with no assignee and the fleet picks them up.
+  This is the agent-spawns-agent frontier Automations also parks — needs a concurrency budget + a
+  fairness/round-robin story first.
+- **Agent-triggered dispatch.** A `task_dispatch` MCP tool letting an agent spawn a worker for a task
+  (today agents only `claim` into their own session). Gate it hard — it's how a runaway loop spawns
+  sessions.
+- **Optional policy brake on dispatch.** Run `Policy.classify('task.dispatch', {task})` in the dispatcher:
+  green auto-spawns, yellow (a `budget`/`protected` label, or an estimated cost) suspends for approval, red
+  needs owner — turning "start work" into a gated capability without touching the store. Designed for, off
+  in v1 (mirrors the KB policy-brake future).
+- **Dependencies & scheduling.** `blocked_by` edges (a task can't dispatch until its blockers are `done`),
+  `due_at`-driven prioritisation, recurring tasks (a cron Automation that files a task).
+- **Richer board.** Projects/epics, swimlanes, saved filters, per-member "my tasks" lens, a burndown, and
+  a Sessions↔Task backlink (the `last_session_id` + `task:<id>` provenance already support it).
+- **Inbox integration.** A `blocked` task surfaces an Inbox card (like an approval) so a human is pinged to
+  unblock, reusing the Slack/Discord approver-notify path.
+</content>
+</invoke>

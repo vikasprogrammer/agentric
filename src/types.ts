@@ -288,6 +288,10 @@ export interface MemoryRecord {
   scope: MemoryScope;
   /** Relevance for a recall result (provider-defined; higher = more relevant). */
   score?: number;
+  /** How many times an actual query has surfaced this memory (retrieval reinforcement). */
+  recallCount?: number;
+  /** When it was last surfaced by a query (ms). Drives usage-aware recency decay. */
+  lastRecalledAt?: number;
 }
 
 export interface StoreInput {
@@ -414,10 +418,14 @@ export interface MemoryConfig {
  * is unchanged. Never reorders a no-query (recency) listing. A ranking nudge, not a hard filter.
  */
 export interface MemoryRanking {
-  /** Recency half-life in days — a memory's weight halves every `halfLifeDays`. Omit/0 → no decay. */
+  /** Recency half-life in days — a memory's weight halves every `halfLifeDays`. Omit/0 → no decay.
+   *  Recency counts from a memory's last *use* (recall) when it has one, else its creation — so a
+   *  memory that keeps proving useful stays fresh, while the never-recalled fade. */
   halfLifeDays?: number;
   /** Also weight by each memory's `importance` (0..1; unset = neutral). Default false. */
   weightByImportance?: boolean;
+  /** Also boost frequently-recalled memories (retrieval reinforcement). Default false. */
+  weightByUsage?: boolean;
 }
 
 /**
@@ -529,6 +537,80 @@ export interface KbSearchQuery {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Tasks — the shared, tenant-wide, durable UNIT OF WORK (vs. KB's document / memory's private note).
+// A task has a lifecycle a human or agent acts on; an agent-assigned auto_dispatch task spawns a
+// governed session that works it and closes its own loop. See docs/tasks-plan.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled';
+
+export interface Task {
+  id: string;
+  tenant: string;
+  title: string;
+  body: string;
+  status: TaskStatus;
+  priority: number; // 0 urgent … 3 low
+  labels: string[];
+  assignee?: string; // member id | 'agent:<id>'
+  owner?: string; // member id → run_as of the dispatched session; undefined → company identity
+  parentId?: string;
+  mode: 'headless' | 'interactive'; // how a dispatched session runs (default headless: work-to-completion)
+  autoDispatch: boolean;
+  dueAt?: number;
+  attempts: number;
+  lastSessionId?: string;
+  createdBy: string; // member id | 'agent:<id>'
+  createdAt: number;
+  updatedAt: number;
+  updatedBy: string;
+}
+
+export interface TaskEvent {
+  id: string;
+  taskId: string;
+  kind: 'comment' | 'status' | 'claim' | 'dispatch' | 'assign' | 'link';
+  body?: string;
+  author: string; // member id | 'agent:<id>' | 'automation:<id>' | 'system'
+  sessionId?: string;
+  createdAt: number;
+}
+
+export interface TaskCreateInput {
+  tenant: string;
+  title: string;
+  body?: string;
+  assignee?: string;
+  owner?: string;
+  priority?: number;
+  labels?: string[];
+  parentId?: string;
+  mode?: 'headless' | 'interactive';
+  autoDispatch?: boolean;
+  dueAt?: number;
+  createdBy: string; // member id | 'agent:<id>'
+}
+
+export interface TaskUpdateInput {
+  status?: TaskStatus;
+  assignee?: string | null; // null clears the assignee
+  priority?: number;
+  labels?: string[];
+  mode?: 'headless' | 'interactive';
+  note?: string; // free-text comment → appended as a task_event
+  by: string; // author (member id | 'agent:<id>')
+}
+
+export interface TaskQuery {
+  tenant: string;
+  status?: TaskStatus;
+  assignee?: string; // member id | 'agent:<id>'
+  label?: string;
+  query?: string; // FTS over title/body/labels
+  limit?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Agent + runtime
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -536,27 +618,25 @@ export interface KbSearchQuery {
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-/** Claude permission mode for a session (`claude --permission-mode <mode>`). This is the agent's
- *  OWN permission posture; Agent OS's gateway/gate-hook is the separate, harder backstop underneath
- *  it (a risky Bash call is blocked for inbox approval even under `bypassPermissions`). */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
-export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions'];
-
-/** The three knobs that tune a claude-code session — settable per-agent (manifest) with a
- *  workspace-wide fallback (Settings → runtime defaults). An undefined field means "inherit". */
+/** The two knobs that tune a claude-code session — settable per-agent (manifest) with a
+ *  workspace-wide fallback (Settings → runtime defaults). An undefined field means "inherit".
+ *  Permission posture is deliberately NOT a knob: the gate hook is the single authority (it emits an
+ *  authoritative PreToolUse decision per side-effecting tool), so `--permission-mode` is neither set
+ *  nor needed — one brain, not a second one layered on top. */
 export interface RuntimeTuning {
   /** Model alias or full id (`claude --model`). Undefined → the CLI's configured default. */
   model?: string;
   /** Reasoning effort (`claude --effort`). Undefined → the CLI default. */
   effort?: Effort;
-  /** Permission posture (`claude --permission-mode`). Undefined → `default`. */
-  permissionMode?: PermissionMode;
 }
 
 export interface AgentManifest extends RuntimeTuning {
   id: string;
   version: string;
   description: string;
+  /** Free-text grouping label (e.g. "Engineering", "Marketing") so the console can bucket agents.
+   *  Undefined → the agent shows under "Uncategorized". Purely organisational; no behavioural effect. */
+  category?: string;
   principal: string;
   policyContext: string;
   runtime: 'mock' | 'claude-code';
@@ -573,9 +653,9 @@ export interface AgentManifest extends RuntimeTuning {
 }
 
 /** Normalize+validate a runtime-tuning payload (from an API body or config file): drops empty
- *  strings to undefined and rejects out-of-set effort/permission values. Returns the clean tuning
- *  plus any validation error (so callers can 400). Unknown model strings pass through — the CLI
- *  validates those, and aliases evolve faster than we'd want to hard-code. */
+ *  strings to undefined and rejects out-of-set effort values. Returns the clean tuning plus any
+ *  validation error (so callers can 400). Unknown model strings pass through — the CLI validates
+ *  those, and aliases evolve faster than we'd want to hard-code. */
 export function sanitizeRuntimeTuning(input: Partial<Record<keyof RuntimeTuning, unknown>>): { tuning: RuntimeTuning; error?: string } {
   const tuning: RuntimeTuning = {};
   const model = typeof input.model === 'string' ? input.model.trim() : '';
@@ -584,11 +664,6 @@ export function sanitizeRuntimeTuning(input: Partial<Record<keyof RuntimeTuning,
   if (effort) {
     if (!EFFORTS.includes(effort as Effort)) return { tuning, error: `effort must be one of: ${EFFORTS.join(', ')}` };
     tuning.effort = effort as Effort;
-  }
-  const mode = typeof input.permissionMode === 'string' ? input.permissionMode.trim() : '';
-  if (mode) {
-    if (!PERMISSION_MODES.includes(mode as PermissionMode)) return { tuning, error: `permissionMode must be one of: ${PERMISSION_MODES.join(', ')}` };
-    tuning.permissionMode = mode as PermissionMode;
   }
   return { tuning };
 }
@@ -606,13 +681,21 @@ export function sanitizeExamplePrompts(input: unknown): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+/** Normalize an agent category label (from an API body or config file): trim, collapse internal
+ *  whitespace, cap at 40 chars. Returns undefined when empty so an uncategorised agent's manifest
+ *  carries no `category` key at all. */
+export function sanitizeCategory(input: unknown): string | undefined {
+  if (typeof input !== 'string') return undefined;
+  const out = input.trim().replace(/\s+/g, ' ').slice(0, 40);
+  return out || undefined;
+}
+
 /** Resolve the effective tuning for a launch: each field is the agent's own value, else the
  *  workspace default, else undefined (CLI default). Pure — used by the terminal launcher. */
 export function resolveRuntimeTuning(agent: RuntimeTuning, defaults: RuntimeTuning): RuntimeTuning {
   return {
     model: agent.model ?? defaults.model,
     effort: agent.effort ?? defaults.effort,
-    permissionMode: agent.permissionMode ?? defaults.permissionMode,
   };
 }
 

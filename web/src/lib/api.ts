@@ -21,26 +21,24 @@ export interface AgentAccess {
   allowedMembers: string[]
 }
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions'
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
-export const PERMISSION_MODES: PermissionMode[] = ['default', 'acceptEdits', 'plan', 'auto', 'dontAsk', 'bypassPermissions']
 /** Per-agent / workspace runtime tuning for claude-code sessions. Each field optional → inherit. */
 export interface RuntimeTuning {
   model?: string
   effort?: Effort
-  permissionMode?: PermissionMode
 }
 
 export interface AgentInfo {
   id: string
   description: string
+  /** Organisational grouping label (e.g. "Engineering", "Marketing"); undefined = uncategorised. */
+  category?: string
   runtime: 'mock' | 'claude-code'
   /** True when the agent lives under the data home (user-created) and can be deleted. */
   deletable?: boolean
   /** Per-agent runtime tuning (claude-code only); undefined fields inherit the workspace default. */
   model?: string
   effort?: Effort
-  permissionMode?: PermissionMode
   /** Suggested first tasks shown as clickable chips on the spawn card. */
   examplePrompts?: string[]
 }
@@ -69,7 +67,10 @@ export interface Session {
   title: string
   task: string
   tmux: string
-  status: 'running' | 'idle'
+  status: 'running' | 'done' | 'stopped' | 'crashed'
+  /** True when the tmux pane is alive now, regardless of the stored lifecycle `status` (an interactive
+   *  session that reported `done` keeps a live pane). Undefined when the server couldn't poll tmux. */
+  alive?: boolean
   spawnedBy?: string
   spawnedByLabel?: string
   createdAt: number
@@ -121,7 +122,7 @@ export interface Recommendation {
   kind: 'runtime' | 'policy' | 'budget'
   title: string
   rationale: string
-  apply?: { runtimeDefaults?: { model?: string; effort?: string; permissionMode?: string } }
+  apply?: { runtimeDefaults?: { model?: string; effort?: string } }
   link?: string
   createdAt: number
 }
@@ -137,9 +138,52 @@ export interface KbRevision {
   createdAt: number
 }
 
+export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled'
+export interface Task {
+  id: string
+  tenant: string
+  title: string
+  body: string
+  status: TaskStatus
+  priority: number
+  labels: string[]
+  assignee?: string
+  owner?: string
+  parentId?: string
+  mode: 'headless' | 'interactive'
+  autoDispatch: boolean
+  dueAt?: number
+  attempts: number
+  lastSessionId?: string
+  createdBy: string
+  createdAt: number
+  updatedAt: number
+  updatedBy: string
+}
+export interface TaskEvent {
+  id: string
+  taskId: string
+  kind: 'comment' | 'status' | 'claim' | 'dispatch' | 'assign' | 'link'
+  body?: string
+  author: string
+  sessionId?: string
+  createdAt: number
+}
+export interface AddTaskReq {
+  title: string
+  body?: string
+  assignee?: string
+  owner?: string
+  priority?: number
+  labels?: string[]
+  parentId?: string
+  mode?: 'headless' | 'interactive'
+  autoDispatch?: boolean
+}
+
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification'
   sessionId: string
   agent: string
   title: string
@@ -158,6 +202,8 @@ export interface Msg {
   /** approval/question: who resolved/answered it (email) — shown on the resolved card. */
   resolvedBy?: string
   answeredBy?: string
+  /** The session's live display name — the inbox leads with this; `agent` is the secondary line. */
+  sessionTitle?: string
   createdAt: number
 }
 
@@ -273,7 +319,7 @@ export type MemoryBackend = 'sqlite' | 'libsql' | 'automem'
 export interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
 export interface EmbeddingsReq { enabled?: boolean; provider?: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKey?: string }
 /** Settings → Memory view — stored backend config with secrets redacted to `…Set` booleans + live health. */
-export interface MemoryRanking { halfLifeDays?: number; weightByImportance?: boolean }
+export interface MemoryRanking { halfLifeDays?: number; weightByImportance?: boolean; weightByUsage?: boolean }
 export interface MemoryMaintenance { pruneAfterDays?: number; keepImportance?: number; dedupeThreshold?: number; everyHours?: number }
 export interface MemorySettings {
   backend: MemoryBackend
@@ -324,6 +370,8 @@ export interface SkillSummary {
   updatedAt: number
   /** Supporting files alongside SKILL.md (templates/scripts), names only. */
   files: string[]
+  /** Agent ids this skill is scoped to. Empty = every agent (the default). */
+  agents: string[]
 }
 export interface SkillDetail extends SkillSummary {
   content: string
@@ -333,12 +381,47 @@ export interface SkillsResp {
   skills: SkillSummary[]
   error?: string
 }
+export interface CatalogSkill {
+  name: string
+  description: string
+  bytes: number
+  files: string[]
+  /** True when this tenant's library already has a skill of this name. */
+  installed: boolean
+}
+export interface CatalogResp {
+  catalog: CatalogSkill[]
+  error?: string
+}
+/** A featured remote source (a GitHub repo of skills) shown as a one-click preset. */
+export interface SkillSource { repo: string; label: string; description: string }
+export interface SkillSourcesResp { presets: SkillSource[]; error?: string }
+/** One skill discovered in a remote repo, with whether this tenant already has it. */
+export interface RemoteSkill { name: string; description: string; path: string; files: string[]; installed?: boolean }
+export interface RemoteCatalogResp {
+  repo: string
+  ref: string
+  repoDescription: string
+  skills: RemoteSkill[]
+  error?: string
+}
+/** A skills.sh directory hit — a skill in some repo, with its install count and source owner/repo. */
+export interface SkillshHit { skillId: string; name: string; installs: number; source: string; installed?: boolean }
+export interface SkillshResp { query: string; hits: SkillshHit[]; error?: string }
 
 export interface CompanySettings {
   companyMd: string
   updatedAt?: number
   updatedBy?: string
   error?: string
+}
+
+/** A stored secret's identity + provenance — the value is NEVER returned by the API. */
+export interface SecretMeta {
+  principal: string
+  key: string
+  updatedAt: number
+  updatedBy?: string
 }
 
 /** Numeric governance caps the never-tier policy rules read ($moneyCapUsd / $bulkDeleteCount). */
@@ -356,6 +439,8 @@ export interface IntegrationsResp {
   slack: { appToken: boolean; botToken: boolean; configured: boolean }
   /** Native Discord (Gateway) — whether the bot token is set; never the token. */
   discord: { botToken: boolean; configured: boolean }
+  /** Generic `/agent` chat router: when on, an unmatched Slack/Discord message reaches any agent by name. */
+  chatRouter: boolean
   updatedAt?: number
   updatedBy?: string
   error?: string
@@ -378,6 +463,8 @@ export interface ComposioConnection {
   status: string
   createdAt: string
   userId: string
+  /** Distinguishing label for this connection (user alias, else Composio's auto handle). */
+  name: string
 }
 export interface ConnectionsResp {
   keySet: boolean
@@ -418,17 +505,21 @@ export interface FileContent {
   error?: string
 }
 
-export type RiskClass = 'green' | 'yellow' | 'red' | 'deny'
 export type PolicyOp = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne'
-export interface PolicyRule {
+export type PolicyAction = 'allow' | 'ask' | 'never'
+export type Approver = 'admin' | 'owner'
+/** A rule (or the document default) yields one outcome; `approver` is set only when action is `ask`. */
+export interface PolicyOutcome {
+  action: PolicyAction
+  approver?: Approver
+}
+export interface PolicyRule extends PolicyOutcome {
   match: { capability: string; when?: { arg: string; op: PolicyOp; value: number | string | boolean } }
-  risk: RiskClass
 }
 export interface PolicyDocument {
   id: string
   description?: string
-  defaultRisk: RiskClass
-  approvalRouting: { yellow: 'head' | 'owner'; red: 'head' | 'owner' }
+  default: PolicyOutcome
   rules: PolicyRule[]
 }
 export interface PolicyResp {
@@ -464,9 +555,14 @@ export const api = {
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
   deleteSession: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/sessions/' + id),
   attach: (id: string) => call<{ url?: string; error?: string }>('GET', `/api/sessions/${id}/attach`),
+  /** Upload a pasted/dropped image into a live session; the server saves it in the agent's folder and
+   *  types the path into the running claude. `dataB64` is base64 (no data: prefix); `ext` e.g. 'png'. */
+  attachFile: (id: string, dataB64: string, ext: string) =>
+    call<{ ok: boolean; path?: string; error?: string }>('POST', `/api/sessions/${id}/attach-file`, { dataB64, ext }),
   resolve: (id: string, approved: boolean) => call<{ ok: boolean; error?: string }>('POST', '/api/approvals/' + id, { approved }),
   answerQuestion: (id: string, answer: string) => call<{ ok: boolean; error?: string }>('POST', '/api/questions/' + id, { answer }),
   dismissMessage: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/dismiss`),
+  dismissAllMessages: () => call<{ ok: boolean; dismissed?: number; error?: string }>('POST', '/api/messages/dismiss-all'),
 
   team: () => call<TeamResp>('GET', '/api/team'),
   audit: (f: { session?: string; type?: string; principal?: string; limit?: number } = {}) => {
@@ -499,6 +595,7 @@ export const api = {
     call<{ ok: boolean; memory?: MemoryRecord; error?: string }>('PATCH', '/api/memory/' + id, m),
   deleteMemory: (id: string, agent: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/memory/${id}?agent=${encodeURIComponent(agent)}`),
   memoryHealth: () => call<MemoryHealth>('GET', '/api/memory/health'),
+  memoryOverview: () => call<{ counts: { memories: number; episodes: number; lessons: number; shared: number; kbPages: number }; activity: { ts: number; runId: string; type: string; principal?: string; data: Record<string, unknown> }[]; error?: string }>('GET', '/api/memory/overview'),
   memorySettings: () => call<MemorySettings>('GET', '/api/settings/memory'),
   saveMemorySettings: (body: MemorySettingsReq) => call<MemorySettings & { ok: boolean }>('PUT', '/api/settings/memory', body),
   testMemorySettings: (body: MemorySettingsReq) => call<{ ok: boolean; health?: MemoryHealth; error?: string }>('POST', '/api/settings/memory/test', body),
@@ -512,26 +609,42 @@ export const api = {
   kbPatch: (id: string, b: { title?: string; body?: string; tags?: string[]; summary?: string }) => call<{ ok: boolean; page?: KbPage; error?: string }>('PATCH', `/api/kb/page/${id}`, b),
   kbRevert: (id: string, rev: number) => call<{ ok: boolean; page?: KbPage; error?: string }>('POST', `/api/kb/page/${id}/revert`, { rev }),
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
-  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; error?: string }>('GET', '/api/dreaming'),
+
+  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[] }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; error?: string }>('GET', `/api/tasks/${id}`),
+  addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
+  patchTask: (id: string, b: { status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
+  commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
+  dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/tasks/${id}/dispatch`),
+  deleteTask: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${id}`),
+  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; consolidateAuto?: boolean; lastConsolidatedAt?: number; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),
   setDreaming: (everyHours: number) => call<{ ok: boolean; everyHours: number; error?: string }>('PUT', '/api/dreaming', { everyHours }),
   setApplyLearnings: (applyLearnings: boolean) => call<{ ok: boolean; applyLearnings: boolean; error?: string }>('PUT', '/api/dreaming', { applyLearnings }),
+  setConsolidateAuto: (consolidateAuto: boolean) => call<{ ok: boolean; consolidateAuto: boolean; error?: string }>('PUT', '/api/dreaming', { consolidateAuto }),
   dreamingRun: () => call<{ ok: boolean; skipped?: boolean; sessions?: number; episodes?: number; kbPageId?: string; insightId?: string; guidance?: string; error?: string }>('POST', '/api/dreaming/run'),
+  consolidate: () => call<{ ok: boolean; spawned?: boolean; reason?: string; sessionId?: string; items?: number; error?: string }>('POST', '/api/dreaming/consolidate'),
 
-  createAgent: (input: { id: string; description: string; claudeMd: string; examplePrompts?: string[] } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
+  createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[] } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
-  agentConfig: (id: string) => call<{ agent: string; error?: string; examplePrompts?: string[] } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
-  saveAgentConfig: (id: string, patch: RuntimeTuning & { examplePrompts?: string[] }) => call<{ ok: boolean; error?: string; examplePrompts?: string[] } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
+  agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; category?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
+  saveAgentConfig: (id: string, patch: RuntimeTuning & { description?: string; examplePrompts?: string[]; category?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; category?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
 
   governance: () => call<GovernanceThresholds & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
   saveGovernance: (t: GovernanceThresholds) => call<{ ok: boolean; error?: string } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
+
+  // Secrets vault — metadata only on the way out; values only ever travel inbound.
+  secrets: () => call<{ secrets: SecretMeta[]; error?: string }>('GET', '/api/secrets'),
+  setSecret: (key: string, value: string, principal?: string) => call<{ ok: boolean; error?: string }>('POST', '/api/secrets', { key, value, principal }),
+  deleteSecret: (key: string, principal?: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/secrets', { key, principal }),
   killSwitch: () => call<{ engaged: boolean; reason?: string; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/kill-switch'),
   setKillSwitch: (engaged: boolean, reason?: string, haltSessions?: boolean) => call<{ ok: boolean; engaged: boolean; reason?: string; halted?: number; updatedBy?: string; error?: string }>('POST', '/api/settings/kill-switch', { engaged, reason, haltSessions }),
+
 
   settings: () => call<CompanySettings>('GET', '/api/settings'),
   saveCompany: (companyMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/company', { companyMd }),
@@ -543,7 +656,7 @@ export const api = {
   disconnectApp: (body: { id: string; scope: 'company' | 'personal' }) =>
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   slackStatus: () => call<SlackStatus>('GET', '/api/settings/slack/status'),
   discordStatus: () => call<DiscordStatus>('GET', '/api/settings/discord/status'),
 
@@ -554,6 +667,26 @@ export const api = {
   saveSkill: (name: string, content: string) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('PUT', '/api/skills/' + encodeURIComponent(name), { content }),
   deleteSkill: (name: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/skills/' + encodeURIComponent(name)),
+  setSkillAgents: (name: string, agents: string[]) =>
+    call<{ ok: boolean; skill?: SkillDetail; error?: string }>('PUT', '/api/skills/' + encodeURIComponent(name) + '/agents', { agents }),
+  skillCatalog: () => call<CatalogResp>('GET', '/api/skills/catalog'),
+  installSkill: (name: string) =>
+    call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/catalog/' + encodeURIComponent(name) + '/install'),
+  skillSources: () => call<SkillSourcesResp>('GET', '/api/skills/sources'),
+  browseSkillRepo: (repo: string) =>
+    call<RemoteCatalogResp>('GET', '/api/skills/sources/browse?repo=' + encodeURIComponent(repo)),
+  installRemoteSkill: (repo: string, path: string, name?: string) =>
+    call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/sources/install', { repo, path, name }),
+  searchSkillsh: (q: string) => call<SkillshResp>('GET', '/api/skills/sources/search?q=' + encodeURIComponent(q)),
+  /** Install one or more skills from an uploaded .zip (drag-and-drop or the Upload button). */
+  uploadSkillZip: async (file: File): Promise<{ ok: boolean; skills?: SkillDetail[]; error?: string }> => {
+    const res = await fetch('/api/skills/upload?name=' + encodeURIComponent(file.name), {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: file,
+    })
+    return res.json()
+  },
 
   policy: () => call<PolicyResp>('GET', '/api/policy'),
   savePolicy: (document: PolicyDocument) => call<{ ok: boolean; document?: PolicyDocument; error?: string }>('PUT', '/api/policy', { document }),
@@ -562,6 +695,17 @@ export const api = {
     list: (path = '') => call<DirListing>('GET', `/api/files/list?path=${encodeURIComponent(path)}`),
     read: (path: string) => call<FileContent>('GET', `/api/files/read?path=${encodeURIComponent(path)}`),
     write: (path: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', '/api/files/write', { path, content }),
+    mkdir: (path: string) => call<{ ok: boolean; path?: string; error?: string }>('POST', '/api/files/mkdir', { path }),
+    remove: (path: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/files/delete?path=${encodeURIComponent(path)}`),
+    rename: (from: string, to: string) => call<{ ok: boolean; path?: string; error?: string }>('POST', '/api/files/rename', { from, to }),
+    /** Direct URL to a file's bytes as an attachment (for download links). */
+    downloadUrl: (path: string) => `/api/files/download?path=${encodeURIComponent(path)}`,
+    /** Upload raw bytes into `dir` under `name` (drag-drop / picker). */
+    upload: async (dir: string, file: File): Promise<{ ok: boolean; path?: string; error?: string }> => {
+      const qs = `path=${encodeURIComponent(dir)}&name=${encodeURIComponent(file.name)}`
+      const r = await fetch(`/api/files/upload?${qs}`, { method: 'POST', credentials: 'same-origin', body: file })
+      try { return await r.json() } catch { return { ok: r.ok, error: r.ok ? undefined : `upload failed (${r.status})` } }
+    },
   },
 
   artifacts: () => call<{ artifacts: Artifact[]; enabled: boolean }>('GET', '/api/artifacts'),

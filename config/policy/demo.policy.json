@@ -1,29 +1,31 @@
 {
   "id": "default@v1",
-  "description": "Demo showcase policy — exercises green/yellow/red/deny across the mock example capabilities.",
-  "defaultRisk": "yellow",
-  "approvalRouting": { "yellow": "head", "red": "owner" },
+  "description": "Demo showcase policy — exercises allow / ask (admin|owner) / never across the mock example capabilities.",
+  "default": { "action": "ask", "approver": "admin" },
   "rules": [
-    { "match": { "capability": "echo.*" }, "risk": "green" },
-    { "match": { "capability": "slack.post" }, "risk": "green" },
-    { "match": { "capability": "paid.*" }, "risk": "green" },
-    { "match": { "capability": "draft.*" }, "risk": "green" },
-    { "match": { "capability": "repo.read" }, "risk": "green" },
+    { "match": { "capability": "echo.*" }, "action": "allow" },
+    { "match": { "capability": "slack.post" }, "action": "allow" },
+    { "match": { "capability": "paid.*" }, "action": "allow" },
+    { "match": { "capability": "draft.*" }, "action": "allow" },
+    { "match": { "capability": "repo.read" }, "action": "allow" },
 
-    { "match": { "capability": "cms.publish" }, "risk": "yellow" },
-    { "match": { "capability": "github.openPR" }, "risk": "yellow" },
+    { "match": { "capability": "cms.publish" }, "action": "ask", "approver": "admin" },
+    { "match": { "capability": "github.openPR" }, "action": "ask", "approver": "admin" },
 
-    { "match": { "capability": "stripe.refund", "when": { "arg": "amountUsd", "op": "gt", "value": 1000 } }, "risk": "red" },
-    { "match": { "capability": "stripe.refund" }, "risk": "yellow" },
+    { "match": { "capability": "stripe.refund", "when": { "arg": "amountUsd", "op": "gt", "value": 1000 } }, "action": "ask", "approver": "owner" },
+    { "match": { "capability": "stripe.refund" }, "action": "ask", "approver": "admin" },
 
-    { "match": { "capability": "shell.exec", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "red" },
-    { "match": { "capability": "shell.exec" }, "risk": "green" },
+    { "match": { "capability": "shell.exec", "when": { "arg": "risky", "op": "eq", "value": true } }, "action": "ask", "approver": "owner" },
+    { "match": { "capability": "shell.exec" }, "action": "allow" },
 
-    { "match": { "capability": "connector.call", "when": { "arg": "risky", "op": "eq", "value": true } }, "risk": "yellow" },
-    { "match": { "capability": "connector.call" }, "risk": "green" },
+    { "match": { "capability": "file.write", "when": { "arg": "outsideWorkdir", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
+    { "match": { "capability": "file.write" }, "action": "allow" },
 
-    { "match": { "capability": "deploy.*" }, "risk": "red" },
-    { "match": { "capability": "*.delete" }, "risk": "red" },
-    { "match": { "capability": "prod.*" }, "risk": "deny" }
+    { "match": { "capability": "connector.call", "when": { "arg": "risky", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
+    { "match": { "capability": "connector.call" }, "action": "allow" },
+
+    { "match": { "capability": "deploy.*" }, "action": "ask", "approver": "owner" },
+    { "match": { "capability": "*.delete" }, "action": "ask", "approver": "owner" },
+    { "match": { "capability": "prod.*" }, "action": "never" }
   ]
 }

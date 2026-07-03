@@ -23,15 +23,16 @@ were updated. All other grades + narratives still hold. Live v1 milestone tracke
 | 4 | Team | ✅ | Roles (owner/admin/member), magic-link login, agent assignment, identity map (external accounts → member) |
 | 5 | Policy | ✅ | JSON rule engine + console editor (owner-edit, live hot-reload, persisted). Single ruleset per workspace; no dry-run simulator |
 | 6 | Audit Logs | ✅ | JSONL system-of-record + SQLite mirror + console **Audit** viewer (filter by session/type/principal) |
-| 7 | Automations | ✅ | Cron + webhook + native **Slack & Discord** triggers spawn governed sessions, run-as the sending member; email inbound still out |
-| 8 | Secrets | 🌱 | Env-lookup vault stub; connector creds sit in the workspace DB |
-| 9 | Memory layer | 🟡 | Per-agent + **shared workspace-wide** `remember`/`recall` MCP server + console Memory page live; three backends — sqlite (keyword, or hybrid keyword+vector with embeddings), libsql (native vectors), automem — switchable live in Settings → Memory. Auto session-end episodes, recency/importance recall ranking, prune+dedupe maintenance, and tenant-scoped sharing land; ANN + a full KB (documents/revisions/wiki) still pending |
+| 7 | Automations | ✅ | Cron + webhook + native **Slack & Discord** triggers spawn governed sessions, run-as the sending member; a **generic `/agent` chat router** reaches any agent by name with no per-agent automation (replies threaded); **agent-scheduled one-shots** (`schedule`/`unschedule` MCP tools → `type:'once'`, bounded + human-cancellable) let an agent defer a future run of itself; email inbound still out |
+| 8 | Secrets | 🟡 | Encrypted-at-rest vault (AES-256-GCM) + console UI; connectors resolve `secret:` refs at launch; no key rotation yet |
+| 9 | Memory layer | 🟡 | Per-agent + **shared workspace-wide** `remember`/`recall` (+ agent self-correction via `revise`/`forget`, recall returns ids) MCP server + console Memory page live; three backends — sqlite (keyword, or hybrid keyword+vector with embeddings), libsql (native vectors), automem — switchable live in Settings → Memory. Auto session-end episodes, recency/importance recall ranking, prune+dedupe maintenance, and tenant-scoped sharing land; ANN still pending (a full KB with revisions/revert/wiki now ships — see §KB) |
 | 10 | Dreaming / Self-learning | 🟡 | A periodic Dreamer reflects on recent episodes + outcomes + friction, **compounds** them into persisted cumulative state (growing KB page + shared memory Insight), and closes the loop two ways: (a) distilled **guidance injected into every agent's prompt** at launch, and (b) **approval-gated config recommendations** (e.g. raise default effort) a human Applies/Dismisses — Apply makes a concrete, reversible, audited settings change. Both toggleable/visible in Settings → Self-learning. Deterministic; policy/budget recs are advisory. LLM gardener = richer follow-up |
 | 11 | Company Settings | 🟡 | Company context (markdown) edited in console, appended to every claude-code agent's system prompt. Tenant branding not folded in yet |
 | 12 | Skills of agents | 🟡 | Global skills library (native `.claude/skills`) edited in console, synced into every claude-code agent at launch. No per-agent grants UI yet |
 | 13 | Tools / Apps | ⬜ | Agent-built tools don't exist (closest: hand-written capability registry) |
 | 14 | Artifacts / Deliverables | ✅ | Agents `publish` finished files (PDF/Markdown/image) to a governed gallery; snapshotted, provenance-scoped, previewed in-console |
 | 15 | Knowledge Base | ✅ | Shared, tenant-wide living wiki: `KbStore` (markdown-on-disk + SQLite/FTS), revision chain + revert, `kb_search`/`kb_read`/`kb_write` MCP tools, and a console **Knowledge** page (browse/view/edit/history/revert). Agents + humans co-author; every edit versioned + auditable. No deep hierarchy / diff view yet |
+| 16 | Tasks / Work Queue | ✅ | Shared tenant-wide backlog humans + agents co-own: durable units of work (`todo→doing→blocked→done`, assignee, activity log) that **auto-dispatch a governed agent session** to work them, plus the agent MCP set (`task_create`/`task_list`/`task_get`/`task_claim`/`task_update`) + a console Kanban board. Task edits auto-apply + audit (KB-style); the dispatched run stays fully gated. The A2A delegation path (support→coding = a task assigned to `agent:<id>`). v1 cuts: pool auto-assignment, agent-triggered dispatch |
 
 ---
 
@@ -93,8 +94,12 @@ governance events.
 - **task (started)** — now carries **provenance** (`source`): manual vs `automation:<id>`.
 - **update** — agent progress notes.
 
-The OS-owned MCP server (`agentos`) carries `recall`/`remember`/`ask`/`report`, materialised into every
-claude-code session. UI has read/unread (per-browser `lastSeen`) and an action-required count badge.
+The OS-owned MCP server (`agentos`) carries 22 always-on tools (memory `recall`/`remember`/`revise`/
+`forget`; KB `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`; operator/inbox `ask`/`check_inbox`/
+`report`/`update`/`publish`/`artifacts_list`; `schedule`/`unschedule`; `directory_lookup`; `list_capabilities`/
+`policy_check`) + chat-only `slack_reply`/`discord_reply`, materialised into every claude-code session.
+Canonical matrix: `docs/agent-mcp-tools.md`. UI has read/unread (per-browser `lastSeen`) and an
+action-required count badge.
 
 **Chat notifications.** When an approval card lands, the OS DMs everyone who can approve it
 (`canApprove(role, level)`) on their linked **Slack/Discord** account (identity map → `dmUser`), so an
@@ -129,7 +134,9 @@ theirs) — `boundTo` resolves org → all, personal+shared → all, private per
 Toggled from the console (**Share with team**); `removeByOwner` still purges a departing member's
 personal connectors, shared or not.
 
-**Gaps.** Secrets are plaintext in the workspace DB (should move behind the Secrets vault) — and for
+**Gaps.** Connector creds are plaintext in the workspace DB by default — though a value can now be written
+as a `secret:KEY` reference resolved from the encrypted Secrets vault at launch (Pillar 8), a one-click
+"move into vault" action is still TODO — and for
 Composio the OAuth grants additionally live in Composio's cloud; the per-app OAuth connect step still
 happens on composio.dev (we don't yet initiate it from our own UI); no health check ("is this token
 still valid?"); no per-agent connector scoping (all enabled connectors go to every session);
@@ -206,8 +213,20 @@ mirror). On @mention/DM the matching automations fire **as the member who sent t
 through the **identity map** (`member_identities`, Pillar 4): Slack by `slack` handle then profile email,
 Discord by `discord` handle (no email on Discord). Unmapped → company identity. The bot acks in-thread;
 the agent replies via the `slack_reply` / `discord_reply` MCP tools bound to its `*_threads` row. Tokens
-live in Settings → Integrations (one Slack app: `xapp-`+`xoxb-`; one Discord bot token). Composio remains
-the webhook ingress lane.
+live in Settings → Integrations (one Slack app: `xapp-`+`xoxb-`; one Discord bot token — with an
+**auto-detected invite button**: a bot's user id is its application id, so once connected the console renders
+a ready invite URL). Composio remains the webhook ingress lane.
+
+**Generic `/agent` chat router.** A message that matches **no** automation falls through to the router
+(`Automations.routeChat`/`spawnChatAgent`, workspace toggle `chatRouterEnabled`, default on): the sender
+addresses any claude-code agent by name (`/pod-troubleshooter why is pod X down?`) and it spawns a one-off
+governed run — provenance `chat:<agent>` (labeled "Chat · <agent> · as <member>" in the console), run-as the
+sender, reply bound to the thread, every effect still gated. An unaddressed/unknown name posts a help list of
+available agents. A leading bot-mention is stripped first so the `/agent` prefix parses. So connecting the bot
+once makes the **whole fleet reachable without a per-agent automation** — automations become optional
+per-channel/mention overrides. **Threading:** Slack replies thread on `thread_ts ?? ts` (a mention starts a
+thread); for a Discord **guild** @mention the socket branches a real thread off the message (`startThread`) and
+keeps the ack + all replies inside it (DMs reply-reference in the DM; thread-create failure → channel fallback).
 
 **Execution mode** (per automation, chosen at creation): **headless** (default, recommended) runs
 `claude -p --dangerously-skip-permissions` in the agent folder — works the task to completion and
@@ -224,14 +243,30 @@ retry/backoff policies; catch-up for schedules missed while the server was down;
 (today: `lastFiredAt` + the audit stream); a long headless run blocked on an approval holds the guard
 until resolved or the hook times out.
 
-## 8. Secrets — 🌱 Seed
+## 8. Secrets — 🟡 Partial
 
-**Today.** `src/edge/secrets.ts`: `EnvSecretsVault` resolves `<TENANT>__<PRINCIPAL>__<KEY>` → env vars.
-Capabilities read secrets inside the gateway; agents never see raw keys. Connector creds bypass this
-and live in the `connectors` table directly.
+**Today.** A real **encrypted-at-rest vault**. `src/edge/secrets.ts`: `SqliteSecretsVault` stores
+credentials in the `secrets` table sealed with **AES-256-GCM** (per-value random IV + auth tag) under a
+workspace master key resolved by `src/edge/secret-crypto.ts` — `$AGENT_OS_SECRET_KEY` (32 bytes hex/base64,
+prod-injectable) else an auto-generated `0600` `<home>/secret.key` (zero-config local). `get(tenant,
+principal, key)` widens principal-specific → tenant-wide (`*`) → the `EnvSecretsVault` fallback (so the old
+`<TENANT>__<PRINCIPAL>__<KEY>` env vars still resolve); a stored value wins over env, and a blob that won't
+decrypt (wrong/rotated key, tamper) **fails closed** rather than falling through. Capabilities read secrets
+inside the gateway; agents never see raw keys. Owner/admin CRUD at `/api/secrets` (GET lists metadata only —
+never values; POST sets, DELETE removes; `secret.set`/`secret.deleted` audited) and a **Settings → Secrets**
+console panel (set/replace/delete; values are write-only, never shown back).
 
-**Gaps.** A real vault (encrypted at rest in the workspace DB, or external KMS); secrets UI; rotating/
-short-lived creds minted per run (ties into the Identity stub); migrate connector env creds behind it.
+**Connectors behind the vault.** A connector `env`/`header` value written as `secret:KEY` (or
+`secret:PRINCIPAL/KEY`) is a *reference*, not a literal. `TerminalManager.buildMcpConfigJson` resolves it via
+`secrets.getSync` at session launch (`resolveVaultRefs`) — the DB holds only the reference, and the plaintext
+lives solely in the connector subprocess's env for the session's life. Principal defaults to the acting member
+(widening to `*`); an unresolved reference is blanked + audited (`connector.secret.unresolved`), never leaking
+the `secret:…` marker. So agents still get *tools*, never raw keys — the cred is decrypted inside the boundary.
+
+**Gaps.** Master-key **rotation + re-encryption** (rotating today invalidates sealed values). A one-click
+"migrate this connector's raw creds into the vault" console action (today the admin sets the secret + edits
+the connector value to `secret:KEY` by hand). Rotating/short-lived creds minted per run (ties into the
+Identity stub). External KMS option.
 
 ## 9. Memory layer — 🟡 Partial
 
@@ -412,6 +447,42 @@ no inbound-link/backlink graph; mock-runtime agents don't get the tools.
 
 ---
 
+## 16. Tasks / Work Queue — ✅ Shipped (v1)
+
+**Plan: [`tasks-plan.md`](./tasks-plan.md).** Built per the plan's build order: `tasks`/`task_events`/`tasks_fts`
+tables + `TaskStore` (`src/state/tasks.ts`, `os.tasks`), the tick-driven dispatcher (`Automations.dispatchTask`
++ `buildTaskPrompt`, provenance `task:<id>`, run-as = `owner`, pile-up + attempt-ceiling guarded), the agent
+loopback + member-console `/api/tasks/*` routes, the five `task_*` MCP tools, and the console **Tasks** Kanban
+board. The v1 cuts below (pool auto-assignment, agent-triggered `task_dispatch`, policy brake) remain §9 futures.
+
+**The idea.** The missing **noun between "a trigger fired" (Automation) and "a session ran" (Session)** —
+a durable *unit of work* that outlives any single run. Today a task's state lives nowhere: implicit in a
+cron, a memory, or a human's head. The Tasks plane makes the *goal* first-class: a shared, tenant-wide
+**board** humans and agents co-own, where each task has a lifecycle (`todo → doing → blocked → done`), an
+owner + assignee, a labelled priority, and an append-only activity log. It's an **active work queue**, not
+a passive tracker — a task can **auto-dispatch a governed agent session** to work it, and the dispatched
+agent closes its own loop (`task_update(done)`).
+
+**Design (locked with the user, not yet built).** Active queue · one shared board (humans + agents) · full
+agent MCP set. `TaskStore` (`src/state/tasks.ts`, db-only — no on-disk mirror, since tasks are structured
+state not co-authored documents) over new `tasks` / `task_events` / `tasks_fts` tables, wired as `os.tasks`.
+**Governance mirrors KB with a twist:** task edits are auto-apply + audit (the safety net is the activity
+log, not an approval gate), but **dispatch reuses the existing run engine** — `TerminalManager.createSession`
+with a free-form `spawnedBy = task:<id>` provenance and `run_as = task.owner`, guarded against pile-up by
+`isAlive`. So the *effects* an agent has while working a task pass the normal PreToolUse gate + gateway;
+the Tasks plane adds **no new trust surface**. Five OS-owned MCP tools (`task_create`/`task_list`/`task_get`/
+`task_claim`/`task_update`, author/assignee server-derived from the session — never trusted from the agent)
+let agents file, claim, drain, and close work; a console **Tasks** Kanban board lets humans triage. Two work
+paths: assigned `auto_dispatch` tasks spawned by the scheduler tick, and a long-running worker session that
+`claim`s open tasks off the pool (the atomic claim is the race resolver).
+
+**Deliberate v1 cuts (see plan §9).** Pool auto-assignment of unassigned tasks to a default worker, and an
+agent-triggered `task_dispatch` tool — both are the **agent-spawns-agent frontier** Automations also parks
+(needs a concurrency budget + fairness story). Also future: an optional policy brake on dispatch,
+`blocked_by` dependencies, and an Inbox card when a task goes `blocked`.
+
+---
+
 ## Suggested build order (dependency-aware)
 
 1. ~~**Automations** (cron + webhook → terminal sessions)~~ — ✅ shipped; inbound chat listeners remain (see `docs/v1-mvp-scope.md`).
@@ -419,6 +490,6 @@ no inbound-link/backlink graph; mock-runtime agents don't get the tools.
 3. ~~**Memory persistence + injection**~~ — ✅ shipped (Pillar 9); episodes auto-distilled off the audit stream.
 4. ~~**Dreaming v1**~~ — ✅ shipped (Pillar 10, deterministic compounding pass + Inbox config recommendations).
 5. ~~**Knowledge Base**~~ — ✅ shipped (Pillar 15).
-6. **Secrets vault** (encrypted in DB) + move connector creds behind it — debt that gets worse the longer it waits (Pillar 8 still 🌱).
+6. ~~**Secrets vault** (encrypted in DB) + move connector creds behind it~~ — ✅ shipped (Pillar 8, AES-256-GCM + Settings → Secrets UI; connectors resolve `secret:` refs at launch). Still to do: master-key rotation + a one-click connector→vault migrate action.
 7. **Chat channels + identity (v1)** — Slack (Socket Mode, ✅) + Discord + act-as-member + audit viewer; tracked in `docs/v1-mvp-scope.md`.
 8. **Tools/Apps, per-agent grants** — bigger product surfaces; design after the above settle.

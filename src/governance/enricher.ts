@@ -16,6 +16,8 @@
  *                    shell command touching stripe/deploy/prod/…).
  *   - amountUsd    → a USD figure pulled from the call (for the money cap).
  *   - deleteCount  → how many items a delete affects (for the bulk-delete cap).
+ *   - outsideWorkdir → for a file.write, whether the target path is OUTSIDE the agent's own folder
+ *                    (in-folder edits are the agent's own work; writing elsewhere is a real side effect).
  *
  * Detection is deliberately CONSERVATIVE on the numeric facts: we'd rather miss a fact (and fall back
  * to the risky→approval path) than fabricate one and deny legitimate work. Caller-supplied facts win
@@ -25,6 +27,7 @@
  * intent behind opaque/encoded arguments, only the executing layer truly knows — defense in depth
  * (least privilege, recoverability) remains the backstop, not this one function.
  */
+import * as path from 'node:path';
 import { ApprovalLevel, Role, canApprove } from '../types';
 
 const DESTRUCTIVE: RegExp[] = [
@@ -45,8 +48,36 @@ const AMOUNT_KEY = /amount.*usd|usd.*amount|amountusd|amount_usd/i;
 const PAYMENT_TOOL = /refund|payment|charge|payout|\bpay\b/i;
 const PAYMENT_AMOUNT_KEY = /^(amount|total|amount_cents|amountcents)$/i;
 const DELETE_VERB = /delete|remove|purge|destroy|truncate|drop/i;
+// An outbound email send — Composio Gmail (`GMAIL_SEND_EMAIL`), a gmail connector's `send_email`, etc.
+// Matched on the TOOL NAME only (recipient parsing is separate), so `Bash` echoing "send_email" can't trip it.
+const EMAIL_SEND_TOOL = /gmail[a-z_]*send|send[a-z_]*e?mail|sendmail/i;
+// Recipient-bearing fields on an email tool's input. `from`/`sender` are deliberately excluded.
+const EMAIL_TO_KEY = /^(to|cc|bcc|recipient|recipients|recipient_email|to_email|to_recipients)$/i;
 
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+
+/** The domain of an email address (lowercased), or '' if it doesn't look like one. */
+const emailDomain = (addr: string): string => {
+  const at = addr.lastIndexOf('@');
+  return at >= 0 ? addr.slice(at + 1).trim().toLowerCase() : '';
+};
+
+/** Pull every recipient address out of an email tool's input (string, comma/space list, or array). */
+function extractRecipients(entries: [string, unknown][]): string[] {
+  const out: string[] = [];
+  const take = (s: string) => {
+    for (const tok of s.split(/[,;\s]+/)) {
+      const m = tok.match(/[^\s<>,;"']+@[^\s<>,;"']+/); // bare or `Name <a@b>` → the address
+      if (m) out.push(m[0].toLowerCase());
+    }
+  };
+  for (const [k, v] of entries) {
+    if (!EMAIL_TO_KEY.test(k)) continue;
+    if (typeof v === 'string') take(v);
+    else if (Array.isArray(v)) for (const x of v) if (typeof x === 'string') take(x);
+  }
+  return [...new Set(out)];
+}
 
 /** Flatten a tool_input one level (plus array element scalars) into a text blob + the raw entries. */
 function scan(input: unknown): { text: string; entries: [string, unknown][] } {
@@ -64,8 +95,15 @@ function scan(input: unknown): { text: string; entries: [string, unknown][] } {
 /**
  * Compute governance facts and return a NEW args object (original + facts). Pure; no I/O.
  * `args` is what the gate received: `{ tool?, input?, command?, ...callerFacts }`.
+ * `orgDomains` are the workspace's internal email domains (lowercased, no `@`) — passed in by the
+ * caller (no I/O here) so an email send can be judged internal (own domain) vs external.
  */
-export function enrichArgs(capability: string, args: Record<string, unknown>): Record<string, unknown> {
+export function enrichArgs(
+  capability: string,
+  args: Record<string, unknown>,
+  orgDomains: string[] = [],
+  workdir?: string,
+): Record<string, unknown> {
   const tool = typeof args.tool === 'string' ? args.tool : '';
   const input = (args.input && typeof args.input === 'object' ? args.input : args) as Record<string, unknown>;
   // Text to pattern-match: an explicit shell command (Bash) and/or the connector input's string values.
@@ -73,15 +111,37 @@ export function enrichArgs(capability: string, args: Record<string, unknown>): R
   const { text: inputText, entries } = scan(input);
   const haystack = `${command}\n${inputText}`;
 
+  // file.write is judged by WHERE it writes (see outsideWorkdir below), never by content: a file whose
+  // TEXT happens to contain "DROP TABLE" or "rm -rf" is not a destructive DB/shell op. So skip the
+  // content scan for it — otherwise the `*` destructive→never rule would wrongly deny a benign edit.
+  const isFileWrite = capability === 'file.write';
+
   let destructive = args.destructive === true;
-  if (!destructive) {
+  if (!destructive && !isFileWrite) {
     destructive = DESTRUCTIVE.some((re) => re.test(haystack)) || (!!tool && DESTRUCTIVE_TOOL.test(tool));
   }
 
   let risky = args.risky === true || destructive;
-  if (!risky) {
+  if (!risky && !isFileWrite) {
     if (capability === 'shell.exec') risky = RISKY_SHELL.test(haystack);
     else if (capability.startsWith('connector')) risky = !!tool && MUTATION_TOOL.test(tool);
+  }
+
+  // outsideWorkdir: for a file write, is the target OUTSIDE the agent's own working folder? Edits inside
+  // the folder are the agent doing its job (allow); writing to ~/.claude, another agent's dir, or system
+  // paths is a real side effect (the policy gates it). A caller-supplied boolean wins (tests/policy_check);
+  // otherwise we derive it from the path in tool_input vs `workdir`. No path we can see → treat as outside
+  // (opaque write needs a human). Left undefined when it's not a file write or no workdir was provided.
+  let outsideWorkdir = typeof args.outsideWorkdir === 'boolean' ? (args.outsideWorkdir as boolean) : undefined;
+  if (outsideWorkdir === undefined && isFileWrite && workdir) {
+    const target = typeof input.file_path === 'string' ? input.file_path
+      : typeof input.notebook_path === 'string' ? input.notebook_path : '';
+    if (!target) {
+      outsideWorkdir = true;
+    } else {
+      const rel = path.relative(workdir, path.resolve(workdir, target));
+      outsideWorkdir = rel !== '' && (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
+    }
   }
 
   // amountUsd: explicit fact → a *_usd key → for a payment tool, a bare amount/total (treated as USD).
@@ -107,9 +167,37 @@ export function enrichArgs(capability: string, args: Record<string, unknown>): R
     else for (const [k, v] of entries) if (/^(count|limit)$/i.test(k) && num(v) !== undefined) { deleteCount = num(v); break; }
   }
 
+  // email.send: an outbound email is its own governed capability (gated by recipient, not just the
+  // send verb). Detect it by tool name for connector calls (and when already remapped to email.send),
+  // then judge internal vs external against the workspace's own domains. No recipients parsed (opaque
+  // args) → treated as EXTERNAL, the safe default (an unknown audience needs the human, not a free pass).
+  const emailCapable = capability.startsWith('connector') || capability === 'email.send';
+  let emailSend = args.emailSend === true;
+  if (!emailSend && emailCapable && !!tool && EMAIL_SEND_TOOL.test(tool)) emailSend = true;
+  let emailExternal: boolean | undefined;
+  let emailExternalCount: number | undefined;
+  let emailRecipients: string[] | undefined;
+  if (emailSend) {
+    emailRecipients = extractRecipients(entries);
+    const org = new Set(orgDomains.map((d) => d.trim().toLowerCase().replace(/^@/, '')).filter(Boolean));
+    // emailExternalCount = how many recipients are OUTSIDE the org — the fact the red bulk-external rule
+    // reads (blasting many outsiders is the risk; internal fan-out isn't). emailExternal stays a boolean
+    // for the yellow tier; unknown recipients (opaque args) count as external there but not as "bulk".
+    const externalCount = emailRecipients.filter((a) => !org.has(emailDomain(a))).length;
+    emailExternalCount = externalCount;
+    emailExternal = args.emailExternal === true || emailRecipients.length === 0 || externalCount > 0;
+  }
+
   const facts: Record<string, unknown> = { ...args, destructive, risky };
+  if (outsideWorkdir !== undefined) facts.outsideWorkdir = outsideWorkdir;
   if (amountUsd !== undefined) facts.amountUsd = amountUsd;
   if (deleteCount !== undefined) facts.deleteCount = deleteCount;
+  if (emailSend) {
+    facts.emailSend = true;
+    facts.emailExternal = emailExternal;
+    facts.emailExternalCount = emailExternalCount;
+    if (emailRecipients) facts.emailRecipients = emailRecipients;
+  }
   return facts;
 }
 

@@ -11,15 +11,14 @@
  *      The agent literally cannot refund except through the front door.
  *
  *   B) Everything else is gated by a PreToolUse hook.
- *      Claude Code can run a hook before each tool call that returns allow/deny/ask.
- *      The hook turns the pending tool call into an ActionAttempt, asks the gateway
- *      (Policy → Approvals → Budget → Audit), and returns the verdict. This replaces
- *      `--permission-mode bypassPermissions` with GOVERNED permissions; the agent's
- *      `allowedTools` becomes the coarse first filter, Policy the fine one.
+ *      Claude Code runs a PreToolUse hook before each tool call that returns an
+ *      AUTHORITATIVE allow/deny/ask decision. The hook turns the pending tool call into
+ *      an ActionAttempt, asks the gateway (Policy → Approvals → Budget → Audit), and emits
+ *      the verdict — which BYPASSES Claude's own permission engine. So the gate hook is the
+ *      single authority; `--permission-mode` is neither set nor needed (one brain, not two).
  *
  * Wiring (out of process, omitted in this starter):
  *   - spawn: claude --print --output-format stream-json --model <model>
- *            --permission-mode default  (NOT bypassPermissions)
  *            --mcp-config <os-gateway-mcp>  --settings <hooks-with-PreToolUse>
  *   - a small local bridge (unix socket / HTTP) lets the hook + MCP server reach this
  *     process's `gateway.invoke`, carrying the run id so the right RunContext is used.

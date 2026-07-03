@@ -17,10 +17,13 @@ import { Automation, Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
+import { Consolidation } from './edge/consolidation';
 import { CATALOG, redact } from './connectors/connectors';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument } from './governance/policy';
-import { AgentManifest, ApprovalRequest, EmbeddingsConfig, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeExamplePrompts, sanitizeRuntimeTuning } from './types';
+import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
+import { extractSkillsFromZip } from './governance/skill-zip';
+import { AgentManifest, ApprovalRequest, EmbeddingsConfig, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeRuntimeTuning, TaskStatus } from './types';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
 interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -29,7 +32,7 @@ interface MemorySettingsView {
   sqlite?: { embeddings?: EmbeddingsView };
   libsql?: { url: string; authTokenSet: boolean; embeddings?: EmbeddingsView };
   automem?: { endpoint: string; tokenSet: boolean };
-  ranking?: { halfLifeDays?: number; weightByImportance?: boolean };
+  ranking?: { halfLifeDays?: number; weightByImportance?: boolean; weightByUsage?: boolean };
   maintenance?: { pruneAfterDays?: number; keepImportance?: number; dedupeThreshold?: number; everyHours?: number };
   sharedWrites?: 'open' | 'curated';
   updatedAt?: number;
@@ -42,17 +45,18 @@ const WEB_DIST = path.resolve(__dirname, '../web/dist');
 /** Agents available for terminal sessions = whatever manifests this instance loaded.
  *  `deletable` = lives under the data home (user-created), so it can be removed; the bundled
  *  examples that ship with the software are read-only. */
-function terminalAgents(os: AgentOS): { id: string; description: string; runtime: string; deletable: boolean; model?: string; effort?: string; permissionMode?: string; examplePrompts?: string[] }[] {
+function terminalAgents(os: AgentOS): { id: string; description: string; category?: string; runtime: string; deletable: boolean; model?: string; effort?: string; examplePrompts?: string[] }[] {
   const userRoot = os.paths ? path.resolve(os.paths.userAgents) + path.sep : null;
   return [...os.agents.values()].map((a) => ({
     id: a.id,
     description: a.description,
+    // Organisational grouping label (Engineering / Marketing / …); undefined = uncategorised.
+    category: a.category,
     runtime: a.runtime,
     deletable: !!userRoot && !!a.dir && (path.resolve(a.dir) + path.sep).startsWith(userRoot),
     // Per-agent runtime tuning (claude-code only) — surfaced so the console can show/edit it.
     model: a.model,
     effort: a.effort,
-    permissionMode: a.permissionMode,
     // Suggested first tasks for the spawn card (clickable chips that prefill the box).
     examplePrompts: a.examplePrompts,
   }));
@@ -169,6 +173,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     if (everyHours && Date.now() - (lastDream.get(os.tenant) || 0) >= everyHours * 3_600_000) {
       lastDream.set(os.tenant, Date.now());
       void new DreamingEngine(os).dream('scheduler').catch(() => { /* never let the dreamer crash the server */ });
+      // Opt-in: after each auto dream pass, spawn the memory-gardener to consolidate new episodes/lessons.
+      if (os.settings.consolidateAuto()) {
+        void new Consolidation(os, rt.tm).run('automation:consolidation').catch(() => { /* never crash the scheduler */ });
+      }
     }
   }), 3_600_000);
   upkeep.unref?.();
@@ -377,6 +385,108 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
   }
 
+  // agent revises one of its OWN memories (correct a fact that turned out wrong / sharpen it). The
+  // provider's author guard means a session can only edit a memory it authored.
+  if (method === 'POST' && p === '/api/memory/revise') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim();
+    if (!id) return sendJson(res, 400, { error: 'id is required' });
+    try {
+      const rec = await os.memory.update({
+        tenant: os.tenant, agentId: agent, id,
+        content: typeof b.content === 'string' ? b.content : undefined,
+        tags: Array.isArray(b.tags) ? b.tags.map(String) : undefined,
+        type: typeof b.type === 'string' ? (b.type as MemoryType) : undefined,
+        importance: typeof b.importance === 'number' ? b.importance : undefined,
+      });
+      if (!rec) return sendJson(res, 200, { ok: false, error: 'no such memory of yours to revise' });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'memory.revised', data: { id: rec.id } });
+      return sendJson(res, 200, { ok: true, id: rec.id, scope: rec.scope });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // agent forgets one of its OWN memories (a stale/wrong fact). Author-guarded like revise.
+  if (method === 'POST' && p === '/api/memory/forget') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim();
+    if (!id) return sendJson(res, 400, { error: 'id is required' });
+    try {
+      const deleted = await os.memory.delete({ tenant: os.tenant, agentId: agent, id });
+      if (deleted) os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'memory.forgotten', data: { id } });
+      return sendJson(res, 200, { ok: true, deleted });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // agent reads back ITS OWN inbox feed (answers to questions it asked, approvals/updates/reports on
+  // its run) — a non-blocking pull, vs `ask` which blocks. Session-scoped server-side.
+  if (method === 'GET' && p === '/api/inbox') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 50);
+    return sendJson(res, 200, { messages: tm.sessionInbox(session, limit) });
+  }
+  // agent lists the deliverables IT has already published (its own agent id) — to build on prior work
+  // or avoid re-publishing. Metadata only; the file lives in the agent's own working folder.
+  if (method === 'GET' && p === '/api/agent/artifacts') {
+    const session = url.searchParams.get('session') || '';
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 50);
+    const artifacts = os.artifacts.list().filter((a) => a.agent === agent).slice(0, limit);
+    return sendJson(res, 200, { artifacts, enabled: os.artifacts.enabled });
+  }
+  // agent schedules a ONE-SHOT deferred run of itself (a follow-up / "check back later"). Stored as a
+  // `once` automation that runs the same agent under the same run-as identity, bounded by the SCHEDULE_*
+  // caps. Provenance stays the automation; shows in the console Automations page (human-cancellable).
+  if (method === 'POST' && p === '/api/agent/schedule') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const task = String(b.task || '').trim();
+    if (!task) return sendJson(res, 400, { error: 'task is required' });
+    // Accept either a relative delay (inMinutes) or an absolute time (at: ISO string or epoch ms).
+    let runAt: number;
+    if (typeof b.inMinutes === 'number') runAt = Date.now() + b.inMinutes * 60_000;
+    else if (b.at !== undefined) runAt = typeof b.at === 'number' ? b.at : Date.parse(String(b.at));
+    else return sendJson(res, 400, { error: 'provide inMinutes or at' });
+    if (!Number.isFinite(runAt)) return sendJson(res, 400, { error: 'could not parse the schedule time' });
+    try {
+      const a = autos.schedule({ agentId: agent, name: String(b.name || '').trim() || `Scheduled: ${task.slice(0, 40)}`, task, runAt, runAs: tm.sessionRunAs(session), createdBy: 'automation' });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'automation.scheduled', data: { id: a.id, runAt, agent } });
+      return sendJson(res, 200, { ok: true, id: a.id, runAt });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // agent cancels one of ITS OWN pending scheduled tasks (scoped to its agent).
+  if (method === 'POST' && p === '/api/agent/schedule/cancel') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim();
+    if (!id) return sendJson(res, 400, { error: 'id is required' });
+    const cancelled = autos.cancelScheduled(id, agent);
+    if (cancelled) os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'automation.cancelled', data: { id } });
+    return sendJson(res, 200, { ok: true, cancelled });
+  }
+
   // ask-human: the agent posts a question (→ inbox) and polls until a human answers it.
   if (method === 'POST' && p === '/api/ask') {
     const b = await readBody(req);
@@ -398,7 +508,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    tm.report(session, agent, String(b.outcome || 'success'), String(b.summary || ''));
+    tm.report(session, agent, String(b.outcome || 'success'), String(b.summary || ''), b.lessons ? String(b.lessons) : undefined);
+    return sendJson(res, 200, { ok: true });
+  }
+  // agent posts a mid-task progress note (→ inbox feed 'update' card; `important` highlights it).
+  if (method === 'POST' && p === '/api/update') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const message = String(b.message || '').trim();
+    if (!message) return sendJson(res, 400, { error: 'message is required' });
+    tm.progress(session, agent, message, b.important === true || b.important === 'true');
     return sendJson(res, 200, { ok: true });
   }
   // agent publishes a deliverable to the Artifacts gallery (→ snapshot + inbox card + audit). The
@@ -443,6 +565,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     tm.markEnded(session);
+    return sendJson(res, 200, { ok: true });
+  }
+  // Claude Code Notification hook (notify-hook.sh): the session is blocked waiting on the human
+  // (permission prompt / idle). Surface a per-session inbox bell. Session-secret gated like the rest.
+  if (method === 'POST' && p === '/api/notify') {
+    const b = await readBody(req);
+    const session = String(b.sessionId || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    tm.notify(session, String(b.agent || ''), String(b.kind || ''), String(b.message || ''));
     return sendJson(res, 200, { ok: true });
   }
   // attach-wrapper signal that a stopped session was resurrected (→ mark running again).
@@ -494,6 +626,122 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
+  }
+  // KB revision history for a page (the agent can see what a write would clobber / what to revert to).
+  if (method === 'GET' && p === '/api/kb/history') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const page = os.kb.read(os.tenant, url.searchParams.get('section') || '', url.searchParams.get('slug') || '');
+    if (!page) return sendJson(res, 404, { error: 'page not found' });
+    return sendJson(res, 200, { current: page.rev, revisions: os.kb.history(page.id) });
+  }
+  // Revert a KB page to an earlier revision — itself a new, auditable, revertable write.
+  if (method === 'POST' && p === '/api/kb/revert') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const page = os.kb.read(os.tenant, String(b.section || ''), String(b.slug || ''));
+    if (!page) return sendJson(res, 404, { error: 'page not found' });
+    const rev = Number(b.rev);
+    if (!Number.isInteger(rev) || rev < 1) return sendJson(res, 400, { error: 'a valid rev (>=1) is required' });
+    try {
+      const reverted = os.kb.revert(page.id, rev, `agent:${agent}`);
+      if (!reverted) return sendJson(res, 200, { ok: false, error: `no such revision ${rev}` });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'kb.reverted', data: { id: page.id, section: page.section, slug: page.slug, toRev: rev, rev: reverted.rev } });
+      return sendJson(res, 200, { ok: true, section: reverted.section, slug: reverted.slug, rev: reverted.rev });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // ── Tasks (agent loopback) ───────────────────────────────────────────────────
+  // The shared work queue, reached by an in-session agent AS ITSELF: author/assignee:"me" are derived
+  // server-side from the session row (never trusted from the body), like kb_write/schedule. Edits are
+  // auto-apply + audited; a dispatched session is separately gated. See docs/tasks-plan.md.
+  if (method === 'POST' && p === '/api/tasks/create') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const title = String(b.title || '').trim();
+    if (!title) return sendJson(res, 400, { error: 'title is required' });
+    try {
+      // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
+      // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
+      const task = os.tasks.create({
+        tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
+        assignee: b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' ? b.assignee : undefined),
+        owner: tm.sessionRunAs(session),
+        priority: typeof b.priority === 'number' ? b.priority : undefined,
+        labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
+        parentId: typeof b.parentId === 'string' ? b.parentId : undefined,
+        mode: b.mode === 'interactive' ? 'interactive' : 'headless',
+        autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true',
+        createdBy: `agent:${agent}`,
+      });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
+      return sendJson(res, 200, { ok: true, id: task.id });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (method === 'GET' && p === '/api/tasks/list') {
+    const session = url.searchParams.get('session') || '';
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const rawAssignee = url.searchParams.get('assignee') || undefined;
+    const tasks = os.tasks.list({
+      tenant: os.tenant,
+      status: (url.searchParams.get('status') as TaskStatus) || undefined,
+      assignee: rawAssignee === 'me' ? `agent:${agent}` : rawAssignee,
+      label: url.searchParams.get('label') || undefined,
+      query: url.searchParams.get('q') || undefined,
+      limit: Number(url.searchParams.get('limit')) || undefined,
+    });
+    return sendJson(res, 200, { tasks });
+  }
+  if (method === 'GET' && p === '/api/tasks/get') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const found = os.tasks.withEvents(url.searchParams.get('id') || '');
+    return sendJson(res, found ? 200 : 404, found ?? { error: 'task not found' });
+  }
+  if (method === 'POST' && p === '/api/tasks/claim') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const task = os.tasks.claim(String(b.id || ''), agent, session);
+    if (!task) return sendJson(res, 200, { ok: false, error: 'task not found, already claimed, or closed' });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'task.claimed', data: { id: task.id } });
+    return sendJson(res, 200, { ok: true, task });
+  }
+  if (method === 'POST' && p === '/api/tasks/update') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '');
+    const task = os.tasks.update(id, {
+      status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
+      assignee: b.assignee === null ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' ? b.assignee : undefined)),
+      priority: typeof b.priority === 'number' ? b.priority : undefined,
+      labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
+      mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
+      note: typeof b.note === 'string' ? b.note : undefined,
+      by: `agent:${agent}`,
+    });
+    if (!task) return sendJson(res, 200, { ok: false, error: 'task not found' });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
+    return sendJson(res, 200, { ok: true, task });
   }
 
   // Every other /api/* route requires a logged-in member.
@@ -706,6 +954,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     tm.say(sayMatch[1], String(b.body || ''));
     return sendJson(res, 200, { ok: true });
   }
+  // Operator pasted/dropped a file (image) onto the open terminal: save it into the session's working
+  // folder and type its path into the running claude. Body: { dataB64, ext }. Capped to keep a stray
+  // huge paste from buffering unbounded (readBody has no limit of its own).
+  const attachFileMatch = p.match(/^\/api\/sessions\/([\w-]+)\/attach-file$/);
+  if (method === 'POST' && attachFileMatch) {
+    const id = attachFileMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to attach to this session' });
+    if (Number(req.headers['content-length'] || 0) > 16 * 1024 * 1024) return sendJson(res, 413, { error: 'attachment too large (max ~12MB)' });
+    const b = await readBody(req);
+    const dataB64 = String(b.dataB64 || '');
+    if (!dataB64) return sendJson(res, 400, { error: 'dataB64 is required' });
+    const data = Buffer.from(dataB64, 'base64');
+    if (!data.length) return sendJson(res, 400, { error: 'empty or invalid attachment' });
+    const r = tm.attachFile(id, me.email, data, String(b.ext || 'png'));
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   // Stop a running session (kill its tmux, keep the row). Per-member: only the session's owner, or
   // an owner/admin — agents are shared, so canRun would let a peer stop another member's session.
   const stopMatch = p.match(/^\/api\/sessions\/([\w-]+)\/stop$/);
@@ -725,6 +990,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
 
   if (method === 'GET' && p === '/api/messages') return sendJson(res, 200, tm.listMessages(me));
+
+  // Dismiss the whole Activity feed at once (soft hide). Leaves action-required items (pending
+  // approvals/questions, waiting notifications) in place. Same per-viewer visibility as the feed.
+  if (method === 'POST' && p === '/api/messages/dismiss-all') {
+    return sendJson(res, 200, { ok: true, dismissed: tm.dismissAllMessages(me) });
+  }
 
   // Dismiss a message from the inbox (soft hide; the row is kept for audit). Same visibility rule as
   // the feed; a pending approval/question can't be dismissed (resolve/answer it instead).
@@ -751,6 +1022,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
   // ── memory (console: browse / curate an agent's persistent memory) ───────────
   if (method === 'GET' && p === '/api/memory/health') return sendJson(res, 200, await os.memory.health());
+  // The learning-system Overview: pipeline counts + a recent learning-activity feed. Owner/admin —
+  // it spans the whole fleet (all agents), like the audit/dreaming surfaces.
+  if (method === 'GET' && p === '/api/memory/overview') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const one = (sql: string, ...args: unknown[]) => Number(os.db.prepare(sql).get<{ n: number }>(...args)?.n ?? 0);
+    const counts = {
+      memories: one('SELECT count(*) AS n FROM memories WHERE tenant = ?', os.tenant),
+      episodes: one("SELECT count(*) AS n FROM memories WHERE tenant = ? AND tags LIKE '%\"episode\"%'", os.tenant),
+      lessons: one("SELECT count(*) AS n FROM memories WHERE tenant = ? AND tags LIKE '%\"lesson\"%'", os.tenant),
+      shared: one("SELECT count(*) AS n FROM memories WHERE tenant = ? AND scope = 'tenant'", os.tenant),
+      kbPages: one('SELECT count(*) AS n FROM kb_pages WHERE tenant = ?', os.tenant),
+    };
+    const rows = os.db
+      .prepare(
+        "SELECT ts, run_id, type, principal, data FROM audit_events WHERE tenant = ? " +
+          "AND type IN ('episode.stored','lesson.stored','learning.dreamed','learning.consolidated') " +
+          'ORDER BY ts DESC, id DESC LIMIT 30',
+      )
+      .all<{ ts: number; run_id: string; type: string; principal: string | null; data: string }>(os.tenant);
+    const activity = rows.map((r) => ({ ts: r.ts, runId: r.run_id, type: r.type, principal: r.principal ?? undefined, data: safeJson(r.data) }));
+    return sendJson(res, 200, { counts, activity });
+  }
   if (method === 'GET' && p === '/api/memory') {
     const agent = url.searchParams.get('agent') || '';
     if (!agent) return sendJson(res, 400, { error: 'agent is required' });
@@ -852,11 +1145,93 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, ok ? 200 : 404, { ok });
   }
 
+  // ── Tasks (member console) ───────────────────────────────────────────────────
+  // Tenant-wide board: reads open to any member (like KB); writes/claims open to any member; dispatch
+  // follows canRun on the assignee agent (spawning a session is a run); delete is owner/admin.
+  const taskId = p.match(/^\/api\/tasks\/([\w-]+)$/);
+  const taskComment = p.match(/^\/api\/tasks\/([\w-]+)\/comment$/);
+  const taskDispatch = p.match(/^\/api\/tasks\/([\w-]+)\/dispatch$/);
+  if (method === 'GET' && p === '/api/tasks') {
+    const tasks = os.tasks.list({ tenant: os.tenant, status: (url.searchParams.get('status') as TaskStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
+    return sendJson(res, 200, { tasks, counts: os.tasks.counts(os.tenant), agents: terminalAgents(os).map((a) => a.id) });
+  }
+  if (taskId && method === 'GET') {
+    const found = os.tasks.withEvents(taskId[1]);
+    return sendJson(res, found ? 200 : 404, found ?? { error: 'task not found' });
+  }
+  if (method === 'POST' && p === '/api/tasks') {
+    const b = await readBody(req);
+    const title = String(b.title || '').trim();
+    if (!title) return sendJson(res, 400, { error: 'title is required' });
+    try {
+      const task = os.tasks.create({
+        tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
+        assignee: typeof b.assignee === 'string' && b.assignee ? b.assignee : undefined,
+        // owner = the member the dispatched session runs AS (run_as). Default to the creator, so a
+        // human-filed task dispatches as them (human passthrough) AND its session stays visible to them
+        // (the run_as visibility rule) — not only to owner/admin.
+        owner: typeof b.owner === 'string' && b.owner ? b.owner : me.id,
+        priority: typeof b.priority === 'number' ? b.priority : undefined,
+        labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
+        parentId: typeof b.parentId === 'string' ? b.parentId : undefined,
+        mode: b.mode === 'interactive' ? 'interactive' : 'headless',
+        autoDispatch: b.autoDispatch === true,
+        createdBy: me.id,
+      });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
+      // Immediate dispatch when it's an auto-dispatch task assigned to an agent (§3.3 trigger 2) — the
+      // tick would pick it up anyway; kicking it now is snappier. Guarded (won't double-fire).
+      if (task.autoDispatch && (task.assignee || '').startsWith('agent:')) autos.dispatchTask(task.id, { guard: true, by: me.email });
+      return sendJson(res, 200, { ok: true, task: os.tasks.get(task.id) });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (taskId && method === 'PATCH') {
+    const b = await readBody(req);
+    const task = os.tasks.update(taskId[1], {
+      status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
+      assignee: b.assignee === null ? null : (typeof b.assignee === 'string' ? b.assignee : undefined),
+      priority: typeof b.priority === 'number' ? b.priority : undefined,
+      labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
+      mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
+      note: typeof b.note === 'string' ? b.note : undefined,
+      by: me.id,
+    });
+    if (!task) return sendJson(res, 404, { error: 'task not found' });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
+    return sendJson(res, 200, { ok: true, task });
+  }
+  if (taskComment && method === 'POST') {
+    const b = await readBody(req);
+    const note = String(b.body || '').trim();
+    if (!note) return sendJson(res, 400, { error: 'a comment body is required' });
+    const task = os.tasks.update(taskComment[1], { note, by: me.id });
+    if (!task) return sendJson(res, 404, { error: 'task not found' });
+    return sendJson(res, 200, { ok: true, task });
+  }
+  if (taskDispatch && method === 'POST') {
+    const task = os.tasks.get(taskDispatch[1]);
+    if (!task) return sendJson(res, 404, { error: 'task not found' });
+    const agentId = (task.assignee || '').startsWith('agent:') ? task.assignee!.slice('agent:'.length) : '';
+    if (!agentId) return sendJson(res, 400, { error: 'assign an agent before dispatching' });
+    if (!os.team.canRun(me, agentId)) return sendJson(res, 403, { error: `you are not assigned to run "${agentId}"` });
+    const r = autos.dispatchTask(task.id, { guard: false, by: me.email }); // explicit human action — no pile-up guard
+    return sendJson(res, r.ok ? 200 : 409, r.ok ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
+  }
+  if (taskId && method === 'DELETE') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const ok = os.tasks.remove(taskId[1]);
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.deleted', data: { id: taskId[1] } });
+    return sendJson(res, ok ? 200 : 404, { ok });
+  }
+
   // ── self-learning (Dreaming): reflect on recent runs → a KB page + a shared memory Insight ──
   if (method === 'GET' && p === '/api/dreaming') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const last = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
-    return sendJson(res, 200, { everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined, applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open });
+    const lastCons = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.consolidated'").get<{ t: number | null }>();
+    return sendJson(res, 200, { everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined, applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, consolidateAuto: os.settings.consolidateAuto(), lastConsolidatedAt: lastCons?.t ?? undefined });
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);
@@ -886,7 +1261,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     if (b.everyHours !== undefined) os.settings.setDreamingEveryHours(Number(b.everyHours) || 0, me.email);
     if (typeof b.applyLearnings === 'boolean') os.settings.setApplyLearnings(b.applyLearnings, me.email);
-    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings() });
+    if (typeof b.consolidateAuto === 'boolean') os.settings.setConsolidateAuto(b.consolidateAuto, me.email);
+    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings(), consolidateAuto: os.settings.consolidateAuto() });
   }
   if (method === 'POST' && p === '/api/dreaming/run') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -895,6 +1271,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, { ok: true, ...result });
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // Lever 4 — consolidation: spawn the headless memory-gardener over recent episodes+lessons.
+  if (method === 'POST' && p === '/api/dreaming/consolidate') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    try {
+      const result = await new Consolidation(os, tm).run('automation:consolidation');
+      return sendJson(res, 200, { ok: true, ...result });
+    } catch (e) {
+      return sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -906,8 +1292,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const id = String(b.id || '').trim().toLowerCase();
     const description = String(b.description || '').trim();
     const claudeMd = String(b.claudeMd ?? '');
-    // model/effort/permissionMode are per-agent overrides — each optional (omit → inherit the
-    // workspace default at launch). Validate effort/permission against the CLI's value sets.
+    // model/effort are per-agent overrides — each optional (omit → inherit the workspace default at
+    // launch). Validate effort against the CLI's value set.
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
     if (tErr) return sendJson(res, 400, { error: tErr });
     // No forced model default: a blank field means "inherit the workspace default" (Settings →
@@ -920,10 +1306,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (fs.existsSync(folder)) return sendJson(res, 409, { error: `folder "${id}" already exists in the agents home` });
 
     const examplePrompts = sanitizeExamplePrompts(b.examplePrompts);
+    const category = sanitizeCategory(b.category);
     const manifest: AgentManifest = {
       id,
       version: '1.0.0',
       description,
+      ...(category ? { category } : {}),
       principal: `svc-${id}`,
       policyContext: 'default@v1',
       runtime: 'claude-code',
@@ -997,21 +1385,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts });
+      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, examplePrompts: ag.examplePrompts, category: ag.category });
     }
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
     if (tErr) return sendJson(res, 400, { error: tErr });
-    // Replace the three tuning fields wholesale (sanitize already dropped empties to undefined →
-    // those become "inherit"). Starter prompts are only touched when the body carries the field
+    // Replace the tuning fields wholesale (sanitize already dropped empties to undefined → those
+    // become "inherit"). Starter prompts + category are only touched when the body carries the field
     // (a tuning-only save from the runtime card leaves them as-is). Preserve everything else.
     const prompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
-    const next: AgentManifest = { ...ag, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts };
+    const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
+    const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, category };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode } });
-    return sendJson(res, 200, { ok: true, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, category } });
+    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, category });
   }
 
   // ── workspace runtime defaults (the fleet-wide model/effort/permission fallback) — owner/admin only ──
@@ -1037,11 +1427,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const b = await readBody(req);
     const saved = os.settings.setGovernanceThresholds(
-      { moneyCapUsd: Number(b.moneyCapUsd), bulkDeleteCount: Number(b.bulkDeleteCount) },
+      { moneyCapUsd: Number(b.moneyCapUsd), bulkDeleteCount: Number(b.bulkDeleteCount), emailBulkCap: Number(b.emailBulkCap) },
       me.email,
     );
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.governance.updated', data: { ...saved } });
     return sendJson(res, 200, { ok: true, ...saved });
+  }
+
+  // ── email org domains (internal recipients → email.send is green; external → yellow) ──
+  if (method === 'GET' && p === '/api/settings/email-domains') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { orgDomains: os.settings.emailOrgDomains(), ...os.settings.emailOrgDomainsMeta() });
+  }
+  if (method === 'PUT' && p === '/api/settings/email-domains') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const input = Array.isArray(b.orgDomains)
+      ? (b.orgDomains as unknown[]).map(String)
+      : typeof b.orgDomains === 'string'
+        ? b.orgDomains.split(',')
+        : [];
+    const saved = os.settings.setEmailOrgDomains(input, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.email_domains.updated', data: { orgDomains: saved } });
+    return sendJson(res, 200, { ok: true, orgDomains: saved });
   }
 
   // ── kill switch (workspace emergency stop — gate denies everything while engaged) ──
@@ -1110,6 +1518,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
     }
     if (discordTouched && discord) void discord.restart();
+    // Generic `/agent` chat router toggle (Slack + Discord fallback when no automation matches).
+    if (typeof b.chatRouter === 'boolean') os.settings.setChatRouterEnabled(b.chatRouter, me.email);
     return sendJson(res, 200, { ok: true, removedSlackAutomations, removedDiscordAutomations, ...integrationsView(os) });
   }
   // Live Slack Socket-Mode connection status (owner/admin) — for the Integrations panel.
@@ -1169,12 +1579,89 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
   }
 
-  // ── skills (the global Claude Code Skills library, materialised into every claude-code agent) ──
-  //    Owner/admin only — skills package HOW agents work and reach every agent at launch. Per-agent
-  //    skills are just files in the agent's folder (browse them via the Files page).
+  // ── skills (the global Claude Code Skills library, materialised into claude-code agents) ──
+  //    Owner/admin only — skills package HOW agents work. By default a skill reaches EVERY agent at
+  //    launch; assign it to specific agents via PUT /api/skills/:name/agents (the skill_assignments
+  //    table). Hand-authored per-agent skills are still just files in the agent's folder (Files page).
+  if (method === 'PUT' && /^\/api\/skills\/([\w.-]+)\/agents$/.test(p)) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = p.match(/^\/api\/skills\/([\w.-]+)\/agents$/)![1];
+    if (!os.skills.get(name)) return sendJson(res, 404, { error: 'skill not found' });
+    const b = await readBody(req);
+    const agents = Array.isArray(b.agents) ? b.agents.map((a: unknown) => String(a)) : [];
+    os.skills.setAssignment(name, agents);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.assigned', data: { skill: name, agents } });
+    return sendJson(res, 200, { ok: true, skill: os.skills.get(name) });
+  }
   if (method === 'GET' && p === '/api/skills') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, { enabled: os.skills.enabled, skills: os.skills.list() });
+  }
+  // The bundled catalog — skills that ship with the software, installable into this tenant's library.
+  // MUST precede the generic /api/skills/:name route below (else "catalog" reads as a skill name).
+  if (method === 'GET' && p === '/api/skills/catalog') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { catalog: os.skills.catalog() });
+  }
+  const installMatch = p.match(/^\/api\/skills\/catalog\/([\w.-]+)\/install$/);
+  if (method === 'POST' && installMatch) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.skills.enabled) return sendJson(res, 400, { error: 'installing skills requires a data home' });
+    try {
+      const s = os.skills.install(installMatch[1]);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.installed', data: { skill: s.name, source: 'catalog' } });
+      return sendJson(res, 200, { ok: true, skill: s });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // ── remote sources: install skills straight from a public GitHub repo (covers skills.sh too) ──
+  if (method === 'GET' && p === '/api/skills/sources') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { presets: PRESET_SOURCES });
+  }
+  // skills.sh directory search — across every indexed repo (a hit installs via the route below).
+  if (method === 'GET' && p === '/api/skills/sources/search') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const q = url.searchParams.get('q') || '';
+    if (!q.trim()) return sendJson(res, 200, { query: '', hits: [] });
+    try {
+      const hits = await searchSkillsh(q);
+      const have = new Set(os.skills.list().map((s) => s.name));
+      return sendJson(res, 200, { query: q, hits: hits.map((h) => ({ ...h, installed: have.has(h.name.toLowerCase()) })) });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (method === 'GET' && p === '/api/skills/sources/browse') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const repo = url.searchParams.get('repo') || '';
+    if (!repo.trim()) return sendJson(res, 400, { error: 'repo is required (owner/repo)' });
+    try {
+      const cat = await browseRepo(repo);
+      const have = new Set(os.skills.list().map((s) => s.name));
+      const skills = cat.skills.map((s) => ({ ...s, installed: have.has(s.name) }));
+      return sendJson(res, 200, { ...cat, skills });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (method === 'POST' && p === '/api/skills/sources/install') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.skills.enabled) return sendJson(res, 400, { error: 'installing skills requires a data home' });
+    const b = await readBody(req);
+    const repo = String(b.repo ?? '');
+    const skillPath = String(b.path ?? '');
+    const name = String(b.name ?? (skillPath.split('/').pop() || ''));
+    if (!repo.trim()) return sendJson(res, 400, { error: 'repo is required' });
+    try {
+      const files = await fetchSkill(repo, skillPath, name);
+      const s = os.skills.installFiles(name, files);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.installed', data: { skill: s.name, source: repo } });
+      return sendJson(res, 200, { ok: true, skill: s });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
   }
   if (method === 'POST' && p === '/api/skills') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -1184,6 +1671,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const s = os.skills.create({ name: String(b.name ?? ''), description: String(b.description ?? ''), content: b.content !== undefined ? String(b.content) : undefined });
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.created', data: { skill: s.name } });
       return sendJson(res, 200, { ok: true, skill: s });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // Drag-and-drop / "Upload skill" — install one or more skills from an uploaded .zip. Raw zip bytes
+  // in the body; optional `?name=` (the dropped filename) seeds the name for a root-level SKILL.md.
+  if (method === 'POST' && p === '/api/skills/upload') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.skills.enabled) return sendJson(res, 400, { error: 'installing skills requires a data home' });
+    const buf = await readRawBuffer(req);
+    if (buf.length === 0) return sendJson(res, 400, { error: 'empty upload' });
+    try {
+      const fallbackName = path.basename(url.searchParams.get('name') || '');
+      const extracted = extractSkillsFromZip(buf, fallbackName);
+      const installed = extracted.map((e) => os.skills.installFiles(e.name, e.files));
+      for (const s of installed) {
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.installed', data: { skill: s.name, source: 'upload' } });
+      }
+      return sendJson(res, 200, { ok: true, skills: installed });
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
@@ -1254,6 +1760,83 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       fs.writeFileSync(file, content);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'file.edited', data: { path: relOf(root, file), bytes: content.length } });
       return sendJson(res, 200, { ok: true });
+    }
+
+    // Download any file as an attachment (streams raw bytes; binaries included).
+    if (method === 'GET' && p === '/api/files/download') {
+      const file = safeResolve(root, url.searchParams.get('path') || '');
+      if (!file) return sendJson(res, 400, { error: 'path escapes the data home' });
+      let st: fs.Stats;
+      try { st = fs.statSync(file); } catch { return sendJson(res, 404, { error: 'not found' }); }
+      if (!st.isFile()) return sendJson(res, 400, { error: 'not a file' });
+      const stream = fs.createReadStream(file);
+      stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
+      res.writeHead(200, {
+        'content-type': mime(file),
+        'content-length': String(st.size),
+        'content-disposition': `attachment; filename="${path.basename(file).replace(/"/g, '')}"`,
+      });
+      stream.pipe(res);
+      return;
+    }
+
+    // Upload (create/overwrite a file). Raw bytes in the body; target dir in `path`, name in `name`.
+    if (method === 'POST' && p === '/api/files/upload') {
+      const dirRel = url.searchParams.get('path') || '';
+      const name = path.basename(url.searchParams.get('name') || '');
+      if (!name || name === '.' || name === '..') return sendJson(res, 400, { error: 'invalid file name' });
+      const dir = safeResolve(root, dirRel);
+      if (!dir) return sendJson(res, 400, { error: 'path escapes the data home' });
+      try { if (!fs.statSync(dir).isDirectory()) return sendJson(res, 400, { error: 'not a directory' }); }
+      catch { return sendJson(res, 404, { error: 'directory not found' }); }
+      const file = safeResolve(root, dirRel ? `${dirRel}/${name}` : name);
+      if (!file) return sendJson(res, 400, { error: 'path escapes the data home' });
+      const buf = await readRawBuffer(req);
+      try { fs.writeFileSync(file, buf); }
+      catch (e) { return sendJson(res, 500, { error: `write failed: ${(e as Error).message}` }); }
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'file.uploaded', data: { path: relOf(root, file), bytes: buf.length } });
+      return sendJson(res, 200, { ok: true, path: relOf(root, file) });
+    }
+
+    // Create a folder (recursive; no-op if it already exists).
+    if (method === 'POST' && p === '/api/files/mkdir') {
+      const b = await readBody(req);
+      const dir = safeResolve(root, String(b.path ?? ''));
+      if (!dir) return sendJson(res, 400, { error: 'path escapes the data home' });
+      if (relOf(root, dir) === '') return sendJson(res, 400, { error: 'invalid folder' });
+      try { fs.mkdirSync(dir, { recursive: true }); }
+      catch (e) { return sendJson(res, 500, { error: `mkdir failed: ${(e as Error).message}` }); }
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'folder.created', data: { path: relOf(root, dir) } });
+      return sendJson(res, 200, { ok: true, path: relOf(root, dir) });
+    }
+
+    // Delete a file or folder (folders recursively). Refuses to delete the home root.
+    if (method === 'DELETE' && p === '/api/files/delete') {
+      const target = safeResolve(root, url.searchParams.get('path') || '');
+      if (!target) return sendJson(res, 400, { error: 'path escapes the data home' });
+      const rel = relOf(root, target);
+      if (rel === '') return sendJson(res, 400, { error: 'refusing to delete the data home root' });
+      let st: fs.Stats;
+      try { st = fs.statSync(target); } catch { return sendJson(res, 404, { error: 'not found' }); }
+      try { fs.rmSync(target, { recursive: st.isDirectory(), force: true }); }
+      catch (e) { return sendJson(res, 500, { error: `delete failed: ${(e as Error).message}` }); }
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: st.isDirectory() ? 'folder.deleted' : 'file.deleted', data: { path: rel } });
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // Rename / move within the home.
+    if (method === 'POST' && p === '/api/files/rename') {
+      const b = await readBody(req);
+      const from = safeResolve(root, String(b.from ?? ''));
+      const to = safeResolve(root, String(b.to ?? ''));
+      if (!from || !to) return sendJson(res, 400, { error: 'path escapes the data home' });
+      if (relOf(root, from) === '') return sendJson(res, 400, { error: 'invalid source' });
+      try { if (fs.existsSync(from) === false) return sendJson(res, 404, { error: 'not found' }); } catch { /* noop */ }
+      if (fs.existsSync(to)) return sendJson(res, 409, { error: 'destination already exists' });
+      try { fs.renameSync(from, to); }
+      catch (e) { return sendJson(res, 500, { error: `rename failed: ${(e as Error).message}` }); }
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'file.renamed', data: { from: relOf(root, from), to: relOf(root, to) } });
+      return sendJson(res, 200, { ok: true, path: relOf(root, to) });
     }
 
     return sendJson(res, 404, { error: 'unknown files route' });
@@ -1473,6 +2056,35 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
   }
 
+  // ── secrets vault (owner/admin): encrypted-at-rest credentials. Values are NEVER returned ──
+  if (method === 'GET' && p === '/api/secrets') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { secrets: os.secrets.list(os.tenant) });
+  }
+  if (method === 'POST' && p === '/api/secrets') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const key = b.key ? String(b.key).trim() : '';
+    const value = b.value != null ? String(b.value) : '';
+    if (!key) return sendJson(res, 400, { error: 'key is required' });
+    if (!value) return sendJson(res, 400, { error: 'value is required' });
+    const principal = b.principal ? String(b.principal).trim() : '*';
+    os.secrets.set(os.tenant, key, value, { principal, updatedBy: me.email });
+    // Audit the act, never the value.
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.set', data: { secretPrincipal: principal, key } });
+    return sendJson(res, 200, { ok: true });
+  }
+  if (method === 'DELETE' && p === '/api/secrets') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const key = b.key ? String(b.key).trim() : '';
+    if (!key) return sendJson(res, 400, { error: 'key is required' });
+    const principal = b.principal ? String(b.principal).trim() : '*';
+    const ok = os.secrets.delete(os.tenant, key, principal);
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.deleted', data: { secretPrincipal: principal, key } });
+    return sendJson(res, ok ? 200 : 404, { ok });
+  }
+
   // ── approvals (shared with the console) ──────────────────────────────────────
   // ── audit viewer (owner/admin): the queryable SQLite mirror of the JSONL system-of-record ──
   if (method === 'GET' && p === '/api/audit') {
@@ -1656,6 +2268,7 @@ function integrationsView(os: AgentOS): {
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
+  chatRouter: boolean;
   updatedAt?: number;
   updatedBy?: string;
 } {
@@ -1667,6 +2280,7 @@ function integrationsView(os: AgentOS): {
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
+    chatRouter: os.settings.chatRouterEnabled(),
     updatedAt: meta.updatedAt,
     updatedBy: meta.updatedBy,
   };
@@ -1701,7 +2315,7 @@ function memoryView(os: AgentOS): MemorySettingsView {
   if (cfg.sqlite) view.sqlite = { embeddings: embeddingsView(cfg.sqlite.embeddings) };
   if (cfg.libsql) view.libsql = { url: cfg.libsql.url ?? '', authTokenSet: !!cfg.libsql.authToken, embeddings: embeddingsView(cfg.libsql.embeddings) };
   if (cfg.automem) view.automem = { endpoint: cfg.automem.endpoint ?? '', tokenSet: !!cfg.automem.token };
-  if (cfg.ranking) view.ranking = { halfLifeDays: cfg.ranking.halfLifeDays, weightByImportance: !!cfg.ranking.weightByImportance };
+  if (cfg.ranking) view.ranking = { halfLifeDays: cfg.ranking.halfLifeDays, weightByImportance: !!cfg.ranking.weightByImportance, weightByUsage: !!cfg.ranking.weightByUsage };
   if (cfg.maintenance) view.maintenance = { ...cfg.maintenance };
   view.sharedWrites = cfg.sharedWrites === 'curated' ? 'curated' : 'open';
   return view;
@@ -1779,7 +2393,8 @@ function parseRanking(rb: any): MemoryRanking | undefined {
   const half = Number(rb.halfLifeDays);
   if (Number.isFinite(half) && half > 0) r.halfLifeDays = half;
   if (rb.weightByImportance) r.weightByImportance = true;
-  return r.halfLifeDays || r.weightByImportance ? r : undefined;
+  if (rb.weightByUsage) r.weightByUsage = true;
+  return r.halfLifeDays || r.weightByImportance || r.weightByUsage ? r : undefined;
 }
 
 /** Parse the maintenance controls; returns undefined unless prune or dedupe is actually enabled. */
@@ -1802,6 +2417,14 @@ function readRawBody(req: http.IncomingMessage): Promise<string> {
     let raw = '';
     req.on('data', (c) => (raw += c));
     req.on('end', () => resolve(raw));
+  });
+}
+/** Collect the request body as raw bytes (binary-safe — used for file uploads). */
+function readRawBuffer(req: http.IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
   });
 }
 function isAdmin(m: Member): boolean {

@@ -1,9 +1,9 @@
 /**
  * Demo — drives four runs through the gateway to show the trust layer working:
- *   1. GREEN happy path + idempotent retry (effect fires once)
- *   2. APPROVALS — yellow (head approves) vs red (owner declines)
+ *   1. ALLOW happy path + idempotent retry (effect fires once)
+ *   2. APPROVALS — ask:admin (admin approves) vs ask:owner (owner declines)
  *   3. BUDGET — hard-stop when per-run cap is hit
- *   4. POLICY DENY — a forbidden capability never executes
+ *   4. POLICY NEVER — a forbidden capability never executes
  *
  * Everything below is auditable: each run prints the exact append-only audit trail
  * the gateway wrote, plus the Evaluation signal computed from it.
@@ -58,16 +58,16 @@ async function main(): Promise<void> {
   // Simulate humans at the approval queue: heads approve; the owner (you) declines the big refund.
   os.approvals.setAutoResolver((req) => req.level === 'head');
 
-  divider('1. GREEN — echo + Slack, with an idempotent retry (effect fires once)');
+  divider('1. ALLOW — echo + Slack, with an idempotent retry (effect fires once)');
   printRun(os, await os.submit(run('example-greeter', { name: 'Vikas' })));
 
-  divider('2. APPROVALS — $49 refund (yellow→head ✅) vs $5000 refund (red→owner ❌)');
+  divider('2. APPROVALS — $49 refund (ask:admin ✅) vs $5000 refund (ask:owner ❌)');
   printRun(os, await os.submit(run('example-refunder', { customer: 'cus_42' })));
 
   divider('3. BUDGET — $0.02 cap; each action costs $0.01 → hard-stop on the 3rd');
   printRun(os, await os.submit({ ...run('example-spender', {}), budget: { usdCap: 0.02 } }));
 
-  divider('4. POLICY DENY — prod.* is denied outright; the effect never fires');
+  divider('4. POLICY NEVER — prod.* is refused outright; the effect never fires');
   printRun(os, await os.submit(run('example-ops', {})));
 
   divider('CONSOLE SNAPSHOT');

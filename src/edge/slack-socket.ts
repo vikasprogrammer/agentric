@@ -156,6 +156,10 @@ export class SlackSocket {
       }
     }
 
+    // An app_mention arrives as `<@BOTID> /agent …` — strip the leading bot mention so the message
+    // (and the `/agent` router prefix) starts clean, matching the Discord path.
+    const text = (ev.text || '').replace(new RegExp(`^\\s*<@${this.botUserId}>\\s*`), '').trim();
+
     const result = this.autos.fireSlack(
       {
         eventType: ev.eventType,
@@ -163,7 +167,7 @@ export class SlackSocket {
         threadTs: ev.threadTs,
         user: ev.user,
         actorLabel,
-        text: ev.text,
+        text,
         raw: ev.raw,
       },
       runAsMember,
@@ -179,9 +183,12 @@ export class SlackSocket {
     });
 
     // Immediate in-thread feedback so the user sees the trigger landed. The agent posts the real
-    // answer via its own Slack egress tools. No matching automation → a quiet "nothing wired" note.
+    // answer via its own Slack egress tools. If nothing fired but the generic router returned a help
+    // list (unknown/unaddressed `/agent`), post that so the sender learns how to reach the fleet.
     if (result.fired > 0) {
       await postMessage(this.os.settings.slackBotToken(), ev.channel, `:robot_face: On it — working on this now.`, ev.threadTs);
+    } else if (result.reply) {
+      await postMessage(this.os.settings.slackBotToken(), ev.channel, result.reply, ev.threadTs);
     }
   }
 

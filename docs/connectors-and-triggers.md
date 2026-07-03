@@ -7,8 +7,11 @@
 > **`member_identities`** table (P1 — built, generalised to `slack|discord|email|github`), reached via
 > `TeamStore.memberByExternalId`, **not** `slack_user_id` columns on `members`. Reply targeting uses
 > the **`slack_threads` / `discord_threads`** tables + the `slack_reply` / `discord_reply` MCP tools,
-> **not** a `term_sessions.reply_to` JSON column. P2/P3/P4 are still pending. See
-> `docs/v1-mvp-scope.md` (the live tracker) and the modules `src/edge/{slack,discord}-socket.ts` +
+> **not** a `term_sessions.reply_to` JSON column. **P1–P4 have all landed** (identity map, `runAs` seam,
+> `shared` connectors, `directory_lookup`). Beyond the frozen plan, the shipped tree adds a **generic
+> `/agent` chat router** (reach any agent by name with no automation) and **threaded replies** (Discord
+> branches a real thread) — see *"Shipped (diverges from the HTTP-adapter design above)"* under Layer A.
+> See `docs/v1-mvp-scope.md` (the live tracker) and the modules `src/edge/{slack,discord}-socket.ts` +
 > `src/connectors/{slack,discord}.ts`. The reframe + use cases below remain the useful conceptual map.
 
 The build spec for how Agent OS talks to the outside world in **both directions**, and whose name is
@@ -162,6 +165,35 @@ One-shot triggers (UC2/UC4): the agent's `report(outcome, summary)` tool, when t
 runs a headless turn `claude -p --resume <claude_session_id>` and posts the model's answer back —
 the agent-orch `emailSessions`/`clickupSessions` pattern, on our headless lane
 (`HEADLESS=1`, `claude-launch.sh`).
+
+### Shipped (diverges from the HTTP-adapter design above)
+
+The tree implemented chat ingress **natively over outbound WebSockets**, not the `POST /triggers/*`
+HTTP adapters sketched above — **Slack via Socket Mode** (`src/edge/slack-socket.ts`) and **Discord via
+the Gateway** (`src/edge/discord-socket.ts`). No public URL, so a Tailscale-private box works. run-as
+resolution still holds (P1 identity map → member, else company); `canRun` is enforced on the run-as
+principal. Reply continuity uses `slack_threads` / `discord_threads` (channel + thread/message bound at
+spawn) rather than the `trigger_threads`/`reply_to` columns above; the agent replies via the
+`slack_reply` / `discord_reply` MCP tools.
+
+**Generic `/agent` router (no automation needed).** This is the shipped generalisation of the "dispatch
+alias" idea: when an inbound Slack/Discord message matches **no** automation, `Automations.routeChat`
+parses a leading `/agent-name`. A known claude-code agent is spawned by `spawnChatAgent` — provenance
+`chat:<agent>`, run-as the sender, thread-bound, every effect still gated, labeled "Chat · <agent> · as
+<member>" on the Sessions page + Inbox. An unaddressed or unknown name posts a **help list** of available
+agents back to the channel. A leading bot-mention (`<@BOTID>`) is stripped so the `/agent` prefix parses.
+Workspace toggle `chatRouterEnabled` (Settings → Integrations, default on). So connecting the bot once
+makes the whole fleet reachable **without** a per-agent automation — automations become optional
+per-channel/mention overrides.
+
+**Threading.** Slack replies thread on `thread_ts ?? ts`, so a mention starts (or continues) a thread.
+Discord has no implicit threads, so a **guild @mention** branches a real thread off the user's message
+(`startThread` in `src/connectors/discord.ts`); the ack + all `discord_reply` output stay inside it. DMs
+have no threads → reply-reference in the DM; a thread-create failure falls back to the parent channel.
+
+**Setup nicety.** The console renders a one-click Discord invite button — a bot's user id *is* its
+application id, so once the Gateway connects (`discord.connected` records the READY guild count) the
+invite URL is built automatically (no pasting the application id).
 
 ## Layer B — Connectors (egress)
 

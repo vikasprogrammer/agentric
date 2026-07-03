@@ -40,15 +40,51 @@ cd "$AGENT_DIR" 2>/dev/null || { red "agent folder not found: $AGENT_DIR"; exec 
 # Pre-allow the OS-owned tools (memory, ask/report, policy preview) so they're friction-free — they're
 # internal and safe (memory reads/writes only this agent's own namespace; policy_check/list_capabilities
 # are pure dry-runs; all go through the loopback API, which derives identity from the session row).
+# The Notification hook lives beside the gate hook; derive its path so it's correct on every machine.
+NOTIFY_HOOK="$(dirname "$HOOK")/notify-hook.sh"
+# NO OS-level Bash sandbox. Governance is the gate hook (PreToolUse), which is now the SOLE
+# authority: it emits an authoritative `permissionDecision` per Bash/connector call, so we don't
+# also wrap the shell in Seatbelt/bubblewrap. The old sandbox was never a real boundary anyway —
+# it walled the filesystem but NOT network egress (Claude's sandbox default is "prompt-then-allow"
+# per domain, so `curl https://anywhere` returned 200), so it mostly added confusing double-denials
+# (it blocked reads the policy allowed, e.g. an agent's own `~/.ssh` key for a sanctioned prod SSH)
+# while giving a false sense of containment. Real OS containment, where we want it, is the Linux
+# per-user uid-isolation path (src/edge/launcher.ts, AOS_UID_ISOLATION) — not this.
+#
+# We DO keep a small set of `permissions.deny` Read rules for crown-jewel paths. These govern the
+# BUILT-IN Read/Glob/Grep tools (which the gate hook deliberately defers to Claude's own permission
+# layer — they aren't world side effects). Bash reads are governed by the gate hook's intent check,
+# not by a filesystem wall. We can't blanket-deny $HOME for the Read tool — the agent folder lives
+# under it and a deny would block the agent reading its OWN files — so we deny only crown-jewel
+# paths that never overlap the agent folder.
+H="${HOME#/}"
+DENYS="\"Read(//$H/.ssh/**)\", \"Read(//$H/.aws/**)\", \"Read(//$H/.gnupg/**)\", \"Read(//$H/.claude/**)\""
+DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
+if [ -n "$DATA_HOME" ]; then
+  DH="${DATA_HOME#/}"
+  DENYS="$DENYS, \"Read(//$DH/connectors/**)\", \"Read(//$DH/control/**)\", \"Read(//$DH/tenants/**)\", \"Read(//$DH/agent-os.db*)\""
+fi
+DENY_LINE=", \"deny\": [ $DENYS ]"
 mkdir -p .claude
-cat > .claude/settings.json <<JSON
+# Write to a NON-auto-discovered filename and load it via the `--settings` FLAG (see COMMON_ARGS below).
+# Claude's workspace-TRUST gate ignores the permissions.allow entries of an AUTO-DISCOVERED
+# .claude/settings.json in an untrusted folder — and agent folders are freshly created and never get the
+# interactive trust dialog, so it printed "Ignoring N permissions.allow entries" and the OS tools
+# (recall/remember/…) lost their pre-allow (prompting in interactive sessions). Settings provided via the
+# --settings flag are NOT trust-gated, so the pre-allows are honored. (Hooks + deny rules apply either
+# way — only `allow` is gated — verified.) Clear any stale auto-discovered file from older launches.
+rm -f .claude/settings.json
+cat > .claude/aos-settings.json <<JSON
 {
   "permissions": {
-    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check", "mcp__agentos__directory_lookup"]
+    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check", "mcp__agentos__directory_lookup", "mcp__agentos__task_create", "mcp__agentos__task_list", "mcp__agentos__task_get", "mcp__agentos__task_claim", "mcp__agentos__task_update"]$DENY_LINE
   },
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
+      { "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*", "hooks": [ { "type": "command", "command": "bash '$HOOK'" } ] }
+    ],
+    "Notification": [
+      { "hooks": [ { "type": "command", "command": "bash '$NOTIFY_HOOK'" } ] }
     ]
   }
 }
@@ -109,20 +145,18 @@ notify_resumed() {
 }
 
 # Per-agent runtime tuning, resolved by the server (agent manifest → workspace default) and passed
-# in as env. Model + effort apply to BOTH lanes; permission-mode only to the interactive lane (the
-# headless lane needs --dangerously-skip-permissions, since no human can answer a prompt). An empty
-# var means "inherit" — we add no flag, so the claude CLI's own default stands.
+# in as env. Model + effort apply to both lanes. An empty var means "inherit" — we add no flag, so
+# the claude CLI's own default stands. There is NO permission-mode flag: the gate hook is the single
+# authority (it emits an authoritative PreToolUse decision), so we don't layer Claude's own on top.
 RUNTIME_ARGS=()
 [ -n "${CLAUDE_MODEL:-}" ]  && RUNTIME_ARGS+=(--model "$CLAUDE_MODEL")
 [ -n "${CLAUDE_EFFORT:-}" ] && RUNTIME_ARGS+=(--effort "$CLAUDE_EFFORT")
-PERM_ARGS=()
-[ -n "${CLAUDE_PERMISSION_MODE:-}" ] && PERM_ARGS+=(--permission-mode "$CLAUDE_PERMISSION_MODE")
-[ -n "${CLAUDE_MODEL:-}${CLAUDE_EFFORT:-}${CLAUDE_PERMISSION_MODE:-}" ] && \
-  dim "tuning: model=${CLAUDE_MODEL:-default} effort=${CLAUDE_EFFORT:-default} permission=${CLAUDE_PERMISSION_MODE:-default}"
+[ -n "${CLAUDE_MODEL:-}${CLAUDE_EFFORT:-}" ] && \
+  dim "tuning: model=${CLAUDE_MODEL:-default} effort=${CLAUDE_EFFORT:-default}"
 
 # bash 3.2 (macOS default) errors on expanding an EMPTY array under `set -u`; the `[@]+` guard
 # expands to nothing when MCP_ARGS/SYS_ARGS are empty instead of tripping "unbound variable".
-COMMON_ARGS=(--settings .claude/settings.json "${MCP_ARGS[@]+"${MCP_ARGS[@]}"}" "${SYS_ARGS[@]+"${SYS_ARGS[@]}"}" "${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"}")
+COMMON_ARGS=(--settings .claude/aos-settings.json "${MCP_ARGS[@]+"${MCP_ARGS[@]}"}" "${SYS_ARGS[@]+"${SYS_ARGS[@]}"}" "${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"}")
 
 if [ "${HEADLESS:-}" = "1" ]; then
   # Headless lane (automations): run the task to completion non-interactively, then EXIT. The pane
@@ -147,10 +181,25 @@ fi
 
 # Fullscreen rendering for the TUI. Inside tmux, claude's normal renderer degrades — the scrollbar
 # vanishes and the mouse wheel scrolls the input history instead of the conversation. Fullscreen mode
-# draws to the alternate screen and restores proper mouse-wheel scroll + selection in the browser
-# terminal. Harmless in the headless lane above (no TUI), so exporting it here in the interactive
-# path keeps it scoped to the sessions that actually render a TUI.
+# draws to the alternate screen and restores proper scroll + selection in the browser terminal.
+# Harmless in the headless lane above (no TUI), so exporting it here in the interactive path keeps it
+# scoped to the sessions that actually render a TUI.
 export CLAUDE_CODE_NO_FLICKER=1
+
+# Clipboard: copy has to go THROUGH ttyd's xterm.js, and this ttyd (1.7.7) copies ONLY off its own
+# `onSelectionChange` (it runs document.execCommand("copy") on the xterm.js selection). It registers
+# NO OSC 52 handler, so claude's own copy-on-select escape is silently dropped — letting claude capture
+# the mouse means xterm.js never gets a selection and nothing reaches the browser clipboard at all.
+# So we must hand selection to xterm.js. DISABLE_MOUSE_CLICKS (not full DISABLE_MOUSE) keeps claude's
+# WHEEL capture — so in-app scroll still works — while releasing click/drag to the terminal. But while
+# mouse events are active xterm.js disables its selection service, and the ONLY way to override that is
+# its `shouldForceSelection` modifier: on macOS that's OPTION held during the drag, and ONLY when the
+# xterm option `macOptionClickForcesSelection` is on (Shift is the non-Mac modifier — it does nothing on
+# a Mac). ttyd doesn't set that option by default, so we pass it via `-t macOptionClickForcesSelection`
+# in launchTtyd (src/tenant-registry.ts). Net: in-app scroll works, and OPTION+drag selects in xterm.js,
+# which ttyd copies to the user's machine (✂ overlay). For the copy to actually land the terminal iframe
+# must carry `allow="clipboard-write"` (web/src/App.tsx) or the browser blocks execCommand in the frame.
+export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
 
 # Interactive session in this folder, governed by the local hook. We pin claude to a session id
 # WE chose (CLAUDE_SESSION_ID) so a stopped session can later be resumed in-place by that id.
@@ -163,15 +212,34 @@ if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
   notify_resumed
   dim "resuming claude session $CLAUDE_SESSION_ID …"
   echo
-  claude --resume "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" \
-    || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" "$TASK"
+  claude --resume "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" \
+    || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "$TASK"
 elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
-  claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" "$TASK"
+  claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "$TASK"
 else
-  claude "${COMMON_ARGS[@]}" "${PERM_ARGS[@]+"${PERM_ARGS[@]}"}" "$TASK"
+  claude "${COMMON_ARGS[@]}" "$TASK"
 fi
 notify_ended
 
+# SECURITY: do NOT drop to a raw shell when claude exits. A tmux shell is NOT Seatbelt-sandboxed and
+# has NO PreToolUse gate hook, so `exec bash` here would hand whoever is attached full, ungoverned
+# access as the app user — reading ~/.ssh, the workspace DB, every tenant's data, the network — a
+# complete bypass of BOTH the sandbox and the approval gate. (On Linux the uid-isolation path confines
+# even a fallback shell; this is the macOS local-mode equivalent.) Keep the pane alive — so ttyd doesn't
+# loop "Reconnecting" — with a no-shell holding prompt that can ONLY re-open claude (resume) or close.
 echo
-dim "claude session ended — this pane stays live. Attach and type, or close the tab."
-exec bash
+while true; do
+  dim "claude session ended — press [r] to resume, [q] to close the tab."
+  key=""
+  IFS= read -rsn1 key || { sleep 2; continue; }   # blocked read is fine; EOF/detached → idle, no spin
+  case "$key" in
+    r|R)
+      notify_resumed
+      claude --resume "${CLAUDE_SESSION_ID:-}" "${COMMON_ARGS[@]}" \
+        || claude --session-id "${CLAUDE_SESSION_ID:-}" "${COMMON_ARGS[@]}" "$TASK"
+      notify_ended
+      ;;
+    q|Q) exit 0 ;;
+    *) : ;;   # ignore any other key — never spawn a shell
+  esac
+done
