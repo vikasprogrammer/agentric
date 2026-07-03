@@ -113,8 +113,11 @@ Plus `npm run typecheck`, `cd web && npm run build`, `npm run demo`.
 
 ## 10. Not built / next
 
-- **LLM "kb-gardener"** — a scheduled headless agent that synthesizes *prose* into the KB via `kb_write`
-  (richer than deterministic aggregation). Layers on top; the baseline here is the always-on floor.
+- **LLM "kb-gardener"** — ✅ **shipped** as the consolidation gardener (lever 4). A governed headless
+  `consolidator` agent reads recent episodes+lessons and synthesises shared memories + KB pages via its
+  own tools. Manual or opt-in after each dream pass. See
+  [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md), which documents the
+  full learning loop this reflection pass sits inside (encoding → reflection → consolidation → reinforcement).
 - **Programmatic policy/budget tuning** — today advisory only; would need its own reversible setter +
   approval-gating (the runtime-defaults lever is the proven pattern).
 - **Multi-tenancy:** the deployment model is **instance-per-tenant** (a separate `agent-os serve` process

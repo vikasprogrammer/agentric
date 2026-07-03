@@ -200,6 +200,14 @@ Key modules:
   emits a living KB page + a tenant-shared memory Insight, and **closes the loop** — distilled guidance is
   injected into every agent's prompt (`buildCompanyMd`, toggleable) and config **recommendations** are
   proposed for a human to Apply/Dismiss (`/api/dreaming*`). See `docs/self-learning-plan.md`.
+- `src/edge/consolidation.ts` — the **consolidation gardener** (lever 4 of the learning loop): selects
+  recent fleet **episodes + lessons** since a watermark (`learning.consolidated` audit) and spawns a
+  governed **headless `consolidator` agent** (provisioned into `<home>/agents/consolidator`) that
+  abstracts the recurring, durable patterns into SHARED memories + KB pages via its own tools. Manual
+  (`POST /api/dreaming/consolidate`) or opt-in after each dream pass (`consolidate_auto`). The wider
+  **episodic↔semantic learning loop** — graded episodes (`episodeSalience` in `terminal.ts`), deliberate
+  `report` **lessons**, and **retrieval reinforcement** (`rerank` `weightByUsage` + last-use recency in
+  `src/memory/embedding.ts`) — is documented in `docs/memory-encoding-and-consolidation.md`.
 - `src/state/db.ts` — the per-workspace SQLite database + migrations.
 - `src/tenant-registry.ts` — the **multi-tenant registry**: builds + caches one full runtime per tenant
   (`AgentOS` + `TerminalManager` + `Automations` + `SlackSocket` + ttyd) and resolves the request's
