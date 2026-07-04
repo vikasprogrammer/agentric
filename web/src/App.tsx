@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -11,8 +11,9 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api, EFFORTS, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta } from '@/lib/api'
 import { ConnectorsPage } from '@/connectors'
+import { docPages } from '@/docs'
 
-type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent'
+type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs'
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -109,7 +110,7 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
 function useHashRoute(): [Route, (r: Route) => void] {
   const parse = (): Route => {
     const h = window.location.hash.replace(/^#\/?/, '')
-    return h === 'sessions' || h === 'agents' || h === 'new-agent' || h === 'connectors' || h === 'team' || h === 'automations' || h === 'tasks' || h === 'memory' || h === 'kb' || h === 'skills' || h === 'files' || h === 'artifacts' || h === 'settings' || h === 'agent' ? h : 'inbox'
+    return h === 'sessions' || h === 'agents' || h === 'new-agent' || h === 'connectors' || h === 'team' || h === 'automations' || h === 'tasks' || h === 'memory' || h === 'kb' || h === 'skills' || h === 'files' || h === 'artifacts' || h === 'settings' || h === 'agent' || h === 'docs' ? h : 'inbox'
   }
   const [route, setRoute] = useState<Route>(parse())
   useEffect(() => {
@@ -379,6 +380,11 @@ function Console({ me }: { me: Member }) {
               )}
             </nav>
           )}
+          {/* Docs sits OUTSIDE the collapsible group: the product manual should stay one click away
+              for members even when Manage is collapsed (or hidden entirely for their role). */}
+          <nav className="mb-1 space-y-1">
+            <NavItem icon={<BookOpen className="h-4 w-4" />} label="Docs" active={route === 'docs'} onClick={() => nav('docs')} />
+          </nav>
 
           <Separator className="my-3" />
           <div className="flex items-center justify-between">
@@ -402,7 +408,7 @@ function Console({ me }: { me: Member }) {
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <h1 className="text-lg font-semibold">
-            {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+            {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
           </h1>
         </div>
 
@@ -421,6 +427,7 @@ function Console({ me }: { me: Member }) {
           {route === 'files' && <FilesPage />}
           {route === 'artifacts' && <ArtifactsPage me={me} initialId={artifactFocus} />}
           {route === 'audit' && <AuditPage />}
+          {route === 'docs' && <DocsPage />}
           {route === 'settings' && <SettingsPage me={me} state={state} />}
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
@@ -2552,6 +2559,32 @@ function KindChip({ on, onClick, children }: { on: boolean; onClick: () => void;
     >
       {children}
     </button>
+  )
+}
+
+/** Product manual bundled into the build (web/src/docs) — read-only, identical for every tenant,
+ *  unlike the KB, which is the tenant's own living wiki. Adding a page = drop a .md in web/src/docs
+ *  and register it in web/src/docs/index.ts. */
+function DocsPage() {
+  const [slug, setSlug] = useState(docPages[0].slug)
+  const sel = docPages.find((p) => p.slug === slug) ?? docPages[0]
+  return (
+    <div className="flex gap-4">
+      <div className="w-64 shrink-0 space-y-3">
+        <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Manual</div>
+        <div className="space-y-0.5">
+          {docPages.map((p) => (
+            <button key={p.slug} onClick={() => setSlug(p.slug)} className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${sel.slug === p.slug ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>{p.title}</button>
+          ))}
+        </div>
+        <div className="text-[11px] leading-relaxed text-muted-foreground">
+          These docs ship with Agent OS. Your company's own pages live in <button className="text-primary underline" onClick={() => { window.location.hash = '/kb' }}>Knowledge</button>.
+        </div>
+      </div>
+      <div className="min-w-0 max-w-3xl flex-1">
+        <Card><CardContent className="p-6 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{sel.body}</ReactMarkdown></CardContent></Card>
+      </div>
+    </div>
   )
 }
 

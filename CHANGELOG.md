@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-04
+
+### Added
+- **In-app Docs** (#13): a bundled product manual — *What is Agent OS?*, *Getting started*,
+  *Core concepts*, *Working with agents*, *Governance & approvals*, *Memory/Knowledge/Tasks* —
+  at a new **Docs** sidebar route (one click away for every role, outside the Manage group).
+  Ships WITH the software (Markdown bundled via Vite `?raw`, versioned with the code), so it's
+  identical for every tenant — distinct from the per-tenant Knowledge base. Adding a page = drop
+  a `.md` in `web/src/docs` + one entry in its `index.ts`.
+
 ## [0.3.0] — 2026-07-04
 
 ### Added
