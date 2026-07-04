@@ -291,7 +291,7 @@ function Console({ me }: { me: Member }) {
           <div className="mb-4 flex items-start justify-between">
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[15px] font-semibold">⚙️ Agent OS</div>
-              {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title="tenant">{state.tenantName || state.tenant}</div>}
+              {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`tenant${state.version ? ` · Agent OS v${state.version}` : ''}`}>{state.tenantName || state.tenant}{state.version ? ` · v${state.version}` : ''}</div>}
             </div>
             <Button size="icon" variant="ghost" className="-mr-1 h-7 w-7 shrink-0 text-muted-foreground" title="collapse sidebar" onClick={() => setSidebarCollapsed(true)}>
               <PanelLeftClose className="h-4 w-4" />

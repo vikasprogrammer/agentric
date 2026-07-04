@@ -46,6 +46,8 @@ export interface StateResp {
   tenant: string
   /** Human label for the tenant (branding); falls back to the tenant id server-side. */
   tenantName?: string
+  /** Software version (package.json), shown in the sidebar so a browser and the box can be compared. */
+  version?: string
   policy: string
   home?: string
   me: Member
