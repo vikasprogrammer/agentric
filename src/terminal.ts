@@ -88,6 +88,14 @@ export interface Session {
    * (launcher backend, or the tmux poll failed): consumers then fall back to `status`.
    */
   alive?: boolean;
+  /**
+   * Whether this session can be resurrected in place via `claude --resume` when its terminal is
+   * re-opened (the ttyd attach wrapper sources its persisted `session-<id>.env`). True only for
+   * interactive claude-code sessions — headless automation runs write no env file, so they're never
+   * resumable. Independent of `status`: a running session is also "resumable", but the console only
+   * offers a Resume affordance once it's no longer live.
+   */
+  resumable?: boolean;
   /** Raw provenance: member id, or `automation:<id>` when a trigger spawned it. */
   spawnedBy?: string;
   /** Human-readable provenance for the console (member name/email, or the automation's name). */
@@ -274,11 +282,33 @@ export class TerminalManager {
       }
     }
     const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+    const resumable = this.resumableIds();
     return visible.map((r) => ({
       ...toSession(r),
       alive: alive ? alive.has(r.tmux) : undefined,
+      resumable: resumable.has(r.id),
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
     }));
+  }
+
+  /**
+   * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. an interactive session
+   * the ttyd attach wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`).
+   * Headless runs write no env file, so they're absent (and correctly report `resumable:false`). One
+   * readdir serves the whole list; no data home (demo/tests) → nothing resumable.
+   */
+  private resumableIds(): Set<string> {
+    const ids = new Set<string>();
+    if (!this.os.paths) return ids;
+    try {
+      for (const f of fs.readdirSync(this.os.paths.connectors)) {
+        const m = /^session-(.+)\.env$/.exec(f);
+        if (m) ids.add(m[1]);
+      }
+    } catch {
+      /* connectors dir may not exist yet — nothing resumable */
+    }
+    return ids;
   }
 
   /**

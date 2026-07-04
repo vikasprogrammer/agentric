@@ -8,8 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-04
+
 ### Added
-- This changelog.
+- This changelog (#11).
+- **Resumable sessions surfaced to the console**: session rows now carry `resumable`
+  (a persisted `session-<id>.env` exists, i.e. an interactive claude-code session the
+  ttyd attach wrapper can resurrect via `claude --resume`). Completes the loop for the
+  already-shipped console Resume button, which never appeared because the server didn't
+  send the flag. Headless automation runs correctly report `resumable: false`.
 
 ## [0.2.0] — 2026-07-04
 
@@ -38,6 +45,7 @@ memory plane (recall/remember/revise/forget + consolidation), knowledge base, ta
 queue, skills library, secrets vault, artifacts gallery; self-learning ("Dreaming") with
 the consolidation gardener; kill switch; governance-conformance CI (44 checks).
 
-[Unreleased]: https://github.com/vikasprogrammer/agent-os/compare/e5b2b81...HEAD
+[Unreleased]: https://github.com/vikasprogrammer/agent-os/compare/main...HEAD
+[0.3.0]: https://github.com/vikasprogrammer/agent-os/pull/12
 [0.2.0]: https://github.com/vikasprogrammer/agent-os/pull/10
 [0.1.0]: https://github.com/vikasprogrammer/agent-os/commits/895bf26
