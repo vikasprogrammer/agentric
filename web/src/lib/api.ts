@@ -71,6 +71,9 @@ export interface Session {
   /** True when the tmux pane is alive now, regardless of the stored lifecycle `status` (an interactive
    *  session that reported `done` keeps a live pane). Undefined when the server couldn't poll tmux. */
   alive?: boolean
+  /** True when this session can be resurrected in place via `claude --resume` on re-open (interactive
+   *  session with a persisted launch env). Headless runs are never resumable. */
+  resumable?: boolean
   spawnedBy?: string
   spawnedByLabel?: string
   createdAt: number
@@ -628,6 +631,7 @@ export const api = {
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[] } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
+  rescanAgents: () => call<{ ok: boolean; added: string[]; updated: string[]; removed: string[]; errors: { folder: string; error: string }[]; error?: string }>('POST', '/api/agents/rescan'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
   agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; category?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),

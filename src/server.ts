@@ -1327,6 +1327,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, id });
   }
 
+  // ── rescan the agent folders: pick up agents added/edited/removed on disk outside the console
+  //    (git pull, scp, an agent writing a sibling) without a restart — owner/admin only. Removal
+  //    here is registry-only (assignments + memories kept, in case the folder comes back); the
+  //    DELETE route below stays the full-cleanup path.
+  if (method === 'POST' && p === '/api/agents/rescan') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.paths) return sendJson(res, 400, { error: 'rescanning agents requires a data home' });
+    const diff = os.rescanAgents();
+    if (diff.added.length || diff.updated.length || diff.removed.length) {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agents.rescanned', data: { added: diff.added, updated: diff.updated, removed: diff.removed } });
+    }
+    return sendJson(res, 200, { ok: true, ...diff });
+  }
+
   // ── delete a user-created agent: deregister + remove its folder — owner/admin only ──
   //    Only agents that live UNDER the data home can be deleted; the bundled examples that
   //    ship with the software are read-only (they'd reappear on restart anyway).

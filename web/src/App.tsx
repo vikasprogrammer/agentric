@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -34,6 +34,12 @@ const statusDot = (s: Session): string =>
 /** The status word shown next to the dot. A live pane whose stored status is a terminal state (a
  *  `done` interactive session still running) reads "live" so the label never contradicts a green dot. */
 const statusLabel = (s: Session): string => (isLive(s) && s.status !== 'running' ? 'live' : s.status)
+
+/** A stopped/ended/crashed interactive session that can be resurrected in place: re-opening its
+ *  terminal runs `claude --resume` (via terminal/attach.sh), picking the conversation back up. Shown
+ *  as a Resume affordance. Requires a persisted launch env (`resumable`) and no live pane — a live
+ *  session is just "open", not "resume". */
+const canResume = (s: Session): boolean => Boolean(s.resumable) && !isLive(s)
 
 const ROLE_LABEL: Record<Role, string> = { owner: 'owner', admin: 'admin', member: 'member' }
 
@@ -183,6 +189,19 @@ function Console({ me }: { me: Member }) {
   const openAgent = (id: string) => {
     setEditAgent(id)
     nav('agent')
+  }
+  // Sync the registry with the agents folder on disk — picks up folders added/edited/removed
+  // outside the console (git pull, scp, another agent) without a server restart.
+  const rescanAgents = async () => {
+    const r = await api.rescanAgents()
+    if (r.error) { alert(r.error); return }
+    await refreshState()
+    const parts: string[] = []
+    if (r.added.length) parts.push(`Added: ${r.added.join(', ')}`)
+    if (r.updated.length) parts.push(`Updated: ${r.updated.join(', ')}`)
+    if (r.removed.length) parts.push(`Removed: ${r.removed.join(', ')}`)
+    if (r.errors.length) parts.push(`Skipped (bad agent.json): ${r.errors.map((e) => e.folder).join(', ')}`)
+    alert(parts.length ? parts.join('\n') : 'No changes — the agents folder already matches.')
   }
   const openTerminal = (tmux: string, title: string) => {
     setSelected({ tmux, title })
@@ -388,7 +407,7 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
-          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} />}
+          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onRescan={rescanAgents} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); openAgent(id) }} />}
           {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onSpawn={() => nav('agents')} onClose={() => setSelected(null)} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
@@ -429,7 +448,7 @@ function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; lab
  *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
  *  just scoped to the chosen agent instead of a grid of cards. */
 function AgentsPage({
-  me, agents, run, onEdit, onNew, onDelete,
+  me, agents, run, onEdit, onNew, onDelete, onRescan,
 }: {
   me: Member
   agents: AgentInfo[]
@@ -437,8 +456,11 @@ function AgentsPage({
   onEdit: (id: string) => void
   onNew: () => void
   onDelete: (id: string) => void
+  onRescan: () => Promise<void>
 }) {
   const canEdit = me.role === 'owner' || me.role === 'admin'
+  const [rescanning, setRescanning] = useState(false)
+  const rescan = async () => { setRescanning(true); try { await onRescan() } finally { setRescanning(false) } }
   const [agentId, setAgentId] = useState('')
   const [task, setTask] = useState('')
   const [hint, setHint] = useState('')
@@ -466,7 +488,14 @@ function AgentsPage({
     return (
       <div className="flex min-h-full flex-col items-center justify-center gap-3 text-center">
         <p className="text-sm text-muted-foreground">{canEdit ? 'No agents yet — create one to get started.' : 'No agents assigned to you.'}</p>
-        {canEdit && <Button size="sm" className="gap-1" onClick={onNew}><Plus className="h-4 w-4" /> New agent</Button>}
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <Button size="sm" className="gap-1" onClick={onNew}><Plus className="h-4 w-4" /> New agent</Button>
+            <Button size="sm" variant="outline" className="gap-1" onClick={rescan} disabled={rescanning} title="pick up agents added to the agents folder on disk">
+              <RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /> Rescan folder
+            </Button>
+          </div>
+        )}
       </div>
     )
   }
@@ -508,6 +537,11 @@ function AgentsPage({
               {canEdit && (
                 <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={onNew} title="new agent">
                   <Plus className="h-4 w-4" />
+                </Button>
+              )}
+              {canEdit && (
+                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={rescan} disabled={rescanning} title="rescan the agents folder — pick up agents added on disk without a restart">
+                  <RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} />
                 </Button>
               )}
             </div>
@@ -799,8 +833,13 @@ function SessionsPage({
                   <span className="max-w-[180px] truncate">{s.title}</span>
                   {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
                 </button>
-                {/* per-tab controls — stop (running only) + delete, revealed on hover or when active */}
+                {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
                 <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
+                  {canResume(s) && (
+                    <button className="rounded p-0.5 text-emerald-400 hover:bg-neutral-600 hover:text-emerald-300" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="resume — reopen and continue this session (claude --resume)">
+                      <Play className="h-3 w-3" />
+                    </button>
+                  )}
                   {isLive(s) && (
                     <button className="rounded p-0.5 text-amber-400 hover:bg-neutral-600 hover:text-amber-300" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
                       <Square className="h-3 w-3" />
@@ -888,6 +927,11 @@ function SessionsPage({
                 <div className="mt-1"><StartedBy label={s.spawnedByLabel} /></div>
               </button>
               <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                {canResume(s) && (
+                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-emerald-600" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="reopen and continue this session (claude --resume)">
+                    <Play className="h-3 w-3" /> Resume
+                  </Button>
+                )}
                 {isLive(s) && (
                   <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-amber-600" onClick={() => onStop(s.id)} title="kill this session's shell">
                     <X className="h-3 w-3" /> Stop
@@ -921,6 +965,11 @@ function SessionsPage({
                 <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
               <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                {canResume(s) && (
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="resume — reopen and continue this session (claude --resume)">
+                    <Play className="h-3.5 w-3.5" />
+                  </Button>
+                )}
                 {isLive(s) && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
                     <Square className="h-3.5 w-3.5" />
@@ -3845,12 +3894,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
       </p>
       <Card>
         <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="text-sm font-medium">Reflection <span className="text-[11px] font-normal text-muted-foreground">— cheap, deterministic, no LLM</span></div>
+            <p className="text-xs text-muted-foreground"><strong>Tallies</strong> recent episodes, outcomes and friction into the guidance injected into every agent, a shared insight, and the <a className="underline" href="#/kb">fleet-learnings</a> KB page. It summarises <em>what happened</em> — it doesn't read the episode text. Free and instant.</p>
+          </div>
           <div className="flex items-end gap-3">
             <Field label="Run automatically every (hours)" help="0 = off (manual only). The pass is cheap; daily (24) is a sensible default.">
               <Input value={everyHours} onChange={(e) => setEveryHours(e.target.value)} className="w-28 font-mono text-xs" placeholder="0" />
             </Field>
             <Button onClick={save} disabled={busy}>Save</Button>
-            <Button variant="outline" onClick={runNow} disabled={busy}><Sparkles className="mr-1 h-4 w-4" />Run now</Button>
+            <Button variant="outline" onClick={runNow} disabled={busy}><Sparkles className="mr-1 h-4 w-4" />Run reflection</Button>
             {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           </div>
           <div className="text-[11px] text-muted-foreground">
@@ -3865,11 +3918,11 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
       <Card>
         <CardContent className="space-y-3 p-4">
           <div>
-            <div className="text-sm font-medium">Consolidate memory <span className="text-[11px] font-normal text-muted-foreground">— the memory gardener</span></div>
-            <p className="text-xs text-muted-foreground">Spawns a governed <strong>headless agent</strong> that reads the recent fleet <strong>episodes + lessons</strong> and distils the recurring, durable patterns into <strong>shared memories</strong> + <a className="underline" href="#/kb">Knowledge</a> pages every agent can recall. Unlike the reflection pass above, this spends a real agent run.</p>
+            <div className="text-sm font-medium">Consolidation <span className="text-[11px] font-normal text-muted-foreground">— the memory gardener (spends an agent run)</span></div>
+            <p className="text-xs text-muted-foreground">Spawns a governed <strong>headless agent</strong> that actually <strong>reads</strong> the recent fleet <strong>episodes + lessons</strong> and distils the recurring, durable patterns into <strong>new shared memories</strong> + <a className="underline" href="#/kb">Knowledge</a> pages every agent can recall. This <em>grows knowledge</em> (vs. reflection, which only summarises) — so it costs a real agent run.</p>
           </div>
           <div className="flex items-center gap-3">
-            <Button variant="outline" onClick={consolidateNow} disabled={busy}><Brain className="mr-1 h-4 w-4" />Consolidate now</Button>
+            <Button variant="outline" onClick={consolidateNow} disabled={busy}><Brain className="mr-1 h-4 w-4" />Consolidate knowledge</Button>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={consolidateAuto} onChange={(e) => toggleConsolidate(e.target.checked)} />
               Auto-consolidate after each scheduled learning pass
