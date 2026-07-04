@@ -301,8 +301,11 @@ Root `package.json` `version` is the single source of truth (`src/version.ts` re
 boot). It surfaces at `GET /health`, `GET /api/state`, the console sidebar (next to the tenant
 name), and `agent-os version`. Pre-beta convention: bump the **minor** for each feature merge and
 the **patch** for fixes, in the same PR (`npm version <x.y.z> --no-git-tag-version` — never let npm
-tag; tags come later with releases). The sidebar version therefore tells you exactly which build a
-long-running server is holding in memory — the first thing to check when a change "isn't taking".
+tag; tags come later with releases). Every feature/fix PR adds a line under **Unreleased** in
+`CHANGELOG.md` (Keep-a-Changelog style), and the PR that bumps the version moves those entries into
+a new version heading in the same commit. The sidebar version therefore tells you exactly which
+build a long-running server is holding in memory — the first thing to check when a change "isn't
+taking".
 
 ## Gotchas
 
