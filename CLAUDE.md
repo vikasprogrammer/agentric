@@ -295,6 +295,15 @@ in `src/types.ts` and `TeamStore.canRun()`.
   repeat `Host`/`X-Forwarded-*` explicitly — otherwise the app sees `Host: 127.0.0.1:3010` and mints
   wrong invite/webhook links. There's a comment in the config; keep it.
 
+## Versioning
+
+Root `package.json` `version` is the single source of truth (`src/version.ts` reads it once at
+boot). It surfaces at `GET /health`, `GET /api/state`, the console sidebar (next to the tenant
+name), and `agent-os version`. Pre-beta convention: bump the **minor** for each feature merge and
+the **patch** for fixes, in the same PR (`npm version <x.y.z> --no-git-tag-version` — never let npm
+tag; tags come later with releases). The sidebar version therefore tells you exactly which build a
+long-running server is holding in memory — the first thing to check when a change "isn't taking".
+
 ## Gotchas
 
 - `node:sqlite` emits an `ExperimentalWarning` on first use; `src/cli.ts` filters just that one line.

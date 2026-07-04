@@ -16,6 +16,7 @@ import { loadAgentOS, readRootConfig } from './kernel';
 import { controlHome, resolveTenantPaths } from './home';
 import { TenantStore } from './state/control';
 import { Role } from './types';
+import { VERSION } from './version';
 
 // `node:sqlite` is stable enough to depend on but still emits an ExperimentalWarning on first
 // use. Swallow just that one line so the console output stays clean; surface every other warning.
@@ -60,6 +61,11 @@ async function main(): Promise<void> {
       startLauncherDaemon(rest);
       break;
     }
+    case 'version':
+    case '--version':
+    case '-v':
+      console.log(VERSION);
+      break;
     case 'help':
     case '--help':
     case '-h':
@@ -199,6 +205,7 @@ function usage(): void {
   tenant <sub>          multi-tenant admin: list | create <slug> --owner <email> | remove <slug>
   demo                  run the scripted governance demo in the terminal
   launcher [--socket=…] run the privileged per-member session launcher (root; Phase A)
+  version               print the software version (from package.json)
   help                  show this help
 
   PORT env var also sets the serve port; TTYD_PORT defaults to PORT+1.

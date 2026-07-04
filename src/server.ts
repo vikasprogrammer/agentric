@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { AgentOS, loadAgentOS } from './kernel';
+import { VERSION } from './version';
 import { TenantRegistry, TenantRuntime } from './tenant-registry';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
@@ -212,7 +213,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const idx = path.join(WEB_DIST, 'index.html');
     return sendFile(res, fs.existsSync(idx) ? idx : CONSOLE_HTML, 'text/html; charset=utf-8');
   }
-  if (method === 'GET' && p === '/health') return sendJson(res, 200, { ok: true, tenant: os.tenant, name: os.tenantName });
+  if (method === 'GET' && p === '/health') return sendJson(res, 200, { ok: true, tenant: os.tenant, name: os.tenantName, version: VERSION });
   // static assets from the built React app (web/dist)
   if (method === 'GET' && (p.startsWith('/assets/') || /\.(js|css|svg|png|ico|woff2?|json|map)$/.test(p))) {
     const file = path.join(WEB_DIST, p.replace(/^\/+/, ''));
@@ -755,6 +756,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, {
       tenant: os.tenant,
       tenantName: os.tenantName,
+      version: VERSION,
       policy: os.policy.id,
       home: os.paths?.home,
       me,
