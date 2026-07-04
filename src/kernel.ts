@@ -182,6 +182,42 @@ export class AgentOS {
   deregisterAgent(id: string): boolean {
     return this.agents.delete(id);
   }
+  /**
+   * Re-scan the agent folders on disk and sync the live registry — the on-demand counterpart of
+   * the boot scan, for agents dropped into `<home>/agents/` outside the console (git pull, scp,
+   * an agent writing a sibling) while the server runs. Disk is the source of truth: new folders
+   * register, changed manifests re-register, and disk-loaded agents whose folder vanished
+   * deregister. Programmatic registrations (no `dir` — demo/tests) are left alone. Removal here
+   * is registry-only — assignments and memories are kept so a folder restored later (git revert)
+   * comes back intact; full cleanup stays with the delete route.
+   */
+  rescanAgents(): AgentRescanResult {
+    const added: string[] = [], updated: string[] = [], removed: string[] = [];
+    const errors: { folder: string; error: string }[] = [];
+    if (!this.paths) return { added, updated, removed, errors };
+    // Same precedence as boot: bundled examples first, then the user's agents (user wins by id).
+    const onDisk = new Map<string, AgentManifest>();
+    for (const dir of [this.paths.bundledAgents, this.paths.userAgents]) {
+      for (const found of scanAgentDir(dir)) {
+        if (found.manifest) onDisk.set(found.manifest.id, found.manifest);
+        else errors.push({ folder: found.folder, error: found.error! });
+      }
+    }
+    for (const [id, manifest] of onDisk) {
+      const current = this.agents.get(id);
+      if (!current) added.push(id);
+      else if (JSON.stringify(current) !== JSON.stringify(manifest)) updated.push(id);
+      else continue;
+      this.agents.set(id, manifest);
+    }
+    for (const [id, current] of this.agents) {
+      if (current.dir && !onDisk.has(id)) {
+        this.agents.delete(id);
+        removed.push(id);
+      }
+    }
+    return { added, updated, removed, errors };
+  }
   registerMockBehavior(agentId: string, behavior: MockBehavior): this {
     this.mock.register(agentId, behavior);
     return this;
@@ -260,15 +296,48 @@ export function loadAgentOS(
 
 /** Register every `<dir>/<id>/agent.json` found, tagging each manifest with its absolute folder. */
 function loadAgentsFrom(os: AgentOS, dir: string): void {
-  if (!fs.existsSync(dir)) return;
+  for (const found of scanAgentDir(dir)) {
+    if (found.manifest) os.registerAgent(found.manifest);
+    else console.error(`[agents] skipping ${found.folder}: ${found.error}`);
+  }
+}
+
+/** What one rescan changed in the live registry (ids), plus folders whose manifest didn't parse. */
+export interface AgentRescanResult {
+  added: string[];
+  updated: string[];
+  removed: string[];
+  errors: { folder: string; error: string }[];
+}
+
+/** One agent folder found on disk: its manifest (tagged with the folder), or why it didn't load. */
+interface ScannedAgent {
+  folder: string;
+  manifest?: AgentManifest;
+  error?: string;
+}
+
+/**
+ * Scan `<dir>/<id>/agent.json` folders. A malformed or id-less manifest is reported, not thrown —
+ * one broken folder must never take down boot or a rescan alongside healthy agents.
+ */
+function scanAgentDir(dir: string): ScannedAgent[] {
+  if (!fs.existsSync(dir)) return [];
+  const out: ScannedAgent[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     const folder = path.join(dir, entry.name);
     const manifestPath = path.join(folder, 'agent.json');
     if (!fs.existsSync(manifestPath)) continue;
-    const manifest = readJson<AgentManifest>(manifestPath);
-    os.registerAgent({ ...manifest, dir: folder });
+    try {
+      const manifest = readJson<AgentManifest>(manifestPath);
+      if (!manifest || typeof manifest.id !== 'string' || !manifest.id) throw new Error('manifest has no "id"');
+      out.push({ folder, manifest: { ...manifest, dir: folder } });
+    } catch (e) {
+      out.push({ folder, error: e instanceof Error ? e.message : String(e) });
+    }
   }
+  return out;
 }
 
 function readJson<T>(p: string): T {
