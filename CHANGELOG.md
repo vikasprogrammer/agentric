@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-05
+
+### Added
+- **Adjustable terminal font size**: an A−/A+ stepper (top-left of the browser terminal) resizes the
+  live xterm.js text without a reload or ttyd relaunch — the console reaches into the same-origin ttyd
+  iframe (`window.term`), sets `fontSize`, and reflows via ttyd's `fit()`. The choice is persisted
+  (`localStorage`) and re-applied on every reconnect. Range 8–40, default 14.
+
 ## [0.4.0] — 2026-07-04
 
 ### Added

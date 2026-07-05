@@ -650,6 +650,27 @@ function ImageDropZone({ session, children }: { session?: Session; children: Rea
   // re-binding them every render.
   const uploadRef = useRef<(file: File) => void>(() => {})
 
+  // Terminal font size. ttyd renders xterm.js inside the same-origin iframe and exposes the live
+  // Terminal instance as `window.term` (plus a `window.term.fit()` helper). So we can set the font
+  // size live — no iframe reload, no ttyd relaunch — by reaching into the iframe and reflowing.
+  // Persisted so the choice sticks across sessions; default 14 matches ttyd's launch `-t fontSize=14`.
+  const FONT_MIN = 8, FONT_MAX = 40
+  const [fontSize, setFontSize] = useState(() => {
+    const n = Number(localStorage.getItem('aos_terminal_font'))
+    return n >= FONT_MIN && n <= FONT_MAX ? n : 14
+  })
+  const fontRef = useRef(fontSize)
+  fontRef.current = fontSize
+  // Apply a size to the iframe's xterm. `window.term` only exists once the ttyd websocket has
+  // connected, so retry briefly when it isn't ready yet (e.g. right after the iframe loads).
+  const applyFont = (size: number, tries = 20) => {
+    const iframe = wrapRef.current?.querySelector('iframe') as HTMLIFrameElement | null
+    let term: any
+    try { term = (iframe?.contentWindow as any)?.term } catch { return } // cross-origin (shouldn't happen — same origin)
+    if (term) { try { term.options.fontSize = size; term.fit?.() } catch { /* term torn down mid-reconnect */ } return }
+    if (tries > 0) setTimeout(() => applyFont(size, tries - 1), 150)
+  }
+
   const upload = async (file: File) => {
     if (!session?.id) return
     if (!live) { setToast({ kind: 'err', text: 'session is not live — start it first' }); return }
@@ -739,6 +760,23 @@ function ImageDropZone({ session, children }: { session?: Session; children: Rea
     }
   }, [session?.id])
 
+  // Persist + push the font size to the live terminal whenever it changes.
+  useEffect(() => {
+    localStorage.setItem('aos_terminal_font', String(fontSize))
+    applyFont(fontSize)
+  }, [fontSize])
+
+  // Re-apply the persisted size whenever the terminal (re)loads — a fresh iframe src or a ttyd
+  // reconnect rebuilds `window.term` at ttyd's default, so we restore the user's choice each time.
+  useEffect(() => {
+    const iframe = wrapRef.current?.querySelector('iframe')
+    if (!iframe) return
+    const onLoad = () => applyFont(fontRef.current)
+    iframe.addEventListener('load', onLoad)
+    applyFont(fontRef.current) // in case it already loaded before this effect ran
+    return () => iframe.removeEventListener('load', onLoad)
+  }, [])
+
   // auto-dismiss the toast (keep errors a touch longer)
   useEffect(() => {
     if (!toast || toast.kind === 'busy') return
@@ -749,6 +787,20 @@ function ImageDropZone({ session, children }: { session?: Session; children: Rea
   return (
     <div ref={wrapRef} className="relative flex min-h-0 w-full flex-1">
       {children}
+      {/* terminal font-size stepper — reaches into the same-origin xterm and reflows live */}
+      <div className="absolute left-2 top-2 z-10 flex items-center overflow-hidden rounded bg-neutral-800/90 text-neutral-200 shadow">
+        <button
+          className="px-2 py-1 text-xs leading-none hover:bg-neutral-700 disabled:opacity-40"
+          title="Decrease terminal font size" disabled={fontSize <= FONT_MIN}
+          onClick={() => setFontSize((s) => Math.max(FONT_MIN, s - 1))}
+        >A−</button>
+        <span className="min-w-[2ch] px-1 text-center text-[11px] tabular-nums" title="Terminal font size">{fontSize}</span>
+        <button
+          className="px-2 py-1 text-sm leading-none hover:bg-neutral-700 disabled:opacity-40"
+          title="Increase terminal font size" disabled={fontSize >= FONT_MAX}
+          onClick={() => setFontSize((s) => Math.min(FONT_MAX, s + 1))}
+        >A+</button>
+      </div>
       {/* 📎 attach button — opens a file picker; always works regardless of focus */}
       <label
         className="absolute right-2 top-2 z-10 flex cursor-pointer items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
