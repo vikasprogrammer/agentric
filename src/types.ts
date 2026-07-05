@@ -648,6 +648,10 @@ export interface AgentManifest extends RuntimeTuning {
   /** Suggested first tasks shown on the agent's spawn card (clickable chips that prefill the box).
    *  Per-agent so each agent advertises how it wants to be invoked, instead of a generic default. */
   examplePrompts?: string[];
+  /** The agent's visual icon. Either a built-in library id (a lucide icon name like `"Bot"`) or a raw
+   *  custom `<svg>…</svg>` markup string the user uploaded. Undefined → the console falls back to a
+   *  default glyph. Purely cosmetic. Rendered in an `<img>` so inline SVG can't execute scripts. */
+  icon?: string;
   /** Absolute folder the manifest was loaded from — the cwd a claude-code session opens in. Set at load. */
   dir?: string;
 }
@@ -688,6 +692,38 @@ export function sanitizeCategory(input: unknown): string | undefined {
   if (typeof input !== 'string') return undefined;
   const out = input.trim().replace(/\s+/g, ' ').slice(0, 40);
   return out || undefined;
+}
+
+/** Normalize an agent icon (from an API body or config file). Two accepted forms:
+ *   - a built-in library id — a bare lucide icon name (`Bot`, `Wrench`); kept as-is if it's a plain
+ *     identifier (the console maps it to a component, falling back to a default if unknown).
+ *   - raw custom SVG markup — sanitised defensively below and capped in size.
+ *  Anything else → undefined (the manifest carries no `icon` key → default glyph). */
+export function sanitizeIcon(input: unknown): string | undefined {
+  if (typeof input !== 'string') return undefined;
+  const raw = input.trim();
+  if (!raw) return undefined;
+  if (/^<svg[\s>]/i.test(raw)) return sanitizeSvgIcon(raw);
+  // A built-in library id: PascalCase-ish lucide name. Reject anything with markup/odd chars.
+  return /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(raw) ? raw : undefined;
+}
+
+/** Defensively clean an uploaded inline SVG so it's safe to persist and embed. The console renders it
+ *  via an `<img src="data:image/svg+xml,…">`, which already prevents script execution, but we strip
+ *  active content here too (defence in depth) and cap the size so a manifest can't be bloated. Returns
+ *  undefined if the result no longer looks like a lone `<svg>…</svg>` element. */
+export function sanitizeSvgIcon(input: string): string | undefined {
+  if (input.length > 20000) return undefined; // ~20 KB — plenty for an icon, guards manifest bloat
+  let s = input
+    .replace(/<\?xml[\s\S]*?\?>/gi, '')                       // XML prolog
+    .replace(/<!DOCTYPE[\s\S]*?>/gi, '')                      // doctype
+    .replace(/<!--[\s\S]*?-->/g, '')                          // comments
+    .replace(/<script[\s\S]*?<\/script\s*>/gi, '')            // scripts
+    .replace(/<foreignObject[\s\S]*?<\/foreignObject\s*>/gi, '') // arbitrary HTML embed
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '') // on* event handlers
+    .replace(/\s(?:xlink:href|href)\s*=\s*("\s*javascript:[^"]*"|'\s*javascript:[^']*')/gi, '') // js: links
+    .trim();
+  return /^<svg[\s\S]*<\/svg\s*>$/i.test(s) ? s : undefined;
 }
 
 /** Resolve the effective tuning for a launch: each field is the agent's own value, else the

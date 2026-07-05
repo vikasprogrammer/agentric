@@ -41,6 +41,8 @@ export interface AgentInfo {
   effort?: Effort
   /** Suggested first tasks shown as clickable chips on the spawn card. */
   examplePrompts?: string[]
+  /** Cosmetic per-agent icon: a built-in library id (a lucide name) or raw custom `<svg>` markup. */
+  icon?: string
 }
 export interface StateResp {
   tenant: string
@@ -657,13 +659,13 @@ export const api = {
   // One "reflect" pass: cheap deterministic tally + the memory-gardener over new material (nested `consolidation`).
   dreamingRun: () => call<{ ok: boolean; skipped?: boolean; sessions?: number; episodes?: number; kbPageId?: string; insightId?: string; guidance?: string; consolidation?: { spawned?: boolean; reason?: string; sessionId?: string; items?: number }; error?: string }>('POST', '/api/dreaming/run'),
 
-  createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[] } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
+  createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
   rescanAgents: () => call<{ ok: boolean; added: string[]; updated: string[]; removed: string[]; errors: { folder: string; error: string }[]; error?: string }>('POST', '/api/agents/rescan'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
-  agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; category?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
-  saveAgentConfig: (id: string, patch: RuntimeTuning & { description?: string; examplePrompts?: string[]; category?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; category?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
+  agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
+  saveAgentConfig: (id: string, patch: RuntimeTuning & { description?: string; examplePrompts?: string[]; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; category?: string; icon?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
 

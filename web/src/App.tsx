@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw } from 'lucide-react'
+import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -75,6 +76,82 @@ function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
     <Badge variant={claude ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
       {claude ? 'claude' : 'mock'}
     </Badge>
+  )
+}
+
+/** The curated built-in icon library — a lucide subset picked for agent roles. The key is stored in
+ *  the manifest's `icon` field verbatim; the value is the component. Unknown/absent keys fall back to
+ *  the default glyph (Bot) in AgentIcon, so the list can grow without breaking old manifests. */
+const AGENT_ICONS: Record<string, LucideIcon> = {
+  Bot, Sparkles, Wand2, Brain, Rocket, Zap, Boxes, Package,
+  Code2, Bug, Terminal, GitBranch, Server, Database, Cloud, Cog, Wrench,
+  Shield, Search, Compass, Globe, Activity, LineChart, BarChart3,
+  MessageSquare, Mail, Megaphone, Send, Headphones, Users, Bell,
+  FileText, ScrollText, BookText, BookOpen, PenTool, Feather, ListChecks, Calendar,
+  DollarSign, ShoppingCart, Building2, Flag, Star, Heart, Palette, Camera, Music,
+}
+const ICON_NAMES = Object.keys(AGENT_ICONS)
+const isCustomSvg = (v?: string) => !!v && /^\s*<svg[\s>]/i.test(v)
+
+/** Renders an agent's icon: a custom uploaded SVG (via an `<img>` data-URI, so any embedded script is
+ *  inert), a built-in library glyph, or — when unset/unknown — the default Bot. */
+function AgentIcon({ icon, className }: { icon?: string; className?: string }) {
+  if (isCustomSvg(icon)) {
+    return <img src={'data:image/svg+xml,' + encodeURIComponent(icon!)} alt="" aria-hidden className={className} />
+  }
+  const Cmp = (icon && AGENT_ICONS[icon]) || Bot
+  return <Cmp className={className} />
+}
+
+const MAX_SVG_BYTES = 20000 // mirrors the server-side cap in sanitizeSvgIcon
+
+/** Icon chooser used by the create + edit forms: a preview, an SVG upload button, and the library
+ *  grid. `value` is a library name or raw SVG; `onChange(undefined)` clears back to the default. */
+function IconPicker({ value, onChange }: { value?: string; onChange: (v: string | undefined) => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [err, setErr] = useState('')
+  const custom = isCustomSvg(value)
+
+  const onFile = async (f: File) => {
+    setErr('')
+    if (f.size > MAX_SVG_BYTES) return setErr(`SVG too large (max ${Math.round(MAX_SVG_BYTES / 1000)} KB)`)
+    const text = await f.text()
+    if (!/^\s*<svg[\s>]/i.test(text)) return setErr('not an SVG file')
+    onChange(text)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border bg-muted/40">
+          <AgentIcon icon={value} className="h-5 w-5 text-foreground" />
+        </div>
+        <span className="text-[11px] text-muted-foreground">{custom ? 'Custom SVG' : (value || 'Default')}</span>
+        <div className="ml-auto flex items-center gap-1">
+          <input ref={fileRef} type="file" accept=".svg,image/svg+xml" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); e.target.value = '' }} />
+          <Button type="button" size="sm" variant="outline" className="gap-1" onClick={() => fileRef.current?.click()}><Upload className="h-3.5 w-3.5" /> Upload SVG</Button>
+          {value && <Button type="button" size="sm" variant="ghost" onClick={() => { setErr(''); onChange(undefined) }}>Clear</Button>}
+        </div>
+      </div>
+      {err && <p className="text-[11px] text-destructive">{err}</p>}
+      <div className="grid grid-cols-12 gap-1">
+        {ICON_NAMES.map((name) => {
+          const Cmp = AGENT_ICONS[name]
+          const active = value === name
+          return (
+            <button
+              key={name}
+              type="button"
+              title={name}
+              onClick={() => onChange(name)}
+              className={'flex h-8 w-full items-center justify-center rounded-md border ' + (active ? 'border-primary bg-primary/10 text-primary' : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground')}
+            >
+              <Cmp className="h-4 w-4" />
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -644,7 +721,7 @@ function AgentsPage({
                       <SelectLabel>{cat}</SelectLabel>
                       {list.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
-                          <span className="flex items-center gap-1.5">{a.id}<RuntimeBadge runtime={a.runtime} /></span>
+                          <span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
                         </SelectItem>
                       ))}
                     </SelectGroup>
@@ -2241,7 +2318,7 @@ function TeamPage({ me }: { me: Member }) {
               return (
                 <Card key={a.id}>
                   <CardContent className="flex flex-wrap items-center gap-2 p-3">
-                    <span className="mr-1 flex items-center gap-1.5 text-sm font-medium">{a.id}<RuntimeBadge runtime={a.runtime} /></span>
+                    <span className="mr-1 flex items-center gap-1.5 text-sm font-medium"><AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
                     <Chip on={acc.allowedRoles.includes('member')} onClick={() => toggleRole(a.id, 'member')}>all members</Chip>
                     {plainMembers.map((m) => (
                       <Chip key={m.id} on={acc.allowedMembers.includes(m.id)} onClick={() => toggleMember(a.id, m.id)}>{m.name}</Chip>
@@ -2632,7 +2709,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                     <SelectContent>
                       {agents.map((a) => (
                         <SelectItem key={a.id} value={a.id}>
-                          <span className="flex items-center gap-1.5">{a.id}<RuntimeBadge runtime={a.runtime} /></span>
+                          <span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -3071,7 +3148,7 @@ function MemoryBrowse({ agents, me }: { agents: AgentInfo[]; me: Member }) {
             <SelectContent>
               {agents.map((a) => (
                 <SelectItem key={a.id} value={a.id}>
-                  <span className="flex items-center gap-1.5">{a.id}<RuntimeBadge runtime={a.runtime} /></span>
+                  <span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
                 </SelectItem>
               ))}
             </SelectContent>
@@ -3261,6 +3338,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const [id, setId] = useState('')
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('')
+  const [icon, setIcon] = useState<string | undefined>(undefined)
   const [tuning, setTuning] = useState<RuntimeTuning>({ model: 'claude-opus-4-8' })
   const [claudeMd, setClaudeMd] = useState(NEW_AGENT_CLAUDE_TEMPLATE)
   const [prompts, setPrompts] = useState('')
@@ -3278,7 +3356,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const create = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
-    const r = await api.createAgent({ id: slug, description: description.trim(), category: category.trim(), claudeMd, examplePrompts, ...tuning })
+    const r = await api.createAgent({ id: slug, description: description.trim(), category: category.trim(), icon, claudeMd, examplePrompts, ...tuning })
     setBusy(false)
     if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed to create agent'))
     onCreated(r.id || slug)
@@ -3311,6 +3389,11 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
             <label className="text-xs font-medium">Category</label>
             <Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Engineering, Marketing" className="text-sm" />
             <p className="text-[11px] text-muted-foreground">Optional. Groups the agent in the picker. Leave blank for “Uncategorized”.</p>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Icon</label>
+            <IconPicker value={icon} onChange={setIcon} />
+            <p className="text-[11px] text-muted-foreground">Optional. Pick from the library or upload a custom SVG. Shown next to the agent everywhere it’s listed.</p>
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium">Starter prompts</label>
@@ -3351,6 +3434,8 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
   const [savedPrompts, setSavedPrompts] = useState('')
   const [category, setCategory] = useState('')
   const [savedCategory, setSavedCategory] = useState('')
+  const [icon, setIcon] = useState<string | undefined>(undefined)
+  const [savedIcon, setSavedIcon] = useState<string | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
@@ -3361,22 +3446,23 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
       const d = r.description ?? ''
       const p = (r.examplePrompts ?? []).join('\n')
       const c = r.category ?? ''
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c)
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
-    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, category: category.trim() })
+    // Always send `icon` (empty string clears it → server drops the manifest key).
+    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     const t: RuntimeTuning = { model: r.model, effort: r.effort }
     const d = r.description ?? ''
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -3392,6 +3478,10 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
         <div className="space-y-1">
           <label className="text-xs font-medium">Category</label>
           <Input value={category} onChange={(e) => setCategory(e.target.value)} className="text-sm" placeholder="e.g. Engineering, Marketing — blank for Uncategorized" />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Icon</label>
+          <IconPicker value={icon} onChange={setIcon} />
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">Starter prompts</label>
