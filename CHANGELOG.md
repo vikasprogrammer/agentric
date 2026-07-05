@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+### Changed
+- **Simplified the memory/self-learning surface.** The whole system is now framed by one four-verb
+  mental model — **Capture · Recall · Distil · Apply** ([`docs/memory-model.md`](docs/memory-model.md),
+  the canonical entry point). The two overlapping learning actions ("Run reflection" + "Consolidate
+  knowledge", with a separate auto-consolidate toggle) collapse into **one "Reflect" pass**: `POST
+  /api/dreaming/run` (and the scheduled tick) run the deterministic tally then the memory-gardener over
+  new material. The Memory hub drops from three tabs to **two** (Memories · Self-learning) under a slim
+  stats strip; the "Lever N" and "Dreaming vs Consolidation" jargon is retired from the product surface.
+
+## [0.6.0] — 2026-07-05
+
+### Added
+- **Self-update from the console**: Agent OS now tells you when the deployed checkout is behind
+  `origin` and can update itself. The server compares HEAD against the tracking branch via a cached
+  `git fetch` (`GET /api/update`) — no GitHub API, so it works on the private Tailscale box — and the
+  sidebar shows an **"Update available · vX.Y.Z"** pill with a changelog preview of the commits that
+  would land. An owner clicks **Update & restart** (`POST /api/update/apply`, owner-only): the box does
+  an ff-only `git pull` → `npm install`+`npm run build` (server + web) → restart via launchd/systemd
+  (override with `AOS_RESTART_CMD`), streaming each step's log; the console waits for `/health` to
+  report the new version and reloads. Refuses on a dirty working tree; the apply is audited
+  (`update.applied`). New module `src/edge/updater.ts`.
+
 ## [0.5.0] — 2026-07-05
 
 ### Added

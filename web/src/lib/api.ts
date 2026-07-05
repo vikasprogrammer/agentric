@@ -55,6 +55,29 @@ export interface StateResp {
   agents: AgentInfo[]
   capabilities: { id: string; description: string; defaultRisk: string }[]
 }
+/** Self-update status — the deploy is a git checkout, so this reflects "is the box behind origin?". */
+export interface UpdateStatus {
+  current: string
+  latest: string
+  behind: number
+  updateAvailable: boolean
+  branch: string
+  upstream: string
+  /** Uncommitted changes on the box — an ff-only apply would fail, so the button is disabled. */
+  dirty: boolean
+  checkedAt: number
+  /** Newest-first commit subjects that would land (a lightweight changelog preview). */
+  log: string[]
+  error?: string
+  /** True only for the owner — gates the "Update & restart" button. */
+  canApply: boolean
+}
+export interface UpdateApplyResult {
+  ok: boolean
+  steps: { cmd: string; ok: boolean; out: string }[]
+  restarting: boolean
+  error?: string
+}
 export interface TeamResp {
   me: Member
   members: Member[]
@@ -554,6 +577,10 @@ export const api = {
   logout: () => call<{ ok: boolean }>('POST', '/api/auth/logout'),
 
   state: () => call<StateResp>('GET', '/api/state'),
+  /** Self-update: check whether the checkout is behind origin (`force` re-runs `git fetch`, owner/admin). */
+  checkUpdate: (force = false) => call<UpdateStatus>('GET', '/api/update' + (force ? '?force=1' : '')),
+  /** Owner-only: pull + rebuild + restart. Resolves with the step log; the process bounces after. */
+  applyUpdate: () => call<UpdateApplyResult>('POST', '/api/update/apply'),
   sessions: () => call<Session[]>('GET', '/api/sessions'),
   messages: () => call<Msg[]>('GET', '/api/messages'),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
@@ -622,14 +649,13 @@ export const api = {
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
   dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/tasks/${id}/dispatch`),
   deleteTask: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${id}`),
-  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; consolidateAuto?: boolean; lastConsolidatedAt?: number; error?: string }>('GET', '/api/dreaming'),
+  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),
   setDreaming: (everyHours: number) => call<{ ok: boolean; everyHours: number; error?: string }>('PUT', '/api/dreaming', { everyHours }),
   setApplyLearnings: (applyLearnings: boolean) => call<{ ok: boolean; applyLearnings: boolean; error?: string }>('PUT', '/api/dreaming', { applyLearnings }),
-  setConsolidateAuto: (consolidateAuto: boolean) => call<{ ok: boolean; consolidateAuto: boolean; error?: string }>('PUT', '/api/dreaming', { consolidateAuto }),
-  dreamingRun: () => call<{ ok: boolean; skipped?: boolean; sessions?: number; episodes?: number; kbPageId?: string; insightId?: string; guidance?: string; error?: string }>('POST', '/api/dreaming/run'),
-  consolidate: () => call<{ ok: boolean; spawned?: boolean; reason?: string; sessionId?: string; items?: number; error?: string }>('POST', '/api/dreaming/consolidate'),
+  // One "reflect" pass: cheap deterministic tally + the memory-gardener over new material (nested `consolidation`).
+  dreamingRun: () => call<{ ok: boolean; skipped?: boolean; sessions?: number; episodes?: number; kbPageId?: string; insightId?: string; guidance?: string; consolidation?: { spawned?: boolean; reason?: string; sessionId?: string; items?: number }; error?: string }>('POST', '/api/dreaming/run'),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[] } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
