@@ -17,6 +17,19 @@ new version heading in the same commit.
   new material. The Memory hub drops from three tabs to **two** (Memories · Self-learning) under a slim
   stats strip; the "Lever N" and "Dreaming vs Consolidation" jargon is retired from the product surface.
 
+## [0.7.0] — 2026-07-05
+
+### Added
+- **Agent icons.** Every agent can now carry a visual icon — pick one from a curated built-in library
+  (a lucide subset spanning engineering / comms / ops / finance roles) or **upload a custom SVG**. The
+  icon shows everywhere an agent is listed (the spawn picker + its trigger, the assignments page, and
+  the task/schedule pickers), with a Bot glyph as the default fallback. It's a single cosmetic `icon`
+  field on the manifest (`AgentManifest.icon`) — a library id like `"Bot"` or raw `<svg>` markup —
+  persisted in `agent.json` and edited from both the New-agent and per-agent settings forms. Uploaded
+  SVGs are sanitised server-side (`sanitizeIcon`/`sanitizeSvgIcon`: strips scripts, `on*` handlers,
+  `javascript:` links and `<foreignObject>`, 20 KB cap) and rendered via an `<img>` data-URI so any
+  residual markup can't execute.
+
 ## [0.6.0] — 2026-07-05
 
 ### Added
