@@ -9,7 +9,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta } from '@/lib/api'
+import { api, EFFORTS, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult } from '@/lib/api'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
 
@@ -139,6 +139,125 @@ function WaitingBell({ className = 'h-3.5 w-3.5' }: { className?: string }) {
     <span title="Claude is waiting for your input" className="inline-flex shrink-0 text-indigo-600">
       <Bell className={className} />
     </span>
+  )
+}
+
+/**
+ * Self-update notice — polls `/api/update` (a cached `git fetch` behind the scenes) and, when the
+ * checkout is behind origin, shows a pill in the sidebar. Clicking opens a panel with the changelog
+ * preview and, for the owner, an "Update & restart" button that pulls + rebuilds + bounces the box;
+ * the panel then waits for `/health` to report the new version and reloads the console.
+ */
+function UpdateNotice() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null)
+  const [open, setOpen] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [result, setResult] = useState<UpdateApplyResult | null>(null)
+  const [restarting, setRestarting] = useState(false)
+
+  const check = (force = false) => api.checkUpdate(force).then(setStatus).catch(() => {})
+  useEffect(() => {
+    check()
+    const t = setInterval(() => check(), 30 * 60_000) // re-poll every 30 min; the server caches the fetch
+    return () => clearInterval(t)
+  }, [])
+
+  if (!status?.updateAvailable) return null
+
+  const apply = async () => {
+    setApplying(true); setResult(null)
+    const r = await api.applyUpdate()
+    setResult(r); setApplying(false)
+    if (r.ok && r.restarting) {
+      setRestarting(true)
+      const started = Date.now()
+      const tick = async () => {
+        try {
+          const h = await fetch('/health').then((x) => x.json())
+          if (h?.version && h.version !== status.current) { window.location.reload(); return }
+        } catch { /* server bouncing — keep waiting */ }
+        if (Date.now() - started > 120_000) { window.location.reload(); return }
+        setTimeout(tick, 3000)
+      }
+      setTimeout(tick, 5000)
+    }
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="mt-1.5 flex w-full items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-left text-[11px] font-medium text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20"
+        title={`Update available: v${status.latest} (${status.behind} commit${status.behind === 1 ? '' : 's'} behind)`}
+      >
+        <Download className="h-3 w-3 shrink-0" />
+        <span className="truncate">Update available · v{status.latest}</span>
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !applying && !restarting && setOpen(false)}>
+          <Card className="w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+            <CardContent className="space-y-3 p-5">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-2 text-sm font-semibold"><Download className="h-4 w-4" /> Software update</div>
+                {!applying && !restarting && (
+                  <Button size="icon" variant="ghost" className="-mr-1 -mt-1 h-6 w-6 text-muted-foreground" onClick={() => setOpen(false)}><X className="h-4 w-4" /></Button>
+                )}
+              </div>
+
+              <div className="text-xs text-muted-foreground">
+                <span className="font-mono">v{status.current}</span> → <span className="font-mono font-semibold text-foreground">v{status.latest}</span>
+                <span className="ml-1">· {status.behind} commit{status.behind === 1 ? '' : 's'} behind <span className="font-mono">{status.upstream}</span></span>
+              </div>
+
+              {status.log.length > 0 && !result && (
+                <div className="max-h-48 overflow-auto rounded-md border bg-muted/40 p-2">
+                  <ul className="space-y-0.5 text-[11px] leading-snug text-muted-foreground">
+                    {status.log.map((s, i) => <li key={i} className="truncate" title={s}>· {s}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {status.dirty && !result && (
+                <div className="flex items-start gap-1.5 rounded-md bg-amber-50 p-2 text-[11px] text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+                  <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                  <span>The box has uncommitted changes — commit or stash them before updating (a fast-forward pull can't run otherwise).</span>
+                </div>
+              )}
+
+              {result && (
+                <div className="max-h-64 space-y-1.5 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px]">
+                  {result.steps.map((s, i) => (
+                    <div key={i}>
+                      <div className={s.ok ? 'text-emerald-600' : 'text-red-600'}>{s.ok ? '✓' : '✗'} {s.cmd}</div>
+                      {!s.ok && s.out && <pre className="mt-0.5 whitespace-pre-wrap break-all text-[10px] text-muted-foreground">{s.out}</pre>}
+                    </div>
+                  ))}
+                  {result.error && <div className="text-red-600">✗ {result.error}</div>}
+                </div>
+              )}
+
+              {restarting ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Restarting the server… the console will reconnect automatically.</div>
+              ) : (
+                <div className="flex items-center justify-end gap-2">
+                  {status.canApply ? (
+                    <Button size="sm" disabled={applying || status.dirty} onClick={apply}>
+                      {applying ? <><RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Updating…</> : <><Download className="mr-1.5 h-3.5 w-3.5" /> Update & restart</>}
+                    </Button>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">Ask an owner to apply this update.</span>
+                  )}
+                </div>
+              )}
+              {applying && !result && (
+                <div className="text-[11px] text-muted-foreground">Running <span className="font-mono">git pull</span> + rebuild + restart — this takes 1–3 minutes. Keep this tab open.</div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -293,6 +412,7 @@ function Console({ me }: { me: Member }) {
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[15px] font-semibold">⚙️ Agent OS</div>
               {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`tenant${state.version ? ` · Agent OS v${state.version}` : ''}`}>{state.tenantName || state.tenant}{state.version ? ` · v${state.version}` : ''}</div>}
+              <UpdateNotice />
             </div>
             <Button size="icon" variant="ghost" className="-mr-1 h-7 w-7 shrink-0 text-muted-foreground" title="collapse sidebar" onClick={() => setSidebarCollapsed(true)}>
               <PanelLeftClose className="h-4 w-4" />
@@ -2786,84 +2906,45 @@ function KnowledgeBasePage({ me }: { me: Member }) {
   )
 }
 
-/** The Memory hub: a tabbed home for the whole learning system. Overview = pipeline + activity;
- *  Memories = per-agent browse (with a cross-agent Shared scope); Self-learning = the engine controls. */
+/** The Memory hub. Two tabs: **Memories** (the store — Capture + Recall) and **Self-learning** (the
+ *  reflect loop — Distil + Apply). A slim stats strip headlines both for admins. See docs/memory-model.md. */
 function MemoryPage({ agents, me }: { agents: AgentInfo[]; me: Member }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
-  const [tab, setTab] = useState<'overview' | 'browse' | 'learning'>(isAdmin ? 'overview' : 'browse')
+  const [tab, setTab] = useState<'browse' | 'learning'>('browse')
   return (
     <div className="space-y-4">
+      {isAdmin && <MemoryStats />}
       <div className="flex gap-1 rounded-lg border bg-background p-1 w-fit">
-        {isAdmin && <TabButton on={tab === 'overview'} onClick={() => setTab('overview')}>Overview</TabButton>}
         <TabButton on={tab === 'browse'} onClick={() => setTab('browse')}>Memories</TabButton>
         {isAdmin && <TabButton on={tab === 'learning'} onClick={() => setTab('learning')}>Self-learning</TabButton>}
       </div>
-      {tab === 'overview' && isAdmin ? <MemoryOverview />
-        : tab === 'learning' && isAdmin ? <DreamingSettings me={me} />
-        : <MemoryBrowse agents={agents} me={me} />}
+      {tab === 'learning' && isAdmin ? <DreamingSettings me={me} /> : <MemoryBrowse agents={agents} me={me} />}
     </div>
   )
 }
 
-/** The learning Overview: the memory pipeline at a glance, a recent learning-activity feed, and the
- *  self-learning engine controls (relocated here from Settings — the engine lives with what it produces). */
-function MemoryOverview() {
+/** A slim at-a-glance strip of the memory store — the counts that used to headline the Overview tab. */
+function MemoryStats() {
   const [counts, setCounts] = useState<{ memories: number; episodes: number; lessons: number; shared: number; kbPages: number } | null>(null)
-  const [activity, setActivity] = useState<{ ts: number; runId: string; type: string; principal?: string; data: Record<string, unknown> }[]>([])
-  const refresh = () => api.memoryOverview().then((r) => { if (r.error) return; setCounts(r.counts); setActivity(r.activity ?? []) }).catch(() => {})
-  useEffect(() => { refresh() }, [])
-
-  const stats: { label: string; value: number; hint: string }[] = counts ? [
+  useEffect(() => { api.memoryOverview().then((r) => { if (!r.error) setCounts(r.counts) }).catch(() => {}) }, [])
+  if (!counts) return null
+  const stats = [
     { label: 'Memories', value: counts.memories, hint: 'all durable memories across the fleet' },
-    { label: 'Episodes', value: counts.episodes, hint: 'auto session recaps (episodic)' },
-    { label: 'Lessons', value: counts.lessons, hint: 'deliberate notes agents kept at report time (semantic)' },
+    { label: 'Episodes', value: counts.episodes, hint: 'auto session recaps (Capture)' },
+    { label: 'Lessons', value: counts.lessons, hint: 'notes agents deliberately kept (Capture)' },
     { label: 'Shared', value: counts.shared, hint: 'workspace-wide knowledge every agent recalls' },
     { label: 'KB pages', value: counts.kbPages, hint: 'living Knowledge-base pages' },
-  ] : []
-
+  ]
   return (
-    <div className="max-w-3xl space-y-5">
-      <p className="text-sm text-muted-foreground">
-        How the fleet learns: agents capture <strong>episodes</strong> (what happened) and <strong>lessons</strong> (what they
-        chose to keep); the <strong>reflection</strong> pass distils recurring signal into guidance injected back into every
-        agent; and the <strong>memory gardener</strong> consolidates it into <strong>shared</strong> knowledge + <a className="underline" href="#/kb">Knowledge</a> pages.
-      </p>
-
-      {/* Pipeline at a glance */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        {stats.map((s) => (
-          <Card key={s.label} title={s.hint}>
-            <CardContent className="p-3">
-              <div className="text-2xl font-semibold tabular-nums">{s.value}</div>
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{s.label}</div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {/* Recent learning activity — the automation, made legible */}
-      <section>
-        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Recent learning activity</div>
-        <Card>
-          <CardContent className="p-0">
-            {activity.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">No learning activity yet. As agents finish sessions they leave episodes/lessons; reflection + consolidation events show here.</div>
-            ) : (
-              <div className="divide-y">
-                {activity.map((e, i) => (
-                  <div key={i} className="flex items-start gap-3 px-3 py-2 text-xs">
-                    <span className="w-32 shrink-0 text-muted-foreground">{new Date(e.ts).toLocaleString()}</span>
-                    <span className="shrink-0">{learningLabel(e.type)}</span>
-                    <span className="min-w-0 flex-1 text-muted-foreground">{learningDetail(e)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+      {stats.map((s) => (
+        <Card key={s.label} title={s.hint}>
+          <CardContent className="p-3">
+            <div className="text-2xl font-semibold tabular-nums">{s.value}</div>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{s.label}</div>
           </CardContent>
         </Card>
-      </section>
-
-      <p className="text-[11px] text-muted-foreground">Manage cadence, run a reflection pass, consolidate, and the injected guidance in the <strong>Self-learning</strong> tab.</p>
+      ))}
     </div>
   )
 }
@@ -3929,13 +4010,15 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [apply, setApply] = useState(true)
   const [guidance, setGuidance] = useState('')
   const [recs, setRecs] = useState<Recommendation[]>([])
-  const [consolidateAuto, setConsolidateAuto] = useState(false)
-  const [lastConsolidated, setLastConsolidated] = useState<number | undefined>(undefined)
+  const [activity, setActivity] = useState<{ ts: number; type: string; principal?: string; data: Record<string, unknown> }[]>([])
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
 
-  const refresh = () => api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setConsolidateAuto(r.consolidateAuto === true); setLastConsolidated(r.lastConsolidatedAt) }).catch(() => {})
+  const refresh = () => {
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []) }).catch(() => {})
+    api.memoryOverview().then((r) => { if (!r.error) setActivity(r.activity ?? []) }).catch(() => {})
+  }
   const applyRec = async (id: string) => { setBusy(true); const r = await api.applyRecommendation(id); setBusy(false); if (r.error) return setHint('⚠ ' + r.error); setHint('applied'); setTimeout(() => setHint(''), 1500); refresh() }
   const dismissRec = async (id: string) => { setBusy(true); await api.dismissRecommendation(id); setBusy(false); refresh() }
   useEffect(() => { refresh() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
@@ -3953,18 +4036,14 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     const r = await api.dreamingRun()
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setResult(r.skipped ? 'No new activity since the last pass — nothing to learn.' : `Reflected on ${r.sessions ?? 0} sessions / ${r.episodes ?? 0} episodes → updated the KB page${r.insightId ? ' + a shared memory insight' : ''}${r.guidance ? ' + refreshed the agent guidance below' : ''}.`)
-    refresh(); onChanged?.()
-  }
-  const toggleConsolidate = async (on: boolean) => { setConsolidateAuto(on); await api.setConsolidateAuto(on) }
-  const consolidateNow = async () => {
-    setBusy(true); setHint(''); setResult('')
-    const r = await api.consolidate()
-    setBusy(false)
-    if (r.error) return setHint('⚠ ' + r.error)
-    setResult(r.spawned
-      ? `Memory-gardener spawned over ${r.items ?? 0} recent episodes/lessons (session ${r.sessionId}). Watch the Sessions/Audit pages — it writes shared memories + KB pages, then reports.`
-      : `Nothing to consolidate — ${r.reason ?? 'too little new activity'}.`)
+    if (r.skipped) { setResult('No new activity since the last pass — nothing to learn.') }
+    else {
+      const c = r.consolidation
+      const grew = c?.spawned
+        ? ` Growing shared knowledge — memory-gardener spawned over ${c.items ?? 0} episodes/lessons (watch Sessions/Audit).`
+        : ` No new material worth an agent run to consolidate${c?.reason ? ` (${c.reason})` : ''}.`
+      setResult(`Reflected on ${r.sessions ?? 0} sessions / ${r.episodes ?? 0} episodes → refreshed guidance${r.insightId ? ' + a shared insight' : ''} + the KB page.${grew}`)
+    }
     refresh(); onChanged?.()
   }
 
@@ -3972,51 +4051,30 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   return (
     <div className="max-w-3xl space-y-4">
       <p className="text-sm text-muted-foreground">
-        The OS reflects on what its agents have been doing — the per-session <strong>episodes</strong> they wrote, run
-        <strong> outcomes</strong>, and <strong>friction</strong> (approvals rejected, budget stops, errors) — and distils it
-        into a shared <strong>memory insight</strong> every agent recalls, plus a living Knowledge page
-        (<a className="underline" href="#/kb">operations/fleet-learnings</a>) that's rewritten each pass and revision-chained.
+        <strong>Reflect</strong> on what agents have been doing and turn it into durable knowledge. One pass tallies recent
+        <strong> episodes</strong>, outcomes and <strong>friction</strong> into the <strong>guidance</strong> injected into every agent, then
+        spawns the <strong>memory gardener</strong> — a short headless run that reads the recent episodes + lessons and writes
+        the recurring patterns into <strong>shared memories</strong> + a living <a className="underline" href="#/kb">Knowledge</a> page. Run it now, or on a schedule.
       </p>
       <Card>
         <CardContent className="space-y-3 p-4">
           <div>
-            <div className="text-sm font-medium">Reflection <span className="text-[11px] font-normal text-muted-foreground">— cheap, deterministic, no LLM</span></div>
-            <p className="text-xs text-muted-foreground"><strong>Tallies</strong> recent episodes, outcomes and friction into the guidance injected into every agent, a shared insight, and the <a className="underline" href="#/kb">fleet-learnings</a> KB page. It summarises <em>what happened</em> — it doesn't read the episode text. Free and instant.</p>
+            <div className="text-sm font-medium">Reflect</div>
+            <p className="text-xs text-muted-foreground">Each pass: <strong>tally</strong> recent episodes/outcomes/friction into the guidance below (instant, free), then spawn the <strong>memory gardener</strong> to distil recent episodes + lessons into <strong>shared memories + <a className="underline" href="#/kb">Knowledge</a> pages</strong> — only when there's new material worth an agent run.</p>
           </div>
           <div className="flex items-end gap-3">
-            <Field label="Run automatically every (hours)" help="0 = off (manual only). The pass is cheap; daily (24) is a sensible default.">
+            <Field label="Reflect automatically every (hours)" help="0 = off (manual only). Daily (24) is a sensible default.">
               <Input value={everyHours} onChange={(e) => setEveryHours(e.target.value)} className="w-28 font-mono text-xs" placeholder="0" />
             </Field>
             <Button onClick={save} disabled={busy}>Save</Button>
-            <Button variant="outline" onClick={runNow} disabled={busy}><Sparkles className="mr-1 h-4 w-4" />Run reflection</Button>
+            <Button variant="outline" onClick={runNow} disabled={busy}><Sparkles className="mr-1 h-4 w-4" />Reflect now</Button>
             {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           </div>
           <div className="text-[11px] text-muted-foreground">
-            {last ? `Last pass: ${new Date(last).toLocaleString()}.` : 'No pass has run yet.'}
+            {last ? `Last reflected: ${new Date(last).toLocaleString()}.` : 'No pass has run yet.'}
             {Number(everyHours) > 0 ? ` Scheduled every ${Number(everyHours)}h.` : ' Automatic passes are off.'}
           </div>
           {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
-        </CardContent>
-      </Card>
-
-      {/* Consolidation (lever 4): the memory-gardener turns raw episodes into durable shared knowledge. */}
-      <Card>
-        <CardContent className="space-y-3 p-4">
-          <div>
-            <div className="text-sm font-medium">Consolidation <span className="text-[11px] font-normal text-muted-foreground">— the memory gardener (spends an agent run)</span></div>
-            <p className="text-xs text-muted-foreground">Spawns a governed <strong>headless agent</strong> that actually <strong>reads</strong> the recent fleet <strong>episodes + lessons</strong> and distils the recurring, durable patterns into <strong>new shared memories</strong> + <a className="underline" href="#/kb">Knowledge</a> pages every agent can recall. This <em>grows knowledge</em> (vs. reflection, which only summarises) — so it costs a real agent run.</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" onClick={consolidateNow} disabled={busy}><Brain className="mr-1 h-4 w-4" />Consolidate knowledge</Button>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={consolidateAuto} onChange={(e) => toggleConsolidate(e.target.checked)} />
-              Auto-consolidate after each scheduled learning pass
-            </label>
-          </div>
-          <div className="text-[11px] text-muted-foreground">
-            {lastConsolidated ? `Last consolidation: ${new Date(lastConsolidated).toLocaleString()}.` : 'No consolidation has run yet.'}
-            {consolidateAuto ? '' : ' Auto-consolidation is off.'}
-          </div>
         </CardContent>
       </Card>
 
@@ -4068,7 +4126,27 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
         </CardContent>
       </Card>
 
-      <p className="text-[11px] text-muted-foreground">This pass is deterministic aggregation (zero cost). A richer LLM "gardener" — a scheduled agent that synthesizes prose into the KB via its <code className="text-[10px]">kb_write</code> tool — can layer on top later.</p>
+      {/* Recent learning activity — the loop, made legible (moved here from the old Overview tab). */}
+      <section>
+        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Recent learning activity</div>
+        <Card>
+          <CardContent className="p-0">
+            {activity.length === 0 ? (
+              <div className="p-4 text-sm text-muted-foreground">Nothing yet. As agents finish sessions they leave episodes/lessons; reflect + consolidation events show here.</div>
+            ) : (
+              <div className="divide-y">
+                {activity.map((e, i) => (
+                  <div key={i} className="flex items-start gap-3 px-3 py-2 text-xs">
+                    <span className="w-32 shrink-0 text-muted-foreground">{new Date(e.ts).toLocaleString()}</span>
+                    <span className="shrink-0">{learningLabel(e.type)}</span>
+                    <span className="min-w-0 flex-1 text-muted-foreground">{learningDetail(e)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </section>
     </div>
   )
 }

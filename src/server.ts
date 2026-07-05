@@ -19,6 +19,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
 import { Consolidation } from './edge/consolidation';
+import { checkForUpdate, applyUpdate } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument } from './governance/policy';
@@ -173,11 +174,11 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     const everyHours = os.settings.dreamingEveryHours();
     if (everyHours && Date.now() - (lastDream.get(os.tenant) || 0) >= everyHours * 3_600_000) {
       lastDream.set(os.tenant, Date.now());
-      void new DreamingEngine(os).dream('scheduler').catch(() => { /* never let the dreamer crash the server */ });
-      // Opt-in: after each auto dream pass, spawn the memory-gardener to consolidate new episodes/lessons.
-      if (os.settings.consolidateAuto()) {
-        void new Consolidation(os, rt.tm).run('automation:consolidation').catch(() => { /* never crash the scheduler */ });
-      }
+      // One "reflect" concept, whether manual or scheduled: the cheap deterministic pass, then the
+      // memory-gardener over new material (it no-ops when there's too little to be worth an agent run).
+      void new DreamingEngine(os).dream('scheduler')
+        .then(() => new Consolidation(os, rt.tm).run('automation:consolidation'))
+        .catch(() => { /* never let the scheduler crash the server */ });
     }
   }), 3_600_000);
   upkeep.unref?.();
@@ -766,6 +767,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     });
   }
 
+  // ── self-update ────────────────────────────────────────────────────────────────
+  // The deploy is a git checkout; "update available?" = "is the checkout behind origin?". Any member
+  // can SEE the notification (cached fetch), only the owner can APPLY it (pull + rebuild + restart).
+  if (method === 'GET' && p === '/api/update') {
+    const force = url.searchParams.get('force') === '1' && (me.role === 'owner' || me.role === 'admin');
+    const status = await checkForUpdate(force);
+    return sendJson(res, 200, { ...status, canApply: me.role === 'owner' });
+  }
+  if (method === 'POST' && p === '/api/update/apply') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const pre = await checkForUpdate();
+    if (!pre.updateAvailable) return sendJson(res, 200, { ok: false, steps: [], restarting: false, error: 'already up to date' });
+    os.audit.append({ ts: Date.now(), runId: 'update', tenant: os.tenant, principal: me.email, type: 'update.applied', data: { from: pre.current, to: pre.latest, behind: pre.behind } });
+    const result = await applyUpdate(os.tenant);
+    return sendJson(res, 200, result);
+  }
+
   // ── terminal attach authorization (nginx auth_request for /terminal/) ──────────
   // nginx calls this before proxying to ttyd. Being logged in is NOT enough (the generic /api/*
   // guard above already enforced that): a member may attach ONLY to a session they can see — their
@@ -1232,8 +1250,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/dreaming') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const last = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
-    const lastCons = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.consolidated'").get<{ t: number | null }>();
-    return sendJson(res, 200, { everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined, applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, consolidateAuto: os.settings.consolidateAuto(), lastConsolidatedAt: lastCons?.t ?? undefined });
+    return sendJson(res, 200, { everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined, applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open });
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);
@@ -1263,26 +1280,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     if (b.everyHours !== undefined) os.settings.setDreamingEveryHours(Number(b.everyHours) || 0, me.email);
     if (typeof b.applyLearnings === 'boolean') os.settings.setApplyLearnings(b.applyLearnings, me.email);
-    if (typeof b.consolidateAuto === 'boolean') os.settings.setConsolidateAuto(b.consolidateAuto, me.email);
-    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings(), consolidateAuto: os.settings.consolidateAuto() });
+    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings() });
   }
+  // One "reflect" action: the cheap deterministic pass, then the memory-gardener over new material
+  // (spawns a headless agent that grows shared memories + KB; no-ops when there's too little).
   if (method === 'POST' && p === '/api/dreaming/run') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     try {
-      const result = await new DreamingEngine(os).dream(me.email);
-      return sendJson(res, 200, { ok: true, ...result });
+      const dream = await new DreamingEngine(os).dream(me.email);
+      let consolidation;
+      try {
+        consolidation = await new Consolidation(os, tm).run('automation:consolidation');
+      } catch (e) {
+        consolidation = { spawned: false, reason: e instanceof Error ? e.message : String(e) };
+      }
+      return sendJson(res, 200, { ok: true, ...dream, consolidation });
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
-    }
-  }
-  // Lever 4 — consolidation: spawn the headless memory-gardener over recent episodes+lessons.
-  if (method === 'POST' && p === '/api/dreaming/consolidate') {
-    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    try {
-      const result = await new Consolidation(os, tm).run('automation:consolidation');
-      return sendJson(res, 200, { ok: true, ...result });
-    } catch (e) {
-      return sendJson(res, 500, { error: e instanceof Error ? e.message : String(e) });
     }
   }
 
