@@ -4142,12 +4142,6 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
   return (
     <div className="max-w-3xl space-y-4">
-      <p className="text-sm text-muted-foreground">
-        <strong>Reflect</strong> on what agents have been doing and turn it into durable knowledge. One pass tallies recent
-        <strong> episodes</strong>, outcomes and <strong>friction</strong> into the <strong>guidance</strong> injected into every agent, then
-        spawns the <strong>memory gardener</strong> — a short headless run that reads the recent episodes + lessons and writes
-        the recurring patterns into <strong>shared memories</strong> + a living <a className="underline" href="#/kb">Knowledge</a> page. Run it now, or on a schedule.
-      </p>
       <Card>
         <CardContent className="space-y-3 p-4">
           <div>

@@ -77,10 +77,11 @@ agent** that reads them and writes the recurring, durable patterns into **shared
 - The `consolidator` agent is provisioned on first use into `<home>/agents/consolidator/` (isolated
   folder + `agent.json` + a `CLAUDE.md` that carries the method: check existing knowledge first, find
   recurring signal, be selective, report). It excludes its own prior runs to avoid recursion.
-- **Manual:** `POST /api/dreaming/consolidate` (owner/admin) — the "Consolidate now" button.
-- **Auto (opt-in, default off):** the `consolidate_auto` setting; when on, a consolidation runs after
-  each scheduled Dreaming pass (piggybacks the same scheduler in `src/server.ts`). Spends a real agent
-  run, hence opt-in.
+- **Not a separate action.** Consolidation is the second half of one **"reflect"** pass: `POST
+  /api/dreaming/run` (the "Reflect now" button) and the scheduled tick both run the deterministic
+  Dreaming pass then this gardener over new material (it no-ops below `MIN_ITEMS`, so cheap when there's
+  little to do). There's no standalone "Consolidate" button or `consolidate_auto` toggle anymore — one
+  concept, whether manual or scheduled.
 - The watermark advances at kickoff so material isn't re-fed.
 
 ## Lever 5 — retrieval reinforcement (use it or lose it)
@@ -100,23 +101,26 @@ Settings → Memory backend → Recall ranking → **"Reinforce by usage."**
 
 ## The console — the Memory hub (`#/memory`)
 
-`MemoryPage` in `web/src/App.tsx` is a tabbed hub:
+`MemoryPage` in `web/src/App.tsx` is **two tabs** under a slim stats strip (memories · episodes ·
+lessons · shared · KB pages, from `GET /api/memory/overview`, admin-only). See the one-page mental
+model in [`memory-model.md`](./memory-model.md) — the hub is organised around its four verbs.
 
-- **Overview** (owner/admin) — the pipeline at a glance (memories · episodes · lessons · shared · KB
-  pages, from `GET /api/memory/overview`) + a **learning-activity feed** (episode/lesson/reflection/
-  consolidation events) that makes the automation legible.
-- **Memories** — per-agent browse: `Add memory` (top-right), kind chips (Episode / Lesson / Insight /
-  …), readable multi-line cards with outcome + source + `imp` (salience tooltip), and a **"Shared (all
-  agents)"** scope (recall with `scope:'tenant'` returns shared knowledge across every author).
-- **Self-learning** — the engine controls, relocated here from Settings: cadence + Run reflection,
-  Consolidate now + auto toggle, apply-guidance toggle with live preview, and recommendations.
+- **Memories** (Capture + Recall) — per-agent browse: `Add memory` (top-right), kind chips (Episode /
+  Lesson / Insight / …), readable multi-line cards with outcome + source + `imp` (salience tooltip), and
+  a **"Shared (all agents)"** scope (recall with `scope:'tenant'` returns shared knowledge across every
+  author).
+- **Self-learning** (Distil + Apply, owner/admin) — one **Reflect** card (cadence + a single **Reflect
+  now** button that runs the deterministic pass then the gardener), the apply-guidance toggle with live
+  preview, config recommendations, and the **learning-activity feed** (episode/lesson/reflection/
+  consolidation events) that makes the loop legible.
 
 ## Data model & audit events
 
 - **Memories** (`memories` table): episodes are tagged `episode`; lessons `lesson`; consolidated
   knowledge is `scope:'tenant'`. `metadata` carries `outcome` / `source` / `salience` for episodes.
-- **Settings keys:** `consolidate_auto` (+ the existing `dreaming_*` / `learned_*` keys). Ranking lives
-  in the `memory_config` JSON (`ranking.weightByUsage`).
+- **Settings keys:** `dreaming_*` / `learned_*` (cadence, apply-guidance, guidance, recommendations).
+  Ranking lives in the `memory_config` JSON (`ranking.weightByUsage`). *(The old `consolidate_auto`
+  toggle is retired — a scheduled reflect always consolidates new material.)*
 - **Audit types:** `episode.stored` / `episode.error`, `lesson.stored` / `lesson.error`,
   `learning.dreamed`, `learning.consolidated` (+ `memory.stored` / `kb.written` from the gardener's
   own tool calls).

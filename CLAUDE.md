@@ -203,8 +203,10 @@ Key modules:
 - `src/edge/consolidation.ts` — the **consolidation gardener** (lever 4 of the learning loop): selects
   recent fleet **episodes + lessons** since a watermark (`learning.consolidated` audit) and spawns a
   governed **headless `consolidator` agent** (provisioned into `<home>/agents/consolidator`) that
-  abstracts the recurring, durable patterns into SHARED memories + KB pages via its own tools. Manual
-  (`POST /api/dreaming/consolidate`) or opt-in after each dream pass (`consolidate_auto`). The wider
+  abstracts the recurring, durable patterns into SHARED memories + KB pages via its own tools. Not a
+  separate action anymore — it's the second half of one **"reflect"** pass: `POST /api/dreaming/run`
+  (and the scheduled tick) runs the deterministic Dreaming pass then this gardener over new material
+  (no-ops below `MIN_ITEMS`). One button ("Reflect now"), one concept. The wider
   **episodic↔semantic learning loop** — graded episodes (`episodeSalience` in `terminal.ts`), deliberate
   `report` **lessons**, and **retrieval reinforcement** (`rerank` `weightByUsage` + last-use recency in
   `src/memory/embedding.ts`) — is documented in `docs/memory-encoding-and-consolidation.md`.

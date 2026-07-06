@@ -8,6 +8,8 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-06
+
 ### Changed
 - **Simplified the memory/self-learning surface.** The whole system is now framed by one four-verb
   mental model — **Capture · Recall · Distil · Apply** ([`docs/memory-model.md`](docs/memory-model.md),

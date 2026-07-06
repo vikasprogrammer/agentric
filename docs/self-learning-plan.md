@@ -115,7 +115,8 @@ Plus `npm run typecheck`, `cd web && npm run build`, `npm run demo`.
 
 - **LLM "kb-gardener"** — ✅ **shipped** as the consolidation gardener (lever 4). A governed headless
   `consolidator` agent reads recent episodes+lessons and synthesises shared memories + KB pages via its
-  own tools. Manual or opt-in after each dream pass. See
+  own tools. Now the second half of one **"reflect"** pass (`POST /api/dreaming/run` + the scheduled
+  tick run the deterministic pass then the gardener) — no separate button/toggle. See
   [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md), which documents the
   full learning loop this reflection pass sits inside (encoding → reflection → consolidation → reinforcement).
 - **Programmatic policy/budget tuning** — today advisory only; would need its own reversible setter +

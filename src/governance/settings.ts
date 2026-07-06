@@ -25,7 +25,6 @@ const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state 
 const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives injected into every agent's prompt
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
-const CONSOLIDATE_AUTO_KEY = 'consolidate_auto'; // 'on' to spawn the memory-gardener after each auto dream pass (default off)
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
@@ -275,16 +274,6 @@ export class SettingsStore {
   }
   setApplyLearnings(on: boolean, by?: string): void {
     this.set(LEARNED_APPLY_KEY, on ? 'on' : 'off', by);
-  }
-
-  /** Whether the memory-gardener (lever 4 consolidation) runs automatically after each scheduled dream
-   *  pass. Default OFF — it spawns a real headless agent run (spends tokens), so it's opt-in. Manual
-   *  "Consolidate now" works regardless. */
-  consolidateAuto(): boolean {
-    return this.getRow(CONSOLIDATE_AUTO_KEY)?.value === 'on';
-  }
-  setConsolidateAuto(on: boolean, by?: string): void {
-    this.set(CONSOLIDATE_AUTO_KEY, on ? 'on' : 'off', by);
   }
 
   /** Open config recommendations + dismissed ids. The dreamer regenerates `open` each pass (minus the
