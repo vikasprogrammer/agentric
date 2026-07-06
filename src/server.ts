@@ -19,7 +19,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
 import { Consolidation } from './edge/consolidation';
-import { checkForUpdate, applyUpdate } from './edge/updater';
+import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument } from './governance/policy';
@@ -784,6 +784,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: 'update', tenant: os.tenant, principal: me.email, type: 'update.applied', data: { from: pre.current, to: pre.latest, behind: pre.behind } });
     const result = await applyUpdate(os.tenant);
     return sendJson(res, 200, result);
+  }
+  // Plain restart (no pull/rebuild) — owner only. Bounces the process the service manager respawns.
+  if (method === 'POST' && p === '/api/restart') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    os.audit.append({ ts: Date.now(), runId: 'restart', tenant: os.tenant, principal: me.email, type: 'service.restarted', data: {} });
+    return sendJson(res, 200, restartService(os.tenant));
   }
 
   // ── terminal attach authorization (nginx auth_request for /terminal/) ──────────

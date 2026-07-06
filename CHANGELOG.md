@@ -17,6 +17,21 @@ new version heading in the same commit.
   new material. The Memory hub drops from three tabs to **two** (Memories · Self-learning) under a slim
   stats strip; the "Lever N" and "Dreaming vs Consolidation" jargon is retired from the product surface.
 
+## [0.9.0] — 2026-07-06
+
+### Added
+- **Settings → System now surfaces the build + self-update + restart.** The System tab gains a
+  **Software** panel showing the running version, the checkout's branch → upstream, and a cached
+  `git fetch` status: **Up to date** or **Update available** with the changelog preview. Owners get a
+  one-click **Update & restart** (pull + rebuild + bounce, then wait for `/health` and reload) and a
+  plain **Restart** (bounce only — no pull/rebuild, for picking up an on-disk change or recovering a
+  wedged runtime) backed by a new owner-only `POST /api/restart` (`restartService` in
+  `src/edge/updater.ts`). The sidebar "Update available" pill stays; this makes the same controls
+  reachable from Settings and adds restart-without-update.
+- **Tenant name in the browser-tab title.** The document title now leads with the tenant name
+  (`<tenant> · Agent OS`, still prefixed with the 🔔 + count when a session is waiting), so several
+  instances open in different tabs are distinguishable at a glance.
+
 ## [0.8.0] — 2026-07-06
 
 ### Added

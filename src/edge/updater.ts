@@ -152,6 +152,26 @@ export async function applyUpdate(tenant: string): Promise<ApplyResult> {
   return { ok: true, steps, restarting: !!cmd };
 }
 
+export interface RestartResult {
+  ok: boolean;
+  /** True when a restart was actually scheduled (a restart command was resolved for this platform). */
+  restarting: boolean;
+  error?: string;
+}
+
+/**
+ * Restart the service WITHOUT updating — a plain bounce of the process the service manager respawns.
+ * Same mechanism as the tail of `applyUpdate`, factored out so the console can offer "Restart" on its
+ * own (e.g. to pick up an on-disk config change, or recover a wedged runtime). Owner-gated at the route.
+ */
+export function restartService(tenant: string): RestartResult {
+  const cmd = restartCommand(tenant);
+  if (!cmd) return { ok: false, restarting: false, error: 'no restart command resolved for this platform — restart the service by hand (set AOS_RESTART_CMD to enable it)' };
+  cache = null; // whatever version we come back as, re-check freshly after the bounce.
+  scheduleRestart(cmd);
+  return { ok: true, restarting: true };
+}
+
 /** Fire the restart shortly after (so the HTTP response flushes first); detached so it outlives us. */
 function scheduleRestart(cmd: string): void {
   setTimeout(() => {
