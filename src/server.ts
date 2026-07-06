@@ -748,6 +748,77 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, task });
   }
 
+  // ── Agents (agent loopback) ──────────────────────────────────────────────────
+  // The agent-author (and any agent, as the delegation surface) creates/refines agents AS ITSELF. Like
+  // the tasks/kb tools this is auto-apply + audited (creating a definition escalates nothing — every
+  // effect the new agent later has still passes the gate, and only a human can run/assign it). Mirrors
+  // the member-facing POST /api/agents + /:id/config routes below, minus the admin gate.
+  if (method === 'POST' && p === '/api/agents/create') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!os.paths) return sendJson(res, 200, { ok: false, error: 'creating agents requires a data home' });
+    const id = String(b.id || '').trim().toLowerCase();
+    const description = String(b.description || '').trim();
+    const claudeMd = String(b.claudeMd ?? '');
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
+    if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) return sendJson(res, 200, { ok: false, error: 'id must be lowercase letters, digits and hyphens (2–40 chars, starting with a letter)' });
+    if (os.agents.get(id)) return sendJson(res, 200, { ok: false, error: `an agent named "${id}" already exists` });
+    if (!claudeMd.trim()) return sendJson(res, 200, { ok: false, error: 'a CLAUDE.md is required' });
+    const folder = path.join(os.paths.userAgents, id);
+    if (fs.existsSync(folder)) return sendJson(res, 200, { ok: false, error: `folder "${id}" already exists in the agents home` });
+    const examplePrompts = sanitizeExamplePrompts(b.examplePrompts);
+    const category = sanitizeCategory(b.category);
+    const icon = sanitizeIcon(b.icon);
+    const manifest: AgentManifest = {
+      id, version: '1.0.0', description,
+      ...(category ? { category } : {}),
+      principal: `svc-${id}`, policyContext: 'default@v1', runtime: 'claude-code',
+      ...tuning,
+      ...(examplePrompts ? { examplePrompts } : {}),
+      ...(icon ? { icon } : {}),
+      budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
+    };
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'agent.json'), JSON.stringify(manifest, null, 2) + '\n');
+    fs.writeFileSync(path.join(folder, 'CLAUDE.md'), claudeMd);
+    os.registerAgent({ ...manifest, dir: folder });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.created', data: { agent: id, runtime: 'claude-code', dir: folder, by: `agent:${agent}` } });
+    return sendJson(res, 200, { ok: true, id });
+  }
+  if (method === 'POST' && p === '/api/agents/update') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!os.paths) return sendJson(res, 200, { ok: false, error: 'editing agents requires a data home' });
+    const id = String(b.id || '').trim().toLowerCase();
+    const ag = os.agents.get(id);
+    if (!ag?.dir) return sendJson(res, 200, { ok: false, error: `unknown agent "${id}"` });
+    if (ag.runtime !== 'claude-code') return sendJson(res, 200, { ok: false, error: 'only claude-code agents can be edited' });
+    // Only agents that live under the data home are editable (the read-only bundled examples are not).
+    const userRoot = path.resolve(os.paths.userAgents) + path.sep;
+    if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
+    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in b ? b.model : ag.model, effort: 'effort' in b ? b.effort : ag.effort });
+    if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
+    // Only fields present in the body are changed; everything else is preserved.
+    const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
+    const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
+    const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
+    const examplePrompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, category, icon, examplePrompts };
+    const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
+    fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
+    if ('claudeMd' in b) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(b.claudeMd ?? ''));
+    os.registerAgent(next);
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: tuning.model, effort: tuning.effort, category, claudeMd: 'claudeMd' in b, by: `agent:${agent}` } });
+    return sendJson(res, 200, { ok: true, id });
+  }
+
   // Every other /api/* route requires a logged-in member.
   const member = memberFor(os, req);
   if (p.startsWith('/api/') && !member) return sendJson(res, 401, { error: 'not authenticated' });

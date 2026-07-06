@@ -34,10 +34,12 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `task_get` | `GET /api/tasks/get` | `TaskStore.withEvents` | R | task + full activity timeline |
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |
 | `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign; closes a dispatched loop |
+| `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
+| `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` | W | rewrites manifest (+CLAUDE.md); user-home agents only; audited `agent.config.updated` |
 | `slack_reply` | `POST /api/agent/slack/reply` | SlackSocket | W | only when `SLACK_REPLY=1` (chat-triggered) |
 | `discord_reply` | `POST /api/agent/discord/reply` | DiscordSocket | W | only when `DISCORD_REPLY=1` (chat-triggered) |
 
-25 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+27 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 
@@ -52,6 +54,18 @@ run-as identity, just later. So it takes **no fresh approval** — but it's boun
 scheduler `tick()` fires it once when due, then disables it. Recurring (cron) schedules remain
 human-only. A future tightening could classify `schedule` through Policy for workspaces that want
 sign-off on deferred runs.
+
+### `agent_create` / `agent_update` — governance model
+
+These are the **agent-author's** build tools (the default *System* agent provisioned by
+`src/edge/agent-author.ts`), though — like the Tasks tools — they're the general **delegation surface**
+available to any agent. Creating an agent **definition escalates nothing**: the new agent still passes
+every side effect through the gate, and only a **human** can run or assign it (spawn is role-gated). So
+they follow the same **auto-apply + audited** posture as `kb_write` / `task_create` — no approval card —
+emitting `agent.created` / `agent.config.updated` with `principal: agent:<id>`. Guards: strict id
+validation + collision check on create; `agent_update` only touches agents that live under the data home
+(the read-only bundled examples can't be edited) and rewrites only the fields the caller supplied. A
+future tightening could classify agent creation through Policy for workspaces that want sign-off.
 
 ## Remaining gaps (not yet exposed)
 

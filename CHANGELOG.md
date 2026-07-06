@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-06
+
+### Added
+- **The agent-author — a default *System* agent that builds other agents.** Agent OS now ships a
+  meta-agent ([`src/edge/agent-author.ts`](src/edge/agent-author.ts)) provisioned into every data home
+  under the **System** category (like the consolidator): it interviews you about a role, drafts a
+  manifest + CLAUDE.md, and **creates the agent for real** via two new agent-facing MCP tools —
+  `agent_create` and `agent_update` (`memory-mcp.ts`). These are session-secret-gated loopback routes
+  (`POST /api/agents/create|update`) sitting before the member gate, following the same **auto-apply +
+  audited** posture as `kb_write` / `task_create` (`agent.created` / `agent.config.updated`,
+  `principal: agent:<id>`). A new agent is live in the console immediately — no restart. Creating a
+  *definition* escalates nothing: the new agent still passes every effect through the gate, and only a
+  human can run or assign it. `agent_update` edits only user-home agents (bundled examples stay
+  read-only). Docs: [`docs/agent-mcp-tools.md`](docs/agent-mcp-tools.md) (now 27 always-on + 2
+  conditional tools).
+
 ## [0.10.0] — 2026-07-06
 
 ### Changed

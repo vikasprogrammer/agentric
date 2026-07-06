@@ -494,6 +494,53 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  // ── Agents: author new agents (the agent-author's build tools) ──
+  {
+    name: 'agent_create',
+    description:
+      'Create a brand-new agent in this workspace and register it live (no restart) — the way to turn a ' +
+      'role into a real, governed teammate. You supply its id, description, and CLAUDE.md (its system ' +
+      'prompt), plus optional category/model/effort/icon/example prompts. The new agent appears in the ' +
+      'console under its category and can then be run or assigned by a human. Use this when someone asks ' +
+      'you to build or spin up an agent for a job.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'Lowercase letters, digits and hyphens (2–40 chars, starts with a letter), e.g. "seo-writer".' },
+        description: { type: 'string', description: 'One-line summary of what the agent does.' },
+        claudeMd: { type: 'string', description: "The agent's system prompt (CLAUDE.md): role, method, tools it uses, boundaries, how it finishes." },
+        category: { type: 'string', description: 'Grouping label for the console, e.g. Support / Engineering / Marketing / Sales / Research / Ops. Omit → Uncategorized.' },
+        model: { type: 'string', description: 'Model alias/id override, e.g. "claude-opus-4-8". Omit → inherit the workspace default.' },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning effort override. Omit → inherit the workspace default.' },
+        examplePrompts: { type: 'array', items: { type: 'string' }, description: '2–3 clickable starter tasks shown on the agent\'s spawn card.' },
+        icon: { type: 'string', description: 'A lucide icon name from the built-in library (e.g. "Bot", "Wrench", "Megaphone"). Omit → default glyph.' },
+      },
+      required: ['id', 'description', 'claudeMd'],
+    },
+  },
+  {
+    name: 'agent_update',
+    description:
+      'Refine an existing agent: pass its id plus only the fields you want to change (its CLAUDE.md, ' +
+      'description, category, model, effort, example prompts, or icon). Re-registers it live so the next ' +
+      'session uses the new values. Prefer this over creating a near-duplicate when an agent nearly fits.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The id of the agent to edit.' },
+        description: { type: 'string', description: 'New one-line description.' },
+        claudeMd: { type: 'string', description: "Replacement CLAUDE.md (the agent's system prompt)." },
+        category: { type: 'string', description: 'New grouping label (empty string clears it → Uncategorized).' },
+        model: { type: 'string', description: 'Model override (empty string clears → inherit the workspace default).' },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning-effort override.' },
+        examplePrompts: { type: 'array', items: { type: 'string' }, description: 'Replacement starter prompts.' },
+        icon: { type: 'string', description: 'New lucide icon name (or raw <svg>).' },
+      },
+      required: ['id'],
+    },
+  },
 ];
 
 function send(msg: JsonRpc): void {
@@ -837,6 +884,50 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
   return `Filed task ${d.id}: "${title}"${who}. Track it with task_get "${d.id}".`;
 }
 
+// ── Agents: author new agents ─────────────────────────────────────────────────
+async function agentCreate(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim().toLowerCase();
+  const description = String(args.description ?? '').trim();
+  const claudeMd = String(args.claudeMd ?? '');
+  if (!id) return 'A new agent needs an id (lowercase letters, digits and hyphens).';
+  if (!description) return 'A new agent needs a one-line description.';
+  if (!claudeMd.trim()) return "A new agent needs a CLAUDE.md (its system prompt).";
+  const res = await fetch(AOS_URL + '/api/agents/create', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, id, description, claudeMd,
+      category: args.category !== undefined ? String(args.category) : undefined,
+      model: args.model !== undefined ? String(args.model) : undefined,
+      effort: args.effort !== undefined ? String(args.effort) : undefined,
+      examplePrompts: Array.isArray(args.examplePrompts) ? args.examplePrompts.map(String) : undefined,
+      icon: args.icon !== undefined ? String(args.icon) : undefined,
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  if (!d.ok) return `Could not create the agent: ${d.error ?? 'unknown error'}`;
+  return `Created agent "${d.id}". It's live in the console now (grouped under ${args.category ? String(args.category) : 'Uncategorized'}); a human can run or assign it. Use agent_update "${d.id}" to refine it.`;
+}
+
+async function agentUpdate(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim().toLowerCase();
+  if (!id) return 'Which agent? (id is required).';
+  // Only forward fields the caller actually supplied, so an unset field is left untouched server-side.
+  const body: Record<string, unknown> = { session: SESSION, id };
+  for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
+    if (args[k] !== undefined) body[k] = String(args[k]);
+  }
+  if (Array.isArray(args.examplePrompts)) body.examplePrompts = args.examplePrompts.map(String);
+  const res = await fetch(AOS_URL + '/api/agents/update', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  if (!d.ok) return `Could not update the agent: ${d.error ?? 'unknown error'}`;
+  return `Updated agent "${id}". The next session it runs will use the new configuration.`;
+}
+
 async function taskList(args: Record<string, unknown>): Promise<string> {
   const u = new URL(AOS_URL + '/api/tasks/list');
   u.searchParams.set('session', SESSION);
@@ -1017,6 +1108,8 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_get' ? await taskGet(args)
         : name === 'task_claim' ? await taskClaim(args)
         : name === 'task_update' ? await taskUpdate(args)
+        : name === 'agent_create' ? await agentCreate(args)
+        : name === 'agent_update' ? await agentUpdate(args)
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
     } catch (e) {

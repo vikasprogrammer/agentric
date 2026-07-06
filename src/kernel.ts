@@ -38,6 +38,7 @@ import { InMemoryIdempotencyStore } from './gateway/idempotency';
 import { JsonPolicyEngine, PolicyDocument } from './governance/policy';
 import { EnvSecretsVault, SqliteSecretsVault } from './edge/secrets';
 import { resolveMasterKey } from './edge/secret-crypto';
+import { ensureAgentAuthor } from './edge/agent-author';
 import { HealthMonitor } from './observability/monitor';
 import { MockAdapter, MockBehavior } from './runtime/mock-adapter';
 import { ClaudeCodeAdapter } from './runtime/claude-code-adapter';
@@ -291,6 +292,9 @@ export function loadAgentOS(
   // Bundled examples first, then the user's agents (which override examples by id).
   loadAgentsFrom(os, paths.bundledAgents);
   loadAgentsFrom(os, paths.userAgents);
+  // Code-provisioned System agents that must exist in every home (materialised into the data home,
+  // idempotently) even though they don't ship as a config/agents folder.
+  ensureAgentAuthor(os);
   return os;
 }
 
