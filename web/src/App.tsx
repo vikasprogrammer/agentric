@@ -3438,6 +3438,8 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
   const [savedCategory, setSavedCategory] = useState('')
   const [icon, setIcon] = useState<string | undefined>(undefined)
   const [savedIcon, setSavedIcon] = useState<string | undefined>(undefined)
+  const [secrets, setSecrets] = useState('')
+  const [savedSecrets, setSavedSecrets] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
@@ -3448,23 +3450,26 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
       const d = r.description ?? ''
       const p = (r.examplePrompts ?? []).join('\n')
       const c = r.category ?? ''
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon)
+      const s = (r.shellSecrets ?? []).join(' ')
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
+    const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
-    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     const t: RuntimeTuning = { model: r.model, effort: r.effort }
     const d = r.description ?? ''
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    const s = (r.shellSecrets ?? []).join(' ')
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -3488,6 +3493,11 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
         <div className="space-y-1">
           <label className="text-xs font-medium">Starter prompts</label>
           <Textarea value={prompts} onChange={(e) => setPrompts(e.target.value)} className="min-h-[70px] text-sm" placeholder={'One per line — clickable chips on the spawn card (up to 6).'} />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Shell secrets</label>
+          <Input value={secrets} onChange={(e) => setSecrets(e.target.value)} className="font-mono text-sm" placeholder="e.g. GH_TOKEN  (space/comma separated env-var names)" />
+          <p className="text-[11px] text-muted-foreground">Vault keys exported as env vars into this agent's shell (so CLIs like <span className="font-mono">gh</span> authenticate). Store the value in <span className="font-medium">Settings → Secrets</span> (key = the name here; set its principal to <span className="font-mono">{agentId}</span> for a per-agent value, or leave tenant-wide). Resolved at launch, audited per key.</p>
         </div>
         <div className="flex items-center gap-3">
           <Button size="sm" onClick={save} disabled={busy || !dirty}>{dirty ? 'Save' : 'Saved'}</Button>

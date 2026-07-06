@@ -113,7 +113,11 @@ Key modules:
   **runtime tuning** (`resolveRuntimeTuning` in `src/types.ts`: agent manifest → workspace default → CLI
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
   maps onto `--model`/`--effort`/`--permission-mode` (model+effort both lanes; permission-mode interactive
-  only — headless keeps `--dangerously-skip-permissions`).
+  only — headless keeps `--dangerously-skip-permissions`). It also resolves the agent's opt-in
+  **`shellSecrets`** (manifest list of vault keys, e.g. `["GH_TOKEN"]`) via `injectShellSecrets` and
+  exports each as a shell env var — the ONLY path a vault secret reaches the interactive shell (so a
+  plain CLI like `gh` authenticates); connectors still get theirs via the MCP bag. Agent-scoped
+  principal (widening to `*`), audited `shell.secret.injected`/`unresolved`, opt-in per agent.
 - `src/governance/` — `policy.ts` (JSON rule engine), `approvals.ts`, `audit.ts`, `team.ts`,
   `settings.ts` (Company context **+ workspace runtime defaults**: the fleet-wide model/effort/permission
   fallback, `runtimeDefaults`/`setRuntimeDefaults`), `skills.ts` (global `.claude/skills` library,

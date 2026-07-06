@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-06
+
+### Added
+- **Per-agent shell secrets — vault credentials that reach the agent's terminal.** An agent manifest
+  can now carry an opt-in `shellSecrets: ["GH_TOKEN"]` list ([`src/types.ts`](src/types.ts)). At launch,
+  each named key is resolved from the encrypted vault — principal = the agent, widening to the
+  tenant-wide `*` default — and exported as a shell env var into that agent's claude-code session
+  ([`TerminalManager.injectShellSecrets`](src/terminal.ts)), so a plain CLI like `gh` (via `GH_TOKEN`)
+  authenticates without baking the credential into the server process env. Each resolution is audited
+  (`shell.secret.injected` / `shell.secret.unresolved`); a missing value leaves the var **unset** (not
+  blanked) so the tool sees "no token" cleanly. This is the **only** path a vault secret reaches the
+  interactive shell — connectors still get theirs via the MCP bag — so exposure stays explicit and
+  opt-in per agent. Store the value in **Settings → Secrets** (set its principal to the agent id for a
+  per-agent token, or leave tenant-wide) and list the key in the agent's config editor
+  (**Runtime tuning → Shell secrets**). Settable via `POST /api/agents`, the agent config PUT, and the
+  agent-facing `agent_create` / `agent_update` tools.
+
 ## [0.11.0] — 2026-07-06
 
 ### Added

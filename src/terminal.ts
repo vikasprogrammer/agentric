@@ -572,6 +572,10 @@ export class TerminalManager {
       // can be resumed in-place with `claude --resume <id>` when the user reconnects in the browser.
       env.CLAUDE_SESSION_ID = randomUUID();
 
+      // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`). Done
+      // here so both isolation lanes and the resurrect env file (writeEnvFile below) carry them.
+      this.injectShellSecrets(env, agent, manifest, id);
+
       if (this.uidIsolation) {
         // Flag on: the launcher writes the files INTO the member's home (member-readable), copies the
         // agent dir to a per-member working copy (AGENT_DIR override), and sets MCP_CONFIG/COMPANY_FILE/
@@ -1257,6 +1261,35 @@ export class TerminalManager {
     }
   }
 
+  /**
+   * Resolve the agent's opt-in `shellSecrets` (vault keys) and export each as a shell env var into
+   * the session — so a plain CLI like `gh` (GH_TOKEN) authenticates without the OS baking the
+   * credential into the server env. Agent-scoped principal (the agent IS the identity for its
+   * tooling), widening to the tenant-wide `*` default inside the vault. Audited per key: `injected`
+   * on success, `unresolved` when the vault has no value (env var left unset rather than blanked, so
+   * `gh` sees "no token" cleanly instead of "set but empty"). This is the ONLY path a vault secret
+   * reaches the interactive shell — connectors get theirs via the MCP bag — so exposure stays
+   * explicit and opt-in per agent (the manifest list).
+   */
+  private injectShellSecrets(
+    env: Record<string, string>,
+    agent: string,
+    manifest: { shellSecrets?: string[] } | undefined,
+    sessionId: string,
+  ): void {
+    const keys = manifest?.shellSecrets;
+    if (!keys?.length) return;
+    for (const key of keys) {
+      const value = this.os.secrets.getSync(this.os.tenant, agent, key);
+      if (value === undefined) {
+        this.audit(sessionId, agent, 'shell.secret.unresolved', { key, principal: agent });
+        continue;
+      }
+      env[key] = value;
+      this.audit(sessionId, agent, 'shell.secret.injected', { key, principal: agent });
+    }
+  }
+
   /** The JSON policy engine ignores ctx; provide a minimal stand-in to satisfy the type. */
   private ctx(sessionId: string, agent: string): RunContext {
     return {
@@ -1280,7 +1313,8 @@ const EPISODE_NOISE = new Set([
   'session.created', 'session.ended', 'session.reported', 'session.resumed', 'session.stopped',
   'session.error', 'session.tuning', 'session.progress', 'session.notified', 'session.attachment',
   'skills.materialized', 'skills.error', 'connector.minted', 'connector.mint.failed',
-  'connector.secret.unresolved', 'gate.attempt', 'gate.killswitch', 'approval.resolved',
+  'connector.secret.unresolved', 'shell.secret.injected', 'shell.secret.unresolved',
+  'gate.attempt', 'gate.killswitch', 'approval.resolved',
   'approval.auto_approved', 'episode.stored', 'episode.error',
 ]);
 

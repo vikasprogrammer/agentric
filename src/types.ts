@@ -648,6 +648,13 @@ export interface AgentManifest extends RuntimeTuning {
   /** Suggested first tasks shown on the agent's spawn card (clickable chips that prefill the box).
    *  Per-agent so each agent advertises how it wants to be invoked, instead of a generic default. */
   examplePrompts?: string[];
+  /** Opt-in list of vault keys to resolve and export as shell env vars into this agent's claude-code
+   *  sessions (e.g. `["GH_TOKEN"]` so the `gh` CLI authenticates). Each string is BOTH the vault key
+   *  and the env var name, so it must be a valid identifier. Resolved at launch with principal = the
+   *  agent (widening to the tenant-wide `*` default), and audited per key. This is the only path a
+   *  vault secret reaches the interactive shell — connectors get theirs via the MCP bag — so it's
+   *  deliberately explicit per agent. Undefined/empty → nothing is exported. */
+  shellSecrets?: string[];
   /** The agent's visual icon. Either a built-in library id (a lucide icon name like `"Bot"`) or a raw
    *  custom `<svg>…</svg>` markup string the user uploaded. Undefined → the console falls back to a
    *  default glyph. Purely cosmetic. Rendered in an `<img>` so inline SVG can't execute scripts. */
@@ -682,6 +689,34 @@ export function sanitizeExamplePrompts(input: unknown): string[] | undefined {
     .map((s) => s.trim().slice(0, 500))
     .filter(Boolean)
     .slice(0, 6);
+  return out.length ? out : undefined;
+}
+
+/** Valid POSIX-ish env var / vault key name: a letter or underscore, then letters/digits/underscores.
+ *  A `shellSecrets` entry is used verbatim as both the vault key and the exported shell variable, so
+ *  it must satisfy this or the shell can't reference it. */
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Normalize a `shellSecrets` payload (from an API body or config file): coerce to an array of
+ *  trimmed strings, drop anything that isn't a valid env-var name, dedupe (order-preserving), cap
+ *  each at 64 chars and the list at 32. Returns undefined when the result is empty so the manifest
+ *  carries no `shellSecrets` key at all. */
+export function sanitizeShellSecrets(input: unknown): string[] | undefined {
+  const raw = Array.isArray(input)
+    ? input
+    : typeof input === 'string'
+      ? input.split(/[\s,]+/) // accept a comma/space/newline-separated string from a UI field too
+      : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== 'string') continue;
+    const k = x.trim().slice(0, 64);
+    if (!ENV_NAME.test(k) || seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= 32) break;
+  }
   return out.length ? out : undefined;
 }
 

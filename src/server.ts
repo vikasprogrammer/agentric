@@ -25,7 +25,7 @@ import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUse
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument } from './governance/policy';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
-import { AgentManifest, ApprovalRequest, EmbeddingsConfig, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, TaskStatus } from './types';
+import { AgentManifest, ApprovalRequest, EmbeddingsConfig, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
 interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -773,12 +773,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const examplePrompts = sanitizeExamplePrompts(b.examplePrompts);
     const category = sanitizeCategory(b.category);
     const icon = sanitizeIcon(b.icon);
+    const shellSecrets = sanitizeShellSecrets(b.shellSecrets);
     const manifest: AgentManifest = {
       id, version: '1.0.0', description,
       ...(category ? { category } : {}),
       principal: `svc-${id}`, policyContext: 'default@v1', runtime: 'claude-code',
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
+      ...(shellSecrets ? { shellSecrets } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -810,7 +812,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const examplePrompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, category, icon, examplePrompts };
+    const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, category, icon, examplePrompts, shellSecrets };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     if ('claudeMd' in b) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(b.claudeMd ?? ''));
@@ -1403,6 +1406,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const examplePrompts = sanitizeExamplePrompts(b.examplePrompts);
     const category = sanitizeCategory(b.category);
     const icon = sanitizeIcon(b.icon);
+    const shellSecrets = sanitizeShellSecrets(b.shellSecrets);
     const manifest: AgentManifest = {
       id,
       version: '1.0.0',
@@ -1413,6 +1417,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       runtime: 'claude-code',
       ...tuning,
       ...(examplePrompts ? { examplePrompts } : {}),
+      ...(shellSecrets ? { shellSecrets } : {}),
       ...(icon ? { icon } : {}),
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     };
@@ -1496,24 +1501,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, examplePrompts: ag.examplePrompts, category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
     if (tErr) return sendJson(res, 400, { error: tErr });
     // Replace the tuning fields wholesale (sanitize already dropped empties to undefined → those
-    // become "inherit"). Starter prompts + category + icon are only touched when the body carries the
-    // field (a tuning-only save from the runtime card leaves them as-is). Preserve everything else.
+    // become "inherit"). Starter prompts + shell secrets + category + icon are only touched when the
+    // body carries the field (a tuning-only save from the runtime card leaves them as-is). Preserve
+    // everything else.
     const prompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
+    const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, category, icon };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, shellSecrets, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, category } });
-    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, category, shellSecrets: shellSecrets ?? [] } });
+    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, shellSecrets, category, icon });
   }
 
   // ── workspace runtime defaults (the fleet-wide model/effort/permission fallback) — owner/admin only ──
