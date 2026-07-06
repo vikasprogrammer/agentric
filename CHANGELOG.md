@@ -8,7 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.12.0] — 2026-07-06
+## [0.13.0] — 2026-07-06
+
+### Added
+- **Agent operating notes: fleet-coordination section + a read-only viewer in Settings → System.** The
+  OS-owned orientation appended to every claude-code agent's system prompt
+  ([`AGENT_OS_OPERATING_NOTES`](src/terminal.ts)) gains a **"You are one agent in a fleet"** section, so
+  agents stop treating the shared planes as isolated tools and understand how to coordinate: **Tasks**
+  (`task_*`) as the shared work queue + hand-off path (delegate specialist work by assigning a task),
+  the **Knowledge Base** (`kb_*`) as the fleet's shared living wiki, **shared memory**
+  (`remember` with `shared: true`) for fleet-wide facts, and `directory_lookup` for reaching teammates.
+  The notes were previously invisible — hardcoded in source, in no UI. They're now surfaced **read-only**
+  in **Settings → System** (the constant is exported, rides the existing `/api/state` payload, and
+  renders in a read-only textarea beside Company context) so operators can see exactly what the whole
+  fleet is told about running inside Agent OS. Company context stays the tenant-editable half; these
+  notes stay OS-owned.
 
 ### Added
 - **Per-agent shell secrets — vault credentials that reach the agent's terminal.** An agent manifest

@@ -4363,6 +4363,23 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
           </dl>
         </CardContent>
       </Card>
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <p className="text-sm font-medium">Agent operating notes</p>
+            <p className="text-sm text-muted-foreground">
+              OS-owned orientation appended to <strong>every claude-code agent's</strong> system prompt,
+              after your Company context. This is what the fleet is told about running inside Agent OS —
+              it's built into the platform and read-only here.
+            </p>
+          </div>
+          <Textarea
+            value={state.operatingNotes ?? ''}
+            readOnly
+            className="min-h-[320px] font-mono text-xs leading-relaxed"
+          />
+        </CardContent>
+      </Card>
     </div>
   )
 }

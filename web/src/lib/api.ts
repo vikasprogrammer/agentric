@@ -56,6 +56,8 @@ export interface StateResp {
   terminalAgents: string[]
   agents: AgentInfo[]
   capabilities: { id: string; description: string; defaultRisk: string }[]
+  /** OS-owned operating notes appended to every claude-code agent's system prompt. Read-only. */
+  operatingNotes?: string
 }
 /** Self-update status — the deploy is a git checkout, so this reflects "is the box behind origin?". */
 export interface UpdateStatus {
