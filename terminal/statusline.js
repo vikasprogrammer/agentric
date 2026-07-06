@@ -45,13 +45,26 @@ async function governance() {
   } catch { return {}; }
 }
 
+// Green under half, yellow past half, red near the ceiling — shared by context + usage meters.
+const pctColor = (pct) => (pct >= 80 ? C.red : pct >= 50 ? C.yellow : C.green);
+
 function contextBar(cw) {
   const pct = cw && cw.used_percentage != null ? Math.round(cw.used_percentage) : null;
   if (pct == null) return `${C.gray}context —${C.reset}`;
   const width = 10, filled = Math.max(0, Math.min(width, Math.round((pct * width) / 100)));
-  const color = pct >= 80 ? C.red : pct >= 50 ? C.yellow : C.green;
+  const color = pctColor(pct);
   const bar = '▓'.repeat(filled) + '░'.repeat(width - filled);
   return `${color}${bar}${C.reset} ${color}${pct}%${C.reset}`;
+}
+
+// Compact working dir: ~ for $HOME, and collapse to the last two segments when deep.
+function folderLabel(cwd) {
+  if (!cwd) return null;
+  const home = process.env.HOME || '';
+  let p = home && cwd.startsWith(home) ? '~' + cwd.slice(home.length) : cwd;
+  const segs = p.split('/').filter(Boolean);
+  if (segs.length > 2) p = (p.startsWith('~') ? '~/…/' : '…/') + segs.slice(-2).join('/');
+  return p;
 }
 
 (async () => {
@@ -67,6 +80,10 @@ function contextBar(cw) {
   parts.push(head);
   if (g.runAs) parts.push(`${C.dim}as ${g.runAs}${C.reset}`);
 
+  // Current working folder (compact).
+  const folder = folderLabel((d.workspace && d.workspace.current_dir) || d.cwd);
+  if (folder) parts.push(`${C.cyan}${folder}${C.reset}`);
+
   // Model · effort (JSON first, env fallback for either).
   const model = (d.model && d.model.display_name) || process.env.CLAUDE_MODEL;
   const effort = (d.effort && d.effort.level) || process.env.CLAUDE_EFFORT;
@@ -74,6 +91,13 @@ function contextBar(cw) {
 
   // Context window bar.
   parts.push(contextBar(d.context_window));
+
+  // Weekly usage limit (Pro/Max only, present after the first API response — else skip silently).
+  const wk = d.rate_limits && d.rate_limits.seven_day && d.rate_limits.seven_day.used_percentage;
+  if (typeof wk === 'number') {
+    const p = Math.round(wk);
+    parts.push(`${C.gray}wk ${C.reset}${pctColor(p)}${p}%${C.reset}`);
+  }
 
   // Cost (skip when free/zero).
   const cost = d.cost && typeof d.cost.total_cost_usd === 'number' ? d.cost.total_cost_usd : 0;
