@@ -13,7 +13,7 @@ import { VERSION } from './version';
 import { TenantRegistry, TenantRuntime } from './tenant-registry';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
-import { TerminalManager } from './terminal';
+import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
 import { Automation, Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
@@ -840,6 +840,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       terminalAgents: agents.map((a) => a.id), // back-compat: existing UI lists ids
       agents, // richer: { id, description, runtime }
       capabilities: os.registry.list().map((c) => ({ id: c.id, description: c.description, defaultRisk: c.defaultRisk })),
+      // OS-owned orientation appended to every claude-code agent's system prompt (after Company
+      // context). Surfaced read-only in Settings → System so operators can see what the fleet is told.
+      operatingNotes: AGENT_OS_OPERATING_NOTES,
     });
   }
 
