@@ -9,6 +9,17 @@ new version heading in the same commit.
 ## [Unreleased]
 
 ### Added
+- **Session status line (info bar in every governed claude TUI).** Each interactive agent session now
+  renders a persistent bottom bar via Claude Code's native `statusLine` — a zero-dependency Node
+  renderer ([`terminal/statusline.js`](terminal/statusline.js)) wired in by `claude-launch.sh`. It
+  blends Claude's live session JSON (model·effort, a context-window usage bar, session cost, diff
+  churn) with the two signals only Agent OS knows: **which human identity the run acts as** and **how
+  many approvals it's blocked on** (`⏸ N waiting`), pulled from a new session-secret-gated loopback
+  route [`GET /api/agent/status`](src/server.ts) (pending approvals for the run + run-as name). Polled
+  on a 5 s refresh so the "waiting" indicator stays live while a gate is suspended; the governance
+  fetch is best-effort with a tight timeout, so an old/slow server just drops to the local metrics.
+  Inspired by [ccstatusline](https://github.com/sirmalloc/ccstatusline), built on the same underlying
+  Claude Code mechanism rather than vendoring the tool.
 - **GitHub App token minter (foundation for native GitHub).** New zero-dependency connector
   ([`src/connectors/github.ts`](src/connectors/github.ts)) that signs a short-lived App JWT (RS256, via
   `node:crypto`) and exchanges it for a **1 h installation access token** — the single credential that

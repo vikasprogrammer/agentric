@@ -42,6 +42,8 @@ cd "$AGENT_DIR" 2>/dev/null || { red "agent folder not found: $AGENT_DIR"; exec 
 # are pure dry-runs; all go through the loopback API, which derives identity from the session row).
 # The Notification hook lives beside the gate hook; derive its path so it's correct on every machine.
 NOTIFY_HOOK="$(dirname "$HOOK")/notify-hook.sh"
+# The Agent OS status line renderer (native claude statusLine) lives beside the hooks too.
+STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # NO OS-level Bash sandbox. Governance is the gate hook (PreToolUse), which is now the SOLE
 # authority: it emits an authoritative `permissionDecision` per Bash/connector call, so we don't
 # also wrap the shell in Seatbelt/bubblewrap. The old sandbox was never a real boundary anyway —
@@ -86,7 +88,8 @@ cat > .claude/aos-settings.json <<JSON
     "Notification": [
       { "hooks": [ { "type": "command", "command": "bash '$NOTIFY_HOOK'" } ] }
     ]
-  }
+  },
+  "statusLine": { "type": "command", "command": "node '$STATUSLINE'", "padding": 1, "refreshInterval": 5 }
 }
 JSON
 

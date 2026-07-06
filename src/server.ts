@@ -316,6 +316,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }));
     return sendJson(res, 200, { members });
   }
+  // Status line (the `statusline.js` bar in a governed claude TUI): live governance for THIS run —
+  // how many approvals it's blocked on and which human identity it acts as. Session-secret gated like
+  // the other agent loopback routes; read-only. Kept cheap: it's polled on the TUI refreshInterval.
+  if (method === 'GET' && p === '/api/agent/status') {
+    const session = url.searchParams.get('session') || '';
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const pending = os.approvals.pending(os.tenant).filter((a) => a.runId === session).length;
+    const runAsId = tm.sessionRunAs(session);
+    const runAs = runAsId ? os.team.getMember(runAsId)?.name ?? null : null;
+    return sendJson(res, 200, { agent, pending, runAs });
+  }
   if (method === 'GET' && p === '/api/agent/policy') {
     const session = url.searchParams.get('session') || '';
     const agent = tm.sessionAgent(session);
