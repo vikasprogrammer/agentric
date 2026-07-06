@@ -2,7 +2,6 @@
 name: engineering-discipline
 description: Baseline engineering conduct for writing, reviewing, editing, or refactoring code — surface assumptions before coding, keep the solution minimal, make surgical changes, leave a verifiable check, and never simplify away safety. Use on any coding, scripting, or code-review task.
 license: MIT
-default: true
 ---
 
 # Engineering discipline

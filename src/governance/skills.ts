@@ -62,12 +62,6 @@ export interface CatalogSkill {
   files: string[];
   /** True when the tenant's library already contains a skill of this name. */
   installed: boolean;
-  /**
-   * `default: true` in the catalog SKILL.md frontmatter — a fleet-wide DEFAULT skill. These
-   * materialise into every agent automatically (no per-tenant install), unless a library or
-   * hand-authored skill of the same name shadows them. See `materialize`.
-   */
-  isDefault: boolean;
 }
 
 export interface CreateSkillInput {
@@ -233,7 +227,7 @@ export class SkillsStore {
    * library skill is synced (back-compat for non-agent callers).
    */
   materialize(claudeDir: string, agent?: string): string[] {
-    if (!this.dir && !this.catalogDir) return [];
+    if (!this.dir) return [];
     const target = path.join(claudeDir, 'skills');
     const managed = new Set<string>(); // names we own in the target right now
     const handAuthored = new Set<string>(); // agent's own — leave alone, they shadow globals
@@ -249,15 +243,9 @@ export class SkillsStore {
     const library = this.list().filter(
       (s) => agent === undefined || s.agents.length === 0 || s.agents.includes(agent),
     );
-    const libNames = new Set(library.map((s) => s.name));
+    const wanted = new Set(library.map((s) => s.name));
 
-    // Fleet-wide DEFAULT catalog skills (`default: true`) materialise into EVERY agent with no
-    // per-tenant install — always on. A library skill of the same name (the tenant installed/edited
-    // its own copy) shadows the default, so we skip those. Hand-authored copies win over both below.
-    const defaults = this.defaultSkillNames().filter((n) => !libNames.has(n));
-    const wanted = new Set<string>([...libNames, ...defaults]);
-
-    // Drop managed skills that have left the library/defaults (or are now shadowed by hand-authored).
+    // Drop managed skills that have left the library (or are now shadowed by a hand-authored one).
     for (const name of managed) {
       if (!wanted.has(name) || handAuthored.has(name)) {
         fs.rmSync(path.join(target, name), { recursive: true, force: true });
@@ -269,11 +257,6 @@ export class SkillsStore {
       if (handAuthored.has(s.name)) continue; // agent's own copy wins
       this.copySkill(s.name, path.join(target, s.name));
       done.push(s.name);
-    }
-    for (const name of defaults) {
-      if (handAuthored.has(name)) continue; // agent's own copy wins
-      this.copyFrom(this.catalogDir!, name, path.join(target, name));
-      done.push(name);
     }
     return done;
   }
@@ -324,19 +307,7 @@ export class SkillsStore {
       .readdirSync(folder, { withFileTypes: true })
       .filter((e) => !(e.isFile() && e.name === 'SKILL.md') && e.name !== MARKER && e.name !== 'node_modules')
       .map((e) => (e.isDirectory() ? e.name + '/' : e.name));
-    return { name, description: fm.description ?? '', bytes: stat.size, files, isDefault: fm.default === 'true' };
-  }
-
-  /** Names of the fleet-wide DEFAULT catalog skills (`default: true`) — always materialised. */
-  private defaultSkillNames(): string[] {
-    if (!this.catalogDir || !fs.existsSync(this.catalogDir)) return [];
-    const out: string[] = [];
-    for (const entry of fs.readdirSync(this.catalogDir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !validSkillName(entry.name)) continue;
-      const c = this.readCatalog(entry.name);
-      if (c?.isDefault) out.push(entry.name);
-    }
-    return out;
+    return { name, description: fm.description ?? '', bytes: stat.size, files };
   }
 
   // ── per-agent assignment (skill_assignments join table) ──────────────────────
@@ -371,23 +342,6 @@ export class SkillsStore {
     fs.rmSync(dest, { recursive: true, force: true });
     fs.mkdirSync(dest, { recursive: true });
     fs.cpSync(src, dest, { recursive: true });
-    fs.writeFileSync(path.join(dest, MARKER), '');
-  }
-
-  /**
-   * Copy a skill folder from an arbitrary source dir (the bundled catalog) into `dest`, skipping
-   * `node_modules` and any stale marker, then stamp our managed marker. Used for the always-on
-   * DEFAULT catalog skills — the per-agent copy is refreshed from the software on every launch, so a
-   * skill's own first-run step reinstalls deps as needed (as `design-review` already does).
-   */
-  private copyFrom(srcDir: string, name: string, dest: string): void {
-    const src = path.join(srcDir, name);
-    fs.rmSync(dest, { recursive: true, force: true });
-    fs.mkdirSync(dest, { recursive: true });
-    fs.cpSync(src, dest, {
-      recursive: true,
-      filter: (s) => path.basename(s) !== 'node_modules' && path.basename(s) !== MARKER,
-    });
     fs.writeFileSync(path.join(dest, MARKER), '');
   }
 }

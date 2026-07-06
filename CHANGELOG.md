@@ -20,19 +20,15 @@ new version heading in the same commit.
 ## [0.8.0] — 2026-07-06
 
 ### Added
-- **Default `engineering-discipline` skill, always on across the fleet.** A single, tone-neutral
-  coding-conduct skill — surface assumptions before coding, keep the solution minimal (reuse before
-  you write), make surgical changes, leave a verifiable check, and a "never simplify away" safety floor
-  (validation / error handling / security / a11y / tests / anything asked for). Distilled from the best
-  of the public Karpathy-guidelines and Ponytail skills, with the personas/comment-conventions stripped
-  and a **headless override** added so unattended runs (cron / Slack / Discord / dispatched tasks) make
-  the most reasonable assumption and proceed instead of stalling on a clarifying question. Ships in the
-  bundled catalog (`config/skills/engineering-discipline`) with `default: true` in its frontmatter.
-- **Always-on default skills.** Catalog skills flagged `default: true` now materialise into **every**
-  claude-code agent at launch with no per-tenant install (`SkillsStore.materialize` unions the library
-  with default catalog skills; `CatalogSkill.isDefault` surfaces the flag). A library or hand-authored
-  skill of the same name still shadows the default, and the `.aos-managed` marker keeps re-syncs from
-  clobbering an agent's own copies.
+- **`engineering-discipline` skill in the bundled catalog.** A single, tone-neutral coding-conduct skill
+  — surface assumptions before coding, keep the solution minimal (reuse before you write), make surgical
+  changes, leave a verifiable check, and a "never simplify away" safety floor (validation / error
+  handling / security / a11y / tests / anything asked for). Distilled from the best of the public
+  Karpathy-guidelines and Ponytail skills, with the personas/comment-conventions stripped and a
+  **headless override** added so unattended runs (cron / Slack / Discord / dispatched tasks) make the
+  most reasonable assumption and proceed instead of stalling on a clarifying question. Opt-in per tenant
+  from the Skills catalog (`config/skills/engineering-discipline`); once installed it materialises into
+  every claude-code agent at launch like any other library skill.
 
 ## [0.7.0] — 2026-07-05
 
