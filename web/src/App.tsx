@@ -370,11 +370,13 @@ function Console({ me }: { me: Member }) {
   }, [])
 
   // Browser-tab badge: a 🔔 + count of sessions where Claude is waiting on you (one open
-  // notification per session), so the tab nags even when the console isn't focused.
+  // notification per session), so the tab nags even when the console isn't focused. The tenant
+  // name leads the title so several instances are distinguishable across browser tabs.
   useEffect(() => {
     const n = messages.filter((m) => m.type === 'notification' && m.status === 'open').length
-    document.title = n > 0 ? `🔔 (${n}) Agent OS` : 'Agent OS'
-  }, [messages])
+    const base = `${state?.tenantName || state?.tenant ? `${state.tenantName || state.tenant} · ` : ''}Agent OS`
+    document.title = n > 0 ? `🔔 (${n}) ${base}` : base
+  }, [messages, state?.tenantName, state?.tenant])
 
   const refreshState = () => api.state().then(setState)
   const deleteAgent = async (id: string) => {
@@ -4323,35 +4325,190 @@ function SettingsPage({ me, state }: { me: Member; state: StateResp | null }) {
           : tab === 'secrets' ? <SecretsSettings me={me} />
           : tab === 'memory' ? <MemorySettings me={me} />
           : tab === 'governance' ? <GovernanceSettings me={me} />
-          : tab === 'system' ? <SystemSettings state={state} />
+          : tab === 'system' ? <SystemSettings state={state} me={me} />
           : <PolicyEditor me={me} />}
       </div>
     </div>
   )
 }
 
-/** Settings → System — read-only workspace runtime facts (the same tenant/policy/home shown top-right). */
-function SystemSettings({ state }: { state: StateResp | null }) {
+/** Settings → System — workspace runtime facts + the Software panel (version, self-update, restart). */
+function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) {
   if (!state) return <div className="text-sm text-muted-foreground">Loading…</div>
   const rows: [string, ReactNode][] = [
+    ['Version', state.version ? <>v{state.version}</> : '—'],
     ['Tenant', <>{state.tenantName || state.tenant}{state.tenantName ? <span className="text-muted-foreground"> ({state.tenant})</span> : null}</>],
     ['Policy', state.policy],
     ['Data home', state.home || '—'],
   ]
   return (
+    <div className="space-y-4">
+      <SoftwarePanel me={me} />
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <p className="text-sm text-muted-foreground">
+            Workspace runtime facts for this instance. One data home + one port = one isolated tenant.
+          </p>
+          <dl className="divide-y rounded-md border">
+            {rows.map(([label, value]) => (
+              <div key={label} className="flex items-baseline gap-4 px-3 py-2">
+                <dt className="w-28 shrink-0 text-xs font-medium text-muted-foreground">{label}</dt>
+                <dd className="min-w-0 break-all font-mono text-sm">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+/**
+ * Settings → System → Software — version + self-update + restart. Polls `/api/update` (a cached
+ * `git fetch`): shows the running build, whether the checkout is behind origin, and — for the owner —
+ * an "Update & restart" (pull + rebuild + bounce) or a plain "Restart" button. After either bounce it
+ * waits for `/health` to come back (on the new version, for an update) then reloads the console.
+ */
+function SoftwarePanel({ me }: { me: Member }) {
+  const [status, setStatus] = useState<UpdateStatus | null>(null)
+  const [checking, setChecking] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [result, setResult] = useState<UpdateApplyResult | null>(null)
+  const [restarting, setRestarting] = useState(false)
+  const [err, setErr] = useState('')
+
+  const check = (force = false) => {
+    setChecking(true); setErr('')
+    return api.checkUpdate(force).then(setStatus).catch(() => setErr('Could not check for updates.')).finally(() => setChecking(false))
+  }
+  useEffect(() => { check() }, [])
+
+  // Wait for the process to respawn, then reload. For an update, hold until the version actually changes.
+  const waitForBounce = (fromVersion?: string) => {
+    setRestarting(true)
+    const started = Date.now()
+    const tick = async () => {
+      try {
+        const h = await fetch('/health').then((x) => x.json())
+        if (h?.version && (!fromVersion || h.version !== fromVersion)) { window.location.reload(); return }
+      } catch { /* server bouncing — keep waiting */ }
+      if (Date.now() - started > 120_000) { window.location.reload(); return }
+      setTimeout(tick, 3000)
+    }
+    setTimeout(tick, 5000)
+  }
+
+  const apply = async () => {
+    setApplying(true); setResult(null); setErr('')
+    const r = await api.applyUpdate()
+    setResult(r); setApplying(false)
+    if (r.ok && r.restarting) waitForBounce(status?.current)
+  }
+
+  const restart = async () => {
+    if (!confirm('Restart the server now? Running agent sessions keep going (tmux), but the console will briefly disconnect while the process respawns.')) return
+    setErr('')
+    const r = await api.restart()
+    if (!r.ok) return setErr(r.error || 'Restart failed.')
+    if (r.restarting) waitForBounce()
+    else setErr('No restart command resolved on this box — restart the service by hand.')
+  }
+
+  const isOwner = me.role === 'owner'
+  const upToDate = status && !status.updateAvailable && !status.error
+
+  return (
     <Card>
-      <CardContent className="space-y-4 p-4">
-        <p className="text-sm text-muted-foreground">
-          Workspace runtime facts for this instance. One data home + one port = one isolated tenant.
-        </p>
-        <dl className="divide-y rounded-md border">
-          {rows.map(([label, value]) => (
-            <div key={label} className="flex items-baseline gap-4 px-3 py-2">
-              <dt className="w-28 shrink-0 text-xs font-medium text-muted-foreground">{label}</dt>
-              <dd className="min-w-0 break-all font-mono text-sm">{value}</dd>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Package className="h-4 w-4" /> Software</div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs" disabled={checking || applying || restarting} onClick={() => check(true)}>
+              <RefreshCw className={`h-3.5 w-3.5 ${checking ? 'animate-spin' : ''}`} /> Check
+            </Button>
+            {isOwner && (
+              <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs" disabled={applying || restarting} onClick={restart}>
+                <RefreshCw className="h-3.5 w-3.5" /> Restart
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {!status ? (
+          <p className="text-sm text-muted-foreground">Checking for updates…</p>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span>Running <span className="font-mono font-semibold text-foreground">v{status.current}</span></span>
+              <span className="text-muted-foreground/60">·</span>
+              <span className="inline-flex items-center gap-1"><GitBranch className="h-3 w-3" /><span className="font-mono">{status.branch}</span> → <span className="font-mono">{status.upstream}</span></span>
+              <span className="text-muted-foreground/60">·</span>
+              <span>checked {timeAgo(status.checkedAt)}</span>
             </div>
-          ))}
-        </dl>
+
+            {status.error ? (
+              <div className="flex items-start gap-1.5 rounded-md bg-amber-50 p-2 text-[11px] text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+                <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" /><span>{status.error}</span>
+              </div>
+            ) : upToDate ? (
+              <div className="flex items-center gap-1.5 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> Up to date.</div>
+            ) : (
+              <>
+                <div className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+                  <Download className="h-3.5 w-3.5 shrink-0" />
+                  Update available · <span className="font-mono">v{status.latest}</span> ({status.behind} commit{status.behind === 1 ? '' : 's'} behind)
+                </div>
+
+                {status.log.length > 0 && !result && (
+                  <div className="max-h-40 overflow-auto rounded-md border bg-muted/40 p-2">
+                    <ul className="space-y-0.5 text-[11px] leading-snug text-muted-foreground">
+                      {status.log.map((s, i) => <li key={i} className="truncate" title={s}>· {s}</li>)}
+                    </ul>
+                  </div>
+                )}
+
+                {status.dirty && !result && (
+                  <div className="flex items-start gap-1.5 rounded-md bg-amber-50 p-2 text-[11px] text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+                    <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                    <span>The box has uncommitted changes — commit or stash them before updating (a fast-forward pull can't run otherwise).</span>
+                  </div>
+                )}
+
+                {result && (
+                  <div className="max-h-64 space-y-1.5 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px]">
+                    {result.steps.map((s, i) => (
+                      <div key={i}>
+                        <div className={s.ok ? 'text-emerald-600' : 'text-red-600'}>{s.ok ? '✓' : '✗'} {s.cmd}</div>
+                        {!s.ok && s.out && <pre className="mt-0.5 whitespace-pre-wrap break-all text-[10px] text-muted-foreground">{s.out}</pre>}
+                      </div>
+                    ))}
+                    {result.error && <div className="text-red-600">✗ {result.error}</div>}
+                  </div>
+                )}
+
+                {!restarting && (
+                  <div className="flex items-center gap-2">
+                    {isOwner ? (
+                      <Button size="sm" disabled={applying || status.dirty} onClick={apply}>
+                        {applying ? <><RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Updating…</> : <><Download className="mr-1.5 h-3.5 w-3.5" /> Update & restart</>}
+                      </Button>
+                    ) : (
+                      <span className="text-[11px] text-muted-foreground">Ask an owner to apply this update.</span>
+                    )}
+                  </div>
+                )}
+                {applying && !result && (
+                  <div className="text-[11px] text-muted-foreground">Running <span className="font-mono">git pull</span> + rebuild + restart — this takes 1–3 minutes. Keep this tab open.</div>
+                )}
+              </>
+            )}
+
+            {restarting && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" /> Restarting the server… the console will reconnect automatically.</div>
+            )}
+            {err && <div className="text-[11px] text-red-600">{err}</div>}
+          </>
+        )}
       </CardContent>
     </Card>
   )

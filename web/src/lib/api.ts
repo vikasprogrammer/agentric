@@ -80,6 +80,12 @@ export interface UpdateApplyResult {
   restarting: boolean
   error?: string
 }
+/** Plain restart (no pull/rebuild) — bounces the process the service manager respawns. */
+export interface RestartResult {
+  ok: boolean
+  restarting: boolean
+  error?: string
+}
 export interface TeamResp {
   me: Member
   members: Member[]
@@ -583,6 +589,8 @@ export const api = {
   checkUpdate: (force = false) => call<UpdateStatus>('GET', '/api/update' + (force ? '?force=1' : '')),
   /** Owner-only: pull + rebuild + restart. Resolves with the step log; the process bounces after. */
   applyUpdate: () => call<UpdateApplyResult>('POST', '/api/update/apply'),
+  /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
+  restart: () => call<RestartResult>('POST', '/api/restart'),
   sessions: () => call<Session[]>('GET', '/api/sessions'),
   messages: () => call<Msg[]>('GET', '/api/messages'),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
