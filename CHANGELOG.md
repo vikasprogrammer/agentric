@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+### Added
+- **GitHub App token minter (foundation for native GitHub).** New zero-dependency connector
+  ([`src/connectors/github.ts`](src/connectors/github.ts)) that signs a short-lived App JWT (RS256, via
+  `node:crypto`) and exchanges it for a **1 h installation access token** — the single credential that
+  will drive both the shell (`GH_TOKEN` for `gh`/`git`) and a governed GitHub MCP connector, so a user
+  connects GitHub once in the browser instead of pasting a static PAT. Includes `appJwt`,
+  `listInstallations`, `mintInstallationToken` (optional repo/permission narrowing for least-privilege)
+  and an in-memory `InstallationTokenCache` (reuse until ~5 min before expiry). Not wired into launch
+  yet — see [`docs/github-integration-plan.md`](docs/github-integration-plan.md) for the phased plan
+  (mint-at-launch injection + Settings → Integrations install flow land next).
+
 ## [0.13.0] — 2026-07-06
 
 ### Added
