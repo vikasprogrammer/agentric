@@ -438,6 +438,14 @@ function Console({ me }: { me: Member }) {
     if (r.error) { alert(r.error); return }
     await refreshState()
   }
+  const duplicateAgent = async (id: string) => {
+    const newId = prompt(`Duplicate "${id}" as a new agent. Enter an id for the copy:`, `${id}-copy`)
+    if (newId == null) return
+    const r = await api.duplicateAgent(id, newId.trim().toLowerCase())
+    if (r.error || !r.id) { alert(r.error ?? 'could not duplicate agent'); return }
+    await refreshState()
+    openAgent(r.id) // jump into the clone's settings to tweak it
+  }
   const openAgent = (id: string) => nav('agent', id)
   // Sync the registry with the agents folder on disk — picks up folders added/edited/removed
   // outside the console (git pull, scp, another agent) without a server restart.
@@ -690,7 +698,7 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
-          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onRescan={rescanAgents} />}
+          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); openAgent(id) }} />}
           {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
@@ -732,7 +740,7 @@ function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; lab
  *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
  *  just scoped to the chosen agent instead of a grid of cards. */
 function AgentsPage({
-  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onRescan,
+  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan,
 }: {
   me: Member
   agents: AgentInfo[]
@@ -742,6 +750,7 @@ function AgentsPage({
   onEdit: (id: string) => void
   onNew: () => void
   onDelete: (id: string) => void
+  onDuplicate: (id: string) => void
   onRescan: () => Promise<void>
 }) {
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -829,6 +838,11 @@ function AgentsPage({
           {canEdit && agent.runtime === 'claude-code' && (
             <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={() => onEdit(agent.id)} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
               <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          )}
+          {canEdit && agent.runtime === 'claude-code' && (
+            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={() => onDuplicate(agent.id)} title="duplicate agent — deep-copy its definition under a new id (fresh, no history carried over)">
+              <Copy className="h-4 w-4" />
             </Button>
           )}
           {canEdit && agent.deletable && (

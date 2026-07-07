@@ -1504,6 +1504,37 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...diff });
   }
 
+  // ── duplicate an agent: deep-copy its folder under a NEW id — owner/admin only ──
+  //    A clone is a FRESH agent (its own id + `svc-<id>` principal), so it starts clean: none of
+  //    the source's runtime history rides along (no memories, sessions, assignments, automations,
+  //    skill scoping, artifacts, audit). That's the whole point of duplicate vs. an id-rename — a
+  //    new id owns new references instead of orphaning the old ones. The SOURCE may be a built-in
+  //    example (customise a read-only bundled agent); only the DESTINATION must live under the data
+  //    home. Everything in the folder (agent.json + CLAUDE.md + any sibling files) is copied, then
+  //    agent.json is rewritten with the new id/principal from the authoritative in-memory manifest.
+  const agentDup = p.match(/^\/api\/agents\/([\w.-]+)\/duplicate$/);
+  if (method === 'POST' && agentDup) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.paths) return sendJson(res, 400, { error: 'duplicating agents requires a data home' });
+    const b = await readBody(req);
+    const srcId = agentDup[1];
+    const src = os.agents.get(srcId);
+    if (!src?.dir) return sendJson(res, 404, { error: `unknown agent "${srcId}"` });
+    if (src.runtime !== 'claude-code') return sendJson(res, 400, { error: 'only claude-code agents can be duplicated' });
+    const newId = String(b.newId || `${srcId}-copy`).trim().toLowerCase();
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(newId)) return sendJson(res, 400, { error: 'id must be lowercase letters, digits and hyphens (2–40 chars, starting with a letter)' });
+    if (os.agents.get(newId)) return sendJson(res, 409, { error: `an agent named "${newId}" already exists` });
+    const folder = path.join(os.paths.userAgents, newId);
+    if (fs.existsSync(folder)) return sendJson(res, 409, { error: `folder "${newId}" already exists in the agents home` });
+    fs.cpSync(src.dir, folder, { recursive: true });
+    const next: AgentManifest = { ...src, id: newId, principal: `svc-${newId}` };
+    const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
+    fs.writeFileSync(path.join(folder, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
+    os.registerAgent({ ...next, dir: folder });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.duplicated', data: { agent: newId, from: srcId, dir: folder } });
+    return sendJson(res, 200, { ok: true, id: newId });
+  }
+
   // ── delete a user-created agent: deregister + remove its folder — owner/admin only ──
   //    Only agents that live UNDER the data home can be deleted; the bundled examples that
   //    ship with the software are read-only (they'd reappear on restart anyway).

@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-07-07
+
+### Added
+- **Duplicate an agent — deep-copy a definition under a new id.** The Agents page gains a **Copy**
+  action (owner/admin, any claude-code agent) that clones the whole agent folder (`agent.json` +
+  `CLAUDE.md` + any sibling files) into `<home>/agents/<new-id>/`, rewriting `id`/`principal` from
+  the authoritative in-memory manifest. The clone is a **fresh** agent with its own id, so none of
+  the source's runtime history rides along (no memories, sessions, assignments, automations, skill
+  scoping, artifacts, audit) — which is exactly why duplicate is the safe answer to "rename an
+  agent" (a new id owns new references instead of orphaning the old ones). The **source** may be a
+  read-only bundled example — a clean way to customise a built-in — while only the **destination**
+  must live under the data home. New `POST /api/agents/:id/duplicate` route (admin-gated), audited
+  as `agent.duplicated`.
+
 ## [0.31.0] — 2026-07-07
 
 ### Added
