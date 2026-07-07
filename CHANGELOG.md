@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.32.2] — 2026-07-07
+### Fixed
+- **`agent-os tenant remove` now respects `AGENT_OS_TENANT`.** The remove guard (and the login-URL
+  branch) compared the slug against `cfg.tenant` only, while `TenantRegistry` resolves the default/apex as
+  `AGENT_OS_TENANT || cfg.tenant`. In a process-per-tenant deployment that overrides the seed (e.g.
+  `AGENT_OS_TENANT=initech` with a config default of `northwind`), this got it backwards: the CLI
+  refused to remove the stale config-default tenant and would have guarded the wrong (real apex) one. Both
+  now resolve the default the same way as the registry.
+
 ## [0.32.1] — 2026-07-07
 ### Fixed
 - **Browser terminal: auto-reconnect instead of dying on a dropped WebSocket.** ttyd was launched with
