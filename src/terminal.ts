@@ -109,10 +109,14 @@ export interface Session {
    * offers a Resume affordance once it's no longer live.
    */
   resumable?: boolean;
-  /** Raw provenance: member id, or `automation:<id>` when a trigger spawned it. */
+  /** Raw provenance: member id, or `automation:<id>`/`task:<id>`/`chat:<name>` when a trigger spawned it. */
   spawnedBy?: string;
   /** Human-readable provenance for the console (member name/email, or the automation's name). */
   spawnedByLabel?: string;
+  /** The member id this session ACTS AS (run_as) — distinct from `spawnedBy` provenance. A task- or
+   *  chat-triggered run is spawned by `task:`/`automation:` but runs as (and is owned by) a member,
+   *  so the console keys "my sessions" off this too. */
+  runAs?: string;
   createdAt: number;
 }
 
@@ -1419,7 +1423,7 @@ function titleFromSummary(summary: string): string {
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, createdAt: r.created_at };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, createdAt: r.created_at };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

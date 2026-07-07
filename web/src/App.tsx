@@ -480,10 +480,12 @@ function Console({ me }: { me: Member }) {
   // Sessions where Claude is blocked waiting on the human — drives the per-session bell everywhere.
   const waiting = new Set(messages.filter((m) => m.type === 'notification' && m.status === 'open').map((m) => m.sessionId))
   const runningSessions = sessions.filter(isLive).length
-  // The sidebar is a switcher over the sessions *I* started (spawnedBy is the member id),
-  // running first, then newest first.
+  // The sidebar is a switcher over the sessions *I'm accountable for* — ones I started directly
+  // (spawnedBy is my member id) OR ones a trigger spawned that run AS me (runAs): a Task I own that
+  // auto-dispatched, a chat message I sent. Those have a `task:`/`automation:` provenance, so keying
+  // only off spawnedBy hid them from their owner's sidebar. Running first, then newest first.
   const mySessions = sessions
-    .filter((s) => s.spawnedBy === me.id)
+    .filter((s) => s.spawnedBy === me.id || s.runAs === me.id)
     .sort((a, b) => {
       const rank = (s: Session) => (isLive(s) ? 0 : 1) // live first; all terminal (dead) states tie
       return rank(a) - rank(b) || b.createdAt - a.createdAt
