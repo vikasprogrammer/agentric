@@ -663,8 +663,8 @@ function Console({ me }: { me: Member }) {
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div className="flex items-center gap-3">
-            <h1 className="text-lg font-semibold">
-              {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+            <h1 className="max-w-[60vw] truncate text-lg font-semibold">
+              {route === 'sessions' && selected ? selected.title : route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
             </h1>
             {/* When a terminal is open the page fills with the iframe; this pins a way back to the list next to the title. */}
             {route === 'sessions' && selected && (
@@ -678,7 +678,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onRescan={rescanAgents} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); openAgent(id) }} />}
-          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onClose={() => nav('sessions')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
+          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
@@ -1129,7 +1129,7 @@ function ImageDropZone({ session, children, onActivity }: { session?: Session; c
 }
 
 function SessionsPage({
-  sessions, waiting, selected, onOpen, onActivity, onSpawn, onClose, onStop, onDelete, onBulkStop, onBulkDelete,
+  sessions, waiting, selected, onOpen, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete,
 }: {
   sessions: Session[]
   waiting: Set<string>
@@ -1137,7 +1137,6 @@ function SessionsPage({
   onOpen: (tmux: string, title: string) => void
   onActivity: (sid: string) => void
   onSpawn: () => void
-  onClose: () => void
   onStop: (id: string) => void
   onDelete: (id: string, tmux: string) => void
   onBulkStop: (ids: string[]) => void
@@ -1228,13 +1227,6 @@ function SessionsPage({
               </>
             )}
           </div>
-          <button
-            className="flex shrink-0 items-center gap-1 rounded bg-neutral-800 px-2 py-1 font-medium text-neutral-200 hover:bg-neutral-700"
-            onClick={onClose}
-            title="exit the terminal and go back to the sessions list"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" /> All sessions
-          </button>
         </div>
         <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity} />
       </div>

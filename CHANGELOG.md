@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-07-07
+
+### Changed
+- **The open session's title leads the console header.** When you're in a terminal, the page header
+  now shows that session's title (truncated to fit) instead of the generic "Sessions" — so you can tell
+  which run you're looking at at a glance. The redundant "All sessions" back button *inside* the terminal
+  view is removed, since the header already pins one next to the title.
+
 ## [0.25.0] — 2026-07-07
 
 ### Added
