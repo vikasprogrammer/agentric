@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+### Added
+- **`scripts/wt.sh` — the git-worktree workflow for this shared checkout** (dev tooling; no runtime
+  change). Multiple Claude sessions edit this one checkout concurrently and clobber each other; the
+  helper keeps the primary checkout clean on `main` and moves all development into per-session
+  worktrees under `~/aos-wt/<name>` (`new`/`list`/`sync`/`integrate`/`done`). Finished branches are
+  batch-merged in a fresh `batch/<ts>` worktree and shipped as **one consolidated PR**. Documented in
+  CLAUDE.md → "Multi-session development (git worktrees)".
+
 ## [0.27.1] — 2026-07-07
 
 ### Changed

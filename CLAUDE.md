@@ -309,6 +309,29 @@ in `src/types.ts` and `TeamStore.canRun()`.
   repeat `Host`/`X-Forwarded-*` explicitly — otherwise the app sees `Host: 127.0.0.1:3010` and mints
   wrong invite/webhook links. There's a comment in the config; keep it.
 
+## Multi-session development (git worktrees)
+
+Several Claude sessions (and the fleet) edit this ONE checkout **concurrently** — two sessions writing
+the same files, or one running `git switch` under another, silently clobber each other (on 2026-07-07 a
+commit landed on the wrong branch this way). So the **primary checkout `~/Projects/agent-os`
+is kept on `main`, clean, and never edited directly** — it exists only to sync with origin, integrate
+finished work, and run the live service. **All development happens in per-session worktrees.**
+
+`scripts/wt.sh` wraps the loop (worktrees live under `~/aos-wt/<name>`; override with `AOS_WT_HOME`):
+- `scripts/wt.sh new <name>` — create `~/aos-wt/<name>` on `feat/<name>` off `origin/main`, with the
+  primary checkout's `node_modules` symlinked in so typecheck/build run without an install. Develop and
+  commit **there**, never in the primary checkout.
+- `scripts/wt.sh list` · `scripts/wt.sh sync` (ff-pull `main` in the primary) · `scripts/wt.sh done <name>`
+  (remove the worktree + delete `feat/<name>`).
+- `scripts/wt.sh integrate <name…>` — spin up a fresh `batch/<ts>` worktree off `origin/main` and merge
+  the named feature branches into it. Then, **merge locally, push once**: bump the version + CHANGELOG
+  a single time for the whole batch, `npm run build && (cd web && npm run build) && npm run test:governance`,
+  push the batch branch, and open **one consolidated PR** (`gh … --repo vikasprogrammer/agent-os`,
+  `gh pr merge --squash`). Never `switch`/branch the primary checkout to integrate.
+
+"Make it live" still runs from the primary checkout after `wt.sh sync` (build + `launchctl kickstart` —
+see Versioning / the macOS section).
+
 ## Versioning
 
 Root `package.json` `version` is the single source of truth (`src/version.ts` reads it once at
