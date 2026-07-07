@@ -390,6 +390,8 @@ function Console({ me }: { me: Member }) {
   const [manageOpen, setManageOpen] = useState(onManage)
   useEffect(() => { if (onManage) setManageOpen(true) }, [onManage])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('aos_sidebar_collapsed') === '1')
+  // Sidebar session list: ended runs collapse behind a toggle so live work stays at the top.
+  const [showEndedNav, setShowEndedNav] = useState(false)
   useEffect(() => { localStorage.setItem('aos_sidebar_collapsed', sidebarCollapsed ? '1' : '0') }, [sidebarCollapsed])
 
   useEffect(() => {
@@ -503,6 +505,31 @@ function Console({ me }: { me: Member }) {
       const rank = (s: Session) => (isLive(s) ? 0 : 1) // live first; all terminal (dead) states tie
       return rank(a) - rank(b) || b.createdAt - a.createdAt
     })
+  // Sidebar split: live sessions always show; the open one shows even if ended; the rest of the ended
+  // ones hide behind the "N ended" toggle so a pile of past runs doesn't push live work off-screen.
+  const navLive = mySessions.filter(isLive)
+  const navEnded = mySessions.filter((s) => !isLive(s))
+  const selectedEndedNav = navEnded.find((s) => s.tmux === selected?.tmux)
+  const collapsibleNav = navEnded.filter((s) => s.tmux !== selected?.tmux)
+  const renderNavSession = (s: Session) => {
+    const active = selected?.tmux === s.tmux && route === 'sessions'
+    return (
+      <button
+        key={s.id}
+        onClick={() => openTerminal(s.tmux, s.agent + ' · ' + s.id)}
+        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted ${active ? 'bg-muted' : ''}`}
+      >
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(s)}`} />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1">
+            <span className={`min-w-0 flex-1 truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
+            {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
+          </span>
+          <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
+        </span>
+      </button>
+    )
+  }
   // A live terminal takes the whole content area (no padding/scroll wrapper).
   const fullBleed = route === 'sessions' && !!selected
 
@@ -565,25 +592,19 @@ function Console({ me }: { me: Member }) {
             </div>
           )}
           <div className="space-y-0.5">
-            {mySessions.map((s) => {
-              const active = selected?.tmux === s.tmux && route === 'sessions'
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => openTerminal(s.tmux, s.agent + ' · ' + s.id)}
-                  className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted ${active ? 'bg-muted' : ''}`}
-                >
-                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(s)}`} />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1">
-                      <span className={`min-w-0 flex-1 truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
-                      {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
-                    </span>
-                    <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
-                  </span>
-                </button>
-              )
-            })}
+            {navLive.map(renderNavSession)}
+            {selectedEndedNav && renderNavSession(selectedEndedNav)}
+            {showEndedNav && collapsibleNav.map(renderNavSession)}
+            {collapsibleNav.length > 0 && (
+              <button
+                onClick={() => setShowEndedNav((v) => !v)}
+                className="flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                title={showEndedNav ? 'hide ended sessions' : 'show stopped/ended sessions'}
+              >
+                <ChevronDown className={`h-3 w-3 transition-transform ${showEndedNav ? '' : '-rotate-90'}`} />
+                {showEndedNav ? 'hide ended' : `${collapsibleNav.length} ended`}
+              </button>
+            )}
           </div>
         </div>
 
@@ -641,9 +662,17 @@ function Console({ me }: { me: Member }) {
 
       <main className="flex flex-1 flex-col overflow-hidden">
         <div className="flex items-center justify-between border-b px-6 py-4">
-          <h1 className="text-lg font-semibold">
-            {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
-          </h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-lg font-semibold">
+              {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+            </h1>
+            {/* When a terminal is open the page fills with the iframe; this pins a way back to the list next to the title. */}
+            {route === 'sessions' && selected && (
+              <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={() => nav('sessions')} title="back to the full sessions list">
+                <ArrowLeft className="h-3.5 w-3.5" /> All sessions
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
@@ -1116,6 +1145,9 @@ function SessionsPage({
 }) {
   const [view, setView] = useState<'grid' | 'list'>(() => (localStorage.getItem('aos_sessions_view') === 'list' ? 'list' : 'grid'))
   const setMode = (v: 'grid' | 'list') => { localStorage.setItem('aos_sessions_view', v); setView(v) }
+  // Terminal switcher bar: live tabs stay pinned; ended (stopped/done/crashed) ones collapse behind a
+  // toggle so the bar doesn't accrete every past run. The open session always shows even if it ended.
+  const [showEnded, setShowEnded] = useState(false)
 
   // Multi-select for bulk stop/delete. Kept in sync with the live list: ids that vanish (deleted
   // elsewhere, or by our own bulk delete) are pruned so the toolbar count never lies.
@@ -1137,42 +1169,64 @@ function SessionsPage({
 
   // A terminal is open → fill the whole area: a slim switcher bar + the iframe taking the rest.
   if (selected) {
+    const renderTab = (s: Session) => (
+      <div
+        key={s.id}
+        className={`group/tab flex shrink-0 items-center gap-1.5 rounded px-2 py-1 ${
+          selected.tmux === s.tmux ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800'
+        }`}
+      >
+        <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5">
+          <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+          <span className="max-w-[180px] truncate">{s.title}</span>
+          {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
+        </button>
+        {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
+        <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
+          {canResume(s) && (
+            <button className="rounded p-0.5 text-emerald-400 hover:bg-neutral-600 hover:text-emerald-300" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="resume — reopen and continue this session (claude --resume)">
+              <Play className="h-3 w-3" />
+            </button>
+          )}
+          {isLive(s) && (
+            <button className="rounded p-0.5 text-amber-400 hover:bg-neutral-600 hover:text-amber-300" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
+              <Square className="h-3 w-3" />
+            </button>
+          )}
+          <button className="rounded p-0.5 text-red-400 hover:bg-neutral-600 hover:text-red-300" onClick={() => onDelete(s.id, s.tmux)} title="delete session + its messages/files">
+            <Trash2 className="h-3 w-3" />
+          </button>
+        </span>
+      </div>
+    )
+    // Live tabs pin left. The open session shows even when ended. Every other ended session hides
+    // behind the "N ended" toggle so a workspace full of past runs doesn't bury the live ones.
+    const liveTabs = sessions.filter(isLive)
+    const endedTabs = sessions.filter((s) => !isLive(s))
+    const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
+    const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux)
     return (
       <div className="flex h-full flex-col">
         <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
           <TerminalSquare className="h-4 w-4 shrink-0" />
           {/* Only the tabs scroll; the "All sessions" button stays pinned right so it's always reachable. */}
           <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
-            {sessions.map((s) => (
-              <div
-                key={s.id}
-                className={`group/tab flex shrink-0 items-center gap-1.5 rounded px-2 py-1 ${
-                  selected.tmux === s.tmux ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800'
-                }`}
-              >
-                <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5">
-                  <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
-                  <span className="max-w-[180px] truncate">{s.title}</span>
-                  {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
+            {liveTabs.map(renderTab)}
+            {selectedEnded && renderTab(selectedEnded)}
+            {showEnded && collapsibleEnded.map(renderTab)}
+            {collapsibleEnded.length > 0 && (
+              <>
+                <span className="h-4 w-px shrink-0 bg-neutral-700" />
+                <button
+                  className="flex shrink-0 items-center gap-1 rounded px-2 py-1 text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                  onClick={() => setShowEnded((v) => !v)}
+                  title={showEnded ? 'hide ended sessions' : 'show stopped/ended sessions'}
+                >
+                  <span className="whitespace-nowrap">{showEnded ? 'hide ended' : `${collapsibleEnded.length} ended`}</span>
+                  <ChevronDown className={`h-3 w-3 transition-transform ${showEnded ? '' : '-rotate-90'}`} />
                 </button>
-                {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
-                <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
-                  {canResume(s) && (
-                    <button className="rounded p-0.5 text-emerald-400 hover:bg-neutral-600 hover:text-emerald-300" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="resume — reopen and continue this session (claude --resume)">
-                      <Play className="h-3 w-3" />
-                    </button>
-                  )}
-                  {isLive(s) && (
-                    <button className="rounded p-0.5 text-amber-400 hover:bg-neutral-600 hover:text-amber-300" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
-                      <Square className="h-3 w-3" />
-                    </button>
-                  )}
-                  <button className="rounded p-0.5 text-red-400 hover:bg-neutral-600 hover:text-red-300" onClick={() => onDelete(s.id, s.tmux)} title="delete session + its messages/files">
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                </span>
-              </div>
-            ))}
+              </>
+            )}
           </div>
           <button
             className="flex shrink-0 items-center gap-1 rounded bg-neutral-800 px-2 py-1 font-medium text-neutral-200 hover:bg-neutral-700"

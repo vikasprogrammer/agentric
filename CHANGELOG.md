@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-07-07
+
+### Changed
+- **Session lists tidy away ended runs.** The terminal switcher bar and the sidebar "Sessions" list
+  now keep live sessions pinned and collapse stopped/done/crashed ones behind a **"N ended"** toggle,
+  so a workspace full of past runs no longer buries the ones you're actually working in. The currently
+  open session always stays visible even after it ends (with its Resume affordance intact), and a new
+  **All sessions** button sits next to the page title while a terminal is open, giving a second one-click
+  way back to the full list.
+
 ## [0.22.0] — 2026-07-07
 
 ### Added
