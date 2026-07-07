@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-07-07
+
+### Added
+- **Backend-switch migrate-or-clear** (Settings → Memory). Switching to an external memory backend
+  (automem/libsql) leaves the pre-switch memories in the local ledger but not in the new store — the
+  Memory-hub counts then overstate what agents can actually recall. Settings → Memory now detects this
+  **drift** (local rows vs. active backend count) and shows a banner with two actions: **Migrate** —
+  replay the local ledger into the new store (preserving author/scope/tags/type/importance/metadata),
+  with an opt-in *"durable only — skip raw episodes"* filter, then drop the migrated-out originals; and
+  **Clear** — empty the local ledger to match a fresh start. Migrate is idempotent (no-ops when already
+  consistent, so it can't duplicate) and gated (a partial migration deletes nothing). New endpoints
+  `POST /api/settings/memory/migrate` + `/clear`, a `count()` probe on the memory providers, and
+  `memory.migrated`/`memory.cleared` audit events. See `docs/memory-backend-migration-plan.md`.
+
 ## [0.23.0] — 2026-07-07
 
 ### Changed

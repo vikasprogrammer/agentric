@@ -179,6 +179,16 @@ export class AutomemMemoryProvider implements MemoryProvider {
     };
   }
 
+  /** Whole-instance memory count from /health (exact per-tenant on a dedicated instance). */
+  async count(): Promise<number | null> {
+    try {
+      const res = (await this.req('GET', '/health')) as { memory_count?: number };
+      return typeof res.memory_count === 'number' ? res.memory_count : null;
+    } catch {
+      return null;
+    }
+  }
+
   async health(): Promise<{ ok: boolean; backend: string; detail?: string }> {
     try {
       const res = (await this.req('GET', '/health')) as { status?: string; memory_count?: number };

@@ -364,6 +364,12 @@ export interface MemoryProvider {
   forgetAgent?(tenant: string, agentId: string): Promise<number>;
   health(): Promise<{ ok: boolean; backend: string; detail?: string }>;
   /**
+   * Optional: how many memories the backend holds (for the backend-switch **drift banner** — compared
+   * against the local `memories` table). SQLite/libsql count their table for the tenant; automem reports
+   * its whole-instance count (exact for a dedicated per-tenant instance). Returns null if unknown.
+   */
+  count?(tenant: string): Promise<number | null>;
+  /**
    * Optional periodic upkeep: prune stale/never-recalled memories and merge near-duplicates. Returns
    * what it did. Backends that consolidate server-side (automem) may no-op. Safe to call repeatedly.
    */

@@ -4990,6 +4990,29 @@ function MemorySettings({ me }: { me: Member }) {
   }
   useEffect(() => { api.memorySettings().then((v) => { if (v.error) return setHint('⚠ ' + v.error); apply(v) }).catch(() => {}) }, [])
 
+  // Backend-switch reconcile: the local ledger has rows the active external store doesn't (see the drift banner).
+  const [reconBusy, setReconBusy] = useState(false)
+  const [reconSkipEp, setReconSkipEp] = useState(false) // migrate all by default; opt in to skipping raw episodes
+  const [reconMsg, setReconMsg] = useState('')
+  const refreshView = () => api.memorySettings().then((v) => { if (!v.error) apply(v) }).catch(() => {})
+  const doMigrate = async () => {
+    setReconBusy(true); setReconMsg('')
+    const r = await api.migrateMemory(reconSkipEp)
+    setReconBusy(false)
+    if (r.error) return setReconMsg('⚠ ' + r.error)
+    setReconMsg(`Migrated ${r.migrated ?? 0}${r.skipped ? `, skipped ${r.skipped} episode(s)` : ''}; removed ${r.deleted ?? 0} local rows.`)
+    refreshView()
+  }
+  const doClear = async () => {
+    if (!confirm('Delete ALL local memory rows for this workspace? This resets the local ledger (and what the reflection loop can look back on). Cannot be undone.')) return
+    setReconBusy(true); setReconMsg('')
+    const r = await api.clearMemoryLedger()
+    setReconBusy(false)
+    if (r.error) return setReconMsg('⚠ ' + r.error)
+    setReconMsg(`Cleared ${r.cleared ?? 0} local rows.`)
+    refreshView()
+  }
+
   // Preset the embedding defaults when toggling provider (the two stacks use different models/dims/ports).
   const pickProvider = (pv: 'openai' | 'ollama') => {
     setProvider(pv)
@@ -5104,6 +5127,26 @@ function MemorySettings({ me }: { me: Member }) {
           </Badge>
         )}
       </div>
+
+      {/* drift banner — local ledger has rows the active external store doesn't (migrate or clear) */}
+      {(view?.drift ?? 0) > 0 && (
+        <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <div className="font-medium text-amber-700">{view!.drift} {view!.drift === 1 ? 'memory is' : 'memories are'} in this workspace's local ledger but not in the active {view?.backend} store.</div>
+              <div className="mt-0.5 text-muted-foreground">Agents recall from {view?.backend} ({view?.backendCount ?? 0} there), so they can't see these {view?.localCount ?? 0} local rows. Migrate them into {view?.backend}, or clear the ledger so the count matches what's recallable.</div>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 pl-6">
+            <Button size="sm" onClick={doMigrate} disabled={reconBusy}><Upload className="mr-1 h-3.5 w-3.5" />Migrate to {view?.backend}</Button>
+            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><input type="checkbox" checked={reconSkipEp} onChange={(e) => setReconSkipEp(e.target.checked)} />durable only (skip raw episodes)</label>
+            <Button size="sm" variant="outline" onClick={doClear} disabled={reconBusy}><Trash2 className="mr-1 h-3.5 w-3.5" />Clear local ledger</Button>
+            {reconBusy && <span className="text-[11px] text-muted-foreground">working…</span>}
+            {reconMsg && <span className="font-mono text-[11px] text-muted-foreground">{reconMsg}</span>}
+          </div>
+        </div>
+      )}
 
       {/* backend picker */}
       <div className="grid gap-2 sm:grid-cols-3">

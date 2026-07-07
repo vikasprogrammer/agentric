@@ -376,6 +376,11 @@ export interface MemorySettings {
   maintenance?: MemoryMaintenance
   sharedWrites?: 'open' | 'curated'
   health?: MemoryHealth
+  /** Rows in the local `memories` ledger vs. the active external store — drives the migrate/clear banner. */
+  localCount?: number
+  backendCount?: number | null
+  /** Local rows the active external backend doesn't have (0 for sqlite). */
+  drift?: number
   updatedAt?: number
   updatedBy?: string
   error?: string
@@ -653,6 +658,8 @@ export const api = {
   testMemorySettings: (body: MemorySettingsReq) => call<{ ok: boolean; health?: MemoryHealth; error?: string }>('POST', '/api/settings/memory/test', body),
   ollamaStatus: (url: string) => call<OllamaStatus>('GET', '/api/settings/memory/ollama?url=' + encodeURIComponent(url)),
   maintainMemory: () => call<{ ok: boolean; pruned?: number; merged?: number; error?: string }>('POST', '/api/settings/memory/maintain'),
+  migrateMemory: (skipEpisodes: boolean) => call<{ ok: boolean; migrated?: number; skipped?: number; deleted?: number; error?: string }>('POST', '/api/settings/memory/migrate', { skipEpisodes }),
+  clearMemoryLedger: () => call<{ ok: boolean; cleared?: number; error?: string }>('POST', '/api/settings/memory/clear'),
 
   kb: (q = '', section = '') => call<{ pages: KbPage[]; sections: string[]; enabled: boolean }>('GET', `/api/kb?q=${encodeURIComponent(q)}&section=${encodeURIComponent(section)}`),
   kbPage: (id: string) => call<{ page?: KbPage; error?: string }>('GET', `/api/kb/page/${id}`),

@@ -61,6 +61,11 @@ export class MirroredMemoryProvider implements MemoryProvider {
     return this.backend.health();
   }
 
+  /** Report the EXTERNAL backend's count (what the drift banner compares the local mirror against). */
+  count(tenant: string): Promise<number | null> {
+    return this.backend.count ? this.backend.count(tenant) : Promise.resolve(null);
+  }
+
   async maintain(opts: MemoryMaintenance): Promise<MemoryMaintenanceResult> {
     // The backend self-maintains (automem) or prunes its own store (libsql); either way, keep the
     // local mirror bounded with the same policy so it doesn't grow forever behind an external store.

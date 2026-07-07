@@ -93,7 +93,9 @@ it doesn't replace the loop that *steers the fleet*.
 > stats read the built-in SQLite `memories` table directly. So an external backend (automem/libsql) is
 > wrapped in a **mirror** that copies every write into that local table — recall goes to the upgraded
 > store, but the self-learning loop and counts keep working unchanged. Switching a tenant is a config
-> flip; no data migrates (the external store starts empty).
+> flip; the external store starts empty, so **Settings → Memory** shows a drift banner offering to
+> **migrate** the local ledger into the new store or **clear** it — see
+> [`memory-backend-migration-plan.md`](./memory-backend-migration-plan.md).
 
 ## What you actually operate
 

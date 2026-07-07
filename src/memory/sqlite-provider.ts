@@ -96,6 +96,11 @@ export class SqliteMemoryProvider implements MemoryProvider {
     this.db.prepare('DELETE FROM memories WHERE tenant = ? AND id = ?').run(tenant, id);
   }
 
+  /** How many memories this tenant has in the table (for the backend-switch drift banner). */
+  async count(tenant: string): Promise<number> {
+    return Number(this.db.prepare('SELECT count(*) AS n FROM memories WHERE tenant = ?').get<{ n: number }>(tenant)?.n ?? 0);
+  }
+
   async recall(q: RecallQuery): Promise<MemoryRecord[]> {
     const limit = Math.max(1, Math.min(q.limit ?? 8, 100));
     // Over-fetch so an optional tag filter (applied in JS) still returns up to `limit`.
