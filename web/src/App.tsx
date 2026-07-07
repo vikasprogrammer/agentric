@@ -704,7 +704,7 @@ function Console({ me }: { me: Member }) {
           {route === 'files' && <FilesPage />}
           {route === 'artifacts' && <ArtifactsPage me={me} initialId={artifactFocus} />}
           {route === 'audit' && <AuditPage />}
-          {route === 'docs' && <DocsPage />}
+          {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} />}
           {route === 'settings' && <SettingsPage me={me} state={state} tab={detail} onTab={(t) => nav('settings', t)} />}
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
@@ -2829,6 +2829,31 @@ function CommentBox({ onSubmit }: { onSubmit: (text: string) => Promise<void> })
 }
 
 // ── Automations ──────────────────────────────────────────────────────────────────
+const CRON_PRESETS: { label: string; value: string }[] = [
+  { label: 'Every 15 minutes', value: '*/15 * * * *' },
+  { label: 'Every 30 minutes', value: '*/30 * * * *' },
+  { label: 'Every hour', value: '0 * * * *' },
+  { label: 'Every 6 hours', value: '0 */6 * * *' },
+  { label: 'Every day at midnight', value: '0 0 * * *' },
+  { label: 'Every day at 9:00 AM', value: '0 9 * * *' },
+  { label: 'Weekdays at 9:00 AM', value: '0 9 * * 1-5' },
+  { label: 'Every Monday at 9:00 AM', value: '0 9 * * 1' },
+  { label: 'First of the month at 9:00 AM', value: '0 9 1 * *' },
+]
+
+// Base UI's Select.Value shows the raw value unless the root is given an items map (value → label).
+const SCHEDULE_ITEMS: Record<string, string> = {
+  ...Object.fromEntries(CRON_PRESETS.map((p) => [p.value, p.label])),
+  custom: 'Custom cron expression…',
+}
+const TRIGGER_ITEMS: Record<string, string> = {
+  cron: 'Schedule (cron)',
+  webhook: 'Webhook',
+  slack: 'Slack message (native)',
+  discord: 'Discord message (native)',
+  composio: 'Composio event',
+}
+
 function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void }) {
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
@@ -2839,6 +2864,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
   const [type, setType] = useState<'cron' | 'webhook' | 'composio' | 'slack' | 'discord'>('cron')
   const [mode, setMode] = useState<'interactive' | 'headless'>('headless')
   const [schedule, setSchedule] = useState('*/30 * * * *')
+  const [scheduleCustom, setScheduleCustom] = useState(false)
   const [filter, setFilter] = useState('')
   const [task, setTask] = useState('')
 
@@ -2953,7 +2979,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                   </Select>
                 </Field>
                 <Field label="Trigger">
-                  <Select value={type} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord')}>
+                  <Select items={TRIGGER_ITEMS} value={type} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord')}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="cron">Schedule (cron)</SelectItem>
@@ -2974,8 +3000,15 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                   </Select>
                 </Field>
                 {type === 'cron' ? (
-                  <Field label="Schedule" help="5-field cron — e.g. */30 * * * * (every 30 min), 0 9 * * 1-5 (9:00 weekdays)">
-                    <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} className="font-mono" />
+                  <Field label="Schedule" help={scheduleCustom ? '5-field cron — minute hour day-of-month month day-of-week. e.g. 0 9 * * 1-5 (9:00 weekdays).' : 'Pick a common schedule, or choose Custom to write a cron expression.'}>
+                    <Select items={SCHEDULE_ITEMS} value={scheduleCustom ? 'custom' : schedule} onValueChange={(v) => { if (!v) return; if (v === 'custom') { setScheduleCustom(true) } else { setScheduleCustom(false); setSchedule(v) } }}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {CRON_PRESETS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}
+                        <SelectItem value="custom">Custom cron expression…</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {scheduleCustom && <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} className="mt-2 font-mono" placeholder="*/30 * * * *" />}
                   </Field>
                 ) : type === 'webhook' ? (
                   <Field label="Webhook" help="A secret URL is generated on create — POST to it to fire this automation.">
@@ -3051,16 +3084,17 @@ function KindChip({ on, onClick, children }: { on: boolean; onClick: () => void;
 /** Product manual bundled into the build (web/src/docs) — read-only, identical for every tenant,
  *  unlike the KB, which is the tenant's own living wiki. Adding a page = drop a .md in web/src/docs
  *  and register it in web/src/docs/index.ts. */
-function DocsPage() {
-  const [slug, setSlug] = useState(docPages[0].slug)
-  const sel = docPages.find((p) => p.slug === slug) ?? docPages[0]
+function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: string) => void }) {
+  // The selected page is a URL detail (`#/docs/<slug>`) so a refresh / shared link lands on the
+  // same page instead of always resetting to the first one.
+  const sel = docPages.find((p) => p.slug === selected) ?? docPages[0]
   return (
     <div className="flex gap-4">
       <div className="w-64 shrink-0 space-y-3">
         <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Manual</div>
         <div className="space-y-0.5">
           {docPages.map((p) => (
-            <button key={p.slug} onClick={() => setSlug(p.slug)} className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${sel.slug === p.slug ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>{p.title}</button>
+            <button key={p.slug} onClick={() => onSelect(p.slug)} className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${sel.slug === p.slug ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>{p.title}</button>
           ))}
         </div>
         <div className="text-[11px] leading-relaxed text-muted-foreground">

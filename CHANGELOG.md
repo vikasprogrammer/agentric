@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.29.1] — 2026-07-07
+
+### Fixed
+- **Docs sub-pages are now URL-addressable (`#/docs/<slug>`).** The console **Docs** page tracked the
+  open manual page in local state, so `#/docs` always reset to the first page and a refresh or shared
+  link lost the selection. It now reads/writes the hash router's detail segment (like Agents and
+  Settings), so each page has its own URL (`#/docs/governance`, `#/docs/getting-started`, …) that
+  survives a reload and can be linked directly.
+
 ## [0.29.0] — 2026-07-07
 
 ### Added
