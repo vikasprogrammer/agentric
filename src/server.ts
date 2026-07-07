@@ -238,7 +238,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/favicon.ico') return end(res, 204);
 
   // ── auth: magic-link landing + session introspection (the only PUBLIC /api routes) ──────────
+  // Magic links use a two-step landing so a link preview / scanner / mail-gateway that GETs the
+  // URL can't burn the one-time token before the human clicks. GET only PEEKS (renders a confirm
+  // page); the token is consumed only by the POST the "Continue" button fires — which bots don't do.
   if (method === 'GET' && p === '/accept') {
+    const token = url.searchParams.get('token') || '';
+    const peek = os.team.peekToken(token);
+    if (!peek) return redirect(res, '/?login=invalid');
+    return sendHtml(res, 200, acceptLandingHtml(peek.email, token));
+  }
+  if (method === 'POST' && p === '/accept') {
     const accepted = os.team.acceptToken(url.searchParams.get('token') || '');
     if (!accepted) return redirect(res, '/?login=invalid');
     res.writeHead(302, { location: '/', 'set-cookie': sessionCookie(accepted.sid) });
@@ -2662,6 +2671,62 @@ function linkFor(req: http.IncomingMessage, token: string): string {
 function redirect(res: http.ServerResponse, location: string): void {
   res.writeHead(302, { location });
   res.end();
+}
+function sendHtml(res: http.ServerResponse, status: number, html: string): void {
+  res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+  res.end(html);
+}
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+/**
+ * The interstitial shown by GET /accept. A plain confirm page — no auto-submit — so a link
+ * preview / mail-scanner that renders it never consumes the token; only the "Continue" POST does.
+ * Self-contained (no app bundle) and theme-aware so it works before the SPA/session exists.
+ */
+function acceptLandingHtml(email: string, token: string): string {
+  const safeEmail = escapeHtml(email);
+  const action = `/accept?token=${encodeURIComponent(token)}`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in — Agent OS</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f6f7f9; color: #0b0d12; }
+  .card { width: 100%; max-width: 380px; background: #fff; border: 1px solid #e6e8ec; border-radius: 14px;
+    padding: 28px; box-shadow: 0 1px 3px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.05); text-align: center; }
+  .logo { width: 40px; height: 40px; margin: 0 auto 16px; border-radius: 10px; display: grid; place-items: center;
+    background: #0b0d12; color: #fff; font-weight: 700; font-size: 18px; }
+  h1 { font-size: 17px; margin: 0 0 6px; }
+  p { margin: 0 0 20px; color: #5b6470; font-size: 14px; }
+  .email { color: #0b0d12; font-weight: 600; }
+  button { width: 100%; padding: 11px 16px; border: 0; border-radius: 9px; background: #0b0d12; color: #fff;
+    font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #23262e; }
+  .foot { margin: 16px 0 0; font-size: 12px; color: #8a94a3; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0b0d12; color: #f3f5f8; }
+    .card { background: #14171d; border-color: #262b33; box-shadow: none; }
+    .logo { background: #f3f5f8; color: #0b0d12; }
+    .email { color: #f3f5f8; }
+    p { color: #9aa4b2; }
+    button { background: #f3f5f8; color: #0b0d12; }
+    button:hover { background: #dfe3e9; }
+  }
+</style></head>
+<body><div class="card">
+  <div class="logo">A</div>
+  <h1>Sign in to Agent OS</h1>
+  <p>You're accepting an invitation as <span class="email">${safeEmail}</span>.</p>
+  <form method="POST" action="${action}">
+    <button type="submit">Continue</button>
+  </form>
+  <p class="foot">If this wasn't you, you can safely close this page.</p>
+</div></body></html>`;
 }
 
 // ── file-browser containment ───────────────────────────────────────────────────

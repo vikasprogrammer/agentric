@@ -2406,24 +2406,46 @@ function TeamPage({ me }: { me: Member }) {
 
   if (!data) return <div className="text-sm text-muted-foreground">Loading…</div>
   const plainMembers = data.members.filter((m) => m.role === 'member')
+  const fullAccessCount = data.members.filter((m) => m.role !== 'member').length
+
+  // A one-line, human summary of who can run an agent, given its access row.
+  const accessSummary = (agentId: string): string => {
+    const acc = access(agentId)
+    const parts: string[] = []
+    if (fullAccessCount > 0) parts.push(`${fullAccessCount} owner/admin`)
+    if (acc.allowedRoles.includes('member')) parts.push('all members')
+    else if (acc.allowedMembers.length) parts.push(`${acc.allowedMembers.length} member${acc.allowedMembers.length > 1 ? 's' : ''}`)
+    return parts.length ? `Runnable by ${parts.join(' · ')}` : 'Only owners & admins can run this'
+  }
 
   return (
-    <div className="max-w-4xl space-y-6">
-      <p className="text-sm text-muted-foreground">
-        Members sign in with a one-time magic link. <strong>Owners</strong> run everything and approve
-        red (owner) requests; <strong>admins</strong> approve yellow (admin) requests and manage the team;
-        <strong> members</strong> can only run the agents they're assigned and never approve.
-      </p>
+    <div className="max-w-4xl space-y-8">
+      {/* Roles legend */}
+      <div className="grid gap-2 sm:grid-cols-3">
+        {[
+          { role: 'owner' as Role, blurb: 'Runs everything, approves red requests, manages the team.' },
+          { role: 'admin' as Role, blurb: 'Runs every agent, approves yellow requests, manages the team.' },
+          { role: 'member' as Role, blurb: 'Runs only assigned agents. Never approves.' },
+        ].map((r) => (
+          <div key={r.role} className="rounded-lg border bg-muted/30 p-3">
+            <RoleBadge role={r.role} />
+            <p className="mt-1.5 text-xs leading-snug text-muted-foreground">{r.blurb}</p>
+          </div>
+        ))}
+      </div>
 
       {/* Members */}
       <section>
-        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Members</div>
+        <div className="mb-2 flex items-baseline justify-between">
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Members</div>
+          <div className="text-[11px] text-muted-foreground">{data.members.length} total</div>
+        </div>
         <div className="space-y-2">
           {data.members.map((m) => (
             <Card key={m.id}>
               <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-medium uppercase">{m.name.slice(0, 1)}</span>
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold uppercase text-foreground/70">{m.name.slice(0, 1)}</span>
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5 text-sm font-medium">
                       <span className="truncate">{m.name}</span>
@@ -2493,7 +2515,7 @@ function TeamPage({ me }: { me: Member }) {
               {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
               {inviteLink && (
                 <div>
-                  <div className="mb-1 text-[11px] text-muted-foreground">Send this one-time link to the invitee:</div>
+                  <div className="mb-1 text-[11px] text-muted-foreground">Send this one-time link to the invitee — they confirm on a landing page, so link previews won't consume it:</div>
                   <CopyLink link={inviteLink} />
                 </div>
               )}
@@ -2506,18 +2528,38 @@ function TeamPage({ me }: { me: Member }) {
       {isAdmin && (
         <section>
           <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Agent access</div>
-          <p className="mb-2 text-xs text-muted-foreground">Owners and admins can run every agent. Grant <strong>members</strong> access below — by role (all members) or individually.</p>
+          <p className="mb-3 text-xs text-muted-foreground">
+            Owners &amp; admins can run every agent. Grant <strong>members</strong> access per agent — toggle
+            <span className="mx-1 rounded bg-muted px-1 py-0.5 font-medium text-foreground">All members</span>
+            to open it to everyone, or pick people individually.
+          </p>
+          {data.agents.length === 0 && <div className="text-xs text-muted-foreground">No agents yet.</div>}
           <div className="space-y-2">
             {data.agents.map((a) => {
               const acc = access(a.id)
+              const allMembers = acc.allowedRoles.includes('member')
               return (
                 <Card key={a.id}>
-                  <CardContent className="flex flex-wrap items-center gap-2 p-3">
-                    <span className="mr-1 flex items-center gap-1.5 text-sm font-medium"><AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
-                    <Chip on={acc.allowedRoles.includes('member')} onClick={() => toggleRole(a.id, 'member')}>all members</Chip>
-                    {plainMembers.map((m) => (
-                      <Chip key={m.id} on={acc.allowedMembers.includes(m.id)} onClick={() => toggleMember(a.id, m.id)}>{m.name}</Chip>
-                    ))}
+                  <CardContent className="space-y-2.5 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="flex items-center gap-1.5 text-sm font-medium"><AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
+                      <span className="text-[11px] text-muted-foreground">{accessSummary(a.id)}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Chip on={allMembers} onClick={() => toggleRole(a.id, 'member')}>All members</Chip>
+                      <span className="mx-0.5 h-4 w-px bg-border" />
+                      {/* Owners/admins always have access — shown as static, non-toggle pills. */}
+                      {data.members.filter((m) => m.role !== 'member').map((m) => (
+                        <span key={m.id} title={`${m.role}s run every agent`} className="inline-flex items-center gap-1 rounded-full border border-dashed border-muted-foreground/30 px-2.5 py-0.5 text-xs text-muted-foreground">
+                          <Check className="h-3 w-3" />{m.name}
+                        </span>
+                      ))}
+                      {/* Plain members — individually assignable (or covered by "All members"). */}
+                      {plainMembers.map((m) => (
+                        <Chip key={m.id} on={allMembers || acc.allowedMembers.includes(m.id)} onClick={() => toggleMember(a.id, m.id)}>{m.name}</Chip>
+                      ))}
+                      {plainMembers.length === 0 && <span className="text-[11px] text-muted-foreground">No members to assign yet — invite one above.</span>}
+                    </div>
                   </CardContent>
                 </Card>
               )

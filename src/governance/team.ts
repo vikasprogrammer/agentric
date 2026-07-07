@@ -176,6 +176,20 @@ export class TeamStore {
   }
 
   // ── login / sessions ─────────────────────────────────────────────────────────
+  /**
+   * Look up a magic-link token WITHOUT consuming it — the read the interstitial
+   * landing page uses to show "sign in as <email>". Returns null if the token is
+   * unknown, already consumed, or expired. Kept side-effect-free so a link
+   * preview / scanner's GET can never burn a one-time token (only the POST does).
+   */
+  peekToken(tok: string): { email: string; role: Role } | null {
+    if (!tok) return null;
+    const inv = this.db
+      .prepare('SELECT email, role FROM invites WHERE token = ? AND accepted_at IS NULL AND expires_at > ?')
+      .get<{ email: string; role: Role }>(tok, Date.now());
+    return inv ? { email: inv.email, role: inv.role } : null;
+  }
+
   /** Consume a magic-link token: activate the member and mint a session. Null if invalid/expired. */
   acceptToken(tok: string): { member: Member; sid: string } | null {
     const now = Date.now();

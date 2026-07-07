@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-07-07
+
+### Fixed
+- **Magic-link invites no longer die with "invalid or expired" before the invitee clicks.** `GET
+  /accept` was a one-time token *consumer*, so any link preview / unfurl / mail-security scanner
+  (Slack, WhatsApp, Outlook Safe-Links, Gmail's proxy, corporate gateways) that fetched the URL burned
+  the token first — the human then landed on "invalid or expired". `/accept` is now a two-step landing:
+  the **GET only peeks** and renders a "Continue" confirm page (no side effect), and the token is
+  consumed only by the **POST** the button fires — which bots don't do. One-time, single-use semantics
+  are preserved; the interstitial is self-contained and theme-aware so it works before the session
+  exists. (`TeamStore.peekToken`, `acceptLandingHtml`.)
+
+### Changed
+- **Team page redesign + per-person agent assignment for any member.** Agent access previously showed
+  individual chips only for plain `member`-role people, so a team of all-admins saw no way to scope
+  agents — "can't assign individually". The redesigned **Agent access** section now lists every member
+  per agent: owners/admins render as static *full-access* pills (they run everything by role), plain
+  members are individually toggleable, and an **All members** toggle opens an agent to everyone. Each
+  agent shows a one-line "who can run this" summary. The page also gains a roles legend and tidied
+  member cards.
+
 ### Added
 - **`scripts/wt.sh` — the git-worktree workflow for this shared checkout** (dev tooling; no runtime
   change). Multiple Claude sessions edit this one checkout concurrently and clobber each other; the
