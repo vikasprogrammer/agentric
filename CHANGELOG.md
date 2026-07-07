@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.29.2] — 2026-07-07
+
+### Added
+- **Docs: a dedicated "Automations" page in the in-console Docs section.** The `/#/docs` guide now
+  has a full Automations page (between "Working with agents" and "Governance & approvals") covering the
+  five triggers (cron/webhook/Composio/Slack/Discord), how an automated run stays governed (provenance
+  vs. run-as, approvals still pause it), headless vs. interactive execution + the pile-up guard, the
+  no-automation-needed chat router, agent self-scheduling, and agent→agent delegation via auto-dispatch
+  tasks. Previously Automations only got a one-line mention in Core concepts and Working with agents.
+
 ## [0.29.1] — 2026-07-07
 
 ### Fixed
