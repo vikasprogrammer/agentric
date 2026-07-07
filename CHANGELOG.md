@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-07-07
+
+### Added
+- **The Agents page remembers where you were.** Extending the URL-routing work: the picked agent is now
+  a hash detail (`#/agents/<id>`) so a **refresh keeps the selected agent** — and a bare `#/agents`
+  restores the **last agent you used** (remembered in `localStorage` across visits) instead of always
+  resetting to the first. The task box is also **draft-persisted per agent**: whatever you'd typed is
+  saved as you type and **restored after an accidental refresh**, then cleared on a successful spawn
+  (falling back to the agent's starter prompt when there's no draft). The agent **editor** deep-links
+  too (`#/agent/<id>`), fixing a blank page on refresh ([`web/src/App.tsx`](web/src/App.tsx)).
+
 ## [0.18.1] — 2026-07-07
 
 ### Fixed

@@ -55,6 +55,10 @@ function RoleBadge({ role }: { role: Role }) {
 /** Prefill the spawn box with the agent's first starter prompt, if it defines any. Otherwise the box
  *  starts empty and shows its "Describe the task…" placeholder — no generic filler. */
 const exampleTask = (a?: AgentInfo): string => a?.examplePrompts?.[0] ?? ''
+// Agents-page persistence (localStorage): the last agent you picked + a per-agent draft of the task
+// box, so a refresh (or an accidental one) restores your place instead of resetting to defaults.
+const LAST_AGENT_KEY = 'aos_last_agent'
+const taskDraftKey = (agentId: string) => `aos_task_draft:${agentId}`
 
 /** Bucket agents by their category label for the grouped picker. Uncategorised agents fall into a
  *  trailing "Uncategorized" group; named categories sort alphabetically, each group keeping list order. */
@@ -357,7 +361,6 @@ function Console({ me }: { me: Member }) {
   // re-binding them every render / going stale on the captured `messages`.
   const messagesRef = useRef<Msg[]>([])
   messagesRef.current = messages
-  const [editAgent, setEditAgent] = useState('')
   const { route, detail, nav } = useHashRoute()
   // The open terminal is a URL detail (`#/sessions/<tmux>`), not local state, so a refresh /
   // back-forward reopens the same session. Title is best-effort from the loaded list (falls back to
@@ -366,6 +369,9 @@ function Console({ me }: { me: Member }) {
     route === 'sessions' && detail
       ? { tmux: detail, title: sessions.find((s) => s.tmux === detail)?.title ?? detail }
       : null
+  // The agent being edited is a URL detail (`#/agent/<id>`) so the editor survives a refresh instead
+  // of falling back to a blank page.
+  const editAgent = route === 'agent' ? detail : ''
 
   // Secondary "Manage" nav is collapsed by default so the Agents list stays high; it auto-opens
   // when you're on one of its pages.
@@ -406,10 +412,7 @@ function Console({ me }: { me: Member }) {
     if (r.error) { alert(r.error); return }
     await refreshState()
   }
-  const openAgent = (id: string) => {
-    setEditAgent(id)
-    nav('agent')
-  }
+  const openAgent = (id: string) => nav('agent', id)
   // Sync the registry with the agents folder on disk — picks up folders added/edited/removed
   // outside the console (git pull, scp, another agent) without a server restart.
   const rescanAgents = async () => {
@@ -634,7 +637,7 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
-          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onRescan={rescanAgents} />}
+          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onRescan={rescanAgents} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); openAgent(id) }} />}
           {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onClose={() => nav('sessions')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
@@ -676,10 +679,12 @@ function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; lab
  *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
  *  just scoped to the chosen agent instead of a grid of cards. */
 function AgentsPage({
-  me, agents, run, onEdit, onNew, onDelete, onRescan,
+  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onRescan,
 }: {
   me: Member
   agents: AgentInfo[]
+  selected: string
+  onSelect: (id: string) => void
   run: (agentId: string, task: string) => Promise<string | null>
   onEdit: (id: string) => void
   onNew: () => void
@@ -689,20 +694,35 @@ function AgentsPage({
   const canEdit = me.role === 'owner' || me.role === 'admin'
   const [rescanning, setRescanning] = useState(false)
   const rescan = async () => { setRescanning(true); try { await onRescan() } finally { setRescanning(false) } }
-  const [agentId, setAgentId] = useState('')
   const [task, setTask] = useState('')
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // Keep the selection valid as the agent list loads/changes; default to the first agent.
-  useEffect(() => {
-    if (agents.length === 0) { if (agentId) setAgentId(''); return }
-    if (!agents.some((a) => a.id === agentId)) setAgentId(agents[0].id)
-  }, [agents, agentId])
-
+  // The chosen agent is driven by the URL (`#/agents/<id>`) so a refresh keeps it. When the URL names
+  // no agent (a bare `#/agents`), fall back to the last one you used (remembered across visits) then
+  // the first in the list — without rewriting the URL, so the default doesn't spam history.
+  const has = (id: string) => agents.some((a) => a.id === id)
+  const lastUsed = localStorage.getItem(LAST_AGENT_KEY)
+  const agentId = has(selected) ? selected : (lastUsed && has(lastUsed) ? lastUsed : (agents[0]?.id ?? ''))
   const agent = agents.find((a) => a.id === agentId)
-  // Switching agents prefills its first starter prompt and clears any stale hint.
-  useEffect(() => { setTask(exampleTask(agent)); setHint('') }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const pick = (id: string) => { localStorage.setItem(LAST_AGENT_KEY, id); onSelect(id) }
+
+  // When the selected agent changes, restore the draft you'd typed for it (persisted by `editTask`, so
+  // an accidental refresh doesn't lose it) or fall back to its first starter prompt.
+  useEffect(() => {
+    if (!agentId) { setTask(''); return }
+    const saved = localStorage.getItem(taskDraftKey(agentId))
+    setTask(saved != null ? saved : exampleTask(agent))
+    setHint('')
+  }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Persist the draft as you type (or pick a starter), keyed per agent; empty clears the key.
+  const editTask = (v: string) => {
+    setTask(v)
+    if (!agentId) return
+    if (v) localStorage.setItem(taskDraftKey(agentId), v)
+    else localStorage.removeItem(taskDraftKey(agentId))
+  }
 
   const spawn = async () => {
     if (!agent || !task.trim()) return
@@ -710,6 +730,8 @@ function AgentsPage({
     const err = await run(agent.id, task)
     setBusy(false)
     setHint(err ? '⚠ ' + err : '')
+    // A successful spawn consumes the draft — drop it so returning here shows the starter prompt again.
+    if (!err) localStorage.removeItem(taskDraftKey(agent.id))
   }
 
   if (agents.length === 0) {
@@ -737,7 +759,7 @@ function AgentsPage({
           <CardContent className="flex flex-col gap-3 p-4">
             {/* agent picker + per-agent actions */}
             <div className="flex items-center gap-2">
-              <Select value={agentId} onValueChange={(v) => v && setAgentId(v)}>
+              <Select value={agentId} onValueChange={(v) => v && pick(v)}>
                 <SelectTrigger className="h-9 min-w-0 flex-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {groupByCategory(agents).map(([cat, list]) => (
@@ -782,7 +804,7 @@ function AgentsPage({
                   <button
                     key={i}
                     type="button"
-                    onClick={() => setTask(p)}
+                    onClick={() => editTask(p)}
                     title={p}
                     className="max-w-full truncate rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
@@ -794,7 +816,7 @@ function AgentsPage({
 
             <Textarea
               value={task}
-              onChange={(e) => setTask(e.target.value)}
+              onChange={(e) => editTask(e.target.value)}
               onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') spawn() }}
               className="min-h-[140px] text-sm"
               placeholder="Describe the task…  (⌘/Ctrl+Enter to Run)"
