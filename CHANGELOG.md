@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-07-07
+
+### Changed
+- **Reimagined the agent chooser with two switchable layouts.** The single dropdown is replaced by a
+  picker you can flip between a **gallery** (a responsive grid of agent cards, each with icon, name,
+  runtime + built-in badges, and a two-line description) and a **split** view (a grouped, scrollable
+  list rail on the left, the selected agent's detail + task composer on the right). The layout choice
+  persists across visits, and a **search box** (id / description / category) appears once the fleet
+  grows past a glance. The task composer, starter-prompt chips, and per-agent Edit/Delete actions are
+  shared by both layouts.
+- **The agent chooser now labels built-in agents.** Every agent that ships with Agent OS — the
+  department generalists (engineer/support/marketer/researcher), the agent-author, and the
+  consolidator — carries a **"built-in"** badge, so it reads apart from agents the team authored.
+  Built-in is derived by id server-side (`builtIn` on the agents API), which also flags homes
+  provisioned before the badge existed, since those agents materialise under the user's agents folder
+  and can't be told apart by path.
+- **The selected agent keeps its icon + badges.** The old dropdown used Radix `<SelectValue/>`, which
+  mirrors only the item's plain text, so the runtime ("claude") and icon vanished the moment you
+  picked an agent. The redesigned picker renders the selected agent's icon, name, runtime, and
+  built-in badge directly in its detail header.
+
 ## [0.26.0] — 2026-07-07
 
 ### Changed

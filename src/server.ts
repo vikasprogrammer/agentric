@@ -18,7 +18,9 @@ import { Automation, Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
-import { Consolidation } from './edge/consolidation';
+import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
+import { GENERALIST_IDS } from './edge/generalists';
+import { AGENT_AUTHOR_ID } from './edge/agent-author';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
@@ -44,10 +46,18 @@ interface MemorySettingsView {
 const CONSOLE_HTML = path.resolve(__dirname, '../public/console.html');
 const WEB_DIST = path.resolve(__dirname, '../web/dist');
 
+/** The agents Agent OS ships with, code-provisioned into every home on boot (the department
+ *  generalists + the agent-author + the consolidator). We flag these by id rather than by disk
+ *  location because they materialise UNDER the user's agents home, so the `deletable` path check
+ *  can't tell them apart from a hand-authored agent — and homes provisioned before this flag existed
+ *  carry no marker in their on-disk manifests. */
+const BUILT_IN_AGENT_IDS = new Set<string>([...GENERALIST_IDS, AGENT_AUTHOR_ID, CONSOLIDATOR_ID]);
+
 /** Agents available for terminal sessions = whatever manifests this instance loaded.
  *  `deletable` = lives under the data home (user-created), so it can be removed; the bundled
- *  examples that ship with the software are read-only. */
-function terminalAgents(os: AgentOS): { id: string; description: string; category?: string; runtime: string; deletable: boolean; model?: string; effort?: string; examplePrompts?: string[]; icon?: string }[] {
+ *  examples that ship with the software are read-only. `builtIn` = one of the agents Agent OS
+ *  provisions itself, so the console can label it as shipped-with-the-software vs. user-authored. */
+function terminalAgents(os: AgentOS): { id: string; description: string; category?: string; runtime: string; deletable: boolean; builtIn: boolean; model?: string; effort?: string; examplePrompts?: string[]; icon?: string }[] {
   const userRoot = os.paths ? path.resolve(os.paths.userAgents) + path.sep : null;
   return [...os.agents.values()].map((a) => ({
     id: a.id,
@@ -56,6 +66,8 @@ function terminalAgents(os: AgentOS): { id: string; description: string; categor
     category: a.category,
     runtime: a.runtime,
     deletable: !!userRoot && !!a.dir && (path.resolve(a.dir) + path.sep).startsWith(userRoot),
+    // A code-provisioned agent that ships with Agent OS (generalist / agent-author / consolidator).
+    builtIn: BUILT_IN_AGENT_IDS.has(a.id),
     // Per-agent runtime tuning (claude-code only) — surfaced so the console can show/edit it.
     model: a.model,
     effort: a.effort,

@@ -16,7 +16,8 @@ import type { AgentOS } from '../kernel';
 import type { TerminalManager } from '../terminal';
 import type { AgentManifest } from '../types';
 
-const AGENT_ID = 'consolidator';
+export const CONSOLIDATOR_ID = 'consolidator';
+const AGENT_ID = CONSOLIDATOR_ID;
 const WINDOW_FALLBACK_MS = 7 * 24 * 3_600_000;
 const MAX_ITEMS = 40; // bound the prompt: newest N episodes/lessons since the watermark
 const MIN_ITEMS = 3; // below this there's nothing worth a run

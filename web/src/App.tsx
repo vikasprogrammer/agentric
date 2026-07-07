@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult } from '@/lib/api'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
@@ -59,6 +59,10 @@ const exampleTask = (a?: AgentInfo): string => a?.examplePrompts?.[0] ?? ''
 // box, so a refresh (or an accidental one) restores your place instead of resetting to defaults.
 const LAST_AGENT_KEY = 'aos_last_agent'
 const taskDraftKey = (agentId: string) => `aos_task_draft:${agentId}`
+// Which agent-chooser layout the user prefers: a card gallery ('grid') or a list-rail + detail
+// ('split'). Persisted so it sticks across visits; defaults to the visual grid.
+const AGENTS_VIEW_KEY = 'aos_agents_view'
+type AgentsView = 'grid' | 'split'
 
 /** Bucket agents by their category label for the grouped picker. Uncategorised agents fall into a
  *  trailing "Uncategorized" group; named categories sort alphabetically, each group keeping list order. */
@@ -81,6 +85,16 @@ function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
   return (
     <Badge variant={claude ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
       {claude ? 'claude' : 'mock'}
+    </Badge>
+  )
+}
+
+/** Marks an agent that ships with Agent OS (a department generalist, the agent-author, the
+ *  consolidator) so the chooser makes clear it's built-in rather than one the team authored. */
+function BuiltInBadge() {
+  return (
+    <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+      built-in
     </Badge>
   )
 }
@@ -736,6 +750,9 @@ function AgentsPage({
   const [task, setTask] = useState('')
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
+  const [view, setView] = useState<AgentsView>(() => (localStorage.getItem(AGENTS_VIEW_KEY) === 'split' ? 'split' : 'grid'))
+  const setViewPersist = (v: AgentsView) => { setView(v); localStorage.setItem(AGENTS_VIEW_KEY, v) }
+  const [query, setQuery] = useState('')
 
   // The chosen agent is driven by the URL (`#/agents/<id>`) so a refresh keeps it. When the URL names
   // no agent (a bare `#/agents`), fall back to the last one you used (remembered across visits) then
@@ -789,89 +806,152 @@ function AgentsPage({
     )
   }
 
-  return (
-    <div className="flex min-h-full flex-col items-center justify-center">
-      <div className="w-full max-w-2xl space-y-5">
-        <h1 className="text-center text-xl font-semibold tracking-tight">What should an agent do?</h1>
+  // Filter the fleet by the search box (id / description / category), then group for display. The
+  // selected agent is resolved over the FULL list, so searching never deselects what you picked.
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? agents.filter((a) => a.id.toLowerCase().includes(q) || (a.description ?? '').toLowerCase().includes(q) || (a.category ?? '').toLowerCase().includes(q))
+    : agents
+  const groups = groupByCategory(filtered)
 
-        <Card className="shadow-sm">
-          <CardContent className="flex flex-col gap-3 p-4">
-            {/* agent picker + per-agent actions */}
-            <div className="flex items-center gap-2">
-              <Select value={agentId} onValueChange={(v) => v && pick(v)}>
-                <SelectTrigger className="h-9 min-w-0 flex-1"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {groupByCategory(agents).map(([cat, list]) => (
-                    <SelectGroup key={cat}>
-                      <SelectLabel>{cat}</SelectLabel>
-                      {list.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          <span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
-              {canEdit && agent?.runtime === 'claude-code' && (
-                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={() => onEdit(agent.id)} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
-                  <SlidersHorizontal className="h-4 w-4" />
-                </Button>
-              )}
-              {canEdit && agent?.deletable && (
-                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-destructive" onClick={() => onDelete(agent.id)} title="delete agent (removes its folder)">
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
-              {canEdit && (
-                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={onNew} title="new agent">
-                  <Plus className="h-4 w-4" />
-                </Button>
-              )}
-              {canEdit && (
-                <Button size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-muted-foreground" onClick={rescan} disabled={rescanning} title="rescan the agents folder — pick up agents added on disk without a restart">
-                  <RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} />
-                </Button>
-              )}
-            </div>
-
-            {agent?.description && <p className="text-xs text-muted-foreground">{agent.description}</p>}
-
-            {agent?.examplePrompts && agent.examplePrompts.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {agent.examplePrompts.map((p, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    onClick={() => editTask(p)}
-                    title={p}
-                    className="max-w-full truncate rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <Textarea
-              value={task}
-              onChange={(e) => editTask(e.target.value)}
-              onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') spawn() }}
-              className="min-h-[140px] text-sm"
-              placeholder="Describe the task…  (⌘/Ctrl+Enter to Run)"
-            />
-
-            <div className="flex items-center gap-3">
-              <Button onClick={spawn} disabled={busy || !task.trim()}>
-                <Play className="mr-1 h-4 w-4" /> Run
-              </Button>
-              {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
-            </div>
-          </CardContent>
-        </Card>
-
-        <p className="text-center text-xs text-muted-foreground">Run spawns a live session — every effect still passes the gate.</p>
+  // The task composer for the selected agent — shared by both layouts (the gallery puts it below the
+  // cards; the split view puts it in the right pane). Its per-agent Edit/Delete actions live here.
+  const composer = !agent ? (
+    <p className="py-10 text-center text-sm text-muted-foreground">Pick an agent to give it a task.</p>
+  ) : (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <AgentIcon icon={agent.icon} className="h-5 w-5 shrink-0 text-muted-foreground" />
+        <span className="truncate text-sm font-semibold">{agent.id}</span>
+        <RuntimeBadge runtime={agent.runtime} />
+        {agent.builtIn && <BuiltInBadge />}
+        <div className="ml-auto flex items-center gap-1">
+          {canEdit && agent.runtime === 'claude-code' && (
+            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={() => onEdit(agent.id)} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          )}
+          {canEdit && agent.deletable && (
+            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-destructive" onClick={() => onDelete(agent.id)} title="delete agent (removes its folder)">
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
       </div>
+
+      {agent.description && <p className="text-xs text-muted-foreground">{agent.description}</p>}
+
+      {agent.examplePrompts && agent.examplePrompts.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {agent.examplePrompts.map((p, i) => (
+            <button key={i} type="button" onClick={() => editTask(p)} title={p} className="max-w-full truncate rounded-full border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground">
+              {p}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <Textarea
+        value={task}
+        onChange={(e) => editTask(e.target.value)}
+        onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') spawn() }}
+        className="min-h-[140px] text-sm"
+        placeholder="Describe the task…  (⌘/Ctrl+Enter to Run)"
+      />
+
+      <div className="flex items-center gap-3">
+        <Button onClick={spawn} disabled={busy || !task.trim()}>
+          <Play className="mr-1 h-4 w-4" /> Run
+        </Button>
+        {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="mx-auto w-full max-w-4xl space-y-4">
+      {/* title + layout toggle + fleet actions */}
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="text-xl font-semibold tracking-tight">What should an agent do?</h1>
+        <div className="ml-auto flex items-center gap-1.5">
+          <div className="flex items-center rounded-md border p-0.5">
+            <button type="button" onClick={() => setViewPersist('grid')} title="Gallery view" aria-pressed={view === 'grid'} className={'flex h-7 w-7 items-center justify-center rounded ' + (view === 'grid' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+              <LayoutGrid className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={() => setViewPersist('split')} title="List + detail view" aria-pressed={view === 'split'} className={'flex h-7 w-7 items-center justify-center rounded ' + (view === 'split' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground')}>
+              <List className="h-4 w-4" />
+            </button>
+          </div>
+          {canEdit && (
+            <>
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={onNew} title="new agent"><Plus className="h-4 w-4" /></Button>
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={rescan} disabled={rescanning} title="rescan the agents folder — pick up agents added on disk without a restart"><RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /></Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* search — only worth showing once the fleet is more than a glance */}
+      {agents.length > 6 && (
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search agents…" className="h-8 pl-7" />
+        </div>
+      )}
+
+      {view === 'grid' ? (
+        <div className="space-y-4">
+          {groups.length === 0 && <p className="text-sm text-muted-foreground">No agents match “{query}”.</p>}
+          {groups.map(([cat, list]) => (
+            <div key={cat} className="space-y-1.5">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{cat}</div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {list.map((a) => {
+                  const active = a.id === agentId
+                  return (
+                    <button key={a.id} type="button" onClick={() => pick(a.id)} className={'flex flex-col gap-1.5 rounded-lg border p-3 text-left transition hover:border-primary/40 hover:bg-muted/40 ' + (active ? 'border-primary bg-primary/5 ring-1 ring-primary' : '')}>
+                      <span className="flex items-center gap-1.5">
+                        <AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <span className="truncate text-sm font-medium">{a.id}</span>
+                      </span>
+                      <span className="flex flex-wrap items-center gap-1">
+                        <RuntimeBadge runtime={a.runtime} />
+                        {a.builtIn && <BuiltInBadge />}
+                      </span>
+                      {a.description && <span className="line-clamp-2 text-[11px] text-muted-foreground">{a.description}</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
+          <Card className="shadow-sm"><CardContent className="p-4">{composer}</CardContent></Card>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-[minmax(190px,230px)_1fr]">
+          <aside className="space-y-3 md:max-h-[70vh] md:overflow-y-auto md:pr-1">
+            {groups.length === 0 && <p className="px-1 text-sm text-muted-foreground">No matches.</p>}
+            {groups.map(([cat, list]) => (
+              <div key={cat} className="space-y-0.5">
+                <div className="px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{cat}</div>
+                {list.map((a) => {
+                  const active = a.id === agentId
+                  return (
+                    <button key={a.id} type="button" onClick={() => pick(a.id)} title={a.description} className={'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition ' + (active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}>
+                      <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{a.id}</span>
+                      {a.builtIn && <span className="ml-auto shrink-0"><BuiltInBadge /></span>}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
+          </aside>
+          <Card className="shadow-sm"><CardContent className="p-4">{composer}</CardContent></Card>
+        </div>
+      )}
+
+      <p className="text-center text-xs text-muted-foreground">Run spawns a live session — every effect still passes the gate.</p>
     </div>
   )
 }

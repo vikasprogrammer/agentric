@@ -222,6 +222,10 @@ a person can act on — not a pile of links.
 
 const GENERALISTS: readonly Generalist[] = [ENGINEER, SUPPORT, MARKETER, RESEARCHER];
 
+/** Ids of the built-in department generalists — the console consults these (with the agent-author +
+ *  consolidator) to flag which agents ship with the software vs. ones a user authored. */
+export const GENERALIST_IDS: readonly string[] = GENERALISTS.map((g) => g.manifest.id);
+
 /** Provision the built-in department generalists into the data home on boot (one isolated folder each
  *  with its manifest + CLAUDE.md), then register each live so it resolves to a real claude-code runtime.
  *  Idempotent: skips any agent already registered with a folder, and never overwrites a manifest/CLAUDE.md
