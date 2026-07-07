@@ -7,6 +7,7 @@ import coreConcepts from './core-concepts.md?raw'
 import workingWithAgents from './working-with-agents.md?raw'
 import governance from './governance.md?raw'
 import sharedPlanes from './shared-planes.md?raw'
+import importIntoAos from './import-into-aos.md?raw'
 
 export type DocPage = { slug: string; title: string; body: string }
 
@@ -17,4 +18,5 @@ export const docPages: DocPage[] = [
   { slug: 'working-with-agents', title: 'Working with agents', body: workingWithAgents },
   { slug: 'governance', title: 'Governance & approvals', body: governance },
   { slug: 'shared-planes', title: 'Memory, Knowledge & Tasks', body: sharedPlanes },
+  { slug: 'import-into-aos', title: 'Import into AOS', body: importIntoAos },
 ]

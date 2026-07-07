@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+### Added
+- **Docs: "Import into AOS" console page** — a master-prompt guide for bringing an agent over from
+  another system (raw Claude Code project, CrewAI/LangGraph, a folder of prompts) by emitting a
+  file-based bundle that mirrors how AOS stores agents, so the manifest/instructions/skills need no
+  importer. Wired into the Docs section (`web/src/docs`).
+- **Docs: procedural-skills plan (spec)** — `docs/procedural-skills-plan.md`, the Lever 6 proposal for
+  closing the episodic→procedural gap (the fleet writing its own `SKILL.md` from repeated successes).
+
 ## [0.24.0] — 2026-07-07
 
 ### Added
