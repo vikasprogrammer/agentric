@@ -459,7 +459,10 @@ export class LauncherDaemon {
       ...setenv,
       '--',
       'ttyd', '-p', String(port), '-i', '127.0.0.1', '-b', `/terminal/${member}`, '-a', '-W',
-      '-t', 'disableReconnect=true', '-t', 'disableLeaveAlert=true', '-t', 'fontSize=14',
+      // Ping to keep the WS alive through idle proxies, and auto-reattach after a dropped socket — the
+      // tmux session persists so reconnect re-attaches to the live session. See the matching rationale in
+      // tenant-registry.launchTtyd: disableReconnect made a transient blip blank the terminal permanently.
+      '-P', '30', '-t', 'disableReconnect=false', '-t', 'disableLeaveAlert=true', '-t', 'fontSize=14',
       'tmux', '-S', this.sock(member), 'attach', '-t',
     ]);
     return r.ok ? { ok: true, uid: ensured.uid } : { ok: false, error: `ttyd start failed: ${r.err}` };
