@@ -1517,7 +1517,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
@@ -1531,12 +1531,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, shellSecrets, category, icon };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, category, shellSecrets: shellSecrets ?? [] } });
-    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, examplePrompts: prompts, shellSecrets, category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [] } });
+    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, category, icon });
   }
 
   // ── workspace runtime defaults (the fleet-wide model/effort/permission fallback) — owner/admin only ──

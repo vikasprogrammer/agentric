@@ -618,16 +618,29 @@ export interface TaskQuery {
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
-/** The two knobs that tune a claude-code session — settable per-agent (manifest) with a
- *  workspace-wide fallback (Settings → runtime defaults). An undefined field means "inherit".
- *  Permission posture is deliberately NOT a knob: the gate hook is the single authority (it emits an
- *  authoritative PreToolUse decision per side-effecting tool), so `--permission-mode` is neither set
- *  nor needed — one brain, not a second one layered on top. */
+/** Permission mode for a claude-code session (`claude --permission-mode <mode>`). These are the exact
+ *  choices the CLI accepts. It matters ONLY on the interactive lane, and ONLY for tools the gate hook
+ *  doesn't already decide: for `Bash`/`Edit`/`Write`/`mcp__*` the PreToolUse hook returns an
+ *  authoritative `allow`/`deny`, which bypasses Claude's own permission engine (the classifier never
+ *  runs). So the mode governs the *fallback* for tools the hook leaves alone (Read/Glob/Grep,
+ *  WebFetch, …) — `auto` lets Claude's classifier auto-approve the safe ones instead of blocking on a
+ *  native prompt no one answers in an idle tmux pane. It is NOT the OS sandbox (a separate switch we
+ *  deliberately don't enable) and does NOT weaken the gate hook. */
+export type PermissionMode = 'auto' | 'plan' | 'acceptEdits' | 'manual' | 'dontAsk' | 'bypassPermissions';
+export const PERMISSION_MODES: readonly PermissionMode[] = ['auto', 'plan', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions'];
+
+/** The knobs that tune a claude-code session — settable per-agent (manifest) with a workspace-wide
+ *  fallback (Settings → runtime defaults). An undefined field means "inherit". `model`/`effort` apply
+ *  to both lanes; `permissionMode` is interactive-only (the headless lane keeps
+ *  `--dangerously-skip-permissions`) and defaults to `auto` when unset at every level. The gate hook
+ *  remains the sole authority for governed side effects regardless of the mode — see PermissionMode. */
 export interface RuntimeTuning {
   /** Model alias or full id (`claude --model`). Undefined → the CLI's configured default. */
   model?: string;
   /** Reasoning effort (`claude --effort`). Undefined → the CLI default. */
   effort?: Effort;
+  /** Permission mode (`claude --permission-mode`), interactive lane only. Undefined → `auto`. */
+  permissionMode?: PermissionMode;
 }
 
 export interface AgentManifest extends RuntimeTuning {
@@ -675,6 +688,11 @@ export function sanitizeRuntimeTuning(input: Partial<Record<keyof RuntimeTuning,
   if (effort) {
     if (!EFFORTS.includes(effort as Effort)) return { tuning, error: `effort must be one of: ${EFFORTS.join(', ')}` };
     tuning.effort = effort as Effort;
+  }
+  const mode = typeof input.permissionMode === 'string' ? input.permissionMode.trim() : '';
+  if (mode) {
+    if (!PERMISSION_MODES.includes(mode as PermissionMode)) return { tuning, error: `permissionMode must be one of: ${PERMISSION_MODES.join(', ')}` };
+    tuning.permissionMode = mode as PermissionMode;
   }
   return { tuning };
 }
@@ -762,11 +780,14 @@ export function sanitizeSvgIcon(input: string): string | undefined {
 }
 
 /** Resolve the effective tuning for a launch: each field is the agent's own value, else the
- *  workspace default, else undefined (CLI default). Pure — used by the terminal launcher. */
+ *  workspace default, else undefined (CLI default) — except `permissionMode`, whose floor is `auto`
+ *  (the interactive lane always runs with a mode; the built-in default is `auto`, not the CLI's own).
+ *  Pure — used by the terminal launcher. */
 export function resolveRuntimeTuning(agent: RuntimeTuning, defaults: RuntimeTuning): RuntimeTuning {
   return {
     model: agent.model ?? defaults.model,
     effort: agent.effort ?? defaults.effort,
+    permissionMode: agent.permissionMode ?? defaults.permissionMode ?? 'auto',
   };
 }
 

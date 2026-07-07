@@ -176,9 +176,12 @@ notify_resumed() {
 }
 
 # Per-agent runtime tuning, resolved by the server (agent manifest → workspace default) and passed
-# in as env. Model + effort apply to both lanes. An empty var means "inherit" — we add no flag, so
-# the claude CLI's own default stands. There is NO permission-mode flag: the gate hook is the single
-# authority (it emits an authoritative PreToolUse decision), so we don't layer Claude's own on top.
+# in as env. Model + effort apply to both lanes (COMMON_ARGS below). An empty var means "inherit" — we
+# add no flag, so the claude CLI's own default stands. CLAUDE_PERMISSION_MODE is handled separately,
+# AFTER the headless branch exits, so `--permission-mode` lands on the INTERACTIVE lane only. It doesn't
+# weaken governance: the gate hook still emits an authoritative PreToolUse decision for every governed
+# tool (which bypasses Claude's own permission engine); the mode only tunes the fallback for the tools
+# the hook leaves alone (Read/WebFetch/…), and `auto` keeps an idle pane from hanging on a native prompt.
 RUNTIME_ARGS=()
 [ -n "${CLAUDE_MODEL:-}" ]  && RUNTIME_ARGS+=(--model "$CLAUDE_MODEL")
 [ -n "${CLAUDE_EFFORT:-}" ] && RUNTIME_ARGS+=(--effort "$CLAUDE_EFFORT")
@@ -209,6 +212,12 @@ if [ "${HEADLESS:-}" = "1" ]; then
   notify_ended
   exit 0
 fi
+
+# INTERACTIVE lane only (the headless branch above already exited). Add the permission mode here — NOT
+# in COMMON_ARGS — so it never touches the headless `-p --dangerously-skip-permissions` run. Defaults to
+# `auto` if the env is unset (e.g. resuming a session launched before this knob existed).
+COMMON_ARGS+=(--permission-mode "${CLAUDE_PERMISSION_MODE:-auto}")
+dim "permission mode: ${CLAUDE_PERMISSION_MODE:-auto} (gate hook still governs every side effect)"
 
 # Fullscreen rendering for the TUI. Inside tmux, claude's normal renderer degrades — the scrollbar
 # vanishes and the mouse wheel scrolls the input history instead of the conversation. Fullscreen mode

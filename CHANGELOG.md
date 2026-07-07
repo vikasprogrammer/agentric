@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-07-07
+
+### Added
+- **Per-agent / workspace permission mode is a knob again — default `auto`.** `RuntimeTuning` gains a
+  `permissionMode` field (`auto`/`plan`/`acceptEdits`/`manual`/`dontAsk`/`bypassPermissions`, the exact
+  set the CLI accepts), settable per-agent (agent.json) with a workspace fallback (Settings → Runtime
+  defaults) and exposed in the console's runtime-tuning fields. `claude-launch.sh` maps it to
+  `--permission-mode` on the **interactive lane only** — the headless/automation lane keeps
+  `--dangerously-skip-permissions` untouched. It does **not** weaken governance or enable the OS
+  sandbox (a separate, still-off switch): for `Bash`/`Edit`/`Write`/`mcp__*` the PreToolUse gate hook
+  still returns an authoritative decision that bypasses Claude's own permission engine, so the mode
+  only governs the *fallback* for tools the hook leaves alone (Read/WebFetch/…). `auto` lets Claude's
+  classifier auto-approve the safe ones instead of hanging an idle tmux pane on a native prompt no one
+  answers. Unset resolves to `auto` at every level (including resumes of pre-knob sessions).
+
 ## [0.21.0] — 2026-07-07
 
 ### Added
@@ -67,7 +82,6 @@ new version heading in the same commit.
   saved as you type and **restored after an accidental refresh**, then cleared on a successful spawn
   (falling back to the agent's starter prompt when there's no draft). The agent **editor** deep-links
   too (`#/agent/<id>`), fixing a blank page on refresh ([`web/src/App.tsx`](web/src/App.tsx)).
-
 ## [0.18.1] — 2026-07-07
 
 ### Fixed

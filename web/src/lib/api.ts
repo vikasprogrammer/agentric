@@ -22,10 +22,15 @@ export interface AgentAccess {
 }
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
-/** Per-agent / workspace runtime tuning for claude-code sessions. Each field optional → inherit. */
+/** `claude --permission-mode` choices. Interactive lane only; the gate hook governs regardless. */
+export type PermissionMode = 'auto' | 'plan' | 'acceptEdits' | 'manual' | 'dontAsk' | 'bypassPermissions'
+export const PERMISSION_MODES: PermissionMode[] = ['auto', 'plan', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions']
+/** Per-agent / workspace runtime tuning for claude-code sessions. Each field optional → inherit
+ *  (permissionMode's floor is `auto`). */
 export interface RuntimeTuning {
   model?: string
   effort?: Effort
+  permissionMode?: PermissionMode
 }
 
 export interface AgentInfo {
@@ -163,7 +168,7 @@ export interface Recommendation {
   kind: 'runtime' | 'policy' | 'budget'
   title: string
   rationale: string
-  apply?: { runtimeDefaults?: { model?: string; effort?: string } }
+  apply?: { runtimeDefaults?: { model?: string; effort?: string; permissionMode?: PermissionMode } }
   link?: string
   createdAt: number
 }

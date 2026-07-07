@@ -10,7 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult } from '@/lib/api'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
 
@@ -161,15 +161,17 @@ function IconPicker({ value, onChange }: { value?: string; onChange: (v: string 
   )
 }
 
-/** The model / effort pair, reused by the create form, the agent editor, and the workspace defaults
- *  panel. Empty model/effort = "inherit" (the placeholder/option says so). These map 1:1 to
- *  `claude --model/--effort`. Permission posture is NOT a knob — the gate hook governs every side
- *  effect authoritatively, so there's no `--permission-mode` to tune. */
-function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritLabel = 'inherit' }: {
+/** The model / effort / permission-mode trio, reused by the create form, the agent editor, and the
+ *  workspace defaults panel. Empty model/effort = "inherit" (the placeholder/option says so). Model +
+ *  effort map 1:1 to `claude --model/--effort`; permissionMode maps to `--permission-mode` on the
+ *  INTERACTIVE lane only and its blank/floor is `auto` (the gate hook governs every side effect
+ *  regardless of the mode — it only tunes the fallback for tools the hook leaves alone). */
+function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritLabel = 'inherit', permInheritLabel }: {
   tuning: RuntimeTuning
   onChange: (t: RuntimeTuning) => void
   modelPlaceholder?: string
   inheritLabel?: string
+  permInheritLabel?: string
 }) {
   const selCls = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
   return (
@@ -184,6 +186,14 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
           <option value="">{inheritLabel}</option>
           {EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}
         </select>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs font-medium">Permission mode</label>
+        <select className={selCls} value={tuning.permissionMode ?? ''} onChange={(e) => onChange({ ...tuning, permissionMode: (e.target.value || undefined) as PermissionMode | undefined })}>
+          <option value="">{permInheritLabel ?? inheritLabel}</option>
+          {PERMISSION_MODES.map((x) => <option key={x} value={x}>{x}</option>)}
+        </select>
+        <p className="text-[11px] text-muted-foreground">Interactive only — headless stays fully skipped. The gate hook governs regardless.</p>
       </div>
     </div>
   )
@@ -3500,7 +3510,7 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
   useEffect(() => {
     api.agentConfig(agentId).then((r) => {
       if (r.error) return
-      const t: RuntimeTuning = { model: r.model, effort: r.effort }
+      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
       const d = r.description ?? ''
       const p = (r.examplePrompts ?? []).join('\n')
       const c = r.category ?? ''
@@ -4820,7 +4830,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
   useEffect(() => {
     api.runtimeDefaults().then((r) => {
       if (r.error) return
-      const t: RuntimeTuning = { model: r.model, effort: r.effort }
+      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
       setTuning(t); setSaved(t); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
     }).catch(() => {})
   }, [])
@@ -4844,7 +4854,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           a blank field here means each unset agent falls through to the <span className="font-mono text-xs">claude</span> CLI's own default.
           Applies on each agent's next session.
         </p>
-        <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder="CLI default" inheritLabel="CLI default" />
+        <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder="CLI default" inheritLabel="CLI default" permInheritLabel="auto (default)" />
         <div className="flex items-center gap-3">
           <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save defaults' : 'Saved'}</Button>
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}

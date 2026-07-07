@@ -575,16 +575,20 @@ export class TerminalManager {
       if (headless) env.HEADLESS = '1';
       env.AGENT_DIR = manifest.dir;
       env.HOOK = this.hook;
-      // No OS sandbox env: the gate hook (PreToolUse) is the sole authority now (it emits an
-      // authoritative permissionDecision per Bash/connector call), so we no longer wrap the shell in
-      // Seatbelt/bubblewrap. Real OS containment, where wanted, is the Linux uid-isolation path.
-      // Per-agent model / effort, each falling back to the workspace default. The launcher
-      // (claude-launch.sh) turns these into `--model` / `--effort`. Resolved here (not in bash) so the
-      // resume env file captures the exact values a reconnect re-uses.
+      // No OS sandbox env: the gate hook (PreToolUse) is the sole authority for governed side effects
+      // (it emits an authoritative permissionDecision per Bash/write/connector call, which bypasses
+      // Claude's own permission engine), so we don't wrap the shell in Seatbelt/bubblewrap. Real OS
+      // containment, where wanted, is the Linux uid-isolation path.
+      // Per-agent model / effort / permission-mode, each falling back to the workspace default. The
+      // launcher (claude-launch.sh) turns these into `--model` / `--effort` / `--permission-mode`
+      // (permission-mode on the INTERACTIVE lane only — headless keeps --dangerously-skip-permissions;
+      // it only tunes the fallback for tools the gate hook doesn't decide, and defaults to `auto`).
+      // Resolved here (not in bash) so the resume env file captures the exact values a reconnect re-uses.
       const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults());
       if (tuning.model) env.CLAUDE_MODEL = tuning.model;
       if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
-      this.audit(id, agent, 'session.tuning', { model: tuning.model, effort: tuning.effort });
+      if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
+      this.audit(id, agent, 'session.tuning', { model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode });
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session
       // can be resumed in-place with `claude --resume <id>` when the user reconnects in the browser.
       env.CLAUDE_SESSION_ID = randomUUID();
