@@ -15,6 +15,8 @@ import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
 
 type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs'
+// The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
+const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'tasks', 'memory', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs']
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -183,19 +185,28 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
   )
 }
 
-/** Minimal hash router — #/inbox · #/agents · #/sessions. No dependency. */
-function useHashRoute(): [Route, (r: Route) => void] {
-  const parse = (): Route => {
+/** Minimal hash router — `#/<page>` with an optional detail segment (`#/sessions/<tmux>`) so a
+ *  deep-linked view (an open terminal, later other pages' selections) survives a refresh and
+ *  back/forward. The detail is everything after the first slash, URL-decoded. No dependency. */
+function useHashRoute(): { route: Route; detail: string; nav: (r: Route, detail?: string) => void } {
+  const parse = () => {
     const h = window.location.hash.replace(/^#\/?/, '')
-    return h === 'sessions' || h === 'agents' || h === 'new-agent' || h === 'connectors' || h === 'team' || h === 'automations' || h === 'tasks' || h === 'memory' || h === 'kb' || h === 'skills' || h === 'files' || h === 'artifacts' || h === 'settings' || h === 'agent' || h === 'docs' ? h : 'inbox'
+    const slash = h.indexOf('/')
+    const head = slash === -1 ? h : h.slice(0, slash)
+    const rest = slash === -1 ? '' : h.slice(slash + 1)
+    const route = (ROUTES as string[]).includes(head) ? (head as Route) : 'inbox'
+    return { route, detail: rest ? decodeURIComponent(rest) : '' }
   }
-  const [route, setRoute] = useState<Route>(parse())
+  const [state, setState] = useState(parse)
   useEffect(() => {
-    const on = () => setRoute(parse())
+    const on = () => setState(parse())
     window.addEventListener('hashchange', on)
     return () => window.removeEventListener('hashchange', on)
   }, [])
-  return [route, (r: Route) => { window.location.hash = '/' + r }]
+  const nav = (r: Route, detail?: string) => {
+    window.location.hash = '/' + r + (detail ? '/' + encodeURIComponent(detail) : '')
+  }
+  return { route: state.route, detail: state.detail, nav }
 }
 
 export default function App() {
@@ -346,9 +357,15 @@ function Console({ me }: { me: Member }) {
   // re-binding them every render / going stale on the captured `messages`.
   const messagesRef = useRef<Msg[]>([])
   messagesRef.current = messages
-  const [selected, setSelected] = useState<Selected>(null)
   const [editAgent, setEditAgent] = useState('')
-  const [route, nav] = useHashRoute()
+  const { route, detail, nav } = useHashRoute()
+  // The open terminal is a URL detail (`#/sessions/<tmux>`), not local state, so a refresh /
+  // back-forward reopens the same session. Title is best-effort from the loaded list (falls back to
+  // the tmux for a link opened before the sessions have loaded).
+  const selected: Selected =
+    route === 'sessions' && detail
+      ? { tmux: detail, title: sessions.find((s) => s.tmux === detail)?.title ?? detail }
+      : null
 
   // Secondary "Manage" nav is collapsed by default so the Agents list stays high; it auto-opens
   // when you're on one of its pages.
@@ -415,9 +432,9 @@ function Console({ me }: { me: Member }) {
     setMessages((ms) => ms.filter((m) => !toClear.some((c) => c.id === m.id)))
     toClear.forEach((m) => { void api.dismissMessage(m.id) })
   }
-  const openTerminal = (tmux: string, title: string) => {
-    setSelected({ tmux, title })
-    nav('sessions')
+  const openTerminal = (tmux: string, _title?: string) => {
+    // The tmux lands in the URL (`#/sessions/<tmux>`); `selected` is derived from it above.
+    nav('sessions', tmux)
     // Opening a session means you're attending to it → clear its bell.
     clearAlerts(tmux.replace(/^aos-/, ''))
   }
@@ -431,7 +448,7 @@ function Console({ me }: { me: Member }) {
   const deleteSession = async (id: string, tmux: string) => {
     if (!confirm('Delete this session? Its inbox messages and transcript files are removed; the audit log is kept.')) return
     await api.deleteSession(id)
-    if (selected?.tmux === tmux) setSelected(null)
+    if (selected?.tmux === tmux) nav('sessions')
     setSessions(await api.sessions())
   }
   // Bulk variants for the Sessions list — stop/delete many in one go, single confirm, one refresh.
@@ -446,7 +463,7 @@ function Console({ me }: { me: Member }) {
     if (!confirm(`Delete ${n} session${n === 1 ? '' : 's'}? Their inbox messages and transcript files are removed; the audit log is kept.`)) return
     const tmuxes = new Set(sessions.filter((s) => ids.includes(s.id)).map((s) => s.tmux))
     await Promise.all(ids.map((id) => api.deleteSession(id)))
-    if (selected && tmuxes.has(selected.tmux)) setSelected(null)
+    if (selected && tmuxes.has(selected.tmux)) nav('sessions')
     setSessions(await api.sessions())
   }
   // Spawn from an agent card on the Agents page; resolves to an error string, or null on success.
@@ -487,7 +504,7 @@ function Console({ me }: { me: Member }) {
             <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={() => nav('agents')}><Bot className="h-4 w-4" /></Button>
             <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'tasks' ? 'text-primary' : 'text-muted-foreground'}`} title="Tasks" onClick={() => nav('tasks')}><ListChecks className="h-4 w-4" /></Button>
             <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Artifacts" onClick={() => nav('artifacts')}><Package className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={() => { setSelected(null); nav('sessions') }}><TerminalSquare className="h-4 w-4" /></Button>
+            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={() => nav('sessions')}><TerminalSquare className="h-4 w-4" /></Button>
           </nav>
         </aside>
       )}
@@ -518,7 +535,7 @@ function Console({ me }: { me: Member }) {
             <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Sessions</span>
             <div className="flex items-center gap-1">
               <button
-                onClick={() => { setSelected(null); nav('sessions') }}
+                onClick={() => nav('sessions')}
                 className={`flex items-center gap-1 text-[11px] uppercase tracking-wider hover:text-foreground ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`}
                 title="all sessions"
               >
@@ -621,7 +638,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onRescan={rescanAgents} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); openAgent(id) }} />}
-          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onClose={() => setSelected(null)} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
+          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onClose={() => nav('sessions')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}

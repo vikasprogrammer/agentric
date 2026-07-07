@@ -8,7 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-07
+
 ### Added
+- **Deep-linkable pages — the open terminal now lives in the URL.** The hash router gained an optional
+  detail segment (`#/sessions/<tmux>`): opening a session terminal pushes its id into the address bar,
+  so a **refresh or back/forward reopens the same terminal** instead of dropping you back on the list.
+  `selected` is now derived from the URL (single source of truth) rather than component state
+  ([`web/src/App.tsx`](web/src/App.tsx)) — the foundation other pages' selections can reuse.
 - **GitHub App token minter (foundation for native GitHub).** New zero-dependency connector
   ([`src/connectors/github.ts`](src/connectors/github.ts)) that signs a short-lived App JWT (RS256, via
   `node:crypto`) and exchanges it for a **1 h installation access token** — the single credential that
@@ -18,6 +25,11 @@ new version heading in the same commit.
   and an in-memory `InstallationTokenCache` (reuse until ~5 min before expiry). Not wired into launch
   yet — see [`docs/github-integration-plan.md`](docs/github-integration-plan.md) for the phased plan
   (mint-at-launch injection + Settings → Integrations install flow land next).
+
+### Fixed
+- **The Audit page survives a refresh.** `audit` was missing from the hash router's allow-list, so a
+  reload of `#/audit` silently fell back to Inbox; the router now validates against the full `ROUTES`
+  set ([`web/src/App.tsx`](web/src/App.tsx)).
 
 ## [0.15.1] — 2026-07-07
 
