@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-07-07
+
+### Added
+- **Built-in department generalists — a starter fleet every workspace boots with.** Four
+  code-provisioned agents (`engineer`, `support`, `marketer`, `researcher`) are now materialised into
+  every data home on boot the same idempotent way as the `agent-author` — an isolated
+  `<home>/agents/<id>/{agent.json,CLAUDE.md}` folder, grouped under its department category
+  (Engineering / Support / Marketing / Research). Each is a broad "do-anything within this function"
+  generalist (not a narrow single-task bot — the agent-author spins those up on demand), so a fresh
+  home is useful immediately without hand-authoring a manifest. User edits to either file are
+  preserved (written only when absent); delete a folder and boot restores it
+  ([`src/edge/generalists.ts`](src/edge/generalists.ts), wired in
+  [`src/kernel.ts`](src/kernel.ts)).
+
+### Fixed
+- **First interactive launch no longer shows the "Do you trust the files in this folder?" dialog.**
+  Freshly-created agent folders had never been trusted, so an interactive claude opened with the
+  workspace-trust prompt (headless already dodged it via `--dangerously-skip-permissions`). The
+  launcher now pre-seeds the per-directory trust flag
+  (`~/.claude.json` → `projects["<AGENT_DIR>"].hasTrustDialogAccepted`) keyed off the real `$HOME` of
+  whatever lane/user runs the session — idempotent (writes only on an agent's first launch), atomic
+  (temp + rename), and never fatal to launch. This suppresses only the one-time trust gate; the
+  PreToolUse gate hook and deny rules still govern every effect, so the security posture is unchanged
+  ([`terminal/claude-launch.sh`](terminal/claude-launch.sh)).
+
 ## [0.19.1] — 2026-07-07
 
 ### Fixed

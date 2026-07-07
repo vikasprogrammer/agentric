@@ -93,6 +93,34 @@ cat > .claude/aos-settings.json <<JSON
 }
 JSON
 
+# Pre-accept the workspace-TRUST dialog for this agent folder. Freshly-created agent folders have
+# never been trusted, so an INTERACTIVE claude would open with "Do you trust the files in this
+# folder?" (headless already dodges it via --dangerously-skip-permissions). Trust is stored
+# per-directory in ~/.claude.json under projects["<dir>"].hasTrustDialogAccepted; seed it so the
+# dialog never fires. Keyed off the REAL $HOME of whatever user/lane runs this (local or uid-isolated).
+# Idempotent (only writes on first launch of each agent), atomic (temp+rename), and never fatal —
+# a failure here must not block the session. NOTE: this only bypasses the one-time TRUST gate; the
+# PreToolUse gate hook + deny rules above still govern every effect, so security posture is unchanged.
+if command -v node >/dev/null 2>&1; then
+  AOS_TRUST_DIR="$AGENT_DIR" node -e '
+    const fs = require("fs"), os = require("os"), path = require("path");
+    const dir = process.env.AOS_TRUST_DIR;
+    if (!dir) process.exit(0);
+    const p = path.join(os.homedir(), ".claude.json");
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch (_) { /* missing/empty/corrupt → start fresh */ }
+    if (typeof cfg !== "object" || cfg === null) cfg = {};
+    cfg.projects = cfg.projects || {};
+    const cur = cfg.projects[dir] || {};
+    if (cur.hasTrustDialogAccepted === true) process.exit(0);   // already trusted — nothing to do
+    cur.hasTrustDialogAccepted = true;
+    cfg.projects[dir] = cur;
+    const tmp = p + ".aos-" + process.pid + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, p);   // atomic replace
+  ' 2>/dev/null || true
+fi
+
 clear
 cyan "┌─ Agent OS · governed claude ────────────────────────────────"
 cyan "│ agent:   $AGENT"
