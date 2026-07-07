@@ -342,6 +342,10 @@ function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
   const [messages, setMessages] = useState<Msg[]>([])
+  // Latest messages reachable from imperative event handlers (the terminal's click listener) without
+  // re-binding them every render / going stale on the captured `messages`.
+  const messagesRef = useRef<Msg[]>([])
+  messagesRef.current = messages
   const [selected, setSelected] = useState<Selected>(null)
   const [editAgent, setEditAgent] = useState('')
   const [route, nav] = useHashRoute()
@@ -402,17 +406,20 @@ function Console({ me }: { me: Member }) {
     if (r.errors.length) parts.push(`Skipped (bad agent.json): ${r.errors.map((e) => e.folder).join(', ')}`)
     alert(parts.length ? parts.join('\n') : 'No changes — the agents folder already matches.')
   }
+  // Attending to a session → clear its "waiting" bell, same as Dismiss. Optimistically drop the open
+  // notifications from state so the icon/tab/badge update instantly; persist via dismiss. Reads the
+  // latest messages from the ref so it's safe to call from the terminal's imperative click listener.
+  const clearAlerts = (sid: string) => {
+    const toClear = messagesRef.current.filter((m) => m.type === 'notification' && m.status === 'open' && m.sessionId === sid)
+    if (toClear.length === 0) return
+    setMessages((ms) => ms.filter((m) => !toClear.some((c) => c.id === m.id)))
+    toClear.forEach((m) => { void api.dismissMessage(m.id) })
+  }
   const openTerminal = (tmux: string, title: string) => {
     setSelected({ tmux, title })
     nav('sessions')
-    // Opening a session means you're attending to it → clear its "waiting" bell, same as Dismiss.
-    // Optimistically drop it from state so the icon/tab/badge update instantly; persist via dismiss.
-    const sid = tmux.replace(/^aos-/, '')
-    const toClear = messages.filter((m) => m.type === 'notification' && m.status === 'open' && m.sessionId === sid)
-    if (toClear.length > 0) {
-      setMessages((ms) => ms.filter((m) => !toClear.some((c) => c.id === m.id)))
-      toClear.forEach((m) => { void api.dismissMessage(m.id) })
-    }
+    // Opening a session means you're attending to it → clear its bell.
+    clearAlerts(tmux.replace(/^aos-/, ''))
   }
   // Deep-link from an inbox 'artifact' card into the gallery, pre-opening that artifact's preview.
   const [artifactFocus, setArtifactFocus] = useState<string | undefined>(undefined)
@@ -614,7 +621,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onRescan={rescanAgents} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); openAgent(id) }} />}
-          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onSpawn={() => nav('agents')} onClose={() => setSelected(null)} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
+          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onClose={() => setSelected(null)} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
@@ -809,7 +816,7 @@ function StartedBy({ label, className = '' }: { label?: string; className?: stri
 /** The live terminal iframe. It asks the server for the attach URL — which is the shared
  *  /terminal/?arg=… (uid-isolation off) or a per-member /terminal/<space>/?arg=… that the app
  *  reverse-proxies to that member's own ttyd (on). Fetching also brings the member's ttyd up. */
-function TerminalFrame({ session, tmux }: { session?: Session; tmux: string }) {
+function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux: string; onActivity?: (sid: string) => void }) {
   const [src, setSrc] = useState('')
   const [err, setErr] = useState('')
   useEffect(() => {
@@ -828,7 +835,7 @@ function TerminalFrame({ session, tmux }: { session?: Session; tmux: string }) {
   // allow clipboard-write so ttyd's copy-on-select (document.execCommand("copy") on the xterm.js
   // selection) isn't blocked by the frame's Permissions Policy; clipboard-read pairs it for paste.
   return (
-    <ImageDropZone session={session}>
+    <ImageDropZone session={session} onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}>
       <iframe title="terminal" src={src} allow="clipboard-write; clipboard-read" className="min-h-0 w-full flex-1 border-0 bg-black" />
     </ImageDropZone>
   )
@@ -840,7 +847,7 @@ function TerminalFrame({ session, tmux }: { session?: Session; tmux: string }) {
  *  Cmd/Ctrl+V (best-effort — only fires when focus is on the console, not inside the terminal iframe;
  *  while you're typing in the terminal the paste goes to ttyd). Each path uploads the bytes; the server
  *  saves them in the agent's folder and types the path into the running claude. */
-function ImageDropZone({ session, children }: { session?: Session; children: ReactNode }) {
+function ImageDropZone({ session, children, onActivity }: { session?: Session; children: ReactNode; onActivity?: () => void }) {
   const [drag, setDrag] = useState(false)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err' | 'busy'; text: string } | null>(null)
   const live = session?.status === 'running'
@@ -848,6 +855,10 @@ function ImageDropZone({ session, children }: { session?: Session; children: Rea
   // Keep the latest upload closure reachable from imperative (addEventListener) handlers without
   // re-binding them every render.
   const uploadRef = useRef<(file: File) => void>(() => {})
+  // Same trick for onActivity — the iframe-document click listener (attached once) reads this ref so
+  // it clears the *current* session's alert without re-binding when the prop identity changes.
+  const activityRef = useRef<(() => void) | undefined>(undefined)
+  activityRef.current = onActivity
 
   // Terminal font size. ttyd renders xterm.js inside the same-origin iframe and exposes the live
   // Terminal instance as `window.term` (plus a `window.term.fit()` helper). So we can set the font
@@ -943,19 +954,24 @@ function ImageDropZone({ session, children }: { session?: Session; children: Rea
       const file = item?.getAsFile()
       if (file) { e.preventDefault(); e.stopPropagation(); uploadRef.current(file) }
     }
+    // A click anywhere in the terminal means you're attending to it → clear its waiting bell. Clicks
+    // inside the iframe don't bubble to our document, so we listen on the terminal's own (same-origin)
+    // document. Capture + passive so we never interfere with xterm's own click/selection handling.
+    const onClick = () => { activityRef.current?.() }
     const attach = () => {
       try {
         doc = iframe.contentDocument
         if (!doc) return
         doc.addEventListener('dragenter', onEnter)
         doc.addEventListener('paste', onPaste, true) // capture: run before xterm's own paste handler
+        doc.addEventListener('mousedown', onClick, { capture: true, passive: true })
       } catch { /* cross-origin or not ready — parent-window handlers still cover the console chrome */ }
     }
     attach()
     iframe.addEventListener('load', attach)
     return () => {
       iframe.removeEventListener('load', attach)
-      try { doc?.removeEventListener('dragenter', onEnter); doc?.removeEventListener('paste', onPaste, true) } catch { /* doc gone */ }
+      try { doc?.removeEventListener('dragenter', onEnter); doc?.removeEventListener('paste', onPaste, true); doc?.removeEventListener('mousedown', onClick, true) } catch { /* doc gone */ }
     }
   }, [session?.id])
 
@@ -984,7 +1000,7 @@ function ImageDropZone({ session, children }: { session?: Session; children: Rea
   }, [toast])
 
   return (
-    <div ref={wrapRef} className="relative flex min-h-0 w-full flex-1">
+    <div ref={wrapRef} className="relative flex min-h-0 w-full flex-1" onMouseDown={() => onActivity?.()}>
       {children}
       {/* terminal font-size stepper — reaches into the same-origin xterm and reflows live */}
       <div className="absolute left-2 top-2 z-10 flex items-center overflow-hidden rounded bg-neutral-800/90 text-neutral-200 shadow">
@@ -1037,12 +1053,13 @@ function ImageDropZone({ session, children }: { session?: Session; children: Rea
 }
 
 function SessionsPage({
-  sessions, waiting, selected, onOpen, onSpawn, onClose, onStop, onDelete, onBulkStop, onBulkDelete,
+  sessions, waiting, selected, onOpen, onActivity, onSpawn, onClose, onStop, onDelete, onBulkStop, onBulkDelete,
 }: {
   sessions: Session[]
   waiting: Set<string>
   selected: Selected
   onOpen: (tmux: string, title: string) => void
+  onActivity: (sid: string) => void
   onSpawn: () => void
   onClose: () => void
   onStop: (id: string) => void
@@ -1118,7 +1135,7 @@ function SessionsPage({
             <ArrowLeft className="h-3.5 w-3.5" /> All sessions
           </button>
         </div>
-        <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} />
+        <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity} />
       </div>
     )
   }

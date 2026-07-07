@@ -19,6 +19,17 @@ new version heading in the same commit.
   yet — see [`docs/github-integration-plan.md`](docs/github-integration-plan.md) for the phased plan
   (mint-at-launch injection + Settings → Integrations install flow land next).
 
+## [0.15.1] — 2026-07-07
+
+### Fixed
+- **Clicking in a live terminal clears its waiting bell.** Previously a session's "needs you"
+  alert only cleared when you *opened* the session; a new alert raised while you were already
+  watching it stuck around. Now any click **inside the terminal** (or on the console chrome around
+  it) dismisses that session's open notification, matching the mental model that interacting with a
+  session means you're attending to it. The click is caught on the same-origin ttyd iframe's own
+  document (clicks there don't bubble to our page), passive + capture so xterm's selection is
+  untouched ([`web/src/App.tsx`](web/src/App.tsx)).
+
 ## [0.15.0] — 2026-07-06
 
 ### Added
