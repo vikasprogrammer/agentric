@@ -387,6 +387,14 @@ mock-runtime agents don't receive skills (they're scripted); supporting-file edi
 the console (edit SKILL.md text; richer assets via Files). A future step mirrors agent↔member
 assignment: a `skill_grants` table for per-agent scoping.
 
+**Planned — procedural skills (Lever 6 of the learning loop).** Skills are authored/installed today;
+nothing turns the fleet's own repeated successes into skills. The plan closes the episodic→**procedural**
+gap (the layer Hermes Agent leads with): a governed producer (any agent post-task, and the consolidation
+gardener across the batch) proposes a `SKILL.md` from a recurring, reusable procedure, staged as a draft
+**not** materialised to agents until a human reviews and publishes it — reusing the skills store + the
+Dreaming recommendations' approval pattern. Spec: [`procedural-skills-plan.md`](./procedural-skills-plan.md).
+This is the natural extension of Pillar 10 (Distil now emits facts → memories/KB; Lever 6 adds procedures → skills).
+
 ## 13. Tools / Apps — ⬜ Not started
 
 **The idea.** Tools *built by agents* (or users) for specific/general use — the

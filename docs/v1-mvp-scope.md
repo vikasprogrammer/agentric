@@ -42,7 +42,7 @@ self-learning, multi-tenancy, and native Slack via Socket Mode. Graded against t
 | **Discord** ingress + egress | Secrets vault (connector creds stay plaintext in DB — documented debt) |
 | **Act-as-member** email — agent acts under the individual's accounts (UC5) | Foreign CLIs (Codex/Gemini runtimes) |
 | Cron + webhook automations — ✅ shipped | Email invite delivery, SSO |
-| Audit viewer + chat approval notifications | |
+| Audit viewer + chat approval notifications | **Procedural skills (Lever 6)** — auto-propose a `SKILL.md` from recurring successful procedures, human-gated ([`procedural-skills-plan.md`](./procedural-skills-plan.md)) |
 | **Already shipped here** (was deferred in the frozen plan): Memory layer (9), Knowledge Base (15), Dreaming / self-learning (10), Multi-tenancy | |
 
 ## Channel matrix (v1)
