@@ -337,6 +337,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }));
     return sendJson(res, 200, { members });
   }
+  // Fleet roster — the OTHER agents this session can hand work to (the agent-discovery primitive backing
+  // `list_agents`). Session-secret gated like the other agent loopback routes; read-only. Excludes the
+  // caller and non-claude-code (mock) agents, so an agent only sees peers it can actually delegate to.
+  if (method === 'GET' && p === '/api/agent/roster') {
+    const session = url.searchParams.get('session') || '';
+    const self = tm.sessionAgent(session);
+    if (!self) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const agents = [...os.agents.values()]
+      .filter((a) => a.runtime === 'claude-code' && a.id !== self)
+      .map((a) => ({ id: a.id, description: a.description, category: a.category }));
+    return sendJson(res, 200, { agents });
+  }
   // Status line (the `statusline.js` bar in a governed claude TUI): live governance for THIS run —
   // how many approvals it's blocked on and which human identity it acts as. Session-secret gated like
   // the other agent loopback routes; read-only. Kept cheap: it's polled on the TUI refreshInterval.
@@ -707,12 +720,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const title = String(b.title || '').trim();
     if (!title) return sendJson(res, 400, { error: 'title is required' });
+    // Resolve the assignee, then validate an `agent:<id>` target actually exists — a task assigned to a
+    // non-existent agent silently never dispatches (it just rots on the board), so reject it up front
+    // with the valid roster instead of accepting an inert hand-off.
+    const assignee = b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' && b.assignee ? b.assignee : undefined);
+    if (assignee && assignee.startsWith('agent:')) {
+      const targetId = assignee.slice('agent:'.length);
+      if (!os.agents.get(targetId)) {
+        const valid = [...os.agents.values()].filter((a) => a.runtime === 'claude-code').map((a) => a.id).join(', ');
+        return sendJson(res, 200, { ok: false, error: `no agent "${targetId}" — assign to one of: ${valid} (call list_agents to see the roster)` });
+      }
+    }
     try {
       // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
       const task = os.tasks.create({
         tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
-        assignee: b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' ? b.assignee : undefined),
+        assignee,
         owner: tm.sessionRunAs(session),
         priority: typeof b.priority === 'number' ? b.priority : undefined,
         labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,

@@ -570,7 +570,7 @@ export class TerminalManager {
       const env = this.sessionEnv(id, agent, task, secret);
       // Build the per-session connector + company payloads once (Composio is minted here).
       const mcpJson = this.buildMcpConfigJson(id, agent, actingMember, secret, !!slack?.channel, !!discord?.channel);
-      const companyMd = this.buildCompanyMd();
+      const companyMd = this.buildCompanyMd(agent);
       this.materializeSkills(id, agent, manifest.dir);
       if (headless) env.HEADLESS = '1';
       env.AGENT_DIR = manifest.dir;
@@ -705,12 +705,27 @@ export class TerminalManager {
    *  We tack on OS-owned operating notes after the user's content. The terminal here is a browser
    *  xterm (over ttyd) running the TUI on the alternate screen with mouse reporting on, so embedded
    *  terminal hyperlinks (OSC 8) aren't clickable — the agent must surface raw URLs as plain text. */
-  private buildCompanyMd(): string {
+  private buildCompanyMd(selfAgent?: string): string {
     const company = this.os.settings.company().companyMd.trim();
     // Close the self-learning loop: the Dreamer's distilled guidance rides in every agent's prompt, so
     // the fleet's accumulated experience shapes each new session. Toggleable in Settings → Self-learning.
     const learned = this.os.settings.applyLearnings() ? this.os.settings.learnedGuidance().trim() : '';
-    return [company, AGENT_OS_OPERATING_NOTES, learned].filter(Boolean).join('\n\n');
+    // The fleet roster — WHO this agent can delegate to. Injected so "hand off to the right agent" is
+    // answerable straight from the prompt without a discovery round-trip (`list_agents` is the live
+    // equivalent). Excludes self and mock agents, so it only lists peers this agent can actually dispatch.
+    const roster = [...this.os.agents.values()]
+      .filter((a) => a.runtime === 'claude-code' && a.id !== selfAgent)
+      .map((a) => `- \`agent:${a.id}\`${a.category ? ` (${a.category})` : ''} — ${a.description}`)
+      .join('\n');
+    const fleet = roster
+      ? '# Your fleet — who you can delegate to\n\n' +
+        'These are the other agents in this workspace. To hand work to one, `task_create({ title, ' +
+        'assignee: "agent:<id>", autoDispatch: true })` — it spawns that agent as a governed run under ' +
+        'the same accountable human. Assign specialised work to the right agent rather than doing it ' +
+        'poorly yourself or filing an unassigned task (which nobody picks up).\n\n' +
+        roster
+      : '';
+    return [company, AGENT_OS_OPERATING_NOTES, fleet, learned].filter(Boolean).join('\n\n');
   }
 
   /**

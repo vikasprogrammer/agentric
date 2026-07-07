@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-07-07
+
+### Added
+- **Agent discovery + delegation wiring — the fleet can hand work to the right peer instead of guessing.**
+  A new `list_agents` MCP tool (backed by `GET /api/agent/roster`) returns the other claude-code agents
+  in the workspace (id, description, category) so an agent can pick the right specialist to delegate to;
+  every session's company context now injects a **"Your fleet — who you can delegate to"** roster with
+  the `task_create({ assignee: "agent:<id>", autoDispatch: true })` hand-off pattern; and `task_create`
+  now **rejects an `agent:<id>` assignee that doesn't exist** (returning the valid roster) instead of
+  silently filing an inert task that never dispatches. Motivated by a 36-run primitive-use eval where
+  agents, told to hand work off, filed unassigned tasks (5/6) or shelled out to the filesystem to
+  discover peers; with this change delegation goes from 1/6 to 6/6 agents producing a dispatchable
+  hand-off, with no regression on the other primitives.
+
 ## [0.28.0] — 2026-07-07
 
 ### Fixed

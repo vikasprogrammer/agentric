@@ -79,7 +79,7 @@ rm -f .claude/settings.json
 cat > .claude/aos-settings.json <<JSON
 {
   "permissions": {
-    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check", "mcp__agentos__directory_lookup", "mcp__agentos__task_create", "mcp__agentos__task_list", "mcp__agentos__task_get", "mcp__agentos__task_claim", "mcp__agentos__task_update"]$DENY_LINE
+    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check", "mcp__agentos__directory_lookup", "mcp__agentos__list_agents", "mcp__agentos__task_create", "mcp__agentos__task_list", "mcp__agentos__task_get", "mcp__agentos__task_claim", "mcp__agentos__task_update"]$DENY_LINE
   },
   "hooks": {
     "PreToolUse": [

@@ -347,6 +347,16 @@ const TOOLS = [
     },
   },
   {
+    name: 'list_agents',
+    description:
+      'List the OTHER agents in this workspace you can hand work to — the fleet roster. Returns each ' +
+      "agent's id, what it does, and its category, so you can pick the RIGHT specialist and delegate to " +
+      'it with task_create({ assignee: "agent:<id>", autoDispatch: true }). Use this before delegating ' +
+      'instead of guessing an id — a task assigned to a non-existent agent never runs. Read-only.',
+    annotations: { readOnlyHint: true },
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
     name: 'check_inbox',
     description:
       'Read your own inbox feed for this session WITHOUT blocking — answers the operator gave to questions ' +
@@ -1033,6 +1043,20 @@ async function policyCheck(args: Record<string, unknown>): Promise<string> {
   return `NEEDS APPROVAL — "${capability}" would pause for ${d.level ?? 'human'} approval${why}.`;
 }
 
+async function listAgents(): Promise<string> {
+  const u = new URL(AOS_URL + '/api/agent/roster');
+  u.searchParams.set('session', SESSION);
+  const res = await fetch(u, { headers: H() });
+  const data = (await res.json()) as { agents?: Array<{ id: string; description: string; category?: string }>; error?: string };
+  if (data.error) return `Could not list agents: ${data.error}`;
+  const agents = data.agents ?? [];
+  if (!agents.length) return 'No other agents are available to delegate to.';
+  return (
+    'Fleet roster — delegate with task_create({ assignee: "agent:<id>", autoDispatch: true }):\n' +
+    agents.map((a) => `- agent:${a.id}${a.category ? ` (${a.category})` : ''} — ${a.description}`).join('\n')
+  );
+}
+
 async function directoryLookup(args: Record<string, unknown>): Promise<string> {
   const u = new URL(AOS_URL + '/api/agent/directory');
   u.searchParams.set('session', SESSION);
@@ -1099,6 +1123,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'list_capabilities' ? await listCapabilities()
         : name === 'policy_check' ? await policyCheck(args)
         : name === 'directory_lookup' ? await directoryLookup(args)
+        : name === 'list_agents' ? await listAgents()
         : name === 'check_inbox' ? await checkInbox(args)
         : name === 'artifacts_list' ? await artifactsList(args)
         : name === 'schedule' ? await schedule(args)
