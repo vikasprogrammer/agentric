@@ -16,12 +16,27 @@ import { Embedder } from './embedding';
 import { SqliteMemoryProvider } from './sqlite-provider';
 import { AutomemMemoryProvider } from './automem-provider';
 import { LibsqlMemoryProvider } from './libsql-provider';
+import { MirroredMemoryProvider } from './mirror';
 
 export { SqliteMemoryProvider } from './sqlite-provider';
 export { AutomemMemoryProvider } from './automem-provider';
 export { LibsqlMemoryProvider } from './libsql-provider';
+export { MirroredMemoryProvider } from './mirror';
 
+/**
+ * Build the recall backend for a config. SQLite is the local `memories` table itself; libsql/automem
+ * are EXTERNAL stores, so they're wrapped in a `MirroredMemoryProvider` that keeps a copy of every
+ * write in the local table — otherwise the OS's SQL-level readers (Dreaming / consolidation / the
+ * Memory-hub overview counts) would see nothing. See mirror.ts. The rest of the OS only ever touches
+ * the returned `MemoryProvider`.
+ */
 export function createMemoryProvider(cfg: MemoryConfig, db: Db): MemoryProvider {
+  const backend = buildBackend(cfg, db);
+  if (cfg.backend === 'sqlite') return backend; // the provider IS the local table — no mirror needed
+  return new MirroredMemoryProvider(backend, new SqliteMemoryProvider(db));
+}
+
+function buildBackend(cfg: MemoryConfig, db: Db): MemoryProvider {
   if (cfg.backend === 'automem') {
     if (!cfg.automem?.endpoint || !cfg.automem?.token) {
       throw new Error('memory.backend=automem requires memory.automem.endpoint and .token');

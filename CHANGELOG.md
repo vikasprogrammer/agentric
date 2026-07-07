@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-07-07
+
+### Added
+- **External memory backends no longer break the self-learning loop** (prep for adopting AutoMem).
+  Dreaming, the consolidation gardener, and the Memory-hub overview counts read the local SQLite
+  `memories` table directly, so switching a tenant to an external store (automem/libsql) would have
+  left those readers empty. A new `MirroredMemoryProvider` (`src/memory/mirror.ts`) now wraps any
+  non-SQLite backend and copies every write into the local table — recall still goes to the upgraded
+  store, but the learning loop and counts keep working. The SQLite default is unchanged (it *is* the
+  table, so it's never wrapped). Also **implemented tenant/shared scope in the automem provider** (the
+  deferred Phase-0 follow-up): `scope:'tenant'` memories are tagged and recalled workspace-wide, with
+  author provenance recovered from the `agent:` tag — so shared knowledge and cross-agent recall work
+  on automem. Prerequisite for piloting automem on a tenant; no behavior change for SQLite tenants.
+
 ## [0.20.0] — 2026-07-07
 
 ### Added

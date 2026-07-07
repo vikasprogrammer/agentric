@@ -2,18 +2,26 @@
  * Automem memory provider — the upgrade backend: a thin REST client over an automem deployment
  * (Flask API in front of FalkorDB graph + Qdrant vectors), the same memory the CEO agent uses.
  *
- * We keep ONE shared automem collection and isolate agents by tag: every store adds
- * `agent:<id>` + `tenant:<t>`, and every recall constrains to them (`tag_mode=all`, prefix
- * match) — so no per-agent container is needed. Verified against the live deployment.
+ * We keep ONE shared automem collection and isolate by tag: every store adds `agent:<id>` +
+ * `tenant:<t>`; a workspace-SHARED memory (`scope:'tenant'`) additionally carries `scope:tenant`.
+ * Recall constrains by scope (`tag_mode=all`): own = agent+tenant, shared = scope:tenant+tenant, and
+ * the default 'all' unions the two. So no per-agent container is needed and tenant-shared knowledge
+ * (the gardener's output, cross-agent recall) works — the Phase-0 tenant-sharing follow-up, now done.
+ *
+ * NOTE: automem is an EXTERNAL store, so the OS wraps this provider in a MirroredMemoryProvider that
+ * copies every write into the local `memories` table — that's what keeps Dreaming, the consolidation
+ * gardener, and the Memory-hub counts (all of which read the local table directly) working. See mirror.ts.
  *
  * Endpoints used (see automem docs/API.md):
  *   POST /memory          { content, tags[], type, importance, metadata, timestamp } → { memory_id }
  *   GET  /recall?query=&tags=&tag_mode=all&limit=                                     → { results[] }
  *   GET  /health
  */
-import { DeleteInput, MemoryProvider, MemoryRecord, RecallQuery, StoreInput, UpdateInput } from '../types';
+import { DeleteInput, MemoryProvider, MemoryRecord, MemoryScope, RecallQuery, StoreInput, UpdateInput } from '../types';
 
 const TIMEOUT_MS = 8000;
+/** Marks a tenant-shared memory in the single collection: recall for `scope:'tenant'` matches on it. */
+const SHARED_TAG = 'scope:tenant';
 
 export class AutomemMemoryProvider implements MemoryProvider {
   private readonly endpoint: string;
@@ -30,7 +38,11 @@ export class AutomemMemoryProvider implements MemoryProvider {
   }
 
   async store(input: StoreInput): Promise<MemoryRecord> {
+    const scope: MemoryScope = input.scope ?? 'agent';
+    // Always tag agent (author provenance) + tenant; a SHARED memory ALSO carries `scope:tenant` so
+    // other agents can recall it without the author filter. (Phase-0 tenant-sharing, now implemented.)
     const tags = [...(input.tags ?? []), ...this.ns(input.agentId, input.tenant)];
+    if (scope === 'tenant') tags.push(SHARED_TAG);
     const ts = Date.now();
     const body = {
       content: input.content,
@@ -51,64 +63,97 @@ export class AutomemMemoryProvider implements MemoryProvider {
       importance: input.importance,
       metadata: input.metadata,
       ts,
-      // Scope isolation on automem is tag-based and still tracked as agent-private (tenant sharing is a
-      // deferred Phase-0 follow-up: write without the agent tag + recall without the agent filter).
-      scope: input.scope ?? 'agent',
+      scope,
     };
   }
 
   async recall(q: RecallQuery): Promise<MemoryRecord[]> {
+    const limit = Math.max(1, Math.min(q.limit ?? 8, 100));
+    const scope = q.scope ?? 'all';
+    const own = [...(q.tags ?? []), ...this.ns(q.agentId, q.tenant)];
+    const shared = [...(q.tags ?? []), `tenant:${q.tenant}`, SHARED_TAG];
+    if (scope === 'agent') return this.recallByTags(q, own, limit);
+    if (scope === 'tenant') return this.recallByTags(q, shared, limit);
+    // 'all' = the agent's own ∪ the tenant's shared. automem's `tag_mode=all` can't express OR, so we
+    // union two constrained calls, dedupe by id, and re-rank by score.
+    const [a, b] = await Promise.all([this.recallByTags(q, own, limit), this.recallByTags(q, shared, limit)]);
+    const seen = new Set<string>();
+    const merged: MemoryRecord[] = [];
+    for (const r of [...a, ...b]) {
+      if (r.id && seen.has(r.id)) continue;
+      if (r.id) seen.add(r.id);
+      merged.push(r);
+    }
+    merged.sort((x, y) => (y.score ?? 0) - (x.score ?? 0));
+    return merged.slice(0, limit);
+  }
+
+  /** One `/recall` call constrained to `tags` (tag_mode=all), mapped to records. */
+  private async recallByTags(q: RecallQuery, tags: string[], limit: number): Promise<MemoryRecord[]> {
     const params = new URLSearchParams();
     if (q.query) params.set('query', q.query);
-    params.set('limit', String(Math.max(1, Math.min(q.limit ?? 8, 100))));
+    params.set('limit', String(limit));
     params.set('tag_mode', 'all');
-    for (const t of [...(q.tags ?? []), ...this.ns(q.agentId, q.tenant)]) params.append('tags', t);
-
+    for (const t of tags) params.append('tags', t);
     const res = (await this.req('GET', '/recall', params)) as { results?: AutomemResult[] };
-    return (res.results ?? []).map((r) => {
-      const m = r.memory ?? {};
-      return {
-        id: String(r.id ?? m.id ?? ''),
-        tenant: q.tenant,
-        agentId: q.agentId,
-        content: String(m.content ?? ''),
-        tags: Array.isArray(m.tags) ? m.tags.map(String) : [],
-        type: m.type as MemoryRecord['type'],
-        importance: typeof m.importance === 'number' ? m.importance : undefined,
-        metadata: (m.metadata as Record<string, unknown> | undefined) ?? undefined,
-        ts: m.timestamp ? Date.parse(String(m.timestamp)) : Date.now(),
-        scope: 'agent',
-        score: typeof r.final_score === 'number' ? r.final_score : undefined,
-      };
-    });
+    return (res.results ?? []).map((r) => this.mapResult(r, q.tenant, r.id, q.agentId));
+  }
+
+  /** Map an automem result to a MemoryRecord; author + scope are recovered from the namespace tags. */
+  private mapResult(r: AutomemResult, tenant: string, id: unknown, querier: string): MemoryRecord {
+    const m = r.memory ?? {};
+    const tags = Array.isArray(m.tags) ? m.tags.map(String) : [];
+    const authorTag = tags.find((t) => t.startsWith('agent:'));
+    return {
+      id: String(id ?? m.id ?? ''),
+      tenant,
+      agentId: authorTag ? authorTag.slice('agent:'.length) : querier, // author provenance from the tag
+      content: String(m.content ?? ''),
+      tags,
+      type: m.type as MemoryRecord['type'],
+      importance: typeof m.importance === 'number' ? m.importance : undefined,
+      metadata: (m.metadata as Record<string, unknown> | undefined) ?? undefined,
+      ts: m.timestamp ? Date.parse(String(m.timestamp)) : Date.now(),
+      scope: tags.includes(SHARED_TAG) ? 'tenant' : 'agent',
+      score: typeof r.final_score === 'number' ? r.final_score : undefined,
+    };
   }
 
   async update(input: UpdateInput): Promise<MemoryRecord | null> {
-    const existing = await this.fetchOwned(input.id, input.agentId, input.tenant);
+    const existing = await this.fetchOwned(input.id, input.agentId, input.tenant, input.admin);
     if (!existing) return null;
     const body: Record<string, unknown> = {};
     if (input.content !== undefined) body.content = input.content;
     if (input.type !== undefined) body.type = input.type;
     if (input.importance !== undefined) body.importance = input.importance;
-    if (input.tags !== undefined) body.tags = [...input.tags, ...this.ns(input.agentId, input.tenant)];
+    if (input.tags !== undefined) {
+      // Re-attach the namespace + preserve the shared marker so a tag edit can't silently un-share it.
+      const authorTag = existing.tags.find((t) => t.startsWith('agent:')) ?? `agent:${existing.agentId}`;
+      const next = [...input.tags, authorTag, `tenant:${input.tenant}`];
+      if (existing.scope === 'tenant') next.push(SHARED_TAG);
+      body.tags = next;
+    }
     if (Object.keys(body).length) await this.req('PATCH', `/memory/${input.id}`, undefined, body);
     return {
       ...existing,
       content: input.content ?? existing.content,
-      tags: input.tags ?? existing.tags,
+      tags: (body.tags as string[] | undefined) ?? existing.tags,
       type: input.type ?? existing.type,
       importance: input.importance ?? existing.importance,
     };
   }
 
   async delete(input: DeleteInput): Promise<boolean> {
-    if (!(await this.fetchOwned(input.id, input.agentId, input.tenant))) return false;
+    if (!(await this.fetchOwned(input.id, input.agentId, input.tenant, input.admin))) return false;
     await this.req('DELETE', `/memory/${input.id}`);
     return true;
   }
 
-  /** Fetch a memory by id only if it carries this agent's namespace tags — else null (not ours). */
-  private async fetchOwned(id: string, agentId: string, tenant: string): Promise<MemoryRecord | null> {
+  /**
+   * Fetch a memory by id, guarding authorship: it must carry this `tenant:` tag, and — unless `admin`
+   * (human curation) — this agent's `agent:` tag. Returns null when the guard fails (not ours / unknown).
+   */
+  private async fetchOwned(id: string, agentId: string, tenant: string, admin = false): Promise<MemoryRecord | null> {
     let res: unknown;
     try {
       res = await this.req('GET', `/memory/${id}`);
@@ -118,16 +163,19 @@ export class AutomemMemoryProvider implements MemoryProvider {
     const m = (res as { memory?: AutomemResult['memory'] }).memory ?? (res as AutomemResult['memory']);
     if (!m) return null;
     const tags = Array.isArray(m.tags) ? m.tags.map(String) : [];
-    if (!tags.includes(`agent:${agentId}`) || !tags.includes(`tenant:${tenant}`)) return null;
+    if (!tags.includes(`tenant:${tenant}`)) return null;
+    if (!admin && !tags.includes(`agent:${agentId}`)) return null;
+    const authorTag = tags.find((t) => t.startsWith('agent:'));
     return {
-      id, tenant, agentId,
+      id, tenant,
+      agentId: authorTag ? authorTag.slice('agent:'.length) : agentId,
       content: String(m.content ?? ''),
       tags,
       type: m.type as MemoryRecord['type'],
       importance: typeof m.importance === 'number' ? m.importance : undefined,
       metadata: (m.metadata as Record<string, unknown> | undefined) ?? undefined,
       ts: m.timestamp ? Date.parse(String(m.timestamp)) : Date.now(),
-      scope: 'agent',
+      scope: tags.includes(SHARED_TAG) ? 'tenant' : 'agent',
     };
   }
 

@@ -69,6 +69,32 @@ closes; the fleet compounds.
 
 ---
 
+## Backends that self-consolidate
+
+**Distil has two halves** — *store hygiene* (strengthen the useful, cluster the related, fade and forget
+the rest) and *behavioral steering* (guidance into prompts, KB prose, config suggestions). By default
+the OS does both over its built-in SQLite store.
+
+Some memory backends do the **store-hygiene half themselves, server-side**. The clearest example is
+**AutoMem** (the opt-in graph-vector backend): a background scheduler runs sleep-inspired cycles —
+**decay** (relevance fades with age, with a floor for important memories), **creative** (mints
+non-obvious associations between memories, REM-style), **cluster** (groups similar memories under
+summary nodes), and **forget** (archives/deletes the faded) — plus automatic entity extraction and
+relationship inference on every write.
+
+When such a backend is active, the OS's own store upkeep (prune / dedupe / usage-reweight) rightly
+**steps back and lets the backend do it** — that's why the maintenance knobs are documented as
+"SQLite/libsql only; AutoMem self-maintains." What does **not** change is the **behavioral half**: the
+Reflect pass still injects learned guidance into agent prompts, still grows KB prose via the gardener,
+and still proposes config suggestions. A self-consolidating backend gives you a stronger *memory brain*;
+it doesn't replace the loop that *steers the fleet*.
+
+> How this works under the hood: the Reflect pass (Dreaming + the gardener) and the console's memory
+> stats read the built-in SQLite `memories` table directly. So an external backend (automem/libsql) is
+> wrapped in a **mirror** that copies every write into that local table — recall goes to the upgraded
+> store, but the self-learning loop and counts keep working unchanged. Switching a tenant is a config
+> flip; no data migrates (the external store starts empty).
+
 ## What you actually operate
 
 The four verbs run themselves. A human touches only a handful of controls:
