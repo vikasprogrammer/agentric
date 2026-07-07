@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-07-07
+
+### Added
+- **Cron automations now offer schedule presets — no cron expression required.** The New-automation
+  **Schedule** field is a dropdown of common cadences (every 15/30 min, hourly, every 6h, daily at
+  midnight/9 AM, weekdays at 9 AM, Mondays, first of the month), with a **Custom cron expression…**
+  option that reveals the raw 5-field input for advanced schedules. The backend is unchanged — each
+  preset just sets the same cron string, still validated by `parseCron()`.
+
+### Fixed
+- **Dropdowns now show the selected option's label, not its raw value.** Base UI's `Select.Value`
+  renders the underlying value unless the root is given an `items` (value → label) map, so any select
+  whose value differed from its label (Trigger showed `cron` instead of *Schedule (cron)*; Priority,
+  Assignee, Run-mode, and the Audit type filter likewise) displayed the wrong text in the collapsed
+  trigger. Added `items` maps across the affected selects in the console.
+
 ## [0.29.2] — 2026-07-07
 
 ### Added

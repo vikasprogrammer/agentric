@@ -2579,6 +2579,8 @@ const TASK_COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: 'done', label: 'Done' },
 ]
 const PRIORITY_LABEL = ['Urgent', 'High', 'Normal', 'Low']
+// Base UI's Select.Value shows the raw value unless the root gets an items map (value → label).
+const PRIORITY_ITEMS: Record<string, string> = Object.fromEntries(PRIORITY_LABEL.map((l, i) => [String(i), l]))
 const priorityTone = (p: number) => ['text-red-600', 'text-amber-600', 'text-muted-foreground', 'text-muted-foreground/70'][p] ?? 'text-muted-foreground'
 
 function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void }) {
@@ -2654,7 +2656,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
             <Field label="Details"><Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Context, acceptance criteria — enough for whoever works it." /></Field>
             <div className="grid grid-cols-3 gap-3">
               <Field label="Assign to">
-                <Select value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
+                <Select items={[{ value: 'none', label: 'Unassigned' }, ...chatAgents.map((a) => ({ value: `agent:${a.id}`, label: `agent · ${a.id}` }))]} value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Unassigned</SelectItem>
@@ -2663,7 +2665,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
                 </Select>
               </Field>
               <Field label="Priority">
-                <Select value={String(priority)} onValueChange={(v) => v && setPriority(Number(v))}>
+                <Select items={PRIORITY_ITEMS} value={String(priority)} onValueChange={(v) => v && setPriority(Number(v))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
                 </Select>
@@ -2677,7 +2679,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
             </div>
             {assignee.startsWith('agent:') && (
               <Field label="Run mode">
-                <Select value={mode} onValueChange={(v) => v && setMode(v as 'headless' | 'interactive')}>
+                <Select items={{ headless: 'Headless — works to completion, then exits', interactive: 'Interactive — attachable TUI you can watch/drive' }} value={mode} onValueChange={(v) => v && setMode(v as 'headless' | 'interactive')}>
                   <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="headless">Headless — works to completion, then exits</SelectItem>
@@ -2745,14 +2747,14 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
                   </Select>
                 </Field>
                 <Field label="Priority">
-                  <Select value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
+                  <Select items={PRIORITY_ITEMS} value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
                     <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
                     <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
                   </Select>
                 </Field>
               </div>
               <Field label="Assignee">
-                <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
+                <Select items={[{ value: 'none', label: 'Unassigned' }, ...chatAgents.map((a) => ({ value: `agent:${a.id}`, label: `agent · ${a.id}` })), ...(detail.task.assignee && !detail.task.assignee.startsWith('agent:') ? [{ value: detail.task.assignee, label: detail.task.assignee }] : [])]} value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
                   <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Unassigned</SelectItem>
@@ -2763,7 +2765,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
               </Field>
               {(detail.task.assignee || '').startsWith('agent:') && (
                 <Field label="Run mode">
-                  <Select value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
+                  <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
                     <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="headless">Headless — runs to completion, then exits</SelectItem>
@@ -2991,7 +2993,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                   </Select>
                 </Field>
                 <Field label="Run mode" help={mode === 'headless' ? 'Headless: runs to completion and exits — unattended-correct.' : 'Interactive: attachable TUI that stays open until you close it.'}>
-                  <Select value={mode} onValueChange={(v) => v && setMode(v as 'interactive' | 'headless')}>
+                  <Select items={{ headless: 'Headless (recommended)', interactive: 'Interactive' }} value={mode} onValueChange={(v) => v && setMode(v as 'interactive' | 'headless')}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="headless">Headless (recommended)</SelectItem>
@@ -4539,7 +4541,7 @@ function AuditPage() {
       </p>
       <div className="flex flex-wrap items-end gap-2">
         <Field label="Type">
-          <Select value={type || '__all'} onValueChange={(v) => { const t = !v || v === '__all' ? '' : v; setType(t); load({ type: t }) }}>
+          <Select items={[{ value: '__all', label: 'All types' }, ...types.map((t) => ({ value: t, label: t }))]} value={type || '__all'} onValueChange={(v) => { const t = !v || v === '__all' ? '' : v; setType(t); load({ type: t }) }}>
             <SelectTrigger className="h-8 w-56"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="__all">All types</SelectItem>
