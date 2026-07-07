@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-07-07
+
+### Fixed
+- **Stale `package-lock.json` no longer dirties every box's working tree.** The committed lockfile
+  still pinned `@libsql/client` (the opt-in native-vectors memory provider) at its root `dependencies`,
+  even though `package.json` had dropped it to make it opt-in. Any box running `npm install` reconciled
+  the lock down to match `package.json`, leaving the tree dirty and **blocking the self-update's
+  fast-forward pull**. Regenerated the lockfile so it matches `package.json` — installs are now a no-op
+  against a clean tree.
+
 ## [0.18.0] — 2026-07-07
 
 ### Added
