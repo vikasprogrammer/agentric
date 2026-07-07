@@ -4,36 +4,36 @@
 
   "decisions": [
     { "name": "bash read is allowed", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "ls -la /var/www" } }, "expect": "allow" },
-    { "name": "bash deploy needs owner", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "npm run deploy:prod" } }, "expect": "ask:owner" },
+    { "name": "bash deploy runs freely (risky ≠ destructive; no longer gated)", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "npm run deploy:prod" } }, "expect": "allow" },
     { "name": "rm -rf data is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "rm -rf /var/lib/data" } }, "expect": "never" },
 
     { "name": "file write inside the agent folder is allowed", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Edit", "input": { "file_path": "/data/agents/support/notes.md", "old_string": "a", "new_string": "b" } }, "expect": "allow" },
     { "name": "file write via a relative path is inside → allowed", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Write", "input": { "file_path": "sub/out.txt", "content": "hi" } }, "expect": "allow" },
-    { "name": "file write OUTSIDE the folder asks admin", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Write", "input": { "file_path": "/Users/x/.claude/settings.json", "content": "x" } }, "expect": "ask:head" },
-    { "name": "path traversal out of the folder asks admin", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Edit", "input": { "file_path": "../other/secret", "old_string": "a", "new_string": "b" } }, "expect": "ask:head" },
-    { "name": "file write with no visible path is treated as outside", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Write", "input": { "content": "opaque" } }, "expect": "ask:head" },
+    { "name": "file write OUTSIDE the folder now runs freely (local, reversible — not a side effect on the world)", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Write", "input": { "file_path": "/Users/x/.claude/settings.json", "content": "x" } }, "expect": "allow" },
+    { "name": "path traversal out of the folder now runs freely", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Edit", "input": { "file_path": "../other/secret", "old_string": "a", "new_string": "b" } }, "expect": "allow" },
+    { "name": "file write with no visible path now runs freely", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Write", "input": { "content": "opaque" } }, "expect": "allow" },
     { "name": "file content that mentions DROP TABLE is NOT destructive (judged by path)", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "Write", "input": { "file_path": "/data/agents/support/migration.sql", "content": "DROP TABLE users; DELETE FROM accounts;" } }, "expect": "allow" },
     { "name": "notebook edit inside the folder is allowed", "capability": "file.write", "workdir": "/data/agents/support", "args": { "tool": "NotebookEdit", "input": { "notebook_path": "/data/agents/support/run.ipynb", "new_source": "print(1)" } }, "expect": "allow" },
     { "name": "lowercase drop database is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"drop database production\"" } }, "expect": "never" },
     { "name": "TRUNCATE is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "mysql -e 'TRUNCATE TABLE users'" } }, "expect": "never" },
     { "name": "delete from with no where is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"delete from sessions\"" } }, "expect": "never" },
-    { "name": "delete from with where is just risky", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"delete from sessions where id=1\"" } }, "expect": "ask:owner" },
+    { "name": "delete from with where is risky, not destructive → runs freely", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"delete from sessions where id=1\"" } }, "expect": "allow" },
     { "name": "terraform destroy is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "terraform destroy -auto-approve" } }, "expect": "never" },
     { "name": "force push is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "git push --force origin main" } }, "expect": "never" },
 
     { "name": "connector read is allowed", "capability": "connector.call", "args": { "tool": "mcp__globex__list_sites", "input": {} }, "expect": "allow" },
-    { "name": "connector send needs approval", "capability": "connector.call", "args": { "tool": "mcp__slack__SLACK_SEND_MESSAGE", "input": { "text": "hi" } }, "expect": "ask:head" },
+    { "name": "connector send (risky mutation) now runs freely", "capability": "connector.call", "args": { "tool": "mcp__slack__SLACK_SEND_MESSAGE", "input": { "text": "hi" } }, "expect": "allow" },
     { "name": "delete_site is never (by name)", "capability": "connector.call", "args": { "tool": "mcp__globex__delete_site", "input": { "site_id": 5 } }, "expect": "never" },
     { "name": "db_query DROP TABLE is never (argument-aware — the closed hole)", "capability": "connector.call", "args": { "tool": "mcp__globex__db_query", "input": { "sql": "DROP TABLE wp_posts" } }, "expect": "never" },
     { "name": "execute_php with rm -rf is never", "capability": "connector.call", "args": { "tool": "mcp__site__execute_php", "input": { "code": "shell_exec('rm -rf /var/www')" } }, "expect": "never" },
     { "name": "db_query SELECT is just a read-ish call", "capability": "connector.call", "args": { "tool": "mcp__globex__db_query", "input": { "sql": "SELECT * FROM wp_posts LIMIT 10" } }, "expect": "allow" },
 
-    { "name": "refund under cap → approval", "capability": "connector.call", "args": { "tool": "mcp__stripe__REFUND_CHARGE", "input": { "amount": 200 } }, "expect": "ask:head" },
+    { "name": "refund under cap now runs freely (only over-cap spend is never)", "capability": "connector.call", "args": { "tool": "mcp__stripe__REFUND_CHARGE", "input": { "amount": 200 } }, "expect": "allow" },
     { "name": "refund over cap → never", "capability": "connector.call", "args": { "tool": "mcp__stripe__REFUND_CHARGE", "input": { "amount": 600 } }, "expect": "never" },
     { "name": "explicit amount_usd over cap → never", "capability": "connector.call", "args": { "tool": "mcp__billing__charge_customer", "input": { "amount_usd": 1000 } }, "expect": "never" },
 
     { "name": "bulk delete over cap → never", "capability": "connector.call", "args": { "tool": "mcp__globex__delete_content", "input": { "ids": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26] } }, "expect": "never" },
-    { "name": "small delete under cap → approval", "capability": "connector.call", "args": { "tool": "mcp__globex__delete_content", "input": { "ids": [1,2,3] } }, "expect": "ask:head" },
+    { "name": "small delete under cap now runs freely (only over-cap bulk delete is never)", "capability": "connector.call", "args": { "tool": "mcp__globex__delete_content", "input": { "ids": [1,2,3] } }, "expect": "allow" },
 
     { "name": "company connection management → owner", "capability": "connector.connect", "args": { "tool": "mcp__composio-company__GMAIL_MANAGE_CONNECTION", "input": {} }, "expect": "ask:owner" },
 
@@ -42,10 +42,10 @@
     { "name": "email mixed internal+external → approval", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__gmail__send_email", "input": { "to": ["a@acme.com", "b@out.com"] } }, "expect": "ask:head" },
     { "name": "email with unparseable recipients → external (safe default)", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__composio__GMAIL_SEND_EMAIL", "input": { "subject": "no to field" } }, "expect": "ask:head" },
     { "name": "email with no org domains configured → all external", "capability": "connector.call", "args": { "tool": "mcp__composio__GMAIL_SEND_EMAIL", "input": { "to": "cfo@acme.com" } }, "expect": "ask:head" },
-    { "name": "bulk external send (>cap outsiders) → owner (red)", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__composio__GMAIL_SEND_EMAIL", "input": { "to": ["a@x.com","b@x.com","c@x.com","d@x.com","e@x.com","f@x.com","g@x.com","h@x.com","i@x.com","j@x.com","k@x.com"] } }, "expect": "ask:owner" },
+    { "name": "bulk external send → admin (external email always asks; no separate bulk tier now)", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__composio__GMAIL_SEND_EMAIL", "input": { "to": ["a@x.com","b@x.com","c@x.com","d@x.com","e@x.com","f@x.com","g@x.com","h@x.com","i@x.com","j@x.com","k@x.com"] } }, "expect": "ask:head" },
     { "name": "external send at cap stays yellow (not bulk)", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__composio__GMAIL_SEND_EMAIL", "input": { "to": ["a@x.com","b@x.com","c@x.com","d@x.com","e@x.com","f@x.com","g@x.com","h@x.com","i@x.com","j@x.com"] } }, "expect": "ask:head" },
     { "name": "many INTERNAL recipients is not bulk-external → green", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__composio__GMAIL_SEND_EMAIL", "input": { "to": ["a@acme.com","b@acme.com","c@acme.com","d@acme.com","e@acme.com","f@acme.com","g@acme.com","h@acme.com","i@acme.com","j@acme.com","k@acme.com","l@acme.com"] } }, "expect": "allow" },
-    { "name": "slack send is NOT misread as email (stays connector)", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__slack__SLACK_SEND_MESSAGE", "input": { "text": "hi" } }, "expect": "ask:head" }
+    { "name": "slack send stays a connector call (not email) → runs freely", "capability": "connector.call", "orgDomains": ["acme.com"], "args": { "tool": "mcp__slack__SLACK_SEND_MESSAGE", "input": { "text": "hi" } }, "expect": "allow" }
   ],
 
   "context": [

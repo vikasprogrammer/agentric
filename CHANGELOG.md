@@ -8,7 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.16.1] — 2026-07-07
+## [0.17.0] — 2026-07-07
+
+### Changed
+- **Default policy super-simplified — local work runs freely, only outward/irreversible effects pause.**
+  The old default gated `file.write` whenever the target sat outside the agent's *home folder*
+  (`outsideWorkdir`). But coding agents almost never edit inside their home dir — they clone repos and
+  work in git worktrees under `/tmp`, `~/code`, etc. So `outsideWorkdir` was `true` for essentially all
+  real work, and the `file.write outsideWorkdir → ask` rule fired an approval prompt on *every single
+  edit* (observed live in session `1603ccea`: a worktree at `/tmp/feat-umami-1click` triggered a `head`
+  approval on each `Edit`). The new [`config/policy/default.policy.json`](config/policy/default.policy.json)
+  (`default@v2`) keeps only the guardrails that carry real weight — **never**: destructive ops, spend over
+  `$moneyCapUsd`, bulk deletes over `$bulkDeleteCount`; **ask**: external email, granting a new OAuth
+  connection (`connector.connect`) — and **allows everything else** (all file writes anywhere, shell,
+  connector calls; `default` flips from `ask` to `allow`). A local, reversible file edit is not a side
+  effect "on the world," so it no longer interrupts. Existing tenants with a saved policy override keep it
+  until re-saved from Settings → Governance (or replaced on disk).
 
 ### Fixed
 - **Task/chat-triggered sessions now show in their owner's sidebar.** The left "my sessions" switcher
