@@ -4994,13 +4994,24 @@ function MemorySettings({ me }: { me: Member }) {
   const [reconBusy, setReconBusy] = useState(false)
   const [reconSkipEp, setReconSkipEp] = useState(false) // migrate all by default; opt in to skipping raw episodes
   const [reconMsg, setReconMsg] = useState('')
+  const [reconcileOpen, setReconcileOpen] = useState(false) // the at-switch interstitial
   const refreshView = () => api.memorySettings().then((v) => { if (!v.error) apply(v) }).catch(() => {})
+  // Batched migrate: loop the endpoint (each call moves ≤ a batch) passing back the server's `before`
+  // horizon until it reports `done`, showing progress. Safe to resume — a failed batch leaves rows put.
   const doMigrate = async () => {
-    setReconBusy(true); setReconMsg('')
-    const r = await api.migrateMemory(reconSkipEp)
+    setReconBusy(true); setReconMsg('Migrating…')
+    let before: number | undefined
+    let migrated = 0, skipped = 0
+    for (let guard = 0; guard < 10000; guard++) {
+      const r = await api.migrateMemory({ skipEpisodes: reconSkipEp, before })
+      if (r.error) { setReconBusy(false); return setReconMsg('⚠ ' + r.error) }
+      migrated += r.migrated ?? 0; skipped += r.skipped ?? 0; before = r.before
+      if (r.done) break
+      setReconMsg(`Migrating… ${migrated} moved${skipped ? ` / ${skipped} skipped` : ''}, ${r.remaining ?? 0} left`)
+    }
     setReconBusy(false)
-    if (r.error) return setReconMsg('⚠ ' + r.error)
-    setReconMsg(`Migrated ${r.migrated ?? 0}${r.skipped ? `, skipped ${r.skipped} episode(s)` : ''}; removed ${r.deleted ?? 0} local rows.`)
+    setReconMsg(`Migrated ${migrated}${skipped ? `, skipped ${skipped} episode(s)` : ''}; local ledger reconciled.`)
+    setReconcileOpen(false)
     refreshView()
   }
   const doClear = async () => {
@@ -5010,6 +5021,7 @@ function MemorySettings({ me }: { me: Member }) {
     setReconBusy(false)
     if (r.error) return setReconMsg('⚠ ' + r.error)
     setReconMsg(`Cleared ${r.cleared ?? 0} local rows.`)
+    setReconcileOpen(false)
     refreshView()
   }
 
@@ -5049,6 +5061,7 @@ function MemorySettings({ me }: { me: Member }) {
     setTestResult(r.health ?? null)
   }
   const save = async () => {
+    const prevBackend = view?.backend
     setBusy(true); setHint(''); setTestResult(null)
     const r = await api.saveMemorySettings(body())
     setBusy(false)
@@ -5056,6 +5069,8 @@ function MemorySettings({ me }: { me: Member }) {
     setApiKey(''); setToken(''); setAuthToken('')
     apply(r)
     setHint('saved — applied live'); setTimeout(() => setHint(''), 1800)
+    // At-switch interstitial: a backend CHANGE that left local rows the new store lacks → prompt to reconcile.
+    if (r.backend !== prevBackend && (r.drift ?? 0) > 0) { setReconSkipEp(false); setReconMsg(''); setReconcileOpen(true) }
   }
 
   if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
@@ -5116,6 +5131,22 @@ function MemorySettings({ me }: { me: Member }) {
 
   return (
     <div className="max-w-3xl space-y-4">
+      {/* At-switch interstitial: pops right after a backend change that left local rows behind. */}
+      {reconcileOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !reconBusy && setReconcileOpen(false)}>
+          <div className="w-full max-w-lg space-y-3 rounded-lg border bg-background p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-medium">Switched to {view?.backend} — reconcile the {view?.localCount ?? 0} existing {(view?.localCount ?? 0) === 1 ? 'memory' : 'memories'}?</div>
+            <p className="text-xs text-muted-foreground">Agents now recall from {view?.backend}, which has {view?.backendCount ?? 0}. Your {view?.drift ?? 0} local {(view?.drift ?? 0) === 1 ? 'memory' : 'memories'} aren't in it yet. <strong>Migrate</strong> copies them into {view?.backend}; <strong>Start fresh</strong> clears the local ledger; <strong>Later</strong> leaves them (the drift banner stays until you reconcile).</p>
+            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><input type="checkbox" checked={reconSkipEp} onChange={(e) => setReconSkipEp(e.target.checked)} />durable only — skip raw session episodes</label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={doMigrate} disabled={reconBusy}><Upload className="mr-1 h-3.5 w-3.5" />Migrate to {view?.backend}</Button>
+              <Button size="sm" variant="outline" onClick={doClear} disabled={reconBusy}><Trash2 className="mr-1 h-3.5 w-3.5" />Start fresh</Button>
+              <Button size="sm" variant="ghost" onClick={() => setReconcileOpen(false)} disabled={reconBusy}>Later</Button>
+              {reconMsg && <span className="font-mono text-[11px] text-muted-foreground">{reconMsg}</span>}
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-start justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           The <strong>persistent memory</strong> every agent recalls across sessions. Changing the backend applies

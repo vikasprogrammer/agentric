@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-07-07
+
+### Added
+- **Backend-switch reconcile — Phase 2: at-switch prompt + batched migration.** Changing the memory
+  backend (Settings → Memory) now pops an **interstitial** the moment you save, when the switch leaves
+  local memories the new store lacks — Migrate / Start fresh / Later — instead of relying only on the
+  passive drift banner. And migration is now **batched**: `POST /api/settings/memory/migrate` moves one
+  batch per call over a fixed `before` horizon (rows created *strictly before* the run; the mirror's
+  re-inserts land after it and are never re-picked, even on a same-millisecond store), returning
+  `{ migrated, skipped, remaining, done }`; the console loops it with a live *"N moved, M left"* count so
+  a large ledger never blocks a single request, and a failed batch is safely resumable (rows stay put).
+  The idempotency guard (no-op when already consistent) and the "durable only — skip episodes" filter
+  carry over. See `docs/memory-backend-migration-plan.md`.
+
 ## [0.24.0] — 2026-07-07
 
 ### Added

@@ -1,9 +1,11 @@
 # Memory backend switch — migrate-or-clear
 
-**Status:** Phase 1 shipped. Hardening for the backend-swap flow that shipped in v0.21.0
-([`memory-model.md`](./memory-model.md) → "Backends that self-consolidate"). Turns a manual, scripted
-cleanup into a first-class Settings action. Phase 1 = the drift banner + migrate/clear endpoints (below);
-Phase 2 (at-switch interstitial, batched progress) remains open.
+**Status:** Phase 1 (v0.24.0) + Phase 2 (v0.25.0) shipped. Hardening for the backend-swap flow that
+shipped in v0.21.0 ([`memory-model.md`](./memory-model.md) → "Backends that self-consolidate"). Turns a
+manual, scripted cleanup into a first-class Settings action: Phase 1 = the drift banner + migrate/clear
+endpoints; Phase 2 = the **at-switch interstitial** (a reconcile prompt the moment you change backend)
++ **batched migration** (the endpoint moves a batch per call over a fixed `before` horizon; the client
+loops with a live progress count, so a large ledger never blocks one request).
 
 ## The problem (observed live)
 

@@ -1729,21 +1729,32 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
     const b = await readBody(req);
     const skipEpisodes = b.skipEpisodes === true;
-    const rows = os.db
-      .prepare('SELECT id, agent_id, content, tags, type, importance, metadata, scope FROM memories WHERE tenant = ?')
-      .all<{ id: string; agent_id: string; content: string; tags: string | null; type: string | null; importance: number | null; metadata: string | null; scope: string }>(os.tenant);
-    // Idempotency guard: migrate replays the local ledger into the backend on the assumption those rows
-    // are ORPHANS (not yet in the store). If the store already holds them (no drift), replaying would
-    // duplicate — so no-op. Canonical case (fresh switch) has an empty store, so this passes through.
-    const backendCount = os.memory.count ? await os.memory.count(os.tenant) : null;
-    if (backendCount != null && backendCount >= rows.length) {
-      return sendJson(res, 200, { ok: true, migrated: 0, skipped: 0, deleted: 0, note: 'already consistent — nothing to migrate' });
+    const limit = Math.max(1, Math.min(Number(b.limit) || 50, 500)); // rows migrated per batch (progress-friendly)
+    const localTotal = () => Number(os.db.prepare('SELECT count(*) AS n FROM memories WHERE tenant = ?').get<{ n: number }>(os.tenant)?.n ?? 0);
+    const remainingBefore = (t: number) => Number(os.db.prepare('SELECT count(*) AS n FROM memories WHERE tenant = ? AND created_at < ?').get<{ n: number }>(os.tenant, t)?.n ?? 0);
+    // `before` fixes the migration horizon: rows STRICTLY before it are the ORPHANS to move; rows the
+    // mirror writes DURING migration (created_at >= `before`, since the backend stamps Date.now() ≥ our
+    // capture) are excluded — so a batch never re-migrates what an earlier batch just mirrored, even if a
+    // store lands in the same millisecond. The client passes the server-assigned `before` back each batch.
+    let before = Number(b.before) || 0;
+    if (!before) {
+      // First batch — idempotency guard: if the backend already holds everything (no drift), no-op so a
+      // stray click can't duplicate. Otherwise fix the horizon at now. (Fresh switch → empty store → passes.)
+      const backendCount = os.memory.count ? await os.memory.count(os.tenant) : null;
+      if (backendCount != null && backendCount >= localTotal()) {
+        return sendJson(res, 200, { ok: true, done: true, migrated: 0, skipped: 0, remaining: 0, note: 'already consistent — nothing to migrate' });
+      }
+      before = Date.now();
     }
-    const snapshotIds = rows.map((r) => r.id); // the pre-existing rows to remove after a clean migration
-    const keep = skipEpisodes ? rows.filter((r) => !(r.tags ?? '').includes('"episode"')) : rows;
-    let migrated = 0;
-    const errors: string[] = [];
-    for (const r of keep) {
+    // One batch of the oldest remaining orphans. We delete each as we go (migrated → re-mirrored under a
+    // new id with created_at > before; skipped episode → simply dropped), so it won't resurface next batch.
+    const rows = os.db
+      .prepare('SELECT id, agent_id, content, tags, type, importance, metadata, scope FROM memories WHERE tenant = ? AND created_at < ? ORDER BY created_at, id LIMIT ?')
+      .all<{ id: string; agent_id: string; content: string; tags: string | null; type: string | null; importance: number | null; metadata: string | null; scope: string }>(os.tenant, before, limit);
+    const del = os.db.prepare('DELETE FROM memories WHERE tenant = ? AND id = ?');
+    let migrated = 0, skipped = 0;
+    for (const r of rows) {
+      if (skipEpisodes && (r.tags ?? '').includes('"episode"')) { del.run(os.tenant, r.id); skipped++; continue; }
       try {
         await os.memory.store({
           tenant: os.tenant, agentId: r.agent_id, content: r.content,
@@ -1752,26 +1763,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
           metadata: r.metadata ? safeJson(r.metadata) : undefined,
           scope: r.scope === 'tenant' ? 'tenant' : 'agent',
         });
-        migrated++;
       } catch (e) {
-        errors.push(`${r.agent_id}: ${e instanceof Error ? e.message : String(e)}`);
+        // Stop cleanly: this orphan stays put (not deleted). The client retries with the SAME `before` to resume.
+        return sendJson(res, 500, { error: `store failed after ${migrated} migrated: ${e instanceof Error ? e.message : String(e)}`, before, migrated, skipped, remaining: remainingBefore(before) });
       }
+      del.run(os.tenant, r.id); migrated++;
     }
-    // Gated: only drop the old rows if EVERY kept row landed — a partial migration leaves all intact.
-    if (migrated !== keep.length) {
-      return sendJson(res, 500, { error: `migrated ${migrated}/${keep.length}; nothing deleted`, migrated, skipped: rows.length - keep.length, errors: errors.slice(0, 5) });
-    }
-    const del = os.db.prepare('DELETE FROM memories WHERE tenant = ? AND id = ?');
-    os.db.exec('BEGIN');
-    try {
-      for (const id of snapshotIds) del.run(os.tenant, id);
-      os.db.exec('COMMIT');
-    } catch (e) {
-      os.db.exec('ROLLBACK');
-      return sendJson(res, 500, { error: `migrated ${migrated} but cleanup failed: ${e instanceof Error ? e.message : String(e)}`, migrated });
-    }
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.migrated', data: { backend: os.settings.memoryConfig()?.backend, migrated, skipped: rows.length - keep.length, deleted: snapshotIds.length } });
-    return sendJson(res, 200, { ok: true, migrated, skipped: rows.length - keep.length, deleted: snapshotIds.length });
+    const remaining = remainingBefore(before);
+    const done = remaining === 0;
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.migrated', data: { backend: os.settings.memoryConfig()?.backend, migrated, skipped, remaining, done } });
+    return sendJson(res, 200, { ok: true, done, before, migrated, skipped, remaining });
   }
   if (method === 'POST' && p === '/api/settings/memory/clear') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
