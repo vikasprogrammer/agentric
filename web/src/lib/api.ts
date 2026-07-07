@@ -111,6 +111,9 @@ export interface Session {
   resumable?: boolean
   spawnedBy?: string
   spawnedByLabel?: string
+  /** The member id this session runs AS (run_as). A task/chat-triggered run is spawnedBy `task:`/
+   *  `automation:` but runs as a member — the sidebar keys "my sessions" off this too. */
+  runAs?: string
   createdAt: number
 }
 export interface AuditEvent {

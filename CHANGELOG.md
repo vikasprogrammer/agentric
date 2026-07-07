@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.16.1] — 2026-07-07
+
+### Fixed
+- **Task/chat-triggered sessions now show in their owner's sidebar.** The left "my sessions" switcher
+  keyed only off `spawnedBy === me.id`, so a session an auto-dispatched **Task** (or a chat message)
+  spawned — whose provenance is `task:<id>`/`automation:<id>` but which *runs as* the owning member —
+  was hidden from that member's sidebar even though they own it. The session DTO now carries **`runAs`**
+  ([`src/terminal.ts`](src/terminal.ts), [`web/src/lib/api.ts`](web/src/lib/api.ts)) and the sidebar
+  includes sessions where `spawnedBy === me.id` **or** `runAs === me.id`
+  ([`web/src/App.tsx`](web/src/App.tsx)) — matching the run-as visibility rule the inbox already used.
+
 ## [0.16.0] — 2026-07-07
 
 ### Added
