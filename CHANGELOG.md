@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-07
+
+### Added
+- **Settings sub-tab is deep-linkable (`#/settings/<tab>`).** Continuing the URL-routing work from
+  v0.16.0, the active Settings sub-tab (Company context, Runtime defaults, Integrations, Secrets,
+  Memory backend, Governance, Policy, System) is now a hash detail segment instead of local component
+  state — a **refresh or shared link lands on the same tab** instead of resetting to Company context.
+  `SettingsPage` resolves the tab from the URL against a shared `SETTINGS_TABS` list and writes it back
+  via `nav('settings', tab)` ([`web/src/App.tsx`](web/src/App.tsx)).
+
 ## [0.17.0] — 2026-07-07
 
 ### Changed

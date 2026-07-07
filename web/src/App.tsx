@@ -369,7 +369,7 @@ function Console({ me }: { me: Member }) {
 
   // Secondary "Manage" nav is collapsed by default so the Agents list stays high; it auto-opens
   // when you're on one of its pages.
-  const manageRoutes: Route[] = ['automations', 'memory', 'skills', 'connectors', 'team', 'files', 'settings']
+  const manageRoutes: Route[] = ['automations', 'memory', 'skills', 'connectors', 'team', 'files', 'settings', 'docs']
   const onManage = manageRoutes.includes(route)
   const [manageOpen, setManageOpen] = useState(onManage)
   useEffect(() => { if (onManage) setManageOpen(true) }, [onManage])
@@ -603,13 +603,9 @@ function Console({ me }: { me: Member }) {
               {(me.role === 'owner' || me.role === 'admin') && (
                 <NavItem icon={<Building2 className="h-4 w-4" />} label="Settings" active={route === 'settings'} onClick={() => nav('settings')} />
               )}
+              <NavItem icon={<BookOpen className="h-4 w-4" />} label="Docs" active={route === 'docs'} onClick={() => nav('docs')} />
             </nav>
           )}
-          {/* Docs sits OUTSIDE the collapsible group: the product manual should stay one click away
-              for members even when Manage is collapsed (or hidden entirely for their role). */}
-          <nav className="mb-1 space-y-1">
-            <NavItem icon={<BookOpen className="h-4 w-4" />} label="Docs" active={route === 'docs'} onClick={() => nav('docs')} />
-          </nav>
 
           <Separator className="my-3" />
           <div className="flex items-center justify-between">
@@ -653,7 +649,7 @@ function Console({ me }: { me: Member }) {
           {route === 'artifacts' && <ArtifactsPage me={me} initialId={artifactFocus} />}
           {route === 'audit' && <AuditPage />}
           {route === 'docs' && <DocsPage />}
-          {route === 'settings' && <SettingsPage me={me} state={state} />}
+          {route === 'settings' && <SettingsPage me={me} state={state} tab={detail} onTab={(t) => nav('settings', t)} />}
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
       </main>
@@ -4343,8 +4339,14 @@ function AuditPage() {
   )
 }
 
-function SettingsPage({ me, state }: { me: Member; state: StateResp | null }) {
-  const [tab, setTab] = useState<'company' | 'runtime' | 'integrations' | 'secrets' | 'memory' | 'policy' | 'governance' | 'system'>('company')
+type SettingsTab = 'company' | 'runtime' | 'integrations' | 'secrets' | 'memory' | 'policy' | 'governance' | 'system'
+const SETTINGS_TABS: SettingsTab[] = ['company', 'runtime', 'integrations', 'secrets', 'memory', 'policy', 'governance', 'system']
+
+// The active sub-tab is a URL detail (`#/settings/<tab>`) so a refresh / shared link lands on the same
+// tab. `tab` is the raw detail from the router; `onTab` writes it back into the hash.
+function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: StateResp | null; tab: string; onTab: (t: SettingsTab) => void }) {
+  const tab: SettingsTab = (SETTINGS_TABS as string[]).includes(tabParam) ? (tabParam as SettingsTab) : 'company'
+  const setTab = onTab
   if (me.role !== 'owner' && me.role !== 'admin') return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
   return (
     <div className="flex gap-6">
