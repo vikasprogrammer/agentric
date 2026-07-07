@@ -5,6 +5,7 @@ import whatIsAgentOs from './what-is-agent-os.md?raw'
 import gettingStarted from './getting-started.md?raw'
 import coreConcepts from './core-concepts.md?raw'
 import workingWithAgents from './working-with-agents.md?raw'
+import automations from './automations.md?raw'
 import governance from './governance.md?raw'
 import sharedPlanes from './shared-planes.md?raw'
 
@@ -15,6 +16,7 @@ export const docPages: DocPage[] = [
   { slug: 'getting-started', title: 'Getting started', body: gettingStarted },
   { slug: 'core-concepts', title: 'Core concepts', body: coreConcepts },
   { slug: 'working-with-agents', title: 'Working with agents', body: workingWithAgents },
+  { slug: 'automations', title: 'Automations', body: automations },
   { slug: 'governance', title: 'Governance & approvals', body: governance },
   { slug: 'shared-planes', title: 'Memory, Knowledge & Tasks', body: sharedPlanes },
 ]
