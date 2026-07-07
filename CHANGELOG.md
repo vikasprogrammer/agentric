@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.32.1] — 2026-07-07
+### Fixed
+- **Browser terminal: auto-reconnect instead of dying on a dropped WebSocket.** ttyd was launched with
+  `disableReconnect=true` (both the per-tenant shared terminal and the Phase-A per-member terminal), so a
+  transient WebSocket blip — laptop sleep, a network hiccup, or CPU starvation on a small box — blanked the
+  terminal permanently until a full page reload, which reads as "the session got killed" even though the
+  tmux-backed agent keeps running. Now reconnect is enabled and ttyd sends a keepalive ping every 30s, so
+  the terminal re-attaches to the live session after a blip (the backend already supports resuming claude
+  in-place on reconnect).
+
 ## [0.32.0] — 2026-07-07
 
 ### Added

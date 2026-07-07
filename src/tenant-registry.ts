@@ -231,7 +231,12 @@ export function launchTtyd(tmuxSocket: string, ttydPort: number, sessionDir: str
     const child = spawn(
       'ttyd',
       ['-p', String(ttydPort), '-i', '127.0.0.1', '-b', '/terminal', '-a', '-W',
-       '-t', 'disableReconnect=true', '-t', 'disableLeaveAlert=true', '-t', 'fontSize=14',
+       // Keep the WS alive through idle proxies (nginx/the app proxy) and auto-reattach after a blip:
+       // the tmux session persists, so on reconnect ttyd re-attaches to the live session (the backend
+       // even resumes claude in-place — see terminal.ts). Leaving disableReconnect on meant a single
+       // dropped socket (laptop sleep, network hiccup, CPU starvation) blanked the terminal until a full
+       // page reload, which reads as "the session got killed" even though the agent is still running.
+       '-P', '30', '-t', 'disableReconnect=false', '-t', 'disableLeaveAlert=true', '-t', 'fontSize=14',
        // Pass-through xterm.js option: while claude has mouse events active (we keep the wheel for
        // in-app scroll via CLAUDE_CODE_DISABLE_MOUSE_CLICKS), xterm.js disables selection unless the
        // user holds the force-selection modifier — on macOS that's Option, and ONLY when this option
