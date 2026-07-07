@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-07-07
+
+### Fixed
+- **Self-update no longer fails with `sh: tsc: not found` on a production box.** The in-console updater's
+  `npm install` inherited the service environment — and the systemd/launchd units run with
+  `NODE_ENV=production`, which makes npm **omit devDependencies**. Since `typescript` (the `tsc` the build
+  step needs) is a devDependency, the very next `npm run build` had no compiler and the update aborted at
+  "server build failed". Both the server and web installs now pass `--include=dev` so the build always has
+  its toolchain regardless of `NODE_ENV` ([`src/edge/updater.ts`](src/edge/updater.ts)).
+
 ## [0.19.0] — 2026-07-07
 
 ### Added

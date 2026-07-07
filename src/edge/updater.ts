@@ -140,10 +140,13 @@ export async function applyUpdate(tenant: string): Promise<ApplyResult> {
     return { ok: false, steps, restarting: false, error: 'working tree has uncommitted changes — commit or stash on the box first' };
 
   if (!run('git pull --ff-only', 'git', ['pull', '--ff-only'])) return { ok: false, steps, restarting: false, error: 'git pull failed' };
-  if (!run('npm install', 'npm', ['install', '--no-audit', '--no-fund'])) return { ok: false, steps, restarting: false, error: 'npm install failed' };
+  // --include=dev is mandatory: the build step below needs `tsc` (a devDependency), and the service
+  // this runs under sets NODE_ENV=production, which would otherwise make npm omit devDependencies →
+  // "sh: tsc: not found". Same for the web build (vite/tsc live in web's devDependencies).
+  if (!run('npm install', 'npm', ['install', '--include=dev', '--no-audit', '--no-fund'])) return { ok: false, steps, restarting: false, error: 'npm install failed' };
   if (!run('npm run build', 'npm', ['run', 'build'])) return { ok: false, steps, restarting: false, error: 'server build failed' };
   const web = path.join(REPO_ROOT, 'web');
-  if (!run('npm install (web)', 'npm', ['install', '--no-audit', '--no-fund'], web)) return { ok: false, steps, restarting: false, error: 'web npm install failed' };
+  if (!run('npm install (web)', 'npm', ['install', '--include=dev', '--no-audit', '--no-fund'], web)) return { ok: false, steps, restarting: false, error: 'web npm install failed' };
   if (!run('npm run build (web)', 'npm', ['run', 'build'], web)) return { ok: false, steps, restarting: false, error: 'web build failed' };
 
   cache = null; // the running version is about to change — force a fresh check after the bounce.
