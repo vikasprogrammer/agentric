@@ -60,7 +60,7 @@ const exampleTask = (a?: AgentInfo): string => a?.examplePrompts?.[0] ?? ''
 const LAST_AGENT_KEY = 'aos_last_agent'
 const taskDraftKey = (agentId: string) => `aos_task_draft:${agentId}`
 // Which agent-chooser layout the user prefers: a card gallery ('grid') or a list-rail + detail
-// ('split'). Persisted so it sticks across visits; defaults to the visual grid.
+// ('split'). Persisted so it sticks across visits; defaults to the compact list-rail split view.
 const AGENTS_VIEW_KEY = 'aos_agents_view'
 type AgentsView = 'grid' | 'split'
 
@@ -750,7 +750,7 @@ function AgentsPage({
   const [task, setTask] = useState('')
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
-  const [view, setView] = useState<AgentsView>(() => (localStorage.getItem(AGENTS_VIEW_KEY) === 'split' ? 'split' : 'grid'))
+  const [view, setView] = useState<AgentsView>(() => (localStorage.getItem(AGENTS_VIEW_KEY) === 'grid' ? 'grid' : 'split'))
   const setViewPersist = (v: AgentsView) => { setView(v); localStorage.setItem(AGENTS_VIEW_KEY, v) }
   const [query, setQuery] = useState('')
 
@@ -925,7 +925,10 @@ function AgentsPage({
               </div>
             </div>
           ))}
-          <Card className="shadow-sm"><CardContent className="p-4">{composer}</CardContent></Card>
+          {/* Docked composer: sits after the cards, but sticks to the bottom of the scroll viewport
+              once the gallery is tall enough to overflow — so the task box stays reachable without
+              scrolling past every card. Clamped to its container, so short fleets show no gap. */}
+          <Card className="sticky bottom-0 z-10 shadow-lg"><CardContent className="p-4">{composer}</CardContent></Card>
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-[minmax(190px,230px)_1fr]">

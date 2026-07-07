@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.27.1] — 2026-07-07
+
+### Changed
+- **The agent chooser defaults to the list (split) view** instead of the gallery — the compact
+  list-rail + detail layout is the quicker default for picking an agent. The gallery is still one
+  toggle away and the choice persists.
+- **In the gallery view the task composer now docks to the bottom of the viewport** once the cards
+  overflow, so it stays reachable without scrolling past every card. It's clamped to its container, so
+  a short fleet shows the composer right under the cards with no gap.
+
 ## [0.27.0] — 2026-07-07
 
 ### Changed
