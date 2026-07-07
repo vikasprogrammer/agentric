@@ -725,7 +725,30 @@ export class TerminalManager {
         'poorly yourself or filing an unassigned task (which nobody picks up).\n\n' +
         roster
       : '';
-    return [company, AGENT_OS_OPERATING_NOTES, fleet, learned].filter(Boolean).join('\n\n');
+    // The team roster — WHO this agent works for and with. Injected so an agent can loop in the right
+    // person (roles set who can approve what) without a `directory_lookup` round-trip. Capped: past a
+    // small team it stays tool-only, so a big org doesn't bloat every prompt.
+    const members = this.os.team.listMembers();
+    const TEAM_CAP = 30;
+    const teamList = members.length && members.length <= TEAM_CAP
+      ? members
+          .map((m) => {
+            const ids = this.os.team.externalIdsFor(m.id).map((i) => `${i.provider}:${i.externalId}`).join(', ');
+            return `- ${m.name} (${m.role}) — ${m.email}${ids ? ` — ${ids}` : ''}`;
+          })
+          .join('\n')
+      : '';
+    const team = teamList
+      ? '# Your team — the people in this workspace\n\n' +
+        'The humans you work for and with. Roles set who can approve what: **owner** approves anything, ' +
+        '**admin** approves most, **member** runs only assigned agents. Use `ask` to get a decision or ' +
+        'sign-off from the right person; `directory_lookup` returns this same list with more on how to ' +
+        'reach each one (Slack/Discord/email).\n\n' +
+        teamList
+      : members.length > TEAM_CAP
+        ? `# Your team\n\n${members.length} people are on the team — use \`directory_lookup\` to find someone by name or email.`
+        : '';
+    return [company, AGENT_OS_OPERATING_NOTES, fleet, team, learned].filter(Boolean).join('\n\n');
   }
 
   /**

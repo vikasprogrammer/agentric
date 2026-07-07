@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-07-07
+
+### Added
+- **Agents now see the team roster in their prompt — the human counterpart of the fleet roster.** Every
+  session's company context gains a **"Your team — the people in this workspace"** block listing each
+  member's name, role (owner/admin/member → who can approve what), email, and any linked Slack/Discord
+  identities, so an agent can loop in the right person via `ask` without a `directory_lookup` round-trip.
+  Capped at 30 members — past that it stays tool-only (a one-line pointer to `directory_lookup`) so a
+  large org doesn't bloat every prompt. Mirrors the agent-roster injection from v0.29.0.
+
 ## [0.30.0] — 2026-07-07
 
 ### Added
