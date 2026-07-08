@@ -44,8 +44,12 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `secret_list` | `GET /api/agent/secret/list` | `TerminalManager.listSecrets` | R | shared (`*`) secret KEYS + metadata only, never values |
 | `slack_reply` | `POST /api/agent/slack/reply` | SlackSocket | W | only when `SLACK_REPLY=1` (chat-triggered) |
 | `discord_reply` | `POST /api/agent/discord/reply` | DiscordSocket | W | only when `DISCORD_REPLY=1` (chat-triggered) |
+| `slack_send` | `POST /api/agent/slack/send` | `SlackSocket.sendToChannel` | W | proactive post to any channel by id/name; auto-joins public channels; audited `slack.send`; only when `SLACK_EGRESS=1` (Slack configured) |
+| `slack_dm` | `POST /api/agent/slack/dm` | `SlackSocket.dmMember` | W | proactive DM by Slack user id or email; audited `slack.dm`; only when `SLACK_EGRESS=1` |
+| `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
+| `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
 
-33 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+33 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 
@@ -105,9 +109,6 @@ tightening could classify CLAUDE.md/model self-edits through Policy for workspac
   missing is **synchronous** delegation (an agent blocking on another's result) and an agent-triggered
   `task_dispatch` (today agents `claim` into their own session; direct spawn stays human/tick-only). Both
   still want budget attribution + recursion-depth limiting before they ship (`docs/tasks-plan.md` §9).
-- **Proactive person-to-person DM.** `directory_lookup` finds a teammate's Slack/Discord id and the
-  server has `dmUser` (the approval notifier path), but the only outbound chat tools (`slack_reply`/
-  `discord_reply`) post to the *triggering* thread. An agent can't DM a specific person off-thread.
 - **Episodic self-query.** Memory is semantic-only; an agent can't query its own past runs
   (`/api/runs` exists but is member-gated). "Have I done this before, how did it go?"
 - **`ask` rigidity.** Timeout hardcoded ~1h; no `timeoutSeconds` and no non-blocking ask-then-collect

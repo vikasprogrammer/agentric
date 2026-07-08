@@ -76,6 +76,67 @@ export async function openDmChannel(botToken: string, userId: string): Promise<{
   }
 }
 
+/** Resolve an email → its Slack user id, so an agent can DM a person it only knows by email. Uses
+ *  `users.lookupByEmail` (needs the `users:read.email` scope). Returns `{ error }` (never throws). */
+export async function lookupUserByEmail(botToken: string, email: string): Promise<{ user: string } | { error: string }> {
+  if (!botToken || !email) return { error: 'missing token or email' };
+  try {
+    const res = await fetch(`${SLACK_API}/users.lookupByEmail?email=${encodeURIComponent(email)}`, {
+      headers: { authorization: `Bearer ${botToken}` },
+    });
+    const j: any = await res.json().catch(() => ({}));
+    if (j?.ok && j.user?.id) return { user: String(j.user.id) };
+    return { error: String(j?.error || `users.lookupByEmail failed (${res.status})`) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'users.lookupByEmail failed' };
+  }
+}
+
+/** Resolve a channel NAME (e.g. `general`, leading `#` optional) → its channel id, so an agent can
+ *  post to a channel it knows by name. Walks `conversations.list` (public + private) with a bounded
+ *  number of pages. Returns `{ error }` when not found / on failure (never throws). */
+export async function lookupChannelByName(botToken: string, name: string): Promise<{ channel: string } | { error: string }> {
+  if (!botToken || !name) return { error: 'missing token or channel name' };
+  const want = name.trim().replace(/^#/, '').toLowerCase();
+  let cursor = '';
+  try {
+    for (let page = 0; page < 10; page++) { // ≤10 pages × 1000 = 10k channels, plenty for a workspace
+      const qs = new URLSearchParams({ types: 'public_channel,private_channel', exclude_archived: 'true', limit: '1000' });
+      if (cursor) qs.set('cursor', cursor);
+      const res = await fetch(`${SLACK_API}/conversations.list?${qs.toString()}`, {
+        headers: { authorization: `Bearer ${botToken}` },
+      });
+      const j: any = await res.json().catch(() => ({}));
+      if (!j?.ok) return { error: String(j?.error || `conversations.list failed (${res.status})`) };
+      const hit = (j.channels || []).find((c: any) => String(c?.name || '').toLowerCase() === want);
+      if (hit?.id) return { channel: String(hit.id) };
+      cursor = String(j.response_metadata?.next_cursor || '');
+      if (!cursor) break;
+    }
+    return { error: `no channel named "${want}"` };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'conversations.list failed' };
+  }
+}
+
+/** Best-effort join a public channel so the bot can post into it (`chat.postMessage` fails with
+ *  `not_in_channel` otherwise). No-op-ish for private channels (returns the error). Never throws. */
+export async function joinChannel(botToken: string, channelId: string): Promise<{ ok: true } | { error: string }> {
+  if (!botToken || !channelId) return { error: 'missing token or channel' };
+  try {
+    const res = await fetch(`${SLACK_API}/conversations.join`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${botToken}`, 'content-type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ channel: channelId }),
+    });
+    const j: any = await res.json().catch(() => ({}));
+    if (j?.ok) return { ok: true };
+    return { error: String(j?.error || `conversations.join failed (${res.status})`) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'conversations.join failed' };
+  }
+}
+
 /** Resolve a Slack user id (e.g. `U123`) to their profile email — the join key for member run-as.
  *  Returns '' on any error/missing email (the dispatcher then falls back to the company identity). */
 export async function lookupUserEmail(botToken: string, userId: string): Promise<string> {

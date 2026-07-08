@@ -199,8 +199,12 @@ Key modules:
   reversible revision (`src/state/agent-revisions.ts`, the KB-style rollback backbone; no agent can edit
   another agent). Plus
   `directory_lookup` (team/identity-map
-  search), `list_capabilities`/`policy_check` (policy preview), and `slack_reply`/`discord_reply` when
-  chat-triggered. Each tool is a session-secret-gated loopback call to an `/api/*` route that sits BEFORE
+  search), `list_capabilities`/`policy_check` (policy preview), `slack_reply`/`discord_reply` when
+  chat-triggered, and **proactive egress** `slack_send`/`slack_dm`/`discord_send`/`discord_dm` (exposed
+  whenever that platform is configured — `SLACK_EGRESS`/`DISCORD_EGRESS`) to post to ANY channel (by
+  id/name, auto-joining public Slack channels) or DM ANY person (Slack: user id / email; Discord: user
+  id), off-thread and unattended; audit-only (`slack.send`/`slack.dm`/`discord.send`/`discord.dm`), no
+  policy gate — same posture as `slack_reply`. Each tool is a session-secret-gated loopback call to an `/api/*` route that sits BEFORE
   the member-auth gate. Canonical tool↔route↔store matrix + the governance notes:
   `docs/agent-mcp-tools.md`. See also `docs/memory-layer-plan.md`.
 - `src/state/kb.ts` — the **Knowledge Base plane** (`os.kb`): the shared, tenant-wide *living* wiki agents

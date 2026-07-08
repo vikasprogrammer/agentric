@@ -280,6 +280,52 @@ export class DiscordSocket {
     return { ok: true };
   }
 
+  /**
+   * Native egress: post to ANY channel by id. Unlike `reply` this is not bound to the triggering
+   * message — it lets an agent proactively message a channel (e.g. a cron posting a daily summary).
+   * Discord has no email/name lookup, so the caller supplies a channel id. Audited as `discord.send`.
+   */
+  async sendToChannel(sessionId: string, channelId: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const token = this.os.settings.discordBotToken();
+    if (!token) return { ok: false, error: 'discord not configured' };
+    const body = (text || '').trim();
+    if (!body) return { ok: false, error: 'empty message' };
+    const channel = (channelId || '').trim();
+    if (!channel) return { ok: false, error: 'channel is required' };
+    const res = await postMessage(token, channel, body);
+    if ('error' in res) {
+      this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.send.failed', data: { channel, error: res.error } });
+      return { ok: false, error: res.error };
+    }
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.send', data: { channel, id: res.id, chars: body.length } });
+    return { ok: true };
+  }
+
+  /**
+   * Native egress: DM a person by their Discord user id (Discord exposes no email lookup, so the id is
+   * the only handle). Opens the DM channel then posts. Audited as `discord.dm`. Returns ok / a reason.
+   */
+  async dmMember(sessionId: string, to: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const token = this.os.settings.discordBotToken();
+    if (!token) return { ok: false, error: 'discord not configured' };
+    const body = (text || '').trim();
+    if (!body) return { ok: false, error: 'empty message' };
+    const userId = (to || '').trim();
+    if (!userId) return { ok: false, error: 'recipient is required' };
+    const ch = await openDmChannel(token, userId);
+    if ('error' in ch) {
+      this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.dm.failed', data: { to: userId, error: ch.error } });
+      return { ok: false, error: ch.error };
+    }
+    const res = await postMessage(token, ch.channel, body);
+    if ('error' in res) {
+      this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.dm.failed', data: { to: userId, error: res.error } });
+      return { ok: false, error: res.error };
+    }
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'discord', type: 'discord.dm', data: { to: userId, id: res.id, chars: body.length } });
+    return { ok: true };
+  }
+
   /** DM a Discord user (by their Discord user id) — best-effort, used for approval notifications.
    *  Returns ok / a reason; never throws. No-op when Discord isn't configured. */
   async dmUser(discordUserId: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {

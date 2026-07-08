@@ -68,6 +68,71 @@ const DISCORD_REPLY_TOOL = {
   },
 };
 
+// Native proactive egress — offered to ANY session when the workspace has Slack/Discord configured
+// (SLACK_EGRESS / DISCORD_EGRESS = '1'), not just chat-triggered ones. Unlike the reply tools these
+// are NOT thread-bound: the agent names a channel or person, so it can message anyone / anywhere.
+const SLACK_EGRESS = process.env.SLACK_EGRESS === '1';
+const DISCORD_EGRESS = process.env.DISCORD_EGRESS === '1';
+
+const SLACK_SEND_TOOL = {
+  name: 'slack_send',
+  description:
+    'Post a message to a Slack channel (any channel, not just the one that triggered you). Use this to ' +
+    'proactively message a channel — announcements, summaries, alerts. For replying to the thread that ' +
+    'triggered you, prefer slack_reply.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      channel: { type: 'string', description: 'Channel id (e.g. C0123ABCD) or name (e.g. "general" / "#general"). Names are resolved to ids; the bot auto-joins public channels it is not in.' },
+      text: { type: 'string', description: 'The message to post (Slack mrkdwn supported).' },
+    },
+    required: ['channel', 'text'],
+  },
+};
+
+const SLACK_DM_TOOL = {
+  name: 'slack_dm',
+  description:
+    'Send a direct message to a person in Slack. Reach anyone in the workspace — teammate updates, ' +
+    'nudges, one-to-one answers.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      to: { type: 'string', description: 'The recipient: a Slack user id (e.g. U0123ABCD) or their email address (resolved to their Slack account).' },
+      text: { type: 'string', description: 'The message to send (Slack mrkdwn supported).' },
+    },
+    required: ['to', 'text'],
+  },
+};
+
+const DISCORD_SEND_TOOL = {
+  name: 'discord_send',
+  description:
+    'Post a message to a Discord channel (any channel, not just the one that triggered you). Use this ' +
+    'to proactively message a channel. For replying where you were triggered, prefer discord_reply.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      channel: { type: 'string', description: 'The Discord channel id to post into.' },
+      text: { type: 'string', description: 'The message to post (Discord markdown supported).' },
+    },
+    required: ['channel', 'text'],
+  },
+};
+
+const DISCORD_DM_TOOL = {
+  name: 'discord_dm',
+  description: 'Send a direct message to a person in Discord by their user id.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      to: { type: 'string', description: 'The recipient Discord user id.' },
+      text: { type: 'string', description: 'The message to send (Discord markdown supported).' },
+    },
+    required: ['to', 'text'],
+  },
+};
+
 const TOOLS = [
   {
     name: 'recall',
@@ -716,6 +781,62 @@ async function discordReply(args: Record<string, unknown>): Promise<string> {
   return d.ok ? 'Posted to Discord.' : `Could not post to Discord: ${d.error ?? 'unknown error'}`;
 }
 
+async function slackSend(args: Record<string, unknown>): Promise<string> {
+  const channel = String(args.channel ?? '').trim();
+  const text = String(args.text ?? '').trim();
+  if (!channel) return 'A channel (id or name) is required.';
+  if (!text) return 'Nothing to post (text is required).';
+  const res = await fetch(AOS_URL + '/api/agent/slack/send', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, channel, text }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  return d.ok ? `Posted to Slack channel ${channel}.` : `Could not post to Slack: ${d.error ?? 'unknown error'}`;
+}
+
+async function slackDm(args: Record<string, unknown>): Promise<string> {
+  const to = String(args.to ?? '').trim();
+  const text = String(args.text ?? '').trim();
+  if (!to) return 'A recipient (Slack user id or email) is required.';
+  if (!text) return 'Nothing to send (text is required).';
+  const res = await fetch(AOS_URL + '/api/agent/slack/dm', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, to, text }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  return d.ok ? `DM sent to ${to}.` : `Could not DM on Slack: ${d.error ?? 'unknown error'}`;
+}
+
+async function discordSend(args: Record<string, unknown>): Promise<string> {
+  const channel = String(args.channel ?? '').trim();
+  const text = String(args.text ?? '').trim();
+  if (!channel) return 'A channel id is required.';
+  if (!text) return 'Nothing to post (text is required).';
+  const res = await fetch(AOS_URL + '/api/agent/discord/send', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, channel, text }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  return d.ok ? `Posted to Discord channel ${channel}.` : `Could not post to Discord: ${d.error ?? 'unknown error'}`;
+}
+
+async function discordDm(args: Record<string, unknown>): Promise<string> {
+  const to = String(args.to ?? '').trim();
+  const text = String(args.text ?? '').trim();
+  if (!to) return 'A recipient Discord user id is required.';
+  if (!text) return 'Nothing to send (text is required).';
+  const res = await fetch(AOS_URL + '/api/agent/discord/dm', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, to, text }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  return d.ok ? `DM sent to ${to}.` : `Could not DM on Discord: ${d.error ?? 'unknown error'}`;
+}
+
 async function report(args: Record<string, unknown>): Promise<string> {
   const res = await fetch(AOS_URL + '/api/report', {
     method: 'POST',
@@ -1276,7 +1397,13 @@ async function handle(req: JsonRpc): Promise<void> {
   if (method && method.startsWith('notifications/')) return;
 
   if (method === 'tools/list') {
-    send({ jsonrpc: '2.0', id, result: { tools: [...TOOLS, ...(SLACK_REPLY ? [SLACK_REPLY_TOOL] : []), ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : [])] } });
+    send({ jsonrpc: '2.0', id, result: { tools: [
+      ...TOOLS,
+      ...(SLACK_REPLY ? [SLACK_REPLY_TOOL] : []),
+      ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : []),
+      ...(SLACK_EGRESS ? [SLACK_SEND_TOOL, SLACK_DM_TOOL] : []),
+      ...(DISCORD_EGRESS ? [DISCORD_SEND_TOOL, DISCORD_DM_TOOL] : []),
+    ] } });
     return;
   }
 
@@ -1301,6 +1428,10 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'skill_propose' ? await skillPropose(args)
         : name === 'slack_reply' ? await slackReply(args)
         : name === 'discord_reply' ? await discordReply(args)
+        : name === 'slack_send' ? await slackSend(args)
+        : name === 'slack_dm' ? await slackDm(args)
+        : name === 'discord_send' ? await discordSend(args)
+        : name === 'discord_dm' ? await discordDm(args)
         : name === 'list_capabilities' ? await listCapabilities()
         : name === 'policy_check' ? await policyCheck(args)
         : name === 'directory_lookup' ? await directoryLookup(args)

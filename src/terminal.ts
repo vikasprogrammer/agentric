@@ -866,8 +866,16 @@ export class TerminalManager {
       args: [this.memoryMcp],
       // SLACK_REPLY / DISCORD_REPLY: '1' makes the agentos server expose the native `slack_reply` /
       // `discord_reply` tool — only for chat-triggered sessions (which have a bound thread/channel),
-      // so other agents aren't cluttered by it.
-      env: { AOS_URL: this.baseUrl, AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret, ...(slackReply ? { SLACK_REPLY: '1' } : {}), ...(discordReply ? { DISCORD_REPLY: '1' } : {}) },
+      // so other agents aren't cluttered by it. SLACK_EGRESS / DISCORD_EGRESS: '1' expose the proactive
+      // `slack_send`/`slack_dm` (and Discord equivalents) whenever the workspace has that platform
+      // configured — any session can message a channel/person, not just chat-triggered ones.
+      env: {
+        AOS_URL: this.baseUrl, AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret,
+        ...(slackReply ? { SLACK_REPLY: '1' } : {}),
+        ...(discordReply ? { DISCORD_REPLY: '1' } : {}),
+        ...(this.os.settings.slackConfigured() ? { SLACK_EGRESS: '1' } : {}),
+        ...(this.os.settings.discordConfigured() ? { DISCORD_EGRESS: '1' } : {}),
+      },
     };
     return JSON.stringify(config, null, 2);
   }

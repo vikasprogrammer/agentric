@@ -16,7 +16,7 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations } from './automations';
-import { lookupBotUserId, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage } from '../connectors/slack';
+import { joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -212,6 +212,72 @@ export class SlackSocket {
     }
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.reply', data: { channel: row.channel, ts: res.ts, chars: body.length } });
     return { ok: true };
+  }
+
+  /**
+   * Native egress: post to ANY channel by id (`C…`/`G…`) or by name (`general` / `#general`). Unlike
+   * `reply` this is not bound to the triggering thread — it lets an agent proactively message a channel
+   * (e.g. a cron automation posting a daily summary). Public channels the bot isn't in are auto-joined
+   * on `not_in_channel` and the post retried once. Audited as `slack.send`. Returns ok / a reason.
+   */
+  async sendToChannel(sessionId: string, channelRef: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const token = this.os.settings.slackBotToken();
+    if (!token) return { ok: false, error: 'slack not configured' };
+    const body = (text || '').trim();
+    if (!body) return { ok: false, error: 'empty message' };
+    const ref = (channelRef || '').trim().replace(/^#/, '');
+    if (!ref) return { ok: false, error: 'channel is required' };
+    // Slack channel/group ids look like C/G/D + base32; anything else is treated as a channel name.
+    let channel = ref;
+    if (!/^[CGD][A-Z0-9]{6,}$/.test(ref)) {
+      const found = await lookupChannelByName(token, ref);
+      if ('error' in found) return this.sendFailed(sessionId, ref, `channel "${ref}" not found: ${found.error}`);
+      channel = found.channel;
+    }
+    let res = await postMessage(token, channel, body);
+    if ('error' in res && res.error === 'not_in_channel') {
+      await joinChannel(token, channel); // best-effort; retry once whether or not the join reported ok
+      res = await postMessage(token, channel, body);
+    }
+    if ('error' in res) return this.sendFailed(sessionId, channel, res.error);
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.send', data: { channel, ts: res.ts, chars: body.length } });
+    return { ok: true };
+  }
+
+  private sendFailed(sessionId: string, channel: string, error: string): { ok: false; error: string } {
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.send.failed', data: { channel, error } });
+    return { ok: false, error };
+  }
+
+  /**
+   * Native egress: DM a person by their Slack user id (`U…`) or by email (resolved via
+   * `users.lookupByEmail`). Opens the DM channel then posts. Lets an agent reach anyone in the
+   * workspace, not just the triggering thread. Audited as `slack.dm`. Returns ok / a reason.
+   */
+  async dmMember(sessionId: string, to: string, text: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    const token = this.os.settings.slackBotToken();
+    if (!token) return { ok: false, error: 'slack not configured' };
+    const body = (text || '').trim();
+    if (!body) return { ok: false, error: 'empty message' };
+    const ref = (to || '').trim();
+    if (!ref) return { ok: false, error: 'recipient is required' };
+    let userId = ref;
+    if (ref.includes('@')) {
+      const found = await lookupUserByEmail(token, ref);
+      if ('error' in found) return this.dmFailed(sessionId, ref, `no Slack user for ${ref}: ${found.error}`);
+      userId = found.user;
+    }
+    const ch = await openDmChannel(token, userId);
+    if ('error' in ch) return this.dmFailed(sessionId, userId, ch.error);
+    const res = await postMessage(token, ch.channel, body);
+    if ('error' in res) return this.dmFailed(sessionId, userId, res.error);
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.dm', data: { to: userId, ts: res.ts, chars: body.length } });
+    return { ok: true };
+  }
+
+  private dmFailed(sessionId: string, to: string, error: string): { ok: false; error: string } {
+    this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.dm.failed', data: { to, error } });
+    return { ok: false, error };
   }
 
   /** DM a Slack user (by their Slack user id) — best-effort, used for approval notifications.

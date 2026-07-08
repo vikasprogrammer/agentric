@@ -698,6 +698,47 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = await discord.reply(session, String(b.text || ''));
     return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
   }
+  // native Slack egress (proactive): post to any channel by id/name. Not thread-bound — the agent
+  // supplies the channel. Audited as `slack.send`. Available to any session when Slack is configured.
+  if (method === 'POST' && p === '/api/agent/slack/send') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!slack) return sendJson(res, 503, { error: 'slack not available' });
+    const out = await slack.sendToChannel(session, String(b.channel || ''), String(b.text || ''));
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+  }
+  // native Slack egress (proactive): DM a person by Slack user id or email. Audited as `slack.dm`.
+  if (method === 'POST' && p === '/api/agent/slack/dm') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!slack) return sendJson(res, 503, { error: 'slack not available' });
+    const out = await slack.dmMember(session, String(b.to || ''), String(b.text || ''));
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+  }
+  // native Discord egress (proactive): post to any channel by id. Audited as `discord.send`.
+  if (method === 'POST' && p === '/api/agent/discord/send') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!discord) return sendJson(res, 503, { error: 'discord not available' });
+    const out = await discord.sendToChannel(session, String(b.channel || ''), String(b.text || ''));
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+  }
+  // native Discord egress (proactive): DM a person by Discord user id. Audited as `discord.dm`.
+  if (method === 'POST' && p === '/api/agent/discord/dm') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!discord) return sendJson(res, 503, { error: 'discord not available' });
+    const out = await discord.dmMember(session, String(b.to || ''), String(b.text || ''));
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+  }
   // launcher signal that the claude process exited (→ completion fallback + mark idle).
   if (method === 'POST' && p === '/api/ended') {
     const b = await readBody(req);

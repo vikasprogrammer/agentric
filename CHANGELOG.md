@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.45.0] — 2026-07-08
+### Added
+- **Agents can proactively DM anyone and post to any channel — Slack + Discord.** Until now the only
+  outbound chat tools (`slack_reply`/`discord_reply`) posted back to the *triggering* thread, so an agent
+  could only speak where it was spoken to. Four new native egress tools change that: `slack_send` /
+  `discord_send` post to ANY channel, and `slack_dm` / `discord_dm` DM ANY person — off-thread and
+  unattended (e.g. a cron automation posting a daily summary or nudging a teammate). Slack resolves a
+  channel by **id or name** (auto-joining a public channel the bot isn't in on `not_in_channel`) and a
+  recipient by **Slack user id or email** (`users.lookupByEmail`); Discord takes channel/user **ids**
+  (no email lookup exists). Exposed to **any** session whenever that platform is configured
+  (`SLACK_EGRESS`/`DISCORD_EGRESS`), not just chat-triggered ones. Audit-only posture — every send/DM is
+  audited (`slack.send`/`slack.dm`/`discord.send`/`discord.dm`, plus `.failed`) but not policy-gated,
+  matching `slack_reply`. New connector helpers (`lookupUserByEmail`/`lookupChannelByName`/`joinChannel`
+  in `connectors/slack.ts`), `SlackSocket.sendToChannel`/`dmMember` + `DiscordSocket.sendToChannel`/
+  `dmMember`, and session-secret-gated loopback routes `POST /api/agent/{slack,discord}/{send,dm}`.
+
 ## [0.44.1] — 2026-07-08
 ### Fixed
 - **Creating a new agent now lands on the agents list with that agent selected**, instead of jumping
