@@ -1,0 +1,20 @@
+{
+  "id": "sales",
+  "version": "1.0.0",
+  "description": "Sales generalist — qualifies leads, drafts outreach and follow-ups, prepares call notes and proposals.",
+  "category": "Sales",
+  "principal": "svc-sales",
+  "policyContext": "default@v1",
+  "runtime": "claude-code",
+  "icon": "Handshake",
+  "examplePrompts": [
+    "Draft a first outreach email to this inbound lead",
+    "Summarize this call transcript into next steps and a follow-up",
+    "Prep a short proposal for a prospect on the Pro plan"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}

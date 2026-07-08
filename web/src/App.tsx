@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
 
@@ -735,7 +735,7 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
-          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} />}
+          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
@@ -777,7 +777,7 @@ function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; lab
  *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
  *  just scoped to the chosen agent instead of a grid of cards. */
 function AgentsPage({
-  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport,
+  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh,
 }: {
   me: Member
   agents: AgentInfo[]
@@ -790,6 +790,7 @@ function AgentsPage({
   onDuplicate: (id: string) => void
   onRescan: () => Promise<void>
   onImport: (file: File) => Promise<void>
+  onRefresh: () => Promise<void>
 }) {
   const canEdit = me.role === 'owner' || me.role === 'admin'
   const [rescanning, setRescanning] = useState(false)
@@ -957,6 +958,9 @@ function AgentsPage({
           )}
         </div>
       </div>
+
+      {/* the agent library — browse & install ready-made agents that ship with Agent OS */}
+      {canEdit && <AgentLibrary onInstalled={onRefresh} />}
 
       {/* search — only worth showing once the fleet is more than a glance */}
       {agents.length > 6 && (
@@ -4336,6 +4340,73 @@ function SkillsPage() {
 
 /** The bundled skill library — skills that ship with the software, one-click installable into the
  *  tenant's own library. Collapsed by default; install copies the playbook (+ its files) into <home>/skills. */
+/** The agent library — the catalog of ready-made agents that ships with Agent OS (`config/agents`).
+ *  Install one to copy it into this workspace as a normal, editable agent. Distribution-only: the list
+ *  is fixed by what ships, and the built-in fleet shows as already installed. Mirrors SkillCatalog. */
+function AgentLibrary({ onInstalled }: { onInstalled: () => void | Promise<void> }) {
+  const [catalog, setCatalog] = useState<CatalogAgent[] | null>(null)
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => api.agentCatalog().then((r) => setCatalog(r.catalog ?? [])).catch(() => setCatalog([]))
+  useEffect(() => { load() }, [])
+
+  const install = async (id: string) => {
+    setBusy(id); setHint('')
+    const r = await api.installAgentFromCatalog(id)
+    setBusy('')
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed to install'))
+    setHint(`Installed "${id}" — it's live in your fleet now.`); setTimeout(() => setHint(''), 3000)
+    load(); await onInstalled()
+  }
+
+  if (!catalog || catalog.length === 0) return null
+  const available = catalog.filter((c) => !c.installed).length
+
+  return (
+    <section className="rounded-md border bg-muted/30">
+      <button className="flex w-full items-center justify-between gap-2 p-3 text-left" onClick={() => setOpen((v) => !v)}>
+        <span className="flex items-center gap-2 text-sm font-medium">
+          <Package className="h-4 w-4 text-muted-foreground" />
+          Agent library
+          <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{available} to install</Badge>
+        </span>
+        <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="space-y-2 border-t p-3">
+          <p className="text-xs text-muted-foreground">Ready-made agents bundled with Agent OS. Install one to copy it into your fleet — then edit, tune, assign, or delete it like any other agent.</p>
+          {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
+          {catalog.map((c) => (
+            <Card key={c.id}>
+              <CardContent className="flex items-start justify-between gap-3 p-3">
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <AgentIcon icon={c.icon} className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="font-mono text-sm font-medium">{c.id}</span>
+                      {c.category && <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{c.category}</Badge>}
+                      {c.builtin && <BuiltInBadge />}
+                    </div>
+                    <div className="mt-1 text-sm text-muted-foreground">{c.description || <span className="italic">no description</span>}</div>
+                  </div>
+                </div>
+                {c.installed ? (
+                  <Badge variant="secondary" className="shrink-0 gap-1"><Check className="h-3 w-3" />Installed</Badge>
+                ) : (
+                  <Button size="sm" variant="outline" className="shrink-0" disabled={!!busy} onClick={() => install(c.id)}>
+                    <Download className="mr-1 h-3.5 w-3.5" />{busy === c.id ? 'Installing…' : 'Install'}
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function SkillCatalog({ onInstalled }: { onInstalled: () => void }) {
   const [catalog, setCatalog] = useState<CatalogSkill[] | null>(null)
   const [open, setOpen] = useState(false)

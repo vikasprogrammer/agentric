@@ -39,8 +39,7 @@ import { InMemoryIdempotencyStore } from './gateway/idempotency';
 import { JsonPolicyEngine, PolicyDocument } from './governance/policy';
 import { EnvSecretsVault, SqliteSecretsVault } from './edge/secrets';
 import { resolveMasterKey } from './edge/secret-crypto';
-import { ensureAgentAuthor } from './edge/agent-author';
-import { ensureGeneralists } from './edge/generalists';
+import { seedBuiltinAgents } from './edge/agent-catalog';
 import { HealthMonitor } from './observability/monitor';
 import { MockAdapter, MockBehavior } from './runtime/mock-adapter';
 import { ClaudeCodeAdapter } from './runtime/claude-code-adapter';
@@ -201,13 +200,12 @@ export class AgentOS {
     const added: string[] = [], updated: string[] = [], removed: string[] = [];
     const errors: { folder: string; error: string }[] = [];
     if (!this.paths) return { added, updated, removed, errors };
-    // Same precedence as boot: bundled examples first, then the user's agents (user wins by id).
+    // The live fleet is the data home only; the bundled `config/agents/` catalog is install-on-demand
+    // (src/edge/agent-catalog.ts), not scanned into the fleet here.
     const onDisk = new Map<string, AgentManifest>();
-    for (const dir of [this.paths.bundledAgents, this.paths.userAgents]) {
-      for (const found of scanAgentDir(dir)) {
-        if (found.manifest) onDisk.set(found.manifest.id, found.manifest);
-        else errors.push({ folder: found.folder, error: found.error! });
-      }
+    for (const found of scanAgentDir(this.paths.userAgents)) {
+      if (found.manifest) onDisk.set(found.manifest.id, found.manifest);
+      else errors.push({ folder: found.folder, error: found.error! });
     }
     for (const [id, manifest] of onDisk) {
       const current = this.agents.get(id);
@@ -294,14 +292,15 @@ export function loadAgentOS(
     }
   }
 
-  // Bundled examples first, then the user's agents (which override examples by id).
-  loadAgentsFrom(os, paths.bundledAgents);
+  // Load the user's agents (the live fleet). The bundled `config/agents/` dir is the install-on-demand
+  // agent LIBRARY (src/edge/agent-catalog.ts), not the live fleet — its entries reach a workspace only by
+  // being copied into the data home (seeded on boot, or installed from the console), so we don't register
+  // them straight from the catalog here.
   loadAgentsFrom(os, paths.userAgents);
-  // Code-provisioned agents that must exist in every home (materialised into the data home,
-  // idempotently) even though they don't ship as a config/agents folder: the System agent-author,
-  // plus the built-in department generalists (engineer/support/marketer/researcher).
-  ensureAgentAuthor(os);
-  ensureGeneralists(os);
+  // Seed the built-in fleet (the department generalists + the System agent-author) from the catalog into
+  // the data home, idempotently — a fresh home is useful the moment it boots; user edits survive; a
+  // deleted built-in is restored on the next boot.
+  seedBuiltinAgents(os);
   return os;
 }
 

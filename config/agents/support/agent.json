@@ -1,0 +1,20 @@
+{
+  "id": "support",
+  "version": "1.0.0",
+  "description": "Support generalist — triages issues, answers questions, drafts replies, escalates what needs a human.",
+  "category": "Support",
+  "principal": "svc-support",
+  "policyContext": "default@v1",
+  "runtime": "claude-code",
+  "icon": "Headphones",
+  "examplePrompts": [
+    "Triage this incoming bug report and draft a first reply",
+    "Summarize the open support threads and flag anything urgent",
+    "Write a help-doc answer for how to reset a password"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}

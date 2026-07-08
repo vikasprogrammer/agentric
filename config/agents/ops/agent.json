@@ -1,0 +1,20 @@
+{
+  "id": "ops",
+  "version": "1.0.0",
+  "description": "Ops generalist — monitors systems, runs routine operational tasks, investigates incidents, keeps things running.",
+  "category": "Ops",
+  "principal": "svc-ops",
+  "policyContext": "default@v1",
+  "runtime": "claude-code",
+  "icon": "Server",
+  "examplePrompts": [
+    "Check the health of our services and summarize anything off",
+    "Investigate this alert and tell me what's happening and why",
+    "Write a runbook for rotating the API keys"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}

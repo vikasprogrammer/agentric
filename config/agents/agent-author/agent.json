@@ -1,0 +1,21 @@
+{
+  "id": "agent-author",
+  "version": "1.0.0",
+  "description": "Builds and refines other agents — interview a role, draft its prompt, and create it live.",
+  "category": "System",
+  "principal": "svc-agent-author",
+  "policyContext": "default@v1",
+  "runtime": "claude-code",
+  "model": "claude-opus-4-8",
+  "icon": "Wand2",
+  "examplePrompts": [
+    "Create a support agent that triages inbound bug reports",
+    "I need an agent that writes weekly SEO reports — help me build it",
+    "Review the engineer agent and tighten its instructions"
+  ],
+  "budget": {
+    "usdCap": 2,
+    "tokenCap": 400000,
+    "wallClockMs": 1800000
+  }
+}

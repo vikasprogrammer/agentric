@@ -20,8 +20,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
-import { GENERALIST_IDS } from './edge/generalists';
-import { AGENT_AUTHOR_ID } from './edge/agent-author';
+import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
@@ -54,7 +53,7 @@ const WEB_DIST = path.resolve(__dirname, '../web/dist');
  *  location because they materialise UNDER the user's agents home, so the `deletable` path check
  *  can't tell them apart from a hand-authored agent — and homes provisioned before this flag existed
  *  carry no marker in their on-disk manifests. */
-const BUILT_IN_AGENT_IDS = new Set<string>([...GENERALIST_IDS, AGENT_AUTHOR_ID, CONSOLIDATOR_ID]);
+const BUILT_IN_AGENT_IDS = new Set<string>([...BUILTIN_SEED_IDS, CONSOLIDATOR_ID]);
 
 /** The full editable state of an agent, from its manifest + on-disk CLAUDE.md — the unit revisions snapshot. */
 function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentConfigSnapshot {
@@ -1830,6 +1829,30 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.imported', data: { agent: id, dir: folder, skills: skillsInstalled, memories: memoriesReplayed, knowledge: knowledgeReplayed, warnings: warnings.length } });
     return sendJson(res, 200, { ok: true, id, skills: skillsInstalled, memories: memoriesReplayed, knowledge: knowledgeReplayed, warnings });
+  }
+
+  // ── the agent library: the catalog of ready-made agents that ships with the software — owner/admin ──
+  //    Browse what's available and install one into this workspace (a copy of the catalog folder into the
+  //    data home, where it becomes a normal editable agent). Distribution-only: users install FROM the
+  //    catalog, they can't add to it (a one-off agent still arrives via the bundle importer above). The
+  //    GET must precede the by-id agent matchers below so "catalog" isn't read as an agent id.
+  if (method === 'GET' && p === '/api/agents/catalog') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const catalog = os.paths ? readAgentCatalog(os.paths.bundledAgents, os.paths.userAgents) : [];
+    return sendJson(res, 200, { catalog });
+  }
+  const agentInstall = p.match(/^\/api\/agents\/catalog\/([\w.-]+)\/install$/);
+  if (method === 'POST' && agentInstall) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.paths) return sendJson(res, 400, { error: 'installing agents requires a data home' });
+    try {
+      const manifest = installAgentFromCatalog(os.paths.bundledAgents, os.paths.userAgents, agentInstall[1]);
+      os.registerAgent(manifest);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.installed', data: { agent: manifest.id, source: 'catalog', dir: manifest.dir } });
+      return sendJson(res, 200, { ok: true, id: manifest.id });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   // ── duplicate an agent: deep-copy its folder under a NEW id — owner/admin only ──

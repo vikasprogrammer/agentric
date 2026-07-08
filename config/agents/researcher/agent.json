@@ -1,0 +1,20 @@
+{
+  "id": "researcher",
+  "version": "1.0.0",
+  "description": "Research generalist — digs into questions, gathers and weighs sources, synthesizes clear findings.",
+  "category": "Research",
+  "principal": "svc-researcher",
+  "policyContext": "default@v1",
+  "runtime": "claude-code",
+  "icon": "LineChart",
+  "examplePrompts": [
+    "Research the top 5 competitors and how their pricing compares to ours",
+    "Summarize what changed in this area over the last quarter, with sources",
+    "Investigate this question and give me a cited, honest answer"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}

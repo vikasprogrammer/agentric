@@ -494,6 +494,23 @@ export interface CatalogResp {
   catalog: CatalogSkill[]
   error?: string
 }
+/** One agent-library entry: a ready-made agent that ships with the software (`config/agents`), with
+ *  whether this workspace already has it installed and whether it's a seeded built-in. */
+export interface CatalogAgent {
+  id: string
+  description: string
+  category?: string
+  icon?: string
+  model?: string
+  effort?: string
+  examplePrompts?: string[]
+  installed: boolean
+  builtin: boolean
+}
+export interface AgentCatalogResp {
+  catalog: CatalogAgent[]
+  error?: string
+}
 /** A featured remote source (a GitHub repo of skills) shown as a one-click preset. */
 export interface SkillSource { repo: string; label: string; description: string }
 export interface SkillSourcesResp { presets: SkillSource[]; error?: string }
@@ -746,6 +763,8 @@ export const api = {
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
   duplicateAgent: (id: string, newId: string) => call<{ ok: boolean; id?: string; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/duplicate`, { newId }),
+  agentCatalog: () => call<AgentCatalogResp>('GET', '/api/agents/catalog'),
+  installAgentFromCatalog: (id: string) => call<{ ok: boolean; id?: string; error?: string }>('POST', `/api/agents/catalog/${encodeURIComponent(id)}/install`),
   rescanAgents: () => call<{ ok: boolean; added: string[]; updated: string[]; removed: string[]; errors: { folder: string; error: string }[]; error?: string }>('POST', '/api/agents/rescan'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),

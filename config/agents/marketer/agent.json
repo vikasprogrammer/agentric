@@ -1,0 +1,20 @@
+{
+  "id": "marketer",
+  "version": "1.0.0",
+  "description": "Marketing generalist — writes copy, posts and emails, plans campaigns, repurposes content.",
+  "category": "Marketing",
+  "principal": "svc-marketer",
+  "policyContext": "default@v1",
+  "runtime": "claude-code",
+  "icon": "Megaphone",
+  "examplePrompts": [
+    "Draft a launch announcement for our new feature",
+    "Turn this blog post into a week of social posts",
+    "Write a 3-email onboarding sequence for new signups"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}

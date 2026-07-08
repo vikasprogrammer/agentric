@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-07-08
+### Added
+- **An agent library you install from — and the built-in fleet is now data, not code.** A workspace
+  ships with a browsable catalog of ready-made agents (`config/agents/`), the agent-side twin of the
+  bundled skills catalog. Owners see an **Agent library** section on the Agents page and install an
+  agent with one click — a copy into the data home, where it becomes a normal editable/tunable/deletable
+  agent. The library is **distribution-only**: its entries are fixed by what ships (users install *from*
+  it, not *into* it — a one-off agent still arrives via the bundle importer). New `src/edge/agent-catalog.ts`
+  (`readAgentCatalog`/`installAgentFromCatalog`/`seedBuiltinAgents`), routes `GET /api/agents/catalog` +
+  `POST /api/agents/catalog/:id/install` (owner/admin, audited `agent.installed`), and the `AgentLibrary`
+  console section. Ships two install-on-demand agents (`sales`, `ops`) alongside the built-in five.
+### Changed
+- **The five built-in agents moved out of TypeScript into catalog data.** `agent-author`, `engineer`,
+  `support`, `marketer`, `researcher` now live as `config/agents/<id>/{agent.json,CLAUDE.md}` instead of
+  string literals in `src/edge/generalists.ts` / `src/edge/agent-author.ts` (both deleted). Boot seeds the
+  built-in fleet from the catalog (`seedBuiltinAgents`) with the same contract as before — a fresh home is
+  useful immediately, user edits survive, a deleted built-in is restored on the next boot — and no longer
+  auto-registers `config/agents/` entries into the live fleet (they're install-on-demand); `rescanAgents`
+  scans the data home only.
+### Docs
+- Plan for the agent library — `docs/agent-library-plan.md` (Phase 1 shipped).
+
 ## [0.50.0] — 2026-07-08
 ### Added
 - **Filter the sessions list.** The Sessions page gained a filter bar — a free-text search (over

@@ -1,0 +1,20 @@
+{
+  "id": "engineer",
+  "version": "1.0.0",
+  "description": "Engineering generalist — writes and reviews code, debugs, investigates systems, ships fixes.",
+  "category": "Engineering",
+  "principal": "svc-engineer",
+  "policyContext": "default@v1",
+  "runtime": "claude-code",
+  "icon": "Code2",
+  "examplePrompts": [
+    "Investigate why the nightly job is failing and propose a fix",
+    "Review this pull request for correctness and clarity",
+    "Add input validation to the signup endpoint and cover it with a test"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}
