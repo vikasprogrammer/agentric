@@ -168,6 +168,34 @@ export class SkillsStore {
     return this.read(name)!;
   }
 
+  /**
+   * Duplicate an existing library skill under a NEW name: a deep copy of its folder (SKILL.md + any
+   * supporting files), minus the managed/proposed markers, with the new name written into the copy's
+   * frontmatter so it lists + invokes as `/newName`. Assignments are NOT carried over — a fresh copy
+   * defaults to all agents, exactly like a freshly installed skill. Throws on a bad/unknown source, a
+   * bad new name, or a name that already exists. Returns the new skill's detail.
+   */
+  duplicate(name: string, newName: string): SkillDetail {
+    if (!this.dir) throw new Error('a data home is required to duplicate skills');
+    if (!validSkillName(name)) throw new Error('invalid skill name');
+    const target = newName.trim().toLowerCase();
+    if (!validSkillName(target)) throw new Error('name must be lowercase letters, digits and hyphens (2–40 chars, starting with a letter)');
+    const src = path.join(this.dir, name);
+    if (!fs.existsSync(path.join(src, 'SKILL.md'))) throw new Error(`skill "${name}" not found`);
+    const dest = path.join(this.dir, target);
+    if (fs.existsSync(dest)) throw new Error(`a skill named "${target}" already exists`);
+    fs.mkdirSync(dest, { recursive: true });
+    // Skip markers so a copy of a managed/proposed skill lands as a plain, published, editable one.
+    fs.cpSync(src, dest, {
+      recursive: true,
+      filter: (s) => ![MARKER, PROPOSED_MARKER, 'node_modules'].includes(path.basename(s)),
+    });
+    // Rewrite the frontmatter `name:` to the new folder name so the two copies don't collide on it.
+    const file = path.join(dest, 'SKILL.md');
+    fs.writeFileSync(file, renameFrontmatter(fs.readFileSync(file, 'utf8'), target));
+    return this.read(target)!;
+  }
+
   /** Overwrite an existing skill's SKILL.md. Returns the updated detail, or undefined if unknown. */
   save(name: string, content: string): SkillDetail | undefined {
     if (!this.dir || !validSkillName(name)) return undefined;
@@ -441,6 +469,21 @@ function readProposal(marker: string): SkillProposal | undefined {
   } catch {
     return { at: 0 }; // a truthy proposal even if the marker was empty/corrupt — still "proposed"
   }
+}
+
+/**
+ * Rewrite the frontmatter `name:` of a SKILL.md to `name` (leaving the rest untouched). If there's no
+ * frontmatter, or no `name:` line in it, the text is returned unchanged — the folder name is what the
+ * CLI actually keys on, so this is a best-effort cosmetic fix so the two copies don't share a `name:`.
+ */
+function renameFrontmatter(text: string, name: string): string {
+  if (!text.startsWith('---')) return text;
+  const end = text.indexOf('\n---', 3);
+  if (end === -1) return text;
+  const head = text.slice(0, end);
+  const rest = text.slice(end);
+  const rewritten = head.replace(/^(\s*name\s*:).*$/m, `$1 ${name}`);
+  return rewritten + rest;
 }
 
 /** Wrap a raw Markdown body in a minimal `name`/`description` frontmatter header. */

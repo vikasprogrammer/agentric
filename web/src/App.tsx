@@ -4647,6 +4647,15 @@ function SkillCard({ s, agents, onChanged }: { s: SkillSummary; agents: string[]
     if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed'))
     onChanged()
   }
+  const duplicate = async () => {
+    const to = prompt(`Duplicate "${s.name}" as a new skill. Enter a name for the copy:`, `${s.name}-copy`)
+    if (!to) return
+    setBusy(true); setHint('')
+    const r = await api.duplicateSkill(s.name, to.trim().toLowerCase())
+    setBusy(false)
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'could not duplicate skill'))
+    setHint(`duplicated as "${r.skill?.name ?? to}"`); setTimeout(() => setHint(''), 2500); onChanged()
+  }
   const openAssign = () => { setSel(s.agents); setAssigning((v) => !v); setHint('') }
   const toggle = (id: string) => setSel((cur) => cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id])
   // "Specific" with nothing checked = every agent (an empty assignment), so guard against that footgun.
@@ -4696,6 +4705,7 @@ function SkillCard({ s, agents, onChanged }: { s: SkillSummary; agents: string[]
           <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
             <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="assign to agents" onClick={openAssign}><Bot className="h-3.5 w-3.5" /></Button>
             <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="edit" onClick={editing ? () => setEditing(false) : open}><Pencil className="h-3.5 w-3.5" /></Button>
+            <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="duplicate — deep-copy this skill under a new name (assignments reset to all agents)" disabled={busy} onClick={duplicate}><Copy className="h-3.5 w-3.5" /></Button>
             <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="delete" disabled={busy} onClick={remove}><Trash2 className="h-3.5 w-3.5" /></Button>
           </div>
         </div>

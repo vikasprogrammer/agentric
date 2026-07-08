@@ -788,6 +788,8 @@ export const api = {
   saveSkill: (name: string, content: string) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('PUT', '/api/skills/' + encodeURIComponent(name), { content }),
   deleteSkill: (name: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/skills/' + encodeURIComponent(name)),
+  duplicateSkill: (name: string, newName: string) =>
+    call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/' + encodeURIComponent(name) + '/duplicate', { name: newName }),
   publishSkill: (name: string) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/' + encodeURIComponent(name) + '/publish'),
   setSkillAgents: (name: string, agents: string[]) =>
