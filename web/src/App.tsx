@@ -3995,9 +3995,19 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
 
   return (
     <div className="max-w-3xl space-y-4">
-      <button onClick={() => { window.location.hash = '/agents' }} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="h-3.5 w-3.5" /> Agents
-      </button>
+      <div className="flex items-center justify-between gap-2">
+        <button onClick={() => { window.location.hash = '/agents' }} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-3.5 w-3.5" /> Agents
+        </button>
+        {/* Open the Files browser scoped to this agent's folder (only for agents that live under the
+            data home — bundled examples live outside it and aren't browsable here). */}
+        {info?.deletable && (
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" title="browse this agent's files"
+            onClick={() => { window.location.hash = '/files/' + encodeURIComponent('agents/' + agentId) }}>
+            <FolderTree className="h-3.5 w-3.5" /> Files
+          </Button>
+        )}
+      </div>
       <p className="text-sm text-muted-foreground">
         <span className="font-medium text-foreground">{agentId}</span>
         {info && <RuntimeBadge runtime={info.runtime} />} — this agent's <span className="font-mono text-xs">CLAUDE.md</span> is its
