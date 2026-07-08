@@ -809,6 +809,15 @@ export const api = {
     })
     return res.json()
   },
+  /** Import an agent from an "AOS bundle" .zip — writes the agent + replays its memory/knowledge/skills. */
+  importAgentBundle: async (file: File): Promise<{ ok: boolean; id?: string; skills?: number; memories?: number; knowledge?: number; warnings?: string[]; error?: string }> => {
+    const res = await fetch('/api/agents/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: file,
+    })
+    return res.json()
+  },
 
   policy: () => call<PolicyResp>('GET', '/api/policy'),
   savePolicy: (document: PolicyDocument) => call<{ ok: boolean; document?: PolicyDocument; error?: string }>('PUT', '/api/policy', { document }),
@@ -823,9 +832,14 @@ export const api = {
     rename: (from: string, to: string) => call<{ ok: boolean; path?: string; error?: string }>('POST', '/api/files/rename', { from, to }),
     /** Direct URL to a file's bytes as an attachment (for download links). */
     downloadUrl: (path: string) => `/api/files/download?path=${encodeURIComponent(path)}`,
-    /** Upload raw bytes into `dir` under `name` (drag-drop / picker). */
-    upload: async (dir: string, file: File): Promise<{ ok: boolean; path?: string; error?: string }> => {
+    /**
+     * Upload raw bytes into `dir` under `name` (drag-drop / picker). Pass `rel` = the file's path within
+     * a dropped folder (its `webkitRelativePath`) to recreate the folder tree server-side; intermediate
+     * directories are created for you.
+     */
+    upload: async (dir: string, file: File, rel?: string): Promise<{ ok: boolean; path?: string; error?: string }> => {
       const qs = `path=${encodeURIComponent(dir)}&name=${encodeURIComponent(file.name)}`
+        + (rel ? `&rel=${encodeURIComponent(rel)}` : '')
       const r = await fetch(`/api/files/upload?${qs}`, { method: 'POST', credentials: 'same-origin', body: file })
       try { return await r.json() } catch { return { ok: r.ok, error: r.ok ? undefined : `upload failed (${r.status})` } }
     },

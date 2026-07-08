@@ -2,7 +2,7 @@
 
 Bringing an agent over from another system (a raw Claude Code project, a CrewAI/LangGraph agent, a folder of prompts, a custom harness)? This page gives you a **master prompt** to paste into that agent. It briefs the agent on what Agent OS is and has it emit a **bundle** — a small, standard folder — that drops straight into AOS.
 
-The trick: the bundle mirrors how AOS actually stores things, so the file parts need **no importer at all**.
+The trick: the bundle mirrors how AOS actually stores things. On the **Agents** page, **Import bundle** takes the whole `.zip` and reconstructs the agent in one shot — files land on disk, and the parts that *aren't* files (memory, knowledge) are replayed through the same stores an agent writes to. Or, if you prefer, drop the files in by hand — see **Finishing the import** below.
 
 ## How an AOS agent is stored (why the bundle looks the way it does)
 
@@ -14,7 +14,7 @@ The trick: the bundle mirrors how AOS actually stores things, so the file parts 
 | **Memory** | SQLite (`memories` table) | ❌ needs replay/import |
 | **Knowledge** | SQLite + `data/kb/…` | ❌ needs replay/import |
 
-So an agent's *brain* (manifest + instructions + skills) is pure files — copy them in, hit **Rescan** on the Agents page, and the agent exists. Its *memory* isn't files, so the bundle carries it as `memory.jsonl` that gets replayed in (see **Finishing the import** below).
+So an agent's *brain* (manifest + instructions + skills) is pure files — the importer drops them in (or you can copy them in and hit **Rescan**). Its *memory* and *knowledge* aren't files, so the bundle carries them as `memory.jsonl` + `knowledge/` and the importer **replays** them through AOS's own `remember`/`kb_write` paths — the same thing a human would do by hand, done losslessly in one step.
 
 **Never put in a bundle:** secrets/API keys/tokens, absolute filesystem paths, or the auto-generated `.claude/aos-settings.json` and materialized `.claude/skills/` — AOS regenerates those at launch for its own environment.
 
@@ -130,14 +130,15 @@ Produce the bundle now.
 
 ## Finishing the import (operator side)
 
-Once you have the bundle folder:
+Zip the bundle folder and, on the **Agents** page, click **Import bundle** (owner/admin) — or `POST /api/agents/import` with the raw `.zip` bytes. In one shot the importer:
 
-1. **Agent brain — drop in + rescan (no code):**
-   - Copy `agent.json` and `CLAUDE.md` into `data/agents/<agent-id>/`.
-   - Copy each `skills/<name>/` into the global `data/skills/<name>/`.
-   - On the **Agents** page click **Rescan** (or `POST /api/agents/rescan`). The agent appears.
-   - Open it, set its **budget, model, and assignments**, and review the `CLAUDE.md` for anything that still assumes the old environment. Wire any credentials it needs via **Connectors**, not in the file.
+- writes `agent.json` + `CLAUDE.md` into `data/agents/<agent-id>/` and registers the agent **live** (no rescan needed);
+- installs each `skills/<name>/` into the global library;
+- **replays** every `memory.jsonl` line via the same store `remember` uses (a `"shared": true` line publishes tenant-wide);
+- **replays** each `knowledge/<section>/<slug>.md` into the KB, authored as the agent.
 
-2. **Memory — replay:** memory lives in SQLite, so it isn't a drop-in file. The simplest path with no new code: run the agent once and tell it *"Read the memory.jsonl in your folder and `remember` each line with its tags, importance, and shared flag."* It replays its own memory through the standard tool. (A one-shot bulk importer would make this lossless — see below.)
+It reports how many memories / KB pages / skills came in, plus any **warnings** (a malformed memory line, a skill whose name is already taken — skipped, never fatal). Safe defaults are assigned for anything the bundle omits (`principal`, `policyContext`, `budget`).
 
-3. **Knowledge — replay:** same idea — have the agent `kb_write` each `knowledge/<section>/<slug>.md`, or paste them into the **Knowledge** page yourself.
+Afterward, open the agent and set its **budget, model, and assignments**, skim the `CLAUDE.md` for anything that still assumes the old environment, and wire any credentials it needs via **Connectors** — never in the file.
+
+**Doing it by hand instead?** The files are drop-in: copy `agent.json` + `CLAUDE.md` into `data/agents/<agent-id>/` and each `skills/<name>/` into `data/skills/<name>/`, then **Rescan**. For the non-file parts, run the agent once and tell it *"read `memory.jsonl` in your folder and `remember` each line"* / *"`kb_write` each file under `knowledge/`"* — the same replay the importer automates.

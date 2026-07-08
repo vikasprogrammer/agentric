@@ -88,7 +88,7 @@ export function unzip(buf: Buffer): ZipEntry[] {
 }
 
 /** Junk an archiver leaves behind that must never reach the library. */
-function isNoise(name: string): boolean {
+export function isNoise(name: string): boolean {
   return name.startsWith('__MACOSX/') || name.includes('/__MACOSX/') || path.basename(name) === '.DS_Store';
 }
 
@@ -101,7 +101,15 @@ function isNoise(name: string): boolean {
  */
 export function extractSkillsFromZip(buf: Buffer, fallbackName?: string): ExtractedSkill[] {
   const entries = unzip(buf).filter((e) => !isNoise(e.name) && e.name.length > 0);
+  return groupSkillsFromEntries(entries, fallbackName);
+}
 
+/**
+ * Group already-unzipped `ZipEntry`s into install-ready skills. Split out from `extractSkillsFromZip`
+ * so callers that have entries in hand (e.g. an AOS import bundle whose skills live under a `skills/`
+ * subtree) reuse the identical longest-prefix ownership + name-derivation rules without re-parsing a zip.
+ */
+export function groupSkillsFromEntries(entries: ZipEntry[], fallbackName?: string): ExtractedSkill[] {
   // Skill folders = the dirs holding a SKILL.md ('' = archive root). Longest first for prefix matching.
   const skillDirs: string[] = [];
   for (const e of entries) {

@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.46.0] — 2026-07-08
+### Added
+- **One-shot agent import — the importer behind the "Import into AOS" doc.** The doc described a portable
+  "AOS bundle" (`agent.json` + `CLAUDE.md` + `skills/` as files, `memory.jsonl` + `knowledge/` as
+  replayable data) but shipped no importer — the operator was told to have the agent replay its own
+  memory by hand. Now **Agents → Import bundle** (owner/admin) takes the whole `.zip` and reconstructs
+  the agent in one step: writes + live-registers the agent folder, installs skills into the global
+  library, and **replays** every memory line (`os.memory.store`, `"shared": true` → tenant-wide) and
+  knowledge page (`os.kb.write`, authored as the agent) through the same stores an agent writes to.
+  Bundle files may sit at the archive root or under a single `<agent-id>/` wrapper (both work). Recoverable
+  issues (a malformed memory line, a name-clashing skill) become **warnings**, never a failed import;
+  omitted manifest fields get safe defaults (`principal`/`policyContext`/`budget`). New pure parser
+  `src/governance/bundle-import.ts` (reuses the skill uploader's zip + grouping), `POST /api/agents/import`
+  (raw zip, `agent.imported` audited), and `api.importAgentBundle`. Doc updated to lead with the importer.
+- **Upload a whole folder in the Files browser.** Alongside **Upload** (files), a new **Upload folder**
+  button uses the OS folder picker (`webkitdirectory`) and recreates the folder's subtree under the
+  current directory — `/api/files/upload` now accepts a `rel` (the file's `webkitRelativePath`) and
+  `mkdir -p`s intermediate directories, with each path segment sanitised and re-checked against the data
+  home (double-guarded against traversal, like every Files route).
+
 ## [0.45.0] — 2026-07-08
 ### Added
 - **Agents can proactively DM anyone and post to any channel — Slack + Discord.** Until now the only

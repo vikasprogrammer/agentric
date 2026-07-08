@@ -28,6 +28,7 @@ import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUse
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
+import { parseBundle } from './governance/bundle-import';
 import { AgentManifest, ApprovalRequest, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 
@@ -1729,6 +1730,89 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...diff });
   }
 
+  // ── import an agent from an "AOS bundle" .zip — owner/admin only ──────────────────
+  //    The one-shot, lossless counterpart to the "Import into AOS" doc: a bundle carries the agent's
+  //    files (manifest + CLAUDE.md + skills) AND its non-file state (memory.jsonl, knowledge/) so we
+  //    replay the latter through the SAME stores an agent would (os.memory.store / os.kb.write). Raw
+  //    zip bytes in the body. The agent's brain lands on disk + registers live (no rescan needed);
+  //    memories/KB pages replay under the imported agent's identity. Recoverable issues → `warnings`.
+  if (method === 'POST' && p === '/api/agents/import') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.paths) return sendJson(res, 400, { error: 'importing agents requires a data home' });
+    const buf = await readRawBuffer(req);
+    if (buf.length === 0) return sendJson(res, 400, { error: 'empty upload' });
+    let bundle;
+    try { bundle = parseBundle(buf); }
+    catch (e) { return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) }); }
+    const warnings = [...bundle.warnings];
+
+    const id = bundle.agentId;
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) return sendJson(res, 400, { error: `bundle agent id "${id}" is invalid (need lowercase letters, digits and hyphens, 2–40 chars, starting with a letter)` });
+    if (os.agents.get(id)) return sendJson(res, 409, { error: `an agent named "${id}" already exists` });
+    const folder = path.join(os.paths.userAgents, id);
+    if (fs.existsSync(folder)) return sendJson(res, 409, { error: `folder "${id}" already exists in the agents home` });
+
+    // Rebuild the manifest from safe defaults + the bundle's declared fields (principal/policy/budget
+    // are always OS-assigned; a bad model/effort is a warning, not a failed import).
+    const m = bundle.manifest;
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(m);
+    if (tErr) warnings.push(`runtime tuning ignored: ${tErr}`);
+    const examplePrompts = sanitizeExamplePrompts((m as { examplePrompts?: unknown }).examplePrompts);
+    const category = sanitizeCategory((m as { category?: unknown }).category);
+    const icon = sanitizeIcon((m as { icon?: unknown }).icon);
+    const shellSecrets = sanitizeShellSecrets((m as { shellSecrets?: unknown }).shellSecrets);
+    const manifest: AgentManifest = {
+      id,
+      version: typeof m.version === 'string' && m.version ? m.version : '1.0.0',
+      description: typeof m.description === 'string' ? m.description.trim() : '',
+      ...(category ? { category } : {}),
+      principal: `svc-${id}`,
+      policyContext: 'default@v1',
+      runtime: 'claude-code',
+      ...(tErr ? {} : tuning),
+      ...(examplePrompts ? { examplePrompts } : {}),
+      ...(shellSecrets ? { shellSecrets } : {}),
+      ...(icon ? { icon } : {}),
+      budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
+    };
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'agent.json'), JSON.stringify(manifest, null, 2) + '\n');
+    fs.writeFileSync(path.join(folder, 'CLAUDE.md'), bundle.claudeMd);
+    os.registerAgent({ ...manifest, dir: folder });
+
+    // Skills → the global library (skip a same-named existing one rather than failing the import).
+    let skillsInstalled = 0;
+    for (const s of bundle.skills) {
+      try { os.skills.installFiles(s.name, s.files); skillsInstalled++; }
+      catch (e) { warnings.push(`skill "${s.name}" not installed: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+
+    // Memory → replay each line under the imported agent (shared lines publish tenant-wide).
+    let memoriesReplayed = 0;
+    for (const mem of bundle.memories) {
+      try {
+        await os.memory.store({
+          tenant: os.tenant, agentId: id, content: mem.content, tags: mem.tags,
+          type: mem.type, importance: mem.importance, metadata: mem.metadata,
+          scope: mem.shared ? 'tenant' : 'agent',
+        });
+        memoriesReplayed++;
+      } catch (e) { warnings.push(`memory not replayed: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+
+    // Knowledge → replay each page into the shared KB, authored as the imported agent.
+    let knowledgeReplayed = 0;
+    for (const k of bundle.knowledge) {
+      try {
+        os.kb.write({ tenant: os.tenant, section: k.section, slug: k.slug, title: k.title, body: k.body, author: `agent:${id}` });
+        knowledgeReplayed++;
+      } catch (e) { warnings.push(`knowledge "${k.section}/${k.slug}" not replayed: ${e instanceof Error ? e.message : String(e)}`); }
+    }
+
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.imported', data: { agent: id, dir: folder, skills: skillsInstalled, memories: memoriesReplayed, knowledge: knowledgeReplayed, warnings: warnings.length } });
+    return sendJson(res, 200, { ok: true, id, skills: skillsInstalled, memories: memoriesReplayed, knowledge: knowledgeReplayed, warnings });
+  }
+
   // ── duplicate an agent: deep-copy its folder under a NEW id — owner/admin only ──
   //    A clone is a FRESH agent (its own id + `svc-<id>` principal), so it starts clean: none of
   //    the source's runtime history rides along (no memories, sessions, assignments, automations,
@@ -2343,18 +2427,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
 
     // Upload (create/overwrite a file). Raw bytes in the body; target dir in `path`, name in `name`.
+    // Folder upload: pass `rel` = the file's path WITHIN the dropped folder (its browser
+    // `webkitRelativePath`, e.g. `runbooks/escalation.md`); intermediate directories are created so a
+    // whole nested tree lands in one call-per-file. `rel` wins over `name` when present; each segment is
+    // sanitised and the resolved target is re-checked against the home so it can't escape.
     if (method === 'POST' && p === '/api/files/upload') {
       const dirRel = url.searchParams.get('path') || '';
-      const name = path.basename(url.searchParams.get('name') || '');
-      if (!name || name === '.' || name === '..') return sendJson(res, 400, { error: 'invalid file name' });
+      const rawRel = url.searchParams.get('rel') || '';
+      // Sanitise into safe segments (drop '', '.', '..'); `rel` may carry subdirs, `name` never does.
+      const segs = (rawRel || url.searchParams.get('name') || '')
+        .split('/').map((s) => s.trim()).filter((s) => s && s !== '.' && s !== '..');
+      if (segs.length === 0) return sendJson(res, 400, { error: 'invalid file name' });
       const dir = safeResolve(root, dirRel);
       if (!dir) return sendJson(res, 400, { error: 'path escapes the data home' });
       try { if (!fs.statSync(dir).isDirectory()) return sendJson(res, 400, { error: 'not a directory' }); }
       catch { return sendJson(res, 404, { error: 'directory not found' }); }
-      const file = safeResolve(root, dirRel ? `${dirRel}/${name}` : name);
+      const file = safeResolve(root, [dirRel, ...segs].filter(Boolean).join('/'));
       if (!file) return sendJson(res, 400, { error: 'path escapes the data home' });
       const buf = await readRawBuffer(req);
-      try { fs.writeFileSync(file, buf); }
+      try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, buf); }
       catch (e) { return sendJson(res, 500, { error: `write failed: ${(e as Error).message}` }); }
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'file.uploaded', data: { path: relOf(root, file), bytes: buf.length } });
       return sendJson(res, 200, { ok: true, path: relOf(root, file) });
