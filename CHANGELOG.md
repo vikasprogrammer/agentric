@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.42.1] — 2026-07-08
+### Fixed
+- **Self-update no longer blocks on untracked files.** The updater flagged the tree "dirty" whenever
+  `git status --porcelain` reported anything, including *untracked* files — but untracked files never
+  break a `git pull --ff-only` (only modified tracked files do). On a live box that always includes the
+  `data` home symlink, `*.log`, and stray docs, so the update button and the manual `wt.sh sync` deploy
+  path both refused with "commit or stash them first" when nothing was actually in the way. The dirty
+  check now passes `--untracked-files=no` (`hasTrackedChanges()` in `src/edge/updater.ts`); if an incoming
+  commit ever collides with an untracked path, `git pull --ff-only` still aborts cleanly and we surface it.
+- **`.gitignore` now ignores a `data` symlink at the repo root, not just a `data/` directory.** The deploy
+  convention symlinks the data home (kept outside the checkout) in as `data`; the trailing-slash `data/`
+  pattern only matched a directory, so the symlink showed as untracked and tripped the check above. Changed
+  to `/data`.
+
 ## [0.42.0] — 2026-07-08
 ### Added
 - **Next-fire timing on the Automations page.** Each cron automation now shows **when it fires next** —

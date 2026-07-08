@@ -15,6 +15,11 @@
  * the caller gets the log; the service manager (launchd/systemd) respawns the process, so bouncing the
  * process we're running in is safe. Override the restart with `AOS_RESTART_CMD` (or the label/unit env).
  *
+ * "Dirty" here means modified/staged TRACKED files only (`--untracked-files=no`) — untracked files never
+ * break an ff-only pull, and a live box always has some (the `data` home symlink, logs, stray docs). If an
+ * incoming commit ever did collide with an untracked path, `git pull --ff-only` aborts cleanly and we
+ * surface its error, so pre-blocking on untracked files would only produce false "can't update" states.
+ *
  * The git repo is process-wide (shared by every tenant in a multi-tenant runtime), so the cache is a
  * module-level singleton rather than per-tenant.
  */
@@ -37,7 +42,8 @@ export interface UpdateStatus {
   /** The checked-out branch and its tracking ref (e.g. `main` / `origin/main`). */
   branch: string;
   upstream: string;
-  /** Uncommitted changes present — an ff-only apply would fail, so the UI disables the button. */
+  /** TRACKED files modified/staged — an ff-only apply would fail, so the UI disables the button.
+   *  Untracked files (the `data` home symlink, logs, stray docs) are deliberately NOT counted. */
   dirty: boolean;
   /** ms epoch of the last successful `git fetch`. */
   checkedAt: number;
@@ -61,6 +67,11 @@ function git(args: string[], timeout = 30_000): { ok: boolean; out: string; err:
   return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
 }
 
+/** True only when TRACKED files are modified/staged — untracked files don't block an ff-only pull. */
+function hasTrackedChanges(): boolean {
+  return git(['status', '--porcelain', '--untracked-files=no']).out.length > 0;
+}
+
 let cache: UpdateStatus | null = null;
 let inflight: Promise<UpdateStatus> | null = null;
 
@@ -79,7 +90,7 @@ async function doCheck(): Promise<UpdateStatus> {
   const remote = upstream.split('/')[0] || 'origin';
 
   const fetched = git(['fetch', '--quiet', remote], 60_000);
-  const dirty = git(['status', '--porcelain']).out.length > 0;
+  const dirty = hasTrackedChanges();
 
   let behind = 0;
   const rl = git(['rev-list', '--count', `HEAD..${upstream}`]);
@@ -136,8 +147,8 @@ export async function applyUpdate(tenant: string): Promise<ApplyResult> {
     return r.status === 0;
   };
 
-  if (git(['status', '--porcelain']).out.length > 0)
-    return { ok: false, steps, restarting: false, error: 'working tree has uncommitted changes — commit or stash on the box first' };
+  if (hasTrackedChanges())
+    return { ok: false, steps, restarting: false, error: 'tracked files have uncommitted changes — commit or stash them on the box first' };
 
   if (!run('git pull --ff-only', 'git', ['pull', '--ff-only'])) return { ok: false, steps, restarting: false, error: 'git pull failed' };
   // --include=dev is mandatory: the build step below needs `tsc` (a devDependency), and the service

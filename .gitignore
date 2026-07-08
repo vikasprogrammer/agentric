@@ -1,6 +1,9 @@
 node_modules/
 dist/
-data/
+# The local data home at repo root — a directory when running from ./data, OR a symlink to a data home
+# kept outside the checkout (the deploy convention). No trailing slash, so a `data` SYMLINK matches too
+# (a `data/` pattern would miss it → shows as untracked → falsely blocks self-update).
+/data
 .env
 *.log
 
