@@ -71,6 +71,31 @@ const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
+/** The sessions-list filters, held in the URL hash query so they survive a refresh / deep-link. */
+interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; owner: string }
+const parseSessionFilters = (qs: string): SessionFilters => {
+  const p = new URLSearchParams(qs)
+  const status = p.get('status') ?? ''
+  const source = p.get('source') ?? ''
+  return {
+    q: p.get('q') ?? '',
+    status: (status in SESSION_STATUS_LABELS ? status : 'all') as SessionStatusFilter,
+    agent: p.get('agent') ?? 'all',
+    source: (source in SESSION_SOURCE_LABELS ? source : 'all') as 'all' | SessionSource,
+    owner: p.get('owner') ?? 'all',
+  }
+}
+/** Serialize the active (non-default) filters back to a query param bag for the URL. */
+const sessionFiltersToParams = (f: SessionFilters): Record<string, string> => {
+  const p: Record<string, string> = {}
+  if (f.q.trim()) p.q = f.q.trim()
+  if (f.status !== 'all') p.status = f.status
+  if (f.agent !== 'all') p.agent = f.agent
+  if (f.source !== 'all') p.source = f.source
+  if (f.owner !== 'all') p.owner = f.owner
+  return p
+}
+
 const ROLE_LABEL: Record<Role, string> = { owner: 'owner', admin: 'admin', member: 'member' }
 
 function RoleBadge({ role }: { role: Role }) {
@@ -242,14 +267,19 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
 /** Minimal hash router — `#/<page>` with an optional detail segment (`#/sessions/<tmux>`) so a
  *  deep-linked view (an open terminal, later other pages' selections) survives a refresh and
  *  back/forward. The detail is everything after the first slash, URL-decoded. No dependency. */
-function useHashRoute(): { route: Route; detail: string; nav: (r: Route, detail?: string) => void } {
+function useHashRoute(): { route: Route; detail: string; query: string; nav: (r: Route, detail?: string) => void; setQuery: (params: Record<string, string>) => void } {
   const parse = () => {
-    const h = window.location.hash.replace(/^#\/?/, '')
-    const slash = h.indexOf('/')
-    const head = slash === -1 ? h : h.slice(0, slash)
-    const rest = slash === -1 ? '' : h.slice(slash + 1)
+    // Strip an optional `?query` BEFORE splitting route/detail, so page state carried in the query
+    // (e.g. the sessions filters) never leaks into the route head and mis-routes to the fallback.
+    const raw = window.location.hash.replace(/^#\/?/, '')
+    const qIdx = raw.indexOf('?')
+    const path = qIdx === -1 ? raw : raw.slice(0, qIdx)
+    const query = qIdx === -1 ? '' : raw.slice(qIdx + 1)
+    const slash = path.indexOf('/')
+    const head = slash === -1 ? path : path.slice(0, slash)
+    const rest = slash === -1 ? '' : path.slice(slash + 1)
     const route = (ROUTES as string[]).includes(head) ? (head as Route) : 'inbox'
-    return { route, detail: rest ? decodeURIComponent(rest) : '' }
+    return { route, detail: rest ? decodeURIComponent(rest) : '', query }
   }
   const [state, setState] = useState(parse)
   useEffect(() => {
@@ -257,10 +287,23 @@ function useHashRoute(): { route: Route; detail: string; nav: (r: Route, detail?
     window.addEventListener('hashchange', on)
     return () => window.removeEventListener('hashchange', on)
   }, [])
+  const hashFor = (r: Route, detail?: string, query?: string) =>
+    '/' + r + (detail ? '/' + encodeURIComponent(detail) : '') + (query ? '?' + query : '')
   const nav = (r: Route, detail?: string) => {
-    window.location.hash = '/' + r + (detail ? '/' + encodeURIComponent(detail) : '')
+    // Preserve the query only within the same route (so opening/closing a session's terminal keeps
+    // the active filters); switching pages drops it.
+    const cur = parse()
+    window.location.hash = hashFor(r, detail, r === cur.route ? cur.query : '')
   }
-  return { route: state.route, detail: state.detail, nav }
+  // Replace the query part in place (no history entry per keystroke), keeping route + detail.
+  const setQuery = (params: Record<string, string>) => {
+    const cur = parse()
+    const qs = new URLSearchParams(params).toString()
+    if (qs === cur.query) return
+    history.replaceState(null, '', window.location.pathname + window.location.search + '#' + hashFor(cur.route, cur.detail, qs))
+    setState(parse())
+  }
+  return { route: state.route, detail: state.detail, query: state.query, nav, setQuery }
 }
 
 export default function App() {
@@ -411,7 +454,7 @@ function Console({ me }: { me: Member }) {
   // re-binding them every render / going stale on the captured `messages`.
   const messagesRef = useRef<Msg[]>([])
   messagesRef.current = messages
-  const { route, detail, nav } = useHashRoute()
+  const { route, detail, query: urlQuery, nav, setQuery: setUrlQuery } = useHashRoute()
   // The open terminal is a URL detail (`#/sessions/<tmux>`), not local state, so a refresh /
   // back-forward reopens the same session. Title is best-effort from the loaded list (falls back to
   // the tmux for a link opened before the sessions have loaded).
@@ -737,7 +780,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
+          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
@@ -1325,7 +1368,7 @@ function ImageDropZone({ session, children, onActivity }: { session?: Session; c
 }
 
 function SessionsPage({
-  sessions, waiting, selected, onOpen, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete,
+  sessions, waiting, selected, onOpen, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   sessions: Session[]
   waiting: Set<string>
@@ -1337,6 +1380,10 @@ function SessionsPage({
   onDelete: (id: string, tmux: string) => void
   onBulkStop: (ids: string[]) => void
   onBulkDelete: (ids: string[]) => void
+  /** Current hash-query string — the persisted filter state, read once to seed the filters. */
+  urlQuery: string
+  /** Push the active filters back into the URL (replaceState) so a refresh restores them. */
+  onFiltersChange: (params: Record<string, string>) => void
 }) {
   const [view, setView] = useState<'grid' | 'list'>(() => (localStorage.getItem('aos_sessions_view') === 'list' ? 'list' : 'grid'))
   const setMode = (v: 'grid' | 'list') => { localStorage.setItem('aos_sessions_view', v); setView(v) }
@@ -1348,12 +1395,19 @@ function SessionsPage({
   const [inspect, setInspect] = useState<Session | null>(null)
 
   // Filters (client-side over the already-fetched list). Search spans title/agent/id/task/starter;
-  // status/agent/source narrow by dimension. All default to "show everything".
-  const [query, setQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>('all')
-  const [agentFilter, setAgentFilter] = useState('all')
-  const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>('all')
-  const [ownerFilter, setOwnerFilter] = useState('all') // run-as member id, or 'all'
+  // status/agent/source/owner narrow by dimension. All default to "show everything". Seeded ONCE from
+  // the URL hash query (so a refresh / deep-link restores them) and mirrored back on every change.
+  const seed = useRef(parseSessionFilters(urlQuery)).current
+  const [query, setQuery] = useState(seed.q)
+  const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>(seed.status)
+  const [agentFilter, setAgentFilter] = useState(seed.agent)
+  const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>(seed.source)
+  const [ownerFilter, setOwnerFilter] = useState(seed.owner) // run-as member id, or 'all'
+  useEffect(() => {
+    onFiltersChange(sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter }))
+    // onFiltersChange is a stable replaceState wrapper; depending on the filter values only is intentional.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, statusFilter, agentFilter, sourceFilter, ownerFilter])
   const agentOptions = useMemo(() => [...new Set(sessions.map((s) => s.agent))].sort(), [sessions])
   // Distinct run-as owners present, id→label, sorted by label. A session with no run-as identity is
   // omitted (nothing to key an Owner filter on).
@@ -1606,7 +1660,20 @@ function SessionsPage({
           ))}
         </div>
       ) : (
-        <div className="divide-y rounded-lg border">
+        <div className="divide-y overflow-hidden rounded-lg border">
+          {/* column headings — mirror each row column's width/visibility classes so they line up */}
+          <div className="flex items-center gap-3 bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <span className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            <div className="flex min-w-0 flex-1 items-center gap-3">
+              <span className="h-2 w-2 shrink-0" aria-hidden />
+              <span className="min-w-0 flex-1 truncate">Session</span>
+              <span className="hidden w-32 shrink-0 sm:block">Agent</span>
+              <span className="hidden w-20 shrink-0 md:block">ID</span>
+              <span className="w-40 shrink-0">Started by</span>
+              <span className="w-16 shrink-0">Status</span>
+            </div>
+            <span className="w-32 shrink-0" aria-hidden />
+          </div>
           {filtered.map((s) => (
             <div key={s.id} className={`group flex items-center gap-3 px-3 py-2 hover:bg-muted ${sel.has(s.id) ? 'bg-muted' : ''}`}>
               <input
@@ -1625,7 +1692,7 @@ function SessionsPage({
                 <StartedBy label={s.spawnedByLabel} className="w-40 shrink-0" />
                 <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
-              <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <div className="flex w-32 shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="resume — reopen and continue this session (claude --resume)">
                     <Play className="h-3.5 w-3.5" />
