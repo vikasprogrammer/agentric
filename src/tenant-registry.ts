@@ -14,7 +14,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice } from './terminal';
+import { TerminalManager, ApprovalNotice, QuestionNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
@@ -187,6 +187,12 @@ export class TenantRegistry {
     // Chat approval notifications (M5): when a risky action lands an approval card, DM whoever can
     // approve it — via their linked Slack/Discord account (identity map). Best-effort, off the hot path.
     tm.setApprovalNotifier((notice) => { void notifyApprovers(os, slack, discord, notice); });
+    // Question notifications: when an agent asks the human a question, DM the person the run acts for so
+    // a blocking `ask` doesn't sit unseen until it times out — the question-side twin of the above.
+    tm.setQuestionNotifier((notice) => { void notifyQuestionAsked(os, slack, discord, notice); });
+    // Chat loop: mirror completions/questions/approvals back to the Slack/Discord thread a chat-triggered
+    // run is bound to. Both replies no-op when the session has no bound thread (non-chat runs).
+    tm.setChatMirror((sessionId, text) => { void slack.reply(sessionId, text); void discord.reply(sessionId, text); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
     return { record: rec, os, tm, autos, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
@@ -222,6 +228,35 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
     if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
   }
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'approval.notified', data: { capability: notice.capability, level: notice.level, approvers: approvers.length, dms } });
+}
+
+/**
+ * DM the human a blocking agent question is waiting on, on their linked Slack/Discord account — the
+ * question-side twin of {@link notifyApprovers}. Targets the member the run acts for (its `run_as`, or
+ * the member who spawned it); if the run has no human owner (a pure automation), falls back to the
+ * owner/admins so the question still reaches someone. Best-effort, off the ask hot path. Audited once.
+ */
+export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: QuestionNotice): Promise<void> {
+  const row = os.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(notice.sessionId);
+  let owner = row?.run_as ? os.team.getMember(row.run_as) : undefined;
+  // A console-spawned run's provenance IS a member id (automation:/task:/chat: spawns are prefixed).
+  if (!owner && row?.spawned_by && !row.spawned_by.includes(':')) owner = os.team.getMember(row.spawned_by);
+  const targets = owner
+    ? [owner]
+    : os.team.listMembers().filter((m) => m.status === 'active' && (m.role === 'owner' || m.role === 'admin'));
+  if (!targets.length) return;
+  const text =
+    `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
+    `\nOpen the Agent OS console → Inbox to reply.`;
+  let dms = 0;
+  for (const m of targets) {
+    const ids = os.team.externalIdsFor(m.id);
+    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
+    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
+    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
+    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
+  }
+  os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'question.notified', data: { agent: notice.agent, targets: targets.length, dms } });
 }
 
 /** Launch a ttyd bound to one tenant's tmux socket on `ttydPort`. (Moved verbatim from server.ts.) */

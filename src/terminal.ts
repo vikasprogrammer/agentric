@@ -152,6 +152,8 @@ export interface FeedMessage {
   answeredBy?: string;
   /** The session's live display title (joined live from term_sessions) — the inbox's primary heading. */
   sessionTitle?: string;
+  /** Whether the requesting viewer has marked this read (per-member; absent on the agent's own feed). */
+  read?: boolean;
   createdAt: number;
 }
 
@@ -198,6 +200,9 @@ interface MessageRow {
   /** The session's live display title (AI-renamed on report, else the task / automation name) — the
    *  inbox leads with this as the primary heading, with the agent as a secondary line. */
   session_title?: string | null;
+  /** Per-viewer inbox state, joined from message_state for the requesting member (console feed only).
+   *  Absent (key not selected) on the agent's own session inbox. */
+  state_read_at?: number | null;
 }
 
 /** What the approval-notifier sink receives when a risky action lands an approval card. */
@@ -207,6 +212,15 @@ export interface ApprovalNotice {
   capability: string;
   level: ApprovalLevel;
   reason?: string;
+}
+
+/** What the question-notifier sink receives when an agent asks the human a question — so an out-of-band
+ *  channel (Slack/Discord DM) can ping the person the run acts for, the way approvals already ping
+ *  approvers. Without it a blocking `ask` sits unseen in the console until it times out. */
+export interface QuestionNotice {
+  sessionId: string;
+  agent: string;
+  prompt: string;
 }
 
 export class TerminalManager {
@@ -231,6 +245,16 @@ export class TerminalManager {
    *  can ping the approver. Set by the registry once the chat sockets exist; absent = no notifications. */
   private approvalNotifier?: (notice: ApprovalNotice) => void;
   setApprovalNotifier(fn: (notice: ApprovalNotice) => void): void { this.approvalNotifier = fn; }
+  /** Optional sink notified when an agent asks the human a question — mirrors the approval notifier so
+   *  a blocking `ask` pings the run-as member out-of-band instead of sitting unseen. */
+  private questionNotifier?: (notice: QuestionNotice) => void;
+  setQuestionNotifier(fn: (notice: QuestionNotice) => void): void { this.questionNotifier = fn; }
+  /** Optional sink that mirrors an inbox-worthy event (completion, question, approval) back to the
+   *  Slack/Discord thread a chat-triggered session is bound to, so the human who pinged the agent in
+   *  chat sees the outcome there instead of having to switch to the console. No-op for non-chat runs
+   *  (the sink resolves no bound thread). Set by the registry once the chat sockets exist. */
+  private chatMirror?: (sessionId: string, text: string) => void;
+  setChatMirror(fn: (sessionId: string, text: string) => void): void { this.chatMirror = fn; }
 
   constructor(
     private readonly os: AgentOS,
@@ -424,21 +448,60 @@ export class TerminalManager {
     // Approval messages take their live status from the approvals table, so the inbox stays
     // correct even after a restart (when the in-memory resolution waiter is gone). We also pull each
     // message's session `spawned_by` so the inbox can be scoped per member (owner/admin see all).
+    // Read/dismiss are PER-MEMBER (message_state join keyed to the viewer): the feed is shared, so one
+    // admin dismissing must not hide the row for another. Legacy global `messages.dismissed_at` is still
+    // honored as a dismissed-for-all fallback. With no viewer (demo), state joins to nothing.
+    const viewerId = viewer?.id ?? '';
     const rows = this.db
       .prepare(
         `SELECT m.*, a.status AS approval_status, a.reason AS approval_reason, a.resolved_by AS approval_resolved_by,
                 q.status AS question_status, q.answer AS question_answer, q.answered_by AS question_answered_by,
-                ts.spawned_by AS session_spawned_by, ts.run_as AS session_run_as, ts.title AS session_title
+                ts.spawned_by AS session_spawned_by, ts.run_as AS session_run_as, ts.title AS session_title,
+                ms.read_at AS state_read_at
          FROM messages m
          LEFT JOIN approvals a ON m.approval_id = a.id
          LEFT JOIN questions q ON m.question_id = q.id
          LEFT JOIN term_sessions ts ON m.session_id = ts.id
-         WHERE m.dismissed_at IS NULL
+         LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
+         WHERE m.dismissed_at IS NULL AND ms.dismissed_at IS NULL
          ORDER BY m.created_at DESC`,
       )
-      .all<MessageRow>();
+      .all<MessageRow>(viewerId);
     const visible = viewer ? rows.filter((r) => this.canViewRow(r.session_spawned_by ?? null, r.session_run_as ?? null, viewer)) : rows;
     return visible.map(toMessage);
+  }
+
+  /** Mark one message read for a member (per-member; idempotent upsert). Visibility-guarded like the
+   *  feed — you can only touch a message you can see. Returns false if it's not found or not yours. */
+  markRead(id: string, viewer: Member): boolean {
+    const row = this.db
+      .prepare('SELECT ts.spawned_by AS sb, ts.run_as AS ra FROM messages m LEFT JOIN term_sessions ts ON m.session_id = ts.id WHERE m.id = ?')
+      .get<{ sb: string | null; ra: string | null }>(id);
+    if (!row) return false;
+    if (!this.canViewRow(row.sb, row.ra, viewer)) return false;
+    this.upsertState(id, viewer.id, 'read_at');
+    return true;
+  }
+
+  /** Mark every message the viewer can currently see as read (per-member). Returns how many were touched. */
+  markAllRead(viewer: Member): number {
+    let n = 0;
+    for (const m of this.listMessages(viewer)) {
+      if (m.read) continue;
+      this.upsertState(m.id, viewer.id, 'read_at');
+      n++;
+    }
+    return n;
+  }
+
+  /** Upsert a per-member message_state timestamp column (read_at | dismissed_at) to now. */
+  private upsertState(messageId: string, memberId: string, col: 'read_at' | 'dismissed_at'): void {
+    this.db
+      .prepare(
+        `INSERT INTO message_state (message_id, member_id, ${col}) VALUES (?, ?, ?)
+         ON CONFLICT(message_id, member_id) DO UPDATE SET ${col} = excluded.${col}`,
+      )
+      .run(messageId, memberId, Date.now());
   }
 
   /** The inbox feed for ONE session — what the agent itself can read back (answers to questions it
@@ -482,7 +545,7 @@ export class TerminalManager {
       (row.type === 'approval' && (row.approval_status ?? 'pending') === 'pending') ||
       (row.type === 'question' && (row.question_status ?? 'pending') === 'pending');
     if (stillWaiting) return 'pending';
-    this.db.prepare('UPDATE messages SET dismissed_at = ? WHERE id = ?').run(Date.now(), id);
+    this.upsertState(id, viewer.id, 'dismissed_at'); // per-member hide — the row stays for others + audit
     return 'ok';
   }
 
@@ -492,28 +555,16 @@ export class TerminalManager {
    * human (pending approval/question) — those are left in place. Returns how many were hidden.
    */
   dismissAllMessages(viewer: Member): number {
-    const rows = this.db
-      .prepare(
-        `SELECT m.id, m.type, a.status AS approval_status, q.status AS question_status,
-                ts.spawned_by AS session_spawned_by, ts.run_as AS session_run_as
-         FROM messages m
-         LEFT JOIN approvals a ON m.approval_id = a.id
-         LEFT JOIN questions q ON m.question_id = q.id
-         LEFT JOIN term_sessions ts ON m.session_id = ts.id
-         WHERE m.dismissed_at IS NULL`,
-      )
-      .all<{ id: string; type: FeedMessage['type']; approval_status: string | null; question_status: string | null; session_spawned_by: string | null; session_run_as: string | null }>();
-    const now = Date.now();
-    const stmt = this.db.prepare('UPDATE messages SET dismissed_at = ? WHERE id = ?');
+    // Reuse the feed (already visibility-scoped + per-member-dismiss filtered) and hide each dismissible
+    // row for THIS viewer. Waiting items (pending approval/question, open notifications) stay put.
     let n = 0;
-    for (const r of rows) {
-      if (!this.canViewRow(r.session_spawned_by ?? null, r.session_run_as ?? null, viewer)) continue;
+    for (const m of this.listMessages(viewer)) {
       const stillWaiting =
-        (r.type === 'approval' && (r.approval_status ?? 'pending') === 'pending') ||
-        (r.type === 'question' && (r.question_status ?? 'pending') === 'pending') ||
-        r.type === 'notification';
+        (m.type === 'approval' && (m.status ?? 'pending') === 'pending') ||
+        (m.type === 'question' && (m.status ?? 'pending') === 'pending') ||
+        m.type === 'notification';
       if (stillWaiting) continue;
-      stmt.run(now, r.id);
+      this.upsertState(m.id, viewer.id, 'dismissed_at');
       n++;
     }
     return n;
@@ -921,6 +972,9 @@ export class TerminalManager {
     this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability });
     // Out-of-band ping (Slack/Discord DM to whoever can approve) — best-effort, never blocks the gate.
     try { this.approvalNotifier?.({ sessionId, agent, capability, level: decision.level, reason: decision.reason }); } catch { /* notifications are advisory */ }
+    // If the run was triggered from chat, surface the gate in that thread too (the approver DM reaches
+    // the approver; this reaches everyone watching the thread). No-op for non-chat runs.
+    try { this.chatMirror?.(sessionId, `🔔 ${agent} needs approval — \`${capability}\` (${decision.level}).\nOpen the Agent OS console → Inbox to approve or reject.`); } catch { /* advisory */ }
 
     // The message + gate status are derived from the approvals table at read time, so all this
     // waiter has to do is leave an audit trail. (It won't fire across a restart — that's fine.)
@@ -1139,6 +1193,11 @@ export class TerminalManager {
       .run(id, sessionId, this.os.tenant, agent, prompt, 'pending', Date.now());
     this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id });
     this.audit(sessionId, agent, 'question.asked', { questionId: id, prompt });
+    // Out-of-band ping (like approvals): DM the person the run acts for so a blocking `ask` doesn't sit
+    // unseen in the console. And if the run was triggered from chat, mirror the question into that
+    // thread. Both best-effort, off the hot path.
+    try { this.questionNotifier?.({ sessionId, agent, prompt }); } catch { /* notifications are advisory */ }
+    try { this.chatMirror?.(sessionId, `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the Agent OS console → Inbox.`); } catch { /* advisory */ }
     return { id };
   }
 
@@ -1184,6 +1243,11 @@ export class TerminalManager {
     if (this.hasCompleted(sessionId)) return;
     this.clearNotifications(sessionId);
     this.addMessage({ type: 'completed', sessionId, agent, title: `Completed — ${agent}`, body: summary || '(no summary)', status: 'open', outcome });
+    // Close the chat loop: a chat-triggered run's completion goes back to the thread the human pinged
+    // from, not just the console. No-op for non-chat runs. The agent's own `slack_reply`/`discord_reply`
+    // still work for finer-grained replies; this guarantees the outcome lands even if it never called them.
+    const mark = outcome === 'success' ? '✅' : outcome === 'failure' ? '❌' : '☑️';
+    try { this.chatMirror?.(sessionId, `${mark} ${agent} finished (${outcome}).\n${summary || '(no summary)'}`); } catch { /* advisory */ }
     // Rename the session from the agent's own summary — an AI-written label that reflects what the run
     // actually did, replacing the provisional title (the task text / automation name set at spawn).
     // Claude Code's internal /resume summaries aren't available for governed sessions (headless `-p`
@@ -1628,6 +1692,9 @@ function toMessage(r: MessageRow): FeedMessage {
     resolvedBy: r.type === 'approval' ? r.approval_resolved_by ?? undefined : undefined,
     answeredBy: r.type === 'question' ? r.question_answered_by ?? undefined : undefined,
     sessionTitle: r.session_title ?? undefined,
+    // read is per-member: present only when the console feed joined message_state for the viewer.
+    // The agent's own session inbox doesn't select it (key absent) → left undefined.
+    read: 'state_read_at' in r ? r.state_read_at != null : undefined,
     createdAt: r.created_at,
   };
 }

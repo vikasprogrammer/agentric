@@ -1477,7 +1477,6 @@ function SessionsPage({
 }
 
 // ── Inbox ──────────────────────────────────────────────────────────────────────
-const SEEN_KEY = 'aos_inbox_seen'
 /** An item needs the human: an unresolved approval, an unanswered question, or a session that fired a
  *  Notification (Claude is blocked waiting on a permission prompt / idle input). */
 const isActionRequired = (m: Msg): boolean =>
@@ -1518,9 +1517,12 @@ function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
 }
 
 function InboxPage({ messages, me, onOpen, onOpenArtifact }: { messages: Msg[]; me: Member; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void }) {
-  const [seen, setSeen] = useState<number>(() => Number(localStorage.getItem(SEEN_KEY) || 0))
+  // Read state is now PER-MEMBER + server-backed (m.read): it syncs across this member's devices/tabs
+  // and one admin marking read no longer touches another's badge. `readIds` optimistically bridges the
+  // gap until the next poll reflects the server truth.
+  const [readIds, setReadIds] = useState<Set<string>>(() => new Set())
   // Optimistically hide dismissed items; roll back on error. The server filters them from the next
-  // poll anyway, so the set just bridges the gap until then.
+  // poll anyway (per-member now), so the set just bridges the gap until then.
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
   const dismiss = async (id: string) => {
     setDismissed((s) => new Set(s).add(id))
@@ -1536,10 +1538,14 @@ function InboxPage({ messages, me, onOpen, onOpenArtifact }: { messages: Msg[]; 
     const r = await api.dismissAllMessages()
     if (r.error) { setDismissed((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n }); alert(r.error) }
   }
-  const unread = activity.filter((m) => m.createdAt > seen).length
-  const markRead = () => {
-    const latest = messages.reduce((mx, m) => Math.max(mx, m.createdAt), seen)
-    localStorage.setItem(SEEN_KEY, String(latest)); setSeen(latest)
+  const isUnread = (m: Msg): boolean => !m.read && !readIds.has(m.id)
+  const unread = activity.filter(isUnread).length
+  const markRead = async () => {
+    const ids = activity.filter(isUnread).map((m) => m.id)
+    if (ids.length === 0) return
+    setReadIds((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n })
+    const r = await api.markAllRead()
+    if (r.error) { setReadIds((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n }); alert(r.error) }
   }
 
   if (messages.length === 0)
@@ -1572,7 +1578,7 @@ function InboxPage({ messages, me, onOpen, onOpenArtifact }: { messages: Msg[]; 
           <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">No activity yet.</div>
         ) : (
           <div className="divide-y divide-border/60 overflow-hidden rounded-lg border">
-            {activity.map((m) => <FeedItem key={m.id} m={m} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onDismiss={dismiss} unread={m.createdAt > seen} />)}
+            {activity.map((m) => <FeedItem key={m.id} m={m} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onDismiss={dismiss} unread={isUnread(m)} />)}
           </div>
         )}
       </section>

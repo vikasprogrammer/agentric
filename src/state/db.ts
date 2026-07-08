@@ -394,6 +394,19 @@ function migrate(db: Db): void {
       agent TEXT NOT NULL,
       PRIMARY KEY (skill, agent)
     );
+
+    -- Per-member inbox state (read + dismiss). The messages feed is SHARED (every owner/admin sees the
+    -- same rows), so read/dismiss can't be a single column on the message — one admin dismissing would
+    -- hide it for all. This join table keys both to (message, member): each viewer has their own
+    -- read-line and their own dismissed set. Legacy global messages.dismissed_at is still honored as a
+    -- dismissed-for-all fallback so pre-migration dismissals don't resurface.
+    CREATE TABLE IF NOT EXISTS message_state (
+      message_id   TEXT NOT NULL,
+      member_id    TEXT NOT NULL,
+      read_at      INTEGER,
+      dismissed_at INTEGER,
+      PRIMARY KEY (message_id, member_id)
+    );
   `);
 
   // Idempotent column additions for the inbox feed (older DBs won't have these).

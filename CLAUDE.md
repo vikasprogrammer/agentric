@@ -261,6 +261,11 @@ Conventions when touching the DB:
   surfaced read-only at `GET /api/audit` (owner/admin; filter by session/type/principal) + the console
   **Audit** page. Approval cards also DM whoever can approve them via Slack/Discord
   (`TerminalManager.setApprovalNotifier` → `notifyApprovers` → identity map → `dmUser`; audited `approval.notified`).
+  Agent **questions** get the same out-of-band ping (`setQuestionNotifier` → `notifyQuestionAsked` → the
+  run-as human, else owner/admins; audited `question.notified`), so a blocking `ask` isn't missed. And a
+  chat-triggered run mirrors its completion/question/approval back into the Slack/Discord thread it came
+  from (`setChatMirror` → `slack.reply`/`discord.reply` over the `slack_threads`/`discord_threads` bindings;
+  no-op for non-chat runs) — read/dismiss on the shared feed are **per-member** (`message_state` join).
 
 ## Team / roles / login
 

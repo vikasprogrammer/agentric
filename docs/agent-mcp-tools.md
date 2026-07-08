@@ -18,7 +18,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `kb_write` | `POST /api/kb/write` | `KbStore.write` | W | versioned; author `agent:<id>` |
 | `kb_history` | `GET /api/kb/history` | `KbStore.history` | R | newest-first revisions |
 | `kb_revert` | `POST /api/kb/revert` | `KbStore.revert` | W | itself a new revision; audited `kb.reverted` |
-| `ask` | `POST /api/ask` + poll | questions | W (blocking) | blocks ~1h polling for the human answer |
+| `ask` | `POST /api/ask` + poll | questions | W (blocking) | blocks ~1h polling for the human answer; DMs the run-as human out-of-band (`question.notified`) + mirrors to the chat thread so it isn't missed |
 | `check_inbox` | `GET /api/inbox` | `TerminalManager.sessionInbox` | R | non-blocking pull of this session's feed |
 | `report` | `POST /api/report` | messages | W | `outcome` enum |
 | `update` | `POST /api/update` | messages | W | non-blocking progress note |
@@ -100,7 +100,10 @@ future tightening could classify agent creation through Policy for workspaces th
 - **Episodic self-query.** Memory is semantic-only; an agent can't query its own past runs
   (`/api/runs` exists but is member-gated). "Have I done this before, how did it go?"
 - **`ask` rigidity.** Timeout hardcoded ~1h; no `timeoutSeconds` and no non-blocking ask-then-collect
-  (partially mitigated now by `check_inbox`).
+  (partially mitigated now by `check_inbox`). The question now DMs the run-as human + mirrors to the chat
+  thread on ask, but there's still **no server-side timeout/escalation**: if the agent's poll gives up, the
+  `questions` row stays `pending` forever and a late answer reaches a run that already moved on. No reminder
+  on stale approvals/questions either — tracked as a follow-up (inbox batch 2).
 - **Cross-agent artifact/KB read of file contents.** `artifacts_list` returns metadata only and is
   scoped to the agent's own outputs; reading a sibling agent's published file back has no tool.
 - **No generic "perform capability" tool** — by design. Effects flow through real tools + the

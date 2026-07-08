@@ -274,6 +274,8 @@ export interface Msg {
   answeredBy?: string
   /** The session's live display name — the inbox leads with this; `agent` is the secondary line. */
   sessionTitle?: string
+  /** Whether THIS member has marked the message read (per-member, server-backed). */
+  read?: boolean
   createdAt: number
 }
 
@@ -650,6 +652,8 @@ export const api = {
   answerQuestion: (id: string, answer: string) => call<{ ok: boolean; error?: string }>('POST', '/api/questions/' + id, { answer }),
   dismissMessage: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/dismiss`),
   dismissAllMessages: () => call<{ ok: boolean; dismissed?: number; error?: string }>('POST', '/api/messages/dismiss-all'),
+  markRead: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/read`),
+  markAllRead: () => call<{ ok: boolean; read?: number; error?: string }>('POST', '/api/messages/read-all'),
 
   team: () => call<TeamResp>('GET', '/api/team'),
   audit: (f: { session?: string; type?: string; principal?: string; limit?: number } = {}) => {

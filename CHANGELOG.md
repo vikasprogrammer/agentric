@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.39.0] — 2026-07-08
+### Added
+- **Questions ping the human out-of-band.** When an agent `ask`s a question it no longer sits silently in
+  the console until its ~1h poll times out: a new **question notifier** DMs the person the run acts for
+  (its `run_as`, else the spawning member; a pure automation falls back to owner/admins) on their linked
+  Slack/Discord account — the question-side twin of the existing approval notifier. Audited `question.notified`.
+- **The chat loop closes.** A Slack/Discord-triggered run now mirrors its **completion, questions, and
+  approval gates back into the thread it was triggered from**, instead of only the console Inbox — the
+  person who @mentioned the agent sees the outcome where they asked. Best-effort via a new `chatMirror`
+  sink over the existing `slack_threads`/`discord_threads` bindings; a no-op for non-chat runs. The agent's
+  own `slack_reply`/`discord_reply` still work for finer replies.
+### Changed
+- **Inbox read + dismiss are now per-member.** The feed is shared (every owner/admin sees the same rows),
+  so a single `dismissed_at` column meant one admin dismissing an item hid it for everyone, and unread was
+  a browser-local `localStorage` timestamp that didn't sync across a member's devices. Both now live in a
+  new `message_state(message_id, member_id, read_at, dismissed_at)` join keyed to the viewer: each member
+  has their own read-line and dismissed set, server-backed. Legacy global `messages.dismissed_at` is still
+  honored as a dismissed-for-all fallback. New routes `POST /api/messages/:id/read` and `/api/messages/read-all`.
+
 ## [0.38.0] — 2026-07-08
 ### Added
 - **Files shortcut from a session.** The live terminal's top-right toolbar grows a **Files** button next to

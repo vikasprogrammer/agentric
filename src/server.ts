@@ -1249,6 +1249,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, dismissed: tm.dismissAllMessages(me) });
   }
 
+  // Mark every message the viewer can see as read (per-member) — clears the unread badge.
+  if (method === 'POST' && p === '/api/messages/read-all') {
+    return sendJson(res, 200, { ok: true, read: tm.markAllRead(me) });
+  }
+
+  // Mark one message read for this member (per-member state; the shared feed is unaffected for others).
+  const readMatch = p.match(/^\/api\/messages\/([\w-]+)\/read$/);
+  if (method === 'POST' && readMatch) {
+    const ok = tm.markRead(readMatch[1], me);
+    return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'unknown message' });
+  }
+
   // Dismiss a message from the inbox (soft hide; the row is kept for audit). Same visibility rule as
   // the feed; a pending approval/question can't be dismissed (resolve/answer it instead).
   const dismissMatch = p.match(/^\/api\/messages\/([\w-]+)\/dismiss$/);
