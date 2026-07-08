@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-07-08
+### Added
+- **Files → New file.** The Files browser grows a **New file** button beside "New folder": it prompts for a
+  name, creates an empty file in the current folder, and opens it straight into the editor. Backed by a new
+  `POST /api/files/create` route that refuses to clobber an existing path (`409`) and audits `file.created`
+  (the existing `/api/files/write` still declines to create files, so this is the dedicated create path).
+
 ## [0.35.0] — 2026-07-08
 ### Added
 - **Agents can share credentials through the secrets vault — without the value ever touching a durable

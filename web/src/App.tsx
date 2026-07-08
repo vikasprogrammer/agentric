@@ -1822,6 +1822,19 @@ function FilesPage() {
     reload()
   }
 
+  const newFile = async () => {
+    const name = prompt('New file name')?.trim()
+    if (!name) return
+    const rel = join(name)
+    setBusy(true); setHint('')
+    const r = await api.files.create(rel)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    reload()
+    // open the fresh (empty) file straight into the editor
+    setOpenPath(rel); setFile({ path: rel, content: '', size: 0 }); setContent('')
+  }
+
   const removeEntry = async (e: FileEntry) => {
     const what = e.type === 'dir' ? 'folder (and everything in it)' : 'file'
     if (!confirm(`Delete ${what} "${e.name}"? This cannot be undone.`)) return
@@ -1863,6 +1876,9 @@ function FilesPage() {
           ))}
         </div>
         <div className="flex items-center gap-1.5">
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={newFile} disabled={busy}>
+            <FileIcon className="h-3.5 w-3.5" /> New file
+          </Button>
           <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={newFolder} disabled={busy}>
             <FolderPlus className="h-3.5 w-3.5" /> New folder
           </Button>
