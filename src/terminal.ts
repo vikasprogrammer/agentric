@@ -72,6 +72,11 @@ Other agents run in this workspace and you share state with them. You are a node
   agents and humans. (Memory is for facts only *you* reuse; the KB is for the whole fleet.)
 - **Shared memory**: \`remember\` with \`shared: true\` publishes a fact fleet-wide instead of only to
   your own recall — use it for things the whole team should know.
+- **Skills** (\`skill_propose\`): when you work out HOW to do something repeatable and non-obvious — a
+  multi-step procedure another agent could follow verbatim — propose it as a skill. That's *procedural*
+  memory (a reusable playbook), distinct from a *fact* (\`remember\`/\`report\` lessons) or a wiki page
+  (\`kb_write\`). Your proposal is a draft a human reviews before it goes live; don't propose one-offs or
+  things a plain fact already covers.
 - **The team**: \`directory_lookup\` finds who's on the team and how to reach them (Slack/Discord/email).
 
 ## Environment notes
@@ -122,7 +127,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -1196,6 +1201,27 @@ export class TerminalManager {
         .store({ tenant: this.os.tenant, agentId: agent, content: lesson, tags: ['lesson', 'session-end'], type: 'Insight', importance: 0.7, metadata: { sessionId, outcome, source: 'report-lesson' } })
         .then(() => this.audit(sessionId, agent, 'lesson.stored', { outcome }))
         .catch((e) => this.audit(sessionId, agent, 'lesson.error', { error: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+
+  /** Agent proposes a new skill (Lever 6 — the fleet drafting its own procedural memory). Drafts a
+   *  `.aos-proposed` skill in the library (never materialised until a human publishes it), posts a
+   *  'skill.proposed' card to the Inbox so owner/admins see it, and audits `skill.proposed`. Returns
+   *  a structured result (name collisions/bad names come back as `ok:false` for the agent to see). */
+  proposeSkill(sessionId: string, agent: string, input: { name: string; description: string; body: string; rationale?: string }): { ok: boolean; skill?: string; error?: string } {
+    try {
+      const s = this.os.skills.propose({ name: input.name, description: input.description, body: input.body, rationale: input.rationale, agent, session: sessionId });
+      this.addMessage({
+        type: 'skill.proposed', sessionId, agent,
+        title: `Skill proposed — ${s.name}`,
+        body: (input.description || s.description || `A new skill "${s.name}" is ready for review.`).trim(),
+        status: 'open',
+        args: { skill: s.name, ...(input.rationale ? { rationale: input.rationale } : {}) },
+      });
+      this.audit(sessionId, agent, 'skill.proposed', { name: s.name, description: s.description, rationale: input.rationale });
+      return { ok: true, skill: s.name };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
   }
 

@@ -625,6 +625,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = tm.publishArtifact(session, { path: filePath, title: String(b.title || ''), description: b.description ? String(b.description) : undefined });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
+  // agent proposes a new skill (Lever 6 — procedural memory). Drafts a NOT-YET-PUBLISHED skill in the
+  // library (`materialize()` skips it) and posts a 'skill.proposed' inbox card for an owner/admin to
+  // review + publish. Pre-auth loopback like the other agent tools; gated by the session secret.
+  if (method === 'POST' && p === '/api/skills/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const name = String(b.name || '').trim();
+    const description = String(b.description || '').trim();
+    const body = String(b.body || '').trim();
+    if (!name || !description || !body) return sendJson(res, 400, { error: 'name, description, and body are required' });
+    const out = tm.proposeSkill(session, agent, { name, description, body, rationale: b.rationale ? String(b.rationale) : undefined });
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
   // native Slack egress: the agent posts its reply back to the thread that triggered the session.
   // Channel/thread come from the server-side binding (slack_threads) — the agent only sends text.
   if (method === 'POST' && p === '/api/agent/slack/reply') {
@@ -1949,6 +1965,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, { enabled: os.skills.enabled, skills: os.skills.list() });
   }
+  // Publish a proposed skill (drop its `.aos-proposed` marker → it materialises to agents next launch).
+  // Owner/admin only. Dismiss reuses DELETE /api/skills/:name (removes the draft folder outright).
+  if (method === 'POST' && /^\/api\/skills\/([\w.-]+)\/publish$/.test(p)) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = p.match(/^\/api\/skills\/([\w.-]+)\/publish$/)![1];
+    const ok = os.skills.publish(name);
+    if (!ok) return sendJson(res, 404, { error: 'no such proposed skill' });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name } });
+    return sendJson(res, 200, { ok: true, skill: os.skills.get(name) });
+  }
   // The bundled catalog — skills that ship with the software, installable into this tenant's library.
   // MUST precede the generic /api/skills/:name route below (else "catalog" reads as a skill name).
   if (method === 'GET' && p === '/api/skills/catalog') {
@@ -2061,9 +2087,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.updated', data: { skill: name, bytes: String(b.content ?? '').length } });
       return sendJson(res, 200, { ok: true, skill: s });
     }
-    // DELETE
+    // DELETE — also the "dismiss" action for a proposal (drops the draft folder). Audit the intent.
+    const wasProposed = !!os.skills.get(name)?.proposed;
     const ok = os.skills.remove(name);
-    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.deleted', data: { skill: name } });
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: wasProposed ? 'skill.proposal.dismissed' : 'skill.deleted', data: { skill: name } });
     return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'skill not found' });
   }
 

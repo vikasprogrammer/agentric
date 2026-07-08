@@ -253,7 +253,7 @@ export interface AddTaskReq {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed'
   sessionId: string
   agent: string
   title: string
@@ -447,6 +447,10 @@ export interface SkillSummary {
   files: string[]
   /** Agent ids this skill is scoped to. Empty = every agent (the default). */
   agents: string[]
+  /** True when this is a not-yet-published proposal (invisible to agents until published). */
+  proposed: boolean
+  /** Provenance of a proposal (present only when `proposed`). */
+  proposal?: { agent?: string; session?: string; rationale?: string; at: number }
 }
 export interface SkillDetail extends SkillSummary {
   content: string
@@ -754,6 +758,8 @@ export const api = {
   saveSkill: (name: string, content: string) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('PUT', '/api/skills/' + encodeURIComponent(name), { content }),
   deleteSkill: (name: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/skills/' + encodeURIComponent(name)),
+  publishSkill: (name: string) =>
+    call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/' + encodeURIComponent(name) + '/publish'),
   setSkillAgents: (name: string, agents: string[]) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('PUT', '/api/skills/' + encodeURIComponent(name) + '/agents', { agents }),
   skillCatalog: () => call<CatalogResp>('GET', '/api/skills/catalog'),

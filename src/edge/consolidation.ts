@@ -121,11 +121,15 @@ the bridge from episodic ("what happened") to semantic ("the reusable lesson").
 2. **Find the recurring signal.** Read the batch in your task. Look for patterns that appear more than
    once: the same problem hit repeatedly, a mistake made again, a fix + root cause worth reusing, a
    stable fact about this environment, a gotcha or constraint.
-3. **Write only the durable, broadly-useful patterns:**
-   - \`remember\` with \`shared: true\` — a self-contained fact every agent can recall. Write it in the
+3. **Write only the durable, broadly-useful patterns, choosing the right artifact for each:**
+   - \`remember\` with \`shared: true\` — a self-contained **fact** every agent can recall. Write it in the
      imperative ("When X, do Y") so it's actionable. Set \`importance\` honestly.
-   - or \`kb_write\` — when it deserves a full runbook/reference page (a sensible section, e.g.
+   - \`kb_write\` — when it deserves a full runbook/reference **page** (a sensible section, e.g.
      \`operations/\`). Update an existing page rather than forking a new one.
+   - \`skill_propose\` — when the batch shows a **repeatable multi-step procedure** run more than once
+     that another agent could follow verbatim (a *how-to*, not a fact). List existing skills first and
+     prefer refining one over proposing a near-duplicate; your proposal is a draft a human publishes.
+     Use sparingly — only for genuine reusable playbooks, not one-liners.
 4. **Be selective.** Quality over quantity — a few well-abstracted, high-value memories beat dozens of
    thin ones. Skip one-offs, run-specific trivia, and anything already captured.
 5. **Finish with \`report\`** — outcome + a one-line summary of what you consolidated (e.g. "wrote 3
