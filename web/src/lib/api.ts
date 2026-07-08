@@ -137,6 +137,27 @@ export interface AuditResp {
   types: string[]
   error?: string
 }
+/** One classified primitive-use in a session's activity timeline (from /api/sessions/:id/activity). */
+export interface ActivityEvent {
+  ts: number
+  category: 'action' | 'operator' | 'memory' | 'knowledge' | 'tasks' | 'scheduling' | 'agents' | 'approval' | 'other'
+  /** OS tool name (remember/ask/task_create…) or, for a governed effect, the capability id. */
+  primitive: string
+  summary: string
+  /** For governed actions/approvals: how the gate classified it, or the outcome. */
+  effect?: 'allow' | 'approve' | 'deny' | 'error'
+}
+export interface ActivitySummaryRow {
+  primitive: string
+  category: ActivityEvent['category']
+  count: number
+}
+export interface SessionActivityResp {
+  events: ActivityEvent[]
+  summary: ActivitySummaryRow[]
+  total: number
+  error?: string
+}
 export interface Artifact {
   id: string
   sessionId: string
@@ -615,6 +636,8 @@ export const api = {
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
   deleteSession: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/sessions/' + id),
   attach: (id: string) => call<{ url?: string; error?: string }>('GET', `/api/sessions/${id}/attach`),
+  /** The agent-os primitives this session used — a classified timeline + grouped counts. */
+  sessionActivity: (id: string) => call<SessionActivityResp>('GET', `/api/sessions/${id}/activity`),
   /** Upload a pasted/dropped image into a live session; the server saves it in the agent's folder and
    *  types the path into the running claude. `dataB64` is base64 (no data: prefix); `ext` e.g. 'png'. */
   attachFile: (id: string, dataB64: string, ext: string) =>
