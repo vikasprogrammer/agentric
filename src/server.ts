@@ -1311,6 +1311,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const summary = [...byPrim.values()].sort((a, b) => b.count - a.count || a.primitive.localeCompare(b.primitive));
     return sendJson(res, 200, { events, summary, total: events.length });
   }
+  // A finished headless run has no live tmux to attach to, but claude-launch.sh tee'd its full `-p`
+  // transcript to <home>/connectors/session-<id>.log. Serve that (same authz as attach) so the console
+  // can show what the run did instead of a dead terminal. Tail the last 512KB of a long run.
+  const transcriptMatch = p.match(/^\/api\/sessions\/([\w-]+)\/transcript$/);
+  if (method === 'GET' && transcriptMatch) {
+    const id = transcriptMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
+    if (!os.paths) return sendJson(res, 404, { error: 'no transcript' });
+    const file = path.join(os.paths.connectors, `session-${id}.log`);
+    try {
+      const buf = fs.readFileSync(file);
+      const CAP = 512 * 1024;
+      const text = buf.length > CAP ? '…(earlier output truncated)\n' + buf.subarray(buf.length - CAP).toString('utf8') : buf.toString('utf8');
+      return sendJson(res, 200, { text });
+    } catch {
+      return sendJson(res, 404, { error: 'no transcript' });
+    }
+  }
   // Prepare a browser attach: authz, then (under the flag) ensure the member's ttyd is up. Returns
   // the iframe URL — the shared /terminal/?arg=… (flag off) or per-member /terminal/<space>/?arg=… (on).
   const attachMatch = p.match(/^\/api\/sessions\/([\w-]+)\/attach$/);

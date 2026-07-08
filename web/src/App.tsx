@@ -716,7 +716,7 @@ function Console({ me }: { me: Member }) {
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
-          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} />}
+          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} />}
@@ -1020,9 +1020,22 @@ function StartedBy({ label, className = '' }: { label?: string; className?: stri
 function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux: string; onActivity?: (sid: string) => void }) {
   const [src, setSrc] = useState('')
   const [err, setErr] = useState('')
+  const [transcript, setTranscript] = useState<string | null>(null)
+  // A finished headless run (and a crashed headless run) has no resurrectable pane — never resumable
+  // and no longer live — so attaching would show a dead terminal. Show its captured transcript instead.
+  // Interactive ended sessions stay resumable and keep the normal attach/resume path untouched.
+  const ended = Boolean(session) && !isLive(session!) && !session!.resumable
   useEffect(() => {
     let alive = true
-    setSrc(''); setErr('')
+    setSrc(''); setErr(''); setTranscript(null)
+    if (session?.id && ended) {
+      api.sessionTranscript(session.id).then((r) => {
+        if (!alive) return
+        if (r.text != null) setTranscript(r.text.replace(/\x1b\[[0-9;]*m/g, '')) // strip any stray ANSI color
+        else setErr(r.error || 'no transcript for this session')
+      })
+      return () => { alive = false }
+    }
     if (!session?.id) { setSrc(`/terminal/?arg=${encodeURIComponent(tmux)}`); return }
     api.attach(session.id).then((r) => {
       if (!alive) return
@@ -1030,7 +1043,15 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
       else setErr(r.error || 'could not open terminal')
     })
     return () => { alive = false }
-  }, [session?.id, tmux])
+  }, [session?.id, tmux, ended])
+  if (transcript != null) return (
+    <div className="flex min-h-0 flex-1 flex-col bg-black">
+      <div className="shrink-0 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
+        Session ended · headless transcript (read-only)
+      </div>
+      <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs leading-relaxed text-neutral-300">{transcript || '(no output captured)'}</pre>
+    </div>
+  )
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!src) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   // allow clipboard-write so ttyd's copy-on-select (document.execCommand("copy") on the xterm.js
@@ -2988,7 +3009,7 @@ const TRIGGER_ITEMS: Record<string, string> = {
   composio: 'Composio event',
 }
 
-function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void }) {
+function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
@@ -3025,7 +3046,12 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
     setBusy('')
     if (!r.ok) return setHint('⚠ ' + (r.reason || r.error || 'failed'))
     await load()
-    if (r.sessionId) onOpen('aos-' + r.sessionId, a.agentId + ' · ' + r.sessionId)
+    // A headless run exits into a dead terminal — don't drop the operator onto it. Send them to the
+    // sessions list where the new run shows up; only interactive runs open the attachable TUI.
+    if (r.sessionId) {
+      if (a.mode === 'headless') nav('sessions')
+      else onOpen('aos-' + r.sessionId, a.agentId + ' · ' + r.sessionId)
+    }
   }
 
   if (!items) return <div className="text-sm text-muted-foreground">Loading…</div>

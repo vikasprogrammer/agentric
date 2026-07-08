@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.48.0] — 2026-07-08
+### Added
+- **See what a finished headless run did — no more dead terminal.** A headless automation runs
+  `claude -p` and exits, so its tmux pane is gone; opening the session later showed an empty, broken
+  terminal even though the full transcript was already captured on disk (`claude-launch.sh` tee's it to
+  `<home>/connectors/session-<id>.log`, 0600). The session view now detects an ended, non-resumable run
+  (headless/crashed — interactive ended sessions stay resumable and keep the normal attach/resume path)
+  and renders that captured transcript read-only instead of attaching a dead pane. New authz-gated
+  `GET /api/sessions/:id/transcript` (same `canViewSession` check as attach; tails the last 512KB of a
+  long run) + `api.sessionTranscript`.
+### Changed
+- **"Run Now" on a headless automation lands on the sessions list, not a terminal.** Firing a headless
+  automation used to navigate straight into a terminal that dies moments later. It now refreshes and
+  drops the operator on the Sessions list where the new run appears; interactive automations still open
+  the attachable TUI as before. (Both paths already ran headless correctly — this is purely where the UI
+  takes you afterward.)
+
 ## [0.47.0] — 2026-07-08
 ### Added
 - **Files shortcut on the agent detail page.** An agent's page (`#/agents/<id>`) now has a **Files**
