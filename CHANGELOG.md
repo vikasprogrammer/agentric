@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-07-08
+### Added
+- **Session activity — see which agent-os primitives a run used, visually.** Every session card (grid +
+  list) grows an **Activity** button that opens a modal timeline built from the run's audit stream:
+  grouped counts (`Bash ×12 · remember ×3 · ask ×1 · report ×1`) over a chronological feed, each event
+  classified into its OS plane (governed action · operator · memory · knowledge · tasks · scheduling ·
+  agents · approval) with the gate's `allow`/`approve`/`deny` verdict shown as a badge. Backed by a new
+  `GET /api/sessions/:id/activity` route (gated by `canViewSession`, so a member sees the activity of the
+  runs they can attach to — not just owner/admin). Classification lives in a pure, testable
+  `src/state/session-activity.ts`; session plumbing (lifecycle, paired gate halves, secret/skill
+  materialisation) is filtered out so the feed reads as intent, and the one un-audited primitive
+  (progress `update`s) is folded in from the inbox so the timeline is complete. Read-only tools (`recall`,
+  searches, inbox checks) leave no audit trace and so don't appear — called out in the empty state.
+
 ## [0.33.0] — 2026-07-08
 ### Added
 - **Docs: "Import into AOS" console page** — a master-prompt guide for bringing an agent over from

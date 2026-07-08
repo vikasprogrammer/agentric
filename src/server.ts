@@ -14,6 +14,7 @@ import { TenantRegistry, TenantRuntime } from './tenant-registry';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
+import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './state/session-activity';
 import { Automation, Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
@@ -1096,6 +1097,41 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!os.team.canRun(me, agent)) return sendJson(res, 403, { error: `you are not assigned to run "${agent}"` });
     const s = tm.createSession(agent, String(b.title || task), task, me.id);
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
+  }
+  // Session activity: "which agent-os primitives did this run use?" — the session's audit stream,
+  // classified into a chronological timeline + a grouped count summary. Same visibility as the terminal
+  // (canViewSession), so a member sees the activity of the runs they can attach to, not just admins.
+  const activityMatch = p.match(/^\/api\/sessions\/([\w-]+)\/activity$/);
+  if (method === 'GET' && activityMatch) {
+    const id = activityMatch[1];
+    const agent = tm.sessionAgent(id);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
+    const rows = os.db
+      .prepare('SELECT ts, type, data FROM audit_events WHERE tenant = ? AND run_id = ? ORDER BY ts ASC, id ASC')
+      .all<{ ts: number; type: string; data: string }>(os.tenant, id);
+    type Row = { ts: number; category: ActivityCategory; primitive: string; summary: string; effect?: ActivityEffect };
+    const events: Row[] = [];
+    for (const r of rows) {
+      const d = classifyActivity(r.type, safeJson(r.data));
+      if (d) events.push({ ts: r.ts, ...d });
+    }
+    // Progress `update`s are the one primitive not audited (they only write an inbox message) — fold
+    // them in so the timeline is complete.
+    const ups = os.db
+      .prepare("SELECT created_at AS ts, body FROM messages WHERE session_id = ? AND type = 'update' ORDER BY created_at ASC")
+      .all<{ ts: number; body: string }>(id);
+    for (const u of ups) events.push({ ts: u.ts, category: 'operator', primitive: 'update', summary: clipText(u.body) });
+    events.sort((a, b) => a.ts - b.ts);
+    // Grouped count summary (primitive → how many times), most-used first.
+    const byPrim = new Map<string, { primitive: string; category: ActivityCategory; count: number }>();
+    for (const e of events) {
+      const cur = byPrim.get(e.primitive) ?? { primitive: e.primitive, category: e.category, count: 0 };
+      cur.count += 1;
+      byPrim.set(e.primitive, cur);
+    }
+    const summary = [...byPrim.values()].sort((a, b) => b.count - a.count || a.primitive.localeCompare(b.primitive));
+    return sendJson(res, 200, { events, summary, total: events.length });
   }
   // Prepare a browser attach: authz, then (under the flag) ensure the member's ttyd is up. Returns
   // the iframe URL — the shared /terminal/?arg=… (flag off) or per-member /terminal/<space>/?arg=… (on).
