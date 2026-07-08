@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-07-08
+### Added
+- **Docs: "Import into AOS" console page** — a master-prompt guide for bringing an agent over from
+  another system (raw Claude Code project, CrewAI/LangGraph, a folder of prompts) by emitting a
+  file-based bundle that mirrors how AOS stores agents, so the manifest/instructions/skills need no
+  importer. Wired into the Docs section (`web/src/docs`).
+
 ## [0.32.2] — 2026-07-07
 ### Fixed
 - **`agent-os tenant remove` now respects `AGENT_OS_TENANT`.** The remove guard (and the login-URL
