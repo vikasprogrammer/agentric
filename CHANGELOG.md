@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-07-08
+### Added
+- **Filter the sessions list.** The Sessions page gained a filter bar — a free-text search (over
+  title / agent / id / task / started-by) plus three dropdowns: **status** (All / Live / Done /
+  Stopped / Crashed), **agent** (auto-derived from the sessions present), and **source** (Member /
+  Automation / Task / Chat, read from each run's provenance). Filters apply client-side over the
+  already-fetched list; the count reads "N of M sessions" while narrowed, a **Clear filters** button
+  and a "no matches" empty state appear, and select-all / bulk stop+delete now act on the filtered
+  view so a hidden row is never touched.
+
 ## [0.49.0] — 2026-07-08
 ### Added
 - **Duplicate an installed skill.** Each skill in the library (Skills page) now has a **Duplicate**
