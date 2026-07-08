@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.57.0] — 2026-07-08
+### Added
+- **Sessions list: an "Updated" column you can sort by.** Sessions now track a `updated_at` timestamp
+  that bumps on every status transition (report / end / stop / resume / crash). The list view shows it
+  as a relative "Updated" column (e.g. "3m ago") that's sortable like the others, so you can surface
+  the most-recently-active runs, not just the newest-created. Persisted in the URL sort param; existing
+  rows backfill to their creation time.
+
 ## [0.56.1] — 2026-07-08
 ### Changed
 - **No "On it — continuing this thread" ack on a Slack thread follow-up.** The continuation's own

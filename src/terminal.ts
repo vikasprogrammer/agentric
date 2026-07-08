@@ -140,6 +140,9 @@ export interface Session {
    *  identity (e.g. a company-identity automation run). Drives the sessions-list Owner filter. */
   runAsLabel?: string;
   createdAt: number;
+  /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
+   *  first transition. Lets the sessions list sort by recent activity, not just creation. */
+  updatedAt: number;
 }
 
 export interface FeedMessage {
@@ -187,6 +190,7 @@ interface SessionRow {
   spawned_by: string | null;
   run_as: string | null;
   created_at: number;
+  updated_at: number;
 }
 interface MessageRow {
   id: string;
@@ -335,8 +339,10 @@ export class TerminalManager {
       const cutoff = Date.now() - 10_000;
       for (const r of rows) {
         if (r.status === 'running' && !alive.has(r.tmux) && r.created_at < cutoff) {
-          this.db.prepare("UPDATE term_sessions SET status = 'crashed' WHERE id = ?").run(r.id);
+          const crashedAt = Date.now();
+          this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(crashedAt, r.id);
           r.status = 'crashed';
+          r.updated_at = crashedAt; // keep the in-memory row in sync so this same response isn't stale
           // A crash fires no end signal (no `report`/`markEnded`/`stopSession`), so this sweep is the
           // only place to capture what the run did before it died. Outcome 'crashed'; idempotent, so
           // repeated polls won't write twice; skipped if the session did no real work.
@@ -650,10 +656,10 @@ export class TerminalManager {
     // Per-session bearer (0d): exported into the session env and required on the loopback agent
     // endpoints, so one session's runtime can't gate/recall/report AS another by forging its id.
     const secret = randomBytes(24).toString('hex');
-    const session: Session = { id, agent, title, task, tmux, status: 'running', createdAt: Date.now() };
+    const session: Session = { id, agent, title, task, tmux, status: 'running', createdAt: Date.now(), updatedAt: Date.now() };
     this.db
-      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, session.createdAt);
+      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, session.createdAt, session.createdAt);
     // No spawn card — the Inbox is a feed of agent-authored signals (progress / questions / approvals /
     // completions / artifacts), not a session lifecycle log. A run that never speaks stays off the feed
     // and lives only on the Sessions page.
@@ -1377,8 +1383,8 @@ export class TerminalManager {
     // never persists one), so the agent's report is the reliable source. Skip when empty so a good
     // title isn't blanked.
     const aiTitle = titleFromSummary(summary);
-    if (aiTitle) this.db.prepare("UPDATE term_sessions SET title = ?, status = 'done' WHERE id = ?").run(aiTitle, sessionId);
-    else this.db.prepare("UPDATE term_sessions SET status = 'done' WHERE id = ?").run(sessionId);
+    if (aiTitle) this.db.prepare("UPDATE term_sessions SET title = ?, status = 'done', updated_at = ? WHERE id = ?").run(aiTitle, Date.now(), sessionId);
+    else this.db.prepare("UPDATE term_sessions SET status = 'done', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.audit(sessionId, agent, 'session.reported', { outcome, summary });
     // Deliberate semantic memory — the agent's note to its future self. Higher importance than an
     // auto-episode (0.7 vs 0.5), private to this agent (broadly-useful facts go via `remember` shared).
@@ -1490,7 +1496,7 @@ export class TerminalManager {
   markEnded(sessionId: string): void {
     const s = this.db.prepare('SELECT agent, status FROM term_sessions WHERE id = ?').get<{ agent: string; status: string }>(sessionId);
     if (!s) return;
-    if (s.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'done' WHERE id = ?").run(sessionId);
+    if (s.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'done', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
     // Distil the session into one durable memory for the agent — the `report` (a 'completed' card) has
     // already landed by now if the agent left one, so writeEpisode prefers it; otherwise it summarises
@@ -1507,7 +1513,7 @@ export class TerminalManager {
   markResumed(sessionId: string): void {
     const s = this.db.prepare('SELECT agent, status FROM term_sessions WHERE id = ?').get<{ agent: string; status: string }>(sessionId);
     if (!s || s.status === 'running') return;
-    this.db.prepare("UPDATE term_sessions SET status = 'running' WHERE id = ?").run(sessionId);
+    this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     // No "Resumed" card — reconnecting is lifecycle noise, not something the operator needs in the feed.
     this.audit(sessionId, s.agent, 'session.resumed', {});
   }
@@ -1561,7 +1567,7 @@ export class TerminalManager {
     const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return false;
     this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
-    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped' WHERE id = ?").run(sessionId);
+    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
     // Halting kills the tmux shell, so the launcher's `markEnded` never fires — capture the episode
     // here instead so the work done (the audit stream) is remembered. Outcome 'stopped'; skipped if the
@@ -1787,7 +1793,7 @@ function titleFromSummary(summary: string): string {
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, createdAt: r.created_at };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at };
 }
 
 function toMessage(r: MessageRow): FeedMessage {
