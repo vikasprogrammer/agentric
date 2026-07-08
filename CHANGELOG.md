@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.55.0] — 2026-07-08
+### Added
+- **Sessions filters persist in the URL, and the list view gets column headings.** The Sessions
+  filter state (search + status/agent/source/owner) is now written to the URL hash query
+  (`#/sessions?q=…&status=…&owner=…`), so a refresh or a shared deep-link restores exactly what you
+  were looking at; the hash router became query-aware and preserves filters when you open/close a
+  session's terminal. The list (table) view also gained a **Session / Agent / ID / Started by /
+  Status** heading row, aligned to the columns.
+
 ## [0.54.0] — 2026-07-08
 ### Added
 - **Talk to an agent inside a Slack thread.** A follow-up message in a thread the bot already replied
