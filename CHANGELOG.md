@@ -8,6 +8,11 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.58.0] — 2026-07-08
+### Added
+- **Sessions grid view shows the last-updated time too.** Each card now displays its relative "updated
+  N ago" next to who started it, matching the list view's Updated column (which was already there).
+
 ## [0.57.0] — 2026-07-08
 ### Added
 - **Sessions list: an "Updated" column you can sort by.** Sessions now track a `updated_at` timestamp
