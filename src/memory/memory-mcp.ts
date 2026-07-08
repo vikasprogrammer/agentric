@@ -108,8 +108,9 @@ const SLACK_DM_TOOL = {
 const DISCORD_SEND_TOOL = {
   name: 'discord_send',
   description:
-    'Post a message to a Discord channel (any channel, not just the one that triggered you). Use this ' +
-    'to proactively message a channel. For replying where you were triggered, prefer discord_reply.',
+    'Post a message to a Discord channel (any channel, not just the one that triggered you). Use this to ' +
+    'proactively message a channel — announcements, summaries, alerts. For replying to the message that ' +
+    'triggered you, prefer discord_reply.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -122,7 +123,9 @@ const DISCORD_SEND_TOOL = {
 
 const DISCORD_DM_TOOL = {
   name: 'discord_dm',
-  description: 'Send a direct message to a person in Discord by their user id.',
+  description:
+    'Send a direct message to a person in Discord. Reach anyone in the workspace — teammate updates, ' +
+    'nudges, one-to-one answers.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -156,13 +159,11 @@ const TOOLS = [
   {
     name: 'remember',
     description:
-      'Store a durable memory for your future self. WHEN to write one — the moments worth encoding: you ' +
-      'were SURPRISED (something behaved differently than you expected), you spent real EFFORT figuring ' +
-      'something out, you made a DECISION others will depend on, or you hit a GOTCHA / constraint / root ' +
-      'cause. Skip routine steps, anything already in the knowledge base, and run-specific trivia — ' +
-      'remembering everything is as useless as remembering nothing. Keep each memory one self-contained ' +
-      'fact; add short tags. Set `importance` honestly — it can bias future recall toward what matters. ' +
-      'Got a fact wrong later? Use `revise` to correct it or `forget` to drop it (recall shows each memory\'s id).',
+      'Store a durable memory for your future self — one self-contained fact you\'ll want on a later run ' +
+      '(a gotcha, a root cause, a decision others depend on, something that surprised you or took real ' +
+      'effort). Skip routine steps and run-specific trivia. Add short tags; set `importance` honestly (it ' +
+      'can bias future recall). Correct a fact later with `revise`, or drop it with `forget` (recall shows ' +
+      'each memory\'s id).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -246,11 +247,10 @@ const TOOLS = [
   {
     name: 'kb_write',
     description:
-      'Create or update a KNOWLEDGE-BASE page — durable, company-wide knowledge others will reuse (a runbook ' +
-      'you followed, a decision and its rationale, a convention, a fact you established). Editing an existing ' +
-      'page is ENCOURAGED — search first (kb_search) and update in place rather than create a duplicate; your ' +
-      'change is versioned and revertable. Use this for shared canonical knowledge, NOT private run notes (use ' +
-      'remember for those).',
+      'Create or update a KNOWLEDGE-BASE page — durable, company-wide knowledge others reuse (a runbook, a ' +
+      'decision + rationale, a convention, an established fact). Search first (kb_search) and edit in place ' +
+      'rather than duplicate; changes are versioned and revertable. Shared canonical knowledge, NOT private ' +
+      'run notes (use remember for those).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,

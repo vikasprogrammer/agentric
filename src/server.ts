@@ -28,7 +28,7 @@ import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAll
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, ApprovalRequest, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
+import { AgentManifest, ApprovalRequest, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
@@ -41,6 +41,7 @@ interface MemorySettingsView {
   ranking?: { halfLifeDays?: number; weightByImportance?: boolean; weightByUsage?: boolean };
   maintenance?: { pruneAfterDays?: number; keepImportance?: number; dedupeThreshold?: number; everyHours?: number };
   sharedWrites?: 'open' | 'curated';
+  preload?: { enabled: boolean; count?: number };
   updatedAt?: number;
   updatedBy?: string;
 }
@@ -3092,6 +3093,7 @@ function memoryView(os: AgentOS): MemorySettingsView {
   if (cfg.ranking) view.ranking = { halfLifeDays: cfg.ranking.halfLifeDays, weightByImportance: !!cfg.ranking.weightByImportance, weightByUsage: !!cfg.ranking.weightByUsage };
   if (cfg.maintenance) view.maintenance = { ...cfg.maintenance };
   view.sharedWrites = cfg.sharedWrites === 'curated' ? 'curated' : 'open';
+  if (cfg.preload?.enabled) view.preload = { enabled: true, count: cfg.preload.count ?? 8 };
   return view;
 }
 
@@ -3157,7 +3159,16 @@ function buildMemoryConfig(body: Record<string, any>, prev: MemoryConfig | null)
   const maintenance = parseMaintenance(body.maintenance);
   if (maintenance) cfg.maintenance = maintenance;
   if (body.sharedWrites === 'curated') cfg.sharedWrites = 'curated';
+  const preload = parsePreload(body.preload);
+  if (preload) cfg.preload = preload;
   return cfg;
+}
+
+/** Parse the launch-time recall-preamble control; undefined unless it's explicitly enabled. */
+function parsePreload(pb: any): MemoryPreload | undefined {
+  if (!pb || typeof pb !== 'object' || !pb.enabled) return undefined;
+  const count = Number(pb.count);
+  return { enabled: true, count: Number.isFinite(count) && count > 0 ? Math.min(Math.floor(count), 25) : 8 };
 }
 
 /** Parse the recall-ranking controls; returns undefined when neither knob is on (→ no re-ranking). */

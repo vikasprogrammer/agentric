@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.52.0] — 2026-07-08
+### Added
+- **Agents get a "what you already know" head start.** New **Settings → Memory → Session preload**
+  toggle (off by default): when on, each new session's system prompt is seeded with the agent's most
+  salient memories (its own + tenant-shared, ranked by importance then recency-of-use, top N configurable
+  1–25), so a cold run isn't blind instead of relying on it to call `recall`. Backed by a new
+  `MemoryConfig.preload`; the preamble reads the local `memories` ledger directly and is best-effort
+  (never blocks a launch), never leaks another agent's private memories.
+- **Agents are told to self-improve.** The OS operating notes now teach the memory-vs-CLAUDE.md
+  distinction: `remember` a per-task fact, `agent_update` your own standing instructions (CLAUDE.md) when
+  a recurring gap in your setup shows up, and when to do both.
+- **Native Slack/Discord steer.** When a workspace has native Slack/Discord configured, the prompt now
+  tells the agent to reach for the built-in `slack_*`/`discord_*` tools first (they post as the company
+  bot) and fall back to a Composio action only when no native tool covers the need — per-platform, only
+  listed when actually configured.
+### Changed
+- **Every OS-owned MCP tool is now friction-free in interactive sessions.** `claude-launch.sh` pre-allowed
+  only 17 of the 34 OS tools by name, so the rest (`revise`/`forget`/`update`/`check_inbox`/`schedule`/
+  `agent_*`/`secret_*`/…) prompted for permission mid-task even though the gate hook already governs them.
+  Replaced the partial list with the `mcp__agentos` server wildcard (covers present + future tools; real
+  governance stays server-side).
+- Brought the `discord_dm` tool description to parity with `slack_dm` (was a terse one-liner), and
+  trimmed the `remember`/`kb_write` descriptions that duplicated the operating notes.
+- New `npm run test:context` — an isolated harness asserting exactly what a session receives at launch
+  (system prompt, MCP tool list + conditional gating, recall preamble scoping, the allow-list wildcard).
+
 ## [0.51.0] — 2026-07-08
 ### Added
 - **An agent library you install from — and the built-in fleet is now data, not code.** A workspace

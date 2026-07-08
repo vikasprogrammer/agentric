@@ -37,9 +37,16 @@ cd "$AGENT_DIR" 2>/dev/null || { red "agent folder not found: $AGENT_DIR"; exec 
 # Wire the gate as a project-local PreToolUse hook. claude inherits AOS_URL/SESSION/AGENT from
 # this shell's env, so the hook can reach the gateway and tag the right session. We regenerate
 # the settings each launch so the hook path is always correct (and portable across machines).
-# Pre-allow the OS-owned tools (memory, ask/report, policy preview) so they're friction-free — they're
-# internal and safe (memory reads/writes only this agent's own namespace; policy_check/list_capabilities
-# are pure dry-runs; all go through the loopback API, which derives identity from the session row).
+# Pre-allow EVERY OS-owned tool so they're friction-free in interactive sessions — a single
+# `mcp__agentos` entry approves all tools that server exposes (present and future: memory, KB, tasks,
+# inbox, schedule, agent_*, secret_*, the conditional slack/discord tools, …). They're internal and
+# safe to pre-allow at Claude's permission layer: every one goes through the loopback API, which derives
+# identity from the session row and enforces the REAL governance server-side (e.g. secret_put still
+# blocks for human approval; memory reads/writes only this agent's own namespace) — so approving them
+# here only silences Claude's own prompt, it does NOT bypass Agent OS policy. The gate hook likewise
+# `exit 0`s mcp__agentos__* (they aren't world side effects), so without this pre-allow the tools NOT
+# on the old explicit list (revise/forget/update/check_inbox/schedule/agent_*/secret_*/…) prompted in
+# interactive sessions. Enumerating a partial list caused exactly that gap; the server name covers all.
 # The Notification hook lives beside the gate hook; derive its path so it's correct on every machine.
 NOTIFY_HOOK="$(dirname "$HOOK")/notify-hook.sh"
 # The Agent OS status line renderer (native claude statusLine) lives beside the hooks too.
@@ -79,7 +86,7 @@ rm -f .claude/settings.json
 cat > .claude/aos-settings.json <<JSON
 {
   "permissions": {
-    "allow": ["mcp__agentos__recall", "mcp__agentos__remember", "mcp__agentos__kb_search", "mcp__agentos__kb_read", "mcp__agentos__kb_write", "mcp__agentos__ask", "mcp__agentos__report", "mcp__agentos__publish", "mcp__agentos__list_capabilities", "mcp__agentos__policy_check", "mcp__agentos__directory_lookup", "mcp__agentos__list_agents", "mcp__agentos__task_create", "mcp__agentos__task_list", "mcp__agentos__task_get", "mcp__agentos__task_claim", "mcp__agentos__task_update"]$DENY_LINE
+    "allow": ["mcp__agentos"]$DENY_LINE
   },
   "hooks": {
     "PreToolUse": [

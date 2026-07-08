@@ -5781,6 +5781,8 @@ function MemorySettings({ me }: { me: Member }) {
   const [maintBusy, setMaintBusy] = useState(false)
   const [maintMsg, setMaintMsg] = useState('')
   const [curated, setCurated] = useState(false) // shared-write policy: only humans publish shared
+  const [preloadOn, setPreloadOn] = useState(false) // launch-time recall preamble
+  const [preloadCount, setPreloadCount] = useState('8')
   const apply = (v: MemorySettings) => {
     setView(v)
     setBackend(v.backend)
@@ -5799,6 +5801,8 @@ function MemorySettings({ me }: { me: Member }) {
     if (m?.dedupeThreshold != null) setDedupeThresh(String(m.dedupeThreshold))
     setEveryHours(String(m?.everyHours ?? 24))
     setCurated(v.sharedWrites === 'curated')
+    setPreloadOn(!!v.preload?.enabled)
+    if (v.preload?.count != null) setPreloadCount(String(v.preload.count))
   }
   useEffect(() => { api.memorySettings().then((v) => { if (v.error) return setHint('⚠ ' + v.error); apply(v) }).catch(() => {}) }, [])
 
@@ -5848,12 +5852,13 @@ function MemorySettings({ me }: { me: Member }) {
   const ranking = () => ({ halfLifeDays: Number(halfLife) || 0, weightByImportance: weightImp, weightByUsage: weightUse })
   const maintenance = () => ({ pruneAfterDays: Number(pruneDays) || 0, keepImportance: Number(keepImp), everyHours: Number(everyHours) || 24, ...(dedupeOn ? { dedupeThreshold: Number(dedupeThresh) } : {}) })
   const sharedWrites = (): 'open' | 'curated' => (curated ? 'curated' : 'open')
+  const preload = () => ({ enabled: preloadOn, count: Math.max(1, Math.min(Number(preloadCount) || 8, 25)) })
   const body = (): MemorySettingsReq => {
     if (backend === 'libsql') {
-      return { backend, libsql: { url: url.trim(), ...(authToken.trim() ? { authToken: authToken.trim() } : {}), embeddings: emb() }, ranking: ranking(), maintenance: maintenance(), sharedWrites: sharedWrites() }
+      return { backend, libsql: { url: url.trim(), ...(authToken.trim() ? { authToken: authToken.trim() } : {}), embeddings: emb() }, ranking: ranking(), maintenance: maintenance(), sharedWrites: sharedWrites(), preload: preload() }
     }
-    if (backend === 'automem') return { backend, automem: { endpoint: endpoint.trim(), ...(token.trim() ? { token: token.trim() } : {}) }, sharedWrites: sharedWrites() }
-    return { ...(embedOn ? { backend: 'sqlite', sqlite: { embeddings: emb() } } : { backend: 'sqlite' }), ranking: ranking(), maintenance: maintenance(), sharedWrites: sharedWrites() }
+    if (backend === 'automem') return { backend, automem: { endpoint: endpoint.trim(), ...(token.trim() ? { token: token.trim() } : {}) }, sharedWrites: sharedWrites(), preload: preload() }
+    return { ...(embedOn ? { backend: 'sqlite', sqlite: { embeddings: emb() } } : { backend: 'sqlite' }), ranking: ranking(), maintenance: maintenance(), sharedWrites: sharedWrites(), preload: preload() }
   }
 
   // Run a maintenance pass now (uses the SAVED policy — save first if you just changed the knobs).
@@ -6121,6 +6126,25 @@ function MemorySettings({ me }: { me: Member }) {
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={curated} onChange={(e) => setCurated(e.target.checked)} />
             Curated <span className="text-[11px] text-muted-foreground">— agents' shared writes are stored private; only humans publish shared. Off = any agent may publish (audited).</span>
+          </label>
+        </CardContent>
+      </Card>
+
+      {/* Launch-time recall preamble — seed each new session with the agent's most salient memories. */}
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="text-sm font-medium">Session preload</div>
+            <p className="text-xs text-muted-foreground">Inject each agent's most salient memories into its system prompt at launch, so a cold session doesn't start blind (instead of relying on it to call <code className="text-xs">recall</code>). Ranked by importance then recency-of-use; includes the agent's own memories and tenant-shared ones.</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={preloadOn} onChange={(e) => setPreloadOn(e.target.checked)} />
+            Preload memories on launch
+            {preloadOn && (
+              <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                — top <Input value={preloadCount} onChange={(e) => setPreloadCount(e.target.value)} className="h-6 w-16 font-mono text-xs" /> (1–25)
+              </span>
+            )}
           </label>
         </CardContent>
       </Card>
