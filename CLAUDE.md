@@ -180,7 +180,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 31 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 33 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`publish`/`artifacts_list`. Skills: `skill_propose` (draft a
@@ -192,7 +192,12 @@ Key modules:
   headless/interactive; owner = run-as passthrough so a hand-off keeps the accountable human). Secrets
   (shared credential handoff): `secret_put`/`secret_get`/`secret_list` — an agent stores a password/key
   tenant-wide under a KEY (approval-gated `secret.put`; value kept out of audit/approval-card/policy args,
-  encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. Plus
+  encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. Agents
+  (build + self-improve): `agent_create` (spin up a new governed teammate) and the **self-only**
+  `agent_update`/`agent_history`/`agent_revert` — an agent refines its OWN listing (description, starter
+  prompts, tuning) + CLAUDE.md system prompt and can roll back a bad self-edit; every change snapshots a
+  reversible revision (`src/state/agent-revisions.ts`, the KB-style rollback backbone; no agent can edit
+  another agent). Plus
   `directory_lookup` (team/identity-map
   search), `list_capabilities`/`policy_check` (policy preview), and `slack_reply`/`discord_reply` when
   chat-triggered. Each tool is a session-secret-gated loopback call to an `/api/*` route that sits BEFORE

@@ -312,6 +312,30 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_kb_rev_page ON kb_revisions(page_id, rev);
 
+    -- Agent config revision history: every prior version of an agent's "listing" (description, starter
+    -- prompts, CLAUDE.md system prompt, tuning). Append-only full snapshots — the rollback + audit
+    -- backbone that makes a self-editing agent safe (safety = reversibility, like the KB above).
+    CREATE TABLE IF NOT EXISTS agent_revisions (
+      id              TEXT PRIMARY KEY,
+      tenant          TEXT NOT NULL,
+      agent_id        TEXT NOT NULL,
+      rev             INTEGER NOT NULL,
+      description     TEXT NOT NULL,
+      category        TEXT,
+      icon            TEXT,
+      model           TEXT,
+      effort          TEXT,
+      permission_mode TEXT,
+      example_prompts TEXT NOT NULL,          -- JSON string[]
+      shell_secrets   TEXT NOT NULL,          -- JSON string[]
+      claude_md       TEXT NOT NULL,          -- full CLAUDE.md snapshot
+      summary         TEXT,                   -- one-line "what changed"
+      author          TEXT NOT NULL,          -- member email | agent:<id> | system
+      created_at      INTEGER NOT NULL,
+      UNIQUE(agent_id, rev)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_rev ON agent_revisions(agent_id, rev);
+
     -- FTS5 over title+tags+body for ranked search (mirrors memories_fts).
     CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
       title, tags, body, content='kb_pages', content_rowid='rowid'

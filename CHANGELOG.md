@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.43.0] — 2026-07-08
+### Added
+- **Agents can improve their own listing — reversibly.** An agent can now refine its OWN description,
+  starter prompts, category, icon, runtime tuning, and CLAUDE.md system prompt via `agent_update`, inspect
+  its edit history with `agent_history`, and roll back a bad self-edit with `agent_revert` (all self-only —
+  the target is always the calling session's agent). This is the self-improvement loop: when an agent
+  notices a recurring gap in its instructions, it can fix it, and the change takes effect on its next
+  session. Safety is **reversibility, not an approval gate** (like the Knowledge Base): every edit — by the
+  agent OR a human console edit — snapshots a full revision into a new `agent_revisions` table
+  (`src/state/agent-revisions.ts`), so any change is auditable (`agent.config.updated` /
+  `agent.config.reverted`) and one-click revertable from the console **agent page → Revision history**
+  panel. Two new MCP tools (`agent_history`, `agent_revert`) → 33 always-on tools; new console routes
+  `GET /api/agents/:id/revisions` + `POST /api/agents/:id/revert` (owner/admin).
+### Changed
+- **`agent_update` is now self-only.** It previously took the target agent id from the request body, so
+  any agent could rewrite any other editable agent's prompt/tuning with no approval — a side effect that
+  skipped the gate. The target is now always the calling session's agent (a supplied `id` must match it).
+  Agents can still *create* other agents with `agent_create`; they just can't silently edit each other.
+  Humans edit any agent from the console as before.
+
 ## [0.42.2] — 2026-07-08
 ### Fixed
 - **Stop tracking the `node_modules` symlink (regression from 0.42.1) + harden `.gitignore`.** `scripts/wt.sh`

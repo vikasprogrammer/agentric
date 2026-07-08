@@ -208,6 +208,23 @@ export interface KbRevision {
   createdAt: number
 }
 
+export interface AgentRevision {
+  id: string
+  rev: number
+  description: string
+  category?: string
+  icon?: string
+  model?: string
+  effort?: Effort
+  permissionMode?: PermissionMode
+  examplePrompts: string[]
+  shellSecrets: string[]
+  claudeMd: string
+  summary?: string | null
+  author: string
+  createdAt: number
+}
+
 export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled'
 export interface Task {
   id: string
@@ -733,6 +750,8 @@ export const api = {
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
   agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
   saveAgentConfig: (id: string, patch: RuntimeTuning & { description?: string; examplePrompts?: string[]; shellSecrets?: string[]; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; category?: string; icon?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
+  agentRevisions: (id: string) => call<{ agent: string; revisions: AgentRevision[]; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/revisions`),
+  agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
 

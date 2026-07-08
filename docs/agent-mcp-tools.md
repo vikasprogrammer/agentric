@@ -36,14 +36,16 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |
 | `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign; closes a dispatched loop |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
-| `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` | W | rewrites manifest (+CLAUDE.md); user-home agents only; audited `agent.config.updated` |
+| `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; snapshots a revision; audited `agent.config.updated` |
+| `agent_history` | `POST /api/agents/history` | `AgentRevisions.list` | R | the caller's own listing revisions (rev/author/summary/date), newest first |
+| `agent_revert` | `POST /api/agents/revert` | `AgentRevisions` + `AgentOS.registerAgent` | W | **self-only**; restores a prior revision (description/prompts/tuning/CLAUDE.md), records the revert as a new revision; audited `agent.config.reverted` |
 | `secret_put` | `POST /api/agent/secret/put` | `TerminalManager.putSecret` | W | shared-scope (`*`) vault write; **approval-gated** (policy `secret.put`, blocks until decided); value NEVER in audit/approval-card/policy args; audited `secret.put` (key only); `updated_by=agent:<id>` |
 | `secret_get` | `POST /api/agent/secret/get` | `TerminalManager.getSecret` | R | returns plaintext to caller; allow+audit (a policy `deny`/`ask` on `secret.get` refuses — reads never hang); audited `secret.get` (key + found, never value) |
 | `secret_list` | `GET /api/agent/secret/list` | `TerminalManager.listSecrets` | R | shared (`*`) secret KEYS + metadata only, never values |
 | `slack_reply` | `POST /api/agent/slack/reply` | SlackSocket | W | only when `SLACK_REPLY=1` (chat-triggered) |
 | `discord_reply` | `POST /api/agent/discord/reply` | DiscordSocket | W | only when `DISCORD_REPLY=1` (chat-triggered) |
 
-31 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+33 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 
@@ -74,17 +76,26 @@ scheduler `tick()` fires it once when due, then disables it. Recurring (cron) sc
 human-only. A future tightening could classify `schedule` through Policy for workspaces that want
 sign-off on deferred runs.
 
-### `agent_create` / `agent_update` — governance model
+### `agent_create` / `agent_update` / `agent_history` / `agent_revert` — governance model
 
-These are the **agent-author's** build tools (the default *System* agent provisioned by
-`src/edge/agent-author.ts`), though — like the Tasks tools — they're the general **delegation surface**
+`agent_create` is the **agent-author's** build tool (the default *System* agent provisioned by
+`src/edge/agent-author.ts`), though — like the Tasks tools — it's the general **delegation surface**
 available to any agent. Creating an agent **definition escalates nothing**: the new agent still passes
 every side effect through the gate, and only a **human** can run or assign it (spawn is role-gated). So
-they follow the same **auto-apply + audited** posture as `kb_write` / `task_create` — no approval card —
-emitting `agent.created` / `agent.config.updated` with `principal: agent:<id>`. Guards: strict id
-validation + collision check on create; `agent_update` only touches agents that live under the data home
-(the read-only bundled examples can't be edited) and rewrites only the fields the caller supplied. A
-future tightening could classify agent creation through Policy for workspaces that want sign-off.
+it follows the same **auto-apply + audited** posture as `kb_write` / `task_create` — no approval card —
+emitting `agent.created` with `principal: agent:<id>`. Guard: strict id validation + collision check.
+
+`agent_update` / `agent_history` / `agent_revert` are the **self-improvement** loop — an agent refining
+its OWN listing (description, starter prompts, category, icon, tuning) and CLAUDE.md system prompt when it
+notices a recurring gap. They are **self-only**: the target is always the calling session's agent (a body
+`id` must equal it), so **no agent can rewrite another agent's prompt or tuning** — that cross-agent side
+effect would skip the gate. A human edits any agent from the console. Safety here is not an approval card
+but **reversibility** (like the KB): every edit — by the agent or a human console edit — snapshots a full
+revision into `agent_revisions` (`src/state/agent-revisions.ts`), so any change is auditable
+(`agent.config.updated` / `agent.config.reverted`) and one-click / one-tool revertable; the console
+**agent page → Revision history** panel is the human rollback. `agent_update` only touches agents under the
+data home (bundled examples can't be edited) and rewrites only the fields the caller supplied. A future
+tightening could classify CLAUDE.md/model self-edits through Policy for workspaces that want sign-off.
 
 ## Remaining gaps (not yet exposed)
 

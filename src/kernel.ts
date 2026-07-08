@@ -32,6 +32,7 @@ import { SkillsStore } from './governance/skills';
 import { Db, openDb } from './state/db';
 import { ArtifactStore } from './state/artifacts';
 import { KbStore } from './state/kb';
+import { AgentRevisions } from './state/agent-revisions';
 import { TaskStore } from './state/tasks';
 import { StubIdentity } from './governance/identity';
 import { InMemoryIdempotencyStore } from './gateway/idempotency';
@@ -80,6 +81,8 @@ export class AgentOS {
   readonly artifacts: ArtifactStore;
   /** The company knowledge base — the shared, living wiki agents + humans co-author (revision-chained). */
   readonly kb: KbStore;
+  /** Revision history for every agent's config/CLAUDE.md — the rollback backbone for self-editing agents. */
+  readonly agentRevisions: AgentRevisions;
   /** The shared work queue — durable tasks humans + agents create, claim, and drain (auto-dispatchable). */
   readonly tasks: TaskStore;
   readonly identity = new StubIdentity();
@@ -118,6 +121,7 @@ export class AgentOS {
     this.skills = new SkillsStore(opts.paths?.skills, this.db, opts.paths?.bundledSkills);
     this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);
     this.kb = new KbStore(this.db, opts.paths?.kb);
+    this.agentRevisions = new AgentRevisions(this.db);
     this.tasks = new TaskStore(this.db); // db-only (structured state, no on-disk mirror — see tasks-plan.md §Decision 2)
     this.memory = createMemoryProvider(opts.memory ?? { backend: 'sqlite' }, this.db);
 

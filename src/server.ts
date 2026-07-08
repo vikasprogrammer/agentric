@@ -29,6 +29,7 @@ import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAll
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { AgentManifest, ApprovalRequest, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
+import { AgentConfigSnapshot } from './state/agent-revisions';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
 interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -53,6 +54,40 @@ const WEB_DIST = path.resolve(__dirname, '../web/dist');
  *  can't tell them apart from a hand-authored agent — and homes provisioned before this flag existed
  *  carry no marker in their on-disk manifests. */
 const BUILT_IN_AGENT_IDS = new Set<string>([...GENERALIST_IDS, AGENT_AUTHOR_ID, CONSOLIDATOR_ID]);
+
+/** The full editable state of an agent, from its manifest + on-disk CLAUDE.md — the unit revisions snapshot. */
+function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentConfigSnapshot {
+  return {
+    description: ag.description ?? '',
+    category: ag.category, icon: ag.icon,
+    model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode,
+    examplePrompts: ag.examplePrompts ?? [], shellSecrets: ag.shellSecrets ?? [],
+    claudeMd,
+  };
+}
+
+/** Read the agent's current on-disk snapshot (manifest fields + CLAUDE.md), to record as the "before". */
+function readAgentSnapshot(ag: AgentManifest): AgentConfigSnapshot {
+  const file = ag.dir ? path.join(ag.dir, 'CLAUDE.md') : '';
+  const claudeMd = file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+  return manifestToSnapshot(ag, claudeMd);
+}
+
+/** Re-apply a full snapshot to disk (agent.json + CLAUDE.md) and re-register — the shared revert primitive. */
+function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSnapshot): AgentManifest {
+  const next: AgentManifest = {
+    ...ag,
+    description: snap.description, category: snap.category, icon: snap.icon,
+    model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode,
+    examplePrompts: snap.examplePrompts.length ? snap.examplePrompts : undefined,
+    shellSecrets: snap.shellSecrets.length ? snap.shellSecrets : undefined,
+  };
+  const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
+  fs.writeFileSync(path.join(ag.dir!, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
+  fs.writeFileSync(path.join(ag.dir!, 'CLAUDE.md'), snap.claudeMd);
+  os.registerAgent(next);
+  return next;
+}
 
 /** Agents available for terminal sessions = whatever manifests this instance loaded.
  *  `deletable` = lives under the data home (user-created), so it can be removed; the bundled
@@ -910,7 +945,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     if (!os.paths) return sendJson(res, 200, { ok: false, error: 'editing agents requires a data home' });
-    const id = String(b.id || '').trim().toLowerCase();
+    // Self-only: an agent edits ITS OWN listing. The target is the session's agent, never a body id —
+    // no agent can rewrite another agent's prompt/tuning (that side effect would skip the gate). A
+    // human edits any agent from the console (the owner/admin routes below).
+    const id = agent;
+    if (b.id !== undefined && String(b.id).trim().toLowerCase() !== id)
+      return sendJson(res, 200, { ok: false, error: `you can only edit your own listing ("${id}"), not "${String(b.id).trim().toLowerCase()}"` });
     const ag = os.agents.get(id);
     if (!ag?.dir) return sendJson(res, 200, { ok: false, error: `unknown agent "${id}"` });
     if (ag.runtime !== 'claude-code') return sendJson(res, 200, { ok: false, error: 'only claude-code agents can be edited' });
@@ -919,6 +959,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
     const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in b ? b.model : ag.model, effort: 'effort' in b ? b.effort : ag.effort });
     if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
+    const before = readAgentSnapshot(ag);
     // Only fields present in the body are changed; everything else is preserved.
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
@@ -930,8 +971,42 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     if ('claudeMd' in b) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(b.claudeMd ?? ''));
     os.registerAgent(next);
-    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: tuning.model, effort: tuning.effort, category, claudeMd: 'claudeMd' in b, by: `agent:${agent}` } });
-    return sendJson(res, 200, { ok: true, id });
+    const after = manifestToSnapshot(next, 'claudeMd' in b ? String(b.claudeMd ?? '') : before.claudeMd);
+    const rev = os.agentRevisions.commit(os.tenant, id, before, after, 'agent self-edit', `agent:${agent}`);
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: tuning.model, effort: tuning.effort, category, claudeMd: 'claudeMd' in b, rev, by: `agent:${agent}` } });
+    return sendJson(res, 200, { ok: true, id, rev });
+  }
+  // Agent reads its OWN revision history (self-scoped) — pick a rev to revert to.
+  if (method === 'POST' && p === '/api/agents/history') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const revisions = os.agentRevisions.list(agent).map((r) => ({
+      rev: r.rev, author: r.author, summary: r.summary, createdAt: r.createdAt,
+      description: r.description, claudeChars: r.claudeMd.length,
+    }));
+    return sendJson(res, 200, { ok: true, agent, revisions });
+  }
+  // Agent reverts ITS OWN listing to a prior revision (self-scoped) — the rollback for a bad self-edit.
+  if (method === 'POST' && p === '/api/agents/revert') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!os.paths) return sendJson(res, 200, { ok: false, error: 'editing agents requires a data home' });
+    const ag = os.agents.get(agent);
+    if (!ag?.dir) return sendJson(res, 200, { ok: false, error: `unknown agent "${agent}"` });
+    const rev = Number(b.rev);
+    const target = os.agentRevisions.get(agent, rev);
+    if (!target) return sendJson(res, 200, { ok: false, error: `no revision ${b.rev} for "${agent}"` });
+    const before = readAgentSnapshot(ag);
+    const next = applyAgentSnapshot(os, ag, target);
+    const newRev = os.agentRevisions.commit(os.tenant, agent, before, manifestToSnapshot(next, target.claudeMd), `revert to rev ${rev}`, `agent:${agent}`);
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.reverted', data: { agent, toRev: rev, rev: newRev, by: `agent:${agent}` } });
+    return sendJson(res, 200, { ok: true, id: agent, toRev: rev, rev: newRev });
   }
 
   // Every other /api/* route requires a logged-in member.
@@ -1686,9 +1761,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, exists: fs.existsSync(file), content });
     }
     const b = await readBody(req);
-    fs.writeFileSync(file, String(b.content ?? ''));
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.claude.updated', data: { agent: ag.id, bytes: String(b.content ?? '').length } });
-    return sendJson(res, 200, { ok: true });
+    const before = readAgentSnapshot(ag);
+    const content = String(b.content ?? '');
+    fs.writeFileSync(file, content);
+    const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(ag, content), 'edited CLAUDE.md', me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.claude.updated', data: { agent: ag.id, bytes: content.length, rev } });
+    return sendJson(res, 200, { ok: true, rev });
   }
 
   // ── per-agent runtime tuning (model / effort / permission-mode) — owner/admin only ──
@@ -1707,6 +1785,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
     if (tErr) return sendJson(res, 400, { error: tErr });
+    const before = readAgentSnapshot(ag);
     // Replace the tuning fields wholesale (sanitize already dropped empties to undefined → those
     // become "inherit"). Starter prompts + shell secrets + category + icon are only touched when the
     // body carries the field (a tuning-only save from the runtime card leaves them as-is). Preserve
@@ -1720,8 +1799,34 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [] } });
+    const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [], rev } });
     return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, category, icon });
+  }
+
+  // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──
+  const agentRevs = p.match(/^\/api\/agents\/([\w.-]+)\/revisions$/);
+  if (agentRevs && method === 'GET') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const ag = os.agents.get(agentRevs[1]);
+    if (!ag) return sendJson(res, 404, { error: 'agent not found' });
+    return sendJson(res, 200, { agent: ag.id, revisions: os.agentRevisions.list(ag.id) });
+  }
+  const agentRevert = p.match(/^\/api\/agents\/([\w.-]+)\/revert$/);
+  if (agentRevert && method === 'POST') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const ag = os.agents.get(agentRevert[1]);
+    if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
+    if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'only claude-code agents can be reverted' });
+    const b = await readBody(req);
+    const rev = Number(b.rev);
+    const target = os.agentRevisions.get(ag.id, rev);
+    if (!target) return sendJson(res, 404, { error: `no revision ${b.rev} for "${ag.id}"` });
+    const before = readAgentSnapshot(ag);
+    const next = applyAgentSnapshot(os, ag, target);
+    const newRev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, target.claudeMd), `revert to rev ${rev}`, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.reverted', data: { agent: ag.id, toRev: rev, rev: newRev } });
+    return sendJson(res, 200, { ok: true, id: ag.id, toRev: rev, rev: newRev });
   }
 
   // ── workspace runtime defaults (the fleet-wide model/effort/permission fallback) — owner/admin only ──

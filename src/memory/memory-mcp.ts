@@ -555,23 +555,45 @@ const TOOLS = [
   {
     name: 'agent_update',
     description:
-      'Refine an existing agent: pass its id plus only the fields you want to change (its CLAUDE.md, ' +
-      'description, category, model, effort, example prompts, or icon). Re-registers it live so the next ' +
-      'session uses the new values. Prefer this over creating a near-duplicate when an agent nearly fits.',
+      'Improve YOUR OWN listing — pass only the fields you want to change (your CLAUDE.md system prompt, ' +
+      'description, category, model, effort, example prompts, or icon). This is how you self-improve: when ' +
+      "you notice a recurring gap in your instructions or a better way to describe what you do, refine it " +
+      'here. Takes effect on your next session. Every edit is snapshotted — inspect them with agent_history ' +
+      'and undo with agent_revert. You can only edit yourself (the id defaults to you); a human edits others.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        id: { type: 'string', description: 'The id of the agent to edit.' },
-        description: { type: 'string', description: 'New one-line description.' },
-        claudeMd: { type: 'string', description: "Replacement CLAUDE.md (the agent's system prompt)." },
+        id: { type: 'string', description: 'Optional — defaults to you. Must be your own id; you cannot edit another agent.' },
+        description: { type: 'string', description: 'New one-line description of what you do.' },
+        claudeMd: { type: 'string', description: "Replacement CLAUDE.md (your full system prompt). Send the complete new text, not a diff." },
         category: { type: 'string', description: 'New grouping label (empty string clears it → Uncategorized).' },
         model: { type: 'string', description: 'Model override (empty string clears → inherit the workspace default).' },
         effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning-effort override.' },
-        examplePrompts: { type: 'array', items: { type: 'string' }, description: 'Replacement starter prompts.' },
+        examplePrompts: { type: 'array', items: { type: 'string' }, description: 'Replacement starter prompts shown on your spawn card.' },
         icon: { type: 'string', description: 'New lucide icon name (or raw <svg>).' },
       },
-      required: ['id'],
+    },
+  },
+  {
+    name: 'agent_history',
+    description:
+      'List the revision history of your own listing (description, starter prompts, CLAUDE.md, tuning) — ' +
+      'newest first, each with a rev number, who made it, and a one-line summary. Use this to find a good ' +
+      'revision to roll back to after a self-edit that made things worse.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'agent_revert',
+    description:
+      "Undo a self-edit: roll YOUR OWN listing back to a prior revision (get the number from " +
+      'agent_history). Restores that revision\'s description, starter prompts, tuning, and CLAUDE.md, and ' +
+      'records the revert as a new revision (so it too is reversible). Takes effect on your next session.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { rev: { type: 'number', description: 'The revision number to restore (from agent_history).' } },
+      required: ['rev'],
     },
   },
   {
@@ -1002,13 +1024,13 @@ async function agentCreate(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
   if (!d.ok) return `Could not create the agent: ${d.error ?? 'unknown error'}`;
-  return `Created agent "${d.id}". It's live in the console now (grouped under ${args.category ? String(args.category) : 'Uncategorized'}); a human can run or assign it. Use agent_update "${d.id}" to refine it.`;
+  return `Created agent "${d.id}". It's live in the console now (grouped under ${args.category ? String(args.category) : 'Uncategorized'}); a human can run or assign it, and refine it from its console page. (agent_update only edits your own listing, not other agents.)`;
 }
 
 async function agentUpdate(args: Record<string, unknown>): Promise<string> {
-  const id = String(args.id ?? '').trim().toLowerCase();
-  if (!id) return 'Which agent? (id is required).';
-  // Only forward fields the caller actually supplied, so an unset field is left untouched server-side.
+  // Self-only: an agent refines its OWN listing. Default the target to this session's agent; the server
+  // rejects any other id. Every change is snapshotted (see agent_history / agent_revert) so it's reversible.
+  const id = String(args.id ?? AGENT).trim().toLowerCase();
   const body: Record<string, unknown> = { session: SESSION, id };
   for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
     if (args[k] !== undefined) body[k] = String(args[k]);
@@ -1019,9 +1041,36 @@ async function agentUpdate(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  const d = (await res.json()) as { ok?: boolean; id?: string; rev?: number | null; error?: string };
   if (!d.ok) return `Could not update the agent: ${d.error ?? 'unknown error'}`;
-  return `Updated agent "${id}". The next session it runs will use the new configuration.`;
+  return `Updated your listing "${id}"${d.rev ? ` (saved as rev ${d.rev} — revert with agent_revert)` : ''}. The next session you run will use it.`;
+}
+
+async function agentHistory(): Promise<string> {
+  const res = await fetch(AOS_URL + '/api/agents/history', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION }),
+  });
+  const d = (await res.json()) as { ok?: boolean; revisions?: Array<{ rev: number; author: string; summary: string | null; createdAt: number; description: string; claudeChars: number }>; error?: string };
+  if (!d.ok) return `Could not read history: ${d.error ?? 'unknown error'}`;
+  if (!d.revisions?.length) return 'No revisions yet — your listing has not been edited.';
+  return 'Your listing revisions (newest first):\n' + d.revisions
+    .map((r) => `  rev ${r.rev} · ${new Date(r.createdAt).toISOString().slice(0, 16).replace('T', ' ')} · ${r.author}${r.summary ? ` — ${r.summary}` : ''}`)
+    .join('\n') + '\n\nUse agent_revert { rev } to roll back to one.';
+}
+
+async function agentRevert(args: Record<string, unknown>): Promise<string> {
+  const rev = Number(args.rev);
+  if (!Number.isInteger(rev) || rev < 1) return 'Which revision? Pass rev (a positive integer from agent_history).';
+  const res = await fetch(AOS_URL + '/api/agents/revert', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, rev }),
+  });
+  const d = (await res.json()) as { ok?: boolean; toRev?: number; rev?: number | null; error?: string };
+  if (!d.ok) return `Could not revert: ${d.error ?? 'unknown error'}`;
+  return `Reverted your listing to rev ${d.toRev}${d.rev ? ` (recorded as rev ${d.rev})` : ''}. The next session you run will use it.`;
 }
 
 // ── Secrets vault: shared credential handoff (value stays out of every durable plane) ─────────────
@@ -1267,6 +1316,8 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_update' ? await taskUpdate(args)
         : name === 'agent_create' ? await agentCreate(args)
         : name === 'agent_update' ? await agentUpdate(args)
+        : name === 'agent_history' ? await agentHistory()
+        : name === 'agent_revert' ? await agentRevert(args)
         : name === 'secret_put' ? await secretPut(args)
         : name === 'secret_get' ? await secretGet(args)
         : name === 'secret_list' ? await secretList()

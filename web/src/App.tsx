@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
 
@@ -3933,6 +3933,8 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  // Bumped after a revert so both the tuning card (remounted via key) and the CLAUDE.md below re-fetch.
+  const [revBump, setRevBump] = useState(0)
   const info = agents.find((a) => a.id === agentId)
 
   useEffect(() => {
@@ -3941,7 +3943,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
       if (r.error) { setHint('⚠ ' + r.error); return }
       setContent(r.content ?? ''); setSaved(r.content ?? ''); setLoaded(true)
     }).catch(() => {})
-  }, [agentId])
+  }, [agentId, revBump])
 
   const dirty = content !== saved
   const save = async () => {
@@ -3963,7 +3965,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
         system prompt: its role, conventions, and how it should use its tools (including when to
         <span className="font-mono text-xs"> recall</span>/<span className="font-mono text-xs">remember</span>). Applied on the agent's next session.
       </p>
-      {info?.runtime === 'claude-code' && <AgentTuningCard agentId={agentId} onSaved={onSaved} />}
+      {info?.runtime === 'claude-code' && <AgentTuningCard key={revBump} agentId={agentId} onSaved={onSaved} />}
       <Card>
         <CardContent className="space-y-3 p-4">
           {!loaded && !hint ? (
@@ -3984,7 +3986,54 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
           )}
         </CardContent>
       </Card>
+      {info?.runtime === 'claude-code' && <AgentRevisionsCard agentId={agentId} onReverted={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
     </div>
+  )
+}
+
+/** Revision history for an agent's listing + CLAUDE.md — the human rollback for a self-editing agent.
+ *  Every edit (by the agent via agent_update, or a human here) snapshots a full version; revert restores
+ *  one and records a new revision, so nothing is ever lost. */
+function AgentRevisionsCard({ agentId, onReverted }: { agentId: string; onReverted: () => void }) {
+  const [revs, setRevs] = useState<AgentRevision[] | null>(null)
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const load = () => api.agentRevisions(agentId).then((r) => { if (!r.error) setRevs(r.revisions) }).catch(() => {})
+  useEffect(() => { setRevs(null); setOpen(false); setHint('') }, [agentId])
+  useEffect(() => { if (open && revs === null) load() }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  const revert = async (rev: number) => {
+    if (!window.confirm(`Revert ${agentId} to rev ${rev}?\n\nThis restores that revision's description, starter prompts, tuning, and CLAUDE.md, and records a new revision (so it too is reversible).`)) return
+    setBusy(true); setHint('')
+    const r = await api.agentRevert(agentId, rev)
+    setBusy(false)
+    if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
+    setHint(`reverted to rev ${rev}`); load(); onReverted(); setTimeout(() => setHint(''), 2500)
+  }
+  return (
+    <Card>
+      <CardContent className="space-y-2 p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs font-medium"><HistoryIcon className="h-3.5 w-3.5" /> Revision history</div>
+          <div className="flex items-center gap-3">
+            {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
+            <Button size="sm" variant="outline" onClick={() => setOpen((v) => !v)}>{open ? 'Hide' : 'Show'}</Button>
+          </div>
+        </div>
+        {open && (
+          revs === null ? <div className="text-xs text-muted-foreground">Loading…</div>
+          : revs.length === 0 ? <div className="text-xs text-muted-foreground">No revisions yet — edits to this agent's listing or CLAUDE.md (by the agent itself or a human) will show up here.</div>
+          : <div className="space-y-1">
+              {revs.map((rv) => (
+                <div key={rv.id} className="flex items-center justify-between gap-2 rounded px-2 py-1 text-xs hover:bg-muted/50">
+                  <span className="min-w-0 flex-1 truncate"><span className="font-mono">rev {rv.rev}</span> · {new Date(rv.createdAt).toLocaleString()} · {rv.author}{rv.summary ? ` — ${rv.summary}` : ''}</span>
+                  {rv.rev !== revs[0].rev && <button className="shrink-0 text-muted-foreground underline hover:text-foreground disabled:opacity-50" disabled={busy} onClick={() => revert(rv.rev)}>revert</button>}
+                </div>
+              ))}
+            </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
