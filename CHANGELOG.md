@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.47.0] — 2026-07-08
+### Added
+- **Files shortcut on the agent detail page.** An agent's page (`#/agents/<id>`) now has a **Files**
+  button (next to the back-to-Agents link) that opens the Files browser scoped to that agent's folder
+  (`#/files/agents/<id>`), so you can jump straight into its `agent.json`/`CLAUDE.md`/skills. Shown only
+  for agents that live under the data home (`deletable`) — bundled examples live outside it and aren't
+  browsable there; the existing deep-link fallback already drops to the home root for anything missing.
+
 ## [0.46.0] — 2026-07-08
 ### Added
 - **One-shot agent import — the importer behind the "Import into AOS" doc.** The doc described a portable
