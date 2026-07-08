@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.44.1] — 2026-07-08
+### Fixed
+- **Creating a new agent now lands on the agents list with that agent selected**, instead of jumping
+  straight into its edit/settings page. `NewAgentPage`'s `onCreated` navigates to `nav('agents', id)`
+  (agents list, new agent highlighted via the URL detail param) rather than `openAgent(id)`.
+
 ## [0.44.0] — 2026-07-08
 ### Added
 - **Custom governance patterns — teach the enricher your own dangerous ops, as config not code.** A
