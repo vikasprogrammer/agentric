@@ -28,7 +28,7 @@ import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUse
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument } from './governance/policy';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
-import { AgentManifest, ApprovalRequest, EmbeddingsConfig, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
+import { AgentManifest, ApprovalRequest, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
 interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -391,6 +391,43 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!capability) return sendJson(res, 400, { error: 'capability is required' });
     const args = b.args && typeof b.args === 'object' ? (b.args as Record<string, unknown>) : {};
     return sendJson(res, 200, { decision: tm.policyCheck(String(b.session), agent, capability, args) });
+  }
+
+  // ── Secrets vault, agent-facing (loopback, session-scoped) — the A2A credential-handoff path ──
+  // Shared-scope model: writes land tenant-wide (`*`) so any agent can read them; the value NEVER
+  // touches audit/approval-card/policy args (see TerminalManager.putSecret/getSecret). `put` is
+  // approval-gated (policy `secret.put`) and BLOCKS this request until the human decides; `get`/`list`
+  // are allow+audit reads. Agents pass key HANDLES to each other, never the raw value.
+  if (method === 'POST' && p === '/api/agent/secret/put') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const key = String(b.key || '').trim();
+    const value = b.value != null ? String(b.value) : '';
+    if (!ENV_NAME.test(key) || key.length > 64) return sendJson(res, 400, { error: 'key must be a letter/underscore then letters, digits or underscores, ≤64 chars (e.g. PROD_DB_URL)' });
+    if (!value) return sendJson(res, 400, { error: 'value is required' });
+    const reasoning = String(b.reasoning || `store shared secret ${key}`);
+    const out = await tm.putSecret(session, agent, key, value, reasoning);
+    return sendJson(res, 200, out);
+  }
+  if (method === 'POST' && p === '/api/agent/secret/get') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const key = String(b.key || '').trim();
+    if (!key) return sendJson(res, 400, { error: 'key is required' });
+    return sendJson(res, 200, tm.getSecret(session, agent, key));
+  }
+  if (method === 'GET' && p === '/api/agent/secret/list') {
+    const session = url.searchParams.get('session') || '';
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    return sendJson(res, 200, { secrets: tm.listSecrets() });
   }
 
   if (method === 'GET' && p === '/api/memory/recall') {

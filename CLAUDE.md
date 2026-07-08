@@ -175,14 +175,17 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 27 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 30 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`publish`/`artifacts_list`. Scheduling: `schedule`/`unschedule`
   (one-shot deferred self-run via a `type:'once'` automation). Tasks (shared work queue):
   `task_create`/`task_list`/`task_get`/`task_claim`/`task_update` (file/claim/drain durable work; an
   agent-assigned `autoDispatch` task spawns a governed session — the A2A delegation path; per-task `mode`
-  headless/interactive; owner = run-as passthrough so a hand-off keeps the accountable human). Plus
+  headless/interactive; owner = run-as passthrough so a hand-off keeps the accountable human). Secrets
+  (shared credential handoff): `secret_put`/`secret_get`/`secret_list` — an agent stores a password/key
+  tenant-wide under a KEY (approval-gated `secret.put`; value kept out of audit/approval-card/policy args,
+  encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. Plus
   `directory_lookup` (team/identity-map
   search), `list_capabilities`/`policy_check` (policy preview), and `slack_reply`/`discord_reply` when
   chat-triggered. Each tool is a session-secret-gated loopback call to an `/api/*` route that sits BEFORE
