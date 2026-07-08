@@ -177,11 +177,12 @@ export class SlackSocket {
         type: 'trigger.slack',
         data: { eventType: ev.eventType, channel: ev.channel, thread: true, continued: cont.status, runAs: runAsMember ?? null },
       });
-      const note =
-        cont.status === 'resumed'
-          ? ':robot_face: On it — continuing this thread.'
-          : ':hourglass_flowing_sand: Still working on your previous message — I’ll pick this up next.';
-      await postMessage(this.os.settings.slackBotToken(), ev.channel, note, ev.threadTs);
+      // No ack for a resumed turn — the agent's own `slack_reply` is the feedback, and an "On it…" line
+      // before every follow-up answer is just noise in a back-and-forth thread. Only the `busy` case
+      // posts a note, since there the message is deferred and the user would otherwise see nothing.
+      if (cont.status === 'busy') {
+        await postMessage(this.os.settings.slackBotToken(), ev.channel, ':hourglass_flowing_sand: Still working on your previous message — I’ll pick this up next.', ev.threadTs);
+      }
       return;
     }
 

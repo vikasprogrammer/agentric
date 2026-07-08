@@ -2598,18 +2598,33 @@ function CopyBlock({ text, label = 'Copy' }: { text: string; label?: string }) {
 }
 
 // The Slack app manifest (JSON — https://docs.slack.dev/reference/app-manifest/). Enables Socket Mode
-// (no public URL), the bot scopes the OS needs, and the two events we route. Pasted into the manifest
+// (no public URL), the bot scopes the OS needs, and the events we route. Pasted into the manifest
 // editor, or pre-filled via the create-app deep link below (?new_app=1&manifest_json=…).
+//
+// The `message.*` events (+ their `*:history` scopes) are what let a plain in-thread reply reach the
+// bot — without them Slack only delivers explicit `app_mention`s, so a thread follow-up never arrives
+// and thread-continuity can't fire. `channels:read`/`groups:read` back channel-name lookup, `channels:join`
+// lets the bot auto-join a public channel to post, and `im:write` opens DMs.
 const SLACK_MANIFEST_OBJ = {
   display_information: { name: 'Agent OS' },
   features: { bot_user: { display_name: 'Agent OS', always_online: true } },
   oauth_config: {
     scopes: {
-      bot: ['app_mentions:read', 'chat:write', 'users:read', 'users:read.email', 'im:history', 'im:read'],
+      bot: [
+        'app_mentions:read',
+        'chat:write',
+        'channels:read', 'channels:join', 'channels:history',
+        'groups:read', 'groups:history',
+        'im:write', 'im:history',
+        'mpim:history',
+        'users:read', 'users:read.email',
+      ],
     },
   },
   settings: {
-    event_subscriptions: { bot_events: ['app_mention', 'message.im'] },
+    event_subscriptions: {
+      bot_events: ['app_mention', 'message.channels', 'message.groups', 'message.im', 'message.mpim'],
+    },
     interactivity: { is_enabled: false },
     socket_mode_enabled: true,
     token_rotation_enabled: false,
@@ -2656,8 +2671,10 @@ function SlackSetupGuide() {
             <li>The status badge above flips to <strong className="text-emerald-600">connected</strong> within a second or two. Then add a <strong>Slack message</strong> automation on the Automations page.</li>
           </ol>
           <p className="border-t pt-2">
-            The manifest already enables <strong>Socket Mode</strong> and subscribes to <code className="text-[11px]">app_mention</code> +
-            <code className="text-[11px]"> message.im</code> — nothing else to configure. No request URL or public endpoint is needed; the server dials out to Slack.
+            The manifest already enables <strong>Socket Mode</strong> and subscribes to <code className="text-[11px]">app_mention</code> plus the
+            <code className="text-[11px]"> message.*</code> events — so plain replies inside a thread reach the bot too (not just @mentions),
+            which is what lets it keep a conversation going. Remember to <strong>invite the bot to the channel</strong> — <code className="text-[11px]">message.channels</code> only
+            fires where it's a member. No request URL or public endpoint is needed; the server dials out to Slack.
           </p>
         </div>
       )}
@@ -6461,7 +6478,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
               className="font-mono text-xs"
             />
           </Field>
-          <Field label="Bot token" help="OAuth & Permissions → Bot User OAuth Token. Scopes: app_mentions:read, chat:write, users:read, users:read.email, im:history.">
+          <Field label="Bot token" help="OAuth & Permissions → Bot User OAuth Token. Scopes: app_mentions:read, chat:write, channels:read/join/history, groups:read/history, im:write/history, mpim:history, users:read, users:read.email.">
             <Input
               type="password"
               value={botTok}

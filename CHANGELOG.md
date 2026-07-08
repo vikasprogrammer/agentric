@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.56.1] — 2026-07-08
+### Changed
+- **No "On it — continuing this thread" ack on a Slack thread follow-up.** The continuation's own
+  `slack_reply` is the feedback; an "On it…" line before every answer was just noise in a back-and-forth.
+  The `busy` note (message deferred while the agent is still working the previous turn) still posts, since
+  there the user would otherwise see nothing.
+- **In-app Slack manifest now includes the `message.*` events.** Settings → Integrations → the Slack setup
+  manifest (and the create-from-manifest deep link) now requests `message.channels`/`message.groups`/
+  `message.im`/`message.mpim` plus the matching `*:history` scopes (and `channels:read`/`channels:join`/
+  `groups:read`/`im:write`) — so a **plain reply inside a thread** reaches the bot, not just @mentions.
+  The setup copy now reminds you to invite the bot to the channel (`message.channels` only fires where it's
+  a member). Existing apps: reinstall after adding the scopes/events.
+
 ## [0.56.0] — 2026-07-08
 ### Added
 - **Sort the sessions list by column.** The list (table) view's column headings — Session, Agent, ID,
