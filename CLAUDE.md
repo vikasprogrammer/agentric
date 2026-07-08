@@ -121,10 +121,15 @@ Key modules:
   exports each as a shell env var — the ONLY path a vault secret reaches the interactive shell (so a
   plain CLI like `gh` authenticates); connectors still get theirs via the MCP bag. Agent-scoped
   principal (widening to `*`), audited `shell.secret.injected`/`unresolved`, opt-in per agent.
-- `src/governance/` — `policy.ts` (JSON rule engine), `approvals.ts`, `audit.ts`, `team.ts`,
+- `src/governance/` — `policy.ts` (JSON rule engine; first-match, glob capability + `when` arg predicates.
+  `withAlwaysAllow`/`hasHardDeny` back the Inbox **"Always approve"** — an owner appending a durable `allow`
+  rule from an approval card, inserted AFTER every `never` so deny guardrails survive; `POST
+  /api/approvals/:id/always`, audited `policy.rule.added`), `approvals.ts`, `audit.ts`, `team.ts`,
   `settings.ts` (Company context **+ workspace runtime defaults**: the fleet-wide model/effort/permission
   fallback, `runtimeDefaults`/`setRuntimeDefaults`), `skills.ts` (global `.claude/skills` library,
   materialised into every claude-code agent at launch by `TerminalManager`), budget, identity.
+  The Inbox surface itself — its data model, the notifier/chat-mirror sinks, per-member read/dismiss, and
+  the gap roadmap — is documented in `docs/inbox-plan.md`.
 - `src/edge/automations.ts` — Automations: cron/webhook/composio/**slack**/**discord** triggers that spawn
   agent sessions unattended (zero-dep cron parser, scheduler tick, pile-up guard via tmux liveness, public
   `/hooks/<id>?key=`). Naming: Automation = user-facing object; Trigger = firing condition; Orchestrator

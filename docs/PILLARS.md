@@ -18,10 +18,10 @@ were updated. All other grades + narratives still hold. Live v1 milestone tracke
 | # | Pillar | Status | One-liner |
 |---|--------|--------|-----------|
 | 1 | Agents & Sessions | ✅ | Manifest-driven agents, real Claude in tmux, persisted sessions |
-| 2 | Inbox | ✅ | Tasks · updates · approval cards, SQLite-backed, role-aware |
+| 2 | Inbox | ✅ | Tasks · updates · approval/question cards, SQLite-backed, role-aware; per-member read/dismiss; out-of-band DMs for approvals **and** questions + chat-thread mirroring. See [`inbox-plan.md`](./inbox-plan.md) |
 | 3 | Connectors | ✅ | MCP catalog → per-session `.mcp.json`, every call still gated |
 | 4 | Team | ✅ | Roles (owner/admin/member), magic-link login, agent assignment, identity map (external accounts → member) |
-| 5 | Policy | ✅ | JSON rule engine + console editor (owner-edit, live hot-reload, persisted). Single ruleset per workspace; no dry-run simulator |
+| 5 | Policy | ✅ | JSON rule engine + console editor (owner-edit, live hot-reload, persisted). **Learnable from the Inbox** — an approval's owner-only "Always" adds an `allow` rule (safely, after all `never` rules). Single ruleset per workspace; no dry-run simulator |
 | 6 | Audit Logs | ✅ | JSONL system-of-record + SQLite mirror + console **Audit** viewer (filter by session/type/principal) |
 | 7 | Automations | ✅ | Cron + webhook + native **Slack & Discord** triggers spawn governed sessions, run-as the sending member; a **generic `/agent` chat router** reaches any agent by name with no per-agent automation (replies threaded); **agent-scheduled one-shots** (`schedule`/`unschedule` MCP tools → `type:'once'`, bounded + human-cancellable) let an agent defer a future run of itself; email inbound still out |
 | 8 | Secrets | 🟡 | Encrypted-at-rest vault (AES-256-GCM) + console UI; connectors resolve `secret:` refs at launch; no key rotation yet |
@@ -98,17 +98,28 @@ The OS-owned MCP server (`agentos`) carries 22 always-on tools (memory `recall`/
 `forget`; KB `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`; operator/inbox `ask`/`check_inbox`/
 `report`/`update`/`publish`/`artifacts_list`; `schedule`/`unschedule`; `directory_lookup`; `list_capabilities`/
 `policy_check`) + chat-only `slack_reply`/`discord_reply`, materialised into every claude-code session.
-Canonical matrix: `docs/agent-mcp-tools.md`. UI has read/unread (per-browser `lastSeen`) and an
+Canonical matrix: `docs/agent-mcp-tools.md`. Read/unread **and** dismiss are **per-member, server-backed**
+(a `message_state(message_id, member_id, read_at, dismissed_at)` join keyed to the viewer) — one admin
+dismissing no longer hides a row for everyone, and unread syncs across a member's devices. Plus an
 action-required count badge.
 
 **Chat notifications.** When an approval card lands, the OS DMs everyone who can approve it
 (`canApprove(role, level)`) on their linked **Slack/Discord** account (identity map → `dmUser`), so an
-approver is pinged out-of-band instead of having to watch the console. Best-effort + audited
-(`approval.notified`); the Inbox card stays the source of truth.
+approver is pinged out-of-band. Agent **questions** get the same treatment (`notifyQuestionAsked` → the
+run-as human, else owner/admins; audited `question.notified`), so a blocking `ask` isn't missed. And a
+**chat-triggered** run mirrors its completion / question / approval back into the Slack/Discord thread it
+came from (`chatMirror` over the `slack_threads`/`discord_threads` bindings), so the person who @mentioned
+the agent sees the outcome where they asked. Best-effort + audited; the Inbox card stays the source of truth.
 
-**Gaps.** Read/unread is client-side only (not per-member server state); no filtering by agent/type;
-chat push covers approvals only (not questions/updates) and needs the approver's chat handle mapped;
-no standalone surfacing of policy denials (folded into session outcome for now).
+**Always approve (policy learning).** An approval card carries an owner-only **Always** action: it approves
+the attempt AND writes a persistent `allow` rule for that capability into policy (`withAlwaysAllow`), so the
+capability stops prompting. The rule is inserted **after** all `never` rules, so deny guardrails (destructive
+/ over-cap / bulk-delete) still fire — the inbox becomes the policy-authoring surface. See §5 and
+`docs/inbox-plan.md`.
+
+**Gaps.** No filtering by agent/type; no server-side `ask` timeout/expiry (a late answer reaches a run that
+already gave up) and no reminder/escalation on stale approvals/questions; still polling, not push (see
+`docs/inbox-plan.md` for the batch roadmap).
 
 ## 3. Connectors — ✅ Working
 
@@ -172,6 +183,9 @@ reorderable). `GET /api/policy` (owner/admin); `PUT /api/policy` (**owner only**
 must approve, so admins can't downgrade a red rule). On save the engine is **hot-reloaded in place**
 (the gateway + terminal gate share the instance, so it applies to running sessions immediately) and
 written to the home override file, surviving restart. `validatePolicyDocument` rejects malformed docs.
+Policy can also be **learned from the Inbox**: an approval card's owner-only **Always** action calls
+`withAlwaysAllow`, which appends an `allow` rule for the capability (inserted *after* every `never` rule so
+deny guardrails survive) and hot-reloads — `POST /api/approvals/:id/always`, audited `policy.rule.added`.
 
 **Gaps.** One ruleset per workspace (no per-agent policy contexts despite `policyContext` existing on
 manifests); no policy versioning/history; no dry-run "what would this classify as" simulator.
