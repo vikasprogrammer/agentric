@@ -122,6 +122,9 @@ export interface Session {
   /** The member id this session runs AS (run_as). A task/chat-triggered run is spawnedBy `task:`/
    *  `automation:` but runs as a member — the sidebar keys "my sessions" off this too. */
   runAs?: string
+  /** Human-readable owner: the run-as member's name/email. Undefined when the session has no run-as
+   *  identity. Drives the sessions-list Owner filter. */
+  runAsLabel?: string
   createdAt: number
 }
 export interface AuditEvent {

@@ -1345,18 +1345,28 @@ function SessionsPage({
   const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>('all')
   const [agentFilter, setAgentFilter] = useState('all')
   const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>('all')
+  const [ownerFilter, setOwnerFilter] = useState('all') // run-as member id, or 'all'
   const agentOptions = useMemo(() => [...new Set(sessions.map((s) => s.agent))].sort(), [sessions])
-  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all'
-  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all') }
+  // Distinct run-as owners present, id→label, sorted by label. A session with no run-as identity is
+  // omitted (nothing to key an Owner filter on).
+  const ownerOptions = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const s of sessions) if (s.runAs && s.runAsLabel) m.set(s.runAs, s.runAsLabel)
+    return [...m].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label))
+  }, [sessions])
+  const ownerLabel = (id: string) => (id === 'all' ? 'All owners' : ownerOptions.find((o) => o.id === id)?.label ?? id)
+  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || ownerFilter !== 'all'
+  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setOwnerFilter('all') }
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>
       matchesStatus(s, statusFilter) &&
       (agentFilter === 'all' || s.agent === agentFilter) &&
       (sourceFilter === 'all' || sessionSource(s) === sourceFilter) &&
-      (needle === '' || `${s.title} ${s.agent} ${s.id} ${s.task} ${s.spawnedByLabel ?? ''}`.toLowerCase().includes(needle)),
+      (ownerFilter === 'all' || s.runAs === ownerFilter) &&
+      (needle === '' || `${s.title} ${s.agent} ${s.id} ${s.task} ${s.spawnedByLabel ?? ''} ${s.runAsLabel ?? ''}`.toLowerCase().includes(needle)),
     )
-  }, [sessions, query, statusFilter, agentFilter, sourceFilter])
+  }, [sessions, query, statusFilter, agentFilter, sourceFilter, ownerFilter])
 
   // Multi-select for bulk stop/delete. Kept in sync with the live list: ids that vanish (deleted
   // elsewhere, or by our own bulk delete) are pruned so the toolbar count never lies. Select-all and
@@ -1523,6 +1533,17 @@ function SessionsPage({
             ))}
           </SelectContent>
         </Select>
+        {/* Owner (run-as) filter — only when more than one distinct owner exists (a single-owner
+            workspace has nothing to narrow). */}
+        {ownerOptions.length > 1 && (
+          <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v ?? 'all')}>
+            <SelectTrigger className="h-8 w-[150px] text-xs"><SelectValue>{(v) => ownerLabel((v ?? 'all') as string)}</SelectValue></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All owners</SelectItem>
+              {ownerOptions.map((o) => <SelectItem key={o.id} value={o.id}>{o.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        )}
         {filtersActive && (
           <Button size="sm" variant="ghost" className="h-8 gap-1 px-2 text-xs text-muted-foreground" onClick={clearFilters}>
             <X className="h-3 w-3" /> Clear filters

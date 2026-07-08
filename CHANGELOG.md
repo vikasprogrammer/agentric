@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.53.0] — 2026-07-08
+### Added
+- **Filter the sessions list by owner.** The Sessions filter bar gained an **Owner** dropdown that
+  narrows to the member a run acts as (run-as identity) — so you can see just your own sessions, or
+  everything a given teammate's automations/tasks/chats spawned. Options are the distinct owners
+  present (shown by name), and the dropdown only appears when more than one owner exists. Backed by a
+  new `runAsLabel` on the session API (the run-as member's display name), which the search box now
+  matches too.
+
 ## [0.52.0] — 2026-07-08
 ### Added
 - **Agents get a "what you already know" head start.** New **Settings → Memory → Session preload**
