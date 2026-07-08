@@ -476,6 +476,12 @@ function migrate(db: Db): void {
   // and non-claude runs → those can't be resumed and fall back to a fresh spawn.
   addColumn(db, 'term_sessions', 'claude_session_id', 'TEXT');
 
+  // Last-touched timestamp: bumped on every status transition (report/end/stop/resume/crash) so the
+  // sessions list can sort by recent activity, not just creation. Backfilled to created_at for existing
+  // rows; the UPDATE is idempotent (only touches NULLs) so it's a no-op after the first boot.
+  addColumn(db, 'term_sessions', 'updated_at', 'INTEGER');
+  db.exec('UPDATE term_sessions SET updated_at = created_at WHERE updated_at IS NULL');
+
   // Session status vocabulary widened: running|idle → running|done|stopped|crashed. Legacy terminal
   // rows collapsed every non-running end state into 'idle'; we can't retro-classify how they actually
   // ended, so map them to the benign 'done'. Idempotent — after the first boot there are no 'idle' rows.

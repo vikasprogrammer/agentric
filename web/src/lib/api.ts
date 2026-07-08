@@ -126,6 +126,9 @@ export interface Session {
    *  identity. Drives the sessions-list Owner filter. */
   runAsLabel?: string
   createdAt: number
+  /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
+   *  first transition. Sortable "Updated" column on the sessions list. */
+  updatedAt: number
 }
 export interface AuditEvent {
   id: number

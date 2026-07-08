@@ -72,9 +72,9 @@ const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
 /** Sortable columns of the sessions list. `created` is the default (newest first — the server order). */
-type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status'
+type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status' | 'updated'
 type SortDir = 'asc' | 'desc'
-const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status']
+const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status', 'updated']
 /** Status ordering for the Status-column sort: live → done → stopped → crashed. */
 const statusRank = (s: Session): number =>
   isLive(s) ? 0 : s.status === 'done' ? 1 : s.status === 'stopped' ? 2 : s.status === 'crashed' ? 3 : 4
@@ -87,6 +87,7 @@ const compareSessions = (a: Session, b: Session, key: SessionSortKey): number =>
     case 'id': return a.id.localeCompare(b.id)
     case 'startedBy': return (a.spawnedByLabel ?? '').localeCompare(b.spawnedByLabel ?? '')
     case 'status': return statusRank(a) - statusRank(b)
+    case 'updated': return a.updatedAt - b.updatedAt
   }
 }
 
@@ -1725,6 +1726,7 @@ function SessionsPage({
               {sortHead('agent', 'Agent', 'hidden w-32 shrink-0 sm:flex')}
               {sortHead('id', 'ID', 'hidden w-20 shrink-0 md:flex')}
               {sortHead('startedBy', 'Started by', 'w-40 shrink-0')}
+              {sortHead('updated', 'Updated', 'w-20 shrink-0')}
               {sortHead('status', 'Status', 'w-16 shrink-0')}
             </div>
             <span className="w-32 shrink-0" aria-hidden />
@@ -1745,6 +1747,7 @@ function SessionsPage({
                 <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{s.agent}</span>
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground md:block" title={s.id}>{s.id}</span>
                 <StartedBy label={s.spawnedByLabel} className="w-40 shrink-0" />
+                <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
               <div className="flex w-32 shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
