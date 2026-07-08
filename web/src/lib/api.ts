@@ -788,6 +788,7 @@ export const api = {
     list: (path = '') => call<DirListing>('GET', `/api/files/list?path=${encodeURIComponent(path)}`),
     read: (path: string) => call<FileContent>('GET', `/api/files/read?path=${encodeURIComponent(path)}`),
     write: (path: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', '/api/files/write', { path, content }),
+    create: (path: string, content = '') => call<{ ok: boolean; path?: string; error?: string }>('POST', '/api/files/create', { path, content }),
     mkdir: (path: string) => call<{ ok: boolean; path?: string; error?: string }>('POST', '/api/files/mkdir', { path }),
     remove: (path: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/files/delete?path=${encodeURIComponent(path)}`),
     rename: (from: string, to: string) => call<{ ok: boolean; path?: string; error?: string }>('POST', '/api/files/rename', { from, to }),

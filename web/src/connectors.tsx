@@ -405,7 +405,7 @@ function NativeRow({ name, title, s, isAdmin }: {
             : statusBadge('not configured')
       }
       right={isAdmin
-        ? <a href="#/settings" className="inline-flex items-center gap-1 text-[11px] text-muted-foreground underline hover:text-foreground">Settings <ExternalLink className="h-3 w-3" /></a>
+        ? <a href="#/settings/integrations" className="inline-flex items-center gap-1 text-[11px] text-muted-foreground underline hover:text-foreground">Settings <ExternalLink className="h-3 w-3" /></a>
         : <span className="text-[11px] text-muted-foreground">managed by an admin</span>}
     />
   )
@@ -622,7 +622,7 @@ function AddConnectorDialog({ me, template, scope, onClose, onAdded }: { me: Mem
             )}{' '}
             Credentials are stored locally in your data home. Tip: enter{' '}
             <span className="font-mono">secret:KEY</span> (or <span className="font-mono">secret:PRINCIPAL/KEY</span>) to
-            reference an encrypted value from the <a href="#/settings" className="underline hover:text-foreground">Secrets vault</a>{' '}
+            reference an encrypted value from the <a href="#/settings/secrets" className="underline hover:text-foreground">Secrets vault</a>{' '}
             instead of storing the raw credential here — it's decrypted only at session launch.
           </p>
         </div>

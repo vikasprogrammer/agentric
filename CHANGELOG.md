@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.35.0] — 2026-07-08
+## [0.37.0] — 2026-07-08
 ### Added
 - **Procedural skills — the fleet drafts its own skills (`skill_propose`, Lever 6 of the learning loop).**
   Agents (and the consolidation gardener) can now propose a reusable **skill** — a multi-step playbook —
@@ -23,6 +23,43 @@ new version heading in the same commit.
   Human-gated only — nothing an agent proposes changes how the fleet works without a person's ok, and the
   PreToolUse gate still governs every effect a published skill drives. Operating-notes + gardener remit
   updated to encode procedures as skills (vs facts as memories/KB). See `docs/procedural-skills-plan.md`.
+
+## [0.36.0] — 2026-07-08
+### Added
+- **Files → New file.** The Files browser grows a **New file** button beside "New folder": it prompts for a
+  name, creates an empty file in the current folder, and opens it straight into the editor. Backed by a new
+  `POST /api/files/create` route that refuses to clobber an existing path (`409`) and audits `file.created`
+  (the existing `/api/files/write` still declines to create files, so this is the dedicated create path).
+
+## [0.35.0] — 2026-07-08
+### Added
+- **Agents can share credentials through the secrets vault — without the value ever touching a durable
+  plane.** Three new always-on MCP tools give the fleet an A2A credential-handoff path: `secret_put`
+  stores a password / API key / token in the vault under a KEY, `secret_get` fetches it back read-once,
+  and `secret_list` shows the available keys (metadata only). Agents pass the key **name** to each other
+  (in a task, message, or report) and never the raw value. Design invariant: the plaintext lives only in
+  the encrypted vault row and the live `secret_get` response — it is deliberately kept out of the audit
+  trail, the approval card, and the policy args (all of which persist), so a secret can't leak through the
+  governance planes. Storing is **approval-gated**: `secret.put` classifies as `ask`/admin in the default
+  policy and blocks the call until a human approves (auto-cleared when an owner/admin is already attending
+  the run, per governance P5). Reads are allow+audit (a workspace can tighten a specific key to `deny`).
+  Scope is **shared/tenant-wide** (any agent can read a stored key) — the pragmatic choice for a trusted
+  fleet; agent-written keys surface on the console **Secrets** page stamped `updated_by = agent:<id>` for
+  human oversight/rotation. Backed by `TerminalManager.putSecret/getSecret/listSecrets` +
+  `/api/agent/secret/{put,get,list}` loopback routes (session-secret gated). Not yet done: generic
+  cross-plane redaction (scrubbing a value out of memory/KB/inbox if an agent ignores the read-once
+  guidance) — tracked as a follow-up.
+
+## [0.34.1] — 2026-07-08
+### Changed
+- **Settings → Integrations: one Composio card.** The separate "Composio API key" and "Composio webhook
+  secret" cards are merged into a single **Composio** card (matching how the Slack/Discord cards already
+  group an integration's credentials): API key + optional webhook secret as two fields under one intro,
+  a single Save, and per-credential Remove links (they stay independent — connectors work without a webhook).
+### Fixed
+- **Connectors page links now deep-link to the right settings tab.** The native chat-bot (Slack/Discord)
+  row's "Settings" link and the Secrets-vault reference pointed at the bare `#/settings` (landing on Company
+  context); they now open `#/settings/integrations` and `#/settings/secrets` respectively.
 
 ## [0.34.0] — 2026-07-08
 ### Added

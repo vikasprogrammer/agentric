@@ -9,6 +9,8 @@
 
     { "match": { "capability": "email.send", "when": { "arg": "emailExternal", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
 
+    { "match": { "capability": "secret.put" }, "action": "ask", "approver": "admin" },
+
     { "match": { "capability": "connector.connect" }, "action": "ask", "approver": "owner" }
   ]
 }

@@ -37,12 +37,30 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign; closes a dispatched loop |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
 | `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` | W | rewrites manifest (+CLAUDE.md); user-home agents only; audited `agent.config.updated` |
+| `secret_put` | `POST /api/agent/secret/put` | `TerminalManager.putSecret` | W | shared-scope (`*`) vault write; **approval-gated** (policy `secret.put`, blocks until decided); value NEVER in audit/approval-card/policy args; audited `secret.put` (key only); `updated_by=agent:<id>` |
+| `secret_get` | `POST /api/agent/secret/get` | `TerminalManager.getSecret` | R | returns plaintext to caller; allow+audit (a policy `deny`/`ask` on `secret.get` refuses — reads never hang); audited `secret.get` (key + found, never value) |
+| `secret_list` | `GET /api/agent/secret/list` | `TerminalManager.listSecrets` | R | shared (`*`) secret KEYS + metadata only, never values |
 | `slack_reply` | `POST /api/agent/slack/reply` | SlackSocket | W | only when `SLACK_REPLY=1` (chat-triggered) |
 | `discord_reply` | `POST /api/agent/discord/reply` | DiscordSocket | W | only when `DISCORD_REPLY=1` (chat-triggered) |
 
-28 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+31 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
+
+### `secret_put` / `secret_get` — the shared credential handoff
+
+The A2A way to pass a password/API key/token between agents **without the value ever touching a
+durable plane**. Agent A `secret_put`s a value under a KEY (stored tenant-wide, encrypted at rest);
+it tells agent B the key NAME (in a task/message/report — a handle, never the value); B `secret_get`s
+it and uses it read-once. The design invariant: the plaintext lives only in the vault row and the
+live `secret_get` response — it is deliberately kept out of `gate.attempt`/audit, the approval card,
+and the policy args (all of which persist). `secret_put` is **approval-gated** (`secret.put` → `ask`
+admin in the default policy) and blocks the call until a human decides, unless an owner/admin is
+already attending the run (governance P5 auto-clear). `secret_get`/`secret_list` are allow+audit.
+Because the scope is shared (tenant-wide `*`), any agent can read any stored key — only put things
+meant for the team, and manage/rotate them from the console **Secrets** page (agent-written keys show
+`updated_by = agent:<id>`). Not yet done: generic cross-plane redaction (scrubbing a leaked value out
+of memory/KB/inbox if an agent ignores the read-once guidance) — tracked as a follow-up.
 
 ### `schedule` — governance model
 

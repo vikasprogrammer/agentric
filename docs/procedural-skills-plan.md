@@ -1,6 +1,6 @@
 # Procedural skills — Lever 6 of the learning loop
 
-**Status:** **Phase 1 shipped** (v0.35.0) — the defaults this spec recommends: fleet-wide `skill_propose`
+**Status:** **Phase 1 shipped** (v0.37.0) — the defaults this spec recommends: fleet-wide `skill_propose`
 + gardener remit · draft-in-library (`.aos-proposed`) staging · a `skill.proposed` inbox card to
 owner/admins · human-gated publish only. Phase 2 (opt-in `skills_autopublish`, usage-based retirement,
 auto-scoping) remains future work. Closes the last open gap in the memory chapter: the fleet learned

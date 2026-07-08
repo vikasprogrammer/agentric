@@ -1,7 +1,11 @@
 /**
  * Secrets vault — stores/injects credentials, namespaced by tenant + principal so
  * brands are isolated. This is the VAULT, not the Identity (who acts). Capabilities
- * read secrets inside the gateway boundary; agents never see raw keys.
+ * read secrets inside the gateway boundary; connectors get theirs via `secret:` refs.
+ * Agents can also read/write the SHARED (tenant-wide `*`) scope directly via the
+ * governed `secret_get`/`secret_put` MCP tools (writes approval-gated) — the A2A
+ * credential-handoff path — but the plaintext value is deliberately kept out of every
+ * durable plane (audit, approval card, policy args); only the KEY is ever recorded.
  *
  * Env lookup order:  <TENANT>__<PRINCIPAL>__<KEY>  →  <TENANT>__<KEY>  →  <KEY>
  * (principal/tenant upper-cased, non-alphanumerics → underscore)

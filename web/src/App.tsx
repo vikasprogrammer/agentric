@@ -1826,6 +1826,19 @@ function FilesPage() {
     reload()
   }
 
+  const newFile = async () => {
+    const name = prompt('New file name')?.trim()
+    if (!name) return
+    const rel = join(name)
+    setBusy(true); setHint('')
+    const r = await api.files.create(rel)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    reload()
+    // open the fresh (empty) file straight into the editor
+    setOpenPath(rel); setFile({ path: rel, content: '', size: 0 }); setContent('')
+  }
+
   const removeEntry = async (e: FileEntry) => {
     const what = e.type === 'dir' ? 'folder (and everything in it)' : 'file'
     if (!confirm(`Delete ${what} "${e.name}"? This cannot be undone.`)) return
@@ -1867,6 +1880,9 @@ function FilesPage() {
           ))}
         </div>
         <div className="flex items-center gap-1.5">
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={newFile} disabled={busy}>
+            <FileIcon className="h-3.5 w-3.5" /> New file
+          </Button>
           <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={newFolder} disabled={busy}>
             <FolderPlus className="h-3.5 w-3.5" /> New folder
           </Button>
@@ -5790,7 +5806,17 @@ function IntegrationsSettings({ me }: { me: Member }) {
 
       <Card>
         <CardContent className="space-y-3 p-4">
-          <Field label="Composio API key">
+          <div>
+            <div className="text-sm font-medium">Composio</div>
+            <p className="text-xs text-muted-foreground">
+              The <strong>API key</strong> powers Composio-backed connectors. The optional <strong>webhook secret</strong> lets
+              app events <strong>trigger agents</strong> (Slack message/DM → run an agent): in Composio, create a webhook pointing
+              at <code className="text-xs">{`<this-host>`}/triggers/composio</code>, paste its signing secret
+              (<code className="text-xs">whsec_…</code>) here, then add a <strong>Composio</strong> trigger on the Automations page.
+            </p>
+          </div>
+
+          <Field label="API key">
             <Input
               type="password"
               value={key}
@@ -5798,31 +5824,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
               placeholder={composio.set ? `${composio.hint} (saved) — type a new key to replace` : 'comp_…  (Composio dashboard → Settings → API Keys)'}
               className="font-mono text-xs"
             />
-          </Field>
-          <div className="flex items-center gap-3">
-            <Button onClick={() => save({ composioApiKey: key.trim() }, 'saved')} disabled={busy || !key.trim()}>Save</Button>
-            {composio.set && <Button variant="ghost" onClick={() => save({ composioApiKey: '' }, 'removed')} disabled={busy}>Remove</Button>}
-            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
-            {meta.updatedAt && (
-              <span className="ml-auto text-[11px] text-muted-foreground">
-                updated {new Date(meta.updatedAt).toLocaleString()}{meta.updatedBy ? ` by ${meta.updatedBy}` : ''}
-              </span>
+            {composio.set && (
+              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ composioApiKey: '' }, 'removed')} disabled={busy}>Remove key</button>
             )}
-          </div>
-        </CardContent>
-      </Card>
+          </Field>
 
-      <Card>
-        <CardContent className="space-y-3 p-4">
-          <div>
-            <div className="text-sm font-medium">Composio webhook secret</div>
-            <p className="text-xs text-muted-foreground">
-              Lets app events <strong>trigger agents</strong> (Slack message/DM → run an agent). In Composio, create a webhook
-              pointing at <code className="text-xs">{`<this-host>`}/triggers/composio</code>, then paste its signing secret
-              (<code className="text-xs">whsec_…</code>) here. Then add a <strong>Composio</strong> trigger on the Automations page.
-            </p>
-          </div>
-          <Field label="Signing secret">
+          <Field label="Webhook secret" help="Optional — only needed for Composio triggers.">
             <Input
               type="password"
               value={wh}
@@ -5830,10 +5837,22 @@ function IntegrationsSettings({ me }: { me: Member }) {
               placeholder={webhook.set ? '•••• (saved) — type a new secret to replace' : 'whsec_…'}
               className="font-mono text-xs"
             />
+            {webhook.set && (
+              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ composioWebhookSecret: '' }, 'removed')} disabled={busy}>Remove secret</button>
+            )}
           </Field>
+
           <div className="flex items-center gap-3">
-            <Button onClick={() => save({ composioWebhookSecret: wh.trim() }, 'saved')} disabled={busy || !wh.trim()}>Save</Button>
-            {webhook.set && <Button variant="ghost" onClick={() => save({ composioWebhookSecret: '' }, 'removed')} disabled={busy}>Remove</Button>}
+            <Button
+              onClick={() => save({ ...(key.trim() ? { composioApiKey: key.trim() } : {}), ...(wh.trim() ? { composioWebhookSecret: wh.trim() } : {}) }, 'saved')}
+              disabled={busy || (!key.trim() && !wh.trim())}
+            >Save</Button>
+            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            {meta.updatedAt && (
+              <span className="ml-auto text-[11px] text-muted-foreground">
+                updated {new Date(meta.updatedAt).toLocaleString()}{meta.updatedBy ? ` by ${meta.updatedBy}` : ''}
+              </span>
+            )}
           </div>
         </CardContent>
       </Card>

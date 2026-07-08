@@ -574,6 +574,53 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  {
+    name: 'secret_put',
+    description:
+      'Store a credential (password, API key, token, connection string) in the shared secrets vault so ' +
+      'ANOTHER agent — or a later run of yourself — can use it, without ever putting the raw value in a ' +
+      'message, memory, task, or report. This is how you hand a secret to a teammate: you store it here ' +
+      'under a KEY, then tell them the key NAME (e.g. "I saved it as PROD_DB_URL") — never the value. The ' +
+      'value is encrypted at rest and is NOT recorded in the audit trail. Storing a secret is a governed, ' +
+      'approval-gated action: this call BLOCKS until a human approves it (unless an approver is already ' +
+      'attending your run). Keys are shared tenant-wide, so any agent can secret_get them — only store ' +
+      'things that are meant to be shared with the team.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        key: { type: 'string', description: 'The handle other agents will fetch by — a letter/underscore then letters, digits or underscores, e.g. "PROD_DB_URL", "STRIPE_KEY". This name is safe to share in messages.' },
+        value: { type: 'string', description: 'The secret value itself. Encrypted at rest; never logged. Do NOT repeat this value anywhere else (messages, memory, reports) — pass the key name instead.' },
+        reasoning: { type: 'string', description: 'One line for the approver: what this credential is and why you are storing it.' },
+      },
+      required: ['key', 'value'],
+    },
+  },
+  {
+    name: 'secret_get',
+    description:
+      'Fetch a shared credential from the vault by its key (the handle another agent told you, e.g. ' +
+      '"PROD_DB_URL"). Returns the plaintext value for you to USE — then use it directly (in the command, ' +
+      'the request, the config) and do NOT echo it back into any durable place: not a memory, not a ' +
+      'report, not a task update, not the knowledge base. Treat it as read-once. The read is audited by ' +
+      'key, never by value.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        key: { type: 'string', description: 'The secret key/handle to fetch, e.g. "PROD_DB_URL".' },
+      },
+      required: ['key'],
+    },
+  },
+  {
+    name: 'secret_list',
+    description:
+      'List the shared secret KEYS available in the vault (handles + when/who last set them) — metadata ' +
+      'only, never the values. Use it to discover what credentials the team has already shared before you ' +
+      'store a duplicate or ask a human, then secret_get the one you need.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
 ];
 
 function send(msg: JsonRpc): void {
@@ -977,6 +1024,51 @@ async function agentUpdate(args: Record<string, unknown>): Promise<string> {
   return `Updated agent "${id}". The next session it runs will use the new configuration.`;
 }
 
+// ── Secrets vault: shared credential handoff (value stays out of every durable plane) ─────────────
+async function secretPut(args: Record<string, unknown>): Promise<string> {
+  const key = String(args.key ?? '').trim();
+  const value = args.value != null ? String(args.value) : '';
+  if (!key) return 'A secret needs a key (the handle other agents fetch by, e.g. PROD_DB_URL).';
+  if (!value) return 'A secret needs a value to store.';
+  const res = await fetch(AOS_URL + '/api/agent/secret/put', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, key, value, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
+  });
+  const d = (await res.json()) as { status?: string; detail?: string; error?: string };
+  if (d.error) return `Could not store the secret: ${d.error}`;
+  if (d.status === 'stored') return `Stored secret "${key}" in the shared vault. Hand it off by NAME — tell the other agent to secret_get "${key}". Never paste the value into a message, memory, or report.`;
+  if (d.status === 'denied') return `Storing "${key}" was not approved${d.detail ? `: ${d.detail}` : ''}.`;
+  return `Could not store the secret${d.detail ? `: ${d.detail}` : ''}.`;
+}
+
+async function secretGet(args: Record<string, unknown>): Promise<string> {
+  const key = String(args.key ?? '').trim();
+  if (!key) return 'Which secret? Pass its key/handle, e.g. secret_get "PROD_DB_URL".';
+  const res = await fetch(AOS_URL + '/api/agent/secret/get', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, key }),
+  });
+  const d = (await res.json()) as { status?: string; value?: string; detail?: string; error?: string };
+  if (d.error) return `Could not read the secret: ${d.error}`;
+  if (d.status === 'ok') return `${d.value}\n\n(Use this value directly — do not store or echo it into a memory, report, task, or the knowledge base.)`;
+  if (d.status === 'denied') return `Reading "${key}" is not allowed${d.detail ? `: ${d.detail}` : ''}.`;
+  return `No secret named "${key}" is in the vault. Check secret_list, or ask the agent/human who has it to secret_put it.`;
+}
+
+async function secretList(): Promise<string> {
+  const u = new URL(AOS_URL + '/api/agent/secret/list');
+  u.searchParams.set('session', SESSION);
+  const res = await fetch(u, { headers: H() });
+  const d = (await res.json()) as { secrets?: Array<{ key: string; updatedAt: number; updatedBy?: string }>; error?: string };
+  if (d.error) return `Could not list secrets: ${d.error}`;
+  const rows = d.secrets ?? [];
+  if (!rows.length) return 'The shared vault has no secrets yet. Use secret_put to add one the team can share.';
+  return 'Shared vault keys (metadata only — use secret_get to fetch a value):\n' +
+    rows.map((s) => `• ${s.key}${s.updatedBy ? ` — set by ${s.updatedBy}` : ''}`).join('\n');
+}
+
 async function taskList(args: Record<string, unknown>): Promise<string> {
   const u = new URL(AOS_URL + '/api/tasks/list');
   u.searchParams.set('session', SESSION);
@@ -1175,6 +1267,9 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_update' ? await taskUpdate(args)
         : name === 'agent_create' ? await agentCreate(args)
         : name === 'agent_update' ? await agentUpdate(args)
+        : name === 'secret_put' ? await secretPut(args)
+        : name === 'secret_get' ? await secretGet(args)
+        : name === 'secret_list' ? await secretList()
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
     } catch (e) {

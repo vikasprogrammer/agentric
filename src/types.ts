@@ -719,7 +719,7 @@ export function sanitizeExamplePrompts(input: unknown): string[] | undefined {
 /** Valid POSIX-ish env var / vault key name: a letter or underscore, then letters/digits/underscores.
  *  A `shellSecrets` entry is used verbatim as both the vault key and the exported shell variable, so
  *  it must satisfy this or the shell can't reference it. */
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Normalize a `shellSecrets` payload (from an API body or config file): coerce to an array of
  *  trimmed strings, drop anything that isn't a valid env-var name, dedupe (order-preserving), cap

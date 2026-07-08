@@ -929,6 +929,115 @@ export class TerminalManager {
   }
 
   /**
+   * Agent-facing vault WRITE (the `secret_put` MCP tool) — the A2A credential-handoff primitive.
+   * Stores a credential under the SHARED (tenant-wide `*`) scope so any agent in the tenant can later
+   * `secret_get` it. Approval-gated through the SAME machinery as {@link gate}: policy classifies
+   * `secret.put`, and unless an attended approver clears it, a human must approve before the value is
+   * written. Crucially, the plaintext value lives ONLY in this call's memory + the encrypted vault
+   * row — it is NEVER passed to the policy args, the approval card, or the audit trail (all of which
+   * persist), so a secret cannot leak through the governance planes. Only the KEY is ever recorded.
+   * Resolves once the write is settled (stored / denied / errored); like {@link gate} the waiter does
+   * not survive a server restart (the agent simply retries).
+   */
+  async putSecret(
+    sessionId: string,
+    agent: string,
+    key: string,
+    value: string,
+    reasoning: string,
+  ): Promise<{ status: 'stored' | 'denied' | 'error'; detail?: string }> {
+    if (this.os.settings.killSwitch().engaged) {
+      this.audit(sessionId, agent, 'gate.killswitch', { capability: 'secret.put', key });
+      return { status: 'denied', detail: 'workspace emergency stop is engaged' };
+    }
+    // Gate on the KEY only — the value is deliberately absent from classify/audit/the approval card.
+    const attempt: ActionAttempt = { capabilityId: 'secret.put', args: { key }, reasoning };
+    const decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
+    this.audit(sessionId, agent, 'gate.attempt', { capability: 'secret.put', args: { key }, reasoning });
+    this.audit(sessionId, agent, 'gate.decision', { capability: 'secret.put', decision });
+    if (decision.effect === 'deny') return { status: 'denied', detail: decision.reason };
+    if (decision.effect === 'approve') {
+      // Attended owner/admin clears their own write without a self-addressed card (governance P5).
+      const approver = this.attendedApprover(sessionId, decision.level);
+      if (approver) {
+        this.audit(sessionId, agent, 'approval.auto_approved', { capability: 'secret.put', level: decision.level, by: approver.email, reason: decision.reason });
+      } else {
+        const { req, decision: settle } = this.os.approvals.request({
+          runId: sessionId,
+          tenant: this.os.tenant,
+          level: decision.level,
+          attempt,
+          reason: decision.reason,
+        });
+        this.addMessage({
+          type: 'approval',
+          sessionId,
+          agent,
+          title: `Approval needed — store secret "${key}"`,
+          body: reasoning,
+          status: 'pending',
+          approvalId: req.id,
+          capability: 'secret.put',
+          args: { key },
+          level: decision.level,
+        });
+        this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability: 'secret.put' });
+        try { this.approvalNotifier?.({ sessionId, agent, capability: 'secret.put', level: decision.level, reason: decision.reason }); } catch { /* advisory */ }
+        const approved = await settle;
+        this.audit(sessionId, agent, 'approval.resolved', { approvalId: req.id, approved });
+        if (!approved) return { status: 'denied', detail: `approval rejected (${decision.level})` };
+      }
+    }
+    // green (allow) or approved → write the encrypted row under the shared tenant-wide principal.
+    try {
+      this.os.secrets.set(this.os.tenant, key, value, { principal: '*', updatedBy: `agent:${agent}` });
+      this.audit(sessionId, agent, 'secret.put', { key, principal: '*' });
+      return { status: 'stored' };
+    } catch (e) {
+      return { status: 'error', detail: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /**
+   * Agent-facing vault READ (the `secret_get` MCP tool). Under the shared-scope model any agent in the
+   * tenant may read a shared secret, so this is allow-and-audit — but it still runs the policy
+   * `classify` so a workspace CAN tighten a specific key to `deny` (a non-allow outcome refuses rather
+   * than silently returning; reads must never hang on an approval card). The plaintext is returned to
+   * the CALLER only; the audit records the key + whether it resolved, never the value. Widens the
+   * agent-scoped principal to the tenant-wide `*` inside the vault, so an agent reads its own value
+   * first, then the shared one.
+   */
+  getSecret(
+    sessionId: string,
+    agent: string,
+    key: string,
+  ): { status: 'ok' | 'denied' | 'missing'; value?: string; detail?: string } {
+    if (this.os.settings.killSwitch().engaged) return { status: 'denied', detail: 'workspace emergency stop is engaged' };
+    const decision = this.os.policy.classify({ capabilityId: 'secret.get', args: { key }, reasoning: '' }, this.ctx(sessionId, agent));
+    if (decision.effect !== 'allow') {
+      const reason = decision.effect === 'deny' ? decision.reason : 'reading this secret requires approval, which reads do not support';
+      this.audit(sessionId, agent, 'secret.get.denied', { key, reason });
+      return { status: 'denied', detail: reason };
+    }
+    const value = this.os.secrets.getSync(this.os.tenant, agent, key);
+    this.audit(sessionId, agent, 'secret.get', { key, found: value !== undefined });
+    if (value === undefined) return { status: 'missing' };
+    return { status: 'ok', value };
+  }
+
+  /**
+   * Agent-facing vault LISTING (the `secret_list` MCP tool): the shared (tenant-wide `*`) secret KEYS
+   * an agent can `secret_get`, as metadata only — never values. Scoped to the shared principal so it
+   * surfaces exactly the handoff namespace, not other principals' member-scoped key names.
+   */
+  listSecrets(): Array<{ key: string; updatedAt: number; updatedBy?: string }> {
+    return this.os.secrets
+      .list(this.os.tenant)
+      .filter((s) => s.principal === '*')
+      .map((s) => ({ key: s.key, updatedAt: s.updatedAt, updatedBy: s.updatedBy }));
+  }
+
+  /**
    * Dry-run the policy for a hypothetical attempt — the SAME brain the gate uses, but pure: no
    * approval card, no audit, no side effect. Lets an agent learn ahead of time whether an action is
    * allowed / needs approval / denied (via the policy_check + list_capabilities MCP tools), so it can
