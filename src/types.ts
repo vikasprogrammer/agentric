@@ -416,6 +416,19 @@ export interface MemoryConfig {
    * 'curated' — agents' shared writes are downgraded to private; only humans (owner/admin) publish shared.
    */
   sharedWrites?: 'open' | 'curated';
+  /**
+   * Launch-time recall preamble: seed each new session's system prompt with the agent's most salient
+   * memories, so a cold start isn't blind (vs. relying on the agent to call `recall` itself). Off by
+   * default. Reads the local `memories` ledger the same store recall ranks over.
+   */
+  preload?: MemoryPreload;
+}
+
+/** Launch-time recall preamble config (Settings → Memory). See MemoryConfig.preload. */
+export interface MemoryPreload {
+  enabled: boolean;
+  /** How many memories to inject (1..25; default 8). Ranked by importance then recency-of-use. */
+  count?: number;
 }
 
 /**

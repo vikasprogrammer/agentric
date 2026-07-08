@@ -421,6 +421,7 @@ export interface MemorySettings {
   ranking?: MemoryRanking
   maintenance?: MemoryMaintenance
   sharedWrites?: 'open' | 'curated'
+  preload?: { enabled: boolean; count?: number }
   health?: MemoryHealth
   /** Rows in the local `memories` ledger vs. the active external store — drives the migrate/clear banner. */
   localCount?: number
@@ -449,6 +450,7 @@ export interface MemorySettingsReq {
   ranking?: MemoryRanking
   maintenance?: MemoryMaintenance
   sharedWrites?: 'open' | 'curated'
+  preload?: { enabled: boolean; count?: number }
 }
 export interface AddMemoryReq {
   agent: string

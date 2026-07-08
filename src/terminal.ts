@@ -79,6 +79,20 @@ Other agents run in this workspace and you share state with them. You are a node
   things a plain fact already covers.
 - **The team**: \`directory_lookup\` finds who's on the team and how to reach them (Slack/Discord/email).
 
+## Improve yourself — a fact (memory) vs. your standing instructions (CLAUDE.md)
+You can edit your OWN definition, so keep it current instead of repeating the same mistakes. Know which
+lever to pull:
+- \`remember\` (or \`report\` \`lessons\`) captures a **fact** for your future runs — a gotcha, a root
+  cause, a decision. Reach for it constantly, for the specific things a task teaches you.
+- \`agent_update\` rewrites **your own CLAUDE.md** (your system prompt / standing instructions), plus
+  your description and tuning — your durable **identity and how you always work**. Reach for it when you
+  notice a recurring gap in your own setup: a step you always have to redo, a convention you should
+  always follow, a better description of what you do. It takes effect next session and every edit is
+  reversible (\`agent_history\` / \`agent_revert\`).
+- Often you want **both**: \`remember\` the one-off fact now, AND — if it reveals a standing rule you'll
+  need on every run — fold that rule into your CLAUDE.md with \`agent_update\`. Rule of thumb: a fact
+  about THIS task → memory; a change to how you ALWAYS operate → your CLAUDE.md.
+
 ## Environment notes
 - Links aren't clickable in this terminal: always print any URL the user must open or copy
   (OAuth/connect links etc.) in full as plain text, not only as a markdown label.`;
@@ -814,7 +828,58 @@ export class TerminalManager {
       : members.length > TEAM_CAP
         ? `# Your team\n\n${members.length} people are on the team — use \`directory_lookup\` to find someone by name or email.`
         : '';
-    return [company, AGENT_OS_OPERATING_NOTES, fleet, team, learned].filter(Boolean).join('\n\n');
+    // Native Slack/Discord are wired directly into the OS (they post as the company bot via the
+    // `slack_*`/`discord_*` tools). When a platform is configured, steer the agent to those FIRST —
+    // otherwise a claude reaching for chat defaults to a Composio Slack/Discord action. Only listed
+    // per-platform when actually configured, so we never advertise a tool the session doesn't have.
+    const chatLines: string[] = [];
+    if (this.os.settings.slackConfigured())
+      chatLines.push(
+        '- **Slack** is native — use `slack_send` (any channel), `slack_dm` (any person), and ' +
+          '`slack_reply` (the thread that triggered you). Do NOT use a Composio Slack action for this.',
+      );
+    if (this.os.settings.discordConfigured())
+      chatLines.push(
+        '- **Discord** is native — use `discord_send` (any channel), `discord_dm` (any person), and ' +
+          '`discord_reply` (the message that triggered you). Do NOT use a Composio Discord action for this.',
+      );
+    const messaging = chatLines.length
+      ? '# Messaging — use the native integration first\n\n' +
+        'These channels are wired directly into Agent OS: the built-in tools post as the company bot, ' +
+        'need no channel setup, and are the supported path. Reach for the native tool first; fall back to ' +
+        'a Composio action only if no native tool covers what you need.\n\n' +
+        chatLines.join('\n')
+      : '';
+    // Launch-time recall preamble (Settings → Memory, off by default): seed the prompt with this
+    // agent's most salient memories so a cold session isn't blind, instead of relying on it to call
+    // `recall`. Reads the local `memories` ledger directly (node:sqlite is synchronous) — the same
+    // store recall ranks over. Best-effort: never let a preamble query block a launch.
+    let preamble = '';
+    const preload = this.os.settings.memoryConfig()?.preload;
+    if (preload?.enabled && selfAgent) {
+      const n = Math.max(1, Math.min(Math.floor(preload.count ?? 8), 25));
+      try {
+        const rows = this.db
+          .prepare(
+            `SELECT content FROM memories
+             WHERE tenant = ? AND (scope = 'tenant' OR (scope = 'agent' AND agent_id = ?))
+             ORDER BY COALESCE(importance, 0.5) DESC, COALESCE(last_recalled_at, created_at) DESC
+             LIMIT ?`,
+          )
+          .all<{ content: string }>(this.os.tenant, selfAgent, n);
+        if (rows.length)
+          preamble =
+            '# What you already know — your most salient memories\n\n' +
+            "Surfaced from your persistent memory so you don't start blind. This is a HEAD START, not the " +
+            'whole picture — `recall` for more on any specific topic before non-trivial work.\n\n' +
+            rows.map((r) => `- ${r.content.replace(/\s+/g, ' ').trim()}`).join('\n');
+      } catch {
+        /* preamble is best-effort; a query failure must never block a session launch */
+      }
+    }
+    return [company, AGENT_OS_OPERATING_NOTES, messaging, fleet, team, preamble, learned]
+      .filter(Boolean)
+      .join('\n\n');
   }
 
   /**
