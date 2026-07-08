@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.34.1] — 2026-07-08
+### Changed
+- **Settings → Integrations: one Composio card.** The separate "Composio API key" and "Composio webhook
+  secret" cards are merged into a single **Composio** card (matching how the Slack/Discord cards already
+  group an integration's credentials): API key + optional webhook secret as two fields under one intro,
+  a single Save, and per-credential Remove links (they stay independent — connectors work without a webhook).
+### Fixed
+- **Connectors page links now deep-link to the right settings tab.** The native chat-bot (Slack/Discord)
+  row's "Settings" link and the Secrets-vault reference pointed at the bare `#/settings` (landing on Company
+  context); they now open `#/settings/integrations` and `#/settings/secrets` respectively.
+
 ## [0.34.0] — 2026-07-08
 ### Added
 - **Session activity — see which agent-os primitives a run used, visually.** Every session card (grid +
