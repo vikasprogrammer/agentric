@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-07-08
+### Added
+- **Procedural skills — the fleet drafts its own skills (`skill_propose`, Lever 6 of the learning loop).**
+  Agents (and the consolidation gardener) can now propose a reusable **skill** — a multi-step playbook —
+  the same way they `remember` a fact or keep a `report` lesson, closing the episodic→procedural gap. A
+  new always-on `skill_propose` MCP tool drafts the skill into the library flagged **`.aos-proposed`**:
+  it's a real, editable skill folder that `materialize()` deliberately **skips**, so it is invisible to
+  every agent until a human publishes it. Each proposal posts a **`skill.proposed` card to the owner/admin
+  Inbox** (violet, "review in Skills") and audits `skill.proposed`. The console **Skills** page grows a
+  **"Proposed by self-learning"** section — Review (opens the draft in an editor, editable), **Publish**
+  (drops the marker → materialises to agents next session; `POST /api/skills/:name/publish`, owner/admin,
+  audited `skill.published`), or **Dismiss** (deletes the draft; audited `skill.proposal.dismissed`).
+  Human-gated only — nothing an agent proposes changes how the fleet works without a person's ok, and the
+  PreToolUse gate still governs every effect a published skill drives. Operating-notes + gardener remit
+  updated to encode procedures as skills (vs facts as memories/KB). See `docs/procedural-skills-plan.md`.
+
 ## [0.34.0] — 2026-07-08
 ### Added
 - **Session activity — see which agent-os primitives a run used, visually.** Every session card (grid +

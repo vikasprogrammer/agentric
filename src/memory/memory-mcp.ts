@@ -304,6 +304,29 @@ const TOOLS = [
     },
   },
   {
+    name: 'skill_propose',
+    description:
+      'Propose a reusable SKILL for the whole workspace — a self-contained, multi-step playbook a ' +
+      'teammate (human or agent) could follow verbatim. Use this when you have just worked out HOW to ' +
+      'do something repeatable and non-obvious (a procedure, a checklist, a recipe), not a one-off fix ' +
+      "and not a plain fact (use `report` lessons / `remember` for facts). Check first that a similar " +
+      "skill doesn't already exist. Your proposal is a DRAFT: it is NOT active and no agent can use it " +
+      'until a human reviews and publishes it — an inbox card notifies the owner/admins. Pass a short ' +
+      '`name` (lowercase-hyphen), a one-line `description` (what it does + when to use it — this is what ' +
+      'agents match on), the full Markdown `body` (the steps), and optionally a `rationale` for the reviewer.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'Skill id: lowercase letters, digits and hyphens (2–40 chars, starts with a letter). Becomes the /command name.' },
+        description: { type: 'string', description: 'One line: what the skill does and when to use it. This is what Claude matches on to auto-invoke it.' },
+        body: { type: 'string', description: 'The full SKILL.md body in Markdown — the concrete, self-contained steps. Frontmatter optional (a name/description header is added if absent).' },
+        rationale: { type: 'string', description: 'Optional note to the reviewer: why this is worth a skill / where it came from.' },
+      },
+      required: ['name', 'description', 'body'],
+    },
+  },
+  {
     name: 'list_capabilities',
     description:
       'List the governed capabilities and how policy treats each one right now: allowed outright, ' +
@@ -632,6 +655,22 @@ async function report(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; error?: string };
   return d.ok ? 'Reported to the inbox.' : `Could not report: ${d.error ?? 'unknown error'}`;
+}
+
+async function skillPropose(args: Record<string, unknown>): Promise<string> {
+  const name = String(args.name ?? '').trim();
+  const description = String(args.description ?? '').trim();
+  const body = String(args.body ?? '').trim();
+  if (!name || !description || !body) return 'skill_propose needs name, description, and body.';
+  const res = await fetch(AOS_URL + '/api/skills/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, name, description, body, rationale: args.rationale ? String(args.rationale) : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; skill?: string; error?: string };
+  return d.ok
+    ? `Proposed skill "${d.skill ?? name}" — it's a draft in the inbox for an owner/admin to review and publish. It won't be active until then.`
+    : `Could not propose skill: ${d.error ?? 'unknown error'}`;
 }
 
 async function update(args: Record<string, unknown>): Promise<string> {
@@ -1118,6 +1157,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'report' ? await report(args)
         : name === 'update' ? await update(args)
         : name === 'publish' ? await publish(args)
+        : name === 'skill_propose' ? await skillPropose(args)
         : name === 'slack_reply' ? await slackReply(args)
         : name === 'discord_reply' ? await discordReply(args)
         : name === 'list_capabilities' ? await listCapabilities()

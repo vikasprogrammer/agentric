@@ -25,6 +25,15 @@ import { Db } from '../state/db';
 /** Marker file written into every skill we materialise, so a re-sync only touches our own. */
 const MARKER = '.aos-managed';
 
+/**
+ * Marker file flagging a skill as a NOT-YET-PUBLISHED proposal (Lever 6 — the fleet writing its own
+ * skills). Its body is a small JSON provenance blob (`SkillProposal`). A folder carrying this marker
+ * is a real, editable skill in the library that `materialize()` deliberately SKIPS — so a proposed
+ * skill is invisible to agents until a human `publish()`es it (drops the marker). See
+ * `docs/procedural-skills-plan.md`.
+ */
+const PROPOSED_MARKER = '.aos-proposed';
+
 /** A skill as listed in the library: its folder name + the frontmatter we surface in the UI. */
 export interface SkillSummary {
   /** Folder name = the `/command-name` the CLI exposes. Lowercase, hyphenated. */
@@ -42,11 +51,41 @@ export interface SkillSummary {
    * (the default & today's behavior); non-empty = only these agents get it materialised at launch.
    */
   agents: string[];
+  /**
+   * True when this is a NOT-YET-PUBLISHED proposal (carries the `.aos-proposed` marker). A proposed
+   * skill is a real, editable folder in the library that `materialize()` skips — invisible to agents
+   * until a human publishes it. See `propose()` / `publish()`.
+   */
+  proposed: boolean;
+  /** Provenance of a proposal (present only when `proposed`). */
+  proposal?: SkillProposal;
+}
+
+/** Who/why a skill was proposed — the JSON body of the `.aos-proposed` marker. */
+export interface SkillProposal {
+  /** The agent that proposed it (`skill_propose` caller, or the consolidation gardener). */
+  agent?: string;
+  /** The source session id, for a link back to the run that produced it. */
+  session?: string;
+  /** Optional free-text: why the agent thinks this is worth a skill. */
+  rationale?: string;
+  /** When it was proposed (epoch ms). */
+  at: number;
 }
 
 /** A skill plus the full SKILL.md text (for the editor). */
 export interface SkillDetail extends SkillSummary {
   content: string;
+}
+
+export interface ProposeSkillInput {
+  name: string;
+  description?: string;
+  /** The Markdown body of the skill. If it lacks frontmatter, a name+description header is prepended. */
+  body: string;
+  agent?: string;
+  session?: string;
+  rationale?: string;
 }
 
 /**
@@ -148,6 +187,44 @@ export class SkillsStore {
     return true;
   }
 
+  // ── proposals (Lever 6 — the fleet drafting its own skills) ──────────────────
+  /**
+   * Draft a proposed skill: a real folder in the library flagged `.aos-proposed`, so it is fully
+   * reviewable/editable in the console yet SKIPPED by `materialize()` — no agent sees it until a human
+   * `publish()`es it. Throws on a bad name or a name that already exists (dedupe by name). Returns the
+   * proposed detail. Provenance (agent/session/rationale) is stamped into the marker.
+   */
+  propose(input: ProposeSkillInput): SkillDetail {
+    if (!this.dir) throw new Error('a data home is required to propose skills');
+    const name = input.name.trim().toLowerCase();
+    if (!validSkillName(name)) throw new Error('name must be lowercase letters, digits and hyphens (2–40 chars, starting with a letter)');
+    const folder = path.join(this.dir, name);
+    if (fs.existsSync(folder)) throw new Error(`a skill named "${name}" already exists`);
+    const body = (input.body || '').trim();
+    if (!body) throw new Error('a skill body is required');
+    // Trust an agent-provided frontmatter block; otherwise compose a name+description header so the
+    // skill lists and materialises correctly once published.
+    const content = body.startsWith('---') ? body + '\n' : composeSkill(name, (input.description || '').trim(), body);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'SKILL.md'), content);
+    const provenance: SkillProposal = { agent: input.agent, session: input.session, rationale: input.rationale, at: Date.now() };
+    fs.writeFileSync(path.join(folder, PROPOSED_MARKER), JSON.stringify(provenance));
+    return this.read(name)!;
+  }
+
+  /**
+   * Publish a proposed skill: drop its `.aos-proposed` marker so it materialises to agents on their
+   * next session. Idempotent-ish — returns false for an unknown or already-published (not-proposed)
+   * skill, true when a marker was actually removed.
+   */
+  publish(name: string): boolean {
+    if (!this.dir || !validSkillName(name)) return false;
+    const marker = path.join(this.dir, name, PROPOSED_MARKER);
+    if (!fs.existsSync(marker)) return false;
+    fs.rmSync(marker, { force: true });
+    return true;
+  }
+
   // ── bundled catalog (the software's config/skills) → install into the library ─
   /**
    * The bundled skill catalog: every skill that ships with the software, each flagged with whether
@@ -240,8 +317,9 @@ export class SkillsStore {
     }
 
     // Only skills targeting this agent (empty audience ⇒ all agents). Undefined agent ⇒ keep all.
+    // Proposed (unpublished) skills are NEVER materialised — that gate is the whole safety story.
     const library = this.list().filter(
-      (s) => agent === undefined || s.agents.length === 0 || s.agents.includes(agent),
+      (s) => !s.proposed && (agent === undefined || s.agents.length === 0 || s.agents.includes(agent)),
     );
     const wanted = new Set(library.map((s) => s.name));
 
@@ -277,8 +355,9 @@ export class SkillsStore {
     const fm = parseFrontmatter(content);
     const files = fs
       .readdirSync(folder, { withFileTypes: true })
-      .filter((e) => !(e.isFile() && e.name === 'SKILL.md') && e.name !== MARKER)
+      .filter((e) => !(e.isFile() && e.name === 'SKILL.md') && e.name !== MARKER && e.name !== PROPOSED_MARKER)
       .map((e) => (e.isDirectory() ? e.name + '/' : e.name));
+    const proposal = readProposal(path.join(folder, PROPOSED_MARKER));
     return {
       name,
       description: fm.description ?? '',
@@ -286,6 +365,8 @@ export class SkillsStore {
       updatedAt: stat.mtimeMs,
       files,
       agents: this.assignmentsFor(name),
+      proposed: !!proposal,
+      ...(proposal ? { proposal } : {}),
       content,
     };
   }
@@ -349,6 +430,23 @@ export class SkillsStore {
 function summaryOf(s: SkillDetail): SkillSummary {
   const { content: _content, ...rest } = s;
   return rest;
+}
+
+/** Read + parse a `.aos-proposed` marker into its provenance blob; undefined when absent/unreadable. */
+function readProposal(marker: string): SkillProposal | undefined {
+  if (!fs.existsSync(marker)) return undefined;
+  try {
+    const raw = JSON.parse(fs.readFileSync(marker, 'utf8') || '{}') as Partial<SkillProposal>;
+    return { agent: raw.agent, session: raw.session, rationale: raw.rationale, at: raw.at ?? 0 };
+  } catch {
+    return { at: 0 }; // a truthy proposal even if the marker was empty/corrupt — still "proposed"
+  }
+}
+
+/** Wrap a raw Markdown body in a minimal `name`/`description` frontmatter header. */
+function composeSkill(name: string, description: string, body: string): string {
+  const desc = description || 'What this skill does and when Claude should use it.';
+  return `---\nname: ${name}\ndescription: ${desc}\n---\n\n${body.trim()}\n`;
 }
 
 /**

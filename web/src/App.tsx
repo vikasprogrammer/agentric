@@ -1693,6 +1693,10 @@ function FeedItem({ m, onOpen, onOpenArtifact, onDismiss, unread }: { m: Msg; on
     Icon = AlertTriangle; iconCls = 'text-amber-600'; highlight = true
     detail = m.body
     badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">important</Badge>
+  } else if (m.type === 'skill.proposed') {
+    Icon = Sparkles; iconCls = 'text-violet-600'; highlight = true
+    verb = 'proposed a skill'; detail = m.body
+    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
@@ -3905,6 +3909,11 @@ function SkillsPage() {
 
   if (!resp) return <div className="text-sm text-muted-foreground">Loading…</div>
 
+  // Proposals (skills agents drafted via `skill_propose`) are held back from the live library until a
+  // human publishes them — surface them in their own review section, keep the Library to live skills.
+  const proposed = resp.skills.filter((s) => s.proposed)
+  const published = resp.skills.filter((s) => !s.proposed)
+
   return (
     <div className="max-w-6xl space-y-6">
       <p className="text-sm text-muted-foreground">
@@ -3921,6 +3930,21 @@ function SkillsPage() {
         </div>
       )}
 
+      {proposed.length > 0 && (
+        <section className="space-y-2 rounded-lg border border-violet-200 bg-violet-50/40 p-3">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-violet-700">
+            <Sparkles className="h-3.5 w-3.5" />Proposed by self-learning · {proposed.length}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            An agent drafted these via <span className="font-mono">skill_propose</span>. They are <span className="font-medium text-foreground">not live</span> —
+            no agent can use one until you <span className="font-medium text-foreground">Publish</span> it. Review (and edit) the draft, then publish or dismiss.
+          </p>
+          <div className="space-y-2">
+            {proposed.map((s) => <ProposedSkillCard key={s.name} s={s} onChanged={load} />)}
+          </div>
+        </section>
+      )}
+
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         {/* Left: this tenant's installed library — also the drop target for skill .zips */}
         <section
@@ -3930,7 +3954,7 @@ function SkillsPage() {
           onDrop={resp.enabled ? onDrop : undefined}
         >
           <div className="mb-2 flex items-center justify-between">
-            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Library · {resp.skills.length}</div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Library · {published.length}</div>
             {resp.enabled && !creating && (
               <div className="flex items-center gap-2">
                 <input ref={fileInput} type="file" accept=".zip,application/zip" multiple className="hidden"
@@ -3944,13 +3968,13 @@ function SkillsPage() {
           </div>
           {uploadMsg && <div className={`mb-2 text-xs ${uploadMsg.startsWith('⚠') ? 'text-destructive' : 'text-muted-foreground'}`}>{uploadMsg}</div>}
           {creating && <NewSkillForm onCancel={() => setCreating(false)} onCreated={() => { setCreating(false); load() }} />}
-          {resp.skills.length === 0 && !creating && (
+          {published.length === 0 && !creating && (
             <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
               No skills yet — drag a skill <span className="font-mono text-xs">.zip</span> here, use <span className="font-medium text-foreground">Upload skill</span>, install one from the right, or add your own.
             </div>
           )}
           <div className="space-y-2">
-            {resp.skills.map((s) => <SkillCard key={s.name} s={s} agents={agents} onChanged={load} />)}
+            {published.map((s) => <SkillCard key={s.name} s={s} agents={agents} onChanged={load} />)}
           </div>
           {dragOver && (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/70 text-sm font-medium text-foreground">
@@ -4261,6 +4285,89 @@ function NewSkillForm({ onCancel, onCreated }: { onCancel: () => void; onCreated
           <Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button>
           {hint && <span className="font-mono text-xs text-destructive">{hint}</span>}
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/** A skill an agent drafted via `skill_propose`, awaiting a human's review. Review opens the draft in an
+ *  editable box (edits save to the same SKILL.md); Publish drops the `.aos-proposed` marker so it goes
+ *  live on each agent's next session; Dismiss deletes the draft. Owner/admin only (the page is gated). */
+function ProposedSkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void }) {
+  const [reviewing, setReviewing] = useState(false)
+  const [content, setContent] = useState('')
+  const [saved, setSaved] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+
+  const open = async () => {
+    setReviewing(true); setHint('')
+    const r = await api.skill(s.name)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setContent(r.content ?? ''); setSaved(r.content ?? '')
+  }
+  const dirty = content !== saved
+  const save = async () => {
+    setBusy(true); setHint('')
+    const r = await api.saveSkill(s.name, content)
+    setBusy(false)
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed'))
+    setSaved(content); setHint('draft saved'); setTimeout(() => setHint(''), 2000)
+  }
+  const publish = async () => {
+    setBusy(true); setHint('')
+    const r = await api.publishSkill(s.name)
+    setBusy(false)
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed'))
+    onChanged()
+  }
+  const dismiss = async () => {
+    if (!confirm(`Dismiss the proposed skill "${s.name}"? The draft is deleted.`)) return
+    setBusy(true); setHint('')
+    const r = await api.deleteSkill(s.name)
+    setBusy(false)
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed'))
+    onChanged()
+  }
+
+  return (
+    <Card className="border-violet-200">
+      <CardContent className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <button className="min-w-0 text-left" onClick={reviewing ? () => setReviewing(false) : open}>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-sm font-medium">{s.name}</span>
+              <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">proposed</Badge>
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">{s.description || <span className="italic">no description</span>}</div>
+            {s.proposal && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {s.proposal.agent ? <>by <span className="font-mono">{s.proposal.agent}</span></> : 'by an agent'}
+                {s.proposal.at ? ` · ${timeAgo(s.proposal.at)}` : ''}
+                {s.proposal.rationale ? <> · <span className="italic">“{s.proposal.rationale}”</span></> : null}
+              </div>
+            )}
+          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button size="sm" variant="outline" disabled={busy} onClick={reviewing ? () => setReviewing(false) : open}>
+              <Pencil className="mr-1 h-3.5 w-3.5" />Review
+            </Button>
+            <Button size="sm" disabled={busy} onClick={publish}><Check className="mr-1 h-3.5 w-3.5" />Publish</Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="dismiss" disabled={busy} onClick={dismiss}><Trash2 className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        {reviewing && (
+          <div className="mt-3 space-y-2">
+            <Textarea value={content} onChange={(e) => setContent(e.target.value)} className="min-h-[320px] font-mono text-xs leading-relaxed" />
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={save} disabled={busy || !dirty}>{dirty ? 'Save draft' : 'Saved'}</Button>
+              <Button size="sm" onClick={publish} disabled={busy}>Publish</Button>
+              <Button size="sm" variant="ghost" onClick={() => setReviewing(false)}>Close</Button>
+              {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            </div>
+          </div>
+        )}
+        {!reviewing && hint && <div className="mt-1 font-mono text-xs text-destructive">{hint}</div>}
       </CardContent>
     </Card>
   )

@@ -23,6 +23,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `report` | `POST /api/report` | messages | W | `outcome` enum |
 | `update` | `POST /api/update` | messages | W | non-blocking progress note |
 | `publish` | `POST /api/publish` | `ArtifactStore` | W | snapshots the file |
+| `skill_propose` | `POST /api/skills/propose` | `SkillsStore.propose` + messages | W | drafts a `.aos-proposed` skill (never materialised) + posts a `skill.proposed` inbox card to owner/admins; audited `skill.proposed`. Human publishes via `POST /api/skills/:name/publish` (owner/admin) or dismisses via `DELETE /api/skills/:name` |
 | `artifacts_list` | `GET /api/agent/artifacts` | `ArtifactStore.list` | R | scoped to the agent's own deliverables |
 | `schedule` | `POST /api/agent/schedule` | `Automations.schedule` (`type:'once'`) | W | one-shot deferred self-run; same agent + run-as; bounded 1 min–30 days, ≤25 pending/agent |
 | `unschedule` | `POST /api/agent/schedule/cancel` | `Automations.cancelScheduled` | W | cancel a pending one, scoped to the agent |
@@ -39,7 +40,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `slack_reply` | `POST /api/agent/slack/reply` | SlackSocket | W | only when `SLACK_REPLY=1` (chat-triggered) |
 | `discord_reply` | `POST /api/agent/discord/reply` | DiscordSocket | W | only when `DISCORD_REPLY=1` (chat-triggered) |
 
-27 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+28 always-on tools + 2 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 
