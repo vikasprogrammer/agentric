@@ -71,21 +71,44 @@ const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
-/** The sessions-list filters, held in the URL hash query so they survive a refresh / deep-link. */
-interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; owner: string }
+/** Sortable columns of the sessions list. `created` is the default (newest first — the server order). */
+type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status'
+type SortDir = 'asc' | 'desc'
+const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status']
+/** Status ordering for the Status-column sort: live → done → stopped → crashed. */
+const statusRank = (s: Session): number =>
+  isLive(s) ? 0 : s.status === 'done' ? 1 : s.status === 'stopped' ? 2 : s.status === 'crashed' ? 3 : 4
+/** Ascending comparison for a given column; direction is applied by the caller. */
+const compareSessions = (a: Session, b: Session, key: SessionSortKey): number => {
+  switch (key) {
+    case 'created': return a.createdAt - b.createdAt
+    case 'title': return a.title.localeCompare(b.title)
+    case 'agent': return a.agent.localeCompare(b.agent)
+    case 'id': return a.id.localeCompare(b.id)
+    case 'startedBy': return (a.spawnedByLabel ?? '').localeCompare(b.spawnedByLabel ?? '')
+    case 'status': return statusRank(a) - statusRank(b)
+  }
+}
+
+/** The sessions-list view state (filters + sort), held in the URL hash query so it survives a
+ *  refresh / deep-link. */
+interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; owner: string; sortKey: SessionSortKey; sortDir: SortDir }
 const parseSessionFilters = (qs: string): SessionFilters => {
   const p = new URLSearchParams(qs)
   const status = p.get('status') ?? ''
   const source = p.get('source') ?? ''
+  const sort = p.get('sort') ?? ''
   return {
     q: p.get('q') ?? '',
     status: (status in SESSION_STATUS_LABELS ? status : 'all') as SessionStatusFilter,
     agent: p.get('agent') ?? 'all',
     source: (source in SESSION_SOURCE_LABELS ? source : 'all') as 'all' | SessionSource,
     owner: p.get('owner') ?? 'all',
+    sortKey: (SESSION_SORT_KEYS.includes(sort as SessionSortKey) ? sort : 'created') as SessionSortKey,
+    sortDir: (p.get('dir') === 'asc' ? 'asc' : 'desc') as SortDir,
   }
 }
-/** Serialize the active (non-default) filters back to a query param bag for the URL. */
+/** Serialize the active (non-default) filters + sort back to a query param bag for the URL. */
 const sessionFiltersToParams = (f: SessionFilters): Record<string, string> => {
   const p: Record<string, string> = {}
   if (f.q.trim()) p.q = f.q.trim()
@@ -93,6 +116,8 @@ const sessionFiltersToParams = (f: SessionFilters): Record<string, string> => {
   if (f.agent !== 'all') p.agent = f.agent
   if (f.source !== 'all') p.source = f.source
   if (f.owner !== 'all') p.owner = f.owner
+  if (f.sortKey !== 'created') p.sort = f.sortKey
+  if (f.sortDir !== 'desc') p.dir = f.sortDir
   return p
 }
 
@@ -1403,11 +1428,32 @@ function SessionsPage({
   const [agentFilter, setAgentFilter] = useState(seed.agent)
   const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>(seed.source)
   const [ownerFilter, setOwnerFilter] = useState(seed.owner) // run-as member id, or 'all'
+  const [sortKey, setSortKey] = useState<SessionSortKey>(seed.sortKey)
+  const [sortDir, setSortDir] = useState<SortDir>(seed.sortDir)
   useEffect(() => {
-    onFiltersChange(sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter }))
-    // onFiltersChange is a stable replaceState wrapper; depending on the filter values only is intentional.
+    onFiltersChange(sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter, sortKey, sortDir }))
+    // onFiltersChange is a stable replaceState wrapper; depending on the filter/sort values only is intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, statusFilter, agentFilter, sourceFilter, ownerFilter])
+  }, [query, statusFilter, agentFilter, sourceFilter, ownerFilter, sortKey, sortDir])
+  // Clicking a column header sorts by it; clicking the active column flips direction. A fresh column
+  // starts ascending, except `created` (time) which reads best newest-first.
+  const toggleSort = (key: SessionSortKey) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(key); setSortDir(key === 'created' ? 'desc' : 'asc') }
+  }
+  // A clickable column heading. `className` carries the column's width/visibility so the header stays
+  // aligned to its rows; the caret shows on the active column and flips with direction.
+  const sortHead = (col: SessionSortKey, label: string, className: string) => (
+    <button
+      type="button"
+      onClick={() => toggleSort(col)}
+      title={`sort by ${label.toLowerCase()}`}
+      className={`flex items-center gap-1 text-left hover:text-foreground ${sortKey === col ? 'text-foreground' : ''} ${className}`}
+    >
+      <span className="truncate">{label}</span>
+      {sortKey === col && <ChevronDown className={`h-3 w-3 shrink-0 transition-transform ${sortDir === 'asc' ? 'rotate-180' : ''}`} />}
+    </button>
+  )
   const agentOptions = useMemo(() => [...new Set(sessions.map((s) => s.agent))].sort(), [sessions])
   // Distinct run-as owners present, id→label, sorted by label. A session with no run-as identity is
   // omitted (nothing to key an Owner filter on).
@@ -1429,6 +1475,15 @@ function SessionsPage({
       (needle === '' || `${s.title} ${s.agent} ${s.id} ${s.task} ${s.spawnedByLabel ?? ''} ${s.runAsLabel ?? ''}`.toLowerCase().includes(needle)),
     )
   }, [sessions, query, statusFilter, agentFilter, sourceFilter, ownerFilter])
+  // Sorted view (both grid + list render this). A stable tiebreak on createdAt keeps equal keys in a
+  // deterministic order rather than letting the sort shuffle them.
+  const shown = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1
+    return [...filtered].sort((a, b) => {
+      const primary = compareSessions(a, b, sortKey)
+      return primary !== 0 ? primary * dir : b.createdAt - a.createdAt
+    })
+  }, [filtered, sortKey, sortDir])
 
   // Multi-select for bulk stop/delete. Kept in sync with the live list: ids that vanish (deleted
   // elsewhere, or by our own bulk delete) are pruned so the toolbar count never lies. Select-all and
@@ -1620,7 +1675,7 @@ function SessionsPage({
         </div>
       ) : view === 'grid' ? (
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {filtered.map((s) => (
+          {shown.map((s) => (
             <div key={s.id} className={`group relative flex flex-col rounded-lg border p-3 hover:bg-muted ${sel.has(s.id) ? 'ring-1 ring-primary' : ''}`}>
               <input
                 type="checkbox"
@@ -1661,20 +1716,20 @@ function SessionsPage({
         </div>
       ) : (
         <div className="divide-y overflow-hidden rounded-lg border">
-          {/* column headings — mirror each row column's width/visibility classes so they line up */}
+          {/* column headings — click to sort; each mirrors its row column's width/visibility classes */}
           <div className="flex items-center gap-3 bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             <span className="h-3.5 w-3.5 shrink-0" aria-hidden />
             <div className="flex min-w-0 flex-1 items-center gap-3">
               <span className="h-2 w-2 shrink-0" aria-hidden />
-              <span className="min-w-0 flex-1 truncate">Session</span>
-              <span className="hidden w-32 shrink-0 sm:block">Agent</span>
-              <span className="hidden w-20 shrink-0 md:block">ID</span>
-              <span className="w-40 shrink-0">Started by</span>
-              <span className="w-16 shrink-0">Status</span>
+              {sortHead('title', 'Session', 'min-w-0 flex-1')}
+              {sortHead('agent', 'Agent', 'hidden w-32 shrink-0 sm:flex')}
+              {sortHead('id', 'ID', 'hidden w-20 shrink-0 md:flex')}
+              {sortHead('startedBy', 'Started by', 'w-40 shrink-0')}
+              {sortHead('status', 'Status', 'w-16 shrink-0')}
             </div>
             <span className="w-32 shrink-0" aria-hidden />
           </div>
-          {filtered.map((s) => (
+          {shown.map((s) => (
             <div key={s.id} className={`group flex items-center gap-3 px-3 py-2 hover:bg-muted ${sel.has(s.id) ? 'bg-muted' : ''}`}>
               <input
                 type="checkbox"
