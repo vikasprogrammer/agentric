@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.53.2] — 2026-07-08
+### Fixed
+- **Agent library modal now scrolls.** The catalog list overflowed the dialog instead of scrolling
+  (the grid `DialogContent` clipped it with no bounded height on the list). Gave the list its own
+  `max-h-[60vh] overflow-y-auto` so long catalogs scroll within the modal.
+
 ## [0.53.1] — 2026-07-08
 ### Changed
 - **The agent library moved behind a button.** The Agents page no longer shows the library as an

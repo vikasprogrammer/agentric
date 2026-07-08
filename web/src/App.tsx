@@ -4400,7 +4400,7 @@ function AgentLibrary({ open, onOpenChange, onInstalled }: { open: boolean; onOp
           <div className="text-xs text-muted-foreground">Ready-made agents bundled with Agent OS. Install one to copy it into your fleet — then edit, tune, assign, or delete it like any other agent.</div>
         </DialogHeader>
         {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
-        <div className="space-y-2 overflow-y-auto">
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
           {!catalog ? (
             <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
           ) : catalog.length === 0 ? (
