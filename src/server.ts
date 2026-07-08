@@ -2150,6 +2150,24 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, { ok: true, path: relOf(root, file) });
     }
 
+    // Create a new (empty, or seeded) file. Refuses to clobber an existing path.
+    if (method === 'POST' && p === '/api/files/create') {
+      const b = await readBody(req);
+      const file = safeResolve(root, String(b.path ?? ''));
+      if (!file) return sendJson(res, 400, { error: 'path escapes the data home' });
+      const rel = relOf(root, file);
+      if (rel === '') return sendJson(res, 400, { error: 'invalid file name' });
+      if (fs.existsSync(file)) return sendJson(res, 409, { error: 'a file or folder already exists here' });
+      const parent = path.dirname(file);
+      try { if (!fs.statSync(parent).isDirectory()) return sendJson(res, 400, { error: 'parent is not a directory' }); }
+      catch { return sendJson(res, 404, { error: 'directory not found' }); }
+      const content = String(b.content ?? '');
+      try { fs.writeFileSync(file, content, { flag: 'wx' }); }
+      catch (e) { return sendJson(res, 500, { error: `create failed: ${(e as Error).message}` }); }
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'file.created', data: { path: rel, bytes: content.length } });
+      return sendJson(res, 200, { ok: true, path: rel });
+    }
+
     // Create a folder (recursive; no-op if it already exists).
     if (method === 'POST' && p === '/api/files/mkdir') {
       const b = await readBody(req);
