@@ -796,6 +796,7 @@ function AgentsPage({
   const [rescanning, setRescanning] = useState(false)
   const rescan = async () => { setRescanning(true); try { await onRescan() } finally { setRescanning(false) } }
   const [importing, setImporting] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
   const pickBundle = async (files: FileList | null) => {
     const file = files?.[0]
@@ -852,16 +853,22 @@ function AgentsPage({
       <div className="flex min-h-full flex-col items-center justify-center gap-3 text-center">
         <p className="text-sm text-muted-foreground">{canEdit ? 'No agents yet — create one to get started.' : 'No agents assigned to you.'}</p>
         {canEdit && (
-          <div className="flex items-center gap-2">
-            <input ref={importInput} type="file" accept=".zip,application/zip" className="hidden" onChange={(e) => pickBundle(e.target.files)} />
-            <Button size="sm" className="gap-1" onClick={onNew}><Plus className="h-4 w-4" /> New agent</Button>
-            <Button size="sm" variant="outline" className="gap-1" onClick={() => importInput.current?.click()} disabled={importing} title="import an agent from an AOS bundle .zip">
-              <Upload className={'h-4 w-4' + (importing ? ' animate-pulse' : '')} /> {importing ? 'Importing…' : 'Import bundle'}
-            </Button>
-            <Button size="sm" variant="outline" className="gap-1" onClick={rescan} disabled={rescanning} title="pick up agents added to the agents folder on disk">
-              <RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /> Rescan folder
-            </Button>
-          </div>
+          <>
+            <div className="flex items-center gap-2">
+              <input ref={importInput} type="file" accept=".zip,application/zip" className="hidden" onChange={(e) => pickBundle(e.target.files)} />
+              <Button size="sm" className="gap-1" onClick={onNew}><Plus className="h-4 w-4" /> New agent</Button>
+              <Button size="sm" variant="outline" className="gap-1" onClick={() => setLibraryOpen(true)} title="browse the agent library — install a ready-made agent">
+                <Package className="h-4 w-4" /> Library
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1" onClick={() => importInput.current?.click()} disabled={importing} title="import an agent from an AOS bundle .zip">
+                <Upload className={'h-4 w-4' + (importing ? ' animate-pulse' : '')} /> {importing ? 'Importing…' : 'Import bundle'}
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1" onClick={rescan} disabled={rescanning} title="pick up agents added to the agents folder on disk">
+                <RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /> Rescan folder
+              </Button>
+            </div>
+            <AgentLibrary open={libraryOpen} onOpenChange={setLibraryOpen} onInstalled={onRefresh} />
+          </>
         )}
       </div>
     )
@@ -952,6 +959,7 @@ function AgentsPage({
             <>
               <input ref={importInput} type="file" accept=".zip,application/zip" className="hidden" onChange={(e) => pickBundle(e.target.files)} />
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={onNew} title="new agent"><Plus className="h-4 w-4" /></Button>
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={() => setLibraryOpen(true)} title="agent library — install a ready-made agent that ships with Agent OS"><Package className="h-4 w-4" /></Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={() => importInput.current?.click()} disabled={importing} title="import an agent from an AOS bundle .zip"><Upload className={'h-4 w-4' + (importing ? ' animate-pulse' : '')} /></Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={rescan} disabled={rescanning} title="rescan the agents folder — pick up agents added on disk without a restart"><RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /></Button>
             </>
@@ -959,8 +967,8 @@ function AgentsPage({
         </div>
       </div>
 
-      {/* the agent library — browse & install ready-made agents that ship with Agent OS */}
-      {canEdit && <AgentLibrary onInstalled={onRefresh} />}
+      {/* the agent library — a modal opened by the Library button in the toolbar above */}
+      {canEdit && <AgentLibrary open={libraryOpen} onOpenChange={setLibraryOpen} onInstalled={onRefresh} />}
 
       {/* search — only worth showing once the fleet is more than a glance */}
       {agents.length > 6 && (
@@ -4364,13 +4372,13 @@ function SkillsPage() {
 /** The agent library — the catalog of ready-made agents that ships with Agent OS (`config/agents`).
  *  Install one to copy it into this workspace as a normal, editable agent. Distribution-only: the list
  *  is fixed by what ships, and the built-in fleet shows as already installed. Mirrors SkillCatalog. */
-function AgentLibrary({ onInstalled }: { onInstalled: () => void | Promise<void> }) {
+function AgentLibrary({ open, onOpenChange, onInstalled }: { open: boolean; onOpenChange: (o: boolean) => void; onInstalled: () => void | Promise<void> }) {
   const [catalog, setCatalog] = useState<CatalogAgent[] | null>(null)
-  const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
   const load = () => api.agentCatalog().then((r) => setCatalog(r.catalog ?? [])).catch(() => setCatalog([]))
-  useEffect(() => { load() }, [])
+  // Load (and refresh) whenever the dialog opens, so installed/available flags reflect current state.
+  useEffect(() => { if (open) { setHint(''); load() } }, [open])
 
   const install = async (id: string) => {
     setBusy(id); setHint('')
@@ -4381,24 +4389,23 @@ function AgentLibrary({ onInstalled }: { onInstalled: () => void | Promise<void>
     load(); await onInstalled()
   }
 
-  if (!catalog || catalog.length === 0) return null
-  const available = catalog.filter((c) => !c.installed).length
-
   return (
-    <section className="rounded-md border bg-muted/30">
-      <button className="flex w-full items-center justify-between gap-2 p-3 text-left" onClick={() => setOpen((v) => !v)}>
-        <span className="flex items-center gap-2 text-sm font-medium">
-          <Package className="h-4 w-4 text-muted-foreground" />
-          Agent library
-          <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{available} to install</Badge>
-        </span>
-        <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-90' : ''}`} />
-      </button>
-      {open && (
-        <div className="space-y-2 border-t p-3">
-          <p className="text-xs text-muted-foreground">Ready-made agents bundled with Agent OS. Install one to copy it into your fleet — then edit, tune, assign, or delete it like any other agent.</p>
-          {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
-          {catalog.map((c) => (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[85vh] w-full max-w-[calc(100%-2rem)] gap-3 overflow-hidden sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 pr-8">
+            <Package className="h-4 w-4 shrink-0 text-muted-foreground" />
+            Agent library
+          </DialogTitle>
+          <div className="text-xs text-muted-foreground">Ready-made agents bundled with Agent OS. Install one to copy it into your fleet — then edit, tune, assign, or delete it like any other agent.</div>
+        </DialogHeader>
+        {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
+        <div className="space-y-2 overflow-y-auto">
+          {!catalog ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">Loading…</p>
+          ) : catalog.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">The agent library is empty.</p>
+          ) : catalog.map((c) => (
             <Card key={c.id}>
               <CardContent className="flex items-start justify-between gap-3 p-3">
                 <div className="flex min-w-0 items-start gap-2.5">
@@ -4423,8 +4430,8 @@ function AgentLibrary({ onInstalled }: { onInstalled: () => void | Promise<void>
             </Card>
           ))}
         </div>
-      )}
-    </section>
+      </DialogContent>
+    </Dialog>
   )
 }
 

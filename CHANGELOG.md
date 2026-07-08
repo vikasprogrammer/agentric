@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.53.1] — 2026-07-08
+### Changed
+- **The agent library moved behind a button.** The Agents page no longer shows the library as an
+  always-present section up top — it's now a **Library** button in the page's toolbar (and in the
+  empty-state actions) that opens the catalog in a modal. Same install flow; less clutter on the
+  primary "run an agent" surface.
+
 ## [0.53.0] — 2026-07-08
 ### Added
 - **Filter the sessions list by owner.** The Sessions filter bar gained an **Owner** dropdown that
