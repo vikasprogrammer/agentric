@@ -1692,7 +1692,10 @@ function SessionsPage({
                   {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 </div>
                 <div className="mt-1 truncate text-xs text-muted-foreground">{s.agent} · {statusLabel(s)} · <span className="font-mono">{s.id}</span></div>
-                <div className="mt-1"><StartedBy label={s.spawnedByLabel} /></div>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <StartedBy label={s.spawnedByLabel} />
+                  <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
+                </div>
               </button>
               <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
