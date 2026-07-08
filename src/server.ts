@@ -2261,6 +2261,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name } });
     return sendJson(res, 200, { ok: true, skill: os.skills.get(name) });
   }
+  // Duplicate an installed skill under a new name — a deep copy (markers stripped, assignments reset
+  // to all-agents). Owner/admin only. MUST precede the generic /api/skills/:name route (the trailing
+  // /duplicate keeps them distinct, but keep it grouped with the other sub-path routes).
+  const skillDup = p.match(/^\/api\/skills\/([\w.-]+)\/duplicate$/);
+  if (method === 'POST' && skillDup) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.skills.enabled) return sendJson(res, 400, { error: 'duplicating skills requires a data home' });
+    const from = skillDup[1];
+    const b = await readBody(req);
+    try {
+      const s = os.skills.duplicate(from, String(b.name ?? ''));
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.duplicated', data: { skill: s.name, from } });
+      return sendJson(res, 200, { ok: true, skill: s });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
   // The bundled catalog — skills that ship with the software, installable into this tenant's library.
   // MUST precede the generic /api/skills/:name route below (else "catalog" reads as a skill name).
   if (method === 'GET' && p === '/api/skills/catalog') {

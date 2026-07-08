@@ -7,6 +7,16 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.49.0] — 2026-07-08
+### Added
+- **Duplicate an installed skill.** Each skill in the library (Skills page) now has a **Duplicate**
+  action next to Edit/Delete: it deep-copies the skill's folder (SKILL.md + any supporting files)
+  under a new name, strips the managed/proposed markers, and rewrites the copy's frontmatter `name:`
+  so it lists and invokes as `/newName`. Handy for forking a bundled or installed playbook before
+  tweaking it. Assignments are **not** carried over — a copy defaults to all agents, like a fresh
+  install. Owner/admin only; audited `skill.duplicated`. New store method `SkillsStore.duplicate` +
+  route `POST /api/skills/:name/duplicate`.
 ### Docs
 - Embed an architecture diagram at the top of `docs/ARCHITECTURE.md`.
 
