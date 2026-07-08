@@ -470,6 +470,12 @@ function migrate(db: Db): void {
   // NULL → identity falls back to memberOf(spawned_by). Older rows predate it → NULL (no change).
   addColumn(db, 'term_sessions', 'run_as', 'TEXT');
 
+  // The claude conversation id we pin this run to (`claude --session-id`), so a later run can RESUME
+  // the SAME transcript (`claude --resume`) and keep context — the backbone of chat-thread continuity
+  // (a Slack/Discord follow-up in a bound thread continues the same conversation). NULL for older rows
+  // and non-claude runs → those can't be resumed and fall back to a fresh spawn.
+  addColumn(db, 'term_sessions', 'claude_session_id', 'TEXT');
+
   // Session status vocabulary widened: running|idle → running|done|stopped|crashed. Legacy terminal
   // rows collapsed every non-running end state into 'idle'; we can't retro-classify how they actually
   // ended, so map them to the benign 'done'. Idempotent — after the first boot there are no 'idle' rows.

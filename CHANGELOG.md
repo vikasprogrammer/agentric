@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.54.0] — 2026-07-08
+### Added
+- **Talk to an agent inside a Slack thread.** A follow-up message in a thread the bot already replied
+  in now **continues the same conversation** instead of being treated as a brand-new trigger (which
+  answered a plain "ok, now do X" with the `/agent` help list). The socket resolves the most recent
+  session bound to that thread and spawns a continuation run that **resumes the same claude transcript**
+  (`claude --resume`), so the agent keeps full context; its `slack_reply` lands back in the same thread.
+  If the bound agent is still working the previous turn, the bot posts a short "still on it — I'll pick
+  this up next" note and drops the duplicate (no overlapping runs on one thread).
+### Changed
+- Headless chat/automation runs now **pin their claude session id** (`--session-id`) so they can be
+  resumed later — the backbone of the thread-continuity above. New `term_sessions.claude_session_id`
+  column (NULL for older/non-claude runs, which fall back to a fresh spawn).
+### Note
+- Requires the Slack app to receive thread replies: subscribe to `message.channels` (and
+  `message.groups`/`message.im`/`message.mpim` as needed) and keep the bot in the channel. `app_mention`
+  alone only delivers explicit @mentions, not plain in-thread replies.
+
 ## [0.53.2] — 2026-07-08
 ### Fixed
 - **Agent library modal now scrolls.** The catalog list overflowed the dialog instead of scrolling

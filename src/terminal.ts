@@ -480,6 +480,26 @@ export class TerminalManager {
     if (!alive) return true; // launcher backend: can't poll; the row says running, so treat as alive
     return alive.has(r.tmux);
   }
+
+  /**
+   * The MOST RECENT session bound to a Slack thread (`channel` + `thread_ts`), for thread continuity:
+   * a follow-up message in a thread resumes THAT run's agent + claude conversation. Returns the agent,
+   * its run-as, and the pinned `claudeSessionId` needed to `--resume`. Undefined when nothing is bound
+   * (the first mention — the thread isn't bound yet) or the newest run predates the claude-id column
+   * (unresumable → the caller falls back to a fresh spawn).
+   */
+  sessionForSlackThread(channel: string, threadTs: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+           FROM slack_threads s JOIN term_sessions t ON t.id = s.session_id
+          WHERE s.channel = ? AND s.thread_ts = ?
+          ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, threadTs);
+    if (!row) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
   listMessages(viewer?: Member): FeedMessage[] {
     // Approval messages take their live status from the approvals table, so the inbox stays
     // correct even after a restart (when the in-memory resolution waiter is gone). We also pull each
@@ -612,9 +632,13 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
-  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string): Session {
+  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string): Session {
     const id = randomUUID().slice(0, 8);
     const tmux = `aos-${id}`;
+    // The claude conversation this run drives. A fresh run mints a new id (pinned via `--session-id`);
+    // a thread follow-up passes the PRIOR run's id so the launcher `--resume`s the same transcript and
+    // keeps context. Persisted on the row so a later follow-up can look it up (see sessionForSlackThread).
+    const claudeSessionId = resumeClaudeId || randomUUID();
     // P2 — provenance vs identity:
     //   `spawnedBy`     = what TRIGGERED this run (an `automation:<id>` or the console member). Stays
     //                     provenance: drives the inbox source label, the audit principal, isolation
@@ -628,8 +652,8 @@ export class TerminalManager {
     const secret = randomBytes(24).toString('hex');
     const session: Session = { id, agent, title, task, tmux, status: 'running', createdAt: Date.now() };
     this.db
-      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, session.createdAt);
+      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, session.createdAt);
     // No spawn card — the Inbox is a feed of agent-authored signals (progress / questions / approvals /
     // completions / artifacts), not a session lifecycle log. A run that never speaks stays off the feed
     // and lives only on the Sessions page.
@@ -682,8 +706,12 @@ export class TerminalManager {
       if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
       this.audit(id, agent, 'session.tuning', { model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode });
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session
-      // can be resumed in-place with `claude --resume <id>` when the user reconnects in the browser.
-      env.CLAUDE_SESSION_ID = randomUUID();
+      // can be resumed in-place with `claude --resume <id>` when the user reconnects in the browser —
+      // and so a chat-thread follow-up can resume the SAME conversation. When `resumeClaudeId` is set
+      // (a thread follow-up), reuse the prior run's id and tell the launcher to `--resume` it; even the
+      // headless lane then continues the transcript instead of starting fresh.
+      env.CLAUDE_SESSION_ID = claudeSessionId;
+      if (resumeClaudeId) env.RESUME = '1';
 
       // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`). Done
       // here so both isolation lanes and the resurrect env file (writeEnvFile below) carry them.

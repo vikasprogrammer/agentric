@@ -534,6 +534,58 @@ export class Automations {
   }
 
   /**
+   * Thread continuity: a follow-up message inside a Slack thread already bound to a session should
+   * CONTINUE that conversation with the same agent — not re-run the automation/`/agent` router (which
+   * would answer a plain "ok, now do X" with a help list). We find the most recent session bound to the
+   * thread and, if it can be resumed, spawn a new governed run that `--resume`s the SAME claude
+   * transcript (context preserved), bound to the same thread so its `slack_reply` lands back in place.
+   *
+   * Returns the disposition so the socket can post the right ack:
+   *   - `resumed`: a continuation run started (sessionId set).
+   *   - `busy`:    the bound agent is still working the previous turn — the caller posts a "one sec" note
+   *                and drops this message (no overlapping run on the same thread).
+   *   - `none`:    nothing resumable is bound (first mention, or a pre-continuity run) — the caller falls
+   *                through to the normal fireSlack path (fresh spawn / router).
+   */
+  continueSlackThread(
+    event: { channel: string; threadTs: string; actorLabel: string; text: string; raw: unknown },
+    runAsMember?: string,
+  ): { status: 'resumed' | 'busy' | 'none'; sessionId?: string } {
+    if (!event.threadTs) return { status: 'none' };
+    const bound = this.tm.sessionForSlackThread(event.channel, event.threadTs);
+    if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound or unresumable → fresh spawn
+    if (this.tm.isAlive(bound.sessionId)) return { status: 'busy' };  // still working the previous turn
+    // Continuation identity is whoever sent THIS follow-up (they're the accountable human for this turn),
+    // falling back to the original run-as when the sender is unmapped.
+    const runAs = runAsMember ?? bound.runAs;
+    const extra =
+      `Follow-up from ${event.actorLabel} in the SAME Slack thread — continue the conversation.\n` +
+      `Message:\n${event.text}\n\n` +
+      `Reply with the \`slack_reply\` tool when done (it posts back to this thread). Keep it concise.\n\n` +
+      `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
+    const s = this.tm.createSession(
+      bound.agent,
+      `Chat → ${bound.agent} (cont.)`,
+      extra,
+      `chat:${bound.agent}`,
+      true, // headless one-off, resuming the prior transcript
+      { channel: event.channel, threadTs: event.threadTs },
+      undefined,
+      runAs,
+      bound.claudeSessionId,
+    );
+    this.os.audit.append({
+      ts: Date.now(),
+      runId: s.id,
+      tenant: this.os.tenant,
+      principal: runAs ? `member:${runAs}` : 'chat',
+      type: 'chat.resumed',
+      data: { agent: bound.agent, from: bound.sessionId, channel: event.channel, thread: event.threadTs, runAs: runAs ?? null },
+    });
+    return { status: 'resumed', sessionId: s.id };
+  }
+
+  /**
    * Inbound native Discord message (Gateway; the bot was @-mentioned or DMed). The exact analogue of
    * `fireSlack`: fire every enabled `discord` automation whose `filter` matches the event type or
    * channel ('' / '*' = any). `runAsMember` runs the session AS that member; absent → the company

@@ -160,6 +160,31 @@ export class SlackSocket {
     // (and the `/agent` router prefix) starts clean, matching the Discord path.
     const text = (ev.text || '').replace(new RegExp(`^\\s*<@${this.botUserId}>\\s*`), '').trim();
 
+    // Thread continuity: if this message lands inside a thread already bound to a session, continue THAT
+    // conversation (resume the same agent + transcript) instead of treating it as a fresh trigger — so
+    // a plain "ok, now do X" in the thread keeps talking to the agent rather than hitting the /agent
+    // router's help list. Only the FIRST message in a thread (nothing bound yet) falls through below.
+    const cont = this.autos.continueSlackThread(
+      { channel: ev.channel, threadTs: ev.threadTs, actorLabel, text, raw: ev.raw },
+      runAsMember,
+    );
+    if (cont.status !== 'none') {
+      this.os.audit.append({
+        ts: Date.now(),
+        runId: cont.sessionId ?? '-',
+        tenant: this.os.tenant,
+        principal: runAsMember ? `member:${runAsMember}` : 'slack',
+        type: 'trigger.slack',
+        data: { eventType: ev.eventType, channel: ev.channel, thread: true, continued: cont.status, runAs: runAsMember ?? null },
+      });
+      const note =
+        cont.status === 'resumed'
+          ? ':robot_face: On it — continuing this thread.'
+          : ':hourglass_flowing_sand: Still working on your previous message — I’ll pick this up next.';
+      await postMessage(this.os.settings.slackBotToken(), ev.channel, note, ev.threadTs);
+      return;
+    }
+
     const result = this.autos.fireSlack(
       {
         eventType: ev.eventType,

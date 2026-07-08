@@ -215,7 +215,19 @@ if [ "${HEADLESS:-}" = "1" ]; then
   ( umask 077; : > "$LOG" ) 2>/dev/null || true
   dim "headless run — transcript → $LOG. This pane closes when the task completes."
   echo
-  claude -p "$TASK" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
+  # Pin the run to CLAUDE_SESSION_ID (`--session-id`) so a later chat-thread follow-up can `--resume`
+  # the SAME transcript and keep context. RESUME=1 (a thread follow-up) resumes it, seeding the new
+  # message as the next turn; if the resume fails (no persisted transcript) fall back to a fresh run so
+  # the user still gets an answer (context lost, but no dead end). No id set → mint-your-own as before.
+  if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    dim "resuming claude session $CLAUDE_SESSION_ID (thread follow-up) …"
+    claude -p "$TASK" --resume "$CLAUDE_SESSION_ID" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG" \
+      || claude -p "$TASK" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
+  elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    claude -p "$TASK" --session-id "$CLAUDE_SESSION_ID" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
+  else
+    claude -p "$TASK" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
+  fi
   notify_ended
   exit 0
 fi

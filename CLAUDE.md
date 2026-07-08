@@ -151,7 +151,15 @@ Key modules:
   `getMemberByEmail`; unmapped → company identity). A leading bot-mention (`<@BOTID>`) is stripped before
   routing so the `/agent` prefix parses. The bot posts an immediate in-thread ack (replies thread on
   `thread_ts ?? ts`, so a mention starts a thread); the agent replies via its own Slack egress tools (the
-  Composio company Slackbot). The socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
+  Composio company Slackbot). **Thread continuity:** a follow-up message inside a thread already bound to a
+  session (`slack_threads`) continues THAT conversation instead of re-triggering — `dispatch` calls
+  `Automations.continueSlackThread` (finds the newest session for `channel`+`thread_ts` via
+  `TerminalManager.sessionForSlackThread`, then spawns a run that `claude --resume`s the SAME transcript,
+  keeping context; a still-busy agent gets a "pick this up next" note, no overlapping run). This needs the
+  pinned claude id — headless runs now launch with `--session-id $CLAUDE_SESSION_ID` (stored in
+  `term_sessions.claude_session_id`). Caveat: plain in-thread replies only reach the socket if the Slack app
+  subscribes to `message.channels`/etc. AND the bot is in-channel (`app_mention` covers only @mentions). The
+  socket re-dials when tokens change; uses the Node 22+ global `WebSocket`
   (no `ws` dep). Slack here is INGRESS-native; Composio remains the webhook ingress lane.
 - `src/edge/discord-socket.ts` + `src/connectors/discord.ts` — **native Discord via the Gateway**: a
   one-for-one mirror of the Slack path. One company bot (single `Bot …` token in Settings → Integrations)
