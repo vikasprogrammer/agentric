@@ -75,6 +75,26 @@ export function cronMatches(spec: CronSpec, d: Date): boolean {
   return domOk || dowOk;
 }
 
+/**
+ * The next time (epoch ms) a 5-field cron expression fires at or after `from` (default now). Minute-
+ * grained to match the scheduler tick, and scanned forward from the NEXT whole minute (a match in the
+ * current minute has already fired or is firing). Returns null if nothing matches within ~13 months — a
+ * defensive bound (a valid cron always fires within a year; an impossible combo like `0 0 30 2 *`,
+ * Feb 30, never does). Cheap enough to call per-automation on a list render: worst case ≈ a year of
+ * minute steps of Set lookups, and real schedules resolve in far fewer.
+ */
+export function nextCronRun(expr: string, from: Date = new Date()): number | null {
+  const spec = parseCron(expr);
+  const d = new Date(from.getTime());
+  d.setSeconds(0, 0);
+  d.setMinutes(d.getMinutes() + 1); // start at the next whole minute
+  const limit = d.getTime() + 400 * 86_400_000;
+  for (let t = d.getTime(); t <= limit; t += 60_000) {
+    if (cronMatches(spec, new Date(t))) return t;
+  }
+  return null;
+}
+
 // ── the automation object ─────────────────────────────────────────────────────────
 
 /**

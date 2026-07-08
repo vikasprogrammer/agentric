@@ -294,6 +294,9 @@ export interface Automation {
   createdAt: number
   lastFiredAt?: number
   lastSessionId?: string
+  /** When it fires next (epoch ms): computed for an enabled cron, or the pending runAt for a one-shot.
+   *  Absent for event triggers (webhook/slack/discord) and disabled automations. */
+  nextRunAt?: number
   /** Ready-to-paste webhook URL — present for admins on webhook automations only. */
   hookUrl?: string
 }

@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.42.0] — 2026-07-08
+### Added
+- **Next-fire timing on the Automations page.** Each cron automation now shows **when it fires next** —
+  "next in 3h · <local time>" — computed by a new `nextCronRun(expr)` helper (`src/edge/automations.ts`,
+  the forward companion to `cronMatches`: scans minute-by-minute from the next whole minute, null for an
+  impossible expression like Feb 30) and surfaced as `nextRunAt` on the automation view. A disabled cron
+  reads "paused — won't fire"; event triggers (webhook/slack/discord) read "fires on … — no schedule";
+  last-fired is now the compact "last fired 2h ago".
+### Changed
+- **Automations UX: the New-automation form is collapsed behind a button.** The page led with a permanent
+  form; now a **New automation** button sits in the Configured header and reveals the form on demand (with
+  a Cancel, and auto-collapse on create), so the page opens on the list of what's configured — the runs,
+  schedules, and next-fire timings — instead of an empty form.
+
 ## [0.41.0] — 2026-07-08
 ### Added
 - **Automation Runs — see every time an automation fired.** Each automation card on the Automations page

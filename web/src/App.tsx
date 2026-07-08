@@ -1497,6 +1497,16 @@ function timeAgo(ts: number): string {
   return `${Math.floor(d / 7)}w`
 }
 
+/** Compact "in 3h" / "in 2d" for a future timestamp — the forward-looking companion to timeAgo. */
+function timeUntil(ts: number): string {
+  const s = Math.max(0, Math.floor((ts - Date.now()) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60); if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24); if (d < 7) return `${d}d`
+  return `${Math.floor(d / 7)}w`
+}
+
 /** The inbox heading for a message: the session's live display name, falling back to the agent id if a
  *  run hasn't been named yet. Every card leads with this; the agent is shown as a secondary line. */
 const sessionName = (m: Msg): string => (m.sessionTitle || '').trim() || m.agent
@@ -2944,6 +2954,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
   const [openRuns, setOpenRuns] = useState<string | null>(null) // automation id whose Runs list is expanded
+  const [showForm, setShowForm] = useState(false) // the New-automation form is collapsed until requested
   // create form
   const [name, setName] = useState('')
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
@@ -2963,7 +2974,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
     setHint('')
     const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task })
     if (r.error) return setHint('⚠ ' + r.error)
-    setName(''); setTask('')
+    setName(''); setTask(''); setShowForm(false)
     load()
   }
   const setItemMode = async (a: Automation, m: 'interactive' | 'headless') => { setBusy(a.id); await api.updateAutomation(a.id, { mode: m }); await load(); setBusy('') }
@@ -2990,70 +3001,16 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
       </p>
 
       <section>
-        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Configured</div>
-        {items.length === 0 && <div className="text-sm text-muted-foreground">No automations yet{isAdmin ? ' — create one below.' : '.'}</div>}
-        <div className="space-y-2">
-          {items.map((a) => (
-            <Card key={a.id}>
-              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <Zap className={`h-4 w-4 shrink-0 ${a.enabled ? 'text-amber-500' : 'text-muted-foreground/40'}`} />
-                    <span className="truncate text-sm font-medium">{a.name}</span>
-                    <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{a.type}</Badge>
-                    <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{a.mode === 'headless' ? 'headless' : 'interactive'}</Badge>
-                    {!a.enabled && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">disabled</Badge>}
-                  </div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    {a.agentId}
-                    {a.type === 'cron' && <span className="ml-2 font-mono">{a.schedule}</span>}
-                    {(a.type === 'composio' || a.type === 'slack' || a.type === 'discord') && <span className="ml-2 font-mono">{a.filter || 'any event'}</span>}
-                    {a.lastFiredAt ? <span className="ml-2">last fired {new Date(a.lastFiredAt).toLocaleString()}</span> : <span className="ml-2">never fired</span>}
-                  </div>
-                  {a.type === 'cron' && a.mode === 'interactive' && (
-                    <div className="mt-1 text-[11px] text-amber-600">Interactive sessions stay open until closed — this cron won't re-fire while its last run is still running.</div>
-                  )}
-                  <div className="mt-1 truncate text-xs text-muted-foreground">{a.task}</div>
-                  {a.hookUrl && <div className="mt-2 w-full max-w-xl"><CopyLink link={a.hookUrl} /></div>}
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button size="sm" variant="ghost" onClick={() => setOpenRuns((cur) => (cur === a.id ? null : a.id))} title="show past runs of this automation">
-                    <HistoryIcon className="mr-1 h-3.5 w-3.5" />Runs
-                    <ChevronDown className={`ml-1 h-3.5 w-3.5 transition-transform ${openRuns === a.id ? 'rotate-180' : ''}`} />
-                  </Button>
-                  <Button size="sm" variant="secondary" disabled={busy === a.id} onClick={() => runNow(a)} title="fire once now">
-                    <Play className="mr-1 h-3.5 w-3.5" />Run now
-                  </Button>
-                  {isAdmin && (
-                    <>
-                      <Select value={a.mode} onValueChange={(v) => v && v !== a.mode && setItemMode(a, v as 'interactive' | 'headless')}>
-                        <SelectTrigger className="h-8 w-32"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="headless">headless</SelectItem>
-                          <SelectItem value="interactive">interactive</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Button size="sm" variant="outline" disabled={busy === a.id} onClick={() => toggle(a)}>
-                        {a.enabled ? 'Disable' : 'Enable'}
-                      </Button>
-                      <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === a.id} onClick={() => remove(a)} title="remove">
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </>
-                  )}
-                </div>
-              </CardContent>
-              {openRuns === a.id && <AutomationRuns id={a.id} onOpen={onOpen} />}
-            </Card>
-          ))}
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Configured</div>
+          {isAdmin && (
+            <Button size="sm" variant={showForm ? 'ghost' : 'default'} onClick={() => { setShowForm((v) => !v); setHint('') }}>
+              {showForm ? <><X className="mr-1 h-3.5 w-3.5" />Cancel</> : <><Plus className="mr-1 h-3.5 w-3.5" />New automation</>}
+            </Button>
+          )}
         </div>
-        {hint && <div className="mt-2 font-mono text-xs text-destructive">{hint}</div>}
-      </section>
-
-      {isAdmin && (
-        <section>
-          <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">New automation</div>
-          <Card>
+        {isAdmin && showForm && (
+          <Card className="mb-3 border-primary/30">
             <CardContent className="space-y-3 p-4">
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning site check" /></Field>
@@ -3122,14 +3079,85 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
               <Field label="Task">
                 <Textarea value={task} onChange={(e) => setTask(e.target.value)} className="min-h-[64px]" placeholder="What should the agent do each time this fires? (Webhook payloads are appended automatically.)" />
               </Field>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
                 <Button onClick={create} disabled={!name.trim() || !task.trim() || !agentId}><Plus className="mr-1 h-4 w-4" />Create</Button>
+                <Button variant="ghost" onClick={() => { setShowForm(false); setHint('') }}>Cancel</Button>
                 {hint && <span className="font-mono text-xs text-destructive">{hint}</span>}
               </div>
             </CardContent>
           </Card>
-        </section>
-      )}
+        )}
+        {items.length === 0 && !showForm && <div className="text-sm text-muted-foreground">No automations yet{isAdmin ? ' — click New automation to create one.' : '.'}</div>}
+        <div className="space-y-2">
+          {items.map((a) => (
+            <Card key={a.id}>
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Zap className={`h-4 w-4 shrink-0 ${a.enabled ? 'text-amber-500' : 'text-muted-foreground/40'}`} />
+                    <span className="truncate text-sm font-medium">{a.name}</span>
+                    <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{a.type}</Badge>
+                    <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{a.mode === 'headless' ? 'headless' : 'interactive'}</Badge>
+                    {!a.enabled && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">disabled</Badge>}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    {a.agentId}
+                    {a.type === 'cron' && <span className="ml-2 font-mono">{a.schedule}</span>}
+                    {(a.type === 'composio' || a.type === 'slack' || a.type === 'discord') && <span className="ml-2 font-mono">{a.filter || 'any event'}</span>}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                    {a.nextRunAt ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-600" title={new Date(a.nextRunAt).toLocaleString()}>
+                        <Clock className="h-3 w-3" />next in {timeUntil(a.nextRunAt)} · {new Date(a.nextRunAt).toLocaleString()}
+                      </span>
+                    ) : a.type === 'cron' && !a.enabled ? (
+                      <span className="text-amber-600">paused — won't fire while disabled</span>
+                    ) : a.type !== 'cron' ? (
+                      <span>fires on {a.type === 'webhook' ? 'webhook' : `${a.type} message`} — no schedule</span>
+                    ) : null}
+                    <span title={a.lastFiredAt ? new Date(a.lastFiredAt).toLocaleString() : undefined}>
+                      {a.lastFiredAt ? `last fired ${timeAgo(a.lastFiredAt)} ago` : 'never fired'}
+                    </span>
+                  </div>
+                  {a.type === 'cron' && a.mode === 'interactive' && (
+                    <div className="mt-1 text-[11px] text-amber-600">Interactive sessions stay open until closed — this cron won't re-fire while its last run is still running.</div>
+                  )}
+                  <div className="mt-1 truncate text-xs text-muted-foreground">{a.task}</div>
+                  {a.hookUrl && <div className="mt-2 w-full max-w-xl"><CopyLink link={a.hookUrl} /></div>}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button size="sm" variant="ghost" onClick={() => setOpenRuns((cur) => (cur === a.id ? null : a.id))} title="show past runs of this automation">
+                    <HistoryIcon className="mr-1 h-3.5 w-3.5" />Runs
+                    <ChevronDown className={`ml-1 h-3.5 w-3.5 transition-transform ${openRuns === a.id ? 'rotate-180' : ''}`} />
+                  </Button>
+                  <Button size="sm" variant="secondary" disabled={busy === a.id} onClick={() => runNow(a)} title="fire once now">
+                    <Play className="mr-1 h-3.5 w-3.5" />Run now
+                  </Button>
+                  {isAdmin && (
+                    <>
+                      <Select value={a.mode} onValueChange={(v) => v && v !== a.mode && setItemMode(a, v as 'interactive' | 'headless')}>
+                        <SelectTrigger className="h-8 w-32"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="headless">headless</SelectItem>
+                          <SelectItem value="interactive">interactive</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button size="sm" variant="outline" disabled={busy === a.id} onClick={() => toggle(a)}>
+                        {a.enabled ? 'Disable' : 'Enable'}
+                      </Button>
+                      <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === a.id} onClick={() => remove(a)} title="remove">
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </CardContent>
+              {openRuns === a.id && <AutomationRuns id={a.id} onOpen={onOpen} />}
+            </Card>
+          ))}
+        </div>
+        {hint && <div className="mt-2 font-mono text-xs text-destructive">{hint}</div>}
+      </section>
     </div>
   )
 }

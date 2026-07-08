@@ -15,7 +15,7 @@ import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './state/session-activity';
-import { Automation, Automations } from './edge/automations';
+import { Automation, Automations, nextCronRun } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
@@ -2599,7 +2599,18 @@ function automationView(a: Automation, req: http.IncomingMessage, admin: boolean
   return {
     ...rest,
     hookUrl: admin && a.type === 'webhook' && secret ? hookUrlFor(req, a.id, secret) : undefined,
+    // When it fires next: an enabled cron computes its next matching minute; a pending one-shot carries
+    // its scheduled runAt. Event triggers (webhook/slack/discord) have no schedule, so it stays absent.
+    nextRunAt: nextRunAtFor(a),
   };
+}
+function nextRunAtFor(a: Automation): number | undefined {
+  if (!a.enabled) return undefined;
+  if (a.type === 'cron' && a.schedule) {
+    try { return nextCronRun(a.schedule) ?? undefined; } catch { return undefined; }
+  }
+  if (a.type === 'once' && a.runAt) return a.runAt;
+  return undefined;
 }
 function hookUrlFor(req: http.IncomingMessage, id: string, secret: string): string {
   const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0];
