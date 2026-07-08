@@ -136,6 +136,9 @@ export interface Session {
    *  chat-triggered run is spawned by `task:`/`automation:` but runs as (and is owned by) a member,
    *  so the console keys "my sessions" off this too. */
   runAs?: string;
+  /** Human-readable owner: the run-as member's name/email. Undefined when the session has no run-as
+   *  identity (e.g. a company-identity automation run). Drives the sessions-list Owner filter. */
+  runAsLabel?: string;
   createdAt: number;
 }
 
@@ -348,6 +351,7 @@ export class TerminalManager {
       alive: alive ? alive.has(r.tmux) : undefined,
       resumable: resumable.has(r.id),
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
+      runAsLabel: this.runAsLabel(r.run_as),
     }));
   }
 
@@ -457,6 +461,14 @@ export class TerminalManager {
     if (spawnedBy.startsWith('task:')) return `Task · ${spawnedBy.slice('task:'.length)}${asSuffix}`;
     const m = this.os.team.getMember(spawnedBy);
     return m ? m.name || m.email : spawnedBy;
+  }
+
+  /** The run-as member's display name (name → email), for the sessions-list Owner filter. Undefined
+   *  when the session has no run-as identity or the member no longer exists. */
+  private runAsLabel(runAs: string | null): string | undefined {
+    if (!runAs) return undefined;
+    const m = this.os.team.getMember(runAs);
+    return m ? m.name || m.email : undefined;
   }
 
   /** Is this session's tmux shell still alive? (The automations guard against pile-ups.) */
