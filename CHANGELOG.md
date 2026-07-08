@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.42.2] — 2026-07-08
+### Fixed
+- **Stop tracking the `node_modules` symlink (regression from 0.42.1) + harden `.gitignore`.** `scripts/wt.sh`
+  symlinks `node_modules` into each worktree, and the `node_modules/` ignore pattern (trailing slash) matches
+  only a *directory* — so the symlink slipped past the ignore and a `git add -A` committed it to the repo. Any
+  checkout that pulled it had its real `node_modules` replaced by a self-referential symlink, breaking dependency
+  resolution until `npm install`. Untracked the symlink (`git rm --cached node_modules`) and changed the ignore
+  patterns for both worktree/deploy symlinks — `node_modules/` → `/node_modules` and (from 0.42.1) `data/` →
+  `/data` — to name-only so a *symlink* is ignored too, not just a directory.
+
 ## [0.42.1] — 2026-07-08
 ### Fixed
 - **Self-update no longer blocks on untracked files.** The updater flagged the tree "dirty" whenever

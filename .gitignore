@@ -1,8 +1,9 @@
-node_modules/
+# No trailing slash on node_modules/data: `scripts/wt.sh` symlinks node_modules into each worktree, and
+# the deploy convention symlinks the data home in as `data`. A `foo/` pattern matches only a DIRECTORY, so
+# a SYMLINK named node_modules/data slips through → shows as untracked → and (once) got committed by a
+# stray `git add -A`, breaking every checkout that pulled it. Match name-only so symlinks are ignored too.
+/node_modules
 dist/
-# The local data home at repo root — a directory when running from ./data, OR a symlink to a data home
-# kept outside the checkout (the deploy convention). No trailing slash, so a `data` SYMLINK matches too
-# (a `data/` pattern would miss it → shows as untracked → falsely blocks self-update).
 /data
 .env
 *.log
