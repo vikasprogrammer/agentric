@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.56.0] — 2026-07-08
+### Added
+- **Sort the sessions list by column.** The list (table) view's column headings — Session, Agent, ID,
+  Started by, Status — are now clickable to sort; clicking the active column flips ascending/
+  descending (a caret shows which). The order applies to the grid view too, and, like the filters, is
+  persisted in the URL hash (`?sort=agent&dir=asc`) so a refresh or shared link keeps it. Default stays
+  newest-first; equal keys tie-break on recency.
+
 ## [0.55.0] — 2026-07-08
 ### Added
 - **Sessions filters persist in the URL, and the list view gets column headings.** The Sessions
