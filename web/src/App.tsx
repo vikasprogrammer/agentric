@@ -710,7 +710,7 @@ function Console({ me }: { me: Member }) {
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} />}
           {route === 'skills' && <SkillsPage />}
-          {route === 'files' && <FilesPage />}
+          {route === 'files' && <FilesPage initialDir={detail} />}
           {route === 'artifacts' && <ArtifactsPage me={me} initialId={artifactFocus} />}
           {route === 'audit' && <AuditPage />}
           {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} />}
@@ -1190,15 +1190,28 @@ function ImageDropZone({ session, children, onActivity }: { session?: Session; c
           onClick={() => setFontSize((s) => Math.min(FONT_MAX, s + 1))}
         >A+</button>
       </div>
-      {/* 📎 attach button — opens a file picker; always works regardless of focus */}
-      <label
-        className="absolute right-2 top-2 z-10 flex cursor-pointer items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
-        title="attach an image to this session (or drag-drop / paste one onto the terminal)"
-      >
-        <ImageIcon className="h-3.5 w-3.5" /> Attach image
-        <input type="file" accept="image/*" className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = '' }} />
-      </label>
+      {/* top-right session toolbar: browse the agent's folder + attach an image */}
+      <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5">
+        {session?.agent && (
+          <button
+            type="button"
+            className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+            title="browse this agent's folder in Files"
+            onClick={() => { window.location.hash = '/files/' + encodeURIComponent('agents/' + session.agent) }}
+          >
+            <FolderTree className="h-3.5 w-3.5" /> Files
+          </button>
+        )}
+        {/* 📎 attach button — opens a file picker; always works regardless of focus */}
+        <label
+          className="flex cursor-pointer items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+          title="attach an image to this session (or drag-drop / paste one onto the terminal)"
+        >
+          <ImageIcon className="h-3.5 w-3.5" /> Attach image
+          <input type="file" accept="image/*" className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = '' }} />
+        </label>
+      </div>
       {/* drag overlay — raised ON TOP of the iframe (z-30, interactive) only while a file-drag is in
           progress, so it catches the drop the iframe would otherwise swallow */}
       {drag && (
@@ -1760,7 +1773,7 @@ const fmtSize = (n: number): string =>
 /** Browse + edit files in the instance's data home. The server confines every path to the
  *  home root; navigation (folders/breadcrumb) + a text editor, plus upload (button or drag-drop),
  *  download, new-folder and delete. */
-function FilesPage() {
+function FilesPage({ initialDir }: { initialDir?: string }) {
   const [dir, setDir] = useState('')
   const [listing, setListing] = useState<DirListing | null>(null)
   const [openPath, setOpenPath] = useState<string | null>(null)
@@ -1772,14 +1785,23 @@ function FilesPage() {
   const fileInput = useRef<HTMLInputElement>(null)
   const dragDepth = useRef(0)
 
-  const loadDir = (rel: string) => {
+  const loadDir = (rel: string, fallbackHome = false) => {
     setHint('')
     api.files.list(rel).then((d) => {
-      if (d.error) return setHint('⚠ ' + d.error)
+      if (d.error) {
+        // A deep link to a folder that doesn't exist (e.g. a bundled agent living outside the
+        // data home) still lands somewhere useful — drop to the home root and explain.
+        if (fallbackHome && rel) {
+          api.files.list('').then((r) => { if (!r.error) { setListing(r); setDir(r.path) } })
+          return setHint(`⚠ ${rel}: ${d.error}`)
+        }
+        return setHint('⚠ ' + d.error)
+      }
       setListing(d); setDir(d.path)
     })
   }
-  useEffect(() => { loadDir('') }, [])
+  // Open the deep-linked folder (`#/files/<path>`) on mount / when the link changes; '' = home root.
+  useEffect(() => { loadDir(initialDir || '', true) }, [initialDir])
   const reload = () => loadDir(dir)
 
   const join = (name: string) => (dir ? `${dir}/${name}` : name)

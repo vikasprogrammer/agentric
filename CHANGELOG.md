@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.38.0] — 2026-07-08
+### Added
+- **Files shortcut from a session.** The live terminal's top-right toolbar grows a **Files** button next to
+  "Attach image": it jumps to the Files browser opened straight at the running agent's own folder
+  (`agents/<id>`) — a one-click way to inspect what the agent is reading and writing. `FilesPage` now honours
+  a deep link (`#/files/<path>`) and falls back to the home root (with a hint) when the folder isn't under
+  the data home (e.g. a bundled agent).
+
 ## [0.37.0] — 2026-07-08
 ### Added
 - **Procedural skills — the fleet drafts its own skills (`skill_propose`, Lever 6 of the learning loop).**
