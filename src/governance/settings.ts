@@ -10,7 +10,7 @@
  * so adding more instance-level settings later is just another key.
  */
 import { Db } from '../state/db';
-import { MemoryConfig, Recommendation, RuntimeTuning, sanitizeRuntimeTuning } from '../types';
+import { EnrichPattern, MemoryConfig, Recommendation, RuntimeTuning, sanitizeRuntimeTuning } from '../types';
 
 const COMPANY_KEY = 'company_md';
 const COMPOSIO_KEY = 'composio_api_key';
@@ -26,6 +26,7 @@ const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives inject
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
+const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
  *  Live-editable in Settings → Governance; resolved at classify time by the policy engine. */
@@ -332,6 +333,45 @@ export class SettingsStore {
     };
     this.set(GOVERNANCE_KEY, JSON.stringify(next), by);
     return next;
+  }
+
+  // ── custom governance patterns (operator regex → boolean fact the enricher sets) ──
+  // The extension seam that keeps the enricher generic: a workspace declares its OWN dangerous ops as
+  // DATA here (a prod-deploy path, a suspend-user CLI), the enricher sets the fact, and policy gates on
+  // it — no brand code in `enricher.ts`. Read on every classify (hot; no restart).
+  enrichPatterns(): EnrichPattern[] {
+    const raw = this.getRow(ENRICH_PATTERNS_KEY)?.value;
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw);
+      if (!Array.isArray(v)) return [];
+      return v
+        .filter((p) => p && typeof p.pattern === 'string' && typeof p.fact === 'string' && p.fact.trim())
+        .map((p) => ({
+          pattern: String(p.pattern),
+          fact: String(p.fact).trim(),
+          scope: ['shell', 'connector', 'any'].includes(p.scope) ? p.scope : 'any',
+        }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Replace the custom patterns. Rejects an invalid regex so a bad rule can't silently no-op. */
+  setEnrichPatterns(patterns: EnrichPattern[], by?: string): EnrichPattern[] {
+    const clean: EnrichPattern[] = [];
+    for (const p of Array.isArray(patterns) ? patterns : []) {
+      if (!p || typeof p.pattern !== 'string' || !p.pattern.trim() || typeof p.fact !== 'string' || !p.fact.trim()) continue;
+      try {
+        new RegExp(p.pattern, 'i');
+      } catch {
+        throw new Error(`invalid regex: ${p.pattern}`);
+      }
+      const scope = ['shell', 'connector', 'any'].includes(p.scope as string) ? (p.scope as EnrichPattern['scope']) : 'any';
+      clean.push({ pattern: String(p.pattern), fact: String(p.fact).trim(), scope });
+    }
+    this.set(ENRICH_PATTERNS_KEY, JSON.stringify(clean), by);
+    return clean;
   }
 
   // ── email org domains (internal recipients for the email.send policy tier) ───────

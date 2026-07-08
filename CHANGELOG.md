@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.44.0] — 2026-07-08
+### Added
+- **Custom governance patterns — teach the enricher your own dangerous ops, as config not code.** A
+  workspace can now define `regex → boolean fact` rules (`EnrichPattern[]`) in Settings; the enricher
+  applies them on every classify and sets the fact, and policy rules gate on it — so operator-specific
+  red-lines (a prod-deploy path, a `suspend-user` CLI, a money-moving command, a "never send" reply)
+  become **data**, keeping `enricher.ts` brand-free and open-core. Patterns carry a `scope`
+  (`shell` | `connector` | `any`, default `any` = shell+connector; never `file.write`, whose haystack
+  is file content). Backed by `SettingsStore.enrichPatterns()`/`setEnrichPatterns()` (invalid regex
+  rejected at save; ignored at match — never throws in the gate) and owner-gated
+  `GET/PUT /api/settings/enrich-patterns` (`settings.enrich_patterns.updated` audited). Wired into both
+  terminal-gate `enrichArgs` call sites; read live per classify (hot, no restart). Unit-tested in
+  `scripts/test-enrich-patterns.cjs`. (Console editor is a follow-up; set via the API meanwhile.)
+
 ## [0.43.0] — 2026-07-08
 ### Added
 - **Agents can improve their own listing — reversibly.** An agent can now refine its OWN description,

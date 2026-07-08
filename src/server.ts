@@ -1859,6 +1859,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...saved });
   }
 
+  // ── custom governance patterns (operator regex → boolean fact the enricher sets, policy gates on) ──
+  if (method === 'GET' && p === '/api/settings/enrich-patterns') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { patterns: os.settings.enrichPatterns() });
+  }
+  if (method === 'PUT' && p === '/api/settings/enrich-patterns') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' }); // patterns govern what gates → owner only
+    const b = await readBody(req);
+    try {
+      const saved = os.settings.setEnrichPatterns(Array.isArray(b.patterns) ? b.patterns : [], me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.enrich_patterns.updated', data: { count: saved.length } });
+      return sendJson(res, 200, { ok: true, patterns: saved });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   // ── email org domains (internal recipients → email.send is green; external → yellow) ──
   if (method === 'GET' && p === '/api/settings/email-domains') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });

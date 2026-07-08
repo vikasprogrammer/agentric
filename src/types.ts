@@ -620,6 +620,21 @@ export interface TaskQuery {
 // Agent + runtime
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * A workspace-defined governance pattern: a regex over a tool call that sets a boolean *fact* the
+ * policy can gate on. It lets an operator mark their OWN dangerous operations — a prod-deploy path,
+ * a `suspend-user` command, a money-moving CLI — without editing the enricher's built-in patterns.
+ * Matched case-insensitively against the shell command + connector input text.
+ */
+export interface EnrichPattern {
+  /** Regex source (JS). Tested case-insensitively; an invalid regex is ignored, never thrown. */
+  pattern: string;
+  /** Boolean fact name set to `true` on match (e.g. 'serverReboot'). Policy reads it as `when.arg`. */
+  fact: string;
+  /** Which calls it applies to: 'shell' (Bash), 'connector' (mcp__* tools), or 'any' (default: shell+connector). */
+  scope?: 'shell' | 'connector' | 'any';
+}
+
 /** Reasoning effort for a claude-code session (`claude --effort <level>`). */
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];

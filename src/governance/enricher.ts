@@ -28,7 +28,7 @@
  * (least privilege, recoverability) remains the backstop, not this one function.
  */
 import * as path from 'node:path';
-import { ApprovalLevel, Role, canApprove } from '../types';
+import { ApprovalLevel, EnrichPattern, Role, canApprove } from '../types';
 
 const DESTRUCTIVE: RegExp[] = [
   /\bdrop\s+(database|table|schema)\b/i,
@@ -103,6 +103,7 @@ export function enrichArgs(
   args: Record<string, unknown>,
   orgDomains: string[] = [],
   workdir?: string,
+  patterns: EnrichPattern[] = [],
 ): Record<string, unknown> {
   const tool = typeof args.tool === 'string' ? args.tool : '';
   const input = (args.input && typeof args.input === 'object' ? args.input : args) as Record<string, unknown>;
@@ -198,6 +199,29 @@ export function enrichArgs(
     facts.emailExternalCount = emailExternalCount;
     if (emailRecipients) facts.emailRecipients = emailRecipients;
   }
+
+  // Workspace-defined custom patterns (Settings → Governance): each sets a boolean fact the policy
+  // gates on — the extension point for operator-specific dangerous ops without editing this file.
+  // Applied to shell + connector calls only (never file.write, whose haystack is file *content*).
+  for (const p of patterns) {
+    if (!p || typeof p.pattern !== 'string' || typeof p.fact !== 'string' || !p.fact) continue;
+    const scope = p.scope ?? 'any';
+    const applies =
+      scope === 'shell' ? capability === 'shell.exec'
+      : scope === 'connector' ? capability.startsWith('connector')
+      : capability === 'shell.exec' || capability.startsWith('connector');
+    if (!applies || facts[p.fact] === true) continue;
+    let re: RegExp;
+    try {
+      re = new RegExp(p.pattern, 'i');
+    } catch {
+      continue; // bad regex → ignore, never throw inside the gate
+    }
+    // Match the TOOL NAME too (a connector's `STRIPE_REFUND` / `delete_site` is the action itself), not
+    // just the command + input values in `haystack`. Harmless for shell, where `tool` is 'Bash'.
+    if (re.test(`${tool}\n${haystack}`)) facts[p.fact] = true;
+  }
+
   return facts;
 }
 

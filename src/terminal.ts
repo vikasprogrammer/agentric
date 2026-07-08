@@ -928,7 +928,7 @@ export class TerminalManager {
       this.audit(sessionId, agent, 'gate.killswitch', { capability });
       return { decision: 'deny' };
     }
-    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), this.os.agents.get(agent)?.dir);
+    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
     // An outbound email is its own governed capability: reclassify so the policy gates it by recipient
     // (internal → green, external → yellow) instead of the generic connector-mutation tier.
     if (args.emailSend === true) {
@@ -1110,7 +1110,7 @@ export class TerminalManager {
    */
   policyCheck(sessionId: string, agent: string, capability: string, args: Record<string, unknown>): Decision {
     if (this.os.settings.killSwitch().engaged) return { effect: 'deny', reason: 'workspace emergency stop is engaged' };
-    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir);
+    const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
     const cap = enriched.emailSend === true ? 'email.send' : capability;
     return this.os.policy.classify({ capabilityId: cap, args: enriched, reasoning: '' }, this.ctx(sessionId, agent));
   }
