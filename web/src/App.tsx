@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -45,6 +45,31 @@ const statusLabel = (s: Session): string => (isLive(s) && s.status !== 'running'
  *  as a Resume affordance. Requires a persisted launch env (`resumable`) and no live pane — a live
  *  session is just "open", not "resume". */
 const canResume = (s: Session): boolean => Boolean(s.resumable) && !isLive(s)
+
+/** Coarse provenance category of a session, from its raw `spawnedBy` (`automation:`/`task:`/`chat:`
+ *  prefixes, else a member started it directly). Drives the Source filter on the sessions list. */
+type SessionSource = 'member' | 'automation' | 'task' | 'chat'
+const sessionSource = (s: Session): SessionSource => {
+  const by = s.spawnedBy ?? ''
+  return by.startsWith('automation:') ? 'automation'
+    : by.startsWith('task:') ? 'task'
+    : by.startsWith('chat:') ? 'chat'
+    : 'member'
+}
+
+/** Session-list status filter. `live` matches any session with a live pane (regardless of stored
+ *  status); the terminal states match only when NOT live, so a live pane reporting `done` reads as
+ *  Live, never Done — the same rule `statusLabel` uses for the dot. */
+type SessionStatusFilter = 'all' | 'live' | 'done' | 'stopped' | 'crashed'
+const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
+  f === 'all' ? true : f === 'live' ? isLive(s) : !isLive(s) && s.status === f
+
+// Filter labels — shared by the dropdown options AND the collapsed trigger (base-ui's SelectValue
+// renders the raw value unless given a formatter, so the two must read from one source).
+const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
+  { all: 'All statuses', live: 'Live', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
+const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
+  { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
 const ROLE_LABEL: Record<Role, string> = { owner: 'owner', admin: 'admin', member: 'member' }
 
@@ -1310,8 +1335,28 @@ function SessionsPage({
   // The session whose agent-os primitive activity is open in the modal timeline (null = closed).
   const [inspect, setInspect] = useState<Session | null>(null)
 
+  // Filters (client-side over the already-fetched list). Search spans title/agent/id/task/starter;
+  // status/agent/source narrow by dimension. All default to "show everything".
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>('all')
+  const [agentFilter, setAgentFilter] = useState('all')
+  const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>('all')
+  const agentOptions = useMemo(() => [...new Set(sessions.map((s) => s.agent))].sort(), [sessions])
+  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all'
+  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all') }
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    return sessions.filter((s) =>
+      matchesStatus(s, statusFilter) &&
+      (agentFilter === 'all' || s.agent === agentFilter) &&
+      (sourceFilter === 'all' || sessionSource(s) === sourceFilter) &&
+      (needle === '' || `${s.title} ${s.agent} ${s.id} ${s.task} ${s.spawnedByLabel ?? ''}`.toLowerCase().includes(needle)),
+    )
+  }, [sessions, query, statusFilter, agentFilter, sourceFilter])
+
   // Multi-select for bulk stop/delete. Kept in sync with the live list: ids that vanish (deleted
-  // elsewhere, or by our own bulk delete) are pruned so the toolbar count never lies.
+  // elsewhere, or by our own bulk delete) are pruned so the toolbar count never lies. Select-all and
+  // the header count operate over the FILTERED view, so bulk actions never touch hidden rows.
   const [sel, setSel] = useState<Set<string>>(new Set())
   useEffect(() => {
     setSel((prev) => {
@@ -1322,8 +1367,13 @@ function SessionsPage({
   }, [sessions])
   const toggle = (id: string) =>
     setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n })
-  const allSelected = sessions.length > 0 && sel.size === sessions.length
-  const toggleAll = () => setSel(allSelected ? new Set() : new Set(sessions.map((s) => s.id)))
+  const allSelected = filtered.length > 0 && filtered.every((s) => sel.has(s.id))
+  const toggleAll = () => setSel((prev) => {
+    const n = new Set(prev)
+    if (allSelected) filtered.forEach((s) => n.delete(s.id))
+    else filtered.forEach((s) => n.add(s.id))
+    return n
+  })
   const selectedRunning = sessions.filter((s) => sel.has(s.id) && isLive(s))
   const bulkStop = () => onBulkStop(selectedRunning.map((s) => s.id))
   const bulkDelete = () => { onBulkDelete([...sel]); setSel(new Set()) }
@@ -1410,7 +1460,11 @@ function SessionsPage({
         <div className="flex items-center gap-3">
           <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground" title={allSelected ? 'clear selection' : 'select all'}>
             <input type="checkbox" checked={allSelected} onChange={toggleAll} className="h-3.5 w-3.5 cursor-pointer accent-primary" />
-            {sel.size > 0 ? `${sel.size} selected` : `${sessions.length} session${sessions.length === 1 ? '' : 's'}`}
+            {sel.size > 0
+              ? `${sel.size} selected`
+              : filtersActive
+                ? `${filtered.length} of ${sessions.length} session${sessions.length === 1 ? '' : 's'}`
+                : `${sessions.length} session${sessions.length === 1 ? '' : 's'}`}
           </label>
           {sel.size > 0 && (
             <div className="flex items-center gap-1">
@@ -1436,9 +1490,50 @@ function SessionsPage({
         </div>
       </div>
 
-      {view === 'grid' ? (
+      {/* filters: free-text search + status/agent/source narrowers, applied client-side over the list */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[180px] flex-1 sm:max-w-xs">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search sessions…" className="h-8 pl-7 text-sm" />
+        </div>
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter((v ?? 'all') as SessionStatusFilter)}>
+          <SelectTrigger className="h-8 w-[130px] text-xs"><SelectValue>{(v) => SESSION_STATUS_LABELS[(v ?? 'all') as SessionStatusFilter]}</SelectValue></SelectTrigger>
+          <SelectContent>
+            {(Object.keys(SESSION_STATUS_LABELS) as SessionStatusFilter[]).map((v) => (
+              <SelectItem key={v} value={v}>{SESSION_STATUS_LABELS[v]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={agentFilter} onValueChange={(v) => setAgentFilter(v ?? 'all')}>
+          <SelectTrigger className="h-8 w-[150px] text-xs"><SelectValue>{(v) => (v && v !== 'all' ? v : 'All agents')}</SelectValue></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All agents</SelectItem>
+            {agentOptions.map((a) => <SelectItem key={a} value={a}>{a}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={sourceFilter} onValueChange={(v) => setSourceFilter((v ?? 'all') as 'all' | SessionSource)}>
+          <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue>{(v) => SESSION_SOURCE_LABELS[(v ?? 'all') as 'all' | SessionSource]}</SelectValue></SelectTrigger>
+          <SelectContent>
+            {(Object.keys(SESSION_SOURCE_LABELS) as ('all' | SessionSource)[]).map((v) => (
+              <SelectItem key={v} value={v}>{SESSION_SOURCE_LABELS[v]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {filtersActive && (
+          <Button size="sm" variant="ghost" className="h-8 gap-1 px-2 text-xs text-muted-foreground" onClick={clearFilters}>
+            <X className="h-3 w-3" /> Clear filters
+          </Button>
+        )}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="rounded-lg border border-dashed py-10 text-center text-sm text-muted-foreground">
+          No sessions match these filters.{' '}
+          <button className="text-primary underline" onClick={clearFilters}>Clear filters</button>
+        </div>
+      ) : view === 'grid' ? (
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {sessions.map((s) => (
+          {filtered.map((s) => (
             <div key={s.id} className={`group relative flex flex-col rounded-lg border p-3 hover:bg-muted ${sel.has(s.id) ? 'ring-1 ring-primary' : ''}`}>
               <input
                 type="checkbox"
@@ -1479,7 +1574,7 @@ function SessionsPage({
         </div>
       ) : (
         <div className="divide-y rounded-lg border">
-          {sessions.map((s) => (
+          {filtered.map((s) => (
             <div key={s.id} className={`group flex items-center gap-3 px-3 py-2 hover:bg-muted ${sel.has(s.id) ? 'bg-muted' : ''}`}>
               <input
                 type="checkbox"
