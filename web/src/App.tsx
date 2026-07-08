@@ -461,6 +461,17 @@ function Console({ me }: { me: Member }) {
     if (r.errors.length) parts.push(`Skipped (bad agent.json): ${r.errors.map((e) => e.folder).join(', ')}`)
     alert(parts.length ? parts.join('\n') : 'No changes — the agents folder already matches.')
   }
+  // Import an agent from an "AOS bundle" .zip (see the Docs → "Import into AOS" page): writes the agent
+  // and replays its memory/knowledge/skills in one shot, then lands on the new agent.
+  const importAgent = async (file: File): Promise<void> => {
+    const r = await api.importAgentBundle(file)
+    if (!r.ok || r.error) { alert(r.error || 'Import failed'); return }
+    await refreshState()
+    if (r.id) nav('agents', r.id)
+    const bits = [`Imported "${r.id}"`, `${r.skills ?? 0} skill(s), ${r.memories ?? 0} memory(ies), ${r.knowledge ?? 0} KB page(s)`]
+    if (r.warnings?.length) bits.push('', 'Warnings:', ...r.warnings.map((w) => '• ' + w))
+    alert(bits.join('\n'))
+  }
   // Attending to a session → clear its "waiting" bell, same as Dismiss. Optimistically drop the open
   // notifications from state so the icon/tab/badge update instantly; persist via dismiss. Reads the
   // latest messages from the ref so it's safe to call from the terminal's imperative click listener.
@@ -699,7 +710,7 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
-          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} />}
+          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
@@ -741,7 +752,7 @@ function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; lab
  *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
  *  just scoped to the chosen agent instead of a grid of cards. */
 function AgentsPage({
-  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan,
+  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport,
 }: {
   me: Member
   agents: AgentInfo[]
@@ -753,10 +764,20 @@ function AgentsPage({
   onDelete: (id: string) => void
   onDuplicate: (id: string) => void
   onRescan: () => Promise<void>
+  onImport: (file: File) => Promise<void>
 }) {
   const canEdit = me.role === 'owner' || me.role === 'admin'
   const [rescanning, setRescanning] = useState(false)
   const rescan = async () => { setRescanning(true); try { await onRescan() } finally { setRescanning(false) } }
+  const [importing, setImporting] = useState(false)
+  const importInput = useRef<HTMLInputElement>(null)
+  const pickBundle = async (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.zip')) { alert('Pick an AOS bundle .zip'); return }
+    setImporting(true)
+    try { await onImport(file) } finally { setImporting(false); if (importInput.current) importInput.current.value = '' }
+  }
   const [task, setTask] = useState('')
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
@@ -806,7 +827,11 @@ function AgentsPage({
         <p className="text-sm text-muted-foreground">{canEdit ? 'No agents yet — create one to get started.' : 'No agents assigned to you.'}</p>
         {canEdit && (
           <div className="flex items-center gap-2">
+            <input ref={importInput} type="file" accept=".zip,application/zip" className="hidden" onChange={(e) => pickBundle(e.target.files)} />
             <Button size="sm" className="gap-1" onClick={onNew}><Plus className="h-4 w-4" /> New agent</Button>
+            <Button size="sm" variant="outline" className="gap-1" onClick={() => importInput.current?.click()} disabled={importing} title="import an agent from an AOS bundle .zip">
+              <Upload className={'h-4 w-4' + (importing ? ' animate-pulse' : '')} /> {importing ? 'Importing…' : 'Import bundle'}
+            </Button>
             <Button size="sm" variant="outline" className="gap-1" onClick={rescan} disabled={rescanning} title="pick up agents added to the agents folder on disk">
               <RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /> Rescan folder
             </Button>
@@ -899,7 +924,9 @@ function AgentsPage({
           </div>
           {canEdit && (
             <>
+              <input ref={importInput} type="file" accept=".zip,application/zip" className="hidden" onChange={(e) => pickBundle(e.target.files)} />
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={onNew} title="new agent"><Plus className="h-4 w-4" /></Button>
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={() => importInput.current?.click()} disabled={importing} title="import an agent from an AOS bundle .zip"><Upload className={'h-4 w-4' + (importing ? ' animate-pulse' : '')} /></Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={rescan} disabled={rescanning} title="rescan the agents folder — pick up agents added on disk without a restart"><RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /></Button>
             </>
           )}
@@ -1809,6 +1836,7 @@ function FilesPage({ initialDir }: { initialDir?: string }) {
   const [hint, setHint] = useState('')
   const [dragging, setDragging] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const folderInput = useRef<HTMLInputElement>(null)
   const dragDepth = useRef(0)
 
   const loadDir = (rel: string, fallbackHome = false) => {
@@ -1852,10 +1880,14 @@ function FilesPage({ initialDir }: { initialDir?: string }) {
   const uploadFiles = async (files: FileList | File[]) => {
     const list = Array.from(files)
     if (!list.length) return
-    setBusy(true); setHint(`uploading ${list.length} file${list.length === 1 ? '' : 's'}…`)
+    // A folder pick (webkitdirectory) or a directory drag sets `webkitRelativePath` (e.g.
+    // "runbooks/escalation.md") — forward it so the whole tree is recreated under `dir`.
+    const withRel = list.map((f) => ({ f, rel: (f as File & { webkitRelativePath?: string }).webkitRelativePath || '' }))
+    const foldered = withRel.some((x) => x.rel.includes('/'))
+    setBusy(true); setHint(`uploading ${list.length} ${foldered ? 'item' : 'file'}${list.length === 1 ? '' : 's'}…`)
     let ok = 0; let err = ''
-    for (const f of list) {
-      const r = await api.files.upload(dir, f)
+    for (const { f, rel } of withRel) {
+      const r = await api.files.upload(dir, f, rel || undefined)
       if (r.error) err = r.error; else ok++
     }
     setBusy(false)
@@ -1937,7 +1969,14 @@ function FilesPage({ initialDir }: { initialDir?: string }) {
           <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={() => fileInput.current?.click()} disabled={busy}>
             <Upload className="h-3.5 w-3.5" /> Upload
           </Button>
+          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={() => folderInput.current?.click()} disabled={busy} title="upload a whole folder (its subfolders are recreated here)">
+            <FolderPlus className="h-3.5 w-3.5" /> Upload folder
+          </Button>
           <input ref={fileInput} type="file" multiple className="hidden"
+            onChange={(e) => { if (e.target.files) void uploadFiles(e.target.files); e.currentTarget.value = '' }} />
+          {/* webkitdirectory = OS folder picker; each File carries a webkitRelativePath the server rebuilds under `dir`. */}
+          <input ref={folderInput} type="file" multiple className="hidden"
+            {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
             onChange={(e) => { if (e.target.files) void uploadFiles(e.target.files); e.currentTarget.value = '' }} />
         </div>
       </div>
