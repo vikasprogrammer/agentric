@@ -8,7 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.40.0] — 2026-07-08
+## [0.41.0] — 2026-07-08
+### Added
+- **Automation Runs — see every time an automation fired.** Each automation card on the Automations page
+  grows a **Runs** toggle that lists the sessions that automation has spawned, newest first — status dot
+  (live / done / stopped / crashed), timestamp, and the run-as/provenance label, each row one click into
+  its session terminal. Backed by a new `GET /api/automations/:id/runs` route (`tm.listRunsFor` filters
+  `listSessions` by provenance `automation:<id>`, so runs carry live status + the same per-viewer
+  visibility as `/api/sessions`: owner/admin see all, a member sees runs of automations they can view).
+  Closes the gap where an automation's history lived only in the audit log — the automation row still
+  tracks just `lastFiredAt`/`lastSessionId`; the full run list is now reconstructed from the session rows
+  that carry the `automation:<id>` provenance.
 ### Added
 - **"Always approve" — teach policy from the inbox.** An approval card grows an owner-only **Always**
   button next to Approve/Reject: it approves the current attempt **and** writes a persistent `allow` rule

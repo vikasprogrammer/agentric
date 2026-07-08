@@ -338,6 +338,16 @@ export class TerminalManager {
   }
 
   /**
+   * The runs a given trigger spawned — every session whose provenance is `spawnedBy` (e.g.
+   * `automation:<id>`), newest first. Reuses `listSessions` so each run carries live status /
+   * resumable / label and the SAME per-viewer visibility rules: owner/admin see all, a member sees
+   * only runs of automations they can view (via `canViewRow`).
+   */
+  listRunsFor(spawnedBy: string, viewer?: Member): Session[] {
+    return this.listSessions(viewer).filter((s) => s.spawnedBy === spawnedBy);
+  }
+
+  /**
    * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. an interactive session
    * the ttyd attach wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`).
    * Headless runs write no env file, so they're absent (and correctly report `resumable:false`). One

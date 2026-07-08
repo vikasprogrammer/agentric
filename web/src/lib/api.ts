@@ -680,6 +680,7 @@ export const api = {
     call<Automation & { error?: string }>('PATCH', '/api/automations/' + id, patch),
   deleteAutomation: (id: string) => call<{ ok: boolean }>('DELETE', '/api/automations/' + id),
   runAutomation: (id: string) => call<{ ok: boolean; sessionId?: string; reason?: string; error?: string }>('POST', `/api/automations/${id}/run`),
+  automationRuns: (id: string) => call<{ runs: Session[]; error?: string }>('GET', `/api/automations/${id}/runs`),
 
   memory: (agent: string, q = '', limit = 50, scope: 'all' | 'agent' | 'tenant' = 'all') =>
     call<{ memories: MemoryRecord[] }>('GET', `/api/memory?agent=${encodeURIComponent(agent)}&q=${encodeURIComponent(q)}&limit=${limit}&scope=${scope}`),

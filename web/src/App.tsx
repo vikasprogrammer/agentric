@@ -2943,6 +2943,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
+  const [openRuns, setOpenRuns] = useState<string | null>(null) // automation id whose Runs list is expanded
   // create form
   const [name, setName] = useState('')
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
@@ -3016,6 +3017,10 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                   {a.hookUrl && <div className="mt-2 w-full max-w-xl"><CopyLink link={a.hookUrl} /></div>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  <Button size="sm" variant="ghost" onClick={() => setOpenRuns((cur) => (cur === a.id ? null : a.id))} title="show past runs of this automation">
+                    <HistoryIcon className="mr-1 h-3.5 w-3.5" />Runs
+                    <ChevronDown className={`ml-1 h-3.5 w-3.5 transition-transform ${openRuns === a.id ? 'rotate-180' : ''}`} />
+                  </Button>
                   <Button size="sm" variant="secondary" disabled={busy === a.id} onClick={() => runNow(a)} title="fire once now">
                     <Play className="mr-1 h-3.5 w-3.5" />Run now
                   </Button>
@@ -3038,6 +3043,7 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
                   )}
                 </div>
               </CardContent>
+              {openRuns === a.id && <AutomationRuns id={a.id} onOpen={onOpen} />}
             </Card>
           ))}
         </div>
@@ -3123,6 +3129,36 @@ function AutomationsPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo
             </CardContent>
           </Card>
         </section>
+      )}
+    </div>
+  )
+}
+
+/** The past runs of one automation — every session it spawned (provenance `automation:<id>`), newest
+ *  first. Loaded lazily when the card's Runs row is expanded. Each row opens its session terminal, so a
+ *  fired run is one click from its transcript/output. Visibility is server-gated (same as /api/sessions). */
+function AutomationRuns({ id, onOpen }: { id: string; onOpen: (tmux: string, title: string) => void }) {
+  const [runs, setRuns] = useState<Session[] | null>(null)
+  useEffect(() => { api.automationRuns(id).then((r) => setRuns(r.runs ?? [])) }, [id])
+  return (
+    <div className="border-t bg-muted/30 px-4 py-3">
+      {!runs ? (
+        <div className="text-xs text-muted-foreground">Loading runs…</div>
+      ) : runs.length === 0 ? (
+        <div className="text-xs text-muted-foreground">No runs yet — this automation hasn't fired.</div>
+      ) : (
+        <div className="space-y-0.5">
+          {runs.map((s) => (
+            <button key={s.id} onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined}
+              className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-muted">
+              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(s)}`} />
+              <span className="w-14 shrink-0 text-muted-foreground">{statusLabel(s)}</span>
+              <Clock className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+              <span className="shrink-0 text-muted-foreground">{new Date(s.createdAt).toLocaleString()}</span>
+              {s.spawnedByLabel && <span className="ml-auto min-w-0 truncate text-muted-foreground/60">{s.spawnedByLabel}</span>}
+            </button>
+          ))}
+        </div>
       )}
     </div>
   )

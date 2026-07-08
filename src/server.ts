@@ -1118,6 +1118,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const r = autos.fire(a, { guard: false }); // explicit human action — no pile-up guard
     return sendJson(res, 200, r);
   }
+  const autoRuns = p.match(/^\/api\/automations\/([\w-]+)\/runs$/);
+  if (method === 'GET' && autoRuns) {
+    const a = autos.get(autoRuns[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    // Runs = every session this automation spawned (provenance `automation:<id>`). Visibility follows
+    // the same rule as /api/sessions — the caller sees only what they're allowed to.
+    return sendJson(res, 200, { runs: tm.listRunsFor(`automation:${a.id}`, me) });
+  }
   const autoMatch = p.match(/^\/api\/automations\/([\w-]+)$/);
   if (autoMatch && (method === 'PATCH' || method === 'DELETE')) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
