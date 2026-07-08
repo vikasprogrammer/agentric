@@ -7,6 +7,8 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Docs
+- Embed an architecture diagram at the top of `docs/ARCHITECTURE.md`.
 
 ## [0.48.0] — 2026-07-08
 ### Added

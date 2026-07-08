@@ -4,6 +4,8 @@
 > Open-core: the **mechanisms** (kernel, governance, observability) are generic and shippable; the
 > **agents, policies, connectors, and data** are brand-private plugins.
 
+![Agent OS architecture](https://share.globex.com/CFWZ1myP)
+
 ---
 
 ## 1. What this is, and the one idea that holds it together
