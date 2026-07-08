@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-07-08
+### Added
+- **"Always approve" — teach policy from the inbox.** An approval card grows an owner-only **Always**
+  button next to Approve/Reject: it approves the current attempt **and** writes a persistent `allow` rule
+  for that capability into the policy override (`POST /api/approvals/:id/always`, hot-reloaded), so future
+  matching attempts pass the gate without a card. The inbox becomes the policy-authoring surface — the
+  place to codify "we've decided this is fine." Safety is by rule **placement**: since `classify` is
+  first-match and the deny guardrails are conditional `never` rules (`destructive` / over-`$moneyCapUsd` /
+  bulk-delete), the new allow is inserted **after** all `never` rules, so a routine attempt stops
+  prompting while a destructive or over-cap attempt of the same capability **still denies**. Owner-only
+  (adding a rule is a policy edit, same guard as `PUT /api/policy`); refuses to shadow an unconditional
+  `never` (approves once, doesn't add the rule); idempotent; audited `policy.rule.added` + `policy.updated`.
+  New `withAlwaysAllow`/`hasHardDeny` helpers in `src/governance/policy.ts`.
+- **`docs/inbox-plan.md`** — the standing inbox audit: the spine, ranked gaps with status, the
+  "Always approve" safety design, and the batch roadmap.
+
 ## [0.39.0] — 2026-07-08
 ### Added
 - **Questions ping the human out-of-band.** When an agent `ask`s a question it no longer sits silently in

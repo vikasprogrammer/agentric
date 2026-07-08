@@ -649,6 +649,8 @@ export const api = {
   attachFile: (id: string, dataB64: string, ext: string) =>
     call<{ ok: boolean; path?: string; error?: string }>('POST', `/api/sessions/${id}/attach-file`, { dataB64, ext }),
   resolve: (id: string, approved: boolean) => call<{ ok: boolean; error?: string }>('POST', '/api/approvals/' + id, { approved }),
+  /** Approve this attempt AND add a persistent policy `allow` rule for its capability (owner-only). */
+  alwaysApprove: (id: string) => call<{ ok: boolean; ruleAdded?: boolean; note?: string; error?: string }>('POST', `/api/approvals/${id}/always`),
   answerQuestion: (id: string, answer: string) => call<{ ok: boolean; error?: string }>('POST', '/api/questions/' + id, { answer }),
   dismissMessage: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/dismiss`),
   dismissAllMessages: () => call<{ ok: boolean; dismissed?: number; error?: string }>('POST', '/api/messages/dismiss-all'),

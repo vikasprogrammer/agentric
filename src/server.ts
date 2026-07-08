@@ -25,7 +25,7 @@ import { AGENT_AUTHOR_ID } from './edge/agent-author';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
-import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument } from './governance/policy';
+import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { AgentManifest, ApprovalRequest, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
@@ -2516,6 +2516,34 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { events, types });
   }
   if (method === 'GET' && p === '/api/approvals') return sendJson(res, 200, os.approvals.pending(os.tenant).filter((a) => tm.canViewSession(a.runId, me)).map(approvalView));
+  // "Always approve": approve THIS attempt AND teach the policy an `allow` rule for its capability, so
+  // future matching attempts pass the gate without a card. Adding a rule is a POLICY EDIT, so it's
+  // OWNER-ONLY — the same guard as PUT /api/policy (an admin can approve once but must not rewrite the
+  // ruleset to bypass future owner sign-off). The rule is inserted AFTER all `never` rules, so deny
+  // guardrails (destructive / over-cap) stay in force; a capability under an unconditional `never` is
+  // refused (approved once, rule not added, with a note). Audited `policy.rule.added` + `policy.updated`.
+  const alwaysMatch = p.match(/^\/api\/approvals\/([\w-]+)\/always$/);
+  if (method === 'POST' && alwaysMatch) {
+    const ap = os.approvals.get(alwaysMatch[1]);
+    if (!ap) return sendJson(res, 404, { error: 'approval not found' });
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required — “always approve” edits policy' });
+    if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 400, { error: 'active policy engine is not editable' });
+    const cap = ap.attempt.capabilityId;
+    const result = withAlwaysAllow(os.policy.document, cap);
+    // The run is waiting — approve this attempt regardless of whether the durable rule lands.
+    os.approvals.resolve(alwaysMatch[1], true, me.email);
+    if ('error' in result) return sendJson(res, 200, { ok: true, ruleAdded: false, note: result.error });
+    if (result.added) {
+      if (os.paths) {
+        fs.mkdirSync(path.dirname(os.paths.policyOverride), { recursive: true });
+        fs.writeFileSync(os.paths.policyOverride, JSON.stringify(result.doc, null, 2));
+      }
+      os.policy.update(result.doc); // hot reload — gateway + terminal gate share this instance
+      os.audit.append({ ts: Date.now(), runId: ap.runId, tenant: os.tenant, principal: me.email, type: 'policy.rule.added', data: { capability: cap, effect: 'allow', from: 'inbox.always_approve' } });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: result.doc.id, rules: result.doc.rules.length } });
+    }
+    return sendJson(res, 200, { ok: true, ruleAdded: result.added, note: result.added ? undefined : `“${cap}” is already always-allowed` });
+  }
   const apMatch = p.match(/^\/api\/approvals\/([\w-]+)$/);
   if (method === 'POST' && apMatch) {
     const ap = os.approvals.get(apMatch[1]);

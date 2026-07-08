@@ -1623,6 +1623,13 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
   if (m.type === 'approval') {
     const mayApprove = canApprove(me.role, (m.level ?? 'head') as 'head' | 'owner')
     const resolve = async (approved: boolean) => { setBusy(true); const r = await api.resolve(m.approvalId!, approved); if (r.error) setBusy(false) }
+    // "Always approve" also teaches policy an allow rule for this capability — a policy edit, so owner-only.
+    const always = async () => {
+      setBusy(true)
+      const r = await api.alwaysApprove(m.approvalId!)
+      if (r.error) { setBusy(false); alert(r.error) }          // 403/404 — not resolved; leave the card
+      else if (r.ruleAdded === false && r.note) alert(`Approved once — ${r.note}`)  // resolved, rule not added
+    }
     return (
       <div className="rounded-lg border border-amber-300 bg-amber-50/40 px-3 py-2.5">
         <div className="flex items-start gap-2.5">
@@ -1642,6 +1649,9 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
           {mayApprove ? (
             <>
               <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => resolve(true)}><Check className="mr-1 h-3.5 w-3.5" />Approve</Button>
+              {me.role === 'owner' && (
+                <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={always} title={`Approve this and stop asking — adds an "allow ${m.capability ?? ''}" rule to policy`}><Shield className="mr-1 h-3.5 w-3.5" />Always</Button>
+              )}
               <Button size="sm" variant="destructive" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => resolve(false)}><X className="mr-1 h-3.5 w-3.5" />Reject</Button>
             </>
           ) : (

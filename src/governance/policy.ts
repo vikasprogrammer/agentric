@@ -91,6 +91,42 @@ function globToRegExp(glob: string): RegExp {
 }
 
 /**
+ * Does an UNCONDITIONAL `never` rule (no `when`) match `capabilityId`? Such a rule is an absolute deny,
+ * and "Always approve" refuses to shadow it. Note that CONDITIONAL nevers (the default policy's
+ * `* when destructive` / `* when amountUsd > cap` / `* when deleteCount > cap`) are deliberately NOT
+ * hard denies here: they're preserved by inserting the new allow AFTER all never rules (see
+ * {@link withAlwaysAllow}), so they still fire for a destructive/over-cap attempt.
+ */
+export function hasHardDeny(doc: PolicyDocument, capabilityId: string): boolean {
+  return doc.rules.some((r) => r.action === 'never' && !r.match.when && globToRegExp(r.match.capability).test(capabilityId));
+}
+
+/**
+ * The "Always approve" learn step: return a NEW document that allows `capabilityId` from now on.
+ *
+ * `classify` is first-match, so placement is the whole safety story. We insert the unconditional `allow`
+ * rule immediately AFTER the last `never` rule — never before it. That keeps every deny guardrail in
+ * force (a destructive or over-cap attempt of this capability still hits its conditional `never`), while
+ * the new allow shadows the `ask` rule that raised the card, so the routine case stops prompting. The
+ * common policy lists nevers first, then asks, so this shadows exactly the intended `ask` and nothing more.
+ * - Refuses (`{ error }`) when an UNCONDITIONAL `never` matches — that's an absolute deny we won't erase.
+ * - Idempotent: if an identical allow rule already exists, returns `added: false`.
+ * Callers persist + hot-reload the returned doc and surface `added`/`error` to the human.
+ */
+export function withAlwaysAllow(doc: PolicyDocument, capabilityId: string): { doc: PolicyDocument; added: boolean } | { error: string } {
+  const cap = capabilityId.trim();
+  if (!cap) return { error: 'no capability to allow' };
+  if (hasHardDeny(doc, cap)) return { error: `"${cap}" is hard-denied by a policy rule and can't be allowed from the inbox — edit policy directly if you really mean to` };
+  const exists = doc.rules.some((r) => r.action === 'allow' && !r.match.when && r.match.capability === cap);
+  if (exists) return { doc, added: false };
+  let insertAt = 0;
+  doc.rules.forEach((r, i) => { if (r.action === 'never') insertAt = i + 1; });
+  const rule: PolicyRule = { match: { capability: cap }, action: 'allow' };
+  const rules = [...doc.rules.slice(0, insertAt), rule, ...doc.rules.slice(insertAt)];
+  return { doc: { ...doc, rules }, added: true };
+}
+
+/**
  * A `when.value` of the form `"$name"` is a reference to a named governance threshold (e.g.
  * `"$moneyCapUsd"`), resolved live from the engine's thresholds provider at classify time. This keeps
  * the numeric caps editable in Settings → Governance without rewriting policy rules. The kernel always
