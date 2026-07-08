@@ -169,6 +169,8 @@ export class SlackSocket {
       runAsMember,
     );
     if (cont.status !== 'none') {
+      // Handled by the thread's warm session — delivered into the live claude, or revived it. No ack:
+      // the agent's own `slack_reply` is the feedback (continueSlackThread already audited the turn).
       this.os.audit.append({
         ts: Date.now(),
         runId: cont.sessionId ?? '-',
@@ -177,12 +179,6 @@ export class SlackSocket {
         type: 'trigger.slack',
         data: { eventType: ev.eventType, channel: ev.channel, thread: true, continued: cont.status, runAs: runAsMember ?? null },
       });
-      // No ack for a resumed turn — the agent's own `slack_reply` is the feedback, and an "On it…" line
-      // before every follow-up answer is just noise in a back-and-forth thread. Only the `busy` case
-      // posts a note, since there the message is deferred and the user would otherwise see nothing.
-      if (cont.status === 'busy') {
-        await postMessage(this.os.settings.slackBotToken(), ev.channel, ':hourglass_flowing_sand: Still working on your previous message — I’ll pick this up next.', ev.threadTs);
-      }
       return;
     }
 

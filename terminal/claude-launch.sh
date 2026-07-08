@@ -232,9 +232,36 @@ if [ "${HEADLESS:-}" = "1" ]; then
   exit 0
 fi
 
-# INTERACTIVE lane only (the headless branch above already exited). Add the permission mode here — NOT
-# in COMMON_ARGS — so it never touches the headless `-p --dangerously-skip-permissions` run. Defaults to
-# `auto` if the env is unset (e.g. resuming a session launched before this knob existed).
+if [ "${RESIDENT:-}" = "1" ]; then
+  # RESIDENT (warm chat) lane: an INTERACTIVE claude that STAYS ALIVE after it answers, so a Slack/Discord
+  # thread follow-up is delivered by typing into this very pane (tmux send-keys) — fast, no cold reload of
+  # MCP servers / transcript. Unattended (no human to answer prompts), so --dangerously-skip-permissions —
+  # the SAME PreToolUse gate hook still runs and still BLOCKS risky Bash for inbox approval under the flag.
+  # Seeded with the first message ($TASK); RESUME=1 continues a prior transcript, still seeded with the new
+  # message. The OS keeps it warm and the idle reaper kills it after the configured timeout. On an abnormal
+  # exit (crash/quit) the pane just ends → the row goes done and the next follow-up revives it fresh (no
+  # ungoverned holding shell, matching the interactive lane's security stance).
+  export CLAUDE_CODE_NO_FLICKER=1
+  export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
+  RES_ARGS=(--dangerously-skip-permissions "${COMMON_ARGS[@]}")
+  dim "resident warm chat session — unattended (gate hook still governs); kept warm for fast follow-ups"
+  echo
+  if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    notify_resumed
+    claude --resume "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" "$TASK" \
+      || claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" "$TASK"
+  elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+    claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" "$TASK"
+  else
+    claude "${RES_ARGS[@]}" "$TASK"
+  fi
+  notify_ended
+  exit 0
+fi
+
+# INTERACTIVE lane only (the headless/resident branches above already exited). Add the permission mode
+# here — NOT in COMMON_ARGS — so it never touches the headless `-p --dangerously-skip-permissions` run.
+# Defaults to `auto` if the env is unset (e.g. resuming a session launched before this knob existed).
 COMMON_ARGS+=(--permission-mode "${CLAUDE_PERMISSION_MODE:-auto}")
 dim "permission mode: ${CLAUDE_PERMISSION_MODE:-auto} (gate hook still governs every side effect)"
 

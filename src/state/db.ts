@@ -482,6 +482,15 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'updated_at', 'INTEGER');
   db.exec('UPDATE term_sessions SET updated_at = created_at WHERE updated_at IS NULL');
 
+  // Resident (warm) chat session: an INTERACTIVE claude kept alive after it answers so a thread
+  // follow-up is delivered by typing into it (tmux send-keys) — fast, and one session row per thread
+  // instead of a fresh cold run per reply. The idle reaper kills these after the configured timeout.
+  // 0 for normal one-shot runs.
+  addColumn(db, 'term_sessions', 'resident', 'INTEGER NOT NULL DEFAULT 0');
+  // Last time a resident session saw a turn (spawn or a delivered follow-up) — the idle-reaper clock.
+  // NULL for non-resident rows (never reaped on idle).
+  addColumn(db, 'term_sessions', 'last_activity', 'INTEGER');
+
   // Session status vocabulary widened: running|idle → running|done|stopped|crashed. Legacy terminal
   // rows collapsed every non-running end state into 'idle'; we can't retro-classify how they actually
   // ended, so map them to the benign 'done'. Idempotent — after the first boot there are no 'idle' rows.

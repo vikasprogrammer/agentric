@@ -207,7 +207,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
 
   // Shared, process-wide upkeep timers — each fans out across every tenant runtime.
   // Idle GC (A5): reclaim idle members' uids/ttyds. No-op under the local backend, so always-on is safe.
-  const reaper = setInterval(() => registry.forEach((rt) => { try { rt.tm.reapIdleSpaces(); } catch { /* never let the sweep crash */ } }), 60_000);
+  const reaper = setInterval(() => registry.forEach((rt) => {
+    try { rt.tm.reapIdleSpaces(); } catch { /* never let the sweep crash */ }
+    try { rt.tm.reapIdleResidents(); } catch { /* warm-chat idle reaper — never let it crash the sweep */ }
+  }), 60_000);
   reaper.unref?.();
   // Memory upkeep + self-learning: hourly check per tenant; each is a no-op unless that tenant opted in.
   const lastMaint = new Map<string, number>();
@@ -2130,6 +2133,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (discordTouched && discord) void discord.restart();
     // Generic `/agent` chat router toggle (Slack + Discord fallback when no automation matches).
     if (typeof b.chatRouter === 'boolean') os.settings.setChatRouterEnabled(b.chatRouter, me.email);
+    // Warm (resident) Slack thread session idle-kill, minutes (0 = disable residence → cold replies).
+    if (b.chatIdleTimeoutMin !== undefined && Number.isFinite(Number(b.chatIdleTimeoutMin))) os.settings.setChatIdleTimeoutMinutes(Number(b.chatIdleTimeoutMin), me.email);
     return sendJson(res, 200, { ok: true, removedSlackAutomations, removedDiscordAutomations, ...integrationsView(os) });
   }
   // Live Slack Socket-Mode connection status (owner/admin) — for the Integrations panel.
@@ -3044,6 +3049,7 @@ function integrationsView(os: AgentOS): {
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
   chatRouter: boolean;
+  chatIdleTimeoutMin: number;
   updatedAt?: number;
   updatedBy?: string;
 } {
@@ -3056,6 +3062,7 @@ function integrationsView(os: AgentOS): {
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
     chatRouter: os.settings.chatRouterEnabled(),
+    chatIdleTimeoutMin: os.settings.chatIdleTimeoutMinutes(),
     updatedAt: meta.updatedAt,
     updatedBy: meta.updatedBy,
   };

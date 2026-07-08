@@ -6348,6 +6348,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
   const [chatRouter, setChatRouter] = useState(true)
+  const [chatIdle, setChatIdle] = useState(30)
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
   const [key, setKey] = useState('')
   const [wh, setWh] = useState('')
@@ -6367,6 +6368,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     setSlack(r.slack ?? SLACK_DEFAULT)
     setDiscord(r.discord ?? DISCORD_DEFAULT)
     if (typeof r.chatRouter === 'boolean') setChatRouter(r.chatRouter)
+    if (typeof r.chatIdleTimeoutMin === 'number') setChatIdle(r.chatIdleTimeoutMin)
     setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
   }
   const loadStatus = () => {
@@ -6381,7 +6383,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     loadStatus()
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
@@ -6542,6 +6544,29 @@ function IntegrationsSettings({ me }: { me: Member }) {
               help list of available agents. Runs go through the same gate + run-as as everything else. No per-agent automation needed.
             </span>
           </label>
+
+          {/* Warm (resident) Slack thread session: how long to keep a thread's claude alive between turns
+              so follow-ups reply fast. The idle reaper kills it after this many minutes; a later reply
+              revives it (context preserved). 0 disables residence (every reply cold-starts). */}
+          <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/20 p-3 text-xs">
+            <span className="font-medium text-foreground">Keep Slack threads warm for</span>
+            <Input
+              type="number"
+              min={0}
+              max={1440}
+              value={chatIdle}
+              disabled={busy}
+              onChange={(e) => setChatIdle(Number(e.target.value))}
+              onBlur={() => save({ chatIdleTimeoutMin: chatIdle }, 'warm-thread timeout saved')}
+              className="h-7 w-20 text-xs"
+            />
+            <span>minutes.</span>
+            <span className="text-muted-foreground">
+              A Slack thread keeps ONE live agent session this long between messages, so follow-ups reply fast (no
+              cold reload). After the idle window it's reaped; the next reply revives it with full context. <code className="text-[11px]">0</code> = off (every reply cold-starts).
+            </span>
+          </div>
+
           <DiscordSetupGuide />
           <Field label="Bot token" help="Discord Developer Portal → your app → Bot → Reset/Copy Token. Enable the MESSAGE CONTENT privileged intent on the same page.">
             <Input

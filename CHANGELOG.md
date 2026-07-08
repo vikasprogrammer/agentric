@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.59.0] — 2026-07-08
+### Added
+- **Warm, resident Slack thread sessions — one session per thread, fast follow-ups.** A Slack thread now
+  runs a single long-lived agent session kept alive between turns, instead of cold-starting a fresh
+  `claude -p` (and a new Sessions row) for every reply. The first message spawns an interactive claude that
+  stays warm; each follow-up is **delivered by typing into the running session** (tmux send-keys) — no
+  reload of MCP servers / transcript, so replies come back fast. It stays **one row per thread** (no more
+  new entry per reply), and the session is attachable from the console like any other. Unattended, so it
+  runs with `--dangerously-skip-permissions` — the PreToolUse gate hook still governs every side effect.
+- **Configurable idle keep-alive (default 30 min).** Settings → Integrations → "Keep Slack threads warm
+  for N minutes". An idle reaper frees the held claude after the window; a later reply **revives the same
+  row**, resuming the transcript (context preserved) and seeded with the new message. `0` disables
+  residence (every reply cold-starts). Backed by new `term_sessions.resident` / `last_activity` columns.
+- **Meaningful session titles for Slack/Discord threads.** A thread session is now titled from the first
+  message (e.g. "why is pod X down?") instead of a generic "Chat → agent".
+### Changed
+- Thread continuity no longer spawns a per-reply run; `continueSlackThread` **delivers** to the live
+  session or **revives** the reaped one. (Discord threads still cold-spawn per message for now.)
+
 ## [0.58.0] — 2026-07-08
 ### Added
 - **Sessions grid view shows the last-updated time too.** Each card now displays its relative "updated

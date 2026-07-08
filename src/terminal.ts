@@ -638,7 +638,7 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
-  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string): Session {
+  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false): Session {
     const id = randomUUID().slice(0, 8);
     const tmux = `aos-${id}`;
     // The claude conversation this run drives. A fresh run mints a new id (pinned via `--session-id`);
@@ -658,8 +658,8 @@ export class TerminalManager {
     const secret = randomBytes(24).toString('hex');
     const session: Session = { id, agent, title, task, tmux, status: 'running', createdAt: Date.now(), updatedAt: Date.now() };
     this.db
-      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, session.createdAt, session.createdAt);
+      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, resident, last_activity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, resident ? 1 : 0, resident ? session.createdAt : null, session.createdAt, session.createdAt);
     // No spawn card — the Inbox is a feed of agent-authored signals (progress / questions / approvals /
     // completions / artifacts), not a session lifecycle log. A run that never speaks stays off the feed
     // and lives only on the Sessions page.
@@ -682,68 +682,140 @@ export class TerminalManager {
     const runtime = manifest?.runtime ?? 'mock';
     // Audit records BOTH provenance and the run-as principal — when they differ (a trigger acting as
     // a member), the trail shows what fired it AND whose identity it used.
-    this.audit(id, agent, 'session.created', { tmux, task, runtime, dir: manifest?.dir, headless, spawnedBy: spawnedBy ?? null, runAs: actingMember ?? null });
+    this.audit(id, agent, 'session.created', { tmux, task, runtime, dir: manifest?.dir, headless, resident, spawnedBy: spawnedBy ?? null, runAs: actingMember ?? null });
 
     if (runtime === 'claude-code' && manifest?.dir) {
-      // Real claude in the agent's own folder, governed by the gate hook. Memory and connectors
-      // are delivered PURELY as MCP tools (recall/remember) via the per-session `.mcp.json` — the
-      // orchestrator injects nothing into the prompt. When/whether to recall or remember is the
-      // agent's own decision, guided by its CLAUDE.md and the tools' own descriptions.
-      const env = this.sessionEnv(id, agent, task, secret);
-      // Build the per-session connector + company payloads once (Composio is minted here).
-      const mcpJson = this.buildMcpConfigJson(id, agent, actingMember, secret, !!slack?.channel, !!discord?.channel);
-      const companyMd = this.buildCompanyMd(agent);
-      this.materializeSkills(id, agent, manifest.dir);
-      if (headless) env.HEADLESS = '1';
-      env.AGENT_DIR = manifest.dir;
-      env.HOOK = this.hook;
-      // No OS sandbox env: the gate hook (PreToolUse) is the sole authority for governed side effects
-      // (it emits an authoritative permissionDecision per Bash/write/connector call, which bypasses
-      // Claude's own permission engine), so we don't wrap the shell in Seatbelt/bubblewrap. Real OS
-      // containment, where wanted, is the Linux uid-isolation path.
-      // Per-agent model / effort / permission-mode, each falling back to the workspace default. The
-      // launcher (claude-launch.sh) turns these into `--model` / `--effort` / `--permission-mode`
-      // (permission-mode on the INTERACTIVE lane only — headless keeps --dangerously-skip-permissions;
-      // it only tunes the fallback for tools the gate hook doesn't decide, and defaults to `auto`).
-      // Resolved here (not in bash) so the resume env file captures the exact values a reconnect re-uses.
-      const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults());
-      if (tuning.model) env.CLAUDE_MODEL = tuning.model;
-      if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
-      if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
-      this.audit(id, agent, 'session.tuning', { model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode });
-      // A stable claude session id we choose (vs letting claude mint its own), so a stopped session
-      // can be resumed in-place with `claude --resume <id>` when the user reconnects in the browser —
-      // and so a chat-thread follow-up can resume the SAME conversation. When `resumeClaudeId` is set
-      // (a thread follow-up), reuse the prior run's id and tell the launcher to `--resume` it; even the
-      // headless lane then continues the transcript instead of starting fresh.
-      env.CLAUDE_SESSION_ID = claudeSessionId;
-      if (resumeClaudeId) env.RESUME = '1';
-
-      // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`). Done
-      // here so both isolation lanes and the resurrect env file (writeEnvFile below) carry them.
-      this.injectShellSecrets(env, agent, manifest, id);
-
-      if (this.uidIsolation) {
-        // Flag on: the launcher writes the files INTO the member's home (member-readable), copies the
-        // agent dir to a per-member working copy (AGENT_DIR override), and sets MCP_CONFIG/COMPANY_FILE/
-        // LOG_DIR itself — the app dir is unreadable/unwritable by the member uid.
-        this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined }, agentSrc: manifest.dir });
-      } else {
-        // Flag off: materialise into the app's connectors dir (the session runs as the app uid, so it
-        // can read them), set the env, and persist the launch context so the ttyd attach wrapper can
-        // resurrect a dead session (terminal/attach.sh). Headless automation runs aren't resumable.
-        const mcpFile = this.writeSessionFile(id, 'mcp.json', mcpJson);
-        if (mcpFile) env.MCP_CONFIG = mcpFile;
-        const companyFile = this.writeSessionFile(id, 'company.md', companyMd);
-        if (companyFile) env.COMPANY_FILE = companyFile;
-        if (headless) env.LOG_DIR = this.os.paths?.connectors ?? '/tmp';
-        if (!headless) this.writeEnvFile(id, env);
-        this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env, argv: ['bash', this.launcher] });
-      }
+      this.launchClaudeCode({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, headless, resident, resume: !!resumeClaudeId, claudeSessionId });
     } else {
       this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env: this.sessionEnv(id, agent, task, secret), argv: ['bash', this.runner] });
     }
     return session;
+  }
+
+  /**
+   * Spawn the claude-code runtime for a session row (in its agent folder, governed by the gate hook).
+   * Factored out of `createSession` so `reviveResident` can re-launch the SAME row (same id/tmux/secret/
+   * claude id) after the warm session was reaped — with `resume: true` it continues the transcript.
+   * Memory + connectors are delivered purely as MCP tools via the per-session `.mcp.json`; the
+   * orchestrator injects nothing into the prompt.
+   */
+  private launchClaudeCode(o: {
+    id: string; agent: string; task: string; secret: string;
+    actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean;
+    headless: boolean; resident: boolean; resume: boolean; claudeSessionId: string;
+  }): void {
+    const manifest = this.os.agents.get(o.agent);
+    if (!manifest?.dir) return;
+    const tmux = `aos-${o.id}`;
+    const env = this.sessionEnv(o.id, o.agent, o.task, o.secret);
+    // Build the per-session connector + company payloads once (Composio is minted here).
+    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord);
+    const companyMd = this.buildCompanyMd(o.agent);
+    this.materializeSkills(o.id, o.agent, manifest.dir);
+    if (o.headless) env.HEADLESS = '1';
+    // Resident (warm) chat session: the launcher's RESIDENT lane keeps an interactive claude alive so
+    // thread follow-ups are delivered by send-keys (see deliverToResident / reviveResident).
+    if (o.resident) env.RESIDENT = '1';
+    env.AGENT_DIR = manifest.dir;
+    env.HOOK = this.hook;
+    // No OS sandbox env: the gate hook (PreToolUse) is the sole authority for governed side effects, so
+    // we don't wrap the shell in Seatbelt/bubblewrap. Real OS containment is the Linux uid-isolation path.
+    // Per-agent model / effort / permission-mode fall back to the workspace default; the launcher maps
+    // them onto `--model`/`--effort`/`--permission-mode` (permission-mode on the interactive lane only).
+    const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults());
+    if (tuning.model) env.CLAUDE_MODEL = tuning.model;
+    if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
+    if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
+    this.audit(o.id, o.agent, 'session.tuning', { model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode });
+    // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
+    // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
+    // follow-up or a console reconnect) instead of starting fresh.
+    env.CLAUDE_SESSION_ID = o.claudeSessionId;
+    if (o.resume) env.RESUME = '1';
+    // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`).
+    this.injectShellSecrets(env, o.agent, manifest, o.id);
+    if (this.uidIsolation) {
+      // Flag on: the launcher writes the files INTO the member's home and sets MCP_CONFIG/COMPANY_FILE itself.
+      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined }, agentSrc: manifest.dir });
+    } else {
+      // Flag off: materialise into the app's connectors dir and persist the launch context so the ttyd
+      // attach wrapper can resurrect a dead session. Headless automation runs write no resurrect env.
+      const mcpFile = this.writeSessionFile(o.id, 'mcp.json', mcpJson);
+      if (mcpFile) env.MCP_CONFIG = mcpFile;
+      const companyFile = this.writeSessionFile(o.id, 'company.md', companyMd);
+      if (companyFile) env.COMPANY_FILE = companyFile;
+      if (o.headless) env.LOG_DIR = this.os.paths?.connectors ?? '/tmp';
+      if (!o.headless) this.writeEnvFile(o.id, env);
+      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher] });
+    }
+  }
+
+  /**
+   * Deliver a thread follow-up to a LIVE resident chat session by typing it into the running claude
+   * (tmux send-keys) — the warm, fast path (no cold reload). Bumps the idle clock. Returns false when
+   * the session isn't a live resident or the keystrokes couldn't be delivered (caller then revives).
+   */
+  deliverToResident(sessionId: string, text: string): boolean {
+    const row = this.db.prepare('SELECT tmux, status, resident, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ tmux: string; status: string; resident: number; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!row || !row.resident || row.status !== 'running') return false;
+    if (!this.isAlive(sessionId)) return false;
+    const body = (text || '').replace(/\r?\n+/g, ' ').trim(); // one-line: a stray newline would submit early
+    if (!body) return false;
+    const ok = this.backend.injectText(this.spaceFor(row.run_as ?? row.spawned_by), row.tmux, body, true);
+    if (ok) {
+      this.db.prepare('UPDATE term_sessions SET last_activity = ?, updated_at = ? WHERE id = ?').run(Date.now(), Date.now(), sessionId);
+      const agent = this.sessionAgent(sessionId) ?? '';
+      this.audit(sessionId, agent, 'chat.delivered', { chars: body.length });
+    }
+    return ok;
+  }
+
+  /**
+   * Revive a reaped/ended resident chat session IN PLACE: flip the row back to running and re-launch the
+   * claude-code runtime under the SAME id/tmux/claude-session, resuming the transcript and seeded with the
+   * new message. Keeps ONE session row per thread across idle gaps (no new list entry). Returns false if
+   * the session can't be revived (unknown, still alive, or non-resumable).
+   */
+  reviveResident(sessionId: string, text: string, runAs?: string): boolean {
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, status FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; status: string }>(sessionId);
+    if (!row || !row.claude_session_id) return false;
+    if (this.isAlive(sessionId)) return false; // caller should have delivered instead
+    const body = (text || '').trim();
+    if (!body) return false;
+    const actingMember = runAs ?? row.run_as ?? undefined;
+    const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
+    const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    this.db.prepare("UPDATE term_sessions SET status = 'running', resident = 1, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
+      .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
+    this.audit(sessionId, row.agent, 'chat.revived', { runAs: actingMember ?? null });
+    this.launchClaudeCode({
+      id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
+      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
+    });
+    return true;
+  }
+
+  /**
+   * Idle reaper: kill resident (warm) chat sessions whose last turn was longer ago than the configured
+   * timeout (Settings → Integrations; default 30 min). Frees the held claude process + MCP servers; the
+   * thread's row stays (status → stopped) so a later reply revives it. `timeoutMin = 0` disables residence
+   * → reap everything resident. Run from the process-wide 60s sweep in server.ts. Never throws.
+   */
+  reapIdleResidents(): void {
+    const timeoutMin = this.os.settings.chatIdleTimeoutMinutes();
+    const cutoff = timeoutMin > 0 ? Date.now() - timeoutMin * 60_000 : Date.now() + 1; // 0 → reap all now
+    const rows = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status = 'running' AND COALESCE(last_activity, created_at) < ?")
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff);
+    for (const r of rows) {
+      try {
+        this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
+        this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+        this.audit(r.id, r.agent, 'chat.reaped', { idleMin: timeoutMin });
+      } catch { /* one bad row must not stop the sweep */ }
+    }
   }
 
   /** `{ AOS_URL, SESSION, AGENT, TASK_B64, AOS_SECRET }` — the base env every runner/launcher inherits. */

@@ -43,6 +43,7 @@ export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd
 
 const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JSON string[]); email.send to these is green
 const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
+const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 
 /** The workspace emergency stop. When engaged, the gate denies EVERY action, fleet-wide, until cleared. */
@@ -420,6 +421,23 @@ export class SettingsStore {
   setChatRouterEnabled(on: boolean, by?: string): boolean {
     this.set(CHAT_ROUTER_KEY, on ? 'on' : 'off', by);
     return this.chatRouterEnabled();
+  }
+
+  /** How long a resident (warm) Slack/Discord thread session is kept alive after its last turn before
+   *  the idle reaper kills it. Default 30 min; clamped to a sane 1 min–24 h. 0 disables residence
+   *  (every reply cold-starts) — an escape hatch, not the default. */
+  chatIdleTimeoutMinutes(): number {
+    const n = Number(this.getRow(CHAT_IDLE_MIN_KEY)?.value);
+    if (!Number.isFinite(n)) return 30; // unset → default
+    if (n <= 0) return 0;               // explicit 0 → residence off
+    return Math.min(Math.max(Math.round(n), 1), 24 * 60);
+  }
+
+  setChatIdleTimeoutMinutes(minutes: number, by?: string): number {
+    const n = Number(minutes);
+    const clamped = !Number.isFinite(n) || n < 0 ? 30 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 60);
+    this.set(CHAT_IDLE_MIN_KEY, String(clamped), by);
+    return this.chatIdleTimeoutMinutes();
   }
 
   // ── kill switch (workspace emergency stop) ───────────────────────────────────────

@@ -193,6 +193,15 @@ export type FireResult =
 
 const MAX_PAYLOAD_CHARS = 4000; // keep webhook payloads from flooding the task prompt
 
+/** A concise, human session title from a chat message — the meaningful label for a Slack/Discord thread
+ *  session (vs a generic "Chat → agent"). Strips a leading `/agent` prefix + mention tokens, collapses
+ *  whitespace, and trims to ~60 chars. Falls back to "Chat → <agent>" when the message is empty. */
+export function chatTitle(text: string, agentId: string): string {
+  const clean = (text || '').replace(/^\s*\/[A-Za-z0-9][\w-]*\s*/, '').replace(/<@[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  if (!clean) return `Chat → ${agentId}`;
+  return clean.length > 60 ? `${clean.slice(0, 59).trimEnd()}…` : clean;
+}
+
 // Bounds for agent-scheduled one-shot tasks (`type: 'once'`). A scheduled run is a time-shift of work
 // the agent is already authorized to do, so it needs no fresh approval — but it is bounded so an agent
 // can't schedule into the far future or pile up unbounded pending runs.
@@ -443,16 +452,21 @@ export class Automations {
   private spawnChatAgent(
     agentId: string,
     task: string,
-    opts: { runAs?: string; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string } },
+    opts: { runAs?: string; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; title?: string; resident?: boolean },
   ): FireResult {
-    const s = this.tm.createSession(agentId, `Chat → ${agentId}`, task, `chat:${agentId}`, true, opts.slack, opts.discord, opts.runAs);
+    // `resident` (Slack chat) → a warm interactive session (headless off) kept alive for fast follow-ups;
+    // otherwise the classic one-shot headless run. `title` is the meaningful, message-derived label.
+    const s = this.tm.createSession(
+      agentId, opts.title || `Chat → ${agentId}`, task, `chat:${agentId}`,
+      !opts.resident, opts.slack, opts.discord, opts.runAs, undefined, !!opts.resident,
+    );
     this.os.audit.append({
       ts: Date.now(),
       runId: s.id,
       tenant: this.os.tenant,
       principal: opts.runAs ? `member:${opts.runAs}` : 'chat',
       type: 'chat.routed',
-      data: { agent: agentId, runAs: opts.runAs ?? null, channel: opts.slack?.channel ?? opts.discord?.channel ?? null },
+      data: { agent: agentId, runAs: opts.runAs ?? null, channel: opts.slack?.channel ?? opts.discord?.channel ?? null, resident: !!opts.resident },
     });
     return { ok: true, sessionId: s.id, tmux: s.tmux };
   }
@@ -524,7 +538,7 @@ export class Automations {
     if (sessions.length === 0 && this.os.settings.chatRouterEnabled()) {
       const routed = this.routeChat(event.text);
       if (routed.agentId) {
-        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs } });
+        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs }, title: chatTitle(event.text, routed.agentId), resident: true });
         if (r.ok) sessions.push(r.sessionId);
       } else {
         reply = routed.help;
@@ -534,55 +548,51 @@ export class Automations {
   }
 
   /**
-   * Thread continuity: a follow-up message inside a Slack thread already bound to a session should
-   * CONTINUE that conversation with the same agent — not re-run the automation/`/agent` router (which
-   * would answer a plain "ok, now do X" with a help list). We find the most recent session bound to the
-   * thread and, if it can be resumed, spawn a new governed run that `--resume`s the SAME claude
-   * transcript (context preserved), bound to the same thread so its `slack_reply` lands back in place.
-   *
-   * Returns the disposition so the socket can post the right ack:
-   *   - `resumed`: a continuation run started (sessionId set).
-   *   - `busy`:    the bound agent is still working the previous turn — the caller posts a "one sec" note
-   *                and drops this message (no overlapping run on the same thread).
-   *   - `none`:    nothing resumable is bound (first mention, or a pre-continuity run) — the caller falls
-   *                through to the normal fireSlack path (fresh spawn / router).
+   * Thread continuity: a follow-up message inside a Slack thread already bound to a session CONTINUES
+   * that conversation with the same agent — not the `/agent` router (which would answer a plain "ok, now
+   * do X" with a help list). We keep ONE warm resident session per thread:
+   *   - **delivered**: the session is live → type the message straight into the running claude (send-keys).
+   *     Fast (no cold reload), and no new Sessions row.
+   *   - **revived**:   the session was reaped/ended (idle) → revive the SAME row, `--resume`ing the claude
+   *     transcript, seeded with the message. Still one row per thread; context preserved.
+   *   - **none**:      nothing resumable is bound (the first message in a thread) → the caller falls through
+   *     to the normal fireSlack path (fresh spawn / router).
+   * The socket posts no ack — the agent's own `slack_reply` is the feedback.
    */
   continueSlackThread(
     event: { channel: string; threadTs: string; actorLabel: string; text: string; raw: unknown },
     runAsMember?: string,
-  ): { status: 'resumed' | 'busy' | 'none'; sessionId?: string } {
+  ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     if (!event.threadTs) return { status: 'none' };
     const bound = this.tm.sessionForSlackThread(event.channel, event.threadTs);
-    if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound or unresumable → fresh spawn
-    if (this.tm.isAlive(bound.sessionId)) return { status: 'busy' };  // still working the previous turn
-    // Continuation identity is whoever sent THIS follow-up (they're the accountable human for this turn),
-    // falling back to the original run-as when the sender is unmapped.
+    if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
+    // Continuation identity is whoever sent THIS follow-up (accountable human for this turn), falling back
+    // to the original run-as when the sender is unmapped.
     const runAs = runAsMember ?? bound.runAs;
-    const extra =
-      `Follow-up from ${event.actorLabel} in the SAME Slack thread — continue the conversation.\n` +
-      `Message:\n${event.text}\n\n` +
-      `Reply with the \`slack_reply\` tool when done (it posts back to this thread). Keep it concise.\n\n` +
-      `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
-    const s = this.tm.createSession(
-      bound.agent,
-      `Chat → ${bound.agent} (cont.)`,
-      extra,
-      `chat:${bound.agent}`,
-      true, // headless one-off, resuming the prior transcript
-      { channel: event.channel, threadTs: event.threadTs },
-      undefined,
-      runAs,
-      bound.claudeSessionId,
-    );
-    this.os.audit.append({
-      ts: Date.now(),
-      runId: s.id,
-      tenant: this.os.tenant,
-      principal: runAs ? `member:${runAs}` : 'chat',
-      type: 'chat.resumed',
-      data: { agent: bound.agent, from: bound.sessionId, channel: event.channel, thread: event.threadTs, runAs: runAs ?? null },
+    // The delivered message goes straight into a live TUI — strip a leading `/agent` (a re-mention) so
+    // claude doesn't see it as a slash command, and drop mention tokens.
+    const msg = this.stripChatPrefix(event.text);
+    if (!msg) return { status: 'none' };
+    const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
+      ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
+      principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
+      data: { mode, agent: bound.agent, session: bound.sessionId, channel: event.channel, thread: event.threadTs, runAs: runAs ?? null },
     });
-    return { status: 'resumed', sessionId: s.id };
+    // Warm path: live resident session → deliver by typing into it.
+    if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
+    // Cold path: reaped/ended → revive the SAME row (resume transcript, seeded with the message).
+    if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', sessionId: bound.sessionId }; }
+    return { status: 'none' };
+  }
+
+  /** Strip a leading `/agent` router prefix (only when it names a known agent) and any `<@…>` mention
+   *  tokens from a follow-up before it's typed into a live claude — so a re-mention doesn't land as a
+   *  slash command. Returns the cleaned message (never undefined). */
+  private stripChatPrefix(text: string): string {
+    const t = (text || '').replace(/<@[^>]+>/g, '').trim();
+    const m = t.match(/^\/([A-Za-z0-9][\w-]*)\s+([\s\S]*)$/);
+    if (m && this.os.agents.has(m[1])) return m[2].trim();
+    return t;
   }
 
   /**
@@ -614,7 +624,7 @@ export class Automations {
     if (sessions.length === 0 && this.os.settings.chatRouterEnabled()) {
       const routed = this.routeChat(event.text);
       if (routed.agentId) {
-        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId } });
+        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId }, title: chatTitle(event.text, routed.agentId) });
         if (r.ok) sessions.push(r.sessionId);
       } else {
         reply = routed.help;

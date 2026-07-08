@@ -567,6 +567,8 @@ export interface IntegrationsResp {
   discord: { botToken: boolean; configured: boolean }
   /** Generic `/agent` chat router: when on, an unmatched Slack/Discord message reaches any agent by name. */
   chatRouter: boolean
+  /** Warm (resident) Slack thread session idle-kill, minutes. 0 = residence off (every reply cold-starts). */
+  chatIdleTimeoutMin: number
   updatedAt?: number
   updatedBy?: string
   error?: string
@@ -804,7 +806,7 @@ export const api = {
   disconnectApp: (body: { id: string; scope: 'company' | 'personal' }) =>
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   slackStatus: () => call<SlackStatus>('GET', '/api/settings/slack/status'),
   discordStatus: () => call<DiscordStatus>('GET', '/api/settings/discord/status'),
 
