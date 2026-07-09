@@ -10,6 +10,12 @@ update this doc if a principle itself moves.
 The one invariant restated: **every side effect an agent has on the world passes through a single
 mediated gateway.** Everything below is what that gateway must actually do to be worth having.
 
+> **Companion — [`access-model.md`](./access-model.md).** This doc is the *decision* (given an action,
+> allow / pause / deny). How an agent is *granted* reach in the first place — connectors, creds,
+> shell/host access — is the **access model** (`Creds → Connections → Capabilities`). Access is
+> upstream of governance: every external Connection there names a capability that *this* decision
+> function then consumes.
+
 ---
 
 ## The core reframing

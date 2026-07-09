@@ -10,6 +10,10 @@ as the **chat-channels v1** work landed, **§4 Team** (added the `member_identit
 were updated. All other grades + narratives still hold. Live v1 milestone tracker:
 `docs/v1-mvp-scope.md`.
 
+**Cross-cutting:** how agents are *granted* reach — the relationship between §3 Connectors, §5 Policy,
+and §8 Secrets — is mapped in [`access-model.md`](./access-model.md) (`Creds → Connections →
+Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`](./governance-model.md).
+
 - ✅ **Working** — usable end-to-end today
 - 🟡 **Partial** — core exists, meaningful gaps remain
 - 🌱 **Seed** — interface/reference impl only, nothing real wired
