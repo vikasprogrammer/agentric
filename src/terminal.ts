@@ -479,6 +479,9 @@ export class TerminalManager {
   async attachUrl(sessionId: string): Promise<string | null> {
     const r = this.db.prepare('SELECT tmux, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ tmux: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return null;
+    // Opening the terminal is a deliberate act (vs ttyd's silent auto-reconnect, which never fetches an
+    // attach URL) — so lift any prior stop-block and let attach.sh resurrect a stopped session on re-open.
+    this.allowResume(sessionId);
     return this.backend.attachUrl(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
   }
 
@@ -1755,6 +1758,12 @@ export class TerminalManager {
     // Cancel both so they leave "Needs you" and become dismissable, rather than hanging forever.
     this.cancelPendingQuestions(sessionId, by);
     this.cancelPendingApprovals(sessionId, by);
+    // A deliberate stop must STAY stopped. The terminal is likely still open in the browser, and ttyd
+    // (disableReconnect=false) silently re-dials the moment the pane's tmux dies — re-running attach.sh,
+    // which would otherwise `claude --resume` the session straight back to life ("reconnected… resumes").
+    // Drop a sentinel so attach.sh skips resurrection; a deliberate re-open (attachUrl / the Resume
+    // button → /resume) clears it. Auto-reconnect calls neither, so it can't self-revive.
+    this.blockResume(sessionId);
     // Halting kills the tmux shell, so the launcher's `markEnded` never fires — capture the episode
     // here instead so the work done (the audit stream) is remembered. Outcome 'stopped'; skipped if the
     // session did nothing worth remembering.
@@ -1762,6 +1771,26 @@ export class TerminalManager {
     // No "Stopped" card — a human halting a run is lifecycle noise; the audit log records who/when.
     this.audit(sessionId, by, 'session.stopped', { tmux: r.tmux });
     return true;
+  }
+
+  /** Path of a session's "do not auto-resurrect" sentinel (see stopSession / attach.sh). */
+  private stopMarkerPath(sessionId: string): string | null {
+    return this.os.paths ? path.join(this.os.paths.connectors, `session-${sessionId}.stopped`) : null;
+  }
+
+  /** Mark a session as deliberately stopped so the ttyd attach wrapper won't `claude --resume` it. */
+  private blockResume(sessionId: string): void {
+    const p = this.stopMarkerPath(sessionId);
+    if (!p) return;
+    try { this.ensureSecureDir(this.os.paths!.connectors); fs.writeFileSync(p, '', { mode: 0o600 }); } catch { /* best-effort */ }
+  }
+
+  /** Clear the stop sentinel — a human deliberately re-opened/resumed this session, so let attach.sh
+   *  resurrect it again. No-op if it was never stopped. Idempotent. */
+  allowResume(sessionId: string): void {
+    const p = this.stopMarkerPath(sessionId);
+    if (!p) return;
+    try { fs.rmSync(p, { force: true }); } catch { /* best-effort */ }
   }
 
   /**

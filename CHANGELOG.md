@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.72.0] — 2026-07-09
+### Fixed
+- **Stopping a session from the terminal no longer auto-resumes it.** When you Stop a session, ttyd
+  (auto-reconnect on) silently re-dialled the moment the pane's tmux died, re-running the attach
+  wrapper — which `claude --resume`d the session straight back to life ("reconnected… resumes").
+  Most visible on the Linux boxes (Initech/Globex), where the local backend + `attach.sh` drive
+  the terminal. `stopSession` now drops a per-session `.stopped` sentinel that `terminal/attach.sh`
+  checks before resurrecting: a silent auto-reconnect stays disconnected, while a **deliberate**
+  re-open (opening the terminal, or the **Resume** button → new `POST /api/sessions/:id/resume`) lifts
+  the block so resume still works on demand. The sentinel is cleared on any deliberate attach and
+  removed with the session's files on delete.
+
 ## [0.71.0] — 2026-07-09
 ### Added
 - **Per-tenant console branding (Settings → Theme).** Give each tenant an **accent colour** and a
