@@ -1430,6 +1430,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.stopSession(id, me.email) });
   }
+  // Deliberately resume a stopped session: lift the stop-block so the ttyd attach wrapper resurrects it
+  // (`claude --resume`) on the next reconnect. The actual relaunch happens in attach.sh when the terminal
+  // (re)connects; this just clears the "stay stopped" sentinel. Same per-member gate as stop.
+  const resumeMatch = p.match(/^\/api\/sessions\/([\w-]+)\/resume$/);
+  if (method === 'POST' && resumeMatch) {
+    const id = resumeMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    tm.allowResume(id);
+    return sendJson(res, 200, { ok: true });
+  }
   // Permanently delete a session (kill tmux + cascade messages/questions/files) — same gate.
   const sessMatch = p.match(/^\/api\/sessions\/([\w-]+)$/);
   if (method === 'DELETE' && sessMatch) {

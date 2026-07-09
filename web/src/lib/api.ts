@@ -712,6 +712,8 @@ export const api = {
   messages: () => call<Msg[]>('GET', '/api/messages'),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
+  /** Lift the stop-block so a stopped session resurrects (claude --resume) on the next terminal open. */
+  resumeSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/resume`),
   deleteSession: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/sessions/' + id),
   attach: (id: string) => call<{ url?: string; error?: string }>('GET', `/api/sessions/${id}/attach`),
   sessionTranscript: (id: string) => call<{ text?: string; error?: string }>('GET', `/api/sessions/${id}/transcript`),

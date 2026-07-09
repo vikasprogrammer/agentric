@@ -48,6 +48,14 @@ const statusLabel = (s: Session): string => (isLive(s) && s.status !== 'running'
  *  session is just "open", not "resume". */
 const canResume = (s: Session): boolean => Boolean(s.resumable) && !isLive(s)
 
+/** Resume a stopped session from the console: lift the server-side stop-block, THEN open/focus its
+ *  terminal. A plain stop leaves the block in place so ttyd's silent auto-reconnect can't revive the
+ *  session; a Resume click is the deliberate act that clears it. We clear it explicitly (not just via
+ *  the iframe's attach fetch) because the tab may already be open and not remount. */
+const resumeAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void): void => {
+  void api.resumeSession(s.id).finally(() => onOpen(s.tmux, s.agent + ' · ' + s.id))
+}
+
 /** Coarse provenance category of a session, from its raw `spawnedBy` (`automation:`/`task:`/`chat:`
  *  prefixes, else a member started it directly). Drives the Source filter on the sessions list. */
 type SessionSource = 'member' | 'automation' | 'task' | 'chat'
@@ -1575,7 +1583,7 @@ function SessionsPage({
         {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
         <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
           {canResume(s) && (
-            <button className="rounded p-0.5 text-emerald-400 hover:bg-neutral-600 hover:text-emerald-300" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="resume — reopen and continue this session (claude --resume)">
+            <button className="rounded p-0.5 text-emerald-400 hover:bg-neutral-600 hover:text-emerald-300" onClick={() => resumeAndOpen(s, onOpen)} title="resume — reopen and continue this session (claude --resume)">
               <Play className="h-3 w-3" />
             </button>
           )}
@@ -1753,7 +1761,7 @@ function SessionsPage({
               </button>
               <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
-                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-emerald-600" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="reopen and continue this session (claude --resume)">
+                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="reopen and continue this session (claude --resume)">
                     <Play className="h-3 w-3" /> Resume
                   </Button>
                 )}
@@ -1809,7 +1817,7 @@ function SessionsPage({
               </button>
               <div className="flex w-32 shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title="resume — reopen and continue this session (claude --resume)">
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="resume — reopen and continue this session (claude --resume)">
                     <Play className="h-3.5 w-3.5" />
                   </Button>
                 )}

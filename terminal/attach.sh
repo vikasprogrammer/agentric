@@ -44,6 +44,15 @@ done
 ID="${NAME#aos-}"
 LAUNCHER="$(cd "$(dirname "$0")" && pwd)/claude-launch.sh"
 ENV_FILE="${AOS_SESSION_DIR:-}/session-$ID.env"
+
+# A DELIBERATE stop (the console Stop button → stopSession) drops a sentinel here. ttyd re-runs us the
+# instant the pane dies (auto-reconnect), so WITHOUT this guard a stopped session would `claude --resume`
+# itself straight back to life. Skip resurrection while the sentinel is present; re-opening the session
+# from the console (attachUrl / the Resume button) clears it, so a deliberate resume still works.
+if [ -n "${AOS_SESSION_DIR:-}" ] && [ -f "${AOS_SESSION_DIR}/session-$ID.stopped" ]; then
+  exec tmux -u -S "$SOCK" attach -t "$NAME"   # fails cleanly (no such session) → ttyd shows disconnected
+fi
+
 if [ -n "${AOS_SESSION_DIR:-}" ] && [ -f "$ENV_FILE" ] && [ -f "$LAUNCHER" ]; then
   # new-session -A: attach if it raced back to life, else create running the resume launcher.
   exec tmux -u -S "$SOCK" new-session -A -s "$NAME" \
