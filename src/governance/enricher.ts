@@ -116,15 +116,22 @@ export function enrichArgs(
   // TEXT happens to contain "DROP TABLE" or "rm -rf" is not a destructive DB/shell op. So skip the
   // content scan for it — otherwise the `*` destructive→never rule would wrongly deny a benign edit.
   const isFileWrite = capability === 'file.write';
+  // For a Bash call the effect is the COMMAND itself; the sibling `description` field is a human-written
+  // label ("Check deploy status") that must NOT drive classification. Scanning it flagged benign
+  // read-only commands (a `gh run list` described as a deploy check) as risky and funneled needless
+  // approvals to the owner. So shell.exec classifies on `command` only; connector calls still scan their
+  // input VALUES (those ARE the effect) via `haystack`.
+  const isShell = capability === 'shell.exec';
+  const classifyText = isShell ? command : haystack;
 
   let destructive = args.destructive === true;
   if (!destructive && !isFileWrite) {
-    destructive = DESTRUCTIVE.some((re) => re.test(haystack)) || (!!tool && DESTRUCTIVE_TOOL.test(tool));
+    destructive = DESTRUCTIVE.some((re) => re.test(classifyText)) || (!!tool && DESTRUCTIVE_TOOL.test(tool));
   }
 
   let risky = args.risky === true || destructive;
   if (!risky && !isFileWrite) {
-    if (capability === 'shell.exec') risky = RISKY_SHELL.test(haystack);
+    if (isShell) risky = RISKY_SHELL.test(command);
     else if (capability.startsWith('connector')) risky = !!tool && MUTATION_TOOL.test(tool);
   }
 

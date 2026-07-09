@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.61.1] — 2026-07-09
+### Fixed
+- **Bash risk classification no longer reads the `description` field.** The enricher classified a
+  `shell.exec` call's `destructive`/`risky` facts over the whole tool input — including the human-written
+  `description` label. A read-only command whose description happened to mention a gated word (a `gh run
+  list` described as *"Check deploy status"*, or a benign command whose note said *"rm -rf"*) was flagged
+  and, on tenants that gate `risky`/`destructive` shell, funneled a needless approval to the owner (or was
+  outright blocked). Shell calls now classify on the `command` only; connector calls still scan their input
+  values (those are the effect). Regression-pinned in the governance conformance fixture.
+
 ## [0.61.0] — 2026-07-09
 ### Changed
 - **Sessions now default to most-recently-active first.** The sessions list's default sort switched

@@ -20,6 +20,7 @@
     { "name": "delete from with where is risky, not destructive → runs freely", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "psql -c \"delete from sessions where id=1\"" } }, "expect": "allow" },
     { "name": "terraform destroy is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "terraform destroy -auto-approve" } }, "expect": "never" },
     { "name": "force push is never", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "git push --force origin main" } }, "expect": "never" },
+    { "name": "destructive phrase in the DESCRIPTION does not gate a benign command (classify on command only)", "capability": "shell.exec", "args": { "tool": "Bash", "input": { "command": "gh run list --repo acme/docs --limit 1", "description": "check the deploy after we rm -rf the old build" } }, "expect": "allow" },
 
     { "name": "connector read is allowed", "capability": "connector.call", "args": { "tool": "mcp__globex__list_sites", "input": {} }, "expect": "allow" },
     { "name": "connector send (risky mutation) now runs freely", "capability": "connector.call", "args": { "tool": "mcp__slack__SLACK_SEND_MESSAGE", "input": { "text": "hi" } }, "expect": "allow" },
