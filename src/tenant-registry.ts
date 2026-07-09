@@ -18,7 +18,8 @@ import { TerminalManager, ApprovalNotice, QuestionNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
-import { canApprove, Task } from './types';
+import { Member, Task } from './types';
+import { resolveRecipients } from './governance/recipients';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantRecord, TenantStore } from './state/control';
 
@@ -210,12 +211,32 @@ export class TenantRegistry {
 }
 
 /**
+ * Deliver one text to a resolved member set over each member's linked Slack/Discord account (identity
+ * map), best-effort. The single copy of the identity-map DM loop the three notifiers used to inline;
+ * returns the delivered-DM count for the caller's audit line. Recipient resolution is NOT done here —
+ * callers pass an already-resolved set (see {@link resolveRecipients}) so WHO and HOW-to-reach stay
+ * separate concerns.
+ */
+async function deliverDM(slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string): Promise<number> {
+  let dms = 0;
+  for (const m of recipients) {
+    const ids = os.team.externalIdsFor(m.id);
+    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
+    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
+    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
+    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
+  }
+  return dms;
+}
+
+/**
  * DM everyone who can approve a freshly-raised approval, on their linked Slack/Discord account. Best-
- * effort: resolves approvers by `canApprove(role, level)`, looks up each one's chat handle in the
- * identity map, and DMs them. Off the gate's hot path (the caller fires-and-forgets). Audited once.
+ * effort: the approvers set comes from the {@link resolveRecipients} `approvers` audience
+ * (`canApprove(role, level)`); `deliverDM` reaches them via the identity map. Off the gate's hot path
+ * (the caller fires-and-forgets). Audited once.
  */
 export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: ApprovalNotice): Promise<void> {
-  const approvers = os.team.listMembers().filter((m) => m.status === 'active' && canApprove(m.role, notice.level));
+  const approvers = resolveRecipients(os, { kind: 'approvers', level: notice.level });
   if (!approvers.length) return;
   // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
   const dot = notice.riskClass === 'red' ? '🔴' : '🟡';
@@ -223,70 +244,42 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
     `${dot} ${notice.riskClass.toUpperCase()} approval needed — \`${notice.capability}\` (${notice.level}) requested by agent ${notice.agent}.` +
     (notice.reason ? `\nwhy: ${notice.reason}` : '') +
     `\nOpen the Agent OS console → Inbox to approve or reject.`;
-  let dms = 0;
-  for (const m of approvers) {
-    const ids = os.team.externalIdsFor(m.id);
-    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
-    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
-    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
-    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
-  }
+  const dms = await deliverDM(slack, discord, os, approvers, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'approval.notified', data: { capability: notice.capability, level: notice.level, approvers: approvers.length, dms } });
 }
 
 /**
  * DM the human a blocking agent question is waiting on, on their linked Slack/Discord account — the
- * question-side twin of {@link notifyApprovers}. Targets the member the run acts for (its `run_as`, or
- * the member who spawned it); if the run has no human owner (a pure automation), falls back to the
- * owner/admins so the question still reaches someone. Best-effort, off the ask hot path. Audited once.
+ * question-side twin of {@link notifyApprovers}. Targets the `sessionOwner` audience (the run's `run_as`,
+ * else a member who spawned it); if the run has no human owner (a pure automation), falls back to the
+ * `admins` audience so the question still reaches someone. Best-effort, off the ask hot path. Audited once.
  */
 export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: QuestionNotice): Promise<void> {
-  const row = os.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(notice.sessionId);
-  let owner = row?.run_as ? os.team.getMember(row.run_as) : undefined;
-  // A console-spawned run's provenance IS a member id (automation:/task:/chat: spawns are prefixed).
-  if (!owner && row?.spawned_by && !row.spawned_by.includes(':')) owner = os.team.getMember(row.spawned_by);
-  const targets = owner
-    ? [owner]
-    : os.team.listMembers().filter((m) => m.status === 'active' && (m.role === 'owner' || m.role === 'admin'));
+  let targets = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId });
+  if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
   const text =
     `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
     `\nOpen the Agent OS console → Inbox to reply.`;
-  let dms = 0;
-  for (const m of targets) {
-    const ids = os.team.externalIdsFor(m.id);
-    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
-    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
-    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
-    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
-  }
+  const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'question.notified', data: { agent: notice.agent, targets: targets.length, dms } });
 }
 
 /**
  * DM the owner of a task that just passed its due date, on their linked Slack/Discord account — the
- * deadline-side sibling of {@link notifyQuestionAsked}. Targets the task `owner` (the member it runs as);
- * an owner-less task falls back to the owner/admins so the miss still reaches someone. Best-effort, fired
- * once per task from the scheduler sweep (the once-guard lives in the DB). Audited.
+ * deadline-side sibling of {@link notifyQuestionAsked}. Targets the task `owner` (the `member` audience);
+ * an owner-less (or deleted-owner) task falls back to the `admins` audience so the miss still reaches
+ * someone. Best-effort, fired once per task from the scheduler sweep (the once-guard lives in the DB).
  */
 export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, task: Task): Promise<void> {
-  const owner = task.owner ? os.team.getMember(task.owner) : undefined;
-  const targets = owner
-    ? [owner]
-    : os.team.listMembers().filter((m) => m.status === 'active' && (m.role === 'owner' || m.role === 'admin'));
+  let targets = task.owner ? resolveRecipients(os, { kind: 'member', id: task.owner }) : [];
+  if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
   const due = task.dueAt ? new Date(task.dueAt).toISOString().slice(0, 10) : 'its deadline';
   const text =
     `⏰ Task overdue — \`${task.title}\` (${task.id}) passed ${due} and is still ${task.status}.` +
     `\nOpen the Agent OS console → Tasks to reprioritise, reassign, or extend it.`;
-  let dms = 0;
-  for (const m of targets) {
-    const ids = os.team.externalIdsFor(m.id);
-    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
-    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
-    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
-    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
-  }
+  const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.overdue.notified', data: { id: task.id, targets: targets.length, dms } });
 }
 

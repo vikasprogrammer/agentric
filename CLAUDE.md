@@ -284,7 +284,11 @@ Conventions when touching the DB:
   **Audit** page. Approval cards also DM whoever can approve them via Slack/Discord
   (`TerminalManager.setApprovalNotifier` → `notifyApprovers` → identity map → `dmUser`; audited `approval.notified`).
   Agent **questions** get the same out-of-band ping (`setQuestionNotifier` → `notifyQuestionAsked` → the
-  run-as human, else owner/admins; audited `question.notified`), so a blocking `ask` isn't missed. And a
+  run-as human, else owner/admins; audited `question.notified`), so a blocking `ask` isn't missed. **Who
+  receives an out-of-band notification is resolved in ONE place** — `resolveRecipients(os, audience)` in
+  `src/governance/recipients.ts` (the `Audience` vocabulary: `approvers`/`admins`/`member`/`sessionOwner`);
+  every notifier declares an audience and shares `deliverDM` (identity-map → `dmUser`) rather than
+  re-deriving members. And a
   chat-triggered run mirrors its completion/question/approval back into the Slack/Discord thread it came
   from (`setChatMirror` → `slack.reply`/`discord.reply` over the `slack_threads`/`discord_threads` bindings;
   no-op for non-chat runs) — read/dismiss on the shared feed are **per-member** (`message_state` join).

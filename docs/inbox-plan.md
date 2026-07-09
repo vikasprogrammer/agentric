@@ -194,7 +194,12 @@ always-rule for owner sign-off (mirrors `skill_propose`).
 - `src/terminal.ts` — `listMessages` / `sessionInbox` / `toMessage`; `askQuestion` / `report` /
   `progress`; the `gate` (approval cards); the `approvalNotifier` / `questionNotifier` / `chatMirror`
   sinks; `markRead` / `markAllRead` / `dismissMessage` / `dismissAllMessages`.
-- `src/tenant-registry.ts` — wires the sinks: `notifyApprovers`, `notifyQuestionAsked`, chat mirror.
+- `src/tenant-registry.ts` — wires the sinks: `notifyApprovers`, `notifyQuestionAsked`,
+  `notifyTaskOverdue`, chat mirror. Each declares an **`Audience`** and calls the shared `deliverDM`.
+- `src/governance/recipients.ts` — the **global recipient resolver**: `Audience`
+  (`approvers`/`admins`/`member`/`sessionOwner`) → `resolveRecipients(os, audience): Member[]`. The one
+  answer to "who receives this," consulted by every out-of-band notifier (and the intended basis for a
+  session-less card's visibility — §4/§7 of the tasks work).
 - `src/server.ts` — the `/api/messages*`, `/api/ask`, `/api/approvals/:id`, `/api/questions/:id` routes.
 - `src/state/db.ts` — `messages`, `questions`, `approvals`, `message_state` schema.
 - `src/governance/policy.ts` — the rule engine "Always approve" will write into.

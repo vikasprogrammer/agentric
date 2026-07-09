@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.63.1] — 2026-07-09
+### Changed
+- **One global recipient resolver for notifications.** "Who is the receiver of a notification?" was
+  re-derived in each of the three DM notifiers (approvals, questions, task-overdue), each with its own
+  owner→admins fallback chain and its own copy of the identity-map DM loop. Introduced a single
+  `Audience` vocabulary + `resolveRecipients` (`src/governance/recipients.ts`) — `approvers` (by level),
+  `admins` (the escalation tier), `member`, and `sessionOwner` (a run's `run_as`, else a member spawner)
+  — and a shared `deliverDM` helper. The notifiers now declare WHO should hear about a thing and never
+  hand-resolve members. Pure refactor: recipient sets and audit lines are unchanged (verified against
+  the old logic). Groundwork for routing session-less notifications (e.g. Tasks) to the right person.
+
 ## [0.63.0] — 2026-07-09
 ### Added
 - **Ownership guard on automation delete/edit.** Admins and members can now only delete or edit
