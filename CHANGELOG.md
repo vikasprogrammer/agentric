@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.72.1] — 2026-07-09
+### Fixed
+- **Restarting the server no longer kills running agent sessions on Linux/systemd** (the
+  Initech/Globex boxes). Sessions run in a tmux server that daemonises out of node's process
+  tree, so a restart is meant to leave them alive and re-adopt them via the persistent
+  `<home>/tmux.sock` — which is exactly what happens on macOS/launchd. But the systemd unit shipped
+  `KillMode=mixed`: on stop, systemd SIGKILLs the **entire cgroup**, and a double-fork escapes the
+  process tree but **not** the cgroup, so every `systemctl restart` took the tmux server (and all live
+  sessions) down with it — they resurfaced as `crashed`. `agent-os.service` now uses
+  `KillMode=process`, so systemd signals only the main node process and leaves the tmux server (and its
+  sessions) running for the fresh process to re-adopt. **Deploy note:** the live unit files on each box
+  must be updated too (`agent-os.service` on Initech, `agent-os-globex` on the jump-server), then
+  `systemctl daemon-reload` + one restart.
+
 ## [0.72.0] — 2026-07-09
 ### Fixed
 - **Stopping a session from the terminal no longer auto-resumes it.** When you Stop a session, ttyd
