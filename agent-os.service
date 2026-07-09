@@ -17,7 +17,16 @@ Environment=PORT=3010
 Environment=PATH=/home/agent-os/.local/bin:/home/agent-os/.nvm/versions/node/v22.22.0/bin:/usr/bin:/usr/local/bin
 ExecStart=/home/agent-os/.nvm/versions/node/v22.22.0/bin/node dist/cli.js serve
 ExecReload=/bin/kill -HUP $MAINPID
-KillMode=mixed
+# KillMode=process (NOT mixed/control-group): on stop/restart, systemd signals ONLY the main node
+# process and leaves the rest of the cgroup alone. Agent sessions run in a tmux server that daemonises
+# out of node's process tree — but a double-fork escapes the process tree, NOT the cgroup, so a
+# cgroup-wide kill (mixed/control-group) SIGKILLs the tmux server on every restart and every live agent
+# session dies (they resurface as `crashed`). This is the Linux-only session-loss bug macOS/launchd
+# never had (launchd has no cgroups). With `process`, the tmux server survives a restart and the fresh
+# node process re-adopts the still-live sessions via the persistent <home>/tmux.sock. Trade-off (intended,
+# and matches macOS): a full `stop` that stays down leaves sessions running orphaned until the service
+# returns. ttyd/Slack/etc. are still reaped explicitly by the SIGINT handler (registry.stopAll).
+KillMode=process
 KillSignal=SIGINT
 TimeoutStopSec=10
 SyslogIdentifier=agent-os
