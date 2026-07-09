@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.66.0] — 2026-07-09
+### Added
+- **Close a terminal tab without killing its session.** Each tab in the session switcher now has a
+  **✕ close** button that hides it from the strip while the session keeps running — reopen it any
+  time from **All sessions** (or the sidebar). Closed tabs are remembered across a refresh
+  (localStorage); closing the tab you're viewing falls back to another live tab, else the sessions
+  list. Distinct from **stop** (kills the shell) and **delete** (removes the session + its files).
+### Fixed
+- **Waiting-bell 🔔 now visible on terminal tabs.** The "Claude is waiting for you" indicator used a
+  dark indigo that was near-invisible against the dark tab strip; it now renders in a lighter tone on
+  the tabs (sidebar/list unchanged).
+
 ## [0.65.0] — 2026-07-09
 ### Added
 - **Self-service sign-in recovery — no admin needed to get back in.** The login screen gains an
