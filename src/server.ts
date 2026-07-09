@@ -28,7 +28,7 @@ import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAll
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, ApprovalRequest, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
+import { AgentManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
@@ -285,7 +285,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const token = url.searchParams.get('token') || '';
     const peek = os.team.peekToken(token);
     if (!peek) return redirect(res, '/?login=invalid');
-    return sendHtml(res, 200, acceptLandingHtml(peek.email, token));
+    return sendHtml(res, 200, acceptLandingHtml(peek.email, token, os.settings.branding().accentColor));
   }
   if (method === 'POST' && p === '/accept') {
     const accepted = os.team.acceptToken(url.searchParams.get('token') || '');
@@ -307,6 +307,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     res.writeHead(200, headers);
     res.end(JSON.stringify({ member: m }));
     return;
+  }
+  // Per-tenant console branding (accent colour + favicon badge). PUBLIC + display-only (no secrets):
+  // the SPA fetches this on mount — before any session exists — so the login screen and the browser-tab
+  // favicon are already tenant-coloured. `tenantName` lets the favicon fall back to the tenant's initial.
+  if (method === 'GET' && p === '/api/branding') {
+    const b = os.settings.branding();
+    return sendJson(res, 200, { tenant: os.tenant, tenantName: os.tenantName, accentColor: b.accentColor, badge: b.badge });
   }
   // Self-service recovery: a member who lost their session (new device, cleared cookies, expired
   // window) asks for a fresh sign-in link WITHOUT needing an admin to mint one. Public + neutral: we
@@ -2072,6 +2079,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, ...saved });
   }
 
+  // ── UI branding (per-tenant accent colour + favicon badge) — owner/admin edits ──
+  // The public read is GET /api/branding (above the member gate); this is the admin editor surface.
+  if (method === 'GET' && p === '/api/settings/branding') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { ...os.settings.branding(), ...os.settings.brandingMeta() });
+  }
+  if (method === 'PUT' && p === '/api/settings/branding') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const saved = os.settings.setBranding(sanitizeBranding(b as Partial<Record<keyof Branding, unknown>>), me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.branding.updated', data: { ...saved } });
+    return sendJson(res, 200, { ok: true, ...saved });
+  }
+
   // ── governance thresholds (the numeric caps the never-tier policy rules read) ──
   if (method === 'GET' && p === '/api/settings/governance') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -3328,14 +3349,29 @@ function sendHtml(res: http.ServerResponse, status: number, html: string): void 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
+/** Black or white — whichever reads better on the given `#rrggbb` background (WCAG relative luminance). */
+function readableOn(hex: string): '#000' | '#fff' {
+  const n = parseInt(hex.slice(1), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.4 ? '#000' : '#fff';
+}
 /**
  * The interstitial shown by GET /accept. A plain confirm page — no auto-submit — so a link
  * preview / mail-scanner that renders it never consumes the token; only the "Continue" POST does.
  * Self-contained (no app bundle) and theme-aware so it works before the SPA/session exists.
  */
-function acceptLandingHtml(email: string, token: string): string {
+function acceptLandingHtml(email: string, token: string, accent?: string): string {
   const safeEmail = escapeHtml(email);
   const action = `/accept?token=${encodeURIComponent(token)}`;
+  // Tenant accent (validated `#rrggbb`): tint the logo chip + Continue button so even the invite
+  // interstitial matches the tenant's console colour. Overrides both light + dark defaults.
+  const brand = accent && /^#[0-9a-fA-F]{6}$/.test(accent)
+    ? `<style>.logo,.card button{background:${accent}!important;color:${readableOn(accent)}!important}
+       .card button:hover{filter:brightness(.92)}</style>`
+    : '';
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
@@ -3366,7 +3402,7 @@ function acceptLandingHtml(email: string, token: string): string {
     button { background: #f3f5f8; color: #0b0d12; }
     button:hover { background: #dfe3e9; }
   }
-</style></head>
+</style>${brand}</head>
 <body><div class="card">
   <div class="logo">A</div>
   <h1>Sign in to Agent OS</h1>

@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.71.0] — 2026-07-09
+### Added
+- **Per-tenant console branding (Settings → Theme).** Give each tenant an **accent colour** and a
+  **favicon badge** (an emoji or 1–3 initials) so several tenants running in parallel — even across
+  machines — are distinguishable at a glance. The accent tints the sidebar strip, active nav item and
+  focus rings; the badge is rendered client-side into an SVG data-URI favicon (no uploads, no
+  storage), so the browser-tab icon differs per tenant. Branding is served from a **public**
+  `GET /api/branding` so the login screen and tab favicon are already themed before sign-in, and it
+  even tints the magic-link accept page. Owner/admin edits via `GET`/`PUT /api/settings/branding`
+  (stored in the per-tenant `settings` table under `ui_branding`, audited `settings.branding.updated`);
+  applies live without a reload. Foreground colours are auto-chosen (black/white by luminance) so text
+  stays readable on any accent.
+
 ## [0.70.0] — 2026-07-09
 ### Changed
 - **Stopping a session retires its open approvals too.** The v0.69.0 stop-cascade for questions now

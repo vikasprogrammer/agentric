@@ -749,6 +749,30 @@ export function sanitizeRuntimeTuning(input: Partial<Record<keyof RuntimeTuning,
   return { tuning };
 }
 
+/** Per-tenant web-console branding — a small visual stamp so several tenants running in parallel
+ *  (even across machines) are distinguishable at a glance: it recolours the sidebar accent and the
+ *  browser-tab favicon, and tints the pre-login screen. Display-only, no secrets — safe to serve
+ *  unauthenticated so the client can theme itself before login. Empty fields → the default look. */
+export interface Branding {
+  /** Accent colour as a 6-digit hex (`#7c3aed`). Undefined/empty → no override (default theme). */
+  accentColor?: string;
+  /** Favicon badge: an emoji (`🟣`) or a 1–3 char initial (`IP`). Undefined → first letter of the
+   *  tenant name is used. Purely cosmetic. */
+  badge?: string;
+}
+
+/** Normalize+validate a branding payload (from an API body): keeps only a well-formed 6-digit hex
+ *  accent (else dropped, not an error — clearing it is valid) and a short badge (≤ 3 chars after
+ *  trimming, so a single emoji or a couple of initials). Never throws; returns a clean object. */
+export function sanitizeBranding(input: Partial<Record<keyof Branding, unknown>>): Branding {
+  const out: Branding = {};
+  const accent = typeof input.accentColor === 'string' ? input.accentColor.trim() : '';
+  if (/^#[0-9a-fA-F]{6}$/.test(accent)) out.accentColor = accent.toLowerCase();
+  const badge = typeof input.badge === 'string' ? [...input.badge.trim()].slice(0, 3).join('') : '';
+  if (badge) out.badge = badge;
+  return out;
+}
+
 /** Normalize a starter-prompts payload (from an API body or config file): coerces to an array of
  *  trimmed, non-empty strings, caps each at 500 chars and the list at 6. Returns undefined when the
  *  result is empty so the manifest stays clean (the card just falls back to its placeholder). */

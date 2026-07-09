@@ -81,6 +81,10 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    /* Per-tenant accent, driven at runtime by applyAccent() in lib/branding.ts. Transparent by
+       default so the sidebar brand strip is invisible until a tenant sets an accent colour. */
+    --brand: transparent;
+    --brand-foreground: currentColor;
 }
 
 .dark {

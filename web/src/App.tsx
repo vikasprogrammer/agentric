@@ -12,6 +12,8 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { type Branding, type PublicBranding } from '@/lib/api'
+import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
 
@@ -337,12 +339,25 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
 export default function App() {
   // undefined = checking, null = not logged in (show Login), Member = authed.
   const [me, setMe] = useState<Member | null | undefined>(undefined)
+  const [accent, setAccent] = useState<string | undefined>(undefined)
   useEffect(() => {
     api.me().then(setMe)
   }, [])
+  // Per-tenant branding — fetched from the PUBLIC endpoint so it themes the login screen + tab favicon
+  // before any session exists. Runs once on mount, independent of auth.
+  useEffect(() => {
+    fetch('/api/branding')
+      .then((r) => r.json() as Promise<PublicBranding>)
+      .then((b) => {
+        applyAccent(b.accentColor)
+        applyFavicon(faviconDataUri(b.accentColor, b.badge, b.tenantName))
+        setAccent(b.accentColor)
+      })
+      .catch(() => {})
+  }, [])
 
   if (me === undefined) return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>
-  if (me === null) return <LoginScreen />
+  if (me === null) return <LoginScreen accent={accent} />
   return <Console me={me} />
 }
 
@@ -689,7 +704,9 @@ function Console({ me }: { me: Member }) {
   return (
     <div className="flex h-screen bg-muted/30 text-foreground">
       {sidebarCollapsed && (
-        <aside className="flex w-12 shrink-0 flex-col items-center gap-1 border-r bg-background py-3">
+        <aside className="relative flex w-12 shrink-0 flex-col items-center gap-1 border-r bg-background py-3">
+          {/* Per-tenant accent strip — invisible until a tenant sets a brand colour (var(--brand)). */}
+          <div className="absolute inset-x-0 top-0 h-1" style={{ background: 'var(--brand)' }} />
           <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" title="expand sidebar" onClick={() => setSidebarCollapsed(false)}>
             <PanelLeftOpen className="h-4 w-4" />
           </Button>
@@ -704,6 +721,8 @@ function Console({ me }: { me: Member }) {
         </aside>
       )}
       <aside className={`${sidebarCollapsed ? 'hidden' : 'flex'} w-72 shrink-0 flex-col border-r bg-background`}>
+        {/* Per-tenant accent strip — invisible until a tenant sets a brand colour (var(--brand)). */}
+        <div className="h-1 shrink-0" style={{ background: 'var(--brand)' }} />
         {/* Top: brand + primary nav (fixed) */}
         <div className="p-4 pb-2">
           <div className="mb-4 flex items-start justify-between">
@@ -2616,7 +2635,10 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
 }
 
 // ── Login ────────────────────────────────────────────────────────────────────────
-function LoginScreen() {
+function LoginScreen({ accent }: { accent?: string }) {
+  // Tenant accent (when set) tints the primary Sign-in button so even the pre-login screen is
+  // identifiable across several tenants; falls back to the default primary styling otherwise.
+  const brandStyle = accent ? { backgroundColor: accent, color: readableOn(accent) } : undefined
   const [value, setValue] = useState('')
   const [email, setEmail] = useState('')
   const [sent, setSent] = useState(false)
@@ -2651,7 +2673,7 @@ function LoginScreen() {
           <Field label="Magic link or token">
             <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://…/accept?token=…" onKeyDown={(e) => e.key === 'Enter' && go()} />
           </Field>
-          <Button className="mt-4 w-full" onClick={go} disabled={!value.trim()}>Sign in</Button>
+          <Button className="mt-4 w-full" style={brandStyle} onClick={go} disabled={!value.trim()}>Sign in</Button>
 
           <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
             <div className="h-px flex-1 bg-border" />lost your link?<div className="h-px flex-1 bg-border" />
@@ -5863,8 +5885,8 @@ function AuditPage() {
   )
 }
 
-type SettingsTab = 'company' | 'runtime' | 'secrets' | 'memory' | 'policy' | 'governance' | 'system'
-const SETTINGS_TABS: SettingsTab[] = ['company', 'runtime', 'secrets', 'memory', 'policy', 'governance', 'system']
+type SettingsTab = 'company' | 'runtime' | 'theme' | 'secrets' | 'memory' | 'policy' | 'governance' | 'system'
+const SETTINGS_TABS: SettingsTab[] = ['company', 'runtime', 'theme', 'secrets', 'memory', 'policy', 'governance', 'system']
 
 // The active sub-tab is a URL detail (`#/settings/<tab>`) so a refresh / shared link lands on the same
 // tab. `tab` is the raw detail from the router; `onTab` writes it back into the hash.
@@ -5877,6 +5899,7 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
       <div className="flex w-48 shrink-0 flex-col gap-1 rounded-lg border bg-background p-1 self-start [&_button]:text-left">
         <TabButton on={tab === 'company'} onClick={() => setTab('company')}>Company context</TabButton>
         <TabButton on={tab === 'runtime'} onClick={() => setTab('runtime')}>Runtime defaults</TabButton>
+        <TabButton on={tab === 'theme'} onClick={() => setTab('theme')}>Theme</TabButton>
         <TabButton on={tab === 'secrets'} onClick={() => setTab('secrets')}>Secrets</TabButton>
         <TabButton on={tab === 'memory'} onClick={() => setTab('memory')}>Memory backend</TabButton>
         <TabButton on={tab === 'governance'} onClick={() => setTab('governance')}>Governance</TabButton>
@@ -5886,6 +5909,7 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
           : tab === 'runtime' ? <RuntimeDefaultsSettings me={me} />
+          : tab === 'theme' ? <ThemeSettings me={me} state={state} />
           : tab === 'secrets' ? <SecretsSettings me={me} />
           : tab === 'memory' ? <MemorySettings me={me} />
           : tab === 'governance' ? <GovernanceSettings me={me} />
@@ -7137,6 +7161,124 @@ function CompanySettings({ me }: { me: Member }) {
             <Button onClick={save} disabled={busy || !dirty}>
               {dirty ? 'Save' : 'Saved'}
             </Button>
+            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            {meta.updatedAt && (
+              <span className="ml-auto text-[11px] text-muted-foreground">
+                last updated {new Date(meta.updatedAt).toLocaleString()}{meta.updatedBy ? ` by ${meta.updatedBy}` : ''}
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+/** Settings → Theme — the per-tenant accent colour + favicon badge, so several tenants running in
+ *  parallel are distinguishable at a glance (sidebar strip, browser-tab favicon, login screen). */
+function ThemeSettings({ me, state }: { me: Member; state: StateResp | null }) {
+  const isAdmin = me.role === 'owner' || me.role === 'admin'
+  const [accent, setAccent] = useState('')      // '' = no accent (default theme)
+  const [badge, setBadge] = useState('')
+  const [saved, setSaved] = useState<Branding>({})
+  const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+
+  useEffect(() => {
+    api.branding().then((b) => {
+      if (b.error) return setHint('⚠ ' + b.error)
+      setAccent(b.accentColor ?? ''); setBadge(b.badge ?? '')
+      setSaved({ accentColor: b.accentColor, badge: b.badge }); setMeta({ updatedAt: b.updatedAt, updatedBy: b.updatedBy })
+    }).catch(() => {})
+  }, [])
+
+  const validHex = /^#[0-9a-fA-F]{6}$/.test(accent)
+  const cur: Branding = { accentColor: validHex ? accent.toLowerCase() : undefined, badge: badge.trim() || undefined }
+  const dirty = cur.accentColor !== saved.accentColor || cur.badge !== saved.badge
+  const tenantName = state?.tenantName || state?.tenant
+  const previewFavicon = faviconDataUri(cur.accentColor, cur.badge, tenantName)
+
+  const save = async () => {
+    setBusy(true); setHint('')
+    const r = await api.saveBranding(cur)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setSaved({ accentColor: r.accentColor, badge: r.badge }); setMeta({ updatedAt: Date.now(), updatedBy: me.email })
+    // Go live immediately — no reload — for this browser.
+    applyAccent(r.accentColor); applyFavicon(faviconDataUri(r.accentColor, r.badge, tenantName))
+    setAccent(r.accentColor ?? ''); setBadge(r.badge ?? '')
+    setHint('saved'); setTimeout(() => setHint(''), 1500)
+  }
+  const clear = () => { setAccent(''); setBadge('') }
+
+  if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
+
+  return (
+    <div className="max-w-3xl space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Give this tenant a <strong>colour + favicon badge</strong> so it's instantly recognisable when you're
+        running several consoles side by side. The accent tints the sidebar strip, active nav item and focus
+        rings; the badge becomes the browser-tab favicon. Applies to <strong>this tenant only</strong>. Leave
+        the colour blank for the default look.
+      </p>
+
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="flex flex-wrap items-end gap-5">
+            <Field label="Accent colour">
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={validHex ? accent : '#7c3aed'}
+                  onChange={(e) => setAccent(e.target.value)}
+                  className="h-9 w-12 cursor-pointer rounded border bg-background p-0.5"
+                  aria-label="accent colour"
+                />
+                <Input
+                  value={accent}
+                  onChange={(e) => setAccent(e.target.value.trim())}
+                  placeholder="#7c3aed"
+                  className="w-32 font-mono text-xs"
+                />
+              </div>
+            </Field>
+            <Field label="Favicon badge" help="An emoji or 1–3 letters. Blank → the tenant's initial.">
+              <Input
+                value={badge}
+                onChange={(e) => setBadge(e.target.value)}
+                placeholder={tenantName ? tenantName.charAt(0).toUpperCase() : '🟣'}
+                className="w-28"
+              />
+            </Field>
+          </div>
+
+          {accent && !validHex && <div className="text-xs text-amber-600">Enter a 6-digit hex colour like <span className="font-mono">#7c3aed</span> (or clear it).</div>}
+
+          {/* Live preview — favicon tile + a mock sidebar showing the accent strip and active nav item. */}
+          <div className="flex flex-wrap items-center gap-5 rounded-lg border bg-muted/30 p-4">
+            <div className="flex flex-col items-center gap-1">
+              <img src={previewFavicon} alt="favicon preview" className="h-12 w-12 rounded-[10px] shadow-sm" />
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">favicon</span>
+            </div>
+            <div className="w-44 overflow-hidden rounded-md border bg-background">
+              <div className="h-1" style={{ background: cur.accentColor || 'transparent' }} />
+              <div className="p-2">
+                <div className="mb-1.5 text-[11px] font-semibold">⚙️ {tenantName || 'Agent OS'}</div>
+                <div
+                  className="rounded px-2 py-1 text-[11px] font-medium"
+                  style={cur.accentColor ? { background: cur.accentColor, color: readableOn(cur.accentColor) } : { background: 'var(--sidebar-primary)', color: 'var(--sidebar-primary-foreground)' }}
+                >Inbox</div>
+                <div className="px-2 py-1 text-[11px] text-muted-foreground">Agents</div>
+                <div className="px-2 py-1 text-[11px] text-muted-foreground">Tasks</div>
+              </div>
+            </div>
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">sidebar</span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button onClick={save} disabled={busy || !dirty}>{dirty ? 'Save' : 'Saved'}</Button>
+            {(accent || badge) && <Button variant="ghost" onClick={clear} disabled={busy}>Clear</Button>}
             {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
             {meta.updatedAt && (
               <span className="ml-auto text-[11px] text-muted-foreground">

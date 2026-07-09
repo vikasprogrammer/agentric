@@ -10,7 +10,7 @@
  * so adding more instance-level settings later is just another key.
  */
 import { Db } from '../state/db';
-import { EnrichPattern, MemoryConfig, Recommendation, RuntimeTuning, sanitizeRuntimeTuning } from '../types';
+import { Branding, EnrichPattern, MemoryConfig, Recommendation, RuntimeTuning, sanitizeBranding, sanitizeRuntimeTuning } from '../types';
 
 const COMPANY_KEY = 'company_md';
 const COMPOSIO_KEY = 'composio_api_key';
@@ -27,6 +27,7 @@ const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
 const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
+const BRANDING_KEY = 'ui_branding'; // per-tenant web-console accent colour + favicon badge (JSON Branding)
 
 /** Numeric governance caps the policy's never-tier rules reference by name (e.g. `$moneyCapUsd`).
  *  Live-editable in Settings → Governance; resolved at classify time by the policy engine. */
@@ -233,6 +234,33 @@ export class SettingsStore {
   setRuntimeDefaults(tuning: RuntimeTuning, by?: string): RuntimeTuning {
     this.set(RUNTIME_DEFAULTS_KEY, JSON.stringify(tuning), by);
     return this.runtimeDefaults();
+  }
+
+  // ── UI branding ──────────────────────────────────────────────────────────────────
+  // Per-tenant accent colour + favicon badge for the web console, so several tenants running side by
+  // side are distinguishable at a glance. Display-only (no secrets) → served unauthenticated via
+  // GET /api/branding so the client themes itself even before login. Empty/missing → default look.
+
+  /** The stored branding (accent colour + badge), or `{}` when none saved. */
+  branding(): Branding {
+    const raw = this.getRow(BRANDING_KEY)?.value;
+    if (!raw) return {};
+    try {
+      return sanitizeBranding(JSON.parse(raw) as Record<string, unknown>);
+    } catch {
+      return {};
+    }
+  }
+
+  /** Who last changed the branding. */
+  brandingMeta(): { updatedAt?: number; updatedBy?: string } {
+    const row = this.getRow(BRANDING_KEY);
+    return { updatedAt: row?.updated_at, updatedBy: row?.updated_by ?? undefined };
+  }
+
+  setBranding(b: Branding, by?: string): Branding {
+    this.set(BRANDING_KEY, JSON.stringify(sanitizeBranding(b)), by);
+    return this.branding();
   }
 
   // ── self-learning (Dreaming) cadence ─────────────────────────────────────────────

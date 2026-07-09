@@ -551,6 +551,19 @@ export interface CompanySettings {
   error?: string
 }
 
+/** Per-tenant web-console branding — accent colour + favicon badge. Display-only. */
+export interface Branding {
+  /** Accent colour as `#rrggbb`; empty/undefined → default theme. */
+  accentColor?: string
+  /** Favicon badge: an emoji or a 1–3 char initial; undefined → tenant initial. */
+  badge?: string
+}
+/** The public GET /api/branding payload (served unauthenticated so the login screen themes too). */
+export interface PublicBranding extends Branding {
+  tenant: string
+  tenantName?: string
+}
+
 /** A stored secret's identity + provenance — the value is NEVER returned by the API. */
 export interface SecretMeta {
   principal: string
@@ -801,6 +814,10 @@ export const api = {
 
   governance: () => call<GovernanceThresholds & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
   saveGovernance: (t: GovernanceThresholds) => call<{ ok: boolean; error?: string } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
+
+  // Per-tenant console branding (accent colour + favicon badge).
+  branding: () => call<Branding & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/branding'),
+  saveBranding: (b: Branding) => call<{ ok: boolean; error?: string } & Branding>('PUT', '/api/settings/branding', b),
 
   // Secrets vault — metadata only on the way out; values only ever travel inbound.
   secrets: () => call<{ secrets: SecretMeta[]; error?: string }>('GET', '/api/secrets'),
