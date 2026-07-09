@@ -71,10 +71,12 @@ const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
-/** Sortable columns of the sessions list. `created` is the default (newest first — the server order). */
+/** Sortable columns of the sessions list. `updated` is the default (most recently active first); it's
+ *  the omitted value in the URL, so a clean `#/sessions` shows the freshest sessions on top. */
 type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status' | 'updated'
 type SortDir = 'asc' | 'desc'
 const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status', 'updated']
+const DEFAULT_SORT_KEY: SessionSortKey = 'updated'
 /** Status ordering for the Status-column sort: live → done → stopped → crashed. */
 const statusRank = (s: Session): number =>
   isLive(s) ? 0 : s.status === 'done' ? 1 : s.status === 'stopped' ? 2 : s.status === 'crashed' ? 3 : 4
@@ -105,7 +107,7 @@ const parseSessionFilters = (qs: string): SessionFilters => {
     agent: p.get('agent') ?? 'all',
     source: (source in SESSION_SOURCE_LABELS ? source : 'all') as 'all' | SessionSource,
     owner: p.get('owner') ?? 'all',
-    sortKey: (SESSION_SORT_KEYS.includes(sort as SessionSortKey) ? sort : 'created') as SessionSortKey,
+    sortKey: (SESSION_SORT_KEYS.includes(sort as SessionSortKey) ? sort : DEFAULT_SORT_KEY) as SessionSortKey,
     sortDir: (p.get('dir') === 'asc' ? 'asc' : 'desc') as SortDir,
   }
 }
@@ -117,7 +119,7 @@ const sessionFiltersToParams = (f: SessionFilters): Record<string, string> => {
   if (f.agent !== 'all') p.agent = f.agent
   if (f.source !== 'all') p.source = f.source
   if (f.owner !== 'all') p.owner = f.owner
-  if (f.sortKey !== 'created') p.sort = f.sortKey
+  if (f.sortKey !== DEFAULT_SORT_KEY) p.sort = f.sortKey
   if (f.sortDir !== 'desc') p.dir = f.sortDir
   return p
 }

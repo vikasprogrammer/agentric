@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.61.0] — 2026-07-09
+### Changed
+- **Sessions now default to most-recently-active first.** The sessions list's default sort switched
+  from newest-*created* to newest-*updated* (last status change), so the sessions you've most recently
+  touched surface at the top. Still overridable per column, and the default stays omitted from the URL.
+
 ## [0.60.0] — 2026-07-09
 ### Added
 - **Tasks board — a real board, not a form.** The Tasks page gains drag-and-drop between columns (drop a
