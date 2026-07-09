@@ -3701,7 +3701,9 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                   <Button size="sm" variant="secondary" disabled={busy === a.id} onClick={() => runNow(a)} title="fire once now">
                     <Play className="mr-1 h-3.5 w-3.5" />Run now
                   </Button>
-                  {isAdmin && (
+                  {/* Manage controls only for automations this member may edit: owner (any) or the creator.
+                      `canManage !== false` keeps them for older payloads without the flag; the server enforces. */}
+                  {isAdmin && a.canManage !== false && (
                     <>
                       <Select value={a.mode} onValueChange={(v) => v && v !== a.mode && setItemMode(a, v as 'interactive' | 'headless')}>
                         <SelectTrigger className="h-8 w-32"><SelectValue /></SelectTrigger>
@@ -3717,6 +3719,9 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                         <Trash2 className="h-4 w-4" />
                       </Button>
                     </>
+                  )}
+                  {isAdmin && a.canManage === false && (
+                    <span className="text-[11px] text-muted-foreground" title="Only the creator or the owner can change this automation">created by another member</span>
                   )}
                 </div>
               </CardContent>

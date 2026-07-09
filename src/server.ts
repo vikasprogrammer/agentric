@@ -1210,7 +1210,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
   // ── automations (cron / webhook → spawn agent sessions) ──────────────────────
   if (method === 'GET' && p === '/api/automations') {
-    return sendJson(res, 200, { automations: autos.list().map((a) => automationView(a, req, isAdmin(me))) });
+    return sendJson(res, 200, { automations: autos.list().map((a) => automationView(a, req, isAdmin(me), canManageAuto(me, a))) });
   }
   if (method === 'POST' && p === '/api/automations') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -1251,6 +1251,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const autoMatch = p.match(/^\/api\/automations\/([\w-]+)$/);
   if (autoMatch && (method === 'PATCH' || method === 'DELETE')) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    // Ownership guard: admins/members may only delete or edit automations THEY created; the owner keeps
+    // a break-glass override for anyone's (incl. legacy automations with no recorded creator). Prevents
+    // one teammate clobbering another's automation. `createdBy` is a member id (or `agent:`/`automation`
+    // for machine-created ones — those are owner-only to manage).
+    const existing = autos.get(autoMatch[1]);
+    if (existing && !canManageAuto(me, existing)) {
+      return sendJson(res, 403, { error: 'you can only delete or edit automations you created' });
+    }
     if (method === 'DELETE') {
       const ok = autos.remove(autoMatch[1]);
       return sendJson(res, ok ? 200 : 404, { ok });
@@ -2919,7 +2927,7 @@ function approvalView(a: ApprovalRequest) {
   return { id: a.id, runId: a.runId, level: a.level, capability: a.attempt.capabilityId, args: a.attempt.args, reason: a.reason };
 }
 /** Strip the webhook secret for non-admins; give admins the ready-to-paste hook URL instead. */
-function automationView(a: Automation, req: http.IncomingMessage, admin: boolean) {
+function automationView(a: Automation, req: http.IncomingMessage, admin: boolean, canManage = true) {
   const { secret, ...rest } = a;
   return {
     ...rest,
@@ -2927,7 +2935,15 @@ function automationView(a: Automation, req: http.IncomingMessage, admin: boolean
     // When it fires next: an enabled cron computes its next matching minute; a pending one-shot carries
     // its scheduled runAt. Event triggers (webhook/slack/discord) have no schedule, so it stays absent.
     nextRunAt: nextRunAtFor(a),
+    // Whether THIS caller may delete/edit it — mirrors the server-side guard so the console can hide the
+    // controls (owner override, else creator-only). Machine-created ones (`agent:`/`automation`) → owner-only.
+    canManage,
   };
+}
+/** Server-side ownership guard for automations: owner manages any (break-glass); everyone else only their
+ *  own. Shared by the DELETE/PATCH gate and the list view's `canManage` flag so UI and API never diverge. */
+function canManageAuto(me: Member, a: Automation): boolean {
+  return me.role === 'owner' || a.createdBy === me.id;
 }
 function nextRunAtFor(a: Automation): number | undefined {
   if (!a.enabled) return undefined;

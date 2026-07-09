@@ -320,6 +320,11 @@ export interface Automation {
   createdAt: number
   lastFiredAt?: number
   lastSessionId?: string
+  /** Member id (or `agent:`/`automation`) that created it — drives the delete/edit ownership guard. */
+  createdBy?: string
+  /** Whether the current caller may delete/edit it (owner override, else creator-only). Mirrors the API
+   *  guard so the console can hide the controls on automations you didn't create. */
+  canManage?: boolean
   /** When it fires next (epoch ms): computed for an enabled cron, or the pending runAt for a one-shot.
    *  Absent for event triggers (webhook/slack/discord) and disabled automations. */
   nextRunAt?: number

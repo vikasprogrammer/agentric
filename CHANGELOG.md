@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.63.0] — 2026-07-09
+### Added
+- **Ownership guard on automation delete/edit.** Admins and members can now only delete or edit
+  automations **they created**; the owner keeps a break-glass override for anyone's (and for legacy
+  automations with no recorded creator). Prevents one teammate from clobbering another's automation.
+  Enforced server-side on `DELETE`/`PATCH /api/automations/:id` and mirrored in the console — the
+  mode/enable/delete controls are hidden (with a "created by another member" note) on automations you
+  can't manage, via a new `canManage` flag on the automation view.
+
 ## [0.62.2] — 2026-07-09
 ### Fixed
 - **Word-wrap the task description.** Long lines and preformatted/code blocks in a task body now wrap
