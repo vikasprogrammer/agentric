@@ -3251,7 +3251,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           <CardContent className="space-y-3 p-4">
             <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Fix null-deref in billing.ts" /></Field>
             <Field label="Details"><Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Context, acceptance criteria — enough for whoever works it." /></Field>
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Field label="Assign to">
                 <Select value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
@@ -3297,7 +3297,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
       <div className="flex gap-4">
         {view === 'board' ? (
-          <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {TASK_COLUMNS.map((col) => {
               const inCol = visible.filter((t) => t.status === col.status || (col.status === 'done' && t.status === 'cancelled'))
               return (
@@ -3358,7 +3358,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
       {detail && (
         <Dialog open onOpenChange={(o) => { if (!o) closeTask() }}>
-          <DialogContent className="max-h-[85vh] w-full max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-lg">
+          <DialogContent className="max-h-[88vh] w-full max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl lg:max-w-3xl">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2 pr-8">
                 {editing ? 'Edit task' : (
@@ -3384,7 +3384,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                 <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
                 {detail.task.body && <div className="max-h-56 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Status">
                     <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
                       <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
@@ -3398,7 +3398,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                     </Select>
                   </Field>
                 </div>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Assignee">
                     <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
                       <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>

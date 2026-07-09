@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.62.1] — 2026-07-09
+### Fixed
+- **Tasks board responsiveness + a roomier detail modal.** The task detail modal was capped too narrow
+  (`max-w-lg`) — widened to `2xl`/`3xl` so the body, controls, and activity have room. The board now
+  reflows at more breakpoints (2-up at `sm`, 4-up at `lg` instead of only `xl`), the new-task form drops to
+  2 columns on small screens, and the modal's control rows stack on the narrowest widths.
+
 ## [0.62.2] — 2026-07-09
 ### Added
 - **Explicit risk class on every decision.** A policy `Decision` now carries a first-class
