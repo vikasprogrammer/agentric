@@ -1924,7 +1924,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
         <Bell className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
         <div className="min-w-0 flex-1">
           <MsgHeading m={m}><span className="shrink-0 text-indigo-600">· waiting for you</span></MsgHeading>
-          <div className="mt-1 break-words text-xs text-muted-foreground">{m.body}</div>
+          <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground">{m.body}</div>
         </div>
         {time}
         <div className="flex shrink-0 gap-1">
@@ -1956,7 +1956,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
             </MsgHeading>
             <div className="mt-1 break-words text-sm font-medium">{m.title}</div>
             {m.policyReason && <div className="mt-0.5 break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {m.policyReason}</div>}
-            {m.body && <div className="mt-0.5 break-words text-xs text-muted-foreground">{m.body}</div>}
+            {m.body && <div className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground">{m.body}</div>}
             <div className="mt-1 break-all font-mono text-[10px] text-muted-foreground/80">{JSON.stringify(m.args ?? {})}</div>
           </div>
           {time}
@@ -1986,7 +1986,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
         <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
         <div className="min-w-0 flex-1">
           <MsgHeading m={m}><span className="shrink-0 text-sky-600">· asks</span></MsgHeading>
-          <div className="mt-1 break-words text-sm">{m.body}</div>
+          <div className="mt-1 whitespace-pre-line break-words text-sm">{m.body}</div>
         </div>
         <button className="shrink-0 pt-0.5 text-[11px] text-muted-foreground underline hover:text-foreground" onClick={open}>open</button>
         {time}

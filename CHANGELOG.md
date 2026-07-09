@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.62.1] — 2026-07-09
+### Fixed
+- **Inbox action cards preserve line breaks in agent prose.** Question, notification, and approval bodies
+  now render with `whitespace-pre-line`, so an agent's multi-line question or description keeps its
+  paragraph/list breaks instead of collapsing into one run-on paragraph.
+
 ## [0.62.0] — 2026-07-09
 ### Added
 - **Task detail is a shareable permalink.** Opening a task now updates the URL to `#/tasks/<id>`, and
