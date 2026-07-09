@@ -346,10 +346,12 @@ export default function App() {
   return <Console me={me} />
 }
 
-/** The per-session "Claude is waiting on you" indicator (shown in the sidebar + session lists). */
-function WaitingBell({ className = 'h-3.5 w-3.5' }: { className?: string }) {
+/** The per-session "Claude is waiting on you" indicator (shown in the sidebar + session lists).
+ * `tone` picks the icon colour: the default indigo-600 reads on the light sidebar/list, but on the
+ * dark terminal tab strip (bg-neutral-900/700) it's near-invisible — pass a lighter tone there. */
+function WaitingBell({ className = 'h-3.5 w-3.5', tone = 'text-indigo-600' }: { className?: string; tone?: string }) {
   return (
-    <span title="Claude is waiting for your input" className="inline-flex shrink-0 text-indigo-600">
+    <span title="Claude is waiting for your input" className={`inline-flex shrink-0 ${tone}`}>
       <Bell className={className} />
     </span>
   )
@@ -477,6 +479,15 @@ function UpdateNotice() {
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
+  // Tabs the user "closed" from the terminal switcher: hidden from the strip, but the session keeps
+  // running — reopen it from All sessions. Persisted so a refresh doesn't resurrect closed tabs.
+  const [hiddenTabs, setHiddenTabs] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('aos_hidden_tabs') || '[]') as string[]) } catch { return new Set() }
+  })
+  const persistHiddenTabs = (next: Set<string>) => {
+    localStorage.setItem('aos_hidden_tabs', JSON.stringify([...next]))
+    setHiddenTabs(next)
+  }
   const [messages, setMessages] = useState<Msg[]>([])
   // Latest messages reachable from imperative event handlers (the terminal's click listener) without
   // re-binding them every render / going stale on the captured `messages`.
@@ -580,8 +591,20 @@ function Console({ me }: { me: Member }) {
   const openTerminal = (tmux: string, _title?: string) => {
     // The tmux lands in the URL (`#/sessions/<tmux>`); `selected` is derived from it above.
     nav('sessions', tmux)
+    // Reopening a previously-closed tab brings it back to the strip.
+    if (hiddenTabs.has(tmux)) { const n = new Set(hiddenTabs); n.delete(tmux); persistHiddenTabs(n) }
     // Opening a session means you're attending to it → clear its bell.
     clearAlerts(tmux.replace(/^aos-/, ''))
+  }
+  // "Close tab" — hide it from the switcher strip without touching the running session. If the open
+  // one is closed, fall back to another visible live tab, else drop to the sessions list.
+  const closeTab = (tmux: string) => {
+    const n = new Set(hiddenTabs); n.add(tmux); persistHiddenTabs(n)
+    if (selected?.tmux === tmux) {
+      const next = sessions.find((s) => isLive(s) && s.tmux !== tmux && !n.has(s.tmux))
+      if (next) nav('sessions', next.tmux)
+      else nav('sessions')
+    }
   }
   // Deep-link from an inbox 'artifact' card into the gallery, pre-opening that artifact's preview.
   const [artifactFocus, setArtifactFocus] = useState<string | undefined>(undefined)
@@ -808,7 +831,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
@@ -1396,11 +1419,15 @@ function ImageDropZone({ session, children, onActivity }: { session?: Session; c
 }
 
 function SessionsPage({
-  sessions, waiting, selected, onOpen, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   sessions: Session[]
   waiting: Set<string>
   selected: Selected
+  /** tmuxes the user closed from the tab strip — hidden there, session stays alive. */
+  hiddenTabs: Set<string>
+  /** Hide a tab from the strip without stopping its session (reopen from All sessions). */
+  onCloseTab: (tmux: string) => void
   onOpen: (tmux: string, title: string) => void
   onActivity: (sid: string) => void
   onSpawn: () => void
@@ -1524,7 +1551,7 @@ function SessionsPage({
         <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5">
           <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
           <span className="max-w-[180px] truncate">{s.title}</span>
-          {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
+          {waiting.has(s.id) && <WaitingBell className="h-3 w-3" tone="text-indigo-300" />}
         </button>
         {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
         <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
@@ -1541,15 +1568,21 @@ function SessionsPage({
           <button className="rounded p-0.5 text-red-400 hover:bg-neutral-600 hover:text-red-300" onClick={() => onDelete(s.id, s.tmux)} title="delete session + its messages/files">
             <Trash2 className="h-3 w-3" />
           </button>
+          <button className="rounded p-0.5 text-neutral-400 hover:bg-neutral-600 hover:text-neutral-100" onClick={() => onCloseTab(s.tmux)} title="close tab — hide from here (the session keeps running; reopen it from All sessions)">
+            <X className="h-3 w-3" />
+          </button>
         </span>
       </div>
     )
     // Live tabs pin left. The open session shows even when ended. Every other ended session hides
     // behind the "N ended" toggle so a workspace full of past runs doesn't bury the live ones.
-    const liveTabs = sessions.filter(isLive)
+    // A tab the user "closed" (hidden set) is dropped from the strip without stopping the session —
+    // except the one currently open, which always stays visible so it can't orphan the iframe.
+    const visible = (s: Session) => !hiddenTabs.has(s.tmux) || s.tmux === selected.tmux
+    const liveTabs = sessions.filter((s) => isLive(s) && visible(s))
     const endedTabs = sessions.filter((s) => !isLive(s))
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
-    const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux)
+    const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s))
     return (
       <div className="flex h-full flex-col">
         <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
