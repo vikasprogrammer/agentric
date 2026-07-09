@@ -30,11 +30,11 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `list_capabilities` | `GET /api/agent/policy` | policy preview | R | |
 | `policy_check` | `POST /api/agent/policy/check` | policy preview | R | dry-run, no side effects |
 | `directory_lookup` | `GET /api/agent/directory` | `TeamStore` | R | people + their chat identities |
-| `task_create` | `POST /api/tasks/create` | `TaskStore.create` | W | files a unit of work; author `agent:<id>`; owner = run-as (delegation passthrough); `mode` headless/interactive for the dispatched run |
+| `task_create` | `POST /api/tasks/create` | `TaskStore.create` | W | files a unit of work; author `agent:<id>`; owner = run-as (delegation passthrough); `mode` headless/interactive for the dispatched run; optional `due` (ISO date) soft deadline |
 | `task_list` | `GET /api/tasks/list` | `TaskStore.list` | R | `assignee:"me"` → self; board query/FTS |
 | `task_get` | `GET /api/tasks/get` | `TaskStore.withEvents` | R | task + full activity timeline |
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |
-| `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign; closes a dispatched loop |
+| `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign/reprioritise/`due` (ISO date, or "" to clear); closes a dispatched loop |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
 | `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; snapshots a revision; audited `agent.config.updated` |
 | `agent_history` | `POST /api/agents/history` | `AgentRevisions.list` | R | the caller's own listing revisions (rev/author/summary/date), newest first |

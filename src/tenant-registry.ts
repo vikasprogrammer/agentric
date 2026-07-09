@@ -18,7 +18,7 @@ import { TerminalManager, ApprovalNotice, QuestionNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
-import { canApprove } from './types';
+import { canApprove, Task } from './types';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantRecord, TenantStore } from './state/control';
 
@@ -193,6 +193,9 @@ export class TenantRegistry {
     // Chat loop: mirror completions/questions/approvals back to the Slack/Discord thread a chat-triggered
     // run is bound to. Both replies no-op when the session has no bound thread (non-chat runs).
     tm.setChatMirror((sessionId, text) => { void slack.reply(sessionId, text); void discord.reply(sessionId, text); });
+    // Deadline notifications: when a task passes its due date, DM its owner (the human it runs as) once,
+    // so a missed deadline surfaces off the board. Owner-less → owner/admins. Mirrors the question path.
+    autos.setOverdueNotifier((task) => { void notifyTaskOverdue(os, slack, discord, task); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
     return { record: rec, os, tm, autos, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
@@ -257,6 +260,33 @@ export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 
     if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
   }
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'question.notified', data: { agent: notice.agent, targets: targets.length, dms } });
+}
+
+/**
+ * DM the owner of a task that just passed its due date, on their linked Slack/Discord account — the
+ * deadline-side sibling of {@link notifyQuestionAsked}. Targets the task `owner` (the member it runs as);
+ * an owner-less task falls back to the owner/admins so the miss still reaches someone. Best-effort, fired
+ * once per task from the scheduler sweep (the once-guard lives in the DB). Audited.
+ */
+export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, task: Task): Promise<void> {
+  const owner = task.owner ? os.team.getMember(task.owner) : undefined;
+  const targets = owner
+    ? [owner]
+    : os.team.listMembers().filter((m) => m.status === 'active' && (m.role === 'owner' || m.role === 'admin'));
+  if (!targets.length) return;
+  const due = task.dueAt ? new Date(task.dueAt).toISOString().slice(0, 10) : 'its deadline';
+  const text =
+    `⏰ Task overdue — \`${task.title}\` (${task.id}) passed ${due} and is still ${task.status}.` +
+    `\nOpen the Agent OS console → Tasks to reprioritise, reassign, or extend it.`;
+  let dms = 0;
+  for (const m of targets) {
+    const ids = os.team.externalIdsFor(m.id);
+    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
+    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
+    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
+    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
+  }
+  os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.overdue.notified', data: { id: task.id, targets: targets.length, dms } });
 }
 
 /** Launch a ttyd bound to one tenant's tmux socket on `ttydPort`. (Moved verbatim from server.ts.) */

@@ -877,6 +877,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         parentId: typeof b.parentId === 'string' ? b.parentId : undefined,
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
         autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true',
+        dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: `agent:${agent}`,
       });
       os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
@@ -932,6 +933,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       priority: typeof b.priority === 'number' ? b.priority : undefined,
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
+      dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
       note: typeof b.note === 'string' ? b.note : undefined,
       by: `agent:${agent}`,
     });
@@ -1587,6 +1589,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         parentId: typeof b.parentId === 'string' ? b.parentId : undefined,
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
         autoDispatch: b.autoDispatch === true,
+        dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: me.id,
       });
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
@@ -1601,11 +1604,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (taskId && method === 'PATCH') {
     const b = await readBody(req);
     const task = os.tasks.update(taskId[1], {
+      title: typeof b.title === 'string' ? b.title : undefined,
+      body: typeof b.body === 'string' ? b.body : undefined,
       status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
       assignee: b.assignee === null ? null : (typeof b.assignee === 'string' ? b.assignee : undefined),
       priority: typeof b.priority === 'number' ? b.priority : undefined,
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
+      dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
       note: typeof b.note === 'string' ? b.note : undefined,
       by: me.id,
     });

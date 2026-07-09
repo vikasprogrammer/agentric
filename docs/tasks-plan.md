@@ -476,6 +476,16 @@ session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME
 
 ## 9. Future (not v1)
 
+> **Update (2026-07-09, v0.60.0): board UX + due dates shipped.** The "Richer board" and part of
+> "Dependencies & scheduling" below are now real: the console board has drag-and-drop, a Board⇄List toggle,
+> a filter bar (My/assignee/label/priority/overdue), a per-member "my tasks" lens, rendered-markdown +
+> inline-editable bodies, real member/agent names, and human assignees. **Due dates** are wired end-to-end
+> — `due_at` set on create/edit and via `task_create`/`task_update` (`due` ISO date), relative due/overdue
+> badges, list sort-by-due, and a scheduler **overdue sweep** that DMs the task owner once (owner-less →
+> owner/admins; audited `task.overdue` / `task.overdue.notified`). Still open below: **blocked_by
+> dependencies**, projects/epics/swimlanes, a burndown, pool auto-assignment, agent-triggered dispatch,
+> the policy brake, and the recurring-task Automation.
+
 - **Pool auto-assignment.** Route unassigned `auto_dispatch` tasks to a workspace **default worker agent**
   (or a small pool), so a human can drop tasks on the board with no assignee and the fleet picks them up.
   This is the agent-spawns-agent frontier Automations also parks — needs a concurrency budget + a

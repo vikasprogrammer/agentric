@@ -3008,8 +3008,43 @@ const PRIORITY_LABEL = ['Urgent', 'High', 'Normal', 'Low']
 // Base UI's Select.Value shows the raw value unless the root gets an items map (value → label).
 const PRIORITY_ITEMS: Record<string, string> = Object.fromEntries(PRIORITY_LABEL.map((l, i) => [String(i), l]))
 const priorityTone = (p: number) => ['text-red-600', 'text-amber-600', 'text-muted-foreground', 'text-muted-foreground/70'][p] ?? 'text-muted-foreground'
+// A colored left edge so priority reads at a glance on a dense board (urgent red → low none).
+const priorityBorder = (p: number) => ['border-l-red-500', 'border-l-amber-500', 'border-l-transparent', 'border-l-transparent'][p] ?? 'border-l-transparent'
+
+/** Friendly name for a task principal: agent id, member name, or a system/automation actor. */
+function principalLabel(id: string | undefined, members: Member[]): string {
+  if (!id) return 'Unassigned'
+  if (id === 'system') return 'System'
+  if (id.startsWith('agent:')) return id.slice('agent:'.length)
+  if (id.startsWith('automation:')) return 'Automation'
+  return members.find((m) => m.id === id)?.name || members.find((m) => m.id === id)?.email || id
+}
+
+/** Due-date presentation: a short relative label + tone, and whether it's overdue (open tasks only). */
+function dueMeta(dueAt: number | undefined, status: TaskStatus): { label: string; overdue: boolean; soon: boolean } | null {
+  if (!dueAt) return null
+  const open = status !== 'done' && status !== 'cancelled'
+  const day = 86_400_000
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+  const days = Math.round((new Date(dueAt).setHours(0, 0, 0, 0) - startOfToday.getTime()) / day)
+  const overdue = open && days < 0
+  const soon = open && days >= 0 && days <= 1
+  let label: string
+  if (days < 0) label = `${-days}d overdue`
+  else if (days === 0) label = 'Due today'
+  else if (days === 1) label = 'Due tomorrow'
+  else if (days <= 7) label = `Due in ${days}d`
+  else label = new Date(dueAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return { label, overdue, soon }
+}
+/** epoch ms → yyyy-mm-dd for a <input type="date">. */
+const toDateInput = (ms?: number) => (ms ? new Date(ms - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '')
+/** yyyy-mm-dd (local) → epoch ms at local midnight, or null when cleared. */
+const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00').getTime() : null)
 
 function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void }) {
+  const [members, setMembers] = useState<Member[]>([])
+  useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const [tasks, setTasks] = useState<Task[] | null>(null)
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   const [q, setQ] = useState('')
@@ -3017,17 +3052,41 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
   const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  // view + filters
+  const [view, setView] = useState<'board' | 'list'>('board')
+  const [mine, setMine] = useState(false)
+  const [fAssignee, setFAssignee] = useState('') // '' = all
+  const [fLabel, setFLabel] = useState('')
+  const [fPriority, setFPriority] = useState('') // '' = all
+  const [fOverdue, setFOverdue] = useState(false)
+  const [sort, setSort] = useState<'priority' | 'due' | 'updated'>('priority')
+  // drag-and-drop
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dragOverCol, setDragOverCol] = useState<TaskStatus | null>(null)
   // create form
   const [showNew, setShowNew] = useState(false)
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
-  const [assignee, setAssignee] = useState('') // '' = unassigned, else 'agent:<id>'
+  const [assignee, setAssignee] = useState('') // '' = unassigned, else 'agent:<id>' or member id
   const [priority, setPriority] = useState(2)
   const [autoDispatch, setAutoDispatch] = useState(false)
   const [mode, setMode] = useState<'headless' | 'interactive'>('headless')
+  const [due, setDue] = useState('')
+  // drawer inline edit
+  const [editing, setEditing] = useState(false)
+  const [eTitle, setETitle] = useState('')
+  const [eBody, setEBody] = useState('')
+  const [confirmDel, setConfirmDel] = useState(false)
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const chatAgents = agents.filter((a) => a.runtime === 'claude-code')
+  // Assignee options: agents (delegation) + humans. Base UI's SelectValue needs a value→label map.
+  const assigneeItems: Record<string, string> = {
+    none: 'Unassigned',
+    ...Object.fromEntries(chatAgents.map((a) => [`agent:${a.id}`, `🤖 ${a.id}`])),
+    ...Object.fromEntries(members.map((m) => [m.id, `👤 ${m.name || m.email}`])),
+  }
+  const nameOf = (id?: string) => principalLabel(id, members)
 
   const load = async () => {
     const r = await api.tasks(q)
@@ -3035,17 +3094,40 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
     if (r.counts) setCounts(r.counts)
   }
   useEffect(() => { load() }, [q])
+  // Live refresh so an agent closing its own loop moves the card without a manual reload. Pause while a
+  // form/inline-edit is open so it can't clobber unsaved text.
+  useEffect(() => {
+    const paused = () => showNew || editing
+    const t = setInterval(() => { if (!paused()) load() }, 5000)
+    return () => clearInterval(t)
+  }, [q, showNew, editing])
   useEffect(() => {
     if (!selId) { setDetail(null); return }
+    if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [] }) })
-  }, [selId, tasks])
+  }, [selId, tasks, editing])
+  useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
+
+  // Client-side filtering over the (≤500) board — cheap, and keeps the lens shareable via UI state.
+  const labelsPresent = [...new Set((tasks ?? []).flatMap((t) => t.labels))].sort()
+  const assigneesPresent = [...new Set((tasks ?? []).map((t) => t.assignee).filter(Boolean) as string[])]
+  const visible = (tasks ?? []).filter((t) => {
+    if (mine && t.assignee !== me.id) return false
+    if (fAssignee && t.assignee !== fAssignee) return false
+    if (fLabel && !t.labels.includes(fLabel)) return false
+    if (fPriority !== '' && t.priority !== Number(fPriority)) return false
+    if (fOverdue && !dueMeta(t.dueAt, t.status)?.overdue) return false
+    return true
+  })
+  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fOverdue
+  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFOverdue(false) }
 
   const create = async () => {
     setHint('')
-    const req: AddTaskReq = { title, body: body || undefined, assignee: assignee || undefined, priority, mode, autoDispatch: autoDispatch && assignee.startsWith('agent:') }
+    const req: AddTaskReq = { title, body: body || undefined, assignee: assignee || undefined, priority, mode, autoDispatch: autoDispatch && assignee.startsWith('agent:'), dueAt: fromDateInput(due) ?? undefined }
     const r = await api.addTask(req)
     if (r.error) return setHint('⚠ ' + r.error)
-    setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setShowNew(false)
+    setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setShowNew(false)
     load()
   }
   const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); setBusy(false) }
@@ -3057,22 +3139,99 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
     await load()
     if (r.sessionId) onOpen('aos-' + r.sessionId, 'Task · ' + t.title)
   }
-  const remove = async (id: string) => { setBusy(true); await api.deleteTask(id); setSelId(null); await load(); setBusy(false) }
+  const remove = async (id: string) => { setBusy(true); await api.deleteTask(id); setSelId(null); setConfirmDel(false); await load(); setBusy(false) }
+  const onDropTo = async (status: TaskStatus) => {
+    const id = dragId
+    setDragId(null); setDragOverCol(null)
+    const t = tasks?.find((x) => x.id === id)
+    if (!t || !id || t.status === status) return
+    await patch(id, { status })
+  }
+  const startEdit = () => { if (!detail) return; setETitle(detail.task.title); setEBody(detail.task.body); setEditing(true) }
+  const saveEdit = async () => {
+    if (!detail) return
+    setBusy(true)
+    await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
+    setEditing(false); setBusy(false)
+    await load()
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [] })
+  }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
+
+  const card = (t: Task) => {
+    const dm = dueMeta(t.dueAt, t.status)
+    return (
+      <div
+        key={t.id}
+        draggable
+        onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragId(t.id) }}
+        onDragEnd={() => { setDragId(null); setDragOverCol(null) }}
+        onClick={() => setSelId(t.id)}
+        className={`w-full cursor-pointer rounded-md border border-l-[3px] p-2.5 text-left hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'ring-1 ring-primary' : ''} ${dragId === t.id ? 'opacity-50' : ''}`}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <span className={`truncate text-sm font-medium ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
+          <span className={`shrink-0 text-[10px] font-medium ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</span>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+          {t.assignee && <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{nameOf(t.assignee)}</Badge>}
+          {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
+          {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
+          {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
+          <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <p className="mr-auto max-w-2xl text-sm text-muted-foreground">
-          The shared work queue humans and agents drain together. Assign a task to an agent (with <strong>auto-dispatch</strong>)
-          and it spawns a governed session that works it and closes its own loop — the safe way for one agent to hand work to another.
+        <p className="mr-auto max-w-xl text-sm text-muted-foreground">
+          The shared work queue humans and agents drain together. Assign to an agent with <strong>auto-dispatch</strong> and it
+          spawns a governed session that works it and closes its own loop.
         </p>
+        <div className="inline-flex overflow-hidden rounded-md border">
+          <button onClick={() => setView('board')} className={`flex items-center gap-1 px-2.5 py-1.5 text-xs ${view === 'board' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><LayoutGrid className="h-3.5 w-3.5" />Board</button>
+          <button onClick={() => setView('list')} className={`flex items-center gap-1 border-l px-2.5 py-1.5 text-xs ${view === 'list' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><List className="h-3.5 w-3.5" />List</button>
+        </div>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks…" className="h-8 w-52 pl-7" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks…" className="h-8 w-48 pl-7" />
         </div>
         <Button size="sm" onClick={() => setShowNew((v) => !v)}><Plus className="mr-1 h-3.5 w-3.5" />New task</Button>
+      </div>
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <div className="inline-flex overflow-hidden rounded-md border">
+          <button onClick={() => setMine(false)} className={`px-2.5 py-1 ${!mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>All</button>
+          <button onClick={() => setMine(true)} className={`border-l px-2.5 py-1 ${mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>My tasks</button>
+        </div>
+        <Select items={{ all: 'Anyone', ...Object.fromEntries(assigneesPresent.map((a) => [a, nameOf(a)])) }} value={fAssignee || 'all'} onValueChange={(v) => setFAssignee(v === 'all' ? '' : v || '')}>
+          <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="all">Anyone</SelectItem>{assigneesPresent.map((a) => <SelectItem key={a} value={a}>{nameOf(a)}</SelectItem>)}</SelectContent>
+        </Select>
+        {labelsPresent.length > 0 && (
+          <Select items={{ all: 'Any label', ...Object.fromEntries(labelsPresent.map((l) => [l, l])) }} value={fLabel || 'all'} onValueChange={(v) => setFLabel(v === 'all' ? '' : v || '')}>
+            <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="all">Any label</SelectItem>{labelsPresent.map((l) => <SelectItem key={l} value={l}>{l}</SelectItem>)}</SelectContent>
+          </Select>
+        )}
+        <Select items={{ all: 'Any priority', ...PRIORITY_ITEMS }} value={fPriority === '' ? 'all' : fPriority} onValueChange={(v) => setFPriority(v === 'all' ? '' : v ?? '')}>
+          <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="all">Any priority</SelectItem>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
+        </Select>
+        <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue</button>
+        {view === 'list' && (
+          <Select items={{ priority: 'Sort: Priority', due: 'Sort: Due date', updated: 'Sort: Updated' }} value={sort} onValueChange={(v) => v && setSort(v as typeof sort)}>
+            <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="priority">Sort: Priority</SelectItem><SelectItem value="due">Sort: Due date</SelectItem><SelectItem value="updated">Sort: Updated</SelectItem></SelectContent>
+          </Select>
+        )}
+        {filterActive && <button onClick={clearFilters} className="text-muted-foreground underline-offset-2 hover:underline">Clear</button>}
+        <span className="ml-auto text-muted-foreground">{visible.length} shown</span>
       </div>
 
       {showNew && (
@@ -3080,13 +3239,14 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
           <CardContent className="space-y-3 p-4">
             <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Fix null-deref in billing.ts" /></Field>
             <Field label="Details"><Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Context, acceptance criteria — enough for whoever works it." /></Field>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
               <Field label="Assign to">
-                <Select items={[{ value: 'none', label: 'Unassigned' }, ...chatAgents.map((a) => ({ value: `agent:${a.id}`, label: `agent · ${a.id}` }))]} value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
+                <Select items={assigneeItems} value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Unassigned</SelectItem>
-                    {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>agent · {a.id}</SelectItem>)}
+                    {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>🤖 {a.id}</SelectItem>)}
+                    {members.map((m) => <SelectItem key={m.id} value={m.id}>👤 {m.name || m.email}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </Field>
@@ -3096,6 +3256,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
                   <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
                 </Select>
               </Field>
+              <Field label="Due date"><Input type="date" value={due} onChange={(e) => setDue(e.target.value)} className="h-9" /></Field>
               <Field label="Auto-dispatch">
                 <label className={`flex h-9 items-center gap-2 text-sm ${assignee.startsWith('agent:') ? '' : 'opacity-40'}`}>
                   <input type="checkbox" checked={autoDispatch} disabled={!assignee.startsWith('agent:')} onChange={(e) => setAutoDispatch(e.target.checked)} />
@@ -3123,47 +3284,91 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
       )}
 
       <div className="flex gap-4">
-        <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {TASK_COLUMNS.map((col) => {
-            const inCol = tasks.filter((t) => t.status === col.status || (col.status === 'done' && t.status === 'cancelled'))
-            return (
-              <div key={col.status} className="min-w-0">
-                <div className="mb-2 flex items-center justify-between text-[11px] uppercase tracking-wider text-muted-foreground">
-                  <span>{col.label}</span><span>{counts[col.status] + (col.status === 'done' ? counts.cancelled : 0)}</span>
+        {view === 'board' ? (
+          <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {TASK_COLUMNS.map((col) => {
+              const inCol = visible.filter((t) => t.status === col.status || (col.status === 'done' && t.status === 'cancelled'))
+              return (
+                <div
+                  key={col.status}
+                  onDragOver={(e) => { e.preventDefault(); if (dragOverCol !== col.status) setDragOverCol(col.status) }}
+                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCol((c) => (c === col.status ? null : c)) }}
+                  onDrop={() => onDropTo(col.status)}
+                  className={`min-w-0 rounded-md ${dragOverCol === col.status ? 'bg-primary/5 ring-1 ring-primary/40' : ''}`}
+                >
+                  <div className="mb-2 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-muted-foreground">
+                    <span>{col.label}</span><span>{counts[col.status] + (col.status === 'done' ? counts.cancelled : 0)}</span>
+                  </div>
+                  <div className="space-y-2 px-1 pb-2">
+                    {inCol.length === 0 && <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">{dragOverCol === col.status ? 'Drop here' : '—'}</div>}
+                    {inCol.map(card)}
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  {inCol.length === 0 && <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">—</div>}
-                  {inCol.map((t) => (
-                    <button key={t.id} onClick={() => setSelId(t.id)} className={`w-full rounded-md border p-2.5 text-left hover:bg-muted ${selId === t.id ? 'ring-1 ring-primary' : ''}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <span className={`truncate text-sm font-medium ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
-                        <span className={`shrink-0 text-[10px] font-medium ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-                        {t.assignee && <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{t.assignee}</Badge>}
-                        {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
-                        {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
-                        <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="flex-1 overflow-x-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="border-b bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Task</th>
+                  <th className="px-3 py-2 text-left font-medium">Status</th>
+                  <th className="px-3 py-2 text-left font-medium">Assignee</th>
+                  <th className="px-3 py-2 text-left font-medium">Priority</th>
+                  <th className="px-3 py-2 text-left font-medium">Due</th>
+                  <th className="px-3 py-2 text-left font-medium">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...visible].sort((a, b) => sort === 'priority' ? a.priority - b.priority || b.updatedAt - a.updatedAt
+                  : sort === 'due' ? (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity)
+                  : b.updatedAt - a.updatedAt).map((t) => {
+                  const dm = dueMeta(t.dueAt, t.status)
+                  return (
+                    <tr key={t.id} onClick={() => setSelId(t.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'bg-muted' : ''}`}>
+                      <td className="px-3 py-2"><span className={t.status === 'cancelled' ? 'line-through opacity-60' : ''}>{t.title}</span> {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
+                      <td className="px-3 py-2 capitalize text-muted-foreground">{t.status}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{t.assignee ? nameOf(t.assignee) : '—'}</td>
+                      <td className={`px-3 py-2 text-xs ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</td>
+                      <td className="px-3 py-2 text-xs">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(t.updatedAt).toLocaleDateString()}</td>
+                    </tr>
+                  )
+                })}
+                {visible.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-muted-foreground">No tasks match.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
 
         {detail && (
           <Card className="w-[26rem] shrink-0 self-start">
             <CardContent className="space-y-3.5 p-4">
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-base font-semibold leading-snug">{detail.task.title}</div>
-                  <div className="mt-0.5 font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${detail.task.owner}` : ''}</div>
+                <div className="min-w-0 flex-1">
+                  {editing
+                    ? <Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="text-base font-semibold" />
+                    : <div className="text-base font-semibold leading-snug">{detail.task.title}</div>}
+                  <div className="mt-0.5 font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
                 </div>
-                <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => setSelId(null)}><X className="h-4 w-4" /></Button>
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {!editing && <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>}
+                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setSelId(null); setEditing(false) }}><X className="h-4 w-4" /></Button>
+                </div>
               </div>
-              {detail.task.body && <div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border bg-muted/30 p-3 text-sm leading-relaxed text-foreground">{detail.task.body}</div>}
+
+              {editing ? (
+                <>
+                  <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={8} className="font-mono text-xs" /></Field>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+                  </div>
+                </>
+              ) : (
+                detail.task.body && <div className="prose-tasks max-h-56 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>
+              )}
 
               <div className="grid grid-cols-2 gap-2">
                 <Field label="Status">
@@ -3179,16 +3384,21 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
                   </Select>
                 </Field>
               </div>
-              <Field label="Assignee">
-                <Select items={[{ value: 'none', label: 'Unassigned' }, ...chatAgents.map((a) => ({ value: `agent:${a.id}`, label: `agent · ${a.id}` })), ...(detail.task.assignee && !detail.task.assignee.startsWith('agent:') ? [{ value: detail.task.assignee, label: detail.task.assignee }] : [])]} value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
-                  <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Unassigned</SelectItem>
-                    {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>agent · {a.id}</SelectItem>)}
-                    {detail.task.assignee && !detail.task.assignee.startsWith('agent:') && <SelectItem value={detail.task.assignee}>{detail.task.assignee}</SelectItem>}
-                  </SelectContent>
-                </Select>
-              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Assignee">
+                  <Select items={assigneeItems} value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
+                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Unassigned</SelectItem>
+                      {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>🤖 {a.id}</SelectItem>)}
+                      {members.map((m) => <SelectItem key={m.id} value={m.id}>👤 {m.name || m.email}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Due date">
+                  <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
+                </Field>
+              </div>
               {(detail.task.assignee || '').startsWith('agent:') && (
                 <Field label="Run mode">
                   <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
@@ -3226,16 +3436,21 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
                         <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
                       </div>
                       {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
-                      <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{e.author}</div>
+                      <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
                     </div>
                   ))}
                 </div>
               </div>
 
               {isAdmin && (
-                <Button size="sm" variant="ghost" className="w-full text-destructive" disabled={busy} onClick={() => remove(detail.task.id)}>
-                  <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
-                </Button>
+                confirmDel
+                  ? <div className="flex items-center gap-2">
+                      <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.task.id)}>Confirm delete</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
+                    </div>
+                  : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
+                      <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
+                    </Button>
               )}
             </CardContent>
           </Card>

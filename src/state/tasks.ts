@@ -34,6 +34,8 @@ interface EventRow {
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>(['done', 'cancelled']);
 const STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'blocked', 'done', 'cancelled'];
+/** Sentinel body for the one-time "went overdue" event that dedupes the overdue notification. */
+const OVERDUE_MARK = '⏰ went overdue';
 
 export class TaskStore {
   constructor(private readonly db: Db) {}
@@ -117,6 +119,16 @@ export class TaskStore {
     const sets: string[] = [];
     const vals: unknown[] = [];
 
+    if (input.title !== undefined && input.title.trim() && input.title.trim() !== t.title) {
+      sets.push('title = ?'); vals.push(input.title.trim());
+    }
+    if (input.body !== undefined && input.body !== t.body) {
+      sets.push('body = ?'); vals.push(input.body);
+    }
+    if (input.dueAt !== undefined && (input.dueAt ?? null) !== (t.dueAt ?? null)) {
+      sets.push('due_at = ?'); vals.push(input.dueAt ?? null);
+      this.addEvent(id, 'status', input.dueAt ? `due ${new Date(input.dueAt).toISOString().slice(0, 10)}` : 'due date cleared', input.by);
+    }
     if (input.status && input.status !== t.status && STATUSES.includes(input.status)) {
       sets.push('status = ?'); vals.push(input.status);
       this.addEvent(id, 'status', `${t.status}→${input.status}`, input.by);
@@ -184,6 +196,28 @@ export class TaskStore {
       if (r.status in out) out[r.status] = r.n;
     }
     return out;
+  }
+
+  /** Open tasks past their due date — the source for the overdue notification sweep. Soonest-due first. */
+  overdue(tenant: string, now: number): Task[] {
+    return this.db
+      .prepare(`SELECT * FROM tasks WHERE tenant = ? AND due_at IS NOT NULL AND due_at < ?
+                 AND status NOT IN ('done','cancelled') ORDER BY due_at`)
+      .all<TaskRow>(tenant, now)
+      .map(toTask);
+  }
+
+  /**
+   * Record a one-time overdue marker in the activity log; returns true only the FIRST time so the sweep
+   * DMs the owner exactly once (not every tick). The marker also shows in the timeline as "went overdue".
+   */
+  markOverdueNotified(id: string): boolean {
+    const existing = this.db
+      .prepare(`SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'status' AND body = ? LIMIT 1`)
+      .get<{ 1: number }>(id, OVERDUE_MARK);
+    if (existing) return false;
+    this.addEvent(id, 'status', OVERDUE_MARK, 'system');
+    return true;
   }
 
   /** Tasks eligible for auto-dispatch: todo, assigned to an agent, auto_dispatch on. Priority-first. */

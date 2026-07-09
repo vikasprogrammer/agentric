@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.60.0] — 2026-07-09
+### Added
+- **Tasks board — a real board, not a form.** The Tasks page gains drag-and-drop between columns (drop a
+  card to change its status), a **Board ⇄ List** view toggle (the list is sortable by priority / due date /
+  updated), and a **filter bar**: My tasks / All, by assignee, by label, by priority, and an **Overdue**
+  quick filter. Priority now shows as a colored left edge on each card, and the board **auto-refreshes**
+  (~5s) so an agent closing its own loop moves the card without a manual reload.
+- **Task due dates end-to-end.** A task can carry a soft deadline: set it on the create form or in the
+  detail drawer (and via the `task_create`/`task_update` MCP tools with a `due` ISO date). Cards and list
+  rows show a relative badge ("Due today", "3d overdue") with amber/red tone. When a task passes its
+  deadline and is still open, the scheduler DMs its owner **once** on their linked Slack/Discord account
+  (owner-less → owner/admins), audited `task.overdue` / `task.overdue.notified`.
+- **Drawer polish.** The task body now renders as **markdown** and the title + body are **inline-editable**;
+  assignees, owners, and activity authors show **real member names** (and agents by name) instead of raw
+  ids; tasks can be assigned to **humans**, not only agents; and deleting a task now takes a **confirm**.
+
 ## [0.59.0] — 2026-07-08
 ### Added
 - **Warm, resident Slack thread sessions — one session per thread, fast follow-ups.** A Slack thread now

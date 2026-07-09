@@ -611,11 +611,14 @@ export interface TaskCreateInput {
 }
 
 export interface TaskUpdateInput {
+  title?: string;
+  body?: string;
   status?: TaskStatus;
   assignee?: string | null; // null clears the assignee
   priority?: number;
   labels?: string[];
   mode?: 'headless' | 'interactive';
+  dueAt?: number | null; // epoch ms soft deadline; null clears it
   note?: string; // free-text comment → appended as a task_event
   by: string; // author (member id | 'agent:<id>')
 }

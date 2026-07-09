@@ -524,6 +524,7 @@ const TOOLS = [
         parentId: { type: 'string', description: 'Parent task id, to file this as a sub-task.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
+        due: { type: 'string', description: 'Optional soft deadline as an ISO date, e.g. "2026-07-15" or "2026-07-15T17:00:00Z".' },
       },
       required: ['title'],
     },
@@ -588,6 +589,7 @@ const TOOLS = [
         assignee: { type: 'string', description: 'Reassign: "agent:<id>", a member id, "me", or null to unassign.' },
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low.' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Replace the label set.' },
+        due: { type: 'string', description: 'Set a soft deadline as an ISO date (e.g. "2026-07-15"), or "" / null to clear it.' },
       },
       required: ['id'],
     },
@@ -1100,6 +1102,14 @@ async function unschedule(args: Record<string, unknown>): Promise<string> {
 interface TaskLite { id: string; title: string; status: string; priority: number; assignee?: string; labels?: string[]; body?: string }
 interface TaskEventLite { kind: string; body?: string; author: string; createdAt: number }
 
+/** Parse an agent-supplied `due` (ISO date/datetime) → epoch ms. '' / null → null (clear). undefined → undefined (leave). */
+function parseDue(due: unknown): number | null | undefined {
+  if (due === undefined) return undefined;
+  if (due === null || (typeof due === 'string' && !due.trim())) return null;
+  const ms = Date.parse(String(due));
+  return Number.isFinite(ms) ? ms : undefined;
+}
+
 async function taskCreate(args: Record<string, unknown>): Promise<string> {
   const title = String(args.title ?? '').trim();
   if (!title) return 'A task needs a title.';
@@ -1115,6 +1125,7 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
       autoDispatch: args.autoDispatch === true,
       mode: args.mode === 'interactive' ? 'interactive' : undefined,
+      dueAt: parseDue(args.due),
     }),
   });
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
@@ -1295,6 +1306,7 @@ async function taskUpdate(args: Record<string, unknown>): Promise<string> {
       assignee: args.assignee === null ? null : (args.assignee !== undefined ? String(args.assignee) : undefined),
       priority: typeof args.priority === 'number' ? args.priority : undefined,
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
+      dueAt: parseDue(args.due),
     }),
   });
   const d = (await res.json()) as { ok?: boolean; task?: TaskLite; error?: string };

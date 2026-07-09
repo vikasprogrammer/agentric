@@ -12,6 +12,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
+import { Task } from '../types';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
 // Supports: * , a-b , */n , a-b/n , lists. dow 0-7 (7 ≡ 0 = Sunday).
@@ -237,6 +238,10 @@ export class Automations {
   ) {
     this.db = os.db;
   }
+
+  /** Best-effort sink DMed once when a task passes its due date (wired in the tenant registry). */
+  private overdueNotifier?: (task: Task) => void;
+  setOverdueNotifier(fn: (task: Task) => void): void { this.overdueNotifier = fn; }
 
   // ── CRUD ───────────────────────────────────────────────────────────────────────
   list(): Automation[] {
@@ -673,6 +678,25 @@ export class Automations {
       this.fire(a, { guard: true });
     }
     this.dispatchTasks();
+    this.sweepOverdue(now);
+  }
+
+  /**
+   * The deadline half of the tick: DM the owner of each newly-overdue task, exactly once. The once-guard
+   * lives in the DB (`markOverdueNotified`), so a restart never re-alarms. Wrapped so a bad row never
+   * kills the scheduler; a no-op when no overdue notifier is wired.
+   */
+  private sweepOverdue(now: Date): void {
+    if (!this.overdueNotifier) return;
+    try {
+      for (const t of this.os.tasks.overdue(this.os.tenant, now.getTime())) {
+        if (!this.os.tasks.markOverdueNotified(t.id)) continue;
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'system', type: 'task.overdue', data: { id: t.id, title: t.title, dueAt: t.dueAt ?? null } });
+        try { this.overdueNotifier(t); } catch { /* notifier best-effort */ }
+      }
+    } catch {
+      // never let the overdue sweep take down the automation scheduler
+    }
   }
 
   /**
