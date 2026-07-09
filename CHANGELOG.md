@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.72.3] — 2026-07-09
+### Fixed
+- **A naturally-finished session no longer auto-resurrects either** (follow-up to v0.72.0, which fixed
+  it for the Stop button). When claude exits on its own, the launcher normally holds the pane on a
+  "press [r] to resume" prompt — but if that pane dies (a detached/idle `read` bailing out, seen on the
+  Linux boxes), ttyd's silent auto-reconnect re-ran `attach.sh` and `claude --resume`d the finished
+  session back to life. `markEnded` now drops the same stay-stopped sentinel as a manual stop (inert
+  while the holding pane lives, decisive if it dies); a deliberate re-open or **Resume** clears it. The
+  idle reaper does the same, so a reaped resident session stays reaped instead of un-reaping itself on
+  a still-open tab (a later Slack reply still revives it).
+
 ## [0.72.2] — 2026-07-09
 ### Fixed
 - **`PrivateTmp=false` in `agent-os.service` — the other half of the restart-survival fix (v0.72.1).**
