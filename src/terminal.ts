@@ -360,8 +360,9 @@ export class TerminalManager {
           // only place to capture what the run did before it died. Outcome 'crashed'; idempotent, so
           // repeated polls won't write twice; skipped if the session did no real work.
           this.writeEpisode(r.id, r.agent, 'crashed');
-          // A crashed agent can't answer anything it asked — retire its open questions like a clean stop.
+          // A crashed agent can't answer or act — retire its open questions + approvals like a clean stop.
           this.cancelPendingQuestions(r.id, 'system');
+          this.cancelPendingApprovals(r.id, 'system');
         }
       }
     }
@@ -855,6 +856,7 @@ export class TerminalManager {
         this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
         this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
         this.cancelPendingQuestions(r.id, 'system');
+        this.cancelPendingApprovals(r.id, 'system');
         this.audit(r.id, r.agent, 'chat.reaped', { idleMin: timeoutMin });
       } catch { /* one bad row must not stop the sweep */ }
     }
@@ -1415,7 +1417,7 @@ export class TerminalManager {
     const status = this.os.approvals.statusOf(id);
     if (status === 'approved') return 'allow';
     if (status === 'pending') return 'pending';
-    return 'deny'; // rejected or unknown
+    return 'deny'; // rejected, cancelled, or unknown
   }
 
   private addMessage(m: Omit<FeedMessage, 'id' | 'createdAt'>): void {
@@ -1498,6 +1500,22 @@ export class TerminalManager {
     if (!pending.length) return 0;
     this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = ?, answered_at = ? WHERE run_id = ? AND status = 'pending'").run(by, Date.now(), sessionId);
     for (const q of pending) this.audit(sessionId, by, 'question.cancelled', { questionId: q.id, reason: 'session ended' });
+    return pending.length;
+  }
+
+  /**
+   * Cancel every pending approval for a session — the sibling of {@link cancelPendingQuestions}, run
+   * when the session stops/crashes/is reaped. The agent blocked on the gate is gone, so an owner
+   * approving now would gate an effect no one will ever perform. `Approvals.cancel` marks the row
+   * `cancelled` and settles the waiter as denied; the card leaves "Needs you" and becomes a dismissable
+   * Activity row. Returns how many were cancelled.
+   */
+  private cancelPendingApprovals(sessionId: string, by: string): number {
+    const pending = this.os.approvals.pending(this.os.tenant).filter((a) => a.runId === sessionId);
+    for (const a of pending) {
+      this.os.approvals.cancel(a.id, by);
+      this.audit(sessionId, by, 'approval.cancelled', { approvalId: a.id, reason: 'session ended' });
+    }
     return pending.length;
   }
 
@@ -1733,9 +1751,10 @@ export class TerminalManager {
     this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
     if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
-    // The agent that asked is now dead — no one can answer its open questions. Cancel them so they leave
-    // "Needs you" and become dismissable, rather than hanging forever as unanswerable prompts.
+    // The agent that asked is now dead — no one can answer its open questions or act on its approvals.
+    // Cancel both so they leave "Needs you" and become dismissable, rather than hanging forever.
     this.cancelPendingQuestions(sessionId, by);
+    this.cancelPendingApprovals(sessionId, by);
     // Halting kills the tmux shell, so the launcher's `markEnded` never fires — capture the episode
     // here instead so the work done (the audit stream) is remembered. Outcome 'stopped'; skipped if the
     // session did nothing worth remembering.
@@ -1755,8 +1774,11 @@ export class TerminalManager {
     if (!r) return false;
     this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
     this.removeSessionFiles(sessionId);
+    // Settle any in-memory approval waiter (deny) before the rows go, so a still-suspended gate unblocks.
+    this.cancelPendingApprovals(sessionId, by);
     this.db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM questions WHERE run_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM approvals WHERE run_id = ?').run(sessionId);
     this.db.prepare('DELETE FROM term_sessions WHERE id = ?').run(sessionId);
     this.audit(sessionId, by, 'session.deleted', { tmux: r.tmux, agent: r.agent });
     return true;

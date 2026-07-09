@@ -49,6 +49,19 @@ export class InMemoryApprovals implements Approvals {
     }
   }
 
+  cancel(id: string, by: string): boolean {
+    const req = this.items.get(id);
+    if (!req || req.status !== 'pending') return false;
+    req.status = 'cancelled';
+    req.resolvedBy = by;
+    const waiter = this.waiters.get(id);
+    if (waiter) {
+      waiter(false); // deny — the gated effect must not proceed
+      this.waiters.delete(id);
+    }
+    return true;
+  }
+
   pending(tenant?: string): ApprovalRequest[] {
     return [...this.items.values()].filter(
       (r) => r.status === 'pending' && (!tenant || r.tenant === tenant),
@@ -65,7 +78,7 @@ interface ApprovalRow {
   args: string;
   reasoning: string | null;
   reason: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
   resolved_by: string | null;
   created_at: number;
 }
@@ -130,8 +143,21 @@ export class SqliteApprovals implements Approvals {
     }
   }
 
-  /** Map a request id to its current status — for the gate hook (allow | deny | pending). */
-  statusOf(id: string): 'pending' | 'approved' | 'rejected' | undefined {
+  cancel(id: string, by: string): boolean {
+    const row = this.db.prepare('SELECT status FROM approvals WHERE id = ?').get<{ status: string }>(id);
+    if (!row || row.status !== 'pending') return false;
+    this.db.prepare("UPDATE approvals SET status = 'cancelled', resolved_by = ? WHERE id = ?").run(by, id);
+    const waiter = this.waiters.get(id);
+    if (waiter) {
+      waiter(false); // deny — the gated effect must not proceed
+      this.waiters.delete(id);
+    }
+    return true;
+  }
+
+  /** Map a request id to its current status — for the gate hook (allow | deny | pending). A `cancelled`
+   *  row falls through to deny below, so a still-polling gate-hook stops waiting and the effect is blocked. */
+  statusOf(id: string): 'pending' | 'approved' | 'rejected' | 'cancelled' | undefined {
     return this.db.prepare('SELECT status FROM approvals WHERE id = ?').get<{ status: ApprovalRow['status'] }>(id)?.status;
   }
 
