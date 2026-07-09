@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.67.0] — 2026-07-09
+### Added
+- **Edit an existing automation.** Each automation card gains an **Edit** button (owner or creator)
+  that reopens the form pre-filled, so you can change the **name, run mode, schedule/cron, trigger
+  filter, and task** without deleting and recreating it. The **agent** and **trigger type** stay
+  fixed (shown disabled) — changing those still means recreating. Backend `Automations.update` now
+  also patches the trigger `filter` (composio slugs are upper-cased; ignored for cron/webhook).
+- **Spent one-shots collapse out of the way.** A one-shot run scheduled by an agent (`once`) that has
+  already fired will never run again; those now fold into a collapsible **"Spent one-shot runs (N)"**
+  section at the bottom of the Automations page — hidden by default, with per-item delete and a
+  **Clear all**. Live cron/webhook/Slack/Discord automations are unaffected.
+
 ## [0.66.1] — 2026-07-09
 ### Fixed
 - **Inbox: dismissing a "Needs you" notification is now instant.** The section rendered
