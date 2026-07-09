@@ -282,7 +282,7 @@ export interface Msg {
   agent: string
   title: string
   body: string
-  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered'
+  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered' | 'cancelled'
   approvalId?: string
   capability?: string
   args?: unknown
@@ -712,6 +712,8 @@ export const api = {
   /** Approve this attempt AND add a persistent policy `allow` rule for its capability (owner-only). */
   alwaysApprove: (id: string) => call<{ ok: boolean; ruleAdded?: boolean; note?: string; error?: string }>('POST', `/api/approvals/${id}/always`),
   answerQuestion: (id: string, answer: string) => call<{ ok: boolean; error?: string }>('POST', '/api/questions/' + id, { answer }),
+  /** Dismiss a pending question without answering (cancels it; unblocks a still-live agent's `ask`). */
+  cancelQuestion: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/questions/${id}/cancel`),
   dismissMessage: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/dismiss`),
   dismissAllMessages: () => call<{ ok: boolean; dismissed?: number; error?: string }>('POST', '/api/messages/dismiss-all'),
   markRead: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/read`),

@@ -756,6 +756,7 @@ async function ask(args: Record<string, unknown>): Promise<string> {
     const r = await fetch(`${AOS_URL}/api/ask/${id}`);
     const d = (await r.json()) as { status?: string; answer?: string };
     if (d.status === 'answered') return d.answer || '(the operator gave no answer)';
+    if (d.status === 'cancelled') return 'The operator dismissed this question without answering. Proceed using your best judgement, or ask again if you are still blocked.';
   }
   return 'No answer yet (timed out waiting on the operator). Proceed using your best judgement or ask again.';
 }
