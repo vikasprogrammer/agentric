@@ -149,10 +149,21 @@ export interface ActionAttempt {
   reasoning?: string;
 }
 
+/**
+ * A policy decision. Every decision carries an explicit {@link RiskClass} — the single, legible
+ * bucket a human reads ("why am I being asked?") — plus a `reason` naming the rule/condition that put
+ * it there. The class is pinned to the effect: allow→green, approve@head→yellow, approve@owner→red,
+ * deny→deny. It's surfaced on the approval card, the audit trail, and the approver DM.
+ */
 export type Decision =
-  | { effect: 'allow' }
-  | { effect: 'deny'; reason: string }
-  | { effect: 'approve'; level: ApprovalLevel; reason: string };
+  | { effect: 'allow'; riskClass: 'green'; reason: string }
+  | { effect: 'deny'; riskClass: 'deny'; reason: string }
+  | { effect: 'approve'; level: ApprovalLevel; riskClass: 'yellow' | 'red'; reason: string };
+
+/** The risk bucket for an `ask` at a given approval level (yellow = admin/head, red = owner). */
+export function riskClassForLevel(level: ApprovalLevel): 'yellow' | 'red' {
+  return level === 'owner' ? 'red' : 'yellow';
+}
 
 export interface CapabilityResult {
   ok: boolean;

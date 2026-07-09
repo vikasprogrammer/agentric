@@ -11,7 +11,7 @@
  * Policy decides. It does not record (that's Audit) and does not run the approval
  * workflow (that's Approvals).
  */
-import { ActionAttempt, ApprovalLevel, Decision, PolicyEngine, RunContext } from '../types';
+import { ActionAttempt, ApprovalLevel, Decision, PolicyEngine, RunContext, riskClassForLevel } from '../types';
 
 type Op = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne';
 export type PolicyAction = 'allow' | 'ask' | 'never';
@@ -42,6 +42,25 @@ const OPS = ['gt', 'gte', 'lt', 'lte', 'eq', 'ne'];
 /** `admin` approves at the internal `head` level; `owner` at `owner`. (See canApprove in types.ts.) */
 function toLevel(approver: Approver | undefined): ApprovalLevel {
   return approver === 'owner' ? 'owner' : 'head';
+}
+
+const OP_PHRASE: Record<Op, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=', ne: '≠' };
+
+/**
+ * The human `reason` a decision carries — names the rule + the CONDITION that tripped it, so an approver
+ * reads *why*, not "matched rule 3". A `when` clause becomes a legible fact ("deleteCount > 25", or just
+ * "destructive" for a `== true` boolean); no clause → the bare capability; no rule → the default.
+ */
+function describeMatch(rule: PolicyRule | undefined, thresholds: Record<string, number>): string {
+  if (!rule) return 'default policy (no rule matched)';
+  const cap = rule.match.capability === '*' ? 'any action' : rule.match.capability;
+  const w = rule.match.when;
+  if (!w) return cap;
+  const resolved = resolveValue(w.value, thresholds);
+  const val = resolved === undefined ? w.value : resolved;
+  // A boolean flag reads cleaner as the flag name alone (`destructive`, not `destructive = true`).
+  if ((w.op === 'eq' && val === true) || (w.op === 'ne' && val === false)) return `${cap}: ${w.arg}`;
+  return `${cap}: ${w.arg} ${OP_PHRASE[w.op]} ${val}`;
 }
 
 /** Validate one outcome block (a rule or the document default). Returns an error message, or null. */
@@ -202,17 +221,17 @@ export class JsonPolicyEngine implements PolicyEngine {
       return true;
     });
     const outcome: PolicyOutcome = rule ?? this.doc.default;
-    const why = rule
-      ? `matched rule "${rule.match.capability}" → ${outcome.action}`
-      : `no rule matched → default ${outcome.action}`;
+    const reason = describeMatch(rule, thresholds);
 
     switch (outcome.action) {
       case 'allow':
-        return { effect: 'allow' };
+        return { effect: 'allow', riskClass: 'green', reason };
       case 'never':
-        return { effect: 'deny', reason: why };
-      case 'ask':
-        return { effect: 'approve', level: toLevel(outcome.approver), reason: why };
+        return { effect: 'deny', riskClass: 'deny', reason };
+      case 'ask': {
+        const level = toLevel(outcome.approver);
+        return { effect: 'approve', level, riskClass: riskClassForLevel(level), reason };
+      }
     }
   }
 }

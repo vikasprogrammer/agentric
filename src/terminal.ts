@@ -13,7 +13,7 @@ import * as path from 'path';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, Role, RunContext, resolveRuntimeTuning } from './types';
+import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
@@ -157,6 +157,9 @@ export interface FeedMessage {
   capability?: string;
   args?: unknown;
   level?: string;
+  /** For 'approval' messages: the explicit risk bucket (yellow = admin, red = owner) — the legible
+   *  severity signal the card badges. Derived from `level` on read. */
+  riskClass?: RiskClass;
   /** Who/what spawned the session (member id | `automation:<id>`) — for 'task' provenance. */
   source?: string;
   /** Links a 'question' message to its row; the answer derives live from it. */
@@ -232,6 +235,7 @@ export interface ApprovalNotice {
   agent: string;
   capability: string;
   level: ApprovalLevel;
+  riskClass: 'yellow' | 'red';
   reason?: string;
 }
 
@@ -1130,7 +1134,7 @@ export class TerminalManager {
       const emailDenial = this.emailIdentityDenial(sessionId, rawArgs);
       if (emailDenial) {
         this.audit(sessionId, agent, 'gate.email.blocked', { capability, reason: emailDenial, recipients: args.emailRecipients ?? [] });
-        this.audit(sessionId, agent, 'gate.decision', { capability, decision: { effect: 'deny', reason: emailDenial } });
+        this.audit(sessionId, agent, 'gate.decision', { capability, decision: { effect: 'deny', riskClass: 'deny', reason: emailDenial } });
         return { decision: 'deny' };
       }
     }
@@ -1172,10 +1176,11 @@ export class TerminalManager {
     });
     this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability });
     // Out-of-band ping (Slack/Discord DM to whoever can approve) — best-effort, never blocks the gate.
-    try { this.approvalNotifier?.({ sessionId, agent, capability, level: decision.level, reason: decision.reason }); } catch { /* notifications are advisory */ }
+    try { this.approvalNotifier?.({ sessionId, agent, capability, level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* notifications are advisory */ }
     // If the run was triggered from chat, surface the gate in that thread too (the approver DM reaches
     // the approver; this reaches everyone watching the thread). No-op for non-chat runs.
-    try { this.chatMirror?.(sessionId, `🔔 ${agent} needs approval — \`${capability}\` (${decision.level}).\nOpen the Agent OS console → Inbox to approve or reject.`); } catch { /* advisory */ }
+    const dot = decision.riskClass === 'red' ? '🔴' : '🟡';
+    try { this.chatMirror?.(sessionId, `${dot} ${agent} needs approval — \`${capability}\` (${decision.riskClass.toUpperCase()} · ${decision.level}).\n_why: ${decision.reason}_\nOpen the Agent OS console → Inbox to approve or reject.`); } catch { /* advisory */ }
 
     // The message + gate status are derived from the approvals table at read time, so all this
     // waiter has to do is leave an audit trail. (It won't fire across a restart — that's fine.)
@@ -1237,7 +1242,7 @@ export class TerminalManager {
           level: decision.level,
         });
         this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability: 'secret.put' });
-        try { this.approvalNotifier?.({ sessionId, agent, capability: 'secret.put', level: decision.level, reason: decision.reason }); } catch { /* advisory */ }
+        try { this.approvalNotifier?.({ sessionId, agent, capability: 'secret.put', level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* advisory */ }
         const approved = await settle;
         this.audit(sessionId, agent, 'approval.resolved', { approvalId: req.id, approved });
         if (!approved) return { status: 'denied', detail: `approval rejected (${decision.level})` };
@@ -1300,7 +1305,7 @@ export class TerminalManager {
    * string — classify falls back to the ruleset's default outcome for ones with no matching rule.
    */
   policyCheck(sessionId: string, agent: string, capability: string, args: Record<string, unknown>): Decision {
-    if (this.os.settings.killSwitch().engaged) return { effect: 'deny', reason: 'workspace emergency stop is engaged' };
+    if (this.os.settings.killSwitch().engaged) return { effect: 'deny', riskClass: 'deny', reason: 'workspace emergency stop is engaged' };
     const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
     const cap = enriched.emailSend === true ? 'email.send' : capability;
     return this.os.policy.classify({ capabilityId: cap, args: enriched, reasoning: '' }, this.ctx(sessionId, agent));
@@ -1885,6 +1890,8 @@ function toMessage(r: MessageRow): FeedMessage {
     capability: r.capability ?? undefined,
     args: r.args ? (JSON.parse(r.args) as unknown) : undefined,
     level: r.level ?? undefined,
+    // Explicit risk bucket for approval cards, derived from the approver level (head→yellow, owner→red).
+    riskClass: r.type === 'approval' && r.level ? riskClassForLevel(r.level as ApprovalLevel) : undefined,
     source: r.source ?? undefined,
     questionId: r.question_id ?? undefined,
     answer: r.question_answer ?? undefined,

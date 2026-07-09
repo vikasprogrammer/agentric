@@ -1938,6 +1938,9 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
   // ── Approval (pending) ──
   if (m.type === 'approval') {
     const mayApprove = canApprove(me.role, (m.level ?? 'head') as 'head' | 'owner')
+    // Explicit risk bucket — falls back to level for pre-riskClass rows (head→yellow, owner→red).
+    const rc = m.riskClass ?? (m.level === 'owner' ? 'red' : 'yellow')
+    const approverLabel = m.level === 'owner' ? 'owner' : 'admin'
     const resolve = async (approved: boolean) => { setBusy(true); const r = await api.resolve(m.approvalId!, approved); if (r.error) setBusy(false) }
     // "Always approve" also teaches policy an allow rule for this capability — a policy edit, so owner-only.
     const always = async () => {
@@ -1952,7 +1955,9 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <div className="min-w-0 flex-1">
             <MsgHeading m={m}>
-              <Badge variant={m.level === 'owner' ? 'destructive' : 'secondary'} className="px-1.5 py-0 text-[10px]">{m.level === 'owner' ? 'owner' : 'admin'} approval</Badge>
+              {rc === 'red'
+                ? <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">🔴 RED · {approverLabel} approval</Badge>
+                : <Badge className="border-amber-300 bg-amber-100 px-1.5 py-0 text-[10px] text-amber-900 hover:bg-amber-100">🟡 YELLOW · {approverLabel} approval</Badge>}
             </MsgHeading>
             <div className="mt-1 break-words text-sm font-medium">{m.title}</div>
             {m.policyReason && <div className="mt-0.5 break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {m.policyReason}</div>}

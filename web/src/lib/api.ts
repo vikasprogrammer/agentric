@@ -287,6 +287,8 @@ export interface Msg {
   capability?: string
   args?: unknown
   level?: 'head' | 'owner'
+  /** approval: explicit risk bucket (yellow = admin, red = owner) — the card's severity badge. */
+  riskClass?: 'green' | 'yellow' | 'red' | 'deny'
   source?: string
   questionId?: string
   answer?: string

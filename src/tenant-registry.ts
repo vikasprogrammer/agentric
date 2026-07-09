@@ -218,9 +218,10 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
   const approvers = os.team.listMembers().filter((m) => m.status === 'active' && canApprove(m.role, notice.level));
   if (!approvers.length) return;
   // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
+  const dot = notice.riskClass === 'red' ? '🔴' : '🟡';
   const text =
-    `🔔 Approval needed — \`${notice.capability}\` (${notice.level}) requested by agent ${notice.agent}.` +
-    (notice.reason ? `\n${notice.reason}` : '') +
+    `${dot} ${notice.riskClass.toUpperCase()} approval needed — \`${notice.capability}\` (${notice.level}) requested by agent ${notice.agent}.` +
+    (notice.reason ? `\nwhy: ${notice.reason}` : '') +
     `\nOpen the Agent OS console → Inbox to approve or reject.`;
   let dms = 0;
   for (const m of approvers) {

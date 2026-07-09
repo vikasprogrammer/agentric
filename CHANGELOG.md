@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.62.2] — 2026-07-09
+### Added
+- **Explicit risk class on every decision.** A policy `Decision` now carries a first-class
+  `riskClass` — 🟢 green (allow) / 🟡 yellow (admin approval) / 🔴 red (owner approval) / ⛔ deny — so
+  the four buckets the gate already used are now a named, legible signal instead of something each
+  consumer re-derived from the approver level. The engine also builds a human `reason` that names the
+  *condition* that tripped the rule (e.g. `deleteCount > 25`, `destructive`, `connector.connect`) rather
+  than "matched rule 3". The class + reason are surfaced on the **inbox approval card** (a coloured
+  RED/YELLOW badge + a "why:" line), the **approver DM** (Slack/Discord), the **chat-thread mirror**, and
+  the **audit trail** (`gate.decision`). Additive and backward-compatible — pre-`riskClass` rows fall back
+  to the approver level (head→yellow, owner→red).
+
 ## [0.62.1] — 2026-07-09
 ### Fixed
 - **Inbox action cards preserve line breaks in agent prose.** Question, notification, and approval bodies
