@@ -860,6 +860,10 @@ export class TerminalManager {
         this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
         this.cancelPendingQuestions(r.id, 'system');
         this.cancelPendingApprovals(r.id, 'system');
+        // A reaped session must stay reaped — otherwise ttyd's reconnect on the still-open tab would
+        // resurrect it and defeat the reap. A later Slack reply still revives it (a fresh session), and a
+        // deliberate console re-open clears the block.
+        this.blockResume(r.id);
         this.audit(r.id, r.agent, 'chat.reaped', { idleMin: timeoutMin });
       } catch { /* one bad row must not stop the sweep */ }
     }
@@ -1683,6 +1687,12 @@ export class TerminalManager {
     if (!s) return;
     if (s.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'done', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
+    // claude exited on its own. The launcher normally holds the pane on a "press [r] to resume" prompt,
+    // but if that pane dies (an idle/detached `read` bailing out), ttyd's silent auto-reconnect would
+    // re-run attach.sh and `claude --resume` the finished session back to life. Drop the same stay-stopped
+    // sentinel as a manual stop — inert while the holding pane lives, decisive if it doesn't. A deliberate
+    // re-open/Resume clears it.
+    this.blockResume(sessionId);
     // Distil the session into one durable memory for the agent — the `report` (a 'completed' card) has
     // already landed by now if the agent left one, so writeEpisode prefers it; otherwise it summarises
     // the audit stream. Best-effort + idempotent; never blocks the end signal.
@@ -1778,11 +1788,15 @@ export class TerminalManager {
     return this.os.paths ? path.join(this.os.paths.connectors, `session-${sessionId}.stopped`) : null;
   }
 
-  /** Mark a session as deliberately stopped so the ttyd attach wrapper won't `claude --resume` it. */
+  /** Mark a session as "do not auto-resurrect" so the ttyd attach wrapper (attach.sh) won't
+   *  `claude --resume` it the next time its dead pane triggers a silent reconnect. Only a session with a
+   *  persisted launch env is resurrectable, so there's nothing to block otherwise — skip it (a headless
+   *  run leaves no env and would only litter the dir). A deliberate re-open clears it via `allowResume`. */
   private blockResume(sessionId: string): void {
     const p = this.stopMarkerPath(sessionId);
-    if (!p) return;
-    try { this.ensureSecureDir(this.os.paths!.connectors); fs.writeFileSync(p, '', { mode: 0o600 }); } catch { /* best-effort */ }
+    if (!p || !this.os.paths) return;
+    if (!fs.existsSync(path.join(this.os.paths.connectors, `session-${sessionId}.env`))) return;
+    try { this.ensureSecureDir(this.os.paths.connectors); fs.writeFileSync(p, '', { mode: 0o600 }); } catch { /* best-effort */ }
   }
 
   /** Clear the stop sentinel — a human deliberately re-opened/resumed this session, so let attach.sh
