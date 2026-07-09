@@ -779,7 +779,7 @@ function Console({ me }: { me: Member }) {
               {(me.role === 'owner' || me.role === 'admin') && (
                 <NavItem icon={<Sparkles className="h-4 w-4" />} label="Skills" active={route === 'skills'} onClick={() => nav('skills')} />
               )}
-              <NavItem icon={<Plug className="h-4 w-4" />} label="Connectors" active={route === 'connectors'} onClick={() => nav('connectors')} />
+              <NavItem icon={<Plug className="h-4 w-4" />} label="Connections" active={route === 'connectors'} onClick={() => nav('connectors')} />
               <NavItem icon={<Users className="h-4 w-4" />} label="Team" active={route === 'team'} onClick={() => nav('team')} />
               {(me.role === 'owner' || me.role === 'admin') && (
                 <NavItem icon={<FolderTree className="h-4 w-4" />} label="Files" active={route === 'files'} onClick={() => nav('files')} />
@@ -817,7 +817,7 @@ function Console({ me }: { me: Member }) {
         <div className="flex items-center justify-between border-b px-6 py-4">
           <div className="flex items-center gap-3">
             <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-              {route === 'sessions' && selected ? selected.title : route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connectors' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+              {route === 'sessions' && selected ? selected.title : route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
             </h1>
             {/* When a terminal is open the page fills with the iframe; this pins a way back to the list next to the title. */}
             {route === 'sessions' && selected && (
@@ -833,7 +833,7 @@ function Console({ me }: { me: Member }) {
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
-          {route === 'connectors' && <ConnectorsPage me={me} />}
+          {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
@@ -2153,7 +2153,35 @@ function FeedItem({ m, onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: 
   )
 }
 
-// Connectors UI lives in ./connectors.tsx (ConnectorsPage imported above).
+// Connectors UI lives in ./connectors.tsx (ConnectorsPage imported above). The "Connections" page
+// wraps it with a **Creds** sub-tab — the workspace platform-credential editor (formerly Settings →
+// Integrations) — so "what an agent can reach" and "the keys that power it" live in one place. The
+// active sub-tab is the hash detail (`#/connectors/creds`), mirroring how SettingsPage tabs work.
+function ConnectionsPage({ me, tab, onTab }: { me: Member | null; tab: string; onTab: (t: 'connected' | 'creds') => void }) {
+  // Creds (the platform-credential editor) is owner/admin-only — as it was under Settings. Members see
+  // only the Connected list, so a stray `#/connectors/creds` falls back rather than showing a dead tab.
+  const isAdmin = me?.role === 'owner' || me?.role === 'admin'
+  const active: 'connected' | 'creds' = tab === 'creds' && isAdmin ? 'creds' : 'connected'
+  return (
+    <div className="max-w-4xl space-y-4">
+      {isAdmin && (
+        <div className="inline-flex gap-1 rounded-lg border bg-background p-1">
+          {([['connected', 'Connected'], ['creds', 'Creds']] as const).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onTab(v)}
+              className={`rounded-md px-3 py-1 text-xs transition-colors ${active === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {active === 'creds' && me ? <IntegrationsSettings me={me} /> : <ConnectorsPage me={me} />}
+    </div>
+  )
+}
 function Field({ label, help, children }: { label: string; help?: string; children: ReactNode }) {
   return (
     <div>
@@ -3756,15 +3784,15 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                     <Input disabled value="URL generated after create" />
                   </Field>
                 ) : type === 'slack' ? (
-                  <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Needs Slack tokens in Settings → Integrations.">
+                  <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Needs Slack tokens in Connections → Creds.">
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="app_mention  ·  or a channel id  (blank = any)" />
                   </Field>
                 ) : type === 'discord' ? (
-                  <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a channel id. Blank = any Discord message the bot receives. Needs a bot token in Settings → Integrations.">
+                  <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a channel id. Blank = any Discord message the bot receives. Needs a bot token in Connections → Creds.">
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="mention  ·  or a channel id  (blank = any)" />
                   </Field>
                 ) : (
-                  <Field label="Trigger filter" help="Composio trigger slug to match — e.g. SLACK_DIRECT_MESSAGE_RECEIVED. Blank = any Composio event. Needs a webhook secret in Settings → Integrations.">
+                  <Field label="Trigger filter" help="Composio trigger slug to match — e.g. SLACK_DIRECT_MESSAGE_RECEIVED. Blank = any Composio event. Needs a webhook secret in Connections → Creds.">
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="SLACK_DIRECT_MESSAGE_RECEIVED  (blank = any)" />
                   </Field>
                 )}
@@ -5826,8 +5854,8 @@ function AuditPage() {
   )
 }
 
-type SettingsTab = 'company' | 'runtime' | 'integrations' | 'secrets' | 'memory' | 'policy' | 'governance' | 'system'
-const SETTINGS_TABS: SettingsTab[] = ['company', 'runtime', 'integrations', 'secrets', 'memory', 'policy', 'governance', 'system']
+type SettingsTab = 'company' | 'runtime' | 'secrets' | 'memory' | 'policy' | 'governance' | 'system'
+const SETTINGS_TABS: SettingsTab[] = ['company', 'runtime', 'secrets', 'memory', 'policy', 'governance', 'system']
 
 // The active sub-tab is a URL detail (`#/settings/<tab>`) so a refresh / shared link lands on the same
 // tab. `tab` is the raw detail from the router; `onTab` writes it back into the hash.
@@ -5840,7 +5868,6 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
       <div className="flex w-48 shrink-0 flex-col gap-1 rounded-lg border bg-background p-1 self-start [&_button]:text-left">
         <TabButton on={tab === 'company'} onClick={() => setTab('company')}>Company context</TabButton>
         <TabButton on={tab === 'runtime'} onClick={() => setTab('runtime')}>Runtime defaults</TabButton>
-        <TabButton on={tab === 'integrations'} onClick={() => setTab('integrations')}>Integrations</TabButton>
         <TabButton on={tab === 'secrets'} onClick={() => setTab('secrets')}>Secrets</TabButton>
         <TabButton on={tab === 'memory'} onClick={() => setTab('memory')}>Memory backend</TabButton>
         <TabButton on={tab === 'governance'} onClick={() => setTab('governance')}>Governance</TabButton>
@@ -5850,7 +5877,6 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
           : tab === 'runtime' ? <RuntimeDefaultsSettings me={me} />
-          : tab === 'integrations' ? <IntegrationsSettings me={me} />
           : tab === 'secrets' ? <SecretsSettings me={me} />
           : tab === 'memory' ? <MemorySettings me={me} />
           : tab === 'governance' ? <GovernanceSettings me={me} />
@@ -6816,9 +6842,10 @@ function IntegrationsSettings({ me }: { me: Member }) {
   return (
     <div className="max-w-3xl space-y-4">
       <p className="text-sm text-muted-foreground">
-        Workspace <strong>integration credentials</strong> — stored once and used by your connectors. The
-        <strong> Composio</strong> API key powers Composio-backed connectors: one company key, with each member's
-        apps scoped to their own account (their email is the Composio <code className="text-xs">user_id</code>).
+        <strong>Creds</strong> — the workspace platform credentials stored once and used by your connections. The
+        <strong> Composio</strong> API key powers Composio-backed connections: one company key, with each member's
+        apps scoped to their own account (their email is the Composio <code className="text-xs">user_id</code>). For
+        arbitrary secrets an agent reads at runtime, use the <a href="#/settings/secrets" className="underline hover:text-foreground">Secrets vault</a>.
       </p>
 
       <Card>

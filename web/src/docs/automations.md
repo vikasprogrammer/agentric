@@ -18,7 +18,7 @@ work*; automations answer *when the work starts*.
 | **Discord message** | the bot is @mentioned or DM'd | the same, in a Discord server or DM |
 
 Slack and Discord run over an **outbound** connection, so there's no public URL to expose — set the
-tokens once in **Settings → Integrations**. Webhooks get a secret URL (the key in the link *is* the
+tokens once in **Connections → Creds**. Webhooks get a secret URL (the key in the link *is* the
 auth); treat it like a password.
 
 ## An automated run is still a governed run

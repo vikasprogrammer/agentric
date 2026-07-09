@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.68.0] — 2026-07-09
+### Changed
+- **Connectors → Connections, with a Creds sub-tab.** The **Connectors** page is now **Connections**,
+  and the workspace platform-credential editor (Composio key, Slack/Discord tokens, chat-router
+  toggle) moved out of **Settings → Integrations** into a **Creds** sub-tab on the same page — so
+  "what an agent can reach" and "the keys that power it" live in one place (`#/connectors/creds`).
+  The Settings → Integrations tab is gone; all prose/links now point to **Connections → Creds**. Creds
+  stays owner/admin-only, as before. UI-only — no API, schema, or data change. First step of the
+  access-model reframe (`docs/access-model.md`).
+
 ## [0.67.0] — 2026-07-09
 ### Added
 - **Edit an existing automation.** Each automation card gains an **Edit** button (owner or creator)

@@ -288,7 +288,7 @@ function AddIntegration({ me, catalog, keySet, onPickTemplate, onConnected, onCl
       {matchedTemplates.length === 0 && matchedApps.length === 0 && (
         <p className="text-xs text-muted-foreground">
           {query ? `No integrations match “${q}”.` : 'No integrations available.'}
-          {!keySet && ' Connecting Composio apps needs a company Composio key (an admin adds it in Settings → Integrations).'}
+          {!keySet && ' Connecting Composio apps needs a company Composio key (an admin adds it in Connections → Creds).'}
         </p>
       )}
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
@@ -390,7 +390,7 @@ function ComposioRow({ app, canRemove, busy, onRemove }: {
   )
 }
 
-/** A native chat-bot row (Slack / Discord) — status only; setup lives in Settings → Integrations. */
+/** A native chat-bot row (Slack / Discord) — status only; setup lives in Connections → Creds. */
 function NativeRow({ name, title, s, isAdmin }: {
   name: string; title: string; s?: { configured: boolean; connected: boolean; botUserId: string }; isAdmin: boolean
 }) {
@@ -405,7 +405,7 @@ function NativeRow({ name, title, s, isAdmin }: {
             : statusBadge('not configured')
       }
       right={isAdmin
-        ? <a href="#/settings/integrations" className="inline-flex items-center gap-1 text-[11px] text-muted-foreground underline hover:text-foreground">Settings <ExternalLink className="h-3 w-3" /></a>
+        ? <a href="#/connectors/creds" className="inline-flex items-center gap-1 text-[11px] text-muted-foreground underline hover:text-foreground">Creds <ExternalLink className="h-3 w-3" /></a>
         : <span className="text-[11px] text-muted-foreground">managed by an admin</span>}
     />
   )
@@ -476,7 +476,7 @@ function ConnectedList({ me, connectors, ov, conns, busy, onToggle, onRemove, on
             {conns?.me && <code className="rounded bg-muted px-1.5 py-0.5 text-[10px]" title="your Composio user_id">{conns.me}</code>}
           </div>
           {!conns?.keySet && myConnectors.length === 0 && (
-            <p className="text-xs text-muted-foreground">Connecting your own apps needs a company Composio key (an admin sets it in Settings → Integrations).</p>
+            <p className="text-xs text-muted-foreground">Connecting your own apps needs a company Composio key (an admin sets it in Connections → Creds).</p>
           )}
           {conns?.keySet && myApps.length === 0 && myConnectors.length === 0 && (
             <p className="text-xs text-muted-foreground">You haven’t connected any personal apps or servers yet.</p>
@@ -679,9 +679,9 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
   return (
     <div className="max-w-4xl space-y-6">
       <p className="text-sm text-muted-foreground">
-        Connectors give your claude-code agents real tools. <b>Company</b> integrations are shared by every agent;
-        <b> your</b> connections only load in sessions you start. Every call still passes the gate, so risky actions
-        land in the Inbox for approval.
+        <b>Connections</b> are the tools your claude-code agents can reach. <b>Company</b> connections are shared by
+        every agent; <b>your</b> connections only load in sessions you start. The keys that power them live under
+        the <b>Creds</b> tab. Every call still passes the gate, so risky actions land in the Inbox for approval.
       </p>
 
       {!showAdd && (
