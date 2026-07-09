@@ -1880,8 +1880,22 @@ function InboxPage({ messages, me, onOpen, onOpenArtifact, onOpenTask }: { messa
     const r = await api.dismissMessage(id)
     if (r.error) { setDismissed((s) => { const n = new Set(s); n.delete(id); return n }); alert(r.error) }
   }
-  const action = messages.filter(isActionRequired)
+  // `dismissed` is honored here too so a dismissed notification vanishes INSTANTLY (optimistic), instead
+  // of lingering until the next 1.5s poll drops it server-side — the old code filtered `activity` but not
+  // `action`, which is why dismissing a "Needs you" notification felt stuck.
+  const action = messages.filter((m) => isActionRequired(m) && !dismissed.has(m.id))
   const activity = messages.filter((m) => !isActionRequired(m) && !dismissed.has(m.id))
+  // Only open notifications in "Needs you" are dismissible — pending approvals/questions must be
+  // resolved/answered, not swept away (the server refuses to dismiss them anyway).
+  const dismissableAction = action.filter((m) => m.type === 'notification')
+  const dismissAllAction = async () => {
+    const ids = dismissableAction.map((m) => m.id)
+    if (ids.length === 0) return
+    setDismissed((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n })
+    const results = await Promise.all(ids.map((id) => api.dismissMessage(id)))
+    const failed = ids.filter((_, i) => results[i].error)
+    if (failed.length) { setDismissed((s) => { const n = new Set(s); failed.forEach((id) => n.delete(id)); return n }); alert('Some notifications could not be dismissed') }
+  }
   const dismissAll = async () => {
     const ids = activity.map((m) => m.id)
     if (ids.length === 0) return
@@ -1905,8 +1919,11 @@ function InboxPage({ messages, me, onOpen, onOpenArtifact, onOpenTask }: { messa
   return (
     <div className="mx-auto max-w-2xl space-y-7">
       <section>
-        <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Needs you {action.length > 0 && <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">{action.length}</Badge>}
+        <div className="mb-2 flex items-center justify-between">
+          <span className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Needs you {action.length > 0 && <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">{action.length}</Badge>}
+          </span>
+          {dismissableAction.length > 0 && <button className="text-[11px] text-muted-foreground underline hover:text-foreground" onClick={dismissAllAction}>dismiss all</button>}
         </div>
         {action.length === 0 ? (
           <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">Nothing waiting on you. 🎉</div>

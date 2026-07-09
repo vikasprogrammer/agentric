@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.66.1] — 2026-07-09
+### Fixed
+- **Inbox: dismissing a "Needs you" notification is now instant.** The section rendered
+  `messages.filter(isActionRequired)` without honoring the optimistic `dismissed` set (the Activity
+  feed below it did), so a dismissed notification lingered until the next 1.5s poll dropped it
+  server-side — it felt stuck. It now hides the moment you click.
+- **Inbox: added a "dismiss all" link to the "Needs you" section.** Clears every open waiting
+  notification there in one click (pending approvals/questions are left in place — those must be
+  resolved/answered, and the server refuses to dismiss them anyway).
+
 ## [0.66.0] — 2026-07-09
 ### Added
 - **Close a terminal tab without killing its session.** Each tab in the session switcher now has a
