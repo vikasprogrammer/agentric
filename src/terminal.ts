@@ -153,7 +153,7 @@ export interface FeedMessage {
   agent: string;
   title: string;
   body: string;
-  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered';
+  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered' | 'cancelled';
   approvalId?: string;
   capability?: string;
   args?: unknown;
@@ -360,6 +360,8 @@ export class TerminalManager {
           // only place to capture what the run did before it died. Outcome 'crashed'; idempotent, so
           // repeated polls won't write twice; skipped if the session did no real work.
           this.writeEpisode(r.id, r.agent, 'crashed');
+          // A crashed agent can't answer anything it asked — retire its open questions like a clean stop.
+          this.cancelPendingQuestions(r.id, 'system');
         }
       }
     }
@@ -852,6 +854,7 @@ export class TerminalManager {
       try {
         this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
         this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+        this.cancelPendingQuestions(r.id, 'system');
         this.audit(r.id, r.agent, 'chat.reaped', { idleMin: timeoutMin });
       } catch { /* one bad row must not stop the sweep */ }
     }
@@ -1471,11 +1474,40 @@ export class TerminalManager {
     return true;
   }
 
+  /**
+   * Cancel a single pending question (the inbox "dismiss" on a question card). Flips it to `cancelled`
+   * so the card leaves "Needs you" and becomes a dismissable Activity row — and, since `questionStatus`
+   * now reports `cancelled`, a still-live agent's blocking `ask` poll unblocks and proceeds instead of
+   * waiting out the hour. No-op unless the question exists and is still pending.
+   */
+  cancelQuestion(id: string, by: string): boolean {
+    const q = this.db.prepare('SELECT run_id, status FROM questions WHERE id = ?').get<{ run_id: string; status: string }>(id);
+    if (!q || q.status !== 'pending') return false;
+    this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = ?, answered_at = ? WHERE id = ?").run(by, Date.now(), id);
+    this.audit(q.run_id, by, 'question.cancelled', { questionId: id });
+    return true;
+  }
+
+  /**
+   * Cancel every pending question for a session — called when the session stops/crashes/is reaped, so the
+   * agent that asked is gone and no one can answer. Leaves the orphaned "Needs you" cards as dismissable
+   * `cancelled` Activity rows instead of live prompts that can never be resolved. Returns how many flipped.
+   */
+  private cancelPendingQuestions(sessionId: string, by: string): number {
+    const pending = this.db.prepare("SELECT id FROM questions WHERE run_id = ? AND status = 'pending'").all<{ id: string }>(sessionId);
+    if (!pending.length) return 0;
+    this.db.prepare("UPDATE questions SET status = 'cancelled', answered_by = ?, answered_at = ? WHERE run_id = ? AND status = 'pending'").run(by, Date.now(), sessionId);
+    for (const q of pending) this.audit(sessionId, by, 'question.cancelled', { questionId: q.id, reason: 'session ended' });
+    return pending.length;
+  }
+
   /** Question status + answer for the polling ask-human MCP tool. */
-  questionStatus(id: string): { status: 'pending' | 'answered'; answer?: string } {
+  questionStatus(id: string): { status: 'pending' | 'answered' | 'cancelled'; answer?: string } {
     const q = this.db.prepare('SELECT status, answer FROM questions WHERE id = ?').get<{ status: string; answer: string | null }>(id);
     if (!q) return { status: 'pending' };
-    return { status: q.status === 'answered' ? 'answered' : 'pending', answer: q.answer ?? undefined };
+    if (q.status === 'answered') return { status: 'answered', answer: q.answer ?? undefined };
+    if (q.status === 'cancelled') return { status: 'cancelled' };
+    return { status: 'pending' };
   }
 
   /** Claude Code fired a Notification — it's blocked waiting on the human (a permission prompt in the
@@ -1701,6 +1733,9 @@ export class TerminalManager {
     this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
     if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
+    // The agent that asked is now dead — no one can answer its open questions. Cancel them so they leave
+    // "Needs you" and become dismissable, rather than hanging forever as unanswerable prompts.
+    this.cancelPendingQuestions(sessionId, by);
     // Halting kills the tmux shell, so the launcher's `markEnded` never fires — capture the episode
     // here instead so the work done (the audit stream) is remembered. Outcome 'stopped'; skipped if the
     // session did nothing worth remembering.

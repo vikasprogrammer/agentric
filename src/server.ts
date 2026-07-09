@@ -1475,6 +1475,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: 'already answered or not found' });
   }
 
+  // Dismiss a pending question without answering it (the inbox "dismiss" on a question card). Cancels
+  // the question — it leaves "Needs you" and a still-live agent's blocking `ask` unblocks. Same
+  // visibility gate as answering.
+  const cancelQMatch = p.match(/^\/api\/questions\/([\w-]+)\/cancel$/);
+  if (method === 'POST' && cancelQMatch) {
+    if (!tm.canViewQuestion(cancelQMatch[1], me)) return sendJson(res, 403, { error: 'not allowed to dismiss this question' });
+    const ok = tm.cancelQuestion(cancelQMatch[1], me.email);
+    return sendJson(res, ok ? 200 : 409, ok ? { ok: true } : { error: 'already resolved or not found' });
+  }
+
   // ── memory (console: browse / curate an agent's persistent memory) ───────────
   if (method === 'GET' && p === '/api/memory/health') return sendJson(res, 200, await os.memory.health());
   // The learning-system Overview: pipeline counts + a recent learning-activity feed. Owner/admin —

@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.69.0] — 2026-07-09
+### Added
+- **Dismiss an agent question from the Inbox.** A pending question card now has a **Dismiss** button
+  next to Reply. It cancels the question (new `cancelled` status) so it leaves "Needs you" — and a
+  still-live agent's blocking `ask` unblocks and proceeds instead of waiting out its poll timeout.
+### Changed
+- **Stopping a session retires its open questions.** When a session is stopped (or crashes, or is
+  idle-reaped), the agent that asked is gone and no one can answer — so its pending questions are now
+  cancelled automatically. The orphaned "Needs you" cards drop into the dismissable Activity feed
+  (labelled *dismissed*) instead of hanging forever as unanswerable prompts.
+
 ## [0.68.0] — 2026-07-09
 ### Changed
 - **Connectors → Connections, with a Creds sub-tab.** The **Connectors** page is now **Connections**,

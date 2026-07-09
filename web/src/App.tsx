@@ -2037,6 +2037,8 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
 
   // ── Question (pending) ──
   const send = async () => { if (!answer.trim()) return; setBusy(true); const r = await api.answerQuestion(m.questionId!, answer.trim()); if (r.error) setBusy(false) }
+  // Dismiss without answering: cancels the question so it leaves "Needs you" (and unblocks a live agent's `ask`).
+  const dismissQ = async () => { setBusy(true); const r = await api.cancelQuestion(m.questionId!); if (r.error) { setBusy(false); alert(r.error) } }
   return (
     <div className="rounded-lg border border-sky-300 bg-sky-50/40 px-3 py-2.5">
       <div className="flex items-start gap-2.5">
@@ -2051,6 +2053,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
       <div className="mt-2 flex gap-1.5">
         <Input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="Type your answer — the agent is waiting…" className="h-8 text-sm" />
         <Button size="sm" className="h-8 px-2.5 text-xs" disabled={busy || !answer.trim()} onClick={send}><Send className="mr-1 h-3.5 w-3.5" />Reply</Button>
+        <Button size="sm" variant="ghost" className="h-8 px-2 text-xs text-muted-foreground" disabled={busy} onClick={dismissQ} title="Dismiss without answering — the agent stops waiting on this">Dismiss</Button>
       </div>
     </div>
   )
@@ -2091,7 +2094,9 @@ function FeedItem({ m, onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: 
     badge = <Badge variant={m.status === 'approved' ? 'default' : 'destructive'} className="px-1.5 py-0 text-[10px]">{m.status}</Badge>
   } else if (m.type === 'question') {
     Icon = HelpCircle; iconCls = 'text-sky-600'
-    verb = 'asked'; detail = m.body
+    const cancelled = m.status === 'cancelled'
+    verb = cancelled ? 'asked — dismissed unanswered' : 'asked'; detail = m.body
+    if (cancelled) badge = <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">dismissed</Badge>
     extra = m.answer ? <div className="mt-1 rounded bg-muted px-2 py-1 text-xs"><span className="text-muted-foreground">{m.answeredBy ? `${m.answeredBy}: ` : 'answer: '}</span>{m.answer}</div> : null
   } else if (isImportant(m)) {
     Icon = AlertTriangle; iconCls = 'text-amber-600'; highlight = true
