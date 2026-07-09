@@ -235,6 +235,21 @@ async function deliverDM(slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<Disco
 }
 
 /**
+ * DM a member their own freshly-minted sign-in link, on their linked Slack/Discord account — the
+ * delivery half of the self-service "email me a link" recovery path (server.ts `POST
+ * /api/auth/request-link`). Best-effort; the caller ALSO logs the link to server.log so an owner with
+ * box access can always recover even with no chat identity linked. Returns the delivered-DM count.
+ */
+export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, member: Member, link: string): Promise<number> {
+  const text =
+    `🔑 Your Agent OS sign-in link (valid 7 days, single use):\n${link}\n` +
+    `If you didn't request this, you can ignore it — the link is harmless until it's opened.`;
+  const dms = await deliverDM(slack, discord, os, [member], text);
+  os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'auth.link.notified', data: { member: member.id, dms } });
+  return dms;
+}
+
+/**
  * DM everyone who can approve a freshly-raised approval, on their linked Slack/Discord account. Best-
  * effort: the approvers set comes from the {@link resolveRecipients} `approvers` audience
  * (`canApprove(role, level)`); `deliverDM` reaches them via the identity map. Off the gate's hot path

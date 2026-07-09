@@ -10,7 +10,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { AgentOS, loadAgentOS } from './kernel';
 import { VERSION } from './version';
-import { TenantRegistry, TenantRuntime } from './tenant-registry';
+import { TenantRegistry, TenantRuntime, notifyLoginLink } from './tenant-registry';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
@@ -296,7 +296,40 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   if (method === 'GET' && p === '/api/auth/me') {
     const m = memberFor(os, req);
-    return m ? sendJson(res, 200, { member: m }) : sendJson(res, 401, { error: 'not authenticated' });
+    if (!m) return sendJson(res, 401, { error: 'not authenticated' });
+    // Sliding session: re-stamp the cookie on every app load (the SPA GETs this on mount) so an active
+    // user's 30-day browser cookie never lapses. Pairs with the DB-side slide in TeamStore.resolveSession
+    // — restamping the cookie alone would outlive the server row, sliding the row alone would outlive the
+    // cookie; both together keep an active user logged in indefinitely.
+    const sid = parseCookies(req)['aos_sid'];
+    const headers: Record<string, string> = { 'content-type': 'application/json; charset=utf-8' };
+    if (sid) headers['set-cookie'] = sessionCookie(sid);
+    res.writeHead(200, headers);
+    res.end(JSON.stringify({ member: m }));
+    return;
+  }
+  // Self-service recovery: a member who lost their session (new device, cleared cookies, expired
+  // window) asks for a fresh sign-in link WITHOUT needing an admin to mint one. Public + neutral: we
+  // ALWAYS return { ok: true } regardless of whether the email is a real member, so this can't be used
+  // to enumerate accounts. A known member gets a fresh 7-day magic-link delivered out-of-band — DM'd to
+  // their linked Slack/Discord (identity map) AND written to server.log (the always-available fallback,
+  // matching how the owner-seed link is surfaced). Rate-limited per email + client IP.
+  if (method === 'POST' && p === '/api/auth/request-link') {
+    const b = await readBody(req);
+    const email = String(b.email || '').trim().toLowerCase();
+    if (email && email.includes('@') && allowLinkRequest(email, req)) {
+      const issued = os.team.issueLoginLink(email); // null when no such member — stays silent
+      if (issued) {
+        const link = linkFor(req, issued.token);
+        let dms = 0;
+        if (slack && discord) dms = await notifyLoginLink(os, slack, discord, issued.member, link);
+        console.log(`[auth] sign-in link requested for ${email} — ${dms} DM(s) sent: ${link}`);
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: email, type: 'auth.link.requested', data: { member: issued.member.id, dms } });
+      } else {
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: email, type: 'auth.link.requested', data: { unknown: true } });
+      }
+    }
+    return sendJson(res, 200, { ok: true });
   }
   if (method === 'POST' && p === '/api/auth/logout') {
     const sid = parseCookies(req)['aos_sid'];
@@ -2977,6 +3010,26 @@ function clearCookie(): string {
 }
 function memberFor(os: AgentOS, req: http.IncomingMessage): Member | undefined {
   return os.team.resolveSession(parseCookies(req)['aos_sid'] || '');
+}
+
+// In-memory throttle for the public /api/auth/request-link route: at most LINK_REQ_MAX attempts per
+// key (email OR client IP) within LINK_REQ_WINDOW_MS. Bounds link-minting + DM spam and slows any
+// enumeration-by-timing. Process-local (fine — this is a per-tenant single process); resets on restart.
+const LINK_REQ_WINDOW_MS = 15 * 60 * 1000;
+const LINK_REQ_MAX = 3;
+const linkReqHits = new Map<string, number[]>();
+function allowLinkRequest(email: string, req: http.IncomingMessage): boolean {
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const now = Date.now();
+  let ok = true;
+  for (const key of [`e:${email}`, `ip:${ip}`]) {
+    if (!key.slice(2)) continue; // skip an empty ip
+    const hits = (linkReqHits.get(key) || []).filter((t) => now - t < LINK_REQ_WINDOW_MS);
+    if (hits.length >= LINK_REQ_MAX) ok = false;
+    hits.push(now);
+    linkReqHits.set(key, hits);
+  }
+  return ok;
 }
 
 // ── per-member terminal reverse proxy (Phase A, flag on) ───────────────────────

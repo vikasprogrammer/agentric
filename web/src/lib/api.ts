@@ -683,6 +683,9 @@ export const api = {
     return (await res.json()).member as Member
   },
   logout: () => call<{ ok: boolean }>('POST', '/api/auth/logout'),
+  /** Self-service recovery: ask the server to send a fresh sign-in link. Always resolves ok (neutral
+   *  response — a real member is DM'd/logged a link; an unknown email is a silent no-op). */
+  requestLink: (email: string) => call<{ ok: boolean }>('POST', '/api/auth/request-link', { email }),
 
   state: () => call<StateResp>('GET', '/api/state'),
   /** Self-update: check whether the checkout is behind origin (`force` re-runs `git fetch`, owner/admin). */

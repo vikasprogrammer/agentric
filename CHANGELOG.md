@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.65.0] — 2026-07-09
+### Added
+- **Self-service sign-in recovery — no admin needed to get back in.** The login screen gains an
+  **"Email me a link"** field: a member who lost their session (new device, cleared cookies, expired
+  window) enters their email and the server mints a fresh 7-day magic-link and delivers it out-of-band —
+  DM'd to their linked **Slack/Discord** (identity map) and written to **server.log** (the always-
+  available fallback, matching how the owner-seed link is surfaced). New public route
+  `POST /api/auth/request-link`; **neutral response** always (`{ ok: true }` whether or not the email is
+  a real member — no account enumeration); rate-limited per email + client IP (3 / 15 min). Closes the
+  gap where the ONLY way into the portal was an owner/admin-minted token. Audited
+  `auth.link.requested` / `auth.link.notified`.
+### Changed
+- **Sliding login sessions — active users stop getting logged out at the hard 30-day mark.**
+  `TeamStore.resolveSession` now bumps the 30-day expiry on activity (throttled to ≤1 DB write/day/
+  session), and `GET /api/auth/me` re-stamps the `aos_sid` cookie on every app load (the SPA calls it on
+  mount) so the browser cookie never lapses either. A daily-active user now stays signed in indefinitely;
+  the fixed-30-day cutoff only bites a genuinely idle session. The one-time invite/magic-link semantics
+  are unchanged (single-use, 7-day TTL).
+
 ## [0.64.0] — 2026-07-09
 ### Added
 - **Task lifecycle → Inbox notifications, routed to the right person.** Creating, (re)assigning, or

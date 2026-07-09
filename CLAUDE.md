@@ -323,10 +323,21 @@ in `src/types.ts` and `TeamStore.canRun()`.
   the provenance rule (automation creator + owner/admin). So a chat-triggered run is owned by the
   automation for provenance yet acts as — and is visible to — the member who sent the message.
 - **Auth in `server.ts`:** public routes are the app/assets, `/health`, `/accept`, `/hooks/<id>`
-  (webhooks carry their own secret key), `/api/auth/me`, `/api/auth/logout`; every other `/api/*`
-  requires a session (else 401). Role gates: approvals → `canApprove`; spawn → `canRun`;
-  team/connector/automation mutations → owner/admin (role changes & member removal → owner only).
-  Resolver identity is the member's email, not the old hardcoded `console-user`.
+  (webhooks carry their own secret key), `/api/auth/me`, `/api/auth/logout`, `/api/auth/request-link`
+  (self-service recovery — see below); every other `/api/*` requires a session (else 401). Role gates:
+  approvals → `canApprove`; spawn → `canRun`; team/connector/automation mutations → owner/admin (role
+  changes & member removal → owner only). Resolver identity is the member's email, not the old hardcoded
+  `console-user`.
+- **Getting in without an admin (self-service recovery).** Login is still invite-token / magic-link, but
+  a member who lost their session no longer needs an owner to mint a fresh one: the login screen's
+  **"Email me a link"** posts to public `POST /api/auth/request-link`, which mints a fresh 7-day
+  magic-link for the known member and delivers it out-of-band — DM'd to their linked Slack/Discord
+  (`notifyLoginLink` in `tenant-registry.ts` → `deliverDM`, identity map) AND written to `server.log`
+  (the always-available fallback). The response is **always neutral** (`{ ok: true }` regardless of
+  whether the email is a real member — no account enumeration) and rate-limited per email + client IP
+  (`allowLinkRequest`, 3 / 15 min). Sessions **slide**: `resolveSession` bumps the 30-day expiry on
+  activity (≤1 write/day) and `/api/auth/me` re-stamps the cookie on each app load, so an active user
+  never hits the hard cutoff. Owner recovery of last resort is still the CLI (`agent-os login-link`).
 - Generated links (invites, webhook URLs) are built from the request's `Host` + `X-Forwarded-Proto`
   headers at read time. The cookie is `HttpOnly; SameSite=Lax`, 30 days.
 

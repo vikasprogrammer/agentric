@@ -214,10 +214,20 @@ export class TeamStore {
   }
   resolveSession(sid: string): Member | undefined {
     if (!sid) return undefined;
+    const now = Date.now();
     const row = this.db
-      .prepare('SELECT member_id FROM auth_sessions WHERE sid = ? AND expires_at > ?')
-      .get<{ member_id: string }>(sid, Date.now());
-    return row ? this.getMember(row.member_id) : undefined;
+      .prepare('SELECT member_id, expires_at FROM auth_sessions WHERE sid = ? AND expires_at > ?')
+      .get<{ member_id: string; expires_at: number }>(sid, now);
+    if (!row) return undefined;
+    // Sliding window: bump the 30-day expiry on activity so a daily-active user never hits the hard
+    // cutoff and gets locked out. Throttled to ≤1 write/day/session (only slide once the row is >1 day
+    // short of a fresh full TTL), so this stays off the per-request hot path. The BROWSER cookie is
+    // re-stamped separately on GET /api/auth/me (see server.ts) — the DB slide alone can't, since the
+    // cookie's Max-Age is fixed at mint time.
+    if (now + SESSION_TTL_MS - row.expires_at > 24 * 60 * 60 * 1000) {
+      this.db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE sid = ?').run(now + SESSION_TTL_MS, sid);
+    }
+    return this.getMember(row.member_id);
   }
   destroySession(sid: string): void {
     this.db.prepare('DELETE FROM auth_sessions WHERE sid = ?').run(sid);

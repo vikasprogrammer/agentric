@@ -2531,6 +2531,9 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
 // ── Login ────────────────────────────────────────────────────────────────────────
 function LoginScreen() {
   const [value, setValue] = useState('')
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
+  const [sending, setSending] = useState(false)
   const invalid = /[?&]login=invalid/.test(window.location.href)
   // Accept either a full magic link or a bare token; navigate to the server-side /accept route.
   const go = () => {
@@ -2539,21 +2542,47 @@ function LoginScreen() {
     const token = v.includes('token=') ? v.split('token=')[1].split(/[&\s]/)[0] : v
     window.location.href = '/accept?token=' + encodeURIComponent(token)
   }
+  // Self-service recovery. The server responds neutrally (no account enumeration), so we always show the
+  // same "if that's a member, a link is on its way" confirmation.
+  const requestLink = async () => {
+    if (!email.trim() || sending) return
+    setSending(true)
+    try { await api.requestLink(email.trim()) } catch { /* neutral either way */ }
+    setSending(false)
+    setSent(true)
+  }
   return (
     <div className="flex h-screen items-center justify-center bg-muted/30">
       <Card className="w-full max-w-md">
         <CardContent className="p-6">
           <div className="mb-1 flex items-center gap-2 text-lg font-semibold">⚙️ Agent OS</div>
           <p className="mb-4 text-sm text-muted-foreground">
-            Access is by invite. Paste the magic-link (or token) you were sent to sign in. The
-            workspace owner can mint one from the Team page, or from the box with{' '}
-            <span className="font-mono text-xs">agent-os invite</span>.
+            Access is by invite. Paste the magic-link (or token) you were sent to sign in — or, if you've
+            signed in before, request a fresh link by email below.
           </p>
-          {invalid && <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">That link is invalid or expired — ask for a fresh one.</div>}
+          {invalid && <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">That link is invalid or expired — request a fresh one below.</div>}
           <Field label="Magic link or token">
             <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://…/accept?token=…" onKeyDown={(e) => e.key === 'Enter' && go()} />
           </Field>
           <Button className="mt-4 w-full" onClick={go} disabled={!value.trim()}>Sign in</Button>
+
+          <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
+            <div className="h-px flex-1 bg-border" />lost your link?<div className="h-px flex-1 bg-border" />
+          </div>
+
+          {sent ? (
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              If <span className="font-medium">{email.trim()}</span> is a member, a fresh sign-in link is on its
+              way to their linked Slack/Discord. Ask the workspace owner if nothing arrives.
+            </div>
+          ) : (
+            <>
+              <Field label="Send me a sign-in link">
+                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" onKeyDown={(e) => e.key === 'Enter' && requestLink()} />
+              </Field>
+              <Button variant="outline" className="mt-3 w-full" onClick={requestLink} disabled={!email.trim() || sending}>{sending ? 'Sending…' : 'Email me a link'}</Button>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>
