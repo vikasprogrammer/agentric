@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.72.2] — 2026-07-09
+### Fixed
+- **`PrivateTmp=false` in `agent-os.service` — the other half of the restart-survival fix (v0.72.1).**
+  With `KillMode=process` the tmux server now survives a restart, but the unit still shipped
+  `PrivateTmp=true`, which hands every service *invocation* its own throwaway `/tmp`. On the first
+  restart-after-fix the surviving tmux server stayed pinned to the previous invocation's now-torn-down
+  `/tmp` namespace, so the `claude` CLI's `mkdir /tmp/claude-<uid>` failed with `ENOENT` and the session
+  died anyway (`claude session ended`). `PrivateTmp=false` makes the service share the host's stable
+  `/tmp`, which persists across restarts, so a surviving session keeps a valid `/tmp` — matching
+  macOS/launchd. **Deploy note:** flip `PrivateTmp=true`→`false` in each live unit
+  (`agent-os.service` on Initech, `agent-os-globex` on the jump-server), `daemon-reload`, then do
+  one clean restart (kill any stale tmux server on the data socket first so no dead-namespace server
+  lingers). Verified on both boxes: a session survives a restart and `/tmp` stays writable.
+
 ## [0.72.1] — 2026-07-09
 ### Fixed
 - **Restarting the server no longer kills running agent sessions on Linux/systemd** (the

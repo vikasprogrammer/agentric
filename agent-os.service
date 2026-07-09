@@ -35,7 +35,15 @@ RestartSec=10
 
 # Security settings
 NoNewPrivileges=true
-PrivateTmp=true
+# PrivateTmp MUST be false here — it is incompatible with KillMode=process (above). Agent sessions run
+# in a tmux server that we deliberately keep alive across a restart (KillMode=process). PrivateTmp gives
+# each service *invocation* its own throwaway /tmp; on restart systemd tears the old invocation's /tmp
+# down, but the surviving tmux server is still pinned to that now-dead mount namespace — so the `claude`
+# CLI's `mkdir /tmp/claude-<uid>` fails with ENOENT and every session dies on the first restart-after-fix.
+# With PrivateTmp=false the service shares the host's stable /tmp, which persists across restarts, so a
+# surviving session keeps a valid /tmp. (macOS/launchd has no private-tmp/cgroup story — this is the
+# Linux-only pairing needed to match its "sessions survive a restart" behaviour.)
+PrivateTmp=false
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/agent-os/tools/agent-os/data
