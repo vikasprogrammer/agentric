@@ -2088,10 +2088,14 @@ function FeedItem({ m, onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: 
     verb = 'published'; detail = m.body
     badge = meta.filename ? <Badge variant="outline" className="max-w-[40%] px-1.5 py-0 text-[10px] font-normal">{meta.filename}</Badge> : null
   } else if (m.type === 'approval') {
+    // cancelled = the session ended before a human decided — a neutral "never ran", not a rejection.
+    const cancelledA = m.status === 'cancelled'
     Icon = m.status === 'approved' ? CheckCircle2 : XCircle
-    iconCls = m.status === 'approved' ? 'text-emerald-600' : 'text-red-600'
-    verb = <>{m.title}{m.resolvedBy && <span className="text-muted-foreground"> · by {m.resolvedBy}</span>}</>
-    badge = <Badge variant={m.status === 'approved' ? 'default' : 'destructive'} className="px-1.5 py-0 text-[10px]">{m.status}</Badge>
+    iconCls = m.status === 'approved' ? 'text-emerald-600' : cancelledA ? 'text-muted-foreground' : 'text-red-600'
+    verb = <>{m.title}{m.resolvedBy && !cancelledA && <span className="text-muted-foreground"> · by {m.resolvedBy}</span>}</>
+    badge = cancelledA
+      ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">cancelled</Badge>
+      : <Badge variant={m.status === 'approved' ? 'default' : 'destructive'} className="px-1.5 py-0 text-[10px]">{m.status}</Badge>
   } else if (m.type === 'question') {
     Icon = HelpCircle; iconCls = 'text-sky-600'
     const cancelled = m.status === 'cancelled'

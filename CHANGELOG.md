@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.70.0] — 2026-07-09
+### Changed
+- **Stopping a session retires its open approvals too.** The v0.69.0 stop-cascade for questions now
+  extends to pending **approvals**: when a session is stopped (or crashes, or is idle-reaped), its
+  pending approval cards are cancelled (new `cancelled` status) — the agent blocked on the gate is
+  gone, so approving would only clear an effect no one will perform. Cancelling settles the gateway's
+  decision as *denied* (a still-suspended gate unblocks and the effect is blocked), the gate-hook's
+  status poll returns `deny`, and the orphaned "Needs you" card drops into the dismissable Activity
+  feed (labelled *cancelled*, not a rejection).
+### Fixed
+- **`deleteSession` no longer leaks approval rows.** Permanently deleting a session now cancels its
+  pending approvals (settling any waiter) and removes its `approvals` rows, matching how it already
+  cascades messages and questions.
+
 ## [0.69.0] — 2026-07-09
 ### Added
 - **Dismiss an agent question from the Inbox.** A pending question card now has a **Dismiss** button

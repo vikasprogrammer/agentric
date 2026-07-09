@@ -225,7 +225,7 @@ export interface ApprovalRequest {
   level: ApprovalLevel;
   attempt: ActionAttempt;
   reason: string;
-  status: 'pending' | 'approved' | 'rejected';
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
   createdAt: number;
   resolvedBy?: string;
 }
@@ -237,6 +237,10 @@ export interface Approvals {
     decision: Promise<boolean>;
   };
   resolve(id: string, approved: boolean, by: string): void;
+  /** Cancel a still-pending request (the session it gated ended, so no one can decide). Settles the
+   *  waiter as denied so a live gateway/gate-hook unblocks, and marks the row `cancelled`. Returns
+   *  whether a pending request was actually cancelled. */
+  cancel(id: string, by: string): boolean;
   pending(tenant?: string): ApprovalRequest[];
 }
 
