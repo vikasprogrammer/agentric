@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.62.2] — 2026-07-09
+### Fixed
+- **Word-wrap the task description.** Long lines and preformatted/code blocks in a task body now wrap
+  (and long unbroken tokens break) inside the detail modal instead of stretching the width — scoped to the
+  task description so the shared markdown styles (KB, artifacts) are unchanged.
+
 ## [0.62.1] — 2026-07-09
 ### Fixed
 - **Tasks board responsiveness + a roomier detail modal.** The task detail modal was capped too narrow

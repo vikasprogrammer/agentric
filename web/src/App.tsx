@@ -3382,7 +3382,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             ) : (
               <div className="space-y-3.5">
                 <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
-                {detail.task.body && <div className="max-h-56 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
+                {detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
 
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Status">
