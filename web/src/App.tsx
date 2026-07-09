@@ -3608,7 +3608,9 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
   const [hint, setHint] = useState('')
   const [openRuns, setOpenRuns] = useState<string | null>(null) // automation id whose Runs list is expanded
   const [showForm, setShowForm] = useState(false) // the New-automation form is collapsed until requested
-  // create form
+  const [editId, setEditId] = useState<string | null>(null) // when set, the form edits this automation instead of creating
+  const [showSpent, setShowSpent] = useState(false) // reveal the collapsed "spent one-shots" section
+  // create / edit form
   const [name, setName] = useState('')
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
   const [type, setType] = useState<'cron' | 'webhook' | 'composio' | 'slack' | 'discord'>('cron')
@@ -3623,11 +3625,36 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
   useEffect(() => { load() }, [])
   useEffect(() => { if (!agentId && agents[0]) setAgentId(agents[0].id) }, [agents, agentId])
 
-  const create = async () => {
+  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setEditId(null) }
+  const startCreate = () => { resetForm(); setShowForm(true); setHint('') }
+  const startEdit = (a: Automation) => {
+    if (a.type === 'once') return // one-shot deferred runs aren't editable from the console
+    setEditId(a.id)
+    setName(a.name)
+    setAgentId(a.agentId)
+    setType(a.type)
+    setMode(a.mode)
+    setFilter(a.filter ?? '')
+    if (a.type === 'cron') {
+      const preset = CRON_PRESETS.some((p) => p.value === a.schedule)
+      setScheduleCustom(!preset)
+      setSchedule(a.schedule ?? '*/30 * * * *')
+    }
+    setTask(a.task)
+    setShowForm(true); setHint('')
+  }
+  const closeForm = () => { setShowForm(false); setHint(''); resetForm() }
+  const submit = async () => {
     setHint('')
-    const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task })
-    if (r.error) return setHint('⚠ ' + r.error)
-    setName(''); setTask(''); setShowForm(false)
+    if (editId) {
+      // agentId + type are immutable on edit; everything else is patchable. filter only for event triggers.
+      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task })
+      if (r.error) return setHint('⚠ ' + r.error)
+    } else {
+      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task })
+      if (r.error) return setHint('⚠ ' + r.error)
+    }
+    closeForm()
     load()
   }
   const setItemMode = async (a: Automation, m: 'interactive' | 'headless') => { setBusy(a.id); await api.updateAutomation(a.id, { mode: m }); await load(); setBusy('') }
@@ -3649,6 +3676,13 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
 
   if (!items) return <div className="text-sm text-muted-foreground">Loading…</div>
 
+  // A one-shot (`once`, scheduled via the agent `schedule` tool) that has already fired will never run
+  // again — split those out so a page full of spent runs doesn't bury the live automations.
+  const isSpent = (a: Automation) => a.type === 'once' && !!a.lastFiredAt
+  const active = items.filter((a) => !isSpent(a))
+  const spent = items.filter(isSpent)
+  const clearSpent = async () => { setBusy('spent'); for (const a of spent) await api.deleteAutomation(a.id); await load(); setBusy('') }
+
   return (
     <div className="max-w-4xl space-y-6">
       <p className="text-sm text-muted-foreground">
@@ -3662,7 +3696,7 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
         <div className="mb-2 flex items-center justify-between gap-2">
           <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Configured</div>
           {isAdmin && (
-            <Button size="sm" variant={showForm ? 'ghost' : 'default'} onClick={() => { setShowForm((v) => !v); setHint('') }}>
+            <Button size="sm" variant={showForm ? 'ghost' : 'default'} onClick={() => (showForm ? closeForm() : startCreate())}>
               {showForm ? <><X className="mr-1 h-3.5 w-3.5" />Cancel</> : <><Plus className="mr-1 h-3.5 w-3.5" />New automation</>}
             </Button>
           )}
@@ -3670,10 +3704,11 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
         {isAdmin && showForm && (
           <Card className="mb-3 border-primary/30">
             <CardContent className="space-y-3 p-4">
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{editId ? 'Edit automation' : 'New automation'}</div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Morning site check" /></Field>
-                <Field label="Agent">
-                  <Select value={agentId} onValueChange={(v) => v && setAgentId(v)}>
+                <Field label="Agent" help={editId ? "The agent can't be changed after creation — delete and recreate to move it." : undefined}>
+                  <Select value={agentId} disabled={!!editId} onValueChange={(v) => v && setAgentId(v)}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {agents.map((a) => (
@@ -3684,8 +3719,8 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                     </SelectContent>
                   </Select>
                 </Field>
-                <Field label="Trigger">
-                  <Select items={TRIGGER_ITEMS} value={type} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord')}>
+                <Field label="Trigger" help={editId ? "The trigger type can't be changed after creation — delete and recreate to switch." : undefined}>
+                  <Select items={TRIGGER_ITEMS} value={type} disabled={!!editId} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord')}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="cron">Schedule (cron)</SelectItem>
@@ -3738,16 +3773,18 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                 <Textarea value={task} onChange={(e) => setTask(e.target.value)} className="min-h-[64px]" placeholder="What should the agent do each time this fires? (Webhook payloads are appended automatically.)" />
               </Field>
               <div className="flex items-center gap-2">
-                <Button onClick={create} disabled={!name.trim() || !task.trim() || !agentId}><Plus className="mr-1 h-4 w-4" />Create</Button>
-                <Button variant="ghost" onClick={() => { setShowForm(false); setHint('') }}>Cancel</Button>
+                <Button onClick={submit} disabled={!name.trim() || !task.trim() || !agentId}>
+                  {editId ? <><Check className="mr-1 h-4 w-4" />Save changes</> : <><Plus className="mr-1 h-4 w-4" />Create</>}
+                </Button>
+                <Button variant="ghost" onClick={closeForm}>Cancel</Button>
                 {hint && <span className="font-mono text-xs text-destructive">{hint}</span>}
               </div>
             </CardContent>
           </Card>
         )}
-        {items.length === 0 && !showForm && <div className="text-sm text-muted-foreground">No automations yet{isAdmin ? ' — click New automation to create one.' : '.'}</div>}
+        {active.length === 0 && !showForm && <div className="text-sm text-muted-foreground">No active automations{spent.length ? ' — only spent one-shot runs remain (below).' : isAdmin ? ' yet — click New automation to create one.' : '.'}</div>}
         <div className="space-y-2">
-          {items.map((a) => (
+          {active.map((a) => (
             <Card key={a.id}>
               <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
                 <div className="min-w-0">
@@ -3805,6 +3842,9 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                       <Button size="sm" variant="outline" disabled={busy === a.id} onClick={() => toggle(a)}>
                         {a.enabled ? 'Disable' : 'Enable'}
                       </Button>
+                      <Button size="sm" variant="outline" disabled={busy === a.id} onClick={() => startEdit(a)} title="edit name, schedule, task…">
+                        <Pencil className="mr-1 h-3.5 w-3.5" />Edit
+                      </Button>
                       <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === a.id} onClick={() => remove(a)} title="remove">
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -3821,6 +3861,57 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
         </div>
         {hint && <div className="mt-2 font-mono text-xs text-destructive">{hint}</div>}
       </section>
+
+      {spent.length > 0 && (
+        <section>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <button className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground hover:text-foreground" onClick={() => setShowSpent((v) => !v)}>
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showSpent ? 'rotate-180' : ''}`} />
+              Spent one-shot runs ({spent.length})
+            </button>
+            {isAdmin && showSpent && (
+              <Button size="sm" variant="ghost" className="text-destructive" disabled={busy === 'spent'} onClick={clearSpent}>
+                <Trash2 className="mr-1 h-3.5 w-3.5" />Clear all
+              </Button>
+            )}
+          </div>
+          {showSpent && (
+            <div className="space-y-2">
+              {spent.map((a) => (
+                <Card key={a.id} className="opacity-70">
+                  <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 shrink-0 text-muted-foreground/40" />
+                        <span className="truncate text-sm font-medium">{a.name}</span>
+                        <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">once</Badge>
+                        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">fired</Badge>
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        {a.agentId}
+                        {a.lastFiredAt && <span className="ml-2">ran {timeAgo(a.lastFiredAt)} ago · {new Date(a.lastFiredAt).toLocaleString()}</span>}
+                      </div>
+                      <div className="mt-1 truncate text-xs text-muted-foreground">{a.task}</div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => setOpenRuns((cur) => (cur === a.id ? null : a.id))} title="show the run this fired">
+                        <HistoryIcon className="mr-1 h-3.5 w-3.5" />Runs
+                        <ChevronDown className={`ml-1 h-3.5 w-3.5 transition-transform ${openRuns === a.id ? 'rotate-180' : ''}`} />
+                      </Button>
+                      {isAdmin && a.canManage !== false && (
+                        <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === a.id} onClick={() => remove(a)} title="remove">
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                  </CardContent>
+                  {openRuns === a.id && <AutomationRuns id={a.id} onOpen={onOpen} />}
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   )
 }

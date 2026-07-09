@@ -1302,6 +1302,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         name: b.name !== undefined ? String(b.name) : undefined,
         mode: b.mode === 'headless' ? 'headless' : b.mode === 'interactive' ? 'interactive' : undefined,
         schedule: b.schedule !== undefined ? String(b.schedule) : undefined,
+        filter: b.filter !== undefined ? String(b.filter) : undefined,
         task: b.task !== undefined ? String(b.task) : undefined,
         enabled: b.enabled !== undefined ? !!b.enabled : undefined,
       });

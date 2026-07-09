@@ -346,16 +346,27 @@ export class Automations {
     return this.remove(id);
   }
 
-  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; task?: string; enabled?: boolean }): Automation | undefined {
+  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean }): Automation | undefined {
     const a = this.get(id);
     if (!a) return undefined;
     if (patch.schedule !== undefined && a.type === 'cron') parseCron(patch.schedule);
+    // `filter` is only meaningful for the event-driven triggers; ignore it on cron/webhook/once so an
+    // edit can't stamp a stray filter onto a type that never reads one. composio uppercases its slug.
+    const filterTypes = a.type === 'composio' || a.type === 'slack' || a.type === 'discord';
+    const nextFilter = !filterTypes
+      ? a.filter ?? null
+      : patch.filter === undefined
+        ? a.filter ?? null
+        : a.type === 'composio'
+          ? patch.filter.trim().toUpperCase()
+          : patch.filter.trim();
     this.db
-      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, task = ?, enabled = ? WHERE id = ?')
+      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ? WHERE id = ?')
       .run(
         patch.name?.trim() || a.name,
         patch.mode ?? a.mode,
         a.type === 'cron' ? (patch.schedule?.trim() ?? a.schedule ?? null) : null,
+        nextFilter,
         patch.task ?? a.task,
         (patch.enabled ?? a.enabled) ? 1 : 0,
         id,

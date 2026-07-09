@@ -310,7 +310,8 @@ export interface Automation {
   id: string
   agentId: string
   name: string
-  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord'
+  /** `once` = a one-shot deferred run scheduled by an agent (not creatable from the console). */
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord'
   mode: ExecMode
   schedule?: string
   /** composio: trigger slug. slack: event type (app_mention/message) or channel id. '' = any. */
@@ -735,7 +736,7 @@ export const api = {
 
   automations: () => call<{ automations: Automation[] }>('GET', '/api/automations'),
   addAutomation: (a: AddAutomationReq) => call<Automation & { error?: string }>('POST', '/api/automations', a),
-  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'task' | 'enabled'>>) =>
+  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled'>>) =>
     call<Automation & { error?: string }>('PATCH', '/api/automations/' + id, patch),
   deleteAutomation: (id: string) => call<{ ok: boolean }>('DELETE', '/api/automations/' + id),
   runAutomation: (id: string) => call<{ ok: boolean; sessionId?: string; reason?: string; error?: string }>('POST', `/api/automations/${id}/run`),
