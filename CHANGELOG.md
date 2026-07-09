@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.62.0] — 2026-07-09
+### Added
+- **Task detail is a shareable permalink.** Opening a task now updates the URL to `#/tasks/<id>`, and
+  pasting that link opens the task straight away — the detail is addressable, so it can be shared in chat
+  or bookmarked.
+### Changed
+- **Task detail opens in a modal** instead of a side panel — a focused, centered dialog over the board
+  (closes on Esc / backdrop / ✕), so it reads the same from the board or the list view and there's room
+  for the full body + activity.
+- **Assignee icons come from the agent's own manifest icon** (not a generic 🤖) on cards, list rows, and
+  the assign dropdowns — a task assigned to an agent shows that agent's icon; humans show a person glyph.
+- **Surface task deadlines in the agent tool prose.** The `task_create` / `task_update` MCP tool
+  descriptions now mention the `due` date (added in 0.60.0) in their headline text, not only the parameter
+  schema — so an agent skimming the tools is prompted to attach a deadline to time-sensitive work and knows
+  the owner is DMed once if it slips.
+
 ## [0.61.1] — 2026-07-09
 ### Fixed
 - **Bash risk classification no longer reads the `description` field.** The enricher classified a

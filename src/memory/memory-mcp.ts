@@ -511,7 +511,8 @@ const TOOLS = [
       'it to another agent by name to have them pick it up (e.g. a support agent files a coding task for ' +
       '`assignee:"agent:engineer"`). Set `autoDispatch:true` to have an agent-assigned task spawn a session ' +
       'automatically. Distinct from `remember` (your private note) and `kb_write` (shared reference knowledge): ' +
-      'a Task is WORK someone must do. Use sub-tasks (`parentId`) to break big work down.',
+      'a Task is WORK someone must do. Use sub-tasks (`parentId`) to break big work down. Give time-sensitive ' +
+      'work a `due` date (ISO) — the owner is DMed once if it slips past the deadline.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -575,8 +576,8 @@ const TOOLS = [
   {
     name: 'task_update',
     description:
-      'Update a task: change its `status`, leave a `note` (appended to the activity timeline), reassign it, or ' +
-      'reprioritise. This is how you CLOSE YOUR LOOP — when you finish work dispatched to you, call ' +
+      'Update a task: change its `status`, leave a `note` (appended to the activity timeline), reassign it, ' +
+      'reprioritise, or set/extend its `due` date. This is how you CLOSE YOUR LOOP — when you finish work dispatched to you, call ' +
       'task_update({ id, status:"done", note:"<what you did>" }); if you\'re stuck, status:"blocked" with why. ' +
       'A note without a status change is just a comment others will see.',
     inputSchema: {

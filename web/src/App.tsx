@@ -813,7 +813,7 @@ function Console({ me }: { me: Member }) {
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} nav={nav} />}
-          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} />}
+          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} />}
           {route === 'skills' && <SkillsPage />}
@@ -3044,13 +3044,17 @@ const toDateInput = (ms?: number) => (ms ? new Date(ms - new Date().getTimezoneO
 /** yyyy-mm-dd (local) → epoch ms at local midnight, or null when cleared. */
 const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00').getTime() : null)
 
-function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void }) {
+function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const [tasks, setTasks] = useState<Task[] | null>(null)
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   const [q, setQ] = useState('')
-  const [selId, setSelId] = useState<string | null>(null)
+  // Selection is URL-driven (#/tasks/<id>) so a task detail is a shareable permalink — pasting it opens
+  // the modal automatically. Opening a card just navigates; closing clears the detail segment.
+  const selId = taskId || null
+  const openTask = (id: string) => nav('tasks', id)
+  const closeTask = () => { setEditing(false); nav('tasks') }
   const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
@@ -3082,13 +3086,14 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const chatAgents = agents.filter((a) => a.runtime === 'claude-code')
-  // Assignee options: agents (delegation) + humans. Base UI's SelectValue needs a value→label map.
-  const assigneeItems: Record<string, string> = {
-    none: 'Unassigned',
-    ...Object.fromEntries(chatAgents.map((a) => [`agent:${a.id}`, `🤖 ${a.id}`])),
-    ...Object.fromEntries(members.map((m) => [m.id, `👤 ${m.name || m.email}`])),
-  }
   const nameOf = (id?: string) => principalLabel(id, members)
+  // Assignee glyph: an AGENT shows its OWN icon (from the manifest), a human shows the person glyph.
+  const assigneeIcon = (id: string | undefined, cls: string) =>
+    id?.startsWith('agent:')
+      ? <AgentIcon icon={agents.find((a) => a.id === id.slice('agent:'.length))?.icon} className={cls} />
+      : <User className={cls} />
+  // An assignee shown as a chip: its icon + friendly name. Used on cards, list rows, and select items.
+  const assigneeChip = (id?: string, cls = 'h-3 w-3') => <span className="inline-flex items-center gap-1">{assigneeIcon(id, cls)}{nameOf(id)}</span>
 
   const load = async () => {
     const r = await api.tasks(q)
@@ -3141,7 +3146,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
     await load()
     if (r.sessionId) onOpen('aos-' + r.sessionId, 'Task · ' + t.title)
   }
-  const remove = async (id: string) => { setBusy(true); await api.deleteTask(id); setSelId(null); setConfirmDel(false); await load(); setBusy(false) }
+  const remove = async (id: string) => { setBusy(true); await api.deleteTask(id); closeTask(); setConfirmDel(false); await load(); setBusy(false) }
   const onDropTo = async (status: TaskStatus) => {
     const id = dragId
     setDragId(null); setDragOverCol(null)
@@ -3169,7 +3174,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
         draggable
         onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragId(t.id) }}
         onDragEnd={() => { setDragId(null); setDragOverCol(null) }}
-        onClick={() => setSelId(t.id)}
+        onClick={() => openTask(t.id)}
         className={`w-full cursor-pointer rounded-md border border-l-[3px] p-2.5 text-left hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'ring-1 ring-primary' : ''} ${dragId === t.id ? 'opacity-50' : ''}`}
       >
         <div className="flex items-start justify-between gap-2">
@@ -3177,7 +3182,7 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
           <span className={`shrink-0 text-[10px] font-medium ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</span>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-          {t.assignee && <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{nameOf(t.assignee)}</Badge>}
+          {t.assignee && <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
           {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
@@ -3243,12 +3248,12 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
             <Field label="Details"><Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Context, acceptance criteria — enough for whoever works it." /></Field>
             <div className="grid grid-cols-4 gap-3">
               <Field label="Assign to">
-                <Select items={assigneeItems} value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
+                <Select value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Unassigned</SelectItem>
-                    {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>🤖 {a.id}</SelectItem>)}
-                    {members.map((m) => <SelectItem key={m.id} value={m.id}>👤 {m.name || m.email}</SelectItem>)}
+                    {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
+                    {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{m.name || m.email}</span></SelectItem>)}
                   </SelectContent>
                 </Select>
               </Field>
@@ -3328,10 +3333,10 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
                   : b.updatedAt - a.updatedAt).map((t) => {
                   const dm = dueMeta(t.dueAt, t.status)
                   return (
-                    <tr key={t.id} onClick={() => setSelId(t.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'bg-muted' : ''}`}>
+                    <tr key={t.id} onClick={() => openTask(t.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'bg-muted' : ''}`}>
                       <td className="px-3 py-2"><span className={t.status === 'cancelled' ? 'line-through opacity-60' : ''}>{t.title}</span> {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
                       <td className="px-3 py-2 capitalize text-muted-foreground">{t.status}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{t.assignee ? nameOf(t.assignee) : '—'}</td>
+                      <td className="px-3 py-2 text-muted-foreground">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</td>
                       <td className={`px-3 py-2 text-xs ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</td>
                       <td className="px-3 py-2 text-xs">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(t.updatedAt).toLocaleDateString()}</td>
@@ -3344,120 +3349,123 @@ function TasksPage({ me, agents, onOpen }: { me: Member; agents: AgentInfo[]; on
           </div>
         )}
 
-        {detail && (
-          <Card className="w-[26rem] shrink-0 self-start">
-            <CardContent className="space-y-3.5 p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  {editing
-                    ? <Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="text-base font-semibold" />
-                    : <div className="text-base font-semibold leading-snug">{detail.task.title}</div>}
-                  <div className="mt-0.5 font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
-                </div>
-                <div className="flex shrink-0 items-center gap-0.5">
-                  {!editing && <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>}
-                  <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setSelId(null); setEditing(false) }}><X className="h-4 w-4" /></Button>
-                </div>
-              </div>
-
-              {editing ? (
-                <>
-                  <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={8} className="font-mono text-xs" /></Field>
-                  <div className="flex items-center gap-2">
-                    <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
-                  </div>
-                </>
-              ) : (
-                detail.task.body && <div className="prose-tasks max-h-56 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>
-              )}
-
-              <div className="grid grid-cols-2 gap-2">
-                <Field label="Status">
-                  <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
-                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                    <SelectContent>{(['todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Priority">
-                  <Select items={PRIORITY_ITEMS} value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
-                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                    <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
-                  </Select>
-                </Field>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <Field label="Assignee">
-                  <Select items={assigneeItems} value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
-                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Unassigned</SelectItem>
-                      {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}>🤖 {a.id}</SelectItem>)}
-                      {members.map((m) => <SelectItem key={m.id} value={m.id}>👤 {m.name || m.email}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Due date">
-                  <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
-                </Field>
-              </div>
-              {(detail.task.assignee || '').startsWith('agent:') && (
-                <Field label="Run mode">
-                  <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
-                    <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="headless">Headless — runs to completion, then exits</SelectItem>
-                      <SelectItem value="interactive">Interactive — attachable TUI you drive</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </Field>
-              )}
-
-              {(detail.task.assignee || '').startsWith('agent:') && (detail.task.status === 'todo' || detail.task.status === 'blocked') && (
-                <Button size="sm" className="w-full" disabled={busy} onClick={() => dispatch(detail.task)}>
-                  <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
-                </Button>
-              )}
-              {detail.task.lastSessionId && (
-                <Button size="sm" variant="outline" className="w-full" onClick={() => onOpen('aos-' + detail.task.lastSessionId, 'Task · ' + detail.task.title)}>
-                  <TerminalSquare className="mr-1 h-3.5 w-3.5" />View session
-                </Button>
-              )}
-              {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
-
-              <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await api.task(detail.task.id).then((r) => r.task && setDetail({ task: r.task, events: r.events ?? [] })) }} />
-
-              <div>
-                <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity</div>
-                <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
-                  {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
-                  {detail.events.slice().reverse().map((e) => (
-                    <div key={e.id} className="rounded-md border bg-muted/20 p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
-                        <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
-                      </div>
-                      {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {isAdmin && (
-                confirmDel
-                  ? <div className="flex items-center gap-2">
-                      <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.task.id)}>Confirm delete</Button>
-                      <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
-                    </div>
-                  : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
-                      <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
-                    </Button>
-              )}
-            </CardContent>
-          </Card>
-        )}
       </div>
+
+      {detail && (
+        <Dialog open onOpenChange={(o) => { if (!o) closeTask() }}>
+          <DialogContent className="max-h-[85vh] w-full max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 pr-8">
+                {editing ? 'Edit task' : (
+                  <>
+                    <span className="min-w-0 flex-1 truncate">{detail.task.title}</span>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>
+                  </>
+                )}
+              </DialogTitle>
+            </DialogHeader>
+
+            {editing ? (
+              <div className="space-y-3">
+                <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
+                <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={10} className="font-mono text-xs" /></Field>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3.5">
+                <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
+                {detail.task.body && <div className="max-h-56 overflow-y-auto rounded-md border bg-muted/30 p-3 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Status">
+                    <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
+                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                      <SelectContent>{(['todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Priority">
+                    <Select items={PRIORITY_ITEMS} value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
+                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                      <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Field label="Assignee">
+                    <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
+                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Unassigned</SelectItem>
+                        {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
+                        {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{m.name || m.email}</span></SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Due date">
+                    <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
+                  </Field>
+                </div>
+                {(detail.task.assignee || '').startsWith('agent:') && (
+                  <Field label="Run mode">
+                    <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
+                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="headless">Headless — runs to completion, then exits</SelectItem>
+                        <SelectItem value="interactive">Interactive — attachable TUI you drive</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                )}
+
+                {(detail.task.assignee || '').startsWith('agent:') && (detail.task.status === 'todo' || detail.task.status === 'blocked') && (
+                  <Button size="sm" className="w-full" disabled={busy} onClick={() => dispatch(detail.task)}>
+                    <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
+                  </Button>
+                )}
+                {detail.task.lastSessionId && (
+                  <Button size="sm" variant="outline" className="w-full" onClick={() => onOpen('aos-' + detail.task.lastSessionId, 'Task · ' + detail.task.title)}>
+                    <TerminalSquare className="mr-1 h-3.5 w-3.5" />View session
+                  </Button>
+                )}
+                {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
+
+                <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await api.task(detail.task.id).then((r) => r.task && setDetail({ task: r.task, events: r.events ?? [] })) }} />
+
+                <div>
+                  <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity</div>
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
+                    {detail.events.slice().reverse().map((e) => (
+                      <div key={e.id} className="rounded-md border bg-muted/20 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
+                          <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+                        </div>
+                        {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
+                        <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {isAdmin && (
+                  confirmDel
+                    ? <div className="flex items-center gap-2">
+                        <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.task.id)}>Confirm delete</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
+                      </div>
+                    : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
+                      </Button>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }
