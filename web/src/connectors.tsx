@@ -13,7 +13,7 @@
  * tools exist and who they belong to. Extracted into its own file to keep App.tsx from growing.
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Plug, Globe, Plus, Trash2, X, Search, Building2, User as UserIcon, ExternalLink } from 'lucide-react'
+import { Plug, Globe, Plus, Trash2, X, Search, Building2, User as UserIcon, ExternalLink, Server, SquareTerminal, Database, Pencil } from 'lucide-react'
 import type { IconType } from 'react-icons'
 import {
   SiGmail, SiGithub, SiGoogledrive, SiDiscord, SiResend, SiHetzner, SiNotion, SiLinear,
@@ -28,6 +28,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import {
   api, type Member, type CatalogEntry, type Connector, type ConnectorScope, type AddConnectorReq,
   type IntegrationsOverview, type ConnectionsResp,
+  type Host, type HostProtocol, type HostPosture, type AddHostReq,
 } from '@/lib/api'
 
 // ── brand icons ────────────────────────────────────────────────────────────────────
@@ -78,8 +79,13 @@ function hueOf(name: string): number {
 function BrandIcon({ name, box = 36 }: { name: string; box?: number }) {
   const key = brandKey(name)
   const tile = 'inline-flex shrink-0 items-center justify-center rounded-lg'
-  if (key === 'custom' || key === 'customremote') {
-    const Glyph = key === 'customremote' ? Globe : Plug
+  // Non-brand glyphs: the custom-MCP escape hatches + the host-connection protocols (Server/terminal/db).
+  const GLYPH: Record<string, typeof Plug> = {
+    custom: Plug, customremote: Globe, host: Server, network: Server, ssh: SquareTerminal,
+    http: Globe, postgres: Database,
+  }
+  if (GLYPH[key]) {
+    const Glyph = GLYPH[key]
     return (
       <span className={`${tile} border bg-muted text-muted-foreground`} style={{ width: box, height: box }}>
         <Glyph style={{ width: box * 0.5, height: box * 0.5 }} />
@@ -411,9 +417,51 @@ function NativeRow({ name, title, s, isAdmin }: {
   )
 }
 
-function ConnectedList({ me, connectors, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio }: {
+/** A single Host connection row — a governed reachable destination (SSH / internal HTTP / DB). Phase
+ *  2a is display + manage only; the gate doesn't read these yet (Phase 2b). */
+function HostRow({ h, me, busy, onToggle, onRemove, onShare, onEdit }: {
+  h: Host; me: Member | null; busy: string
+  onToggle: (id: string, enabled: boolean) => void
+  onRemove: (id: string) => void
+  onShare: (id: string, shared: boolean) => void
+  onEdit: (h: Host) => void
+}) {
+  const isAdmin = isAdminRole(me)
+  const canManage = isAdmin || (h.scope === 'personal' && h.ownerMemberId === me?.id)
+  const canShare = h.scope === 'personal' && canManage
+  const proto = h.protocol === 'any' ? 'any' : h.protocol
+  const detail = `${proto} · ${h.match}${h.credential ? ` · ${h.credential}` : ''}`
+  const postureTone = h.posture === 'never' ? 'warn' : h.posture === 'allow' ? 'ok' : 'muted'
+  return (
+    <Row
+      name={h.protocol === 'any' ? 'host' : h.protocol}
+      title={h.name}
+      subtitle={detail}
+      badges={
+        <>
+          {statusBadge(h.enabled ? 'enabled' : 'disabled', h.enabled ? 'ok' : 'muted')}
+          {statusBadge(h.posture, postureTone)}
+          {h.scope === 'personal' && h.shared && statusBadge('shared with team', 'ok')}
+        </>
+      }
+      right={canManage ? (
+        <>
+          <Button size="icon" variant="ghost" className="h-8 w-8" disabled={busy === h.id} onClick={() => onEdit(h)} title="edit"><Pencil className="h-4 w-4" /></Button>
+          {canShare && (
+            <Button size="sm" variant="outline" disabled={busy === h.id} onClick={() => onShare(h.id, !h.shared)}>{h.shared ? 'Unshare' : 'Share'}</Button>
+          )}
+          <Button size="sm" variant="outline" disabled={busy === h.id} onClick={() => onToggle(h.id, !h.enabled)}>{h.enabled ? 'Disable' : 'Enable'}</Button>
+          <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === h.id} onClick={() => onRemove(h.id)} title="remove"><Trash2 className="h-4 w-4" /></Button>
+        </>
+      ) : undefined}
+    />
+  )
+}
+
+function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost }: {
   me: Member | null
   connectors: Connector[]
+  hosts: Host[]
   ov: IntegrationsOverview | null
   conns: ConnectionsResp | null
   busy: string
@@ -421,6 +469,10 @@ function ConnectedList({ me, connectors, ov, conns, busy, onToggle, onRemove, on
   onRemove: (id: string) => void
   onShare: (id: string, shared: boolean) => void
   onDisconnectComposio: (id: string, scope: 'company' | 'personal', label: string) => void
+  onToggleHost: (id: string, enabled: boolean) => void
+  onRemoveHost: (id: string) => void
+  onShareHost: (id: string, shared: boolean) => void
+  onEditHost: (h: Host) => void
 }) {
   const isAdmin = isAdminRole(me)
   const [filter, setFilter] = useState<'all' | 'company' | 'mine'>('all')
@@ -429,16 +481,19 @@ function ConnectedList({ me, connectors, ov, conns, busy, onToggle, onRemove, on
   // apps come from /api/connections (carries each connection's distinguishing name), not the overview.
   const orgConnectors = connectors.filter((c) => c.scope === 'org' || (c.scope === 'personal' && c.shared))
   const companyApps = conns?.company ?? []
-  // Mine = the viewer's own personal connectors + their own Composio apps.
+  const orgHosts = hosts.filter((h) => h.scope === 'org' || (h.scope === 'personal' && h.shared))
+  // Mine = the viewer's own personal connectors + their own Composio apps + their own hosts.
   const myConnectors = connectors.filter((c) => c.scope === 'personal' && c.ownerMemberId === me?.id)
   const myApps = conns?.mine ?? []
+  const myHosts = hosts.filter((h) => h.scope === 'personal' && h.ownerMemberId === me?.id)
 
-  const companyCount = orgConnectors.length + companyApps.length + 2 // +2 for the native bot rows
-  const mineCount = myConnectors.length + myApps.length
+  const companyCount = orgConnectors.length + companyApps.length + orgHosts.length + 2 // +2 for the native bot rows
+  const mineCount = myConnectors.length + myApps.length + myHosts.length
   const showCompany = filter === 'all' || filter === 'company'
   const showMine = filter === 'all' || filter === 'mine'
 
   const cardProps = { me, busy, onToggle, onRemove, onShare }
+  const hostProps = { me, busy, onToggle: onToggleHost, onRemove: onRemoveHost, onShare: onShareHost, onEdit: onEditHost }
 
   return (
     <section className="space-y-4">
@@ -466,6 +521,7 @@ function ConnectedList({ me, connectors, ov, conns, busy, onToggle, onRemove, on
             <ComposioRow key={a.id} app={a} canRemove={isAdmin} busy={busy === a.id} onRemove={() => onDisconnectComposio(a.id, 'company', a.toolkit)} />
           ))}
           {orgConnectors.map((c) => <ConnectorRow key={c.id} c={c} {...cardProps} />)}
+          {orgHosts.map((h) => <HostRow key={h.id} h={h} {...hostProps} />)}
         </div>
       )}
 
@@ -485,6 +541,7 @@ function ConnectedList({ me, connectors, ov, conns, busy, onToggle, onRemove, on
             <ComposioRow key={a.id} app={a} canRemove busy={busy === a.id} onRemove={() => onDisconnectComposio(a.id, 'personal', a.toolkit)} />
           ))}
           {myConnectors.map((c) => <ConnectorRow key={c.id} c={c} {...cardProps} />)}
+          {myHosts.map((h) => <HostRow key={h.id} h={h} {...hostProps} />)}
         </div>
       )}
     </section>
@@ -637,14 +694,100 @@ function AddConnectorDialog({ me, template, scope, onClose, onAdded }: { me: Mem
   )
 }
 
+// ── add/edit a host connection ───────────────────────────────────────────────────────────
+const HOST_PROTOCOLS: { value: HostProtocol; label: string }[] = [
+  { value: 'any', label: 'Any' }, { value: 'ssh', label: 'SSH' }, { value: 'http', label: 'HTTP' }, { value: 'postgres', label: 'Postgres' },
+]
+const HOST_POSTURES: { value: HostPosture; label: string }[] = [
+  { value: 'allow', label: 'Allow' }, { value: 'ask', label: 'Ask' }, { value: 'never', label: 'Never' },
+]
+
+function AddHostDialog({ me, host, scope, onClose, onSaved }: {
+  me: Member | null; host?: Host | null; scope: ConnectorScope; onClose: () => void; onSaved: () => void
+}) {
+  const editing = !!host
+  const isAdmin = isAdminRole(me)
+  const [name, setName] = useState(host?.name ?? '')
+  const [match, setMatch] = useState(host?.match ?? '')
+  const [protocol, setProtocol] = useState<HostProtocol>(host?.protocol ?? 'any')
+  const [posture, setPosture] = useState<HostPosture>(host?.posture ?? 'ask')
+  const [credential, setCredential] = useState('') // never prefilled (redacted); blank on edit = keep existing
+  const [chosenScope, setChosenScope] = useState<ConnectorScope>(host?.scope ?? scope)
+  const [hint, setHint] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async () => {
+    setBusy(true); setHint('')
+    const body: AddHostReq = { name: name.trim(), match: match.trim(), protocol, posture }
+    if (credential.trim()) body.credential = credential.trim()
+    if (!editing) body.scope = isAdmin ? chosenScope : 'personal'
+    const res = editing ? await api.updateHost(host!.id, body) : await api.addHost(body)
+    setBusy(false)
+    if (res && 'error' in res) return setHint('⚠ ' + res.error)
+    onSaved()
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <BrandIcon name={protocol === 'any' ? 'host' : protocol} box={24} /> {editing ? 'Edit host' : 'Add a host'}
+            <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{chosenScope === 'personal' ? 'personal · only you' : 'company · whole team'}</Badge>
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            A <b>host</b> is a reachable destination — an SSH box, an internal service, a database — your agents may talk to.
+            <span className="text-foreground"> Not yet enforced:</span> this registers the destination and its credential; the
+            gate begins governing reaches to it in a later update.
+          </p>
+
+          <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Prod database" /></Field>
+
+          <Field label="Host match" help="A hostname (db.internal.example.com), a wildcard (*.internal.example.com), a CIDR (10.0.0.0/8), or host:port.">
+            <Input value={match} onChange={(e) => setMatch(e.target.value)} placeholder="db.prod.internal:5432" className="font-mono text-xs" />
+          </Field>
+
+          <Field label="Protocol"><Segmented value={protocol} onChange={setProtocol} options={HOST_PROTOCOLS} /></Field>
+
+          <Field label="Default posture" help="allow = reach freely · ask = pause for approval · never = always refuse. Takes effect once host governance ships.">
+            <Segmented value={posture} onChange={setPosture} options={HOST_POSTURES} />
+          </Field>
+
+          <Field label="Credential" help="Optional. A Secrets-vault reference (secret:KEY) to an SSH key or password, injected at launch. Leave blank for none.">
+            <Input value={credential} onChange={(e) => setCredential(e.target.value)} placeholder={editing && host?.credential ? `${host.credential} (saved) — type to replace` : 'secret:SSH_KEY'} className="font-mono text-xs" />
+          </Field>
+
+          {isAdmin && !editing && (
+            <Field label="Scope" help={chosenScope === 'personal' ? 'Only loads in sessions you start.' : 'Available to every agent in the workspace.'}>
+              <Segmented value={chosenScope} onChange={setChosenScope} options={[{ value: 'org', label: 'Company · whole team' }, { value: 'personal', label: 'Personal · only me' }]} />
+            </Field>
+          )}
+        </div>
+
+        <DialogFooter>
+          {hint && <span className="mr-auto self-center font-mono text-xs text-destructive">{hint}</span>}
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={busy || !name.trim() || !match.trim()}><Server className="mr-1 h-4 w-4" />{editing ? 'Save' : 'Add host'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ── page ─────────────────────────────────────────────────────────────────────────────
 export function ConnectorsPage({ me }: { me: Member | null }) {
   const [connectors, setConnectors] = useState<Connector[]>([])
   const [catalog, setCatalog] = useState<CatalogEntry[]>([])
+  const [hosts, setHosts] = useState<Host[]>([])
   const [ov, setOv] = useState<IntegrationsOverview | null>(null)
   const [conns, setConns] = useState<ConnectionsResp | null>(null)
   const [adding, setAdding] = useState<{ template: CatalogEntry; scope: ConnectorScope } | null>(null)
   const [showAdd, setShowAdd] = useState(false)
+  // A host being added (null host + a default scope) or edited (the host).
+  const [hostForm, setHostForm] = useState<{ host: Host | null; scope: ConnectorScope } | null>(null)
   const [busy, setBusy] = useState('')
 
   const loadConnectors = () =>
@@ -652,9 +795,10 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
       setConnectors(Array.isArray(d?.connectors) ? d.connectors : [])
       setCatalog(Array.isArray(d?.catalog) ? d.catalog : [])
     }).catch(() => {})
+  const loadHosts = () => api.hosts().then((d) => setHosts(Array.isArray(d?.hosts) ? d.hosts : [])).catch(() => {})
   const loadOverview = () => api.integrationsOverview().then(setOv).catch(() => {})
   const loadConnections = () => api.connections().then(setConns).catch(() => {})
-  const reloadAll = () => { loadConnectors(); loadOverview(); loadConnections() }
+  const reloadAll = () => { loadConnectors(); loadHosts(); loadOverview(); loadConnections() }
   useEffect(() => { reloadAll() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const withBusy = async (id: string, fn: () => Promise<unknown>) => {
@@ -663,6 +807,16 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
   const toggle = (id: string, enabled: boolean) => withBusy(id, () => api.toggleConnector(id, enabled))
   const remove = (id: string) => withBusy(id, () => api.deleteConnector(id))
   const share = (id: string, shared: boolean) => withBusy(id, () => api.shareConnector(id, shared))
+
+  const withHostBusy = async (id: string, fn: () => Promise<unknown>) => {
+    setBusy(id); await fn(); await loadHosts(); setBusy('')
+  }
+  const toggleHost = (id: string, enabled: boolean) => withHostBusy(id, () => api.toggleHost(id, enabled))
+  const shareHost = (id: string, shared: boolean) => withHostBusy(id, () => api.shareHost(id, shared))
+  const removeHost = (id: string) => {
+    if (!window.confirm('Remove this host connection?')) return
+    withHostBusy(id, () => api.deleteHost(id))
+  }
 
   const disconnectComposio = async (id: string, scope: 'company' | 'personal', label: string) => {
     const who = scope === 'company' ? 'the whole company' : 'yourself'
@@ -679,13 +833,15 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
   return (
     <div className="max-w-4xl space-y-6">
       <p className="text-sm text-muted-foreground">
-        <b>Connections</b> are the tools your claude-code agents can reach. <b>Company</b> connections are shared by
-        every agent; <b>your</b> connections only load in sessions you start. The keys that power them live under
-        the <b>Creds</b> tab. Every call still passes the gate, so risky actions land in the Inbox for approval.
+        <b>Connections</b> are what your claude-code agents can reach — tool <b>integrations</b> (MCP servers &amp; apps)
+        and <b>hosts</b> (SSH boxes, internal services, databases). <b>Company</b> connections are shared by every
+        agent; <b>your</b> connections only load in sessions you start. The keys that power them live under the
+        <b> Creds</b> tab. Every call still passes the gate, so risky actions land in the Inbox for approval.
       </p>
 
       {!showAdd && (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => setHostForm({ host: null, scope: isAdminRole(me) ? 'org' : 'personal' })}><Server className="mr-1 h-4 w-4" />Add a host</Button>
           <Button onClick={() => setShowAdd(true)}><Plus className="mr-1 h-4 w-4" />Add an integration</Button>
         </div>
       )}
@@ -703,6 +859,7 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
       <ConnectedList
         me={me}
         connectors={connectors}
+        hosts={hosts}
         ov={ov}
         conns={conns}
         busy={busy}
@@ -710,6 +867,10 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
         onRemove={remove}
         onShare={share}
         onDisconnectComposio={disconnectComposio}
+        onToggleHost={toggleHost}
+        onRemoveHost={removeHost}
+        onShareHost={shareHost}
+        onEditHost={(h) => setHostForm({ host: h, scope: h.scope })}
       />
 
       {adding && (
@@ -719,6 +880,16 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
           scope={adding.scope}
           onClose={() => setAdding(null)}
           onAdded={async () => { setAdding(null); reloadAll() }}
+        />
+      )}
+
+      {hostForm && (
+        <AddHostDialog
+          me={me}
+          host={hostForm.host}
+          scope={hostForm.scope}
+          onClose={() => setHostForm(null)}
+          onSaved={async () => { setHostForm(null); loadHosts() }}
         />
       )}
     </div>

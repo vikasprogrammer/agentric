@@ -23,6 +23,7 @@ import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
+import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
@@ -1235,8 +1236,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Close the residue loophole: a removed member's PERSONAL connectors (their own credentials) must
     // not outlive the account. Sessions, invites and assignment grants were cleared in removeMember.
     const connectorsRemoved = os.connectors.removeByOwner(teamMember[1]).length;
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.removed', data: { member: teamMember[1], connectorsRemoved } });
-    return sendJson(res, 200, { ...out, connectorsRemoved });
+    const hostsRemoved = os.hosts.removeByOwner(teamMember[1]).length;
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.removed', data: { member: teamMember[1], connectorsRemoved, hostsRemoved } });
+    return sendJson(res, 200, { ...out, connectorsRemoved, hostsRemoved });
   }
   const teamAssign = p.match(/^\/api\/team\/assignments\/([\w.-]+)$/);
   if (method === 'PUT' && teamAssign) {
@@ -2879,6 +2881,79 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
       const updated = os.connectors.setEnabled(id, !!b.enabled);
       return sendJson(res, updated ? 200 : 404, updated ? redact(updated) : { error: 'not found' });
+    }
+  }
+
+  // ── host connections (Host shape of the access model — docs/host-connections-plan.md, Phase 2a) ──
+  // Governed reachable destinations (SSH / internal HTTP / DB). Same org/personal/shared ownership +
+  // auth as connectors. The governance that reads these rows is Phase 2b (not wired yet).
+  if (method === 'GET' && p === '/api/hosts') {
+    return sendJson(res, 200, { hosts: os.hosts.listForConsole(me.id, isAdmin(me)).map(redactHost) });
+  }
+  if (method === 'POST' && p === '/api/hosts') {
+    const b = await readBody(req);
+    // Company (org) hosts are owner/admin-managed; personal ones any member adds for themselves.
+    const scope = b.scope === 'personal' ? 'personal' : 'org';
+    if (scope === 'org' && !isAdmin(me)) return sendJson(res, 403, { error: 'only an owner or admin can add a company host' });
+    try {
+      const created = os.hosts.add({
+        name: b.name ? String(b.name) : '',
+        match: b.match ? String(b.match) : '',
+        protocol: b.protocol ? (b.protocol as HostProtocol) : undefined,
+        credential: b.credential ? String(b.credential) : undefined,
+        posture: b.posture ? (b.posture as HostPosture) : undefined,
+        // The owner is always the caller — never trust a client-supplied owner id.
+        scope,
+        ownerMemberId: scope === 'personal' ? me.id : undefined,
+      });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'host.added', data: { host: created.id, scope, match: created.match, protocol: created.protocol } });
+      return sendJson(res, 200, redactHost(created));
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const hostMatch = p.match(/^\/api\/hosts\/([\w-]+)$/);
+  if (hostMatch) {
+    const id = hostMatch[1];
+    const h = os.hosts.get(id);
+    if (!h) return sendJson(res, 404, { error: 'not found' });
+    // Org hosts: owner/admin only. Personal: the owner, or an owner/admin (oversight). Same as connectors.
+    const canManage = isAdmin(me) || (h.scope === 'personal' && h.ownerMemberId === me.id);
+    if (!canManage) return sendJson(res, 403, { error: 'not allowed to manage this host' });
+    if (method === 'DELETE') {
+      const ok = os.hosts.remove(id);
+      if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'host.removed', data: { host: id } });
+      return sendJson(res, ok ? 200 : 404, { ok });
+    }
+    if (method === 'PATCH') {
+      const b = await readBody(req);
+      try {
+        // Share/un-share a personal host with the team.
+        if (typeof b.shared === 'boolean') {
+          if (h.scope !== 'personal') return sendJson(res, 400, { error: 'only personal hosts can be shared' });
+          const updated = os.hosts.setShared(id, b.shared);
+          if (updated) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'host.shared', data: { host: id, shared: b.shared } });
+          return sendJson(res, updated ? 200 : 404, updated ? redactHost(updated) : { error: 'not found' });
+        }
+        // Enable/disable.
+        if (typeof b.enabled === 'boolean') {
+          const updated = os.hosts.setEnabled(id, b.enabled);
+          return sendJson(res, updated ? 200 : 404, updated ? redactHost(updated) : { error: 'not found' });
+        }
+        // Edit fields. A blank credential means "leave as-is" (the browser only ever sees a redacted
+        // value, so echoing it back must NOT overwrite the stored secret ref).
+        const patch: Record<string, unknown> = {};
+        if (typeof b.name === 'string') patch.name = b.name;
+        if (typeof b.match === 'string') patch.match = b.match;
+        if (typeof b.protocol === 'string') patch.protocol = b.protocol as HostProtocol;
+        if (typeof b.posture === 'string') patch.posture = b.posture as HostPosture;
+        if (typeof b.credential === 'string' && b.credential.trim() !== '') patch.credential = b.credential;
+        const updated = os.hosts.update(id, patch);
+        if (updated) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'host.updated', data: { host: id, match: updated.match, protocol: updated.protocol } });
+        return sendJson(res, updated ? 200 : 404, updated ? redactHost(updated) : { error: 'not found' });
+      } catch (e) {
+        return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+      }
     }
   }
 

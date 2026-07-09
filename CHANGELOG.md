@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.73.0] — 2026-07-09
+### Added
+- **Host connections — a new "Host" shape on the Connections page.** You can now register the hosts
+  your agents reach — an SSH box, an internal service, a database — as first-class connections:
+  name, a match pattern (hostname / wildcard / CIDR / `host:port`), protocol, an optional
+  Secrets-vault credential (`secret:KEY`), and a default posture (allow / ask / never). Same
+  org/personal/shared ownership and owner-admin management as MCP connectors; a `hosts` table +
+  `/api/hosts` CRUD back it. **Phase 2a of the access model** (`docs/host-connections-plan.md`) —
+  this is the registry + UI only; the gate does **not** govern reaches to these hosts yet (that's
+  Phase 2b), and the UI says so.
+
 ## [0.72.3] — 2026-07-09
 ### Fixed
 - **A naturally-finished session no longer auto-resurrects either** (follow-up to v0.72.0, which fixed

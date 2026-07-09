@@ -402,6 +402,32 @@ export interface AddConnectorReq {
   scope?: ConnectorScope
 }
 
+// ── Host connections (the "Host" shape — docs/host-connections-plan.md, Phase 2a) ──
+export type HostProtocol = 'ssh' | 'http' | 'postgres' | 'any'
+export type HostPosture = 'allow' | 'ask' | 'never'
+export interface Host {
+  id: string
+  name: string
+  match: string                 // hostname glob | CIDR | host[:port]
+  protocol: HostProtocol
+  credential: string            // redacted: a `secret:KEY` ref, '••••' (raw, masked), or ''
+  posture: HostPosture
+  enabled: boolean
+  scope: ConnectorScope         // org | personal (same ownership model as connectors)
+  ownerMemberId?: string
+  shared: boolean
+  createdAt: number
+}
+export interface HostsResp { hosts: Host[] }
+export interface AddHostReq {
+  name: string
+  match: string
+  protocol?: HostProtocol
+  credential?: string
+  posture?: HostPosture
+  scope?: ConnectorScope
+}
+
 export interface MemoryRecord {
   id: string
   tenant: string
@@ -920,4 +946,11 @@ export const api = {
   deleteConnector: (id: string) => call<{ ok: boolean }>('DELETE', '/api/connectors/' + id),
   toggleConnector: (id: string, enabled: boolean) => call<Connector>('PATCH', '/api/connectors/' + id, { enabled }),
   shareConnector: (id: string, shared: boolean) => call<Connector>('PATCH', '/api/connectors/' + id, { shared }),
+
+  hosts: () => call<HostsResp>('GET', '/api/hosts'),
+  addHost: (h: AddHostReq) => call<Host | { error: string }>('POST', '/api/hosts', h),
+  updateHost: (id: string, patch: Partial<AddHostReq>) => call<Host | { error: string }>('PATCH', '/api/hosts/' + id, patch),
+  toggleHost: (id: string, enabled: boolean) => call<Host>('PATCH', '/api/hosts/' + id, { enabled }),
+  shareHost: (id: string, shared: boolean) => call<Host>('PATCH', '/api/hosts/' + id, { shared }),
+  deleteHost: (id: string) => call<{ ok: boolean }>('DELETE', '/api/hosts/' + id),
 }

@@ -95,6 +95,24 @@ function migrate(db: Db): void {
       created_at  INTEGER NOT NULL
     );
 
+    -- Host connections — reachable destinations (SSH box / internal HTTP / DB) an agent may talk to,
+    -- as a first-class governed thing (docs/host-connections-plan.md). Phase 2a stores them; the
+    -- governance that reads them (net.connect/ssh.exec + allow-list) is Phase 2b. Mirrors connectors'
+    -- org/personal/shared ownership. Column is "pattern" (match is a SQLite keyword) = destination matcher.
+    CREATE TABLE IF NOT EXISTS hosts (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      pattern     TEXT NOT NULL,                 -- hostname glob | CIDR | host[:port]
+      protocol    TEXT NOT NULL DEFAULT 'any',   -- ssh | http | postgres | any
+      credential  TEXT NOT NULL DEFAULT '',      -- vault ref (secret:KEY); injected at launch in Phase 2c
+      posture     TEXT NOT NULL DEFAULT 'ask',   -- allow | ask | never (default tier for reaching this host)
+      enabled     INTEGER NOT NULL DEFAULT 1,    -- 0 | 1
+      scope       TEXT NOT NULL DEFAULT 'org',   -- org (company-wide) | personal (one member's own)
+      owner_member_id TEXT,                      -- the owning member (personal scope only; NULL for org)
+      shared      INTEGER NOT NULL DEFAULT 0,    -- a personal host shared with the whole team
+      created_at  INTEGER NOT NULL
+    );
+
     -- Terminal-native agent sessions (each a tmux shell).
     CREATE TABLE IF NOT EXISTS term_sessions (
       id         TEXT PRIMARY KEY,

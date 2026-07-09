@@ -22,6 +22,7 @@ import {
 import { createMemoryProvider } from './memory';
 import { CapabilityRegistry } from './capabilities/registry';
 import { ConnectorStore } from './connectors/connectors';
+import { HostStore } from './hosts/hosts';
 import { Gateway } from './gateway/gateway';
 import { InMemoryAuditSink, JsonlAuditSink, SqliteAuditSink, TeeAuditSink } from './governance/audit';
 import { InMemoryBudgetLedger } from './governance/budget';
@@ -94,6 +95,8 @@ export class AgentOS {
   readonly agents = new Map<string, AgentManifest>();
   /** User-registered connectors (MCP servers) the claude-code runtime exposes to agents. */
   readonly connectors: ConnectorStore;
+  /** Host connections — governed reachable destinations (SSH / internal HTTP / DB). See host-connections-plan.md. */
+  readonly hosts: HostStore;
   /**
    * Persistent agent memory (recall across sessions). SQLite by default; libsql/automem optional.
    * Mutable so Settings → Memory can hot-swap the backend live (new requests use the new provider).
@@ -114,6 +117,7 @@ export class AgentOS {
     this.db = openDb(opts.paths?.db ?? ':memory:');
     this.secrets = new SqliteSecretsVault(this.db, resolveMasterKey(opts.paths?.home), new EnvSecretsVault());
     this.connectors = new ConnectorStore(this.db);
+    this.hosts = new HostStore(this.db);
     this.approvals = new SqliteApprovals(this.db);
     this.team = new TeamStore(this.db);
     this.settings = new SettingsStore(this.db);
