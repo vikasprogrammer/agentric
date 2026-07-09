@@ -15,6 +15,7 @@ import { Db } from './state/db';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
 import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
+import { Audience, resolveRecipients } from './governance/recipients';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -177,6 +178,11 @@ export interface FeedMessage {
   sessionTitle?: string;
   /** Whether the requesting viewer has marked this read (per-member; absent on the agent's own feed). */
   read?: boolean;
+  /** Explicit recipient routing: when set, visibility is governed by this Audience rather than the
+   *  card's session provenance (the path a session-less card — e.g. a Tasks notification — reaches the
+   *  right person). `audienceId` holds the member id / approval level, per `audienceKind`. */
+  audienceKind?: Audience['kind'];
+  audienceId?: string;
   createdAt: number;
 }
 
@@ -227,6 +233,9 @@ interface MessageRow {
   /** Per-viewer inbox state, joined from message_state for the requesting member (console feed only).
    *  Absent (key not selected) on the agent's own session inbox. */
   state_read_at?: number | null;
+  /** Explicit-audience routing columns (NULL = fall back to session visibility). */
+  audience_kind?: string | null;
+  audience_id?: string | null;
 }
 
 /** What the approval-notifier sink receives when a risky action lands an approval card. */
@@ -421,6 +430,32 @@ export class TerminalManager {
     return this.canViewSpawn(spawnedBy, viewer);
   }
 
+  /**
+   * Whether `viewer` may see a message ROW. A card with an explicit `audience_kind` is routed by that
+   * Audience (the pull face of {@link resolveRecipients} — one definition of "receiver" for push and
+   * pull); otherwise it falls back to the card's session provenance (`canViewRow`). Owner/admin see all
+   * either way, keeping parity with `canViewSpawn`.
+   */
+  private canViewMessageRow(r: MessageRow, viewer: Member): boolean {
+    return this.canViewMsg(r.audience_kind ?? null, r.audience_id ?? null, r.session_spawned_by ?? null, r.session_run_as ?? null, viewer);
+  }
+
+  /** Field-level twin of {@link canViewMessageRow} for the read/dismiss/answer guards, which fetch just
+   *  the visibility columns: explicit audience wins, else the session provenance rule. */
+  private canViewMsg(audienceKind: string | null, audienceId: string | null, spawnedBy: string | null, runAs: string | null, viewer: Member): boolean {
+    if (audienceKind) return this.canViewAudience(audienceKind, audienceId, viewer);
+    return this.canViewRow(spawnedBy, runAs, viewer);
+  }
+
+  /** Is `viewer` in the resolved recipient set of an explicit audience? Reuses `resolveRecipients` so a
+   *  card is visible to exactly whom it would have been DMed (owner/admin always, per the platform rule). */
+  private canViewAudience(kind: string, id: string | null, viewer: Member): boolean {
+    if (viewer.role === 'owner' || viewer.role === 'admin') return true;
+    const audience = audienceFromColumns(kind, id);
+    if (!audience) return false;
+    return resolveRecipients(this.os, audience).some((m) => m.id === viewer.id);
+  }
+
   /** Whether `viewer` may see a specific session (resolves its provenance + run-as, then the rule). */
   canViewSession(sessionId: string, viewer: Member): boolean {
     const r = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
@@ -533,7 +568,7 @@ export class TerminalManager {
          ORDER BY m.created_at DESC`,
       )
       .all<MessageRow>(viewerId);
-    const visible = viewer ? rows.filter((r) => this.canViewRow(r.session_spawned_by ?? null, r.session_run_as ?? null, viewer)) : rows;
+    const visible = viewer ? rows.filter((r) => this.canViewMessageRow(r, viewer)) : rows;
     return visible.map(toMessage);
   }
 
@@ -541,10 +576,10 @@ export class TerminalManager {
    *  feed — you can only touch a message you can see. Returns false if it's not found or not yours. */
   markRead(id: string, viewer: Member): boolean {
     const row = this.db
-      .prepare('SELECT ts.spawned_by AS sb, ts.run_as AS ra FROM messages m LEFT JOIN term_sessions ts ON m.session_id = ts.id WHERE m.id = ?')
-      .get<{ sb: string | null; ra: string | null }>(id);
+      .prepare('SELECT m.audience_kind AS ak, m.audience_id AS ai, ts.spawned_by AS sb, ts.run_as AS ra FROM messages m LEFT JOIN term_sessions ts ON m.session_id = ts.id WHERE m.id = ?')
+      .get<{ ak: string | null; ai: string | null; sb: string | null; ra: string | null }>(id);
     if (!row) return false;
-    if (!this.canViewRow(row.sb, row.ra, viewer)) return false;
+    if (!this.canViewMsg(row.ak, row.ai, row.sb, row.ra, viewer)) return false;
     this.upsertState(id, viewer.id, 'read_at');
     return true;
   }
@@ -597,16 +632,16 @@ export class TerminalManager {
   dismissMessage(id: string, viewer: Member): 'ok' | 'not_found' | 'forbidden' | 'pending' {
     const row = this.db
       .prepare(
-        `SELECT m.type, a.status AS approval_status, q.status AS question_status, ts.spawned_by AS session_spawned_by, ts.run_as AS session_run_as
+        `SELECT m.type, m.audience_kind, m.audience_id, a.status AS approval_status, q.status AS question_status, ts.spawned_by AS session_spawned_by, ts.run_as AS session_run_as
          FROM messages m
          LEFT JOIN approvals a ON m.approval_id = a.id
          LEFT JOIN questions q ON m.question_id = q.id
          LEFT JOIN term_sessions ts ON m.session_id = ts.id
          WHERE m.id = ?`,
       )
-      .get<{ type: FeedMessage['type']; approval_status: string | null; question_status: string | null; session_spawned_by: string | null; session_run_as: string | null }>(id);
+      .get<{ type: FeedMessage['type']; audience_kind: string | null; audience_id: string | null; approval_status: string | null; question_status: string | null; session_spawned_by: string | null; session_run_as: string | null }>(id);
     if (!row) return 'not_found';
-    if (!this.canViewRow(row.session_spawned_by ?? null, row.session_run_as ?? null, viewer)) return 'forbidden';
+    if (!this.canViewMsg(row.audience_kind ?? null, row.audience_id ?? null, row.session_spawned_by ?? null, row.session_run_as ?? null, viewer)) return 'forbidden';
     const stillWaiting =
       (row.type === 'approval' && (row.approval_status ?? 'pending') === 'pending') ||
       (row.type === 'question' && (row.question_status ?? 'pending') === 'pending');
@@ -1382,12 +1417,32 @@ export class TerminalManager {
 
   private addMessage(m: Omit<FeedMessage, 'id' | 'createdAt'>): void {
     this.db
-      .prepare('INSERT INTO messages (id, type, session_id, agent, title, body, status, approval_id, capability, args, level, source, question_id, outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO messages (id, type, session_id, agent, title, body, status, approval_id, capability, args, level, source, question_id, outcome, audience_kind, audience_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(
         randomUUID().slice(0, 8), m.type, m.sessionId, m.agent, m.title, m.body, m.status,
         m.approvalId ?? null, m.capability ?? null, m.args !== undefined ? JSON.stringify(m.args) : null,
-        m.level ?? null, m.source ?? null, m.questionId ?? null, m.outcome ?? null, Date.now(),
+        m.level ?? null, m.source ?? null, m.questionId ?? null, m.outcome ?? null,
+        m.audienceKind ?? null, m.audienceId ?? null, Date.now(),
       );
+  }
+
+  /**
+   * Post an inbox card for a Tasks event, addressed to an explicit {@link Audience} (the assignee, the
+   * owner, …) rather than to a session's viewers — a task has no session, so it uses the `task:<id>`
+   * sentinel for `session_id` (no matching term_sessions row → visibility is governed entirely by the
+   * audience via `canViewMessageRow`). `args.taskId` deep-links the card to the board. Public so the
+   * tenant-registry wiring (the `os.tasks` notifier) can call it.
+   */
+  postTaskCard(input: { taskId: string; agent: string; title: string; body: string; audience: Audience; event: string }): void {
+    const audienceId = input.audience.kind === 'member' ? input.audience.id
+      : input.audience.kind === 'sessionOwner' ? input.audience.id
+      : input.audience.kind === 'approvers' ? input.audience.level
+      : undefined;
+    this.addMessage({
+      type: 'task', sessionId: `task:${input.taskId}`, agent: input.agent, title: input.title,
+      body: input.body, status: 'open', args: { taskId: input.taskId, event: input.event },
+      audienceKind: input.audience.kind, audienceId,
+    });
   }
 
   // ── session lifecycle → inbox ────────────────────────────────────────────────
@@ -1903,7 +1958,21 @@ function toMessage(r: MessageRow): FeedMessage {
     // read is per-member: present only when the console feed joined message_state for the viewer.
     // The agent's own session inbox doesn't select it (key absent) → left undefined.
     read: 'state_read_at' in r ? r.state_read_at != null : undefined,
+    audienceKind: (r.audience_kind as Audience['kind']) ?? undefined,
+    audienceId: r.audience_id ?? undefined,
     createdAt: r.created_at,
   };
+}
+
+/** Rebuild an {@link Audience} from a message row's two persisted columns (`audience_kind`,
+ *  `audience_id`) — the inverse of how `postTaskCard` flattens it. Unknown/blank kind → null. */
+function audienceFromColumns(kind: string, id: string | null): Audience | null {
+  switch (kind) {
+    case 'member': return id ? { kind: 'member', id } : null;
+    case 'sessionOwner': return id ? { kind: 'sessionOwner', id } : null;
+    case 'admins': return { kind: 'admins' };
+    case 'approvers': return id === 'head' || id === 'owner' ? { kind: 'approvers', level: id } : null;
+    default: return null;
+  }
 }
 

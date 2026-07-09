@@ -809,7 +809,7 @@ function Console({ me }: { me: Member }) {
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} onOpen={openTerminal} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
-          {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} />}
+          {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectorsPage me={me} />}
           {route === 'team' && <TeamPage me={me} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} nav={nav} />}
@@ -1815,7 +1815,9 @@ function timeUntil(ts: number): string {
 
 /** The inbox heading for a message: the session's live display name, falling back to the agent id if a
  *  run hasn't been named yet. Every card leads with this; the agent is shown as a secondary line. */
-const sessionName = (m: Msg): string => (m.sessionTitle || '').trim() || m.agent
+// A 'task' card has no session — its headline is the event title; everything else leads with the
+// session's live title (falling back to the agent id).
+const sessionName = (m: Msg): string => m.type === 'task' ? (m.title || 'Task') : ((m.sessionTitle || '').trim() || m.agent)
 
 /** Shared two-tier heading: the session name (primary) with the agent id as a secondary line below.
  *  Inline status badges/verb sit on the agent line so the session name always reads as the title. */
@@ -1832,7 +1834,7 @@ function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
   )
 }
 
-function InboxPage({ messages, me, onOpen, onOpenArtifact }: { messages: Msg[]; me: Member; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void }) {
+function InboxPage({ messages, me, onOpen, onOpenArtifact, onOpenTask }: { messages: Msg[]; me: Member; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void; onOpenTask: (id: string) => void }) {
   // Read state is now PER-MEMBER + server-backed (m.read): it syncs across this member's devices/tabs
   // and one admin marking read no longer touches another's badge. `readIds` optimistically bridges the
   // gap until the next poll reflects the server truth.
@@ -1894,7 +1896,7 @@ function InboxPage({ messages, me, onOpen, onOpenArtifact }: { messages: Msg[]; 
           <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">No activity yet.</div>
         ) : (
           <div className="divide-y divide-border/60 overflow-hidden rounded-lg border">
-            {activity.map((m) => <FeedItem key={m.id} m={m} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onDismiss={dismiss} unread={isUnread(m)} />)}
+            {activity.map((m) => <FeedItem key={m.id} m={m} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onOpenTask={onOpenTask} onDismiss={dismiss} unread={isUnread(m)} />)}
           </div>
         )}
       </section>
@@ -2007,10 +2009,12 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
 /** One read-only Activity-feed row — completion · artifact · progress update · resolved approval ·
  *  answered question · (legacy) start. Compact, the whole row opens the session (artifacts open the
  *  gallery); the timestamp swaps to a dismiss button on hover. */
-function FeedItem({ m, onOpen, onOpenArtifact, onDismiss, unread }: { m: Msg; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
+function FeedItem({ m, onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: { m: Msg; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onOpenTask?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
-  const meta = (m.args ?? {}) as { artifactId?: string; filename?: string }
+  const meta = (m.args ?? {}) as { artifactId?: string; filename?: string; taskId?: string; event?: string }
   const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
+  // A 'task' card has no session — it deep-links to the board (its taskId), not a terminal.
+  const goTask = m.type === 'task' && meta.taskId && onOpenTask ? () => onOpenTask(meta.taskId!) : null
 
   let Icon = Clock
   let iconCls = 'text-muted-foreground'
@@ -2050,6 +2054,13 @@ function FeedItem({ m, onOpen, onOpenArtifact, onDismiss, unread }: { m: Msg; on
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
+  } else if (m.type === 'task' && meta.taskId) {
+    // A Tasks lifecycle card (assigned to you / blocked / done). Headline = event title (via sessionName);
+    // the muted line carries the task title (m.body). Blocked is highlighted — it needs a human.
+    Icon = ListChecks; iconCls = meta.event === 'blocked' ? 'text-amber-600' : meta.event === 'done' ? 'text-emerald-600' : 'text-sky-600'
+    highlight = meta.event === 'blocked'
+    detail = m.body
+    badge = <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">task</Badge>
   } else {
     // legacy 'task' (started) rows from older runs — kept renderable
     Icon = Rocket; iconCls = 'text-muted-foreground'
@@ -2058,7 +2069,7 @@ function FeedItem({ m, onOpen, onOpenArtifact, onDismiss, unread }: { m: Msg; on
 
   return (
     <div
-      onClick={goArtifact ?? open}
+      onClick={goArtifact ?? goTask ?? open}
       className={`group relative flex cursor-pointer items-start gap-2.5 px-3 py-2 hover:bg-muted/50 ${highlight ? 'bg-amber-50/40' : ''}`}
     >
       <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${unread ? 'bg-primary' : 'bg-transparent'}`} />

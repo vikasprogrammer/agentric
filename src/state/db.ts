@@ -438,6 +438,11 @@ function migrate(db: Db): void {
   addColumn(db, 'messages', 'question_id', 'TEXT');   // links a 'question' message to its row
   addColumn(db, 'messages', 'outcome', 'TEXT');       // for 'completed' messages: success|failure|partial|unknown
   addColumn(db, 'messages', 'dismissed_at', 'INTEGER'); // when a human dismissed it from the inbox (NULL = visible)
+  // Explicit recipient routing (see docs/inbox-plan.md): when set, the card's visibility is governed by
+  // this Audience (member/admins/approvers/sessionOwner), NOT by its session's provenance — the path a
+  // session-less card (e.g. a Tasks notification, session_id='task:<id>') reaches the right person.
+  addColumn(db, 'messages', 'audience_kind', 'TEXT');  // Audience.kind | NULL = fall back to session visibility
+  addColumn(db, 'messages', 'audience_id', 'TEXT');    // the audience's member id / approval level (kind-dependent)
 
   // Execution mode for automations (older DBs predate it — default preserves their interactive behavior).
   addColumn(db, 'automations', 'mode', "TEXT NOT NULL DEFAULT 'interactive'");

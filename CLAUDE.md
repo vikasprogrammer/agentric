@@ -232,8 +232,12 @@ Key modules:
   agent **closes its own loop** with `task_update(done)`. This is the **A2A delegation path** (support→coding
   = a task assigned to `agent:<id>`; run-as passthrough keeps the accountable human). Agent tools
   `task_create`/`task_list`/`task_get`/`task_claim`/`task_update` (author/assignee server-derived); console
-  **Tasks** Kanban board (primary nav, under Agents). §9 futures: pool auto-assignment, agent-triggered
-  `task_dispatch`, a policy brake on dispatch. See `docs/tasks-plan.md`.
+  **Tasks** Kanban board (primary nav, under Agents). A `TaskStore` notifier (`setNotifier`, wired in
+  tenant-registry like `setOverdueNotifier`) fires on create/(re)assign/status so **every** mutation path
+  (console, MCP, dispatcher) lands an **audience-addressed Inbox card + DM** for the right human —
+  assignee on create/assign, owner on blocked/done — via `notifyTaskEvent` → `postTaskCard` +
+  `resolveRecipients`/`deliverDM` (agent-assigned & self-actions stay quiet). §9 futures: pool
+  auto-assignment, agent-triggered `task_dispatch`, a policy brake on dispatch. See `docs/tasks-plan.md`.
 - `src/edge/dreaming.ts` — the **self-learning ("Dreaming")** engine: a periodic deterministic pass that
   reflects on recent episodes + outcomes + friction, **compounds** them into `settings: dreaming_state`,
   emits a living KB page + a tenant-shared memory Insight, and **closes the loop** — distilled guidance is
@@ -265,7 +269,9 @@ Everything the live console touches persists in one SQLite DB per data home, via
 `node:sqlite`** (keeps the zero-dependency stance; `@types/node` v20 lacks the types, so
 `src/state/sqlite.d.ts` declares the subset we use). Tables: `members`, `invites`, `auth_sessions`,
 `assignments`, `member_identities` (external accounts → member, the chat run-as join key; PK
-`(provider, external_id)`), `connectors`, `term_sessions`, `messages` (the inbox feed), `questions`,
+`(provider, external_id)`), `connectors`, `term_sessions`, `messages` (the inbox feed; a row may carry an
+explicit `audience_kind`/`audience_id` to route a session-less card — e.g. a Tasks notification — to a
+member, else visibility falls back to its session's provenance), `questions`,
 `approvals`, `automations`, `slack_threads`, `discord_threads`, `artifacts`, `audit_events`,
 `settings` (key→value: company context,
 runtime defaults, memory config, **self-learning state/guidance/recommendations**, …), `memories`

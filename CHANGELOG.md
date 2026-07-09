@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.64.0] — 2026-07-09
+### Added
+- **Task lifecycle → Inbox notifications, routed to the right person.** Creating, (re)assigning, or
+  changing a task's status now lands an inbox card for the human it concerns and DMs them on their
+  linked Slack/Discord account: a **new/reassigned** task → its human **assignee** ("assigned to you");
+  a task going **blocked** or **done** → its **owner**. Agent-assigned and self-made changes stay quiet
+  (an agent-owned task announces itself by dispatching a session; nobody is notified of their own
+  action). Fires on **every** mutation path — console, agent `task_*` MCP tools, and the auto-dispatcher
+  — because the sink lives on `TaskStore`, not the routes.
+- **Explicit recipient routing on the inbox feed (`audience`).** A message row can now name its
+  **audience** (`audience_kind`/`audience_id`) instead of always inheriting visibility from its session's
+  provenance — the mechanism that lets a **session-less** card (a task notification) reach exactly the
+  right member. `canViewMessageRow` resolves the audience via the same `resolveRecipients` used to DM, so
+  a card is visible to precisely whom it would be pinged (owner/admin still see all); rows without an
+  audience are unchanged. Task cards use a `task:<id>` session sentinel and deep-link to the board.
+
 ## [0.63.1] — 2026-07-09
 ### Changed
 - **One global recipient resolver for notifications.** "Who is the receiver of a notification?" was

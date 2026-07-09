@@ -43,9 +43,17 @@ Three design choices make it robust:
 | `update` | `update` MCP tool | no | no |
 | `artifact` | `publish` MCP tool | no | no |
 | `skill.proposed` | `skill_propose` MCP tool | no | review (in Skills) |
-| `task` | legacy start rows | no | no |
+| `task` | Tasks lifecycle (`TaskStore` notifier) + legacy start rows | no | no (deep-links to the board) |
 
 The first three are **"Needs you"**; the rest are **"Activity"**.
+
+**Explicit-audience cards (`audience_kind`/`audience_id`).** Most cards inherit their visibility from the
+session that wrote them (`canViewRow` on the session's provenance/run-as). A card can instead **name its
+recipient** via an Audience (`member`/`admins`/`approvers`/`sessionOwner`) — then `canViewMessageRow`
+resolves it through the same `resolveRecipients` used to DM, so the card is visible to exactly whom it
+would be pinged (owner/admin always see all). This is how a **session-less** card reaches the right person:
+a **Tasks** notification has no session, so it carries `audience = {member: assignee|owner}` and a
+`session_id = 'task:<id>'` sentinel. See §4.10.
 
 ---
 
@@ -127,6 +135,15 @@ Approve/reply buttons just `disabled=busy` until the next 1.5s poll (no optimist
 `alert()`. No filter/search/grouping/threading in the feed. **Plan:** optimistic action state +
 toasts; per-agent/per-session grouping; type filter + search.
 
+### 4.10 No global "who receives this?" + Tasks didn't notify — ✅ SHIPPED (v0.63.1 / v0.64.0)
+"Who is the receiver of a notification?" was re-derived in each DM notifier, and anything without a
+session (a **Task**) had nowhere to route — inbox visibility was inferred purely from a session's
+provenance. **Fixed in two steps:** (1) one `Audience` vocabulary + `resolveRecipients`
+(`src/governance/recipients.ts`) is the single answer to "who receives this," consulted by every notifier
+(v0.63.1). (2) Messages gained an explicit `audience` (the pull face of the same resolver), and
+`TaskStore` gained a notifier so create/assign/blocked/done events land an **audience-addressed** inbox
+card + DM for the right human — assignee or owner (v0.64.0). See §4 header for the audience mechanics.
+
 ### 4.9 Agent can't be *pushed* an answer — ⏳ LATER
 An agent only learns its question was answered by polling `ask` or remembering to `check_inbox`. No push,
 no "N new replies since last check" cursor. Partially mitigated by `check_inbox`. **Plan:** an inbox
@@ -183,6 +200,7 @@ always-rule for owner sign-off (mirrors `skill_propose`).
 |---|---|---|
 | **1** | Question DMs · chat loop · per-member read/dismiss | ✅ v0.39.0 |
 | **Always approve** | Learn a policy `allow` from an approval card (§4.4/§5) | ✅ v0.40.0 |
+| **Recipient routing** | Global `Audience`/`resolveRecipients` + explicit-audience cards + Tasks→Inbox (§4.10) | ✅ v0.63.1/v0.64.0 |
 | **2** | Server-side `ask` timeout/expiry · stale-item reminders + escalation | ⏳ |
 | **3** | `since`-cursor + SSE push · feed filter/search/grouping · optimistic UI | ⏳ |
 | **later** | Push answers to the agent · inbox cursor | ⏳ |

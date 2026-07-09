@@ -37,8 +37,28 @@ const STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'blocked', 'done', 'ca
 /** Sentinel body for the one-time "went overdue" event that dedupes the overdue notification. */
 const OVERDUE_MARK = '⏰ went overdue';
 
+/**
+ * What the {@link TaskStore} notifier sink receives on a meaningful task change. The store stays
+ * db-only and layer-clean — it just fires a domain event; the edge wiring (tenant-registry) decides
+ * whether it merits an inbox card, resolves the receiver via an `Audience`, and DMs them. Mirrors
+ * `Automations.setOverdueNotifier`. `by` is the actor (member id | `agent:<id>`) so the wiring can
+ * suppress self-notification.
+ */
+export interface TaskNotice {
+  task: Task;
+  kind: 'created' | 'assigned' | 'status';
+  by: string;
+  detail?: string;
+}
+
 export class TaskStore {
   constructor(private readonly db: Db) {}
+
+  private notifier?: (n: TaskNotice) => void;
+  /** Register the sink fired on task create / (re)assignment / status change. Best-effort, post-construction
+   *  (wired in tenant-registry once the TerminalManager exists), like the other notifier sinks. */
+  setNotifier(fn: (n: TaskNotice) => void): void { this.notifier = fn; }
+  private notify(n: TaskNotice): void { try { this.notifier?.(n); } catch { /* notifications are advisory */ } }
 
   /** Create a task, log its opening `status` event, and (for a sub-task) `link` it on the parent. */
   create(input: TaskCreateInput): Task {
@@ -59,7 +79,9 @@ export class TaskStore {
       );
     this.addEvent(id, 'status', '→todo', input.createdBy);
     if (input.parentId && this.get(input.parentId)) this.addEvent(input.parentId, 'link', `task:${id}`, input.createdBy);
-    return this.get(id)!;
+    const task = this.get(id)!;
+    this.notify({ task, kind: 'created', by: input.createdBy });
+    return task;
   }
 
   get(id: string): Task | undefined {
@@ -129,12 +151,16 @@ export class TaskStore {
       sets.push('due_at = ?'); vals.push(input.dueAt ?? null);
       this.addEvent(id, 'status', input.dueAt ? `due ${new Date(input.dueAt).toISOString().slice(0, 10)}` : 'due date cleared', input.by);
     }
+    let statusChange: string | undefined;
     if (input.status && input.status !== t.status && STATUSES.includes(input.status)) {
       sets.push('status = ?'); vals.push(input.status);
-      this.addEvent(id, 'status', `${t.status}→${input.status}`, input.by);
+      statusChange = `${t.status}→${input.status}`;
+      this.addEvent(id, 'status', statusChange, input.by);
     }
+    let reassigned = false;
     if (input.assignee !== undefined && (input.assignee ?? null) !== (t.assignee ?? null)) {
       sets.push('assignee = ?'); vals.push(input.assignee ?? null);
+      reassigned = true;
       this.addEvent(id, 'assign', input.assignee ? `→${input.assignee}` : '→unassigned', input.by);
     }
     if (input.priority !== undefined) { sets.push('priority = ?'); vals.push(clampPriority(input.priority)); }
@@ -146,7 +172,13 @@ export class TaskStore {
     sets.push('updated_at = ?'); vals.push(now);
     sets.push('updated_by = ?'); vals.push(input.by);
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id);
-    return this.get(id)!;
+    const task = this.get(id)!;
+    // Fire the notices AFTER the write so the snapshot reflects the change. Reassignment first (the new
+    // assignee's "assigned to you"), then any status transition (owner's "blocked"/"done"); the edge
+    // wiring filters which merit a card + resolves the receiver.
+    if (reassigned) this.notify({ task, kind: 'assigned', by: input.by });
+    if (statusChange) this.notify({ task, kind: 'status', by: input.by, detail: statusChange });
+    return task;
   }
 
   /**

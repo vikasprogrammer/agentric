@@ -19,7 +19,8 @@ import { Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { Member, Task } from './types';
-import { resolveRecipients } from './governance/recipients';
+import { TaskNotice } from './state/tasks';
+import { Audience, resolveRecipients } from './governance/recipients';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantRecord, TenantStore } from './state/control';
 
@@ -197,6 +198,10 @@ export class TenantRegistry {
     // Deadline notifications: when a task passes its due date, DM its owner (the human it runs as) once,
     // so a missed deadline surfaces off the board. Owner-less → owner/admins. Mirrors the question path.
     autos.setOverdueNotifier((task) => { void notifyTaskOverdue(os, slack, discord, task); });
+    // Task lifecycle → Inbox: a create/assign/status change lands an audience-addressed inbox card for
+    // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
+    // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.
+    os.tasks.setNotifier((notice) => { void notifyTaskEvent(os, tm, slack, discord, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
     return { record: rec, os, tm, autos, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
@@ -281,6 +286,51 @@ export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'd
     `\nOpen the Agent OS console → Tasks to reprioritise, reassign, or extend it.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.overdue.notified', data: { id: task.id, targets: targets.length, dms } });
+}
+
+/** Is `who` a human teammate (a member id) rather than an agent (`agent:<id>`) or nobody? */
+function isHumanMember(who: string | undefined): who is string {
+  return !!who && !who.startsWith('agent:');
+}
+
+/**
+ * Map a {@link TaskNotice} to the inbox card it warrants — WHO should hear about it (an {@link Audience})
+ * and the card copy — or `null` when the change doesn't merit a notification. The routing:
+ * - **created / assigned** → the human assignee ("assigned to you"); agent/unassigned tasks notify nobody
+ *   (an agent-owned task announces itself by dispatching a session, not a card).
+ * - **status → blocked** → the owner ("needs you to unblock"); → **done** → the owner ("finished").
+ * Actor-suppression (don't notify yourself) is applied by the caller against `notice.by`.
+ */
+function taskCard(n: TaskNotice): { audience: Audience; title: string; event: string } | null {
+  const t = n.task;
+  if ((n.kind === 'created' || n.kind === 'assigned') && isHumanMember(t.assignee)) {
+    return { audience: { kind: 'member', id: t.assignee }, event: n.kind, title: n.kind === 'created' ? 'New task assigned to you' : 'Task assigned to you' };
+  }
+  if (n.kind === 'status' && isHumanMember(t.owner)) {
+    if (t.status === 'blocked') return { audience: { kind: 'member', id: t.owner }, event: 'blocked', title: 'Task blocked — needs you' };
+    if (t.status === 'done') return { audience: { kind: 'member', id: t.owner }, event: 'done', title: 'Task done' };
+  }
+  return null;
+}
+
+/**
+ * Task lifecycle → Inbox. Writes an audience-addressed inbox card for the human a task change concerns
+ * (assignee/owner) and DMs them on their linked chat account. The card is written SYNCHRONOUSLY (before
+ * the awaited DM) so it's durable even if the process exits right after; the DM is best-effort. Skips
+ * entirely when the change warrants no card or the only recipient is the actor who made it.
+ */
+export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard'>, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: TaskNotice): Promise<void> {
+  const card = taskCard(notice);
+  if (!card) return;
+  // Resolve the receiver, then drop the actor themselves — nobody needs a card for their own action.
+  const recipients = resolveRecipients(os, card.audience).filter((m) => m.id !== notice.by);
+  if (!recipients.length) return;
+  const t = notice.task;
+  const agentLabel = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : 'tasks';
+  tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event });
+  const text = `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen the Agent OS console → Tasks.`;
+  const dms = await deliverDM(slack, discord, os, recipients, text);
+  os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
 }
 
 /** Launch a ttyd bound to one tenant's tmux socket on `ttydPort`. (Moved verbatim from server.ts.) */
