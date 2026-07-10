@@ -832,6 +832,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const page = os.kb.read(os.tenant, url.searchParams.get('section') || '', url.searchParams.get('slug') || '');
+    if (page) os.kb.recordRead(page.id); // an agent opened it — bump the fetch counter (auto-archive signal)
     return sendJson(res, page ? 200 : 404, page ? { page } : { error: 'page not found' });
   }
   if (method === 'POST' && p === '/api/kb/write') {

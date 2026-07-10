@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.95.0] — 2026-07-10
+### Added
+- **KB pages now count how often agents read them.** Every `kb_read` fetch by an agent bumps a
+  per-page `read_count` and stamps `last_read_at` (new `kb_pages` columns, added additively for
+  existing tenants). It's a cheap targeted `UPDATE` — the FTS reindex trigger is re-scoped to
+  `UPDATE OF title, tags, body`, so a fetch never re-tokenizes the body. This is the signal a future
+  auto-archive pass will use to retire never/rarely-read pages. Surfaced on `KbPage` as
+  `readCount`/`lastReadAt`; only the agent fetch route (`GET /api/kb/read`) counts — console reads,
+  history and revert don't (`src/state/kb.ts` `recordRead`, `src/server.ts`, `src/state/db.ts`).
+
 ## [0.94.1] — 2026-07-10
 ### Fixed
 - **Memory migration now pre-flights the backend instead of failing mid-loop.** The

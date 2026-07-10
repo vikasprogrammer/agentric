@@ -20,6 +20,7 @@ import { KbPage, KbRevision, KbSearchQuery, KbWriteInput } from '../types';
 interface PageRow {
   id: string; tenant: string; section: string; slug: string; title: string; tags: string;
   body: string; rel_path: string; rev: number; created_at: number; updated_at: number; updated_by: string;
+  read_count: number; last_read_at: number | null;
   rank?: number;
 }
 interface RevRow {
@@ -106,6 +107,17 @@ export class KbStore {
     return r ? toPage(r) : null;
   }
 
+  /**
+   * Record that an agent fetched a page: bump `read_count` and stamp `last_read_at`. Cheap targeted
+   * UPDATE (the FTS trigger is scoped to content columns, so this never re-tokenizes the body). A page
+   * with a low/stale count is a future auto-archive candidate. Best-effort — never fails a read.
+   */
+  recordRead(id: string, at: number = Date.now()): void {
+    try {
+      this.db.prepare('UPDATE kb_pages SET read_count = read_count + 1, last_read_at = ? WHERE id = ?').run(at, id);
+    } catch { /* counting is telemetry — a failure must not break the fetch */ }
+  }
+
   get(id: string): KbPage | undefined {
     const r = this.db.prepare('SELECT * FROM kb_pages WHERE id = ?').get<PageRow>(id);
     return r ? toPage(r) : undefined;
@@ -185,6 +197,7 @@ function toPage(r: PageRow): KbPage {
     id: r.id, tenant: r.tenant, section: r.section, slug: r.slug, title: r.title,
     tags: JSON.parse(r.tags) as string[], body: r.body, relPath: r.rel_path, rev: r.rev,
     createdAt: r.created_at, updatedAt: r.updated_at, updatedBy: r.updated_by,
+    readCount: r.read_count ?? 0, lastReadAt: r.last_read_at ?? undefined,
   };
 }
 
