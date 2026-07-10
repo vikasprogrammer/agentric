@@ -753,7 +753,7 @@ function AddHostDialog({ me, host, scope, onClose, onSaved }: {
 
           <Field label="Protocol"><Segmented value={protocol} onChange={setProtocol} options={HOST_PROTOCOLS} /></Field>
 
-          <Field label="Default posture" help="allow = reach freely · ask = pause for approval · never = always refuse. Takes effect once host governance ships.">
+          <Field label="Default posture" help="allow = reach freely · ask = pause for approval · never = always refuse. Takes effect once host governance is enabled (Settings → Governance).">
             <Segmented value={posture} onChange={setPosture} options={HOST_POSTURES} />
           </Field>
 

@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.79.3] — 2026-07-10
+### Fixed
+- **Add-a-host dialog: corrected the posture help copy.** It read "Takes effect once host governance
+  *ships*" — but host governance has shipped (v0.77.0); it now reads "once host governance is *enabled*
+  (Settings → Governance)". Caught in the browser QA pass.
+
 ## [0.79.2] — 2026-07-10
 ### Changed
 - **Sessions list now defaults to "My sessions" for owner/admin.** The scope toggle added in 0.79.0
