@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.75.0] — 2026-07-10
+### Changed
+- **The browser terminal is now a first-party xterm.js client, not an embedded ttyd iframe.** A new
+  `<Xterm>` component speaks ttyd's WebSocket protocol directly (over the same `/terminal/ws?arg=…`
+  proxy, auth, tmux `attach.sh` resurrection and gate hook — the backend is unchanged), so the console
+  finally *owns* the terminal frontend. That unlocks what the iframe couldn't: **select-to-copy** (drag
+  copies to your clipboard with a ✓ flash, highlight kept), ⌘/Ctrl-C copy, native paste, **Esc cancels a
+  selection**, clickable links, scrollback search, console-matched theming, and a live font stepper — plus
+  a **⍰ Help** modal on the terminal pane documenting the gestures. The canvas renderer (on the stable
+  xterm 5.5 line) removes the DOM-renderer selection "wobble". Session tmux gains `mouse on` +
+  `copy-selection-no-clear` so the wheel scrolls scrollback at a shell prompt and drag-copy keeps its
+  highlight. Adds a standalone terminal **test bed** (`scripts/termbed.mjs` + `web/termbed.html`) to
+  iterate on the client in isolation.
+
 ## [0.74.2] — 2026-07-10
 ### Changed
 - **Session facts read as a subline under a smaller title.** Instead of sitting on the header's right

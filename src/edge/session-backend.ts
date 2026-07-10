@@ -90,15 +90,22 @@ export class LocalSessionBackend implements SessionBackend {
     // Server-wide tmux tuning recommended for the claude TUI: allow-passthrough lets the agent's
     // progress/notification escapes reach the browser terminal instead of being swallowed; the
     // extended-keys pair lets tmux distinguish Shift+Enter from Enter so the newline shortcut works;
-    // set-clipboard on lets claude's copy-on-select OSC 52 escape reach ttyd/xterm.js so a selection
-    // in the TUI lands on the USER's browser clipboard (claude DCS-wraps it for the passthrough path,
-    // and forwards the raw variant too — this covers both). Global + idempotent, so re-applying per
-    // spawn is harmless; older tmux may reject an option → stdio is ignored so it can't break a
-    // session. (Mouse-wheel scroll is fixed separately by CLAUDE_CODE_NO_FLICKER in claude-launch.sh,
-    // which puts the TUI on the alternate screen.)
+    // set-clipboard on lets claude's copy-on-select OSC 52 escape reach the browser terminal so a
+    // selection in the TUI lands on the USER's browser clipboard (claude DCS-wraps it for the
+    // passthrough path, and forwards the raw variant too — this covers both). Global + idempotent, so
+    // re-applying per spawn is harmless; older tmux may reject an option → stdio is ignored so it can't
+    // break a session.
+    // mouse on: the WHEEL scrolls tmux's scrollback at a bare shell prompt (e.g. claude's resume screen);
+    // a running claude that requests its own mouse mode still gets the wheel forwarded to it, so its
+    // in-app scroll is unchanged. mode-style paints the selection blue to match the console's <Xterm>;
+    // MouseDragEnd copy-selection-no-clear copies (→ OSC 52 → clipboard) WITHOUT clearing the highlight.
     for (const opt of [['set', '-g', 'allow-passthrough', 'on'], ['set', '-s', 'extended-keys', 'on'],
                        ['set', '-g', 'set-clipboard', 'on'],
-                       ['set', '-as', 'terminal-features', 'xterm*:extkeys']]) {
+                       ['set', '-as', 'terminal-features', 'xterm*:extkeys'],
+                       ['set', '-g', 'mouse', 'on'],
+                       ['set', '-g', 'mode-style', 'bg=#2563eb,fg=#ffffff'],
+                       ['bind', '-T', 'copy-mode', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-selection-no-clear'],
+                       ['bind', '-T', 'copy-mode-vi', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-selection-no-clear']]) {
       spawnSync('tmux', ['-S', this.tmuxSocket, ...opt], { stdio: 'ignore' });
     }
   }

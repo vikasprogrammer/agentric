@@ -16,6 +16,10 @@ import { type Branding, type PublicBranding } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
+import { Xterm } from './Xterm'
+
+// Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
+const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
 type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
@@ -1180,20 +1184,61 @@ function StartedBy({ label, className = '' }: { label?: string; className?: stri
   )
 }
 
-/** The live terminal iframe. It asks the server for the attach URL — which is the shared
- *  /terminal/?arg=… (uid-isolation off) or a per-member /terminal/<space>/?arg=… that the app
- *  reverse-proxies to that member's own ttyd (on). Fetching also brings the member's ttyd up. */
+/** "How to use the terminal" — a small modal of shortcuts and quirks. The terminal is a real remote TUI,
+ *  so a few gestures aren't obvious (select-to-copy, Option-drag when an app owns the mouse, Esc cancels a
+ *  selection). Reached from the ⍰ Help button on the terminal pane. */
+function TerminalHelpModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad)/.test(navigator.platform)
+  const mod = isMac ? '⌘' : 'Ctrl'
+  const rows: { keys: string; desc: string }[] = [
+    { keys: 'Drag', desc: 'Select text — it copies to your clipboard automatically (a ✓ flashes) and stays highlighted.' },
+    { keys: `${isMac ? '⌥ Option' : 'Shift'} + drag`, desc: 'Force a precise text selection when a running app (like claude) is using the mouse.' },
+    { keys: 'Esc', desc: 'Cancel the current selection (without sending Esc to the app).' },
+    { keys: `${mod} + C`, desc: 'Copy the selection.' },
+    { keys: `${mod} + V  ·  right-click`, desc: 'Paste into the terminal.' },
+    { keys: 'Mouse wheel', desc: 'Scroll back through output. Inside a full-screen app (claude) it scrolls that app.' },
+    { keys: 'Click a link', desc: 'URLs in the output are clickable — opens in a new tab.' },
+    { keys: 'Paste / drop an image', desc: 'Sends the image to the agent (it can’t travel over the raw terminal).' },
+  ]
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><TerminalSquare className="h-4 w-4" /> Using the terminal</DialogTitle></DialogHeader>
+        <div className="divide-y divide-neutral-800">
+          {rows.map((r) => (
+            <div key={r.keys} className="flex items-baseline gap-3 py-2">
+              <kbd className="shrink-0 whitespace-nowrap rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-200">{r.keys}</kbd>
+              <span className="text-sm text-neutral-300">{r.desc}</span>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs text-neutral-500">This is a live tmux session — closing the tab leaves it running; reopen it any time to reattach.</p>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** The live terminal pane. It asks the server for the attach URL — the shared /terminal/?arg=…
+ *  (uid-isolation off) or a per-member /terminal/<space>/?arg=… (on) — and derives the ttyd WebSocket
+ *  endpoint from it, which our first-party <Xterm> speaks directly (no iframe). */
 function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux: string; onActivity?: (sid: string) => void }) {
-  const [src, setSrc] = useState('')
+  const [wsUrl, setWsUrl] = useState('')
   const [err, setErr] = useState('')
   const [transcript, setTranscript] = useState<string | null>(null)
+  // Terminal font size — lifted here so it drives BOTH the <Xterm> (a live prop) and the stepper in the
+  // ImageDropZone chrome. Persisted so the choice sticks across sessions.
+  const [fontSize, setFontSize] = useState(() => {
+    const n = Number(localStorage.getItem('aos_terminal_font'))
+    return n >= TERM_FONT_MIN && n <= TERM_FONT_MAX ? n : 14
+  })
+  useEffect(() => { localStorage.setItem('aos_terminal_font', String(fontSize)) }, [fontSize])
   // A finished headless run (and a crashed headless run) has no resurrectable pane — never resumable
   // and no longer live — so attaching would show a dead terminal. Show its captured transcript instead.
   // Interactive ended sessions stay resumable and keep the normal attach/resume path untouched.
   const ended = Boolean(session) && !isLive(session!) && !session!.resumable
   useEffect(() => {
     let alive = true
-    setSrc(''); setErr(''); setTranscript(null)
+    setWsUrl(''); setErr(''); setTranscript(null)
     if (session?.id && ended) {
       api.sessionTranscript(session.id).then((r) => {
         if (!alive) return
@@ -1202,10 +1247,12 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
       })
       return () => { alive = false }
     }
-    if (!session?.id) { setSrc(`/terminal/?arg=${encodeURIComponent(tmux)}`); return }
+    // Our own <Xterm> speaks ttyd's WebSocket protocol directly, so we need the WS endpoint, not the old
+    // iframe page URL. ttyd serves it at <base>/ws — the attach URL is <base>/?arg=…, so swap `/?`→`/ws?`.
+    if (!session?.id) { setWsUrl(`/terminal/ws?arg=${encodeURIComponent(tmux)}`); return }
     api.attach(session.id).then((r) => {
       if (!alive) return
-      if (r.url) setSrc(r.url)
+      if (r.url) setWsUrl(r.url.replace(/\/\?/, '/ws?'))
       else setErr(r.error || 'could not open terminal')
     })
     return () => { alive = false }
@@ -1219,55 +1266,34 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
     </div>
   )
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
-  if (!src) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
-  // allow clipboard-write so ttyd's copy-on-select (document.execCommand("copy") on the xterm.js
-  // selection) isn't blocked by the frame's Permissions Policy; clipboard-read pairs it for paste.
+  if (!wsUrl) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   return (
-    <ImageDropZone session={session} onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}>
-      <iframe title="terminal" src={src} allow="clipboard-write; clipboard-read" className="min-h-0 w-full flex-1 border-0 bg-black" />
+    <ImageDropZone session={session} onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}
+      fontSize={fontSize} setFontSize={setFontSize}>
+      <Xterm wsUrl={wsUrl} fontSize={fontSize} copyOnSelect />
     </ImageDropZone>
   )
 }
 
-/** Wraps the terminal iframe so the operator can get an image INTO the remote session — which the pty
- *  can't carry. Three ways in (the iframe is a separate document, so we can only intercept events that
- *  reach OUR document): a 📎 button (always works), drag-and-drop onto the pane (always works), and
- *  Cmd/Ctrl+V (best-effort — only fires when focus is on the console, not inside the terminal iframe;
- *  while you're typing in the terminal the paste goes to ttyd). Each path uploads the bytes; the server
- *  saves them in the agent's folder and types the path into the running claude. */
-function ImageDropZone({ session, children, onActivity }: { session?: Session; children: ReactNode; onActivity?: () => void }) {
+/** Wraps the first-party terminal (<Xterm>) with the console chrome: the font stepper, the "how to use"
+ *  help modal, and the paths to get an IMAGE into the remote session — which the pty can't carry. Three
+ *  ways in: a 📎 button, drag-and-drop onto the pane, and Cmd/Ctrl+V (image paste). Each uploads the
+ *  bytes; the server saves them in the agent's folder and types the path into the running claude. Now
+ *  that the terminal is same-document (no iframe), drops/pastes over it bubble to our window handlers
+ *  directly — no cross-document interception needed. */
+function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }: {
+  session?: Session; children: ReactNode; onActivity?: () => void
+  fontSize: number; setFontSize: (f: number | ((s: number) => number)) => void
+}) {
   const [drag, setDrag] = useState(false)
+  const [help, setHelp] = useState(false)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err' | 'busy'; text: string } | null>(null)
   const live = session?.status === 'running'
   const wrapRef = useRef<HTMLDivElement>(null)
   // Keep the latest upload closure reachable from imperative (addEventListener) handlers without
   // re-binding them every render.
   const uploadRef = useRef<(file: File) => void>(() => {})
-  // Same trick for onActivity — the iframe-document click listener (attached once) reads this ref so
-  // it clears the *current* session's alert without re-binding when the prop identity changes.
-  const activityRef = useRef<(() => void) | undefined>(undefined)
-  activityRef.current = onActivity
-
-  // Terminal font size. ttyd renders xterm.js inside the same-origin iframe and exposes the live
-  // Terminal instance as `window.term` (plus a `window.term.fit()` helper). So we can set the font
-  // size live — no iframe reload, no ttyd relaunch — by reaching into the iframe and reflowing.
-  // Persisted so the choice sticks across sessions; default 14 matches ttyd's launch `-t fontSize=14`.
-  const FONT_MIN = 8, FONT_MAX = 40
-  const [fontSize, setFontSize] = useState(() => {
-    const n = Number(localStorage.getItem('aos_terminal_font'))
-    return n >= FONT_MIN && n <= FONT_MAX ? n : 14
-  })
-  const fontRef = useRef(fontSize)
-  fontRef.current = fontSize
-  // Apply a size to the iframe's xterm. `window.term` only exists once the ttyd websocket has
-  // connected, so retry briefly when it isn't ready yet (e.g. right after the iframe loads).
-  const applyFont = (size: number, tries = 20) => {
-    const iframe = wrapRef.current?.querySelector('iframe') as HTMLIFrameElement | null
-    let term: any
-    try { term = (iframe?.contentWindow as any)?.term } catch { return } // cross-origin (shouldn't happen — same origin)
-    if (term) { try { term.options.fontSize = size; term.fit?.() } catch { /* term torn down mid-reconnect */ } return }
-    if (tries > 0) setTimeout(() => applyFont(size, tries - 1), 150)
-  }
+  const FONT_MIN = TERM_FONT_MIN, FONT_MAX = TERM_FONT_MAX
 
   const upload = async (file: File) => {
     if (!session?.id) return
@@ -1288,16 +1314,18 @@ function ImageDropZone({ session, children, onActivity }: { session?: Session; c
     }
   }
 
-  // Document-level paste: works when focus is on the console (not the terminal iframe).
+  // Image paste. Capture phase so it runs BEFORE xterm's own textarea paste handler when the terminal is
+  // focused (an image has no text, so xterm would do nothing with it anyway — but capturing lets us claim
+  // it cleanly). A text paste has no image item, so it falls through to xterm untouched.
   useEffect(() => {
     if (!session?.id) return
     const onPaste = (e: ClipboardEvent) => {
       const item = Array.from(e.clipboardData?.items || []).find((it) => it.kind === 'file' && it.type.startsWith('image/'))
       const file = item?.getAsFile()
-      if (file) { e.preventDefault(); void upload(file) }
+      if (file) { e.preventDefault(); e.stopPropagation(); void upload(file) }
     }
-    window.addEventListener('paste', onPaste)
-    return () => window.removeEventListener('paste', onPaste)
+    window.addEventListener('paste', onPaste, true)
+    return () => window.removeEventListener('paste', onPaste, true)
   }, [session?.id, live])
 
   // Drag detection at the WINDOW level. The terminal iframe is a separate document that swallows
@@ -1326,59 +1354,8 @@ function ImageDropZone({ session, children, onActivity }: { session?: Session; c
 
   uploadRef.current = upload
 
-  // The terminal grabs focus the moment a session opens, so a drag/paste DIRECTLY over it lands in the
-  // iframe's own document — the parent-window handlers above never see it. The terminal is served from
-  // OUR origin, so we can reach into its document and listen there too: a file-drag entering the iframe
-  // flips `drag` on (which raises the parent overlay above the iframe to catch the drop), and an image
-  // paste is intercepted (capture phase) before xterm.js so Cmd/Ctrl+V works while the terminal is focused.
-  useEffect(() => {
-    if (!session?.id) return
-    const iframe = wrapRef.current?.querySelector('iframe')
-    if (!iframe) return
-    let doc: Document | null = null
-    const onEnter = (e: DragEvent) => { if (Array.from(e.dataTransfer?.types || []).includes('Files')) { e.preventDefault(); setDrag(true) } }
-    const onPaste = (e: ClipboardEvent) => {
-      const item = Array.from(e.clipboardData?.items || []).find((it) => it.kind === 'file' && it.type.startsWith('image/'))
-      const file = item?.getAsFile()
-      if (file) { e.preventDefault(); e.stopPropagation(); uploadRef.current(file) }
-    }
-    // A click anywhere in the terminal means you're attending to it → clear its waiting bell. Clicks
-    // inside the iframe don't bubble to our document, so we listen on the terminal's own (same-origin)
-    // document. Capture + passive so we never interfere with xterm's own click/selection handling.
-    const onClick = () => { activityRef.current?.() }
-    const attach = () => {
-      try {
-        doc = iframe.contentDocument
-        if (!doc) return
-        doc.addEventListener('dragenter', onEnter)
-        doc.addEventListener('paste', onPaste, true) // capture: run before xterm's own paste handler
-        doc.addEventListener('mousedown', onClick, { capture: true, passive: true })
-      } catch { /* cross-origin or not ready — parent-window handlers still cover the console chrome */ }
-    }
-    attach()
-    iframe.addEventListener('load', attach)
-    return () => {
-      iframe.removeEventListener('load', attach)
-      try { doc?.removeEventListener('dragenter', onEnter); doc?.removeEventListener('paste', onPaste, true); doc?.removeEventListener('mousedown', onClick, true) } catch { /* doc gone */ }
-    }
-  }, [session?.id])
-
-  // Persist + push the font size to the live terminal whenever it changes.
-  useEffect(() => {
-    localStorage.setItem('aos_terminal_font', String(fontSize))
-    applyFont(fontSize)
-  }, [fontSize])
-
-  // Re-apply the persisted size whenever the terminal (re)loads — a fresh iframe src or a ttyd
-  // reconnect rebuilds `window.term` at ttyd's default, so we restore the user's choice each time.
-  useEffect(() => {
-    const iframe = wrapRef.current?.querySelector('iframe')
-    if (!iframe) return
-    const onLoad = () => applyFont(fontRef.current)
-    iframe.addEventListener('load', onLoad)
-    applyFont(fontRef.current) // in case it already loaded before this effect ran
-    return () => iframe.removeEventListener('load', onLoad)
-  }, [])
+  // Font size flows to <Xterm> as a live prop (it reflows internally), so no imperative poking needed —
+  // and the terminal is same-document now, so image paste/drop bubble to the window handlers above.
 
   // auto-dismiss the toast (keep errors a touch longer)
   useEffect(() => {
@@ -1390,20 +1367,28 @@ function ImageDropZone({ session, children, onActivity }: { session?: Session; c
   return (
     <div ref={wrapRef} className="relative flex min-h-0 w-full flex-1" onMouseDown={() => onActivity?.()}>
       {children}
-      {/* terminal font-size stepper — reaches into the same-origin xterm and reflows live */}
-      <div className="absolute left-2 top-2 z-10 flex items-center overflow-hidden rounded bg-neutral-800/90 text-neutral-200 shadow">
+      {/* top-left: terminal font-size stepper + a help button (shortcuts / quirks) */}
+      <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
+        <div className="flex items-center overflow-hidden rounded bg-neutral-800/90 text-neutral-200 shadow">
+          <button
+            className="px-2 py-1 text-xs leading-none hover:bg-neutral-700 disabled:opacity-40"
+            title="Decrease terminal font size" disabled={fontSize <= FONT_MIN}
+            onClick={() => setFontSize((s) => Math.max(FONT_MIN, s - 1))}
+          >A−</button>
+          <span className="min-w-[2ch] px-1 text-center text-[11px] tabular-nums" title="Terminal font size">{fontSize}</span>
+          <button
+            className="px-2 py-1 text-sm leading-none hover:bg-neutral-700 disabled:opacity-40"
+            title="Increase terminal font size" disabled={fontSize >= FONT_MAX}
+            onClick={() => setFontSize((s) => Math.min(FONT_MAX, s + 1))}
+          >A+</button>
+        </div>
         <button
-          className="px-2 py-1 text-xs leading-none hover:bg-neutral-700 disabled:opacity-40"
-          title="Decrease terminal font size" disabled={fontSize <= FONT_MIN}
-          onClick={() => setFontSize((s) => Math.max(FONT_MIN, s - 1))}
-        >A−</button>
-        <span className="min-w-[2ch] px-1 text-center text-[11px] tabular-nums" title="Terminal font size">{fontSize}</span>
-        <button
-          className="px-2 py-1 text-sm leading-none hover:bg-neutral-700 disabled:opacity-40"
-          title="Increase terminal font size" disabled={fontSize >= FONT_MAX}
-          onClick={() => setFontSize((s) => Math.min(FONT_MAX, s + 1))}
-        >A+</button>
+          className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+          title="How to use the terminal — shortcuts & quirks"
+          onClick={() => setHelp(true)}
+        ><HelpCircle className="h-3.5 w-3.5" /> Help</button>
       </div>
+      <TerminalHelpModal open={help} onClose={() => setHelp(false)} />
       {/* top-right session toolbar: browse the agent's folder + attach an image */}
       <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5">
         {session?.agent && (
