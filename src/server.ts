@@ -2449,7 +2449,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const localCount = Number(os.db.prepare('SELECT count(*) AS n FROM memories WHERE tenant = ?').get<{ n: number }>(os.tenant)?.n ?? 0);
     const external = (os.settings.memoryConfig()?.backend ?? 'sqlite') !== 'sqlite';
     const backendCount = external && os.memory.count ? await os.memory.count(os.tenant) : null;
-    const drift = external && backendCount != null && localCount > backendCount ? localCount - backendCount : 0;
+    // Drift = local rows written BEFORE the current backend became active (the true orphans not in it),
+    // anchored to the stable switch horizon rather than a count heuristic. No horizon on record (never
+    // switched, or switched pre-feature) → 0, so we never flag/duplicate an already-consistent ledger.
+    const horizon = external ? memoryOrphanHorizon(os) : null;
+    const drift = horizon != null ? countOrphans(os, horizon) : 0;
     return sendJson(res, 200, { ...memoryView(os), health: await os.memory.health(), localCount, backendCount, drift });
   }
   // Probe a (local) Ollama for the embeddings UI: is it reachable, which models are pulled, and —
@@ -2478,8 +2482,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
+    const prevBackend = os.settings.memoryConfig()?.backend ?? 'sqlite';
     os.settings.setMemoryConfig(cfg, me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.backend.changed', data: { backend: cfg.backend } });
+    // A real backend TYPE switch resets the orphan horizon (existing local rows are from the OLD store, so
+    // they're the ones to migrate up). A same-backend re-save (token/endpoint/ranking edit) must NOT move it,
+    // or already-migrated rows would look like orphans again and re-migrate as duplicates.
+    if (cfg.backend !== prevBackend) {
+      os.settings.stampMemorySwitch(Date.now(), me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.backend.changed', data: { backend: cfg.backend, from: prevBackend } });
+    } else {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.config.updated', data: { backend: cfg.backend } });
+    }
     return sendJson(res, 200, { ok: true, ...memoryView(os), health: await os.memory.health() });
   }
   // Run a maintenance pass now (prune + consolidate), using the saved policy. Owner/admin.
@@ -2503,33 +2516,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     const skipEpisodes = b.skipEpisodes === true;
     const limit = Math.max(1, Math.min(Number(b.limit) || 50, 500)); // rows migrated per batch (progress-friendly)
-    const localTotal = () => Number(os.db.prepare('SELECT count(*) AS n FROM memories WHERE tenant = ?').get<{ n: number }>(os.tenant)?.n ?? 0);
-    const remainingBefore = (t: number) => Number(os.db.prepare('SELECT count(*) AS n FROM memories WHERE tenant = ? AND created_at < ?').get<{ n: number }>(os.tenant, t)?.n ?? 0);
-    // `before` fixes the migration horizon: rows STRICTLY before it are the ORPHANS to move; rows the
-    // mirror writes DURING migration (created_at >= `before`, since the backend stamps Date.now() ≥ our
-    // capture) are excluded — so a batch never re-migrates what an earlier batch just mirrored, even if a
-    // store lands in the same millisecond. The client passes the server-assigned `before` back each batch.
-    let before = Number(b.before) || 0;
-    if (!before) {
-      // First batch — pre-flight the backend so a doomed migration fails FAST with an actionable message
-      // instead of looping into a partial `store failed after 0 migrated` (e.g. a token automem's public
-      // /health can't catch — the exact trap this guards). Only the first batch checks; once one store
-      // lands the token is proven, so later batches skip the extra round-trip.
-      const h = await os.memory.health();
-      if (!h.ok) return sendJson(res, 503, { error: `backend not ready — ${h.detail ?? 'health check failed'}. Fix it in Settings → Memory, then migrate.` });
-      // Idempotency guard: if the backend already holds everything (no drift), no-op so a stray click can't
-      // duplicate. Otherwise fix the horizon at now. (Fresh switch → empty store → passes.)
-      const backendCount = os.memory.count ? await os.memory.count(os.tenant) : null;
-      if (backendCount != null && backendCount >= localTotal()) {
-        return sendJson(res, 200, { ok: true, done: true, migrated: 0, skipped: 0, remaining: 0, note: 'already consistent — nothing to migrate' });
-      }
-      before = Date.now();
+    // The migration horizon is the STABLE backend-switch timestamp, not a per-run `Date.now()`. Orphans =
+    // local rows written before the switch (from the old store, absent from the current one). This makes the
+    // loop resume-safe across a closed tab / stray double-click: each migrated orphan is deleted and
+    // re-mirrored with created_at = now (≥ horizon, so it leaves the orphan set), and rows agents write
+    // post-switch are ≥ horizon too — so a fresh call can never re-migrate an already-moved row (no
+    // duplicates) nor falsely report "done" while true orphans remain.
+    const horizon = memoryOrphanHorizon(os);
+    if (horizon == null) {
+      return sendJson(res, 200, { ok: true, done: true, migrated: 0, skipped: 0, remaining: 0, note: 'no backend-switch on record — nothing to migrate' });
     }
-    // One batch of the oldest remaining orphans. We delete each as we go (migrated → re-mirrored under a
-    // new id with created_at > before; skipped episode → simply dropped), so it won't resurface next batch.
+    if (countOrphans(os, horizon) === 0) {
+      return sendJson(res, 200, { ok: true, done: true, migrated: 0, skipped: 0, remaining: 0, note: 'already consistent — nothing to migrate' });
+    }
+    // Pre-flight the backend so a doomed batch fails FAST with an actionable message instead of a partial
+    // `store failed after 0 migrated` (catches a token automem's public /health can't — see AutomemProvider).
+    const h = await os.memory.health();
+    if (!h.ok) return sendJson(res, 503, { error: `backend not ready — ${h.detail ?? 'health check failed'}. Fix it in Settings → Memory, then migrate.` });
+    // One batch of the oldest orphans. Delete each as we go (migrated → re-mirrored with a new id/created_at;
+    // skipped episode → simply dropped), so it won't resurface next batch.
     const rows = os.db
       .prepare('SELECT id, agent_id, content, tags, type, importance, metadata, scope FROM memories WHERE tenant = ? AND created_at < ? ORDER BY created_at, id LIMIT ?')
-      .all<{ id: string; agent_id: string; content: string; tags: string | null; type: string | null; importance: number | null; metadata: string | null; scope: string }>(os.tenant, before, limit);
+      .all<{ id: string; agent_id: string; content: string; tags: string | null; type: string | null; importance: number | null; metadata: string | null; scope: string }>(os.tenant, horizon, limit);
     const del = os.db.prepare('DELETE FROM memories WHERE tenant = ? AND id = ?');
     let migrated = 0, skipped = 0;
     for (const r of rows) {
@@ -2543,19 +2551,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
           scope: r.scope === 'tenant' ? 'tenant' : 'agent',
         });
       } catch (e) {
-        // Stop cleanly: this orphan stays put (not deleted). The client retries with the SAME `before` to resume.
+        // Stop cleanly: this orphan stays put (not deleted). A retry (same horizon) resumes from here.
         const raw = e instanceof Error ? e.message : String(e);
         // A 401 here is the backend rejecting our token (automem's /health is unauthenticated, so a bad token
         // passes the Test/health check and only bites on this first write) — point the operator at the fix.
         const hint = raw.includes('→ 401') ? ' — backend rejected the token; check the token in Settings → Memory' : '';
-        return sendJson(res, 500, { error: `store failed after ${migrated} migrated: ${raw}${hint}`, before, migrated, skipped, remaining: remainingBefore(before) });
+        return sendJson(res, 500, { error: `store failed after ${migrated} migrated: ${raw}${hint}`, migrated, skipped, remaining: countOrphans(os, horizon) });
       }
       del.run(os.tenant, r.id); migrated++;
     }
-    const remaining = remainingBefore(before);
+    const remaining = countOrphans(os, horizon);
     const done = remaining === 0;
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'memory.migrated', data: { backend: os.settings.memoryConfig()?.backend, migrated, skipped, remaining, done } });
-    return sendJson(res, 200, { ok: true, done, before, migrated, skipped, remaining });
+    return sendJson(res, 200, { ok: true, done, migrated, skipped, remaining });
   }
   if (method === 'POST' && p === '/api/settings/memory/clear') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -3538,6 +3546,21 @@ function parseEmbeddings(eb: any, ep?: EmbeddingsConfig): EmbeddingsConfig | und
  * (`…Set`), plus who last changed it. Reflects the saved DB config; when none is saved yet, returns
  * a `sqlite` skeleton (the file default may differ, but the form edits the DB layer).
  */
+/**
+ * The stable migration horizon: the timestamp the active external backend became active. Local `memories`
+ * rows OLDER than this were written under the previous backend and aren't in the current one — the orphans
+ * the migrate button copies up. Anchoring to the switch (not a per-run `Date.now()`) is what makes the
+ * migration resume-safe. `null` → no switch on record → treat the ledger as already consistent.
+ */
+function memoryOrphanHorizon(os: AgentOS): number | null {
+  return os.settings.memorySwitchedAt() ?? null;
+}
+
+/** Count local rows written before `horizon` for this tenant — the un-migrated orphans. */
+function countOrphans(os: AgentOS, horizon: number): number {
+  return Number(os.db.prepare('SELECT count(*) AS n FROM memories WHERE tenant = ? AND created_at < ?').get<{ n: number }>(os.tenant, horizon)?.n ?? 0);
+}
+
 function memoryView(os: AgentOS): MemorySettingsView {
   const cfg = os.settings.memoryConfig() ?? { backend: 'sqlite' as const };
   const view: MemorySettingsView = { backend: cfg.backend, ...os.settings.memoryMeta() };

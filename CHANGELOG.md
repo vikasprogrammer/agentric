@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.99.1] — 2026-07-10
+### Fixed
+- **Memory-backend migration is now resume-safe and can't duplicate or lose rows.** The migrate loop
+  used a per-run `Date.now()` horizon threaded through the browser, so leaving the tab halted it
+  mid-run, and re-clicking to finish couldn't tell an un-migrated orphan from an already-mirrored row —
+  it could re-migrate rows as duplicates, or (via a count-based `backendCount >= localCount` guard)
+  falsely report "already consistent" while real orphans remained. Migration now anchors to a **stable
+  backend-switch timestamp** (`memory_backend_switched_at`, stamped only on a real backend *type* change,
+  not a token/ranking re-save): orphans = local rows written before the switch, so each is migrated
+  exactly once (re-mirrored with a fresh `created_at` that leaves the orphan set) and post-switch rows
+  are never touched. Leaving the tab and clicking **Migrate** again cleanly resumes where it stopped.
+  The drift banner/count and the "already consistent" guard are now orphan-based too, and the banner
+  explains that migration is resume-safe. (Follow-up to the automem 401 work — #162/#167.)
+
 ## [0.99.0] — 2026-07-10
 ### Added
 - **Synchronous task hand-off — a delegating agent can now wait for the result.** `task_dispatch`
