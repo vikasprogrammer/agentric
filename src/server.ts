@@ -2740,9 +2740,44 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSpawn(a.source ?? null, me)) return sendJson(res, 403, { error: 'forbidden' });
     const resolved = os.artifacts.readPath(a.id, url.searchParams.get('file') || undefined);
     if (!resolved) return sendJson(res, 404, { error: 'file not found' });
+    let total: number;
+    try { total = fs.statSync(resolved.absPath).size; } catch { return sendJson(res, 404, { error: 'file not found' }); }
+    const disposition = `inline; filename="${resolved.filename.replace(/"/g, '')}"`;
+    // Honour byte-range requests — <video>/<audio> scrubbing (and Safari playback at all) depends on
+    // 206 Partial Content responses, and it keeps large downloads resumable.
+    const range = req.headers['range'];
+    const m = typeof range === 'string' ? range.match(/^bytes=(\d*)-(\d*)$/) : null;
+    if (m && (m[1] || m[2]) && total > 0) {
+      let start = m[1] ? parseInt(m[1], 10) : NaN;
+      let end = m[2] ? parseInt(m[2], 10) : NaN;
+      if (Number.isNaN(start)) { start = total - end; end = total - 1; }   // suffix range: bytes=-N
+      else if (Number.isNaN(end)) end = total - 1;                          // open range:   bytes=N-
+      if (start > end || start < 0 || start >= total) {
+        res.writeHead(416, { 'content-range': `bytes */${total}` });
+        res.end();
+        return;
+      }
+      end = Math.min(end, total - 1);
+      const stream = fs.createReadStream(resolved.absPath, { start, end });
+      stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
+      res.writeHead(206, {
+        'content-type': resolved.mime,
+        'content-disposition': disposition,
+        'content-range': `bytes ${start}-${end}/${total}`,
+        'accept-ranges': 'bytes',
+        'content-length': end - start + 1,
+      });
+      stream.pipe(res);
+      return;
+    }
     const stream = fs.createReadStream(resolved.absPath);
     stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
-    res.writeHead(200, { 'content-type': resolved.mime, 'content-disposition': `inline; filename="${resolved.filename.replace(/"/g, '')}"` });
+    res.writeHead(200, {
+      'content-type': resolved.mime,
+      'content-disposition': disposition,
+      'accept-ranges': 'bytes',
+      'content-length': total,
+    });
     stream.pipe(res);
     return;
   }
