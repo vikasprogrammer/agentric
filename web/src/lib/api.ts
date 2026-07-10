@@ -6,6 +6,8 @@ export interface Member {
   role: Role
   status: 'invited' | 'active'
   createdAt: number
+  /** Profile picture as a `data:image/…;base64,…` URL; absent → show the member's initial. */
+  avatar?: string
 }
 export type IdentityProvider = 'slack' | 'discord' | 'email' | 'github'
 export const IDENTITY_PROVIDERS: IdentityProvider[] = ['slack', 'discord', 'email', 'github']
@@ -801,6 +803,9 @@ export const api = {
   setRole: (id: string, role: Role) => call<Member | { error: string }>('POST', `/api/team/${id}/role`, { role }),
   removeMember: (id: string) => call<{ ok: boolean; reason?: string }>('DELETE', '/api/team/' + id),
   loginLink: (id: string) => call<{ link: string; error?: string }>('POST', `/api/team/${id}/login-link`),
+  /** Set (POST a data-URL) or clear (DELETE) a member's profile picture. */
+  setAvatar: (id: string, avatar: string) => call<{ ok: boolean; member?: Member; error?: string }>('POST', `/api/team/${id}/avatar`, { avatar }),
+  clearAvatar: (id: string) => call<{ ok: boolean; member?: Member; error?: string }>('DELETE', `/api/team/${id}/avatar`),
   setAssignment: (agentId: string, access: AgentAccess) => call<{ ok: boolean; assignment: AgentAccess }>('PUT', '/api/team/assignments/' + agentId, access),
   setIdentity: (id: string, provider: IdentityProvider, externalId: string) => call<{ ok: boolean; identities: MemberIdentity[]; error?: string }>('POST', `/api/team/${id}/identities`, { provider, externalId }),
   clearIdentity: (id: string, provider: IdentityProvider) => call<{ ok: boolean; identities: MemberIdentity[]; error?: string }>('DELETE', `/api/team/${id}/identities/${provider}`),

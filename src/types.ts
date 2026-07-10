@@ -34,6 +34,9 @@ export interface Member {
   /** `invited` until they accept a magic link; then `active`. */
   status: 'invited' | 'active';
   createdAt: number;
+  /** Profile picture as a self-contained `data:image/…;base64,…` URL (small, square). Absent → the
+   *  UI falls back to the member's initial. Members set their own; owners/admins may set anyone's. */
+  avatar?: string;
 }
 
 /**

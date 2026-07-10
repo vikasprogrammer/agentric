@@ -542,6 +542,10 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'rating', 'TEXT');       // 'up' | 'down' | NULL (unrated)
   addColumn(db, 'term_sessions', 'rated_by', 'TEXT');     // member id who gave the verdict
   addColumn(db, 'term_sessions', 'rated_at', 'INTEGER');  // when (epoch ms)
+
+  // Profile picture: a small square `data:image/…;base64,…` URL. NULL → the UI shows the member's
+  // initial. Members set their own from the Team page; owners/admins may set anyone's.
+  addColumn(db, 'members', 'avatar', 'TEXT');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

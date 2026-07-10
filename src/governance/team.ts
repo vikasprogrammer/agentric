@@ -21,6 +21,7 @@ interface MemberRow {
   role: Role;
   status: 'invited' | 'active';
   created_at: number;
+  avatar: string | null;
 }
 
 interface IdentityRow {
@@ -101,6 +102,14 @@ export class TeamStore {
 
   setRole(id: string, role: Role): Member | undefined {
     this.db.prepare('UPDATE members SET role = ? WHERE id = ?').run(role, id);
+    return this.getMember(id);
+  }
+
+  /** Set (or, with null, clear) a member's profile picture. Returns the updated member, or undefined
+   *  if the id is unknown. The caller validates the data URL (see server.ts). */
+  setAvatar(id: string, avatar: string | null): Member | undefined {
+    if (!this.getMember(id)) return undefined;
+    this.db.prepare('UPDATE members SET avatar = ? WHERE id = ?').run(avatar, id);
     return this.getMember(id);
   }
 
@@ -303,7 +312,7 @@ export class TeamStore {
 }
 
 function toMember(r: MemberRow): Member {
-  return { id: r.id, email: r.email, name: r.name, role: r.role, status: r.status, createdAt: r.created_at };
+  return { id: r.id, email: r.email, name: r.name, role: r.role, status: r.status, createdAt: r.created_at, avatar: r.avatar ?? undefined };
 }
 
 function toIdentity(r: IdentityRow): MemberIdentity {
