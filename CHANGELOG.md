@@ -8,7 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.94.0] — 2026-07-10
+## [0.94.1] — 2026-07-10
+### Fixed
+- **Memory migration now pre-flights the backend instead of failing mid-loop.** The
+  `POST /api/settings/memory/migrate` route batched straight into writes, so an unreachable or
+  auth-rejected external store surfaced only as a confusing `store failed after 0 migrated: … → 401`
+  after the first row. The first batch now runs `os.memory.health()` first and, if the backend isn't
+  ready, returns `503 backend not ready — <detail>. Fix it in Settings → Memory, then migrate.`
+  (paired with the v0.91.1 authenticated automem health probe, so a bad/truncated automem token is
+  reported as `token rejected (401)` before any migration starts). Only the first batch checks — once a
+  store lands the token is proven, so later batches skip the extra round-trip.
 ### Added
 - **Member avatars on a session's "started by" too.** The Sessions list (both the card grid and the
   list view) and the terminal-header facts now show the avatar of the member who started a session,

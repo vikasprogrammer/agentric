@@ -2450,8 +2450,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // store lands in the same millisecond. The client passes the server-assigned `before` back each batch.
     let before = Number(b.before) || 0;
     if (!before) {
-      // First batch — idempotency guard: if the backend already holds everything (no drift), no-op so a
-      // stray click can't duplicate. Otherwise fix the horizon at now. (Fresh switch → empty store → passes.)
+      // First batch — pre-flight the backend so a doomed migration fails FAST with an actionable message
+      // instead of looping into a partial `store failed after 0 migrated` (e.g. a token automem's public
+      // /health can't catch — the exact trap this guards). Only the first batch checks; once one store
+      // lands the token is proven, so later batches skip the extra round-trip.
+      const h = await os.memory.health();
+      if (!h.ok) return sendJson(res, 503, { error: `backend not ready — ${h.detail ?? 'health check failed'}. Fix it in Settings → Memory, then migrate.` });
+      // Idempotency guard: if the backend already holds everything (no drift), no-op so a stray click can't
+      // duplicate. Otherwise fix the horizon at now. (Fresh switch → empty store → passes.)
       const backendCount = os.memory.count ? await os.memory.count(os.tenant) : null;
       if (backendCount != null && backendCount >= localTotal()) {
         return sendJson(res, 200, { ok: true, done: true, migrated: 0, skipped: 0, remaining: 0, note: 'already consistent — nothing to migrate' });
