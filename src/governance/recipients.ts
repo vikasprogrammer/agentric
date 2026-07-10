@@ -55,3 +55,20 @@ export function resolveRecipients(os: AgentOS, audience: Audience): Member[] {
     }
   }
 }
+
+/**
+ * Who an approval card/DM should reach — the one rule shared by the inbox card's audience and the
+ * out-of-band approver DM, so a card is shown to exactly whom it's pushed to. Scoping principle: an
+ * approval is the session owner's OWN business when they hold approval authority for its level (an
+ * admin/owner running their own agent self-approves — nobody else needs pinging). Only when the owner
+ * can't clear it does it escalate to the full approver tier (`canApprove(role, level)` — owners for
+ * red, owners+admins for yellow). This is what stops every admin from being DMed about every other
+ * admin's self-approvable session — the flood the un-audienced broadcast used to cause.
+ */
+export function approvalAudience(os: AgentOS, sessionId: string, level: ApprovalLevel): Audience {
+  const owner = resolveRecipients(os, { kind: 'sessionOwner', id: sessionId })[0];
+  if (owner && owner.status === 'active' && canApprove(owner.role, level)) {
+    return { kind: 'sessionOwner', id: sessionId };
+  }
+  return { kind: 'approvers', level };
+}

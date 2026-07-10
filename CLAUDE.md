@@ -188,10 +188,13 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 35 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 36 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
-  `ask`/`check_inbox`/`report`/`update`/`publish`/`artifacts_list`. Skills: `skill_propose` (draft a
+  `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`artifacts_list` (session cards are
+  **owner-scoped** — addressed to the run's `run_as`/spawner via the `sessionOwner` audience — so the
+  Inbox default `mine` view isn't flooded; `notify({to,message})` is the escape hatch to loop in ONE
+  named teammate, and owner/admin flip to `?scope=all` for oversight). Skills: `skill_propose` (draft a
   reusable playbook — Lever 6 procedural memory; lands as a NOT-YET-PUBLISHED `.aos-proposed` skill +
   a `skill.proposed` inbox card, gated behind an owner/admin publish). Scheduling: `schedule`/`unschedule`
   (one-shot deferred self-run via a `type:'once'` automation). Tasks (shared work queue):

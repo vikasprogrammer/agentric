@@ -21,7 +21,8 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `ask` | `POST /api/ask` + poll | questions | W (blocking) | blocks ~1h polling for the human answer; DMs the run-as human out-of-band (`question.notified`) + mirrors to the chat thread so it isn't missed |
 | `check_inbox` | `GET /api/inbox` | `TerminalManager.sessionInbox` | R | non-blocking pull of this session's feed |
 | `report` | `POST /api/report` | messages | W | `outcome` enum |
-| `update` | `POST /api/update` | messages | W | non-blocking progress note |
+| `update` | `POST /api/update` | messages | W | non-blocking progress note (session-owner scoped) |
+| `notify` | `POST /api/notify` | messages + member DM | W | notify ONE named teammate (`to` = name/email); inbox card addressed to them + Slack/Discord DM; the escape hatch from session-owner scoping — see below |
 | `publish` | `POST /api/publish` | `ArtifactStore` | W | snapshots the file |
 | `skill_propose` | `POST /api/skills/propose` | `SkillsStore.propose` + messages | W | drafts a `.aos-proposed` skill (never materialised) + posts a `skill.proposed` inbox card to owner/admins; audited `skill.proposed`. Human publishes via `POST /api/skills/:name/publish` (owner/admin) or dismisses via `DELETE /api/skills/:name` |
 | `artifacts_list` | `GET /api/agent/artifacts` | `ArtifactStore.list` | R | scoped to the agent's own deliverables |
@@ -51,9 +52,30 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
 
-35 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+36 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
+
+### `notify` — deliberately looping in one teammate (inbox scoping)
+
+Every session's inbox cards — an agent's `update`/`report`, its `ask` question, a `notification`
+("Claude is waiting"), a published `artifact`, and the approval card the gate raises — are **addressed
+to the session's owner** (its `run_as`, else the member who spawned it) via the `sessionOwner`
+audience, not left un-addressed. This is what stops an owner/admin from being flooded by *every*
+member's and admin's session activity: the default Inbox (`GET /api/messages`, scope `mine`) shows a
+viewer only the cards addressed to them, so a session is "allocated" to one human. Owner/admin can flip
+to `scope=all` for the oversight view (every session's cards); a plain member always sees only their
+own. Approval cards/DMs route through `approvalAudience` (`src/governance/recipients.ts`): the session
+owner alone when they hold approval authority for the level (an admin self-approving their own run),
+else they escalate to the full approver tier — so admins stop DMing each other about self-approvable
+sessions.
+
+`notify` is the **escape hatch**: when a run genuinely needs someone *other* than its owner to know,
+the agent calls `notify({ to, message, important? })` with a teammate's name or email. It writes an
+inbox card addressed to that one member (`member` audience → lands in their `mine` feed) and DMs them
+on their linked Slack/Discord (`TerminalManager.setMemberNotifier` → `notifyMember` in the registry).
+It is **one named recipient only** — there is deliberately no team-wide broadcast — and it's
+allow+audit (`member.notified`), no policy gate, same posture as `slack_send`.
 
 ### `secret_put` / `secret_get` — the shared credential handoff
 

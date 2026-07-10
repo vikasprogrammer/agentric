@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.98.0] — 2026-07-10
+### Changed
+- **Inbox notifications are now scoped to a session's owner instead of flooding every owner/admin.**
+  An owner used to be DMed and inbox-carded about *every* member's and admin's session, and every
+  approval broadcast to *all* approvers (so admins pinged each other about runs they could self-approve).
+  Root cause: session cards were written with no audience, so visibility fell through to the
+  "owner/admin see everything" rule. Now:
+  - Every session card (`question`/`update`/`completed`/`notification`/`artifact`) is addressed to the
+    session's owner (`run_as`/spawner) via the `sessionOwner` audience.
+  - Approval cards **and** their Slack/Discord DMs share one `approvalAudience` rule — the session owner
+    alone when they can clear that level (an admin self-approving their own run), otherwise escalate to
+    the full approver tier (owners+admins for yellow, owners for red).
+  - The Inbox feed (`GET /api/messages`) defaults to a **`mine`** scope (only cards addressed to you);
+    owner/admin can flip to **All** (`?scope=all`) for the fleet-wide oversight view. A **My activity /
+    All** toggle appears on the Inbox for owner/admin. Visibility itself is unchanged — overseers can
+    still see everything, they're just no longer flooded by default.
+### Added
+- **`notify` agent tool** — an agent can deliberately loop in ONE named teammate (`notify({ to, message,
+  important? })`, `to` = name or email) when a run concerns someone other than its owner: an inbox card
+  addressed to that member plus a Slack/Discord DM. The escape hatch from owner-scoping; one recipient
+  only (no team-wide broadcast), allow+audit (`member.notified`). See `docs/agent-mcp-tools.md`.
+
 ## [0.97.0] — 2026-07-10
 ### Added
 - **KB page view now shows how often agents read it.** The page metadata line (under the title) now

@@ -55,6 +55,15 @@ would be pinged (owner/admin always see all). This is how a **session-less** car
 a **Tasks** notification has no session, so it carries `audience = {member: assignee|owner}` and a
 `session_id = 'task:<id>'` sentinel. See §4.10.
 
+**Owner-scoped session cards + `mine`/`all` scope (v0.98.0 — §4.11).** Every session card
+(`question`/`completed`/`update`/`notification`/`artifact`) now carries `audience =
+{sessionOwner: <session>}`, and approval cards carry the `approvalAudience` (owner-if-approver, else
+`approvers`). Visibility (`canView*`) is unchanged — owner/admin *can* still see everything — but
+`listMessages(viewer, scope)` adds a **`mine`** default that narrows the feed to cards *addressed to*
+the viewer (role-neutral: `isAddressedTo`, no owner/admin blanket pass). Owner/admin request `scope=all`
+for the oversight view; a member's `mine` and `all` are identical. This fixes the flood where an
+owner/admin saw — and was DMed about — every other person's session. See §4.11.
+
 ---
 
 ## 2. Write paths
@@ -143,6 +152,19 @@ provenance. **Fixed in two steps:** (1) one `Audience` vocabulary + `resolveReci
 (v0.63.1). (2) Messages gained an explicit `audience` (the pull face of the same resolver), and
 `TaskStore` gained a notifier so create/assign/blocked/done events land an **audience-addressed** inbox
 card + DM for the right human — assignee or owner (v0.64.0). See §4 header for the audience mechanics.
+
+### 4.11 Owner/admin flooded by everyone's session cards — ✅ SHIPPED (v0.98.0)
+Because session cards were **un-addressed**, `canViewMessageRow` fell through to `canViewRow`, whose
+"owner/admin see everything" rule meant an owner was DMed + inbox-carded about *every* member's and
+admin's session — and every approval broadcast to *all* approvers, so admins pinged each other about
+self-approvable runs. **Fixed:** (1) every session card carries `audience = {sessionOwner}`; the two
+approval cards + `notifyApprovers` share `approvalAudience` (session owner if they can clear the level,
+else escalate) — card audience == DM audience. (2) `listMessages(viewer, scope)` defaults to **`mine`**
+(cards addressed to the viewer, via the role-neutral `isAddressedTo`); owner/admin opt into `scope=all`
+for oversight (`GET /api/messages?scope=all`, gated by `inboxScope`). (3) The **`notify`** MCP tool
+(`POST /api/notify` → `TerminalManager.notifyMember` + `setMemberNotifier`) is the escape hatch: an
+agent loops in ONE named teammate (inbox card addressed to them + DM) when a run concerns someone other
+than its owner. Console: an **My activity / All** toggle on the Inbox (owner/admin only).
 
 ### 4.9 Agent can't be *pushed* an answer — ⏳ LATER
 An agent only learns its question was answered by polling `ask` or remembering to `check_inbox`. No push,
