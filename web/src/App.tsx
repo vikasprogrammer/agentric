@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -2594,6 +2594,7 @@ function FilesPage({ initialDir }: { initialDir?: string }) {
 
 // ── Artifacts (the deliverables gallery) ────────────────────────────────────────
 const isImageMime = (m: string) => m.startsWith('image/')
+const isVideoMime = (m: string) => m.startsWith('video/')
 const isPdfMime = (m: string) => m === 'application/pdf'
 const isMarkdownArt = (a: Artifact) => a.mime.startsWith('text/markdown') || /\.(md|markdown)$/i.test(a.filename)
 const isTextMime = (m: string) => m.startsWith('text/') || m === 'application/json'
@@ -2622,12 +2623,13 @@ const mdComponents = {
 function ArtifactIcon({ a, className }: { a: Artifact; className?: string }) {
   if (isPdfMime(a.mime)) return <FileText className={className ?? 'h-4 w-4 text-red-500'} />
   if (isImageMime(a.mime)) return <ImageIcon className={className ?? 'h-4 w-4 text-sky-500'} />
+  if (isVideoMime(a.mime)) return <Film className={className ?? 'h-4 w-4 text-orange-500'} />
   if (isMarkdownArt(a)) return <FileText className={className ?? 'h-4 w-4 text-violet-500'} />
   return <FileIcon className={className ?? 'h-4 w-4 text-muted-foreground'} />
 }
 
-/** Renders an artifact's contents by type: image inline, PDF in an iframe, Markdown rendered,
- *  text/JSON in a pre, anything else a download prompt. */
+/** Renders an artifact's contents by type: image inline, video in a player, PDF in an iframe,
+ *  Markdown rendered, text/JSON in a pre, anything else a download prompt. */
 function ArtifactBody({ a }: { a: Artifact }) {
   const raw = api.artifactRawUrl(a.id)
   const [text, setText] = useState<string | null>(null)
@@ -2640,6 +2642,7 @@ function ArtifactBody({ a }: { a: Artifact }) {
   }, [a.id])
 
   if (isImageMime(a.mime)) return <img src={raw} alt={a.title} className="max-h-[70vh] max-w-full rounded-lg border" />
+  if (isVideoMime(a.mime)) return <video src={raw} controls className="max-h-[72vh] w-full rounded-lg border bg-black" />
   if (isPdfMime(a.mime)) return <iframe src={raw} title={a.title} className="h-[72vh] w-full rounded-lg border" />
   if (wantsText) {
     if (text === null) return <div className="text-sm text-muted-foreground">Loading…</div>
@@ -2707,6 +2710,11 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
                 <div className="flex items-start gap-2.5 p-2.5">
                   {isImageMime(a.mime)
                     ? <img src={api.artifactRawUrl(a.id)} alt="" className="h-10 w-10 shrink-0 rounded border object-cover" />
+                    : isVideoMime(a.mime)
+                    ? <span className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded border bg-black">
+                        <video src={`${api.artifactRawUrl(a.id)}#t=0.1`} preload="metadata" muted className="h-full w-full object-cover" />
+                        <Play className="absolute h-3.5 w-3.5 fill-white/90 text-white/90" />
+                      </span>
                     : <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded bg-muted"><ArtifactIcon a={a} className="h-4 w-4 text-muted-foreground" /></span>}
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{a.title}</div>

@@ -8,7 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.86.1] — 2026-07-10
+## [0.87.0] — 2026-07-10
+### Added
+- **Video artifacts play inline in the deliverables gallery.** The artifact library now previews
+  `video/*` deliverables (`.mp4`/`.m4v`/`.webm`/`.mov`/`.ogv`) in a real `<video>` player instead of
+  falling through to a bare download link, with a first-frame thumbnail (Film icon) in the gallery list.
+  The store learned those extensions (`mimeOf` in `src/state/artifacts.ts`), and — the part that makes
+  playback actually work — the raw route (`GET /api/artifacts/:id/raw`) now honours HTTP **byte-range
+  requests**: it answers `Range:` with `206 Partial Content` + `Content-Range`, advertises
+  `Accept-Ranges: bytes` and `Content-Length` on the full response, and returns `416` for an
+  unsatisfiable range. Scrubbing/seeking depends on this, and Safari refuses to play a video served
+  without range support at all. Server + web (`src/server.ts`, `web/src/App.tsx`).
 ### Fixed
 - **Saving Slack/Discord tokens no longer looks like it needs a server restart.** The server already
   re-dials the Socket-Mode / Gateway connection live when tokens change (`SlackSocket.restart()` /

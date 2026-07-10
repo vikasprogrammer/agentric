@@ -198,7 +198,7 @@ function containedPath(root: string, rel: string): string | null {
 }
 
 /** Content-type by extension — self-contained so the store has no server dependency. Covers the
- *  deliverable formats (Markdown/PDF/images/text) the gallery previews; default = octet-stream. */
+ *  deliverable formats (Markdown/PDF/images/video/text) the gallery previews; default = octet-stream. */
 function mimeOf(file: string): string {
   const e = path.extname(file).toLowerCase();
   const map: Record<string, string> = {
@@ -216,6 +216,11 @@ function mimeOf(file: string): string {
     '.gif': 'image/gif',
     '.webp': 'image/webp',
     '.svg': 'image/svg+xml',
+    '.mp4': 'video/mp4',
+    '.m4v': 'video/mp4',
+    '.webm': 'video/webm',
+    '.mov': 'video/quicktime',
+    '.ogv': 'video/ogg',
   };
   return map[e] || 'application/octet-stream';
 }
