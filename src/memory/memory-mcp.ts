@@ -637,6 +637,22 @@ const TOOLS = [
       required: ['id', 'path'],
     },
   },
+  {
+    name: 'task_dispatch',
+    description:
+      'Kick an agent-assigned task into a governed session NOW, instead of waiting for the board to pick it ' +
+      'up. Use this to HAND OFF work asynchronously: file a task with task_create({ assignee:"agent:<id>" }) ' +
+      'then task_dispatch it to spawn the worker immediately. The spawned session runs to completion and ' +
+      'closes its own loop (task_update). The task must be assigned to an agent. It\'s guarded against ' +
+      'pile-ups — if a session is already working the task you\'ll get a clear reason and should not retry. ' +
+      'This spawns a NEW session, distinct from task_claim (which pulls a task into YOUR current session).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'string', description: 'The id of an agent-assigned task to dispatch.' } },
+      required: ['id'],
+    },
+  },
   // ── Agents: author new agents (the agent-author's build tools) ──
   {
     name: 'agent_create',
@@ -1403,6 +1419,19 @@ async function taskUpdate(args: Record<string, unknown>): Promise<string> {
   return `Updated ${d.task.id} → [${d.task.status}].`;
 }
 
+async function taskDispatch(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim();
+  if (!id) return 'Which task? (id is required).';
+  const res = await fetch(AOS_URL + '/api/tasks/dispatch', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, id }),
+  });
+  const d = (await res.json()) as { ok?: boolean; sessionId?: string; error?: string };
+  if (!d.ok) return `Could not dispatch task ${id}: ${d.error ?? 'unknown error'}.`;
+  return `Dispatched task ${id} — a session is now working it. Track progress with task_get "${id}".`;
+}
+
 function verdict(effect?: string, level?: string): string {
   if (effect === 'allow') return 'allowed';
   if (effect === 'deny') return 'DENIED';
@@ -1548,6 +1577,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_claim' ? await taskClaim(args)
         : name === 'task_update' ? await taskUpdate(args)
         : name === 'task_attach' ? await taskAttach(args)
+        : name === 'task_dispatch' ? await taskDispatch(args)
         : name === 'agent_create' ? await agentCreate(args)
         : name === 'agent_update' ? await agentUpdate(args)
         : name === 'agent_history' ? await agentHistory()

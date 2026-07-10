@@ -37,6 +37,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |
 | `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign/reprioritise/`due` (ISO date, or "" to clear); closes a dispatched loop |
 | `task_attach` | `POST /api/tasks/attach` | `TerminalManager.attachTaskFile` → `TaskStore.attachFromPath` | W | snapshots a file from the caller's OWN working folder onto a task (path resolved strictly under the agent folder, like `publish`); logs an `attach` event; audited `task.attached` |
+| `task_dispatch` | `POST /api/tasks/dispatch` | `Automations.dispatchTask` | W | spawns a governed session NOW for an agent-assigned task (async hand-off, distinct from `task_claim`); `guard:true` (no pile-up) + `TASK_MAX_ATTEMPTS` ceiling; run-as = task owner; audited `task.dispatched` (`by:agent:<id>`) |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
 | `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; snapshots a revision; audited `agent.config.updated` |
 | `agent_history` | `POST /api/agents/history` | `AgentRevisions.list` | R | the caller's own listing revisions (rev/author/summary/date), newest first |
@@ -51,7 +52,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
 
-35 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+36 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 
@@ -126,12 +127,12 @@ tightening could classify CLAUDE.md/model self-edits through Policy for workspac
 
 ## Remaining gaps (not yet exposed)
 
-- **Delegation / sub-agents.** Partially closed by the **Tasks** plane: an agent files a task assigned
-  to `agent:<id>` (with `autoDispatch`) and the scheduler tick spawns a governed session that works it —
-  async, durable, human-passthrough run-as (the task `owner`), guarded + attempt-ceilinged. What's still
-  missing is **synchronous** delegation (an agent blocking on another's result) and an agent-triggered
-  `task_dispatch` (today agents `claim` into their own session; direct spawn stays human/tick-only). Both
-  still want budget attribution + recursion-depth limiting before they ship (`docs/tasks-plan.md` §9).
+- **Delegation / sub-agents.** Largely closed by the **Tasks** plane: an agent files a task assigned to
+  `agent:<id>` and either lets the scheduler tick spawn a governed session (with `autoDispatch`) or kicks
+  it immediately with **`task_dispatch`** — async, durable, human-passthrough run-as (the task `owner`),
+  guarded (no pile-up) + attempt-ceilinged. What's still missing is **synchronous** delegation (an agent
+  blocking on another's result) and per-run budget attribution + recursion-depth limiting on the
+  agent-triggered spawn path (`docs/tasks-plan.md` §9).
 - **Episodic self-query.** Memory is semantic-only; an agent can't query its own past runs
   (`/api/runs` exists but is member-gated). "Have I done this before, how did it go?"
 - **`ask` rigidity.** Timeout hardcoded ~1h; no `timeoutSeconds` and no non-blocking ask-then-collect

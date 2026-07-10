@@ -311,7 +311,9 @@ function migrate(db: Db): void {
       rev        INTEGER NOT NULL,         -- current revision number (starts at 1)
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
-      updated_by TEXT NOT NULL             -- member id | agent:<id> | automation:<id>
+      updated_by TEXT NOT NULL,            -- member id | agent:<id> | automation:<id>
+      read_count INTEGER NOT NULL DEFAULT 0, -- times an agent has fetched the page (auto-archive signal)
+      last_read_at INTEGER                 -- when an agent last fetched it (epoch ms); NULL = never
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_slug ON kb_pages(tenant, section, slug);
 
@@ -364,7 +366,8 @@ function migrate(db: Db): void {
     CREATE TRIGGER IF NOT EXISTS kb_ad AFTER DELETE ON kb_pages BEGIN
       INSERT INTO kb_fts(kb_fts, rowid, title, tags, body) VALUES('delete', old.rowid, old.title, old.tags, old.body);
     END;
-    CREATE TRIGGER IF NOT EXISTS kb_au AFTER UPDATE ON kb_pages BEGIN
+    -- Scoped to content columns: a read_count/last_read_at bump on fetch must NOT re-tokenize the page.
+    CREATE TRIGGER IF NOT EXISTS kb_au AFTER UPDATE OF title, tags, body ON kb_pages BEGIN
       INSERT INTO kb_fts(kb_fts, rowid, title, tags, body) VALUES('delete', old.rowid, old.title, old.tags, old.body);
       INSERT INTO kb_fts(rowid, title, tags, body) VALUES (new.rowid, new.title, new.tags, new.body);
     END;
@@ -562,6 +565,19 @@ function migrate(db: Db): void {
   // Profile picture: a small square `data:image/…;base64,…` URL. NULL → the UI shows the member's
   // initial. Members set their own from the Team page; owners/admins may set anyone's.
   addColumn(db, 'members', 'avatar', 'TEXT');
+
+  // KB fetch counter: every time an agent opens a page (kb_read) we bump these. A never/rarely-read
+  // page is a candidate for auto-archive later. Older pages default to 0 / never-read.
+  addColumn(db, 'kb_pages', 'read_count', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'kb_pages', 'last_read_at', 'INTEGER');
+  // The bump is an UPDATE; re-scope the FTS reindex trigger to content columns only so a fetch doesn't
+  // re-tokenize the body. `CREATE TRIGGER IF NOT EXISTS` above leaves an existing DB's old un-scoped
+  // trigger in place, so drop + recreate it here.
+  db.exec('DROP TRIGGER IF EXISTS kb_au');
+  db.exec(`CREATE TRIGGER kb_au AFTER UPDATE OF title, tags, body ON kb_pages BEGIN
+    INSERT INTO kb_fts(kb_fts, rowid, title, tags, body) VALUES('delete', old.rowid, old.title, old.tags, old.body);
+    INSERT INTO kb_fts(rowid, title, tags, body) VALUES (new.rowid, new.title, new.tags, new.body);
+  END`);
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

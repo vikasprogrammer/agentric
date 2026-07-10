@@ -847,6 +847,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const page = os.kb.read(os.tenant, url.searchParams.get('section') || '', url.searchParams.get('slug') || '');
+    if (page) os.kb.recordRead(page.id); // an agent opened it — bump the fetch counter (auto-archive signal)
     return sendJson(res, page ? 200 : 404, page ? { page } : { error: 'page not found' });
   }
   if (method === 'POST' && p === '/api/kb/write') {
@@ -1012,6 +1013,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!id || !filePath) return sendJson(res, 200, { ok: false, error: 'id and path are required' });
     const out = tm.attachTaskFile(session, id, filePath);
     return sendJson(res, 200, out.ok ? { ok: true, id: out.id, filename: out.filename } : { ok: false, error: out.error });
+  }
+  // Agent-triggered dispatch: spawn a governed session to work an agent-assigned task NOW, rather than
+  // waiting on the scheduler tick (the async delegation kick). Same engine as the console "Dispatch" and
+  // the tick — `autos.dispatchTask` — but guarded (guard:true), so a runaway agent can't pile up parallel
+  // sessions on one task: if a session is already working it, this no-ops with a clear reason, and the
+  // TASK_MAX_ATTEMPTS ceiling still parks a task that keeps failing. The spawned session runs AS the task
+  // owner (human passthrough) and every effect it has still passes the gateway.
+  if (method === 'POST' && p === '/api/tasks/dispatch') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim();
+    if (!id) return sendJson(res, 200, { ok: false, error: 'id is required' });
+    const r = autos.dispatchTask(id, { guard: true, by: `agent:${agent}` });
+    return sendJson(res, 200, r.ok ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
   }
 
   // ── Agents (agent loopback) ──────────────────────────────────────────────────

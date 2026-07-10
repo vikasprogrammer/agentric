@@ -538,6 +538,8 @@ export interface KbPage {
   createdAt: number;
   updatedAt: number;
   updatedBy: string; // member id | agent:<id> | automation:<id>
+  readCount: number; // times an agent has fetched this page (feeds future auto-archive of dead pages)
+  lastReadAt?: number; // when an agent last fetched it (epoch ms); undefined = never fetched
 }
 
 /** A prior version of a page — the rollback + audit backbone (append-only). */

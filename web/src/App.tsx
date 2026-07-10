@@ -4662,7 +4662,7 @@ function KnowledgeBasePage({ me }: { me: Member }) {
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="text-lg font-semibold">{sel.title}</div>
-                <div className="text-[11px] text-muted-foreground"><code>{sel.section}/{sel.slug}</code> · rev {sel.rev} · updated {new Date(sel.updatedAt).toLocaleString()} by {sel.updatedBy}</div>
+                <div className="text-[11px] text-muted-foreground"><code>{sel.section}/{sel.slug}</code> · rev {sel.rev} · updated {new Date(sel.updatedAt).toLocaleString()} by {sel.updatedBy} · <span title={sel.lastReadAt ? `last read by an agent ${new Date(sel.lastReadAt).toLocaleString()}` : 'no agent has fetched this page yet'}>{sel.readCount ? `read ${sel.readCount}× by agents` : 'never read by agents'}</span></div>
                 {sel.tags.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{sel.tags.map((t) => <Badge key={t} variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{t}</Badge>)}</div>}
               </div>
               {!editing && (

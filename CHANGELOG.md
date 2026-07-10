@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.95.0] — 2026-07-10
+## [0.98.0] — 2026-07-10
 ### Changed
 - **Inbox notifications are now scoped to a session's owner instead of flooding every owner/admin.**
   An owner used to be DMed and inbox-carded about *every* member's and admin's session, and every
@@ -29,6 +29,38 @@ new version heading in the same commit.
   important? })`, `to` = name or email) when a run concerns someone other than its owner: an inbox card
   addressed to that member plus a Slack/Discord DM. The escape hatch from owner-scoping; one recipient
   only (no team-wide broadcast), allow+audit (`member.notified`). See `docs/agent-mcp-tools.md`.
+
+## [0.97.0] — 2026-07-10
+### Added
+- **KB page view now shows how often agents read it.** The page metadata line (under the title) now
+  reads `… · read N× by agents` (or `never read by agents`), with the last-read timestamp on hover —
+  surfacing the `readCount`/`lastReadAt` added in v0.95.0 so a human can spot dead pages at a glance
+  before the eventual auto-archive pass exists (`MemoryBrowse`/KB viewer in `web/src/App.tsx`,
+  `KbPage` in `web/src/lib/api.ts`). Console-only, no server change.
+
+## [0.96.0] — 2026-07-10
+### Added
+- **Agents can now dispatch tasks, not just create them.** New `task_dispatch` MCP tool (→
+  `POST /api/tasks/dispatch` → `Automations.dispatchTask`) lets an agent kick an agent-assigned task
+  into a governed session immediately, instead of only filing it and waiting on the scheduler tick. This
+  closes the tasks-plan §9 "agent-triggered dispatch" future: file work with `task_create({
+  assignee:"agent:<id>" })`, then `task_dispatch` it to spawn the worker now. Distinct from `task_claim`
+  (which pulls a task into the caller's OWN session) — dispatch spawns a NEW session that runs the task to
+  completion and closes its own loop via `task_update`. Runaway brakes: `guard:true` (the pile-up guard
+  the console's explicit-human dispatch skips, so an agent can't stack parallel sessions on one task) plus
+  the existing `TASK_MAX_ATTEMPTS` ceiling; the spawned session runs-as the task `owner` (human
+  passthrough) and every effect still passes the gateway. Audited `task.dispatched` with `by:agent:<id>`.
+  35 always-on MCP tools now.
+
+## [0.95.0] — 2026-07-10
+### Added
+- **KB pages now count how often agents read them.** Every `kb_read` fetch by an agent bumps a
+  per-page `read_count` and stamps `last_read_at` (new `kb_pages` columns, added additively for
+  existing tenants). It's a cheap targeted `UPDATE` — the FTS reindex trigger is re-scoped to
+  `UPDATE OF title, tags, body`, so a fetch never re-tokenizes the body. This is the signal a future
+  auto-archive pass will use to retire never/rarely-read pages. Surfaced on `KbPage` as
+  `readCount`/`lastReadAt`; only the agent fetch route (`GET /api/kb/read`) counts — console reads,
+  history and revert don't (`src/state/kb.ts` `recordRead`, `src/server.ts`, `src/state/db.ts`).
 
 ## [0.94.1] — 2026-07-10
 ### Fixed

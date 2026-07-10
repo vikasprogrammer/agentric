@@ -55,7 +55,7 @@ would be pinged (owner/admin always see all). This is how a **session-less** car
 a **Tasks** notification has no session, so it carries `audience = {member: assignee|owner}` and a
 `session_id = 'task:<id>'` sentinel. See §4.10.
 
-**Owner-scoped session cards + `mine`/`all` scope (v0.95.0 — §4.11).** Every session card
+**Owner-scoped session cards + `mine`/`all` scope (v0.98.0 — §4.11).** Every session card
 (`question`/`completed`/`update`/`notification`/`artifact`) now carries `audience =
 {sessionOwner: <session>}`, and approval cards carry the `approvalAudience` (owner-if-approver, else
 `approvers`). Visibility (`canView*`) is unchanged — owner/admin *can* still see everything — but
@@ -153,7 +153,7 @@ provenance. **Fixed in two steps:** (1) one `Audience` vocabulary + `resolveReci
 `TaskStore` gained a notifier so create/assign/blocked/done events land an **audience-addressed** inbox
 card + DM for the right human — assignee or owner (v0.64.0). See §4 header for the audience mechanics.
 
-### 4.11 Owner/admin flooded by everyone's session cards — ✅ SHIPPED (v0.95.0)
+### 4.11 Owner/admin flooded by everyone's session cards — ✅ SHIPPED (v0.98.0)
 Because session cards were **un-addressed**, `canViewMessageRow` fell through to `canViewRow`, whose
 "owner/admin see everything" rule meant an owner was DMed + inbox-carded about *every* member's and
 admin's session — and every approval broadcast to *all* approvers, so admins pinged each other about
