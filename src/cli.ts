@@ -10,12 +10,14 @@
  *   agent-os help                  show this help
  */
 import './preflight'; // MUST be first — fail fast on Node < 22.5 before any node:sqlite import loads.
+import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrap, startServer } from './server';
 import { init } from './init';
 import { loadAgentOS, readRootConfig } from './kernel';
-import { controlHome, resolveTenantPaths } from './home';
+import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantStore } from './state/control';
+import { reconcileTenant } from './governance/policy-reconcile';
 import { Role } from './types';
 import { VERSION } from './version';
 
@@ -50,6 +52,9 @@ async function main(): Promise<void> {
     case 'tenant':
     case 'tenants':
       tenants(rest);
+      break;
+    case 'policy':
+      policy(rest);
       break;
     case 'demo':
       await import('./demo');
@@ -200,6 +205,77 @@ function tenants(rest: string[]): void {
   process.exitCode = 1;
 }
 
+/**
+ * Policy admin from the box. `reconcile` aligns every agent's `policyContext` to the enforced ruleset id
+ * (the drift the #136 warning reports) — per-tenant, or `--all` across the control plane. DRY-RUN by
+ * default; writing is opt-in with `--yes`. It only rewrites agent manifests, never the policy document —
+ * agents conform to the policy, never the reverse. Pure filesystem (like `tenant remove`, no server): the
+ * enforced id is read straight from each tenant's resolved policy file, exactly as the runtime resolves it.
+ */
+function policy(rest: string[]): void {
+  if (rest[0] !== 'reconcile') {
+    console.log('usage: agent-os policy reconcile [--tenant <slug> | --all] [--yes]');
+    process.exitCode = 1;
+    return;
+  }
+
+  const baseDir = path.resolve(__dirname, '..');
+  const configPath = 'config/agent-os.config.json';
+  const cfg = readRootConfig(configPath, baseDir);
+  const defaultTenant = process.env.AGENT_OS_TENANT || cfg.tenant;
+  const store = new TenantStore(path.join(controlHome(baseDir, cfg), 'control.db'));
+
+  const apply = rest.includes('--yes') || rest.includes('--apply');
+  const dryRun = !apply; // dry-run is the default; a write is opt-in
+  const flag = rest.find((a) => a.startsWith('--tenant='));
+  const ti = rest.indexOf('--tenant');
+  const named = flag ? flag.split('=')[1] : ti >= 0 ? rest[ti + 1] : undefined;
+
+  let slugs: string[];
+  if (rest.includes('--all')) {
+    slugs = store.list().map((t) => t.slug);
+    if (!slugs.includes(defaultTenant)) slugs.unshift(defaultTenant); // the apex may not be a control-plane row
+  } else {
+    slugs = [named || defaultTenant];
+  }
+
+  let totalChanged = 0;
+  for (const slug of slugs) {
+    const isDefault = slug === defaultTenant;
+    const paths = isDefault ? resolvePaths(baseDir, cfg) : resolveTenantPaths(baseDir, cfg, slug);
+    let enforced: unknown;
+    try {
+      enforced = (JSON.parse(fs.readFileSync(paths.policyFile, 'utf8')) as { id?: unknown }).id;
+    } catch {
+      console.log(`\n[${slug}] cannot read policy (${paths.policyFile}) — skipping`);
+      continue;
+    }
+    if (typeof enforced !== 'string' || !enforced) {
+      console.log(`\n[${slug}] policy has no string id — skipping`);
+      continue;
+    }
+
+    const result = reconcileTenant(paths.userAgents, enforced, { dryRun });
+    totalChanged += result.changed.length;
+    console.log(`\n[${slug}] enforced=${enforced}`);
+    if (!result.changed.length) {
+      console.log(`  nothing to do — ${result.aligned.length} aligned, ${result.skipped.length} without policyContext`);
+      continue;
+    }
+    const verb = dryRun ? 'would reconcile' : 'reconciled';
+    for (const c of result.changed) console.log(`  ${verb}: ${c.agent}  ${c.from} → ${enforced}`);
+    console.log(`  ${result.changed.length} ${verb}, ${result.aligned.length} already aligned`);
+  }
+
+  if (totalChanged) {
+    console.log(
+      dryRun
+        ? `\n${totalChanged} manifest(s) would change. Re-run with --yes to apply, then restart the tenant(s) so agents re-register.`
+        : `\nApplied to ${totalChanged} manifest(s). Restart the tenant(s) so agents re-register under the enforced id.`,
+    );
+  }
+}
+
 function usage(): void {
   console.log(`agent-os <command>
 
@@ -209,6 +285,7 @@ function usage(): void {
   login-link <email>    print a fresh login link for an existing member (recovery)
   members               list workspace members and their roles
   tenant <sub>          multi-tenant admin: list | create <slug> --owner <email> | remove <slug>
+  policy reconcile      align agents' policyContext to the enforced ruleset (--tenant <slug> | --all; --yes to apply)
   demo                  run the scripted governance demo in the terminal
   launcher [--socket=…] run the privileged per-member session launcher (root; Phase A)
   version               print the software version (from package.json)
