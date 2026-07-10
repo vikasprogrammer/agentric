@@ -31,6 +31,7 @@ import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
 import { AgentManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
+import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
 interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -1122,6 +1123,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // context). Surfaced read-only in Settings → System so operators can see what the fleet is told.
       operatingNotes: AGENT_OS_OPERATING_NOTES,
     });
+  }
+
+  // ── agent trust / maturity stats ───────────────────────────────────────────────
+  // "Which agent can the system trust to run with less oversight?" A read-side roll-up of signals
+  // already flowing through the gateway (autonomy, denials), the sessions/tasks tables, and the
+  // agents' own self-reports. See src/state/agent-stats.ts for the scoring rules.
+  if (method === 'GET' && p === '/api/agents/stats') {
+    // Members see stats only for agents they may run; owner/admin see the whole fleet. Passing the
+    // visible ids includes freshly-created, zero-run agents (confidence: 'none') instead of hiding them.
+    const visible = terminalAgents(os).filter((a) => os.team.canRun(me, a.id)).map((a) => a.id);
+    const allow = new Set(visible);
+    const stats = computeAgentStats(os.db, visible).filter((s) => allow.has(s.agentId));
+    return sendJson(res, 200, { stats });
+  }
+  const agentStatMatch = p.match(/^\/api\/agents\/([\w.-]+)\/stats$/);
+  if (method === 'GET' && agentStatMatch) {
+    const id = agentStatMatch[1];
+    if (!os.team.canRun(me, id)) return sendJson(res, 403, { error: 'forbidden' });
+    return sendJson(res, 200, { stats: computeAgentStat(os.db, id) });
   }
 
   // ── self-update ────────────────────────────────────────────────────────────────

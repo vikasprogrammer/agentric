@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { type Branding, type PublicBranding } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -4887,6 +4887,80 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
   )
 }
 
+/** Trust & maturity — "can the system let this agent run with less oversight?" A read-only roll-up of
+ *  the agent's real history: how autonomously it ran (vs. needing a human to approve), how often a human
+ *  or policy said no, and its governed run outcomes. Maturity ≠ success rate — it weights autonomy,
+ *  penalises denials, and discounts small samples so a handful of runs can't fake a track record. */
+function AgentTrustCard({ agentId }: { agentId: string }) {
+  const [s, setS] = useState<AgentStats | null>(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    setS(null); setErr('')
+    api.agentStats(agentId).then((r) => setS(r.stats)).catch((e) => setErr(String(e?.message || e)))
+  }, [agentId])
+
+  if (err) return null // agent the caller can't see (403) — just hide the card
+  const pct = (n: number) => Math.round(n * 100)
+  // Maturity colour keys off confidence too: an unproven agent shows neutral, not alarming red.
+  const tone = !s || s.confidence === 'none' ? 'muted' : s.maturity >= 0.66 ? 'good' : s.maturity >= 0.33 ? 'warn' : 'low'
+  const barColor = tone === 'good' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : tone === 'low' ? 'bg-rose-500' : 'bg-muted-foreground/40'
+  const confLabel: Record<AgentStats['confidence'], string> = { none: 'no runs yet', low: 'low confidence', medium: 'building trust', high: 'well-established' }
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-sm font-medium"><Shield className="h-4 w-4 text-muted-foreground" /> Trust &amp; maturity</div>
+          {s && <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">{confLabel[s.confidence]}</Badge>}
+        </div>
+        {!s ? (
+          <div className="text-sm text-muted-foreground">Loading…</div>
+        ) : s.runs.total === 0 ? (
+          <div className="text-sm text-muted-foreground">No runs yet — trust is earned as this agent works. Metrics appear once it has run.</div>
+        ) : (
+          <>
+            {/* Headline maturity score + bar */}
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between">
+                <span className="text-2xl font-semibold tabular-nums">{pct(s.maturity)}<span className="text-sm text-muted-foreground">/100</span></span>
+                <span className="text-xs text-muted-foreground">maturity — autonomy, minus overrides, weighted by track record</span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div className={`h-full rounded-full ${barColor}`} style={{ width: `${Math.max(2, pct(s.maturity))}%` }} />
+              </div>
+            </div>
+            {/* Key metrics grid */}
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 pt-1 sm:grid-cols-4">
+              <Stat label="Runs" value={String(s.runs.total)} hint={`${s.runs.crashed} crashed`} />
+              <Stat label="Autonomy" value={`${pct(s.autonomy)}%`} hint={`${s.actions.humanGated} needed a human`} />
+              <Stat label="Overrides" value={String(s.deniedRuns)} hint={`${s.actions.rejected} rejected · ${s.actions.killswitch} killswitch`} tone={s.deniedRuns > 0 ? 'warn' : undefined} />
+              <Stat label="Outcomes" value={s.successRate === null ? '—' : `${pct(s.successRate)}%`} hint={`${s.outcomes.success}✓ ${s.outcomes.failure}✗ ${s.outcomes.inconclusive}·`} />
+            </div>
+            {(s.tasks.done + s.tasks.blocked + s.tasks.cancelled) > 0 && (
+              <div className="text-xs text-muted-foreground">Assigned tasks: {s.tasks.done} done · {s.tasks.blocked} blocked · {s.tasks.cancelled} cancelled</div>
+            )}
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              A high outcome rate alone doesn't earn trust — an agent that needs a human to approve every action stays low-maturity
+              by design. Denials (a human or policy saying “no”) and small samples both pull the score down.
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/** One compact labelled metric for the trust card. */
+function Stat({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: 'warn' }) {
+  return (
+    <div className="space-y-0.5">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={`text-lg font-semibold tabular-nums ${tone === 'warn' ? 'text-amber-600 dark:text-amber-500' : ''}`}>{value}</div>
+      {hint && <div className="text-[10px] text-muted-foreground">{hint}</div>}
+    </div>
+  )
+}
+
 function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: AgentInfo[]; onSaved?: () => void }) {
   const [content, setContent] = useState('')
   const [saved, setSaved] = useState('')
@@ -4935,6 +5009,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
         system prompt: its role, conventions, and how it should use its tools (including when to
         <span className="font-mono text-xs"> recall</span>/<span className="font-mono text-xs">remember</span>). Applied on the agent's next session.
       </p>
+      <AgentTrustCard agentId={agentId} />
       {info?.runtime === 'claude-code' && <AgentTuningCard key={revBump} agentId={agentId} onSaved={onSaved} />}
       <Card>
         <CardContent className="space-y-3 p-4">

@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.81.0] — 2026-07-10
+### Added
+- **Per-agent trust & maturity stats — "which agent can the system trust to run with less oversight?"**
+  A read-side roll-up (`src/state/agent-stats.ts`, `GET /api/agents/:id/stats` + fleet `GET /api/agents/stats`,
+  a Trust card on the agent page) over signals already flowing through the governed gateway — it invents
+  no new bookkeeping. Each run gets a **governed** outcome (a human denial or a crash can't be papered over
+  by an optimistic self-report): `failure` if the run crashed / hit a denial (reject, policy deny,
+  killswitch, budget stop) / self-reported failure / its dispatching task ended `blocked`; `success` if the
+  task ended `done` or the agent self-reported success on a clean, un-denied run; else `inconclusive`.
+  **Maturity ≠ success rate** — it answers "trust to run alone": `autonomy × (1 − denialRate) ×
+  volumeConfidence`, where autonomy = governed actions that ran without suspending for a human, denials
+  multiply the score down hard, and small samples are discounted (5 clean runs can't outrank 200). So an
+  agent with a 95% self-reported success rate that needs a human approval every run stays low-maturity by
+  design. Stats are visibility-scoped (a member sees only agents they may run).
+
 ## [0.80.0] — 2026-07-10
 ### Changed
 - **Unattended runs no longer strand on a blocking `ask`/approval (#138).** A headless run
