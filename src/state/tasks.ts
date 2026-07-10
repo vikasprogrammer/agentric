@@ -114,6 +114,18 @@ export class TaskStore {
   }
 
   /**
+   * The newest free-text comment on a task — the closing "what I did" note a delegate leaves when it calls
+   * task_update({ status:"done", note }). Ordered by insertion (created_at, then the monotonic rowid) so it
+   * is unambiguous even when several events land in the same millisecond. Feeds the `task_wait` result.
+   */
+  latestNote(id: string): string | undefined {
+    const r = this.db
+      .prepare("SELECT body FROM task_events WHERE task_id = ? AND kind = 'comment' AND body IS NOT NULL AND body != '' ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get<{ body: string }>(id);
+    return r?.body ?? undefined;
+  }
+
+  /**
    * Board query. FTS (bm25) when `query` is set, else ordered by status, then priority, then most-recently
    * updated. status/assignee/label filter in SQL/JS. Mirrors KbStore.search.
    */

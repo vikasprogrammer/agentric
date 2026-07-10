@@ -24,6 +24,11 @@ const TENANT = process.env.AOS_TENANT || '';
 // idle-reaper bound. A blocking `ask` therefore parks after a short window instead of hanging ~1h (#138).
 const HEADLESS = process.env.HEADLESS === '1';
 const UNATTENDED_ASK_WAIT_S = Number(process.env.AOS_UNATTENDED_ASK_WAIT_S) || 120;
+// How long a delegating agent blocks in `task_wait` for a handed-off task to reach a terminal state. A
+// delegated task can legitimately run many minutes, so this is far longer than the ask window — but still
+// bounded, so a stuck child can't strand the caller forever (on timeout the tool returns "still running,
+// check back", not a hang). Interactive callers wait longer (a human can steer); headless park at this.
+const TASK_WAIT_S = Number(process.env.AOS_TASK_WAIT_S) || 900;
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
   return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...extra };
@@ -534,7 +539,9 @@ const TOOLS = [
       'close, with a lifecycle (todo → doing → blocked → done). This is how you DELEGATE or HAND OFF: assign ' +
       'it to another agent by name to have them pick it up (e.g. a support agent files a coding task for ' +
       '`assignee:"agent:engineer"`). Set `autoDispatch:true` to have an agent-assigned task spawn a session ' +
-      'automatically. Distinct from `remember` (your private note) and `kb_write` (shared reference knowledge): ' +
+      'automatically. To hand off and WAIT for the result before you continue, set `wait:true` (or call ' +
+      '`task_wait` after filing) — one synchronous call that blocks until the delegate finishes and returns ' +
+      'its outcome. Distinct from `remember` (your private note) and `kb_write` (shared reference knowledge): ' +
       'a Task is WORK someone must do. Use sub-tasks (`parentId`) to break big work down. Give time-sensitive ' +
       'work a `due` date (ISO) — the owner is DMed once if it slips past the deadline.',
     inputSchema: {
@@ -550,6 +557,8 @@ const TOOLS = [
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
         due: { type: 'string', description: 'Optional soft deadline as an ISO date, e.g. "2026-07-15" or "2026-07-15T17:00:00Z".' },
+        wait: { type: 'boolean', description: 'If true, block until this task finishes and return its result (synchronous delegation). Implies autoDispatch. Only meaningful when assigned to an agent. Default false: file it and return immediately.' },
+        timeoutSeconds: { type: 'number', minimum: 10, maximum: 21600, description: 'When wait is true, max seconds to block before returning "still running" (default ~15 min headless / 1h interactive).' },
       },
       required: ['title'],
     },
@@ -615,6 +624,25 @@ const TOOLS = [
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low.' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Replace the label set.' },
         due: { type: 'string', description: 'Set a soft deadline as an ISO date (e.g. "2026-07-15"), or "" / null to clear it.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'task_wait',
+    description:
+      'Hand off and WAIT: block until a task reaches a terminal state (done / cancelled / blocked), then return ' +
+      'its outcome and closing note. Use this right after delegating with task_create({ assignee:"agent:<id>", ' +
+      'autoDispatch:true }) — or task_create({ …, wait:true }) to do both in one call — when you need the ' +
+      'delegate\'s result before you can continue. The task is dispatched immediately if it hasn\'t started, and ' +
+      'a crashed run is retried automatically. Your session stays put and resumes the moment the task finishes. ' +
+      'If it times out it keeps running in the background — call task_wait or task_get again to keep watching.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The task id to wait for.' },
+        timeoutSeconds: { type: 'number', minimum: 10, maximum: 21600, description: 'Max seconds to block before returning "still running" (default ~15 min headless / 1h interactive).' },
       },
       required: ['id'],
     },
@@ -1210,7 +1238,8 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       priority: typeof args.priority === 'number' ? args.priority : undefined,
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
       parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
-      autoDispatch: args.autoDispatch === true,
+      // `wait` implies autoDispatch — you can't block on work that never starts.
+      autoDispatch: args.autoDispatch === true || args.wait === true,
       mode: args.mode === 'interactive' ? 'interactive' : undefined,
       dueAt: parseDue(args.due),
     }),
@@ -1218,7 +1247,47 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
   if (!d.ok) return `Could not create the task: ${d.error ?? 'unknown error'}`;
   const who = args.assignee ? ` (assigned to ${String(args.assignee)})` : ' (open — anyone can claim it)';
+  // wait:true → delegate synchronously: file it, then block until the delegate closes the loop.
+  if (args.wait === true) {
+    const outcome = await taskWait({ id: d.id, timeoutSeconds: args.timeoutSeconds });
+    return `Filed task ${d.id}: "${title}"${who}.\n${outcome}`;
+  }
   return `Filed task ${d.id}: "${title}"${who}. Track it with task_get "${d.id}".`;
+}
+
+// Block until a handed-off task reaches a terminal state, driving its dispatch/retry via /api/tasks/wait.
+// The caller's session stays alive on this pending tool call and resumes with the result — same shape as
+// `ask`, but waiting on another agent's task rather than a human's answer.
+async function taskWait(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim();
+  if (!id) return 'Which task? (id is required).';
+  const requested = typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : undefined;
+  // Interactive callers can afford a long block (a human can steer); headless park sooner so a stuck child
+  // can't strand them. An explicit timeoutSeconds always wins. Clamped to [10s, 6h].
+  const ceilingS = HEADLESS ? TASK_WAIT_S : Math.max(TASK_WAIT_S, 3600);
+  const maxWaitS = Math.min(21600, Math.max(10, requested ?? ceilingS));
+  const deadline = Date.now() + maxWaitS * 1000;
+  let lastStatus = '';
+  while (Date.now() < deadline) {
+    const res = await fetch(AOS_URL + '/api/tasks/wait', {
+      method: 'POST',
+      headers: H({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ session: SESSION, id }),
+    });
+    const d = (await res.json()) as { ok?: boolean; error?: string; status?: string; terminal?: boolean; note?: string | null };
+    if (!d.ok) return `Could not wait on task ${id}: ${d.error ?? 'unknown error'}`;
+    lastStatus = d.status ?? lastStatus;
+    // done/cancelled are terminal; blocked won't finish on its own, so stop waiting and surface it too.
+    if (d.terminal || d.status === 'blocked') {
+      const note = d.note ? ` — ${d.note}` : '';
+      if (d.status === 'done') return `Task ${id} completed${note}. You can continue.`;
+      if (d.status === 'cancelled') return `Task ${id} was cancelled${note}.`;
+      return `Task ${id} is blocked and needs attention${note}. It won't finish on its own — read task_get "${id}" and decide how to proceed.`;
+    }
+    await sleep(3000);
+  }
+  const where = lastStatus ? ` (currently "${lastStatus}")` : '';
+  return `Task ${id} hasn't finished within ${maxWaitS}s${where}. It's still running in the background — call task_wait or task_get "${id}" again to keep watching, or move on and check back later.`;
 }
 
 // ── Agents: author new agents ─────────────────────────────────────────────────
@@ -1576,6 +1645,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_get' ? await taskGet(args)
         : name === 'task_claim' ? await taskClaim(args)
         : name === 'task_update' ? await taskUpdate(args)
+        : name === 'task_wait' ? await taskWait(args)
         : name === 'task_attach' ? await taskAttach(args)
         : name === 'task_dispatch' ? await taskDispatch(args)
         : name === 'agent_create' ? await agentCreate(args)

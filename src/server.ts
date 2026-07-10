@@ -939,6 +939,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         createdBy: `agent:${agent}`,
       });
       os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'task.created', data: { id: task.id, title: task.title, assignee: task.assignee ?? null } });
+      // Immediate dispatch (parity with the console route above): an agent-assigned auto-dispatch hand-off
+      // starts NOW rather than waiting for the next ~20s scheduler tick, so a delegated task begins the
+      // moment it's filed — and a waiting caller (task_wait / wait:true) makes progress at once.
+      if (task.autoDispatch && (task.assignee || '').startsWith('agent:')) autos.dispatchTask(task.id, { guard: true, by: `agent:${agent}` });
       return sendJson(res, 200, { ok: true, id: task.id });
     } catch (e) {
       return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -999,6 +1003,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!task) return sendJson(res, 200, { ok: false, error: 'task not found' });
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
     return sendJson(res, 200, { ok: true, task });
+  }
+  // A delegating agent long-polls this until a handed-off task finishes (the `task_wait` tool). Each poll,
+  // if the task is stalled — not terminal, not deliberately `blocked`, assigned to an agent, and nothing
+  // live is on it — kick a guarded immediate dispatch so WAITING drives the work forward and auto-retries a
+  // crashed run. dispatchTask is guarded (no double-spawn while alive) + attempt-ceilinged (parks `blocked`
+  // after TASK_MAX_ATTEMPTS), so re-polling a crash-looping child self-limits. Returns a compact snapshot;
+  // no new trust surface — the dispatched session is still fully gated. Auto-apply + audited via dispatchTask.
+  if (method === 'POST' && p === '/api/tasks/wait') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const t = os.tasks.get(String(b.id || ''));
+    if (!t) return sendJson(res, 200, { ok: false, error: 'task not found' });
+    const terminal = t.status === 'done' || t.status === 'cancelled';
+    if (!terminal && t.status !== 'blocked' && (t.assignee || '').startsWith('agent:') && !(t.lastSessionId && tm.isAlive(t.lastSessionId))) {
+      autos.dispatchTask(t.id, { guard: true, by: `wait:${agent}` });
+    }
+    // The delegate's closing "what I did" — the newest comment (task_update writes the done note as one).
+    const note = os.tasks.latestNote(t.id) ?? null;
+    return sendJson(res, 200, { ok: true, status: t.status, terminal, note, assignee: t.assignee ?? null });
   }
   // agent attaches a file from its own working folder onto a task (→ snapshot + `attach` event + audit).
   // The path is resolved strictly under the agent folder by the store; only that session may attach.

@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.99.0] — 2026-07-10
+### Added
+- **Synchronous task hand-off — a delegating agent can now wait for the result.** `task_dispatch`
+  (v0.96.0) spawns a worker and returns immediately; this adds the *waiting* half. New `task_wait(id)`
+  MCP tool (or `task_create({ …, wait:true })` in one call) long-polls until the task reaches
+  `done`/`cancelled`/`blocked`, then returns the delegate's closing note — the agent-to-agent analog of
+  `ask`. The caller's session stays alive on the pending tool call and resumes on its own; no session
+  revival needed. Each poll of the new `POST /api/tasks/wait` route kicks a **guarded immediate dispatch**
+  when the task is stalled (not terminal, not `blocked`, agent-assigned, nothing live on it), so waiting
+  *drives* the work and auto-retries a crashed run — self-limited by the existing `dispatchTask` guard +
+  `TASK_MAX_ATTEMPTS` ceiling (a re-polled crash-loop parks `blocked`, it can't spin). Headless callers
+  park after `AOS_TASK_WAIT_S` (default 900s) with a "still running, check back" message; interactive
+  callers wait up to an hour. The result note is `TaskStore.latestNote` — the newest `comment` event,
+  ordered by insertion (`rowid`) so it's unambiguous even for same-millisecond events. 37 always-on MCP
+  tools now.
+- **An agent-filed `autoDispatch` hand-off now dispatches immediately** instead of waiting for the next
+  ≤20s scheduler tick — parity with the console `POST /api/tasks` route, which already dispatched on
+  create. So a delegated task begins the moment it's filed, and a `task_wait` caller makes progress at
+  once (`src/server.ts`, `src/memory/memory-mcp.ts`, `src/state/tasks.ts`, `docs/tasks-plan.md`,
+  `docs/agent-mcp-tools.md`).
+
 ## [0.98.0] — 2026-07-10
 ### Changed
 - **Inbox notifications are now scoped to a session's owner instead of flooding every owner/admin.**

@@ -36,6 +36,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `task_get` | `GET /api/tasks/get` | `TaskStore.withEvents` | R | task + full activity timeline |
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |
 | `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign/reprioritise/`due` (ISO date, or "" to clear); closes a dispatched loop |
+| `task_wait` | `POST /api/tasks/wait` | `Automations.dispatchTask` + `TaskStore.get`/`latestNote` | W | **synchronous handoff**: long-polls until a task hits done/cancelled/blocked, then returns its closing note. Kicks a guarded immediate dispatch each poll if the task is stalled (not terminal, not `blocked`, agent-assigned, nothing live on it) so waiting DRIVES the work + auto-retries a crashed run (bounded by `TASK_MAX_ATTEMPTS`). Caller session stays alive on the pending call and resumes on completion (same shape as `ask`). Headless parks after `AOS_TASK_WAIT_S` (default 900s), interactive waits longer |
 | `task_attach` | `POST /api/tasks/attach` | `TerminalManager.attachTaskFile` → `TaskStore.attachFromPath` | W | snapshots a file from the caller's OWN working folder onto a task (path resolved strictly under the agent folder, like `publish`); logs an `attach` event; audited `task.attached` |
 | `task_dispatch` | `POST /api/tasks/dispatch` | `Automations.dispatchTask` | W | spawns a governed session NOW for an agent-assigned task (async hand-off, distinct from `task_claim`); `guard:true` (no pile-up) + `TASK_MAX_ATTEMPTS` ceiling; run-as = task owner; audited `task.dispatched` (`by:agent:<id>`) |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
@@ -52,7 +53,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
 
-36 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+37 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 

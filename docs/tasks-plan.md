@@ -509,6 +509,21 @@ session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME
   pile-up guard (never two live sessions per task) + the `TASK_MAX_ATTEMPTS` ceiling (parks a failing task
   `blocked`); the spawned session runs-as the task owner and every effect still passes the gateway. Still
   open: per-run **budget attribution** + **recursion-depth** limiting on this spawn path.
+
+> **Update (2026-07-10, v0.98.0): synchronous hand-off shipped (`task_wait`).** `task_dispatch` (above)
+> spawns a worker and returns; this adds the *waiting* half, so delegation can now BLOCK on the result: a
+> caller hands a task to another agent and waits until it finishes, then resumes with the delegate's closing
+> note — the A2A analog of `ask`. `task_wait(id)` (or `task_create({ wait:true })` in one call) long-polls
+> `POST /api/tasks/wait`; each poll kicks a **guarded immediate dispatch** when the task is stalled (not
+> terminal, not `blocked`, agent-assigned, nothing live on it), so waiting DRIVES the work and auto-retries a
+> crashed run — self-limited by the same `dispatchTask` guard + `TASK_MAX_ATTEMPTS` ceiling, so a re-polled
+> crash-loop parks `blocked` rather than spinning. The caller's session stays alive on the pending tool call
+> and resumes on its own; no session revival needed. The closing note is `TaskStore.latestNote` (newest
+> `comment` event, ordered by insertion so it's unambiguous within a millisecond). Headless callers park after
+> `AOS_TASK_WAIT_S` (default 900s) with a "still running, check back" message; interactive wait longer. Also:
+> an agent `task_create` now dispatches an `autoDispatch` hand-off **immediately** (parity with the console
+> route) instead of leaving it for the ≤20s scheduler tick. Still gated below: the hard policy brake, plus
+> per-run budget attribution + recursion-depth limiting on the spawn path.
 - **Optional policy brake on dispatch.** Run `Policy.classify('task.dispatch', {task})` in the dispatcher:
   green auto-spawns, yellow (a `budget`/`protected` label, or an estimated cost) suspends for approval, red
   needs owner — turning "start work" into a gated capability without touching the store. Designed for, off

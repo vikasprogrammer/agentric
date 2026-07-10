@@ -188,7 +188,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 36 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 37 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`artifacts_list` (session cards are
@@ -198,12 +198,15 @@ Key modules:
   reusable playbook — Lever 6 procedural memory; lands as a NOT-YET-PUBLISHED `.aos-proposed` skill +
   a `skill.proposed` inbox card, gated behind an owner/admin publish). Scheduling: `schedule`/`unschedule`
   (one-shot deferred self-run via a `type:'once'` automation). Tasks (shared work queue):
-  `task_create`/`task_list`/`task_get`/`task_claim`/`task_update`/`task_attach`/`task_dispatch` (file/claim/drain
-  durable work + attach a file from the agent's folder onto a task; an
+  `task_create`/`task_list`/`task_get`/`task_claim`/`task_update`/`task_wait`/`task_dispatch`/`task_attach`
+  (file/claim/drain durable work + attach a file from the agent's folder onto a task; an
   agent-assigned `autoDispatch` task spawns a governed session — the A2A delegation path; per-task `mode`
-  headless/interactive; owner = run-as passthrough so a hand-off keeps the accountable human. `task_dispatch`
-  kicks an agent-assigned task into a session NOW instead of waiting on the tick — `guard:true` pile-up brake
-  + `TASK_MAX_ATTEMPTS` ceiling). Secrets
+  headless/interactive; owner = run-as passthrough so a hand-off keeps the accountable human). `task_dispatch`
+  kicks an agent-assigned task into a session NOW instead of waiting on the tick (`guard:true` pile-up brake +
+  `TASK_MAX_ATTEMPTS` ceiling); **`task_wait`** (or `task_create({ wait:true })`) makes the hand-off
+  SYNCHRONOUS — the caller BLOCKS until the delegate finishes and resumes with its result, each poll kicking
+  the same guarded dispatch so waiting drives the work (and retries a crashed run). An agent `task_create` now
+  also dispatches an `autoDispatch` hand-off immediately (parity with the console) instead of waiting for the tick. Secrets
   (shared credential handoff): `secret_put`/`secret_get`/`secret_list` — an agent stores a password/key
   tenant-wide under a KEY (approval-gated `secret.put`; value kept out of audit/approval-card/policy args,
   encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. Agents
