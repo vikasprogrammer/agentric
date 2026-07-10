@@ -775,7 +775,9 @@ export const api = {
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
   restart: () => call<RestartResult>('POST', '/api/restart'),
   sessions: () => call<Session[]>('GET', '/api/sessions'),
-  messages: () => call<Msg[]>('GET', '/api/messages'),
+  /** Inbox feed. `scope='all'` is the owner/admin oversight view (every session's cards); the default
+   *  `mine` is the personal feed — only cards addressed to you, so overseers aren't flooded. */
+  messages: (scope: 'mine' | 'all' = 'mine') => call<Msg[]>('GET', `/api/messages${scope === 'all' ? '?scope=all' : ''}`),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
   rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
@@ -800,9 +802,9 @@ export const api = {
   /** Dismiss a pending question without answering (cancels it; unblocks a still-live agent's `ask`). */
   cancelQuestion: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/questions/${id}/cancel`),
   dismissMessage: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/dismiss`),
-  dismissAllMessages: () => call<{ ok: boolean; dismissed?: number; error?: string }>('POST', '/api/messages/dismiss-all'),
+  dismissAllMessages: (scope: 'mine' | 'all' = 'mine') => call<{ ok: boolean; dismissed?: number; error?: string }>('POST', `/api/messages/dismiss-all${scope === 'all' ? '?scope=all' : ''}`),
   markRead: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/read`),
-  markAllRead: () => call<{ ok: boolean; read?: number; error?: string }>('POST', '/api/messages/read-all'),
+  markAllRead: (scope: 'mine' | 'all' = 'mine') => call<{ ok: boolean; read?: number; error?: string }>('POST', `/api/messages/read-all${scope === 'all' ? '?scope=all' : ''}`),
 
   team: () => call<TeamResp>('GET', '/api/team'),
   audit: (f: { session?: string; type?: string; principal?: string; limit?: number } = {}) => {

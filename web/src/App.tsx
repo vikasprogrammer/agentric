@@ -2171,7 +2171,7 @@ function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
   )
 }
 
-function InboxPage({ messages, me, members, onOpen, onOpenArtifact, onOpenTask }: { messages: Msg[]; me: Member; members: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void; onOpenTask: (id: string) => void }) {
+function InboxPage({ messages: propMessages, me, members, onOpen, onOpenArtifact, onOpenTask }: { messages: Msg[]; me: Member; members: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void; onOpenTask: (id: string) => void }) {
   // Read state is now PER-MEMBER + server-backed (m.read): it syncs across this member's devices/tabs
   // and one admin marking read no longer touches another's badge. `readIds` optimistically bridges the
   // gap until the next poll reflects the server truth.
@@ -2179,6 +2179,21 @@ function InboxPage({ messages, me, members, onOpen, onOpenArtifact, onOpenTask }
   // Optimistically hide dismissed items; roll back on error. The server filters them from the next
   // poll anyway (per-member now), so the set just bridges the gap until then.
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set())
+  // Inbox scope. Default `mine` — only cards addressed to you (fed by the App-level poll, so the tab
+  // badge stays personal). Owner/admin can flip to `all` to oversee every session's cards; that view is
+  // fetched + polled LOCALLY here so switching to it doesn't spike the global badge.
+  const isOverseer = me.role === 'owner' || me.role === 'admin'
+  const [scope, setScope] = useState<'mine' | 'all'>('mine')
+  const [allMsgs, setAllMsgs] = useState<Msg[] | null>(null)
+  useEffect(() => {
+    if (scope !== 'all') { setAllMsgs(null); return }
+    let live = true
+    const pull = async () => { const m = await api.messages('all'); if (live) setAllMsgs(m) }
+    void pull()
+    const t = setInterval(pull, 2000)
+    return () => { live = false; clearInterval(t) }
+  }, [scope])
+  const messages = scope === 'all' ? (allMsgs ?? propMessages) : propMessages
   const dismiss = async (id: string) => {
     setDismissed((s) => new Set(s).add(id))
     const r = await api.dismissMessage(id)
@@ -2204,7 +2219,7 @@ function InboxPage({ messages, me, members, onOpen, onOpenArtifact, onOpenTask }
     const ids = activity.map((m) => m.id)
     if (ids.length === 0) return
     setDismissed((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n })
-    const r = await api.dismissAllMessages()
+    const r = await api.dismissAllMessages(scope)
     if (r.error) { setDismissed((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n }); alert(r.error) }
   }
   const isUnread = (m: Msg): boolean => !m.read && !readIds.has(m.id)
@@ -2213,15 +2228,29 @@ function InboxPage({ messages, me, members, onOpen, onOpenArtifact, onOpenTask }
     const ids = activity.filter(isUnread).map((m) => m.id)
     if (ids.length === 0) return
     setReadIds((s) => { const n = new Set(s); ids.forEach((id) => n.add(id)); return n })
-    const r = await api.markAllRead()
+    const r = await api.markAllRead(scope)
     if (r.error) { setReadIds((s) => { const n = new Set(s); ids.forEach((id) => n.delete(id)); return n }); alert(r.error) }
   }
 
+  // The My/All scope toggle — owner/admin only (a member's feed is already just their own).
+  const scopeToggle = isOverseer ? (
+    <div className="inline-flex overflow-hidden rounded-md border text-[11px]">
+      <button onClick={() => setScope('mine')} className={`px-2.5 py-1 ${scope === 'mine' ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`} title="only cards addressed to you">My activity</button>
+      <button onClick={() => setScope('all')} className={`border-l px-2.5 py-1 ${scope === 'all' ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`} title="every session's cards across the workspace">All</button>
+    </div>
+  ) : null
+
   if (messages.length === 0)
-    return <div className="mx-auto max-w-xl pt-10 text-center text-sm text-muted-foreground">No messages yet. Spawn an agent to start.</div>
+    return (
+      <div className="mx-auto max-w-2xl">
+        {scopeToggle && <div className="mb-4 flex justify-end">{scopeToggle}</div>}
+        <div className="pt-10 text-center text-sm text-muted-foreground">{scope === 'all' ? 'No activity across the workspace yet.' : 'No messages addressed to you yet.'}</div>
+      </div>
+    )
 
   return (
     <div className="mx-auto max-w-2xl space-y-7">
+      {scopeToggle && <div className="flex justify-end">{scopeToggle}</div>}
       <section>
         <div className="mb-2 flex items-center justify-between">
           <span className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">

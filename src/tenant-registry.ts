@@ -14,13 +14,13 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice, QuestionNotice } from './terminal';
+import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { Member, Task } from './types';
 import { TaskNotice } from './state/tasks';
-import { Audience, resolveRecipients } from './governance/recipients';
+import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantRecord, TenantStore } from './state/control';
 
@@ -202,6 +202,9 @@ export class TenantRegistry {
     // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
     // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.
     os.tasks.setNotifier((notice) => { void notifyTaskEvent(os, tm, slack, discord, notice); });
+    // Agent → teammate: when an agent uses the `notify` tool, the inbox card is written inline (addressed
+    // to the target member); this sink DMs that member on their linked Slack/Discord too.
+    tm.setMemberNotifier((notice) => { void notifyMember(os, slack, discord, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
     return { record: rec, os, tm, autos, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
@@ -256,7 +259,10 @@ export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * (the caller fires-and-forgets). Audited once.
  */
 export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: ApprovalNotice): Promise<void> {
-  const approvers = resolveRecipients(os, { kind: 'approvers', level: notice.level });
+  // Route to the SAME audience the inbox card uses (approvalAudience): the session owner alone when they
+  // can clear this level (an admin self-approving their own run), else the full approver tier — so we
+  // stop DMing every admin about every other admin's self-approvable session.
+  const approvers = resolveRecipients(os, approvalAudience(os, notice.sessionId, notice.level));
   if (!approvers.length) return;
   // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
   const dot = notice.riskClass === 'red' ? '🔴' : '🟡';
@@ -346,6 +352,20 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   const text = `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen the Agent OS console → Tasks.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
+}
+
+/**
+ * DM the one teammate an agent deliberately notified via the `notify` tool. The inbox card is already
+ * written (addressed to that member) by {@link TerminalManager.notifyMember}; this is the out-of-band
+ * push to their linked Slack/Discord. Single named recipient — never a broadcast. Best-effort, audited.
+ */
+export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: MemberNotice): Promise<void> {
+  const targets = resolveRecipients(os, { kind: 'member', id: notice.to });
+  if (!targets.length) return;
+  const bell = notice.important ? '❗' : '📨';
+  const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\nOpen the Agent OS console → Inbox.`;
+  const dms = await deliverDM(slack, discord, os, targets, text);
+  os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'member.notified', data: { to: notice.to, important: notice.important, dms } });
 }
 
 /** Launch a ttyd bound to one tenant's tmux socket on `ttydPort`. (Moved verbatim from server.ts.) */

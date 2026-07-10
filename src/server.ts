@@ -693,6 +693,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     tm.progress(session, agent, message, b.important === true || b.important === 'true');
     return sendJson(res, 200, { ok: true });
   }
+  // agent deliberately notifies a specific teammate (the `notify` tool) — the escape hatch from the
+  // session-owner-scoped default: an inbox card addressed to that member + an out-of-band DM.
+  if (method === 'POST' && p === '/api/notify') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const to = String(b.to || '').trim();
+    const message = String(b.message || '').trim();
+    if (!to) return sendJson(res, 400, { error: 'to is required' });
+    if (!message) return sendJson(res, 400, { error: 'message is required' });
+    const out = tm.notifyMember(session, agent, to, message, b.important === true || b.important === 'true');
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
   // agent publishes a deliverable to the Artifacts gallery (→ snapshot + inbox card + audit). The
   // file path is resolved under the agent's own folder by the store; only that session may publish.
   if (method === 'POST' && p === '/api/publish') {
@@ -1535,17 +1550,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: tm.deleteSession(id, me.email) });
   }
 
-  if (method === 'GET' && p === '/api/messages') return sendJson(res, 200, tm.listMessages(me));
+  // Inbox feed. `scope=all` is the oversight view (owner/admin only — resolved server-side); the
+  // default `mine` narrows to cards addressed to the viewer so owner/admin aren't flooded.
+  if (method === 'GET' && p === '/api/messages') return sendJson(res, 200, tm.listMessages(me, inboxScope(url, me)));
 
   // Dismiss the whole Activity feed at once (soft hide). Leaves action-required items (pending
   // approvals/questions, waiting notifications) in place. Same per-viewer visibility as the feed.
   if (method === 'POST' && p === '/api/messages/dismiss-all') {
-    return sendJson(res, 200, { ok: true, dismissed: tm.dismissAllMessages(me) });
+    return sendJson(res, 200, { ok: true, dismissed: tm.dismissAllMessages(me, inboxScope(url, me)) });
   }
 
   // Mark every message the viewer can see as read (per-member) — clears the unread badge.
   if (method === 'POST' && p === '/api/messages/read-all') {
-    return sendJson(res, 200, { ok: true, read: tm.markAllRead(me) });
+    return sendJson(res, 200, { ok: true, read: tm.markAllRead(me, inboxScope(url, me)) });
   }
 
   // Mark one message read for this member (per-member state; the shared feed is unaffected for others).
@@ -3253,6 +3270,14 @@ function runView(r: Run) {
 /** Parse a stored JSON column, degrading to a `{ raw }` wrapper rather than throwing on bad data. */
 function safeJson(s: string): Record<string, unknown> {
   try { const v = JSON.parse(s); return v && typeof v === 'object' ? v : { value: v }; } catch { return { raw: s }; }
+}
+/** Resolve the requested inbox scope from `?scope=`. Only owner/admin may see the `all` oversight view;
+ *  a member is always pinned to `mine` (they can't see others' cards regardless, so this just keeps the
+ *  contract explicit). Default = `mine` — the un-flooded personal feed. */
+function inboxScope(url: URL, me: Member): 'mine' | 'all' {
+  const want = url.searchParams.get('scope');
+  if (want === 'all' && (me.role === 'owner' || me.role === 'admin')) return 'all';
+  return 'mine';
 }
 /** Parse a stored `tags` JSON column into a string[] (empty on null/garbage). */
 function parseTags(s: string | null): string[] {

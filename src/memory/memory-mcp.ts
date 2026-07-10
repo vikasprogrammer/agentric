@@ -354,6 +354,26 @@ const TOOLS = [
     },
   },
   {
+    name: 'notify',
+    description:
+      'Notify a SPECIFIC teammate — the person who should know about something on this run, when that is ' +
+      'someone OTHER than the operator you already report to. By default your progress/updates/questions ' +
+      'go only to the human who owns this session; use `notify` to deliberately loop in someone else: ' +
+      '"@alex the deploy you asked about is live", "flagging this to the on-call admin". Pass `to` (their ' +
+      'name or email) and a one-line `message`. They get an Inbox card + a DM. This does NOT block — keep ' +
+      'working. Use it purposefully for the RIGHT person, not to broadcast; there is no team-wide notify.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        to: { type: 'string', description: "The teammate to notify — their name or email (e.g. \"Alex Rivera\" or \"alex@acme.com\")." },
+        message: { type: 'string', description: 'One line: what you want them to know.' },
+        important: { type: 'boolean', description: 'Flag as urgent/high-priority. Default false.' },
+      },
+      required: ['to', 'message'],
+    },
+  },
+  {
     name: 'publish',
     description:
       'Publish a finished deliverable to the Artifacts gallery so the operator can view and download ' +
@@ -911,6 +931,20 @@ async function update(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; error?: string };
   return d.ok ? 'Progress posted to the inbox.' : `Could not post update: ${d.error ?? 'unknown error'}`;
+}
+
+async function notify(args: Record<string, unknown>): Promise<string> {
+  const to = String(args.to ?? '').trim();
+  const message = String(args.message ?? '').trim();
+  if (!to) return 'Who should I notify? (`to` is required — a teammate name or email.)';
+  if (!message) return 'Nothing to send (message is required).';
+  const res = await fetch(AOS_URL + '/api/notify', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, to, message, important: args.important === true }),
+  });
+  const d = (await res.json()) as { ok?: boolean; to?: string; error?: string };
+  return d.ok ? `Notified ${d.to ?? to} (inbox + DM).` : `Could not notify: ${d.error ?? 'unknown error'}`;
 }
 
 async function publish(args: Record<string, unknown>): Promise<string> {
@@ -1491,6 +1525,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'ask' ? await ask(args)
         : name === 'report' ? await report(args)
         : name === 'update' ? await update(args)
+        : name === 'notify' ? await notify(args)
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
         : name === 'slack_reply' ? await slackReply(args)

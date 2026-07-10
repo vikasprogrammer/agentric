@@ -13,10 +13,10 @@ import * as path from 'path';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
-import { Audience, resolveRecipients } from './governance/recipients';
+import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -268,6 +268,17 @@ export interface QuestionNotice {
   prompt: string;
 }
 
+/** What the member-notifier sink receives when an agent deliberately notifies a specific teammate via
+ *  the `notify` tool — the explicit "this task needs someone else to know" escape hatch from the
+ *  session-owner-scoped default. `to` is the resolved member id; the registry DMs them out-of-band. */
+export interface MemberNotice {
+  sessionId: string;
+  agent: string;
+  to: string;
+  message: string;
+  important: boolean;
+}
+
 export class TerminalManager {
   /** Scripted demo runner — for `runtime: mock` agents. */
   private readonly runner = path.resolve(__dirname, '../terminal/agent-runner.sh');
@@ -300,6 +311,10 @@ export class TerminalManager {
    *  (the sink resolves no bound thread). Set by the registry once the chat sockets exist. */
   private chatMirror?: (sessionId: string, text: string) => void;
   setChatMirror(fn: (sessionId: string, text: string) => void): void { this.chatMirror = fn; }
+  /** Optional sink notified when an agent uses the `notify` tool to ping a specific teammate — the
+   *  registry DMs the target member on their linked Slack/Discord (the inbox card is written inline). */
+  private memberNotifier?: (notice: MemberNotice) => void;
+  setMemberNotifier(fn: (notice: MemberNotice) => void): void { this.memberNotifier = fn; }
 
   constructor(
     private readonly os: AgentOS,
@@ -455,10 +470,50 @@ export class TerminalManager {
     return this.canViewMsg(r.audience_kind ?? null, r.audience_id ?? null, r.session_spawned_by ?? null, r.session_run_as ?? null, viewer);
   }
 
+  /**
+   * Role-NEUTRAL session ownership: is `viewer` the human this session acts for — its `run_as`, or the
+   * member who spawned it directly (a prefixed `automation:`/`task:`/`chat:` provenance has no human
+   * owner here)? Unlike {@link canViewRow} this does NOT grant owner/admin, so the default inbox scope
+   * can tell "a session I own" apart from "a session I can merely oversee".
+   */
+  private ownsSession(spawnedBy: string | null, runAs: string | null, viewer: Member): boolean {
+    if (runAs && runAs === viewer.id) return true;
+    if (spawnedBy && !spawnedBy.includes(':') && spawnedBy === viewer.id) return true;
+    return false;
+  }
+
+  /**
+   * Is a message ADDRESSED to `viewer` (vs merely visible via an oversight role)? This is the `mine`
+   * inbox scope — the fix for owner/admin being flooded by every session's cards. An explicit audience
+   * routes by REAL membership: a named `member`/`sessionOwner` by id, an `approvers`/`admins` card to
+   * anyone who genuinely holds that authority (they ARE an intended recipient — e.g. a member's session
+   * that escalated an approval legitimately belongs in every approver's queue). A card with no audience
+   * (legacy session card) is owned by its session's human. Owner/admin get NO blanket pass here.
+   */
+  private isAddressedTo(r: MessageRow, viewer: Member): boolean {
+    // A session's own human always sees their session's cards in `mine`, whatever the card's routing
+    // audience — e.g. an approval that escalated to the `approvers` tier still belongs in the member
+    // owner's feed for awareness. (Task cards have no session row → this is a no-op for them.)
+    if (this.ownsSession(r.session_spawned_by ?? null, r.session_run_as ?? null, viewer)) return true;
+    const kind = r.audience_kind ?? null;
+    if (kind === 'member') return r.audience_id === viewer.id;
+    if (kind === 'approvers') {
+      const a = audienceFromColumns('approvers', r.audience_id ?? null);
+      return a?.kind === 'approvers' && canApprove(viewer.role, a.level);
+    }
+    if (kind === 'admins') return viewer.role === 'owner' || viewer.role === 'admin';
+    // sessionOwner audience (audience_id === session id) and legacy un-audienced cards resolve to the
+    // session owner too — already covered by the ownsSession check above; nothing else addresses them.
+    return false;
+  }
+
   /** Field-level twin of {@link canViewMessageRow} for the read/dismiss/answer guards, which fetch just
-   *  the visibility columns: explicit audience wins, else the session provenance rule. */
+   *  the visibility columns. A card is visible to its explicit audience OR to the human of the session
+   *  it belongs to — so a member whose session escalates an approval to the `approvers` tier still sees
+   *  their OWN session's card (awareness), on top of the approvers who must act. A session-less card (a
+   *  Task, session cols null) is governed purely by the audience + the owner/admin oversight rule. */
   private canViewMsg(audienceKind: string | null, audienceId: string | null, spawnedBy: string | null, runAs: string | null, viewer: Member): boolean {
-    if (audienceKind) return this.canViewAudience(audienceKind, audienceId, viewer);
+    if (audienceKind && this.canViewAudience(audienceKind, audienceId, viewer)) return true;
     return this.canViewRow(spawnedBy, runAs, viewer);
   }
 
@@ -579,7 +634,7 @@ export class TerminalManager {
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
   }
-  listMessages(viewer?: Member): FeedMessage[] {
+  listMessages(viewer?: Member, scope: 'mine' | 'all' = 'mine'): FeedMessage[] {
     // Approval messages take their live status from the approvals table, so the inbox stays
     // correct even after a restart (when the in-memory resolution waiter is gone). We also pull each
     // message's session `spawned_by` so the inbox can be scoped per member (owner/admin see all).
@@ -602,7 +657,11 @@ export class TerminalManager {
          ORDER BY m.created_at DESC`,
       )
       .all<MessageRow>(viewerId);
-    const visible = viewer ? rows.filter((r) => this.canViewMessageRow(r, viewer)) : rows;
+    let visible = viewer ? rows.filter((r) => this.canViewMessageRow(r, viewer)) : rows;
+    // `mine` (the default) narrows the visible set to what's ADDRESSED to the viewer, so owner/admin
+    // aren't flooded by every session's cards; `all` is the explicit oversight view (owner/admin only —
+    // a member's `all` and `mine` are identical since they only ever see their own).
+    if (viewer && scope === 'mine') visible = visible.filter((r) => this.isAddressedTo(r, viewer));
     return visible.map(toMessage);
   }
 
@@ -618,10 +677,11 @@ export class TerminalManager {
     return true;
   }
 
-  /** Mark every message the viewer can currently see as read (per-member). Returns how many were touched. */
-  markAllRead(viewer: Member): number {
+  /** Mark every message the viewer can currently see as read (per-member), within the given inbox
+   *  scope (so "mark all read" on the default `mine` view doesn't touch other people's cards). */
+  markAllRead(viewer: Member, scope: 'mine' | 'all' = 'mine'): number {
     let n = 0;
-    for (const m of this.listMessages(viewer)) {
+    for (const m of this.listMessages(viewer, scope)) {
       if (m.read) continue;
       this.upsertState(m.id, viewer.id, 'read_at');
       n++;
@@ -689,11 +749,11 @@ export class TerminalManager {
    * `dismissMessage`'s rules: only rows the viewer may see, and never an item still waiting on the
    * human (pending approval/question) — those are left in place. Returns how many were hidden.
    */
-  dismissAllMessages(viewer: Member): number {
+  dismissAllMessages(viewer: Member, scope: 'mine' | 'all' = 'mine'): number {
     // Reuse the feed (already visibility-scoped + per-member-dismiss filtered) and hide each dismissible
     // row for THIS viewer. Waiting items (pending approval/question, open notifications) stay put.
     let n = 0;
-    for (const m of this.listMessages(viewer)) {
+    for (const m of this.listMessages(viewer, scope)) {
       const stillWaiting =
         (m.type === 'approval' && (m.status ?? 'pending') === 'pending') ||
         (m.type === 'question' && (m.status ?? 'pending') === 'pending') ||
@@ -1234,7 +1294,7 @@ export class TerminalManager {
   say(sessionId: string, body: string): void {
     const s = this.db.prepare('SELECT agent FROM term_sessions WHERE id = ?').get<{ agent: string }>(sessionId);
     if (!s) return;
-    this.addMessage({ type: 'update', sessionId, agent: s.agent, title: `Task Update (${s.agent})`, body, status: 'open' });
+    this.addMessage({ type: 'update', sessionId, agent: s.agent, title: `Task Update (${s.agent})`, body, status: 'open', audienceKind: 'sessionOwner', audienceId: sessionId });
   }
 
   /** The gate. Same policy brain as the console — allow flows, ask → inbox approval (auto-cleared for
@@ -1314,6 +1374,9 @@ export class TerminalManager {
       attempt,
       reason: decision.reason,
     });
+    // Address the card to whoever will be pinged: the session owner if they can clear this level,
+    // else the approver tier. Card audience == DM audience, so it shows in exactly their "mine" inbox.
+    const aud = approvalAudience(this.os, sessionId, decision.level);
     this.addMessage({
       type: 'approval',
       sessionId,
@@ -1325,6 +1388,8 @@ export class TerminalManager {
       capability,
       args,
       level: decision.level,
+      audienceKind: aud.kind,
+      audienceId: audienceIdOf(aud),
     });
     this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability });
     // Out-of-band ping (Slack/Discord DM to whoever can approve) — best-effort, never blocks the gate.
@@ -1381,6 +1446,7 @@ export class TerminalManager {
           attempt,
           reason: decision.reason,
         });
+        const aud = approvalAudience(this.os, sessionId, decision.level);
         this.addMessage({
           type: 'approval',
           sessionId,
@@ -1392,6 +1458,8 @@ export class TerminalManager {
           capability: 'secret.put',
           args: { key },
           level: decision.level,
+          audienceKind: aud.kind,
+          audienceId: audienceIdOf(aud),
         });
         this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability: 'secret.put' });
         try { this.approvalNotifier?.({ sessionId, agent, capability: 'secret.put', level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* advisory */ }
@@ -1551,14 +1619,10 @@ export class TerminalManager {
    * tenant-registry wiring (the `os.tasks` notifier) can call it.
    */
   postTaskCard(input: { taskId: string; agent: string; title: string; body: string; audience: Audience; event: string }): void {
-    const audienceId = input.audience.kind === 'member' ? input.audience.id
-      : input.audience.kind === 'sessionOwner' ? input.audience.id
-      : input.audience.kind === 'approvers' ? input.audience.level
-      : undefined;
     this.addMessage({
       type: 'task', sessionId: `task:${input.taskId}`, agent: input.agent, title: input.title,
       body: input.body, status: 'open', args: { taskId: input.taskId, event: input.event },
-      audienceKind: input.audience.kind, audienceId,
+      audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
     });
   }
 
@@ -1569,7 +1633,7 @@ export class TerminalManager {
     this.db
       .prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .run(id, sessionId, this.os.tenant, agent, prompt, 'pending', Date.now());
-    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id });
+    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id, audienceKind: 'sessionOwner', audienceId: sessionId });
     this.audit(sessionId, agent, 'question.asked', { questionId: id, prompt });
     // Out-of-band ping (like approvals): DM the person the run acts for so a blocking `ask` doesn't sit
     // unseen in the console. And if the run was triggered from chat, mirror the question into that
@@ -1649,7 +1713,7 @@ export class TerminalManager {
     if (kind !== 'permission_prompt' && kind !== 'idle_prompt') return;
     this.clearNotifications(sessionId);
     const fallback = kind === 'permission_prompt' ? 'Claude needs permission to continue.' : 'Claude is waiting for your input.';
-    this.addMessage({ type: 'notification', sessionId, agent, title: `Waiting — ${agent}`, body: (message || '').trim() || fallback, status: 'open' });
+    this.addMessage({ type: 'notification', sessionId, agent, title: `Waiting — ${agent}`, body: (message || '').trim() || fallback, status: 'open', audienceKind: 'sessionOwner', audienceId: sessionId });
     this.audit(sessionId, agent, 'session.notified', { kind, message });
   }
 
@@ -1665,7 +1729,7 @@ export class TerminalManager {
   report(sessionId: string, agent: string, outcome: string, summary: string, lessons?: string): void {
     if (this.hasCompleted(sessionId)) return;
     this.clearNotifications(sessionId);
-    this.addMessage({ type: 'completed', sessionId, agent, title: `Completed — ${agent}`, body: summary || '(no summary)', status: 'open', outcome });
+    this.addMessage({ type: 'completed', sessionId, agent, title: `Completed — ${agent}`, body: summary || '(no summary)', status: 'open', outcome, audienceKind: 'sessionOwner', audienceId: sessionId });
     // Close the chat loop: a chat-triggered run's completion goes back to the thread the human pinged
     // from, not just the console. No-op for non-chat runs. The agent's own `slack_reply`/`discord_reply`
     // still work for finer-grained replies; this guarantees the outcome lands even if it never called them.
@@ -1704,6 +1768,9 @@ export class TerminalManager {
         body: (input.description || s.description || `A new skill "${s.name}" is ready for review.`).trim(),
         status: 'open',
         args: { skill: s.name, ...(input.rationale ? { rationale: input.rationale } : {}) },
+        // Publishing a skill is an owner/admin act — address the review card to the admin tier so it
+        // lands in exactly their inbox (not the running agent's session owner).
+        audienceKind: 'admins',
       });
       this.audit(sessionId, agent, 'skill.proposed', { name: s.name, description: s.description, rationale: input.rationale });
       return { ok: true, skill: s.name };
@@ -1719,8 +1786,43 @@ export class TerminalManager {
   progress(sessionId: string, agent: string, message: string, important = false): void {
     const body = (message || '').trim();
     if (!body) return;
-    this.addMessage({ type: 'update', sessionId, agent, title: `Update — ${agent}`, body, status: 'open', args: important ? { important: true } : undefined });
+    this.addMessage({ type: 'update', sessionId, agent, title: `Update — ${agent}`, body, status: 'open', args: important ? { important: true } : undefined, audienceKind: 'sessionOwner', audienceId: sessionId });
     this.audit(sessionId, agent, 'session.progress', { important, message: body });
+  }
+
+  /**
+   * Agent deliberately notifies a specific teammate (the `notify` MCP tool) — the "this task needs
+   * someone else to know" escape hatch from the session-owner-scoped default. Resolves `to` (a member
+   * id, email, or display name), posts an inbox card ADDRESSED to that member (so it lands in their
+   * `mine` feed regardless of who owns the session), fires the out-of-band DM sink, and audits it.
+   * Never routes to the whole team — one named recipient, deliberately chosen by the agent.
+   */
+  notifyMember(sessionId: string, agent: string, to: string, message: string, important = false): { ok: boolean; to?: string; error?: string } {
+    const body = (message || '').trim();
+    if (!body) return { ok: false, error: 'message is required' };
+    const target = this.resolveMember(to);
+    if (!target) return { ok: false, error: `no teammate matches "${to}"` };
+    this.addMessage({
+      type: 'update', sessionId, agent, title: `Note from ${agent}`, body, status: 'open',
+      args: important ? { important: true } : undefined,
+      audienceKind: 'member', audienceId: target.id,
+    });
+    this.audit(sessionId, agent, 'member.notified', { to: target.id, important, message: body });
+    try { this.memberNotifier?.({ sessionId, agent, to: target.id, message: body, important }); } catch { /* advisory */ }
+    return { ok: true, to: target.email };
+  }
+
+  /** Resolve a person the agent named — by member id, email (case-insensitive), or display name — to a
+   *  member. Used by {@link notifyMember}; returns undefined when nothing matches unambiguously. */
+  private resolveMember(who: string): Member | undefined {
+    const q = (who || '').trim();
+    if (!q) return undefined;
+    const byId = this.os.team.getMember(q);
+    if (byId) return byId;
+    const lower = q.toLowerCase();
+    const members = this.os.team.listMembers().filter((m) => m.status === 'active');
+    return members.find((m) => m.email.toLowerCase() === lower)
+        ?? members.find((m) => (m.name ?? '').toLowerCase() === lower);
   }
 
   /**
@@ -1748,6 +1850,7 @@ export class TerminalManager {
     this.addMessage({
       type: 'artifact', sessionId, agent, title: `Artifact — ${agent}`, body: a.title, status: 'open',
       source, args: { artifactId: a.id, filename: a.filename, mime: a.mime, kind: a.kind },
+      audienceKind: 'sessionOwner', audienceId: sessionId,
     });
     this.audit(sessionId, agent, 'artifact.published', { id: a.id, filename: a.filename, bytes: a.bytes, mime: a.mime, title: a.title });
     return { ok: true, id: a.id };
@@ -2275,6 +2378,17 @@ function audienceFromColumns(kind: string, id: string | null): Audience | null {
     case 'admins': return { kind: 'admins' };
     case 'approvers': return id === 'head' || id === 'owner' ? { kind: 'approvers', level: id } : null;
     default: return null;
+  }
+}
+
+/** The `audience_id` column value for an {@link Audience} (its member id / session id / level; null for
+ *  the role-set `admins`) — the inverse of {@link audienceFromColumns}, shared by every card writer. */
+function audienceIdOf(a: Audience): string | undefined {
+  switch (a.kind) {
+    case 'member': return a.id;
+    case 'sessionOwner': return a.id;
+    case 'approvers': return a.level;
+    case 'admins': return undefined;
   }
 }
 
