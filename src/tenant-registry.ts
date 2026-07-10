@@ -21,6 +21,7 @@ import { DiscordSocket } from './edge/discord-socket';
 import { Member, Task } from './types';
 import { TaskNotice } from './state/tasks';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
+import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
 import { TenantRecord, TenantStore } from './state/control';
 
@@ -179,7 +180,10 @@ export class TenantRegistry {
     }
 
     const ttydPort = isDefault ? (Number(process.env.TTYD_PORT) || this.basePort + 1) : this.nextTtydPort++;
-    const tm = new TerminalManager(os, this.loopbackBase, paths.tmuxSocket);
+    // The tenant's public console origin — resolved once here (no request Host in a background DM) and
+    // closed over by every notifier so its deep-links point at the deployment's REAL external URL.
+    const consoleOrigin = this.consoleOrigin(rec.slug);
+    const tm = new TerminalManager(os, this.loopbackBase, paths.tmuxSocket, consoleOrigin);
     const autos = new Automations(os, tm);
     autos.start();
     const slack = new SlackSocket(os, autos);
@@ -188,20 +192,25 @@ export class TenantRegistry {
     void discord.start();
     // Chat approval notifications (M5): when a risky action lands an approval card, DM whoever can
     // approve it — via their linked Slack/Discord account (identity map). Best-effort, off the hot path.
-    tm.setApprovalNotifier((notice) => { void notifyApprovers(os, slack, discord, notice); });
+    tm.setApprovalNotifier((notice) => { void notifyApprovers(os, slack, discord, consoleOrigin, notice); });
     // Question notifications: when an agent asks the human a question, DM the person the run acts for so
     // a blocking `ask` doesn't sit unseen until it times out — the question-side twin of the above.
-    tm.setQuestionNotifier((notice) => { void notifyQuestionAsked(os, slack, discord, notice); });
+    tm.setQuestionNotifier((notice) => { void notifyQuestionAsked(os, slack, discord, consoleOrigin, notice); });
     // Chat loop: mirror completions/questions/approvals back to the Slack/Discord thread a chat-triggered
-    // run is bound to. Both replies no-op when the session has no bound thread (non-chat runs).
-    tm.setChatMirror((sessionId, text) => { void slack.reply(sessionId, text); void discord.reply(sessionId, text); });
+    // run is bound to. `text` is a per-platform builder so an embedded deep-link uses each platform's
+    // masked-link syntax. Both replies no-op when the session has no bound thread (non-chat runs).
+    tm.setChatMirror((sessionId, text) => {
+      const render = (p: ChatPlatform) => (typeof text === 'function' ? text(p) : text);
+      void slack.reply(sessionId, render('slack'));
+      void discord.reply(sessionId, render('discord'));
+    });
     // Deadline notifications: when a task passes its due date, DM its owner (the human it runs as) once,
     // so a missed deadline surfaces off the board. Owner-less → owner/admins. Mirrors the question path.
-    autos.setOverdueNotifier((task) => { void notifyTaskOverdue(os, slack, discord, task); });
+    autos.setOverdueNotifier((task) => { void notifyTaskOverdue(os, slack, discord, consoleOrigin, task); });
     // Task lifecycle → Inbox: a create/assign/status change lands an audience-addressed inbox card for
     // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
     // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.
-    os.tasks.setNotifier((notice) => { void notifyTaskEvent(os, tm, slack, discord, notice); });
+    os.tasks.setNotifier((notice) => { void notifyTaskEvent(os, tm, slack, discord, consoleOrigin, notice); });
     // Agent → teammate: when an agent uses the `notify` tool, the inbox card is written inline (addressed
     // to the target member); this sink DMs that member on their linked Slack/Discord too.
     tm.setMemberNotifier((notice) => { void notifyMember(os, slack, discord, notice); });
@@ -216,6 +225,22 @@ export class TenantRegistry {
     if (this.cfg.baseDomain) return `https://${slug}.${this.cfg.baseDomain}/accept?token=${token}`;
     return `http://${slug}.localhost:${this.basePort}/accept?token=${token}`;
   }
+
+  /**
+   * The public origin (`scheme://host[:port]`, no trailing slash) of a tenant's console — the base for
+   * deep-links in out-of-band chat DMs, which fire from a background scheduler/gate with no request Host
+   * to derive from. Priority: `AGENT_OS_PUBLIC_URL` env / config `publicUrl` (the deployment's REAL
+   * external URL, e.g. a Tailscale name) pins the seed tenant's origin; a `baseDomain` gives every other
+   * tenant its own subdomain; otherwise a localhost dev fallback (links open only on the box but stay
+   * clickable). Unlike `loginUrl`, this prefers the pinned URL for the default tenant so a deployed box
+   * whose real host is NOT localhost still emits reachable links.
+   */
+  consoleOrigin(slug: string): string {
+    const pinned = (process.env.AGENT_OS_PUBLIC_URL || this.cfg.publicUrl || '').trim().replace(/\/+$/, '');
+    if (this.isDefault(slug)) return pinned || (this.cfg.baseDomain ? `https://${this.cfg.baseDomain}` : `http://localhost:${this.basePort}`);
+    if (this.cfg.baseDomain) return `https://${slug}.${this.cfg.baseDomain}`;
+    return pinned || `http://${slug}.localhost:${this.basePort}`;
+  }
 }
 
 /**
@@ -225,14 +250,17 @@ export class TenantRegistry {
  * callers pass an already-resolved set (see {@link resolveRecipients}) so WHO and HOW-to-reach stay
  * separate concerns.
  */
-async function deliverDM(slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string): Promise<number> {
+async function deliverDM(slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string | ((platform: ChatPlatform) => string)): Promise<number> {
+  // `text` may be a per-platform builder so a message can carry a masked deep-link, whose syntax differs
+  // between Slack mrkdwn (`<url|label>`) and Discord markdown (`[label](url)`). A plain string is sent as-is.
+  const render = (platform: ChatPlatform) => (typeof text === 'function' ? text(platform) : text);
   let dms = 0;
   for (const m of recipients) {
     const ids = os.team.externalIdsFor(m.id);
     const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
     const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
-    if (slackId && (await slack.dmUser(slackId, text)).ok) dms++;
-    if (discordId && (await discord.dmUser(discordId, text)).ok) dms++;
+    if (slackId && (await slack.dmUser(slackId, render('slack'))).ok) dms++;
+    if (discordId && (await discord.dmUser(discordId, render('discord'))).ok) dms++;
   }
   return dms;
 }
@@ -258,7 +286,7 @@ export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * (`canApprove(role, level)`); `deliverDM` reaches them via the identity map. Off the gate's hot path
  * (the caller fires-and-forgets). Audited once.
  */
-export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: ApprovalNotice): Promise<void> {
+export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: ApprovalNotice): Promise<void> {
   // Route to the SAME audience the inbox card uses (approvalAudience): the session owner alone when they
   // can clear this level (an admin self-approving their own run), else the full approver tier — so we
   // stop DMing every admin about every other admin's self-approvable session.
@@ -266,10 +294,11 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
   if (!approvers.length) return;
   // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
   const dot = notice.riskClass === 'red' ? '🔴' : '🟡';
-  const text =
+  const inbox = consolePage(consoleOrigin, 'inbox');
+  const text = (p: ChatPlatform) =>
     `${dot} ${notice.riskClass.toUpperCase()} approval needed — \`${notice.capability}\` (${notice.level}) requested by agent ${notice.agent}.` +
     (notice.reason ? `\nwhy: ${notice.reason}` : '') +
-    `\nOpen the Agent OS console → Inbox to approve or reject.`;
+    `\nOpen the ${chatLink(p, inbox, 'Agent OS Inbox')} to approve or reject.`;
   const dms = await deliverDM(slack, discord, os, approvers, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'approval.notified', data: { capability: notice.capability, level: notice.level, approvers: approvers.length, dms } });
 }
@@ -280,13 +309,14 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * else a member who spawned it); if the run has no human owner (a pure automation), falls back to the
  * `admins` audience so the question still reaches someone. Best-effort, off the ask hot path. Audited once.
  */
-export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: QuestionNotice): Promise<void> {
+export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: QuestionNotice): Promise<void> {
   let targets = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId });
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
-  const text =
+  const inbox = consolePage(consoleOrigin, 'inbox');
+  const text = (p: ChatPlatform) =>
     `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
-    `\nOpen the Agent OS console → Inbox to reply.`;
+    `\nOpen the ${chatLink(p, inbox, 'Agent OS Inbox')} to reply.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'question.notified', data: { agent: notice.agent, targets: targets.length, dms } });
 }
@@ -297,14 +327,15 @@ export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 
  * an owner-less (or deleted-owner) task falls back to the `admins` audience so the miss still reaches
  * someone. Best-effort, fired once per task from the scheduler sweep (the once-guard lives in the DB).
  */
-export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, task: Task): Promise<void> {
+export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, task: Task): Promise<void> {
   let targets = task.owner ? resolveRecipients(os, { kind: 'member', id: task.owner }) : [];
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
   const due = task.dueAt ? new Date(task.dueAt).toISOString().slice(0, 10) : 'its deadline';
-  const text =
+  const url = consolePage(consoleOrigin, 'tasks', task.id);
+  const text = (p: ChatPlatform) =>
     `⏰ Task overdue — \`${task.title}\` (${task.id}) passed ${due} and is still ${task.status}.` +
-    `\nOpen the Agent OS console → Tasks to reprioritise, reassign, or extend it.`;
+    `\nOpen it in the ${chatLink(p, url, 'Agent OS console')} to reprioritise, reassign, or extend it.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.overdue.notified', data: { id: task.id, targets: targets.length, dms } });
 }
@@ -340,7 +371,7 @@ function taskCard(n: TaskNotice): { audience: Audience; title: string; event: st
  * the awaited DM) so it's durable even if the process exits right after; the DM is best-effort. Skips
  * entirely when the change warrants no card or the only recipient is the actor who made it.
  */
-export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard'>, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: TaskNotice): Promise<void> {
+export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard'>, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TaskNotice): Promise<void> {
   const card = taskCard(notice);
   if (!card) return;
   // Resolve the receiver, then drop the actor themselves — nobody needs a card for their own action.
@@ -349,7 +380,9 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   const t = notice.task;
   const agentLabel = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : 'tasks';
   tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event });
-  const text = `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen the Agent OS console → Tasks.`;
+  // Deep-link straight to the task's permalink (`#/tasks/<id>`), so the DM is one tap from the board.
+  const url = consolePage(consoleOrigin, 'tasks', t.id);
+  const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
 }

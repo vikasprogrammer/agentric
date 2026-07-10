@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.100.0] — 2026-07-10
+### Added
+- **Slack/Discord notifications now carry a one-tap deep-link back to the console.** The out-of-band
+  DMs and thread mirrors used to end with a flat instruction ("Open the Agent OS console → Tasks"); they
+  now embed a clickable masked link straight to the relevant page — a task's permalink (`#/tasks/<id>`)
+  for task-assigned / blocked / done / overdue notices, and the Inbox (`#/inbox`) for approval and
+  question pings. Rendered per platform (Slack mrkdwn `<url|label>`, Discord markdown `[label](url)`)
+  because a single DM fans out to both. A tenant's public origin is resolved once from the new
+  `AGENT_OS_PUBLIC_URL` env / config `publicUrl` (a background DM has no request Host to derive from);
+  unset falls back to `baseDomain` subdomains or localhost. New `src/governance/chat-links.ts`
+  (`consolePage` + `chatLink`); `deliverDM` and the chat-mirror sink now take a per-platform text
+  builder; `TenantRegistry.consoleOrigin(slug)` pins the URL. **Deploy note:** set
+  `AGENT_OS_PUBLIC_URL` to the box's real external URL (e.g. the Tailscale name) or the links point at
+  localhost.
+
 ## [0.99.1] — 2026-07-10
 ### Fixed
 - **Memory-backend migration is now resume-safe and can't duplicate or lose rows.** The migrate loop

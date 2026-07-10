@@ -17,6 +17,7 @@ import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, 
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
+import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -309,8 +310,8 @@ export class TerminalManager {
    *  Slack/Discord thread a chat-triggered session is bound to, so the human who pinged the agent in
    *  chat sees the outcome there instead of having to switch to the console. No-op for non-chat runs
    *  (the sink resolves no bound thread). Set by the registry once the chat sockets exist. */
-  private chatMirror?: (sessionId: string, text: string) => void;
-  setChatMirror(fn: (sessionId: string, text: string) => void): void { this.chatMirror = fn; }
+  private chatMirror?: (sessionId: string, text: string | ((platform: ChatPlatform) => string)) => void;
+  setChatMirror(fn: (sessionId: string, text: string | ((platform: ChatPlatform) => string)) => void): void { this.chatMirror = fn; }
   /** Optional sink notified when an agent uses the `notify` tool to ping a specific teammate — the
    *  registry DMs the target member on their linked Slack/Discord (the inbox card is written inline). */
   private memberNotifier?: (notice: MemberNotice) => void;
@@ -320,6 +321,9 @@ export class TerminalManager {
     private readonly os: AgentOS,
     private readonly baseUrl: string,
     private readonly tmuxSocket: string,
+    /** The console's public origin (`scheme://host`) — the base for deep-links mirrored into chat
+     *  threads. Optional so test/demo call sites can omit it; links fall back to a bare console path. */
+    private readonly publicOrigin = '',
   ) {
     this.db = os.db;
     const onError: SpawnErrorSink = (sessionId, agent, error) => this.audit(sessionId, agent, 'session.error', { error });
@@ -1397,7 +1401,8 @@ export class TerminalManager {
     // If the run was triggered from chat, surface the gate in that thread too (the approver DM reaches
     // the approver; this reaches everyone watching the thread). No-op for non-chat runs.
     const dot = decision.riskClass === 'red' ? '🔴' : '🟡';
-    try { this.chatMirror?.(sessionId, `${dot} ${agent} needs approval — \`${capability}\` (${decision.riskClass.toUpperCase()} · ${decision.level}).\n_why: ${decision.reason}_\nOpen the Agent OS console → Inbox to approve or reject.`); } catch { /* advisory */ }
+    const inboxLink = consolePage(this.publicOrigin, 'inbox');
+    try { this.chatMirror?.(sessionId, (p) => `${dot} ${agent} needs approval — \`${capability}\` (${decision.riskClass.toUpperCase()} · ${decision.level}).\n_why: ${decision.reason}_\nOpen the ${chatLink(p, inboxLink, 'Agent OS Inbox')} to approve or reject.`); } catch { /* advisory */ }
 
     // The message + gate status are derived from the approvals table at read time, so all this
     // waiter has to do is leave an audit trail. (It won't fire across a restart — that's fine.)
@@ -1639,7 +1644,7 @@ export class TerminalManager {
     // unseen in the console. And if the run was triggered from chat, mirror the question into that
     // thread. Both best-effort, off the hot path.
     try { this.questionNotifier?.({ sessionId, agent, prompt }); } catch { /* notifications are advisory */ }
-    try { this.chatMirror?.(sessionId, `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the Agent OS console → Inbox.`); } catch { /* advisory */ }
+    try { this.chatMirror?.(sessionId, (p) => `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the ${chatLink(p, consolePage(this.publicOrigin, 'inbox'), 'Agent OS Inbox')}.`); } catch { /* advisory */ }
     return { id };
   }
 
@@ -1734,7 +1739,8 @@ export class TerminalManager {
     // from, not just the console. No-op for non-chat runs. The agent's own `slack_reply`/`discord_reply`
     // still work for finer-grained replies; this guarantees the outcome lands even if it never called them.
     const mark = outcome === 'success' ? '✅' : outcome === 'failure' ? '❌' : '☑️';
-    try { this.chatMirror?.(sessionId, `${mark} ${agent} finished (${outcome}).\n${summary || '(no summary)'}`); } catch { /* advisory */ }
+    const inboxLink = consolePage(this.publicOrigin, 'inbox');
+    try { this.chatMirror?.(sessionId, (p) => `${mark} ${agent} finished (${outcome}).\n${summary || '(no summary)'}\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
     // Rename the session from the agent's own summary — an AI-written label that reflects what the run
     // actually did, replacing the provisional title (the task text / automation name set at spawn).
     // Claude Code's internal /resume summaries aren't available for governed sessions (headless `-p`

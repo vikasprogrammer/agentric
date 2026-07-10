@@ -255,6 +255,9 @@ export interface RootConfig {
   tenant: string;
   /** Base domain for subdomain routing (e.g. `agent-os.example.com`); tenants live at `<slug>.<base>`. */
   baseDomain?: string;
+  /** The console's real external origin (`https://host[:port]`), used to build deep-links in background
+   *  chat DMs that have no request Host to derive from. `AGENT_OS_PUBLIC_URL` env overrides this. */
+  publicUrl?: string;
   /** User data home (env AGENT_OS_HOME overrides). Default: ./data. */
   home?: string;
   /** Bundled example agents that ship with the software. Default: config/agents. */
