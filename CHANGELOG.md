@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.90.0] — 2026-07-10
+### Added
+- **Member avatars now show on the Tasks board too.** The profile pictures added in 0.88.0 are reused
+  wherever a task names a person: the assignee badge on Kanban cards and list rows, and both "Assign to"
+  dropdowns show the member's avatar (falling back to their initial when unset). Agents keep their own
+  manifest icon and system/automation/unknown assignees keep the person glyph — the swap only applies to
+  ids that resolve to a real member. Done via the existing `assigneeIcon` helper + the shared
+  `MemberAvatar`, so no new data plumbing (`web/src/App.tsx`). Other people-naming surfaces
+  (Sessions "started by"/"run as", Inbox attributions, Audit principal) still show label strings only —
+  those receive a name from the server, not a member object, so they'd need API changes to gain avatars.
+
 ## [0.89.0] — 2026-07-10
 ### Added
 - **File attachments on tasks.** A task can now carry files — screenshots, logs, PDFs, CSVs, generated
