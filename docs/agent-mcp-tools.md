@@ -35,6 +35,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `task_get` | `GET /api/tasks/get` | `TaskStore.withEvents` | R | task + full activity timeline |
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |
 | `task_update` | `POST /api/tasks/update` | `TaskStore.update` | W | status/note/reassign/reprioritise/`due` (ISO date, or "" to clear); closes a dispatched loop |
+| `task_attach` | `POST /api/tasks/attach` | `TerminalManager.attachTaskFile` → `TaskStore.attachFromPath` | W | snapshots a file from the caller's OWN working folder onto a task (path resolved strictly under the agent folder, like `publish`); logs an `attach` event; audited `task.attached` |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
 | `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; snapshots a revision; audited `agent.config.updated` |
 | `agent_history` | `POST /api/agents/history` | `AgentRevisions.list` | R | the caller's own listing revisions (rev/author/summary/date), newest first |
@@ -49,7 +50,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
 
-33 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+34 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 

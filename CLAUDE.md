@@ -188,14 +188,15 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 33 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 34 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`publish`/`artifacts_list`. Skills: `skill_propose` (draft a
   reusable playbook — Lever 6 procedural memory; lands as a NOT-YET-PUBLISHED `.aos-proposed` skill +
   a `skill.proposed` inbox card, gated behind an owner/admin publish). Scheduling: `schedule`/`unschedule`
   (one-shot deferred self-run via a `type:'once'` automation). Tasks (shared work queue):
-  `task_create`/`task_list`/`task_get`/`task_claim`/`task_update` (file/claim/drain durable work; an
+  `task_create`/`task_list`/`task_get`/`task_claim`/`task_update`/`task_attach` (file/claim/drain durable
+  work + attach a file from the agent's folder onto a task; an
   agent-assigned `autoDispatch` task spawns a governed session — the A2A delegation path; per-task `mode`
   headless/interactive; owner = run-as passthrough so a hand-off keeps the accountable human). Secrets
   (shared credential handoff): `secret_put`/`secret_get`/`secret_list` — an agent stores a password/key

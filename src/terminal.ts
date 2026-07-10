@@ -1710,6 +1710,22 @@ export class TerminalManager {
   }
 
   /**
+   * Agent attaches a file from its OWN working folder onto a task (the `task_attach` MCP path). The
+   * store resolves the path strictly under the agent folder + snapshots it into the task's attachment
+   * dir. Uploader = `agent:<id>`; auto-apply + audited, exactly like publishArtifact / task edits.
+   */
+  attachTaskFile(sessionId: string, taskId: string, srcPath: string): { ok: boolean; id?: string; filename?: string; error?: string } {
+    const agent = this.sessionAgent(sessionId);
+    if (!agent) return { ok: false, error: 'unknown session' };
+    const manifest = this.os.agents.get(agent);
+    if (!manifest?.dir) return { ok: false, error: 'agent has no working folder' };
+    const r = this.os.tasks.attachFromPath({ taskId, allowRoot: manifest.dir, srcPath, uploadedBy: `agent:${agent}` });
+    if (!r.ok) return { ok: false, error: r.error };
+    this.audit(sessionId, agent, 'task.attached', { taskId, id: r.attachment.id, filename: r.attachment.filename, bytes: r.attachment.bytes, mime: r.attachment.mime });
+    return { ok: true, id: r.attachment.id, filename: r.attachment.filename };
+  }
+
+  /**
    * Console operator pasted/dropped a file (typically an image) onto a LIVE session. Save it under the
    * agent's OWN working folder (`.inbox/`) — reachable by the agent's Read tool via a relative path —
    * and type its relative path into the running claude (no auto-submit) so the operator can add a
