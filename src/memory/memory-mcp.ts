@@ -599,6 +599,24 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  {
+    name: 'task_attach',
+    description:
+      'Attach a file from YOUR working folder onto a task — a screenshot, log, report, generated artifact, ' +
+      'CSV, etc. — so whoever picks up the task (or the human reviewing it) can see your output. Give the ' +
+      'path relative to your working folder (or absolute within it). The file is snapshotted onto the task ' +
+      'and listed on its detail view alongside the activity timeline (see task_get). Use this to hand off ' +
+      'concrete deliverables with a task, rather than pasting large content into a note.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The task id to attach the file to.' },
+        path: { type: 'string', description: 'Path to the file in your working folder (e.g. "report.pdf" or "out/summary.csv").' },
+      },
+      required: ['id', 'path'],
+    },
+  },
   // ── Agents: author new agents (the agent-author's build tools) ──
   {
     name: 'agent_create',
@@ -1119,6 +1137,7 @@ async function unschedule(args: Record<string, unknown>): Promise<string> {
 // ── Tasks: the shared work queue ──────────────────────────────────────────────
 interface TaskLite { id: string; title: string; status: string; priority: number; assignee?: string; labels?: string[]; body?: string }
 interface TaskEventLite { kind: string; body?: string; author: string; createdAt: number }
+interface TaskAttachmentLite { id: string; filename: string; mime: string; bytes: number; uploadedBy: string }
 
 /** Parse an agent-supplied `due` (ISO date/datetime) → epoch ms. '' / null → null (clear). undefined → undefined (leave). */
 function parseDue(due: unknown): number | null | undefined {
@@ -1291,13 +1310,31 @@ async function taskGet(args: Record<string, unknown>): Promise<string> {
   u.searchParams.set('id', String(args.id ?? ''));
   const res = await fetch(u, { headers: H() });
   if (!res.ok) return 'Task not found.';
-  const d = (await res.json()) as { task?: TaskLite; events?: TaskEventLite[] };
+  const d = (await res.json()) as { task?: TaskLite; events?: TaskEventLite[]; attachments?: TaskAttachmentLite[] };
   if (!d.task) return 'Task not found.';
   const t = d.task;
   const timeline = (d.events ?? [])
     .map((e) => `  · ${e.kind}${e.body ? `: ${e.body}` : ''} — ${e.author}`)
     .join('\n');
-  return `${t.id} · [${t.status}] · P${t.priority}${t.assignee ? ` · ${t.assignee}` : ''}\n# ${t.title}\n${t.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}`;
+  const files = (d.attachments ?? [])
+    .map((a) => `  · ${a.filename} (${a.mime}, ${a.bytes} bytes) — ${a.uploadedBy}`)
+    .join('\n');
+  const attachSection = d.attachments?.length ? `\n\nAttachments:\n${files}` : '';
+  return `${t.id} · [${t.status}] · P${t.priority}${t.assignee ? ` · ${t.assignee}` : ''}\n# ${t.title}\n${t.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${attachSection}`;
+}
+
+async function taskAttach(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim();
+  const filePath = String(args.path ?? '').trim();
+  if (!id || !filePath) return 'Both id and path are required.';
+  const res = await fetch(AOS_URL + '/api/tasks/attach', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, id, path: filePath }),
+  });
+  const d = (await res.json()) as { ok?: boolean; filename?: string; error?: string };
+  if (!d.ok) return `Could not attach: ${d.error ?? 'unknown error'}`;
+  return `Attached ${d.filename} to task ${id}. It's now visible on the task (task_get "${id}").`;
 }
 
 async function taskClaim(args: Record<string, unknown>): Promise<string> {
@@ -1475,6 +1512,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_get' ? await taskGet(args)
         : name === 'task_claim' ? await taskClaim(args)
         : name === 'task_update' ? await taskUpdate(args)
+        : name === 'task_attach' ? await taskAttach(args)
         : name === 'agent_create' ? await agentCreate(args)
         : name === 'agent_update' ? await agentUpdate(args)
         : name === 'agent_history' ? await agentHistory()

@@ -949,7 +949,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const found = os.tasks.withEvents(url.searchParams.get('id') || '');
-    return sendJson(res, found ? 200 : 404, found ?? { error: 'task not found' });
+    if (!found) return sendJson(res, 404, { error: 'task not found' });
+    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id) });
   }
   if (method === 'POST' && p === '/api/tasks/claim') {
     const b = await readBody(req);
@@ -982,6 +983,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!task) return sendJson(res, 200, { ok: false, error: 'task not found' });
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: task.status === 'done' ? 'task.completed' : 'task.updated', data: { id: task.id, status: task.status } });
     return sendJson(res, 200, { ok: true, task });
+  }
+  // agent attaches a file from its own working folder onto a task (→ snapshot + `attach` event + audit).
+  // The path is resolved strictly under the agent folder by the store; only that session may attach.
+  if (method === 'POST' && p === '/api/tasks/attach') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim();
+    const filePath = String(b.path || '').trim();
+    if (!id || !filePath) return sendJson(res, 200, { ok: false, error: 'id and path are required' });
+    const out = tm.attachTaskFile(session, id, filePath);
+    return sendJson(res, 200, out.ok ? { ok: true, id: out.id, filename: out.filename } : { ok: false, error: out.error });
   }
 
   // ── Agents (agent loopback) ──────────────────────────────────────────────────
@@ -1690,13 +1705,50 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const taskId = p.match(/^\/api\/tasks\/([\w-]+)$/);
   const taskComment = p.match(/^\/api\/tasks\/([\w-]+)\/comment$/);
   const taskDispatch = p.match(/^\/api\/tasks\/([\w-]+)\/dispatch$/);
+  const taskAttachments = p.match(/^\/api\/tasks\/([\w-]+)\/attachments$/);
+  const taskAttachmentRaw = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)\/raw$/);
+  const taskAttachment = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)$/);
   if (method === 'GET' && p === '/api/tasks') {
     const tasks = os.tasks.list({ tenant: os.tenant, status: (url.searchParams.get('status') as TaskStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
     return sendJson(res, 200, { tasks, counts: os.tasks.counts(os.tenant), agents: terminalAgents(os).map((a) => a.id) });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);
-    return sendJson(res, found ? 200 : 404, found ?? { error: 'task not found' });
+    if (!found) return sendJson(res, 404, { error: 'task not found' });
+    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id) });
+  }
+  // Upload a file onto a task (raw bytes in the body; original name in ?name=). Any member, like a task edit.
+  if (taskAttachments && method === 'POST') {
+    if (!os.tasks.get(taskAttachments[1])) return sendJson(res, 404, { error: 'task not found' });
+    const name = url.searchParams.get('name') || '';
+    if (!name.trim()) return sendJson(res, 400, { error: 'a file name (?name=) is required' });
+    const buf = await readRawBuffer(req);
+    if (buf.length === 0) return sendJson(res, 400, { error: 'empty upload' });
+    const out = os.tasks.attachBytes({ taskId: taskAttachments[1], filename: name, bytes: buf, uploadedBy: me.id });
+    if (!out.ok) return sendJson(res, 400, { error: out.error });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.attached', data: { taskId: taskAttachments[1], id: out.attachment.id, filename: out.attachment.filename, bytes: out.attachment.bytes } });
+    return sendJson(res, 200, { ok: true, attachment: out.attachment });
+  }
+  // Stream an attachment's bytes (inline; browser previews images/pdf, downloads the rest). Any member.
+  if (taskAttachmentRaw && method === 'GET') {
+    const resolved = os.tasks.readAttachment(taskAttachmentRaw[1]);
+    if (!resolved) return sendJson(res, 404, { error: 'attachment not found' });
+    const st = fs.statSync(resolved.absPath);
+    const stream = fs.createReadStream(resolved.absPath);
+    stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
+    res.writeHead(200, {
+      'content-type': resolved.mime,
+      'content-length': String(st.size),
+      'content-disposition': `inline; filename="${resolved.filename.replace(/"/g, '')}"`,
+    });
+    stream.pipe(res);
+    return;
+  }
+  // Remove an attachment. Any member (like a task edit); the removal is logged on the task timeline.
+  if (taskAttachment && method === 'DELETE') {
+    const ok = os.tasks.removeAttachment(taskAttachment[1], me.id);
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.attachment.removed', data: { id: taskAttachment[1] } });
+    return sendJson(res, ok ? 200 : 404, { ok });
   }
   if (method === 'POST' && p === '/api/tasks') {
     const b = await readBody(req);

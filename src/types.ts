@@ -606,10 +606,23 @@ export interface Task {
 export interface TaskEvent {
   id: string;
   taskId: string;
-  kind: 'comment' | 'status' | 'claim' | 'dispatch' | 'assign' | 'link';
+  kind: 'comment' | 'status' | 'claim' | 'dispatch' | 'assign' | 'link' | 'attach';
   body?: string;
   author: string; // member id | 'agent:<id>' | 'automation:<id>' | 'system'
   sessionId?: string;
+  createdAt: number;
+}
+
+/** A file attached to a task — a durable on-disk snapshot (mirrors {@link Artifact}, keyed to a task). */
+export interface TaskAttachment {
+  id: string;
+  taskId: string;
+  tenant: string;
+  filename: string; // original basename (display + download name)
+  relPath: string; // under <home>/task-attachments/ (<taskId>/<id>-<filename>)
+  mime: string;
+  bytes: number;
+  uploadedBy: string; // member id | 'agent:<id>'
   createdAt: number;
 }
 

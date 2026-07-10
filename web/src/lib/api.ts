@@ -285,10 +285,21 @@ export interface Task {
 export interface TaskEvent {
   id: string
   taskId: string
-  kind: 'comment' | 'status' | 'claim' | 'dispatch' | 'assign' | 'link'
+  kind: 'comment' | 'status' | 'claim' | 'dispatch' | 'assign' | 'link' | 'attach'
   body?: string
   author: string
   sessionId?: string
+  createdAt: number
+}
+export interface TaskAttachment {
+  id: string
+  taskId: string
+  tenant: string
+  filename: string
+  relPath: string
+  mime: string
+  bytes: number
+  uploadedBy: string
   createdAt: number
 }
 export interface AddTaskReq {
@@ -844,12 +855,20 @@ export const api = {
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
   tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[] }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
-  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; error?: string }>('GET', `/api/tasks/${id}`),
+  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; error?: string }>('GET', `/api/tasks/${id}`),
   addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
   patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
   dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/tasks/${id}/dispatch`),
   deleteTask: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${id}`),
+  /** Upload a file onto a task (raw bytes). */
+  uploadTaskAttachment: async (id: string, file: File): Promise<{ ok: boolean; attachment?: TaskAttachment; error?: string }> => {
+    const r = await fetch(`/api/tasks/${id}/attachments?name=${encodeURIComponent(file.name)}`, { method: 'POST', credentials: 'same-origin', body: file })
+    return r.json()
+  },
+  deleteTaskAttachment: (taskId: string, attId: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${taskId}/attachments/${attId}`),
+  /** Direct URL to an attachment's bytes (inline; for download/preview links). */
+  taskAttachmentUrl: (taskId: string, attId: string) => `/api/tasks/${taskId}/attachments/${attId}/raw`,
   dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),

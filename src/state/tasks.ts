@@ -17,8 +17,10 @@
  * the KB pattern — see docs/tasks-plan.md §Decision 2.)
  */
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { Db } from './db';
-import { Task, TaskCreateInput, TaskEvent, TaskQuery, TaskStatus, TaskUpdateInput } from '../types';
+import { Task, TaskAttachment, TaskCreateInput, TaskEvent, TaskQuery, TaskStatus, TaskUpdateInput } from '../types';
 
 interface TaskRow {
   id: string; tenant: string; title: string; body: string; status: string; priority: number;
@@ -31,6 +33,12 @@ interface EventRow {
   id: string; task_id: string; kind: string; body: string | null; author: string;
   session_id: string | null; created_at: number;
 }
+interface AttachmentRow {
+  id: string; task_id: string; tenant: string; filename: string; rel_path: string;
+  mime: string; bytes: number; uploaded_by: string; created_at: number;
+}
+
+export type AttachResult = { ok: true; attachment: TaskAttachment } | { ok: false; error: string };
 
 const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>(['done', 'cancelled']);
 const STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'blocked', 'done', 'cancelled'];
@@ -52,7 +60,12 @@ export interface TaskNotice {
 }
 
 export class TaskStore {
-  constructor(private readonly db: Db) {}
+  /** `dir` = `<home>/task-attachments/`, where attached files snapshot to. Undefined (demo/tests on
+   *  `:memory:`) disables attachments. Task ROWS are still db-only (§Decision 2); only files hit disk. */
+  constructor(private readonly db: Db, private readonly dir?: string) {}
+
+  /** Are file attachments available? (Needs a data home; off for demo/tests on `:memory:`.) */
+  get attachmentsEnabled(): boolean { return !!this.dir; }
 
   private notifier?: (n: TaskNotice) => void;
   /** Register the sink fired on task create / (re)assignment / status change. Best-effort, post-construction
@@ -211,11 +224,13 @@ export class TaskStore {
     this.addEvent(id, 'dispatch', `dispatched session ${sessionId}`, 'system', sessionId);
   }
 
-  /** Hard delete + cascade the activity log (owner/admin at the route layer). */
+  /** Hard delete + cascade the activity log, attachment rows, and the on-disk attachment dir. */
   remove(id: string): boolean {
     const res = this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
     if (res.changes === 0) return false;
     this.db.prepare('DELETE FROM task_events WHERE task_id = ?').run(id);
+    this.db.prepare('DELETE FROM task_attachments WHERE task_id = ?').run(id);
+    if (this.dir) fs.rmSync(path.join(this.dir, id), { recursive: true, force: true });
     return true;
   }
 
@@ -261,6 +276,89 @@ export class TaskStore {
       .map(toTask);
   }
 
+  // ── Attachments ────────────────────────────────────────────────────────────────────────────────
+  // Files attached to a task, snapshotted onto disk under <home>/task-attachments/<taskId>/<id>-<name>
+  // (the same immutable-copy model as ArtifactStore). Both humans (console upload → raw bytes) and
+  // agents (task_attach → a path in their working folder) land here through attachBytes / attachFromPath.
+
+  /** Attach a file from raw bytes (the console upload path). Logs an `attach` event on the task. */
+  attachBytes(input: { taskId: string; filename: string; bytes: Buffer; uploadedBy: string }): AttachResult {
+    if (!this.dir) return { ok: false, error: 'no data home configured (attachments disabled)' };
+    if (!this.get(input.taskId)) return { ok: false, error: 'task not found' };
+    const filename = sanitizeName(input.filename);
+    if (!filename) return { ok: false, error: 'invalid file name' };
+    return this.writeAttachment(input.taskId, filename, input.bytes, input.uploadedBy);
+  }
+
+  /**
+   * Attach a file the agent names in its working folder (the `task_attach` MCP path). `allowRoot` is the
+   * agent's folder; `srcPath` is resolved STRICTLY under it (lexically + after symlink resolution), so an
+   * agent can't attach `/etc/passwd` or escape via a symlink. Mirrors ArtifactStore.publish.
+   */
+  attachFromPath(input: { taskId: string; allowRoot: string; srcPath: string; uploadedBy: string }): AttachResult {
+    if (!this.dir) return { ok: false, error: 'no data home configured (attachments disabled)' };
+    if (!this.get(input.taskId)) return { ok: false, error: 'task not found' };
+    const src = containedPath(input.allowRoot, input.srcPath);
+    if (!src) return { ok: false, error: 'path escapes the agent folder or does not exist' };
+    let st: fs.Stats;
+    try { st = fs.statSync(src); } catch { return { ok: false, error: 'not found' }; }
+    if (!st.isFile()) return { ok: false, error: 'not a file' };
+    return this.writeAttachment(input.taskId, path.basename(src), fs.readFileSync(src), input.uploadedBy);
+  }
+
+  /** Shared writer: copy bytes to disk, insert the row, log the `attach` event. */
+  private writeAttachment(taskId: string, filename: string, bytes: Buffer, uploadedBy: string): AttachResult {
+    const id = randomUUID().slice(0, 8);
+    const rel = path.join(taskId, `${id}-${filename}`);
+    const dest = path.join(this.dir!, rel);
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, bytes);
+    } catch (e) {
+      return { ok: false, error: `write failed: ${(e as Error).message}` };
+    }
+    const now = Date.now();
+    this.db
+      .prepare(`INSERT INTO task_attachments (id, task_id, tenant, filename, rel_path, mime, bytes, uploaded_by, created_at)
+                 VALUES (?, ?, (SELECT tenant FROM tasks WHERE id = ?), ?, ?, ?, ?, ?, ?)`)
+      .run(id, taskId, taskId, filename, rel, mimeOf(filename), bytes.length, uploadedBy, now);
+    this.addEvent(taskId, 'attach', filename, uploadedBy);
+    return { ok: true, attachment: toAttachment(this.db.prepare('SELECT * FROM task_attachments WHERE id = ?').get<AttachmentRow>(id)!) };
+  }
+
+  /** All attachments on a task, oldest first (upload order). */
+  attachments(taskId: string): TaskAttachment[] {
+    return this.db
+      .prepare('SELECT * FROM task_attachments WHERE task_id = ? ORDER BY created_at ASC, id ASC')
+      .all<AttachmentRow>(taskId)
+      .map(toAttachment);
+  }
+
+  getAttachment(id: string): TaskAttachment | undefined {
+    const r = this.db.prepare('SELECT * FROM task_attachments WHERE id = ?').get<AttachmentRow>(id);
+    return r ? toAttachment(r) : undefined;
+  }
+
+  /** Resolve an attachment's bytes for streaming/download. null if missing or the dir is disabled. */
+  readAttachment(id: string): { absPath: string; mime: string; filename: string } | null {
+    if (!this.dir) return null;
+    const a = this.getAttachment(id);
+    if (!a) return null;
+    const abs = path.join(this.dir, a.relPath);
+    try { if (!fs.statSync(abs).isFile()) return null; } catch { return null; }
+    return { absPath: abs, mime: a.mime, filename: a.filename };
+  }
+
+  /** Remove one attachment: its row, its on-disk file, and a `comment` event noting the removal. */
+  removeAttachment(id: string, by: string): boolean {
+    const a = this.getAttachment(id);
+    if (!a) return false;
+    this.db.prepare('DELETE FROM task_attachments WHERE id = ?').run(id);
+    if (this.dir) fs.rmSync(path.join(this.dir, a.relPath), { force: true });
+    this.addEvent(a.taskId, 'comment', `removed attachment ${a.filename}`, by);
+    return true;
+  }
+
   /** Append one row to the append-only activity log. */
   private addEvent(taskId: string, kind: TaskEvent['kind'], body: string, author: string, sessionId?: string): void {
     this.db
@@ -298,4 +396,45 @@ function toEvent(r: EventRow): TaskEvent {
     id: r.id, taskId: r.task_id, kind: r.kind as TaskEvent['kind'], body: r.body ?? undefined,
     author: r.author, sessionId: r.session_id ?? undefined, createdAt: r.created_at,
   };
+}
+
+function toAttachment(r: AttachmentRow): TaskAttachment {
+  return {
+    id: r.id, taskId: r.task_id, tenant: r.tenant, filename: r.filename, relPath: r.rel_path,
+    mime: r.mime, bytes: r.bytes, uploadedBy: r.uploaded_by, createdAt: r.created_at,
+  };
+}
+
+/** Collapse an uploaded name to a single safe basename (no path separators, no `.`/`..`). */
+function sanitizeName(name: string): string {
+  const base = path.basename(String(name ?? '').trim().replace(/[/\\]+/g, '/'));
+  return base === '.' || base === '..' ? '' : base;
+}
+
+/** Resolve `rel` under `root`, rejecting escapes lexically AND after symlink resolution. The target
+ *  must already exist (you attach a real file). Mirrors ArtifactStore.containedPath. */
+function containedPath(root: string, rel: string): string | null {
+  let realRoot: string;
+  try { realRoot = fs.realpathSync(root); } catch { realRoot = path.resolve(root); }
+  const within = (p: string) => p === realRoot || p.startsWith(realRoot + path.sep);
+  const target = path.resolve(realRoot, rel.replace(/^[/\\]+/, ''));
+  if (!within(target) || !fs.existsSync(target)) return null;
+  let real: string;
+  try { real = fs.realpathSync(target); } catch { return null; }
+  return within(real) ? real : null;
+}
+
+/** Content-type by extension — self-contained (no server dependency). Mirrors ArtifactStore.mimeOf. */
+function mimeOf(file: string): string {
+  const e = path.extname(file).toLowerCase();
+  const map: Record<string, string> = {
+    '.md': 'text/markdown; charset=utf-8', '.markdown': 'text/markdown; charset=utf-8',
+    '.txt': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
+    '.csv': 'text/csv; charset=utf-8', '.json': 'application/json',
+    '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+    '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+    '.zip': 'application/zip',
+  };
+  return map[e] || 'application/octet-stream';
 }

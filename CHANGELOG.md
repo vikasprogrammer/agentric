@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.89.0] — 2026-07-10
+### Added
+- **File attachments on tasks.** A task can now carry files — screenshots, logs, PDFs, CSVs, generated
+  deliverables — alongside its description and activity timeline. Humans upload from the Tasks detail
+  drawer (a picker **or** drag-and-drop) with per-file download and delete; a working agent attaches a
+  file from its own working folder with the new **`task_attach`** MCP tool (path resolved strictly under
+  the agent folder, like `publish`, so it can't escape). Files snapshot immutably to disk under
+  `<home>/task-attachments/<taskId>/` (the same model as the Artifacts gallery, keyed to a task); the
+  DB gets a `task_attachments` table; each attach logs an `attach` event on the task timeline and audits
+  `task.attached`, and deleting a task cascades its attachment rows + files. New routes: agent loopback
+  `POST /api/tasks/attach` (+ attachments now returned by `task_get`), and member console
+  `POST/GET/DELETE /api/tasks/:id/attachments[...]`. `task_get`'s output lists attachments too.
+
 ## [0.88.0] — 2026-07-10
 ### Added
 - **Team members can attach a profile picture.** Each member now has an avatar that renders in the
@@ -32,6 +45,8 @@ new version heading in the same commit.
   `Accept-Ranges: bytes` and `Content-Length` on the full response, and returns `416` for an
   unsatisfiable range. Scrubbing/seeking depends on this, and Safari refuses to play a video served
   without range support at all. Server + web (`src/server.ts`, `web/src/App.tsx`).
+
+## [0.86.1] — 2026-07-10
 ### Fixed
 - **Saving Slack/Discord tokens no longer looks like it needs a server restart.** The server already
   re-dials the Socket-Mode / Gateway connection live when tokens change (`SlackSocket.restart()` /

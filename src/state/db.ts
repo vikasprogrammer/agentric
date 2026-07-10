@@ -426,6 +426,22 @@ function migrate(db: Db): void {
       INSERT INTO tasks_fts(rowid, title, body, labels) VALUES (new.rowid, new.title, new.body, new.labels);
     END;
 
+    -- Files attached to a task (humans upload from the console; agents snapshot from their working
+    -- folder via task_attach). Each row is a file copied into <home>/task-attachments/<task_id>/<id>-
+    -- <filename> — same on-disk snapshot model as artifacts, keyed to the task instead of a session.
+    CREATE TABLE IF NOT EXISTS task_attachments (
+      id          TEXT PRIMARY KEY,
+      task_id     TEXT NOT NULL,
+      tenant      TEXT NOT NULL,
+      filename    TEXT NOT NULL,           -- original basename (display + download name)
+      rel_path    TEXT NOT NULL,           -- path under <home>/task-attachments/ (<task_id>/<id>-<filename>)
+      mime        TEXT NOT NULL,
+      bytes       INTEGER NOT NULL,
+      uploaded_by TEXT NOT NULL,           -- member id | 'agent:<id>'
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_attachments ON task_attachments(task_id, created_at);
+
     -- Which agents a library skill is scoped to (the skill artifact itself stays on disk under
     -- home/skills/name). Same join-table shape as assignments (members->agents). A skill with
     -- NO rows here is materialised into EVERY claude-code agent (the default & today's behavior);

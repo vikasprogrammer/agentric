@@ -486,6 +486,17 @@ session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME
 > dependencies**, projects/epics/swimlanes, a burndown, pool auto-assignment, agent-triggered dispatch,
 > the policy brake, and the recurring-task Automation.
 
+> **Update (2026-07-10, v0.89.0): file attachments shipped.** A task now carries files. `TaskStore` gained
+> the on-disk attachment dir (`<home>/task-attachments/<taskId>/`, snapshot model borrowed from
+> `ArtifactStore` — so the store is no longer strictly db-only, but task ROWS still are per §Decision 2)
+> plus `attachBytes`/`attachFromPath`/`attachments`/`readAttachment`/`removeAttachment` over a
+> `task_attachments` table. Humans upload from the drawer (picker + drag-and-drop, download + delete);
+> agents attach from their working folder via the `task_attach` MCP tool → `TerminalManager.attachTaskFile`
+> → `TaskStore.attachFromPath` (strict-contained path resolution). Each attach logs an `attach` timeline
+> event + audits `task.attached`; `task_get` and the console detail both list attachments; deleting a task
+> cascades its attachment rows + files. Routes: agent loopback `POST /api/tasks/attach`; member console
+> `POST/GET-raw/DELETE /api/tasks/:id/attachments`.
+
 - **Pool auto-assignment.** Route unassigned `auto_dispatch` tasks to a workspace **default worker agent**
   (or a small pool), so a human can drop tasks on the board with no assignee and the fleet picks them up.
   This is the agent-spawns-agent frontier Automations also parks — needs a concurrency budget + a

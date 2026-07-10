@@ -128,7 +128,9 @@ export class AgentOS {
     this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);
     this.kb = new KbStore(this.db, opts.paths?.kb);
     this.agentRevisions = new AgentRevisions(this.db);
-    this.tasks = new TaskStore(this.db); // db-only (structured state, no on-disk mirror — see tasks-plan.md §Decision 2)
+    // Task rows are db-only structured state (§Decision 2), but attachments are real files, so the
+    // store also gets the on-disk attachments dir (snapshot model, like artifacts).
+    this.tasks = new TaskStore(this.db, opts.paths?.taskAttachments);
     this.memory = createMemoryProvider(opts.memory ?? { backend: 'sqlite' }, this.db);
 
     const sinks: AuditSink[] = [this.memoryAudit, new SqliteAuditSink(this.db)];

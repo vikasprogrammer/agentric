@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { type Branding, type PublicBranding } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -3406,7 +3406,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const selId = taskId || null
   const openTask = (id: string) => nav('tasks', id)
   const closeTask = () => { setEditing(false); nav('tasks') }
-  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[] } | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // view + filters
@@ -3462,7 +3462,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [] }) })
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [] }) })
   }, [selId, tasks, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
 
@@ -3512,8 +3512,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
     setEditing(false); setBusy(false)
     await load()
-    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [] })
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [] })
   }
+  // Re-pull the open task's detail (events + attachments) after a mutation that doesn't move columns.
+  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [] }) }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -3783,7 +3785,15 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                 )}
                 {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
 
-                <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await api.task(detail.task.id).then((r) => r.task && setDetail({ task: r.task, events: r.events ?? [] })) }} />
+                <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await refreshDetail(detail.task.id) }} />
+
+                <TaskAttachments
+                  taskId={detail.task.id}
+                  attachments={detail.attachments}
+                  nameOf={nameOf}
+                  onChange={() => refreshDetail(detail.task.id)}
+                />
+
 
                 <div>
                   <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity</div>
@@ -3828,6 +3838,67 @@ function CommentBox({ onSubmit }: { onSubmit: (text: string) => Promise<void> })
     <div className="flex items-end gap-2">
       <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={1} placeholder="Add a comment…" className="min-h-8 text-xs" />
       <Button size="sm" disabled={!text.trim() || busy} onClick={async () => { setBusy(true); await onSubmit(text); setText(''); setBusy(false) }}><Send className="h-3.5 w-3.5" /></Button>
+    </div>
+  )
+}
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** Attachments section of the task drawer: upload (button/drop), list with download, delete. */
+function TaskAttachments({ taskId, attachments, nameOf, onChange }: {
+  taskId: string; attachments: TaskAttachment[]; nameOf: (id?: string) => string; onChange: () => Promise<void> | void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const [drag, setDrag] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const upload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    setBusy(true); setHint('')
+    for (const f of Array.from(files)) {
+      const r = await api.uploadTaskAttachment(taskId, f)
+      if (!r.ok) { setHint('⚠ ' + (r.error || `could not upload ${f.name}`)); break }
+    }
+    if (inputRef.current) inputRef.current.value = ''
+    await onChange()
+    setBusy(false)
+  }
+  const del = async (attId: string) => { setBusy(true); await api.deleteTaskAttachment(taskId, attId); await onChange(); setBusy(false) }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Attachments{attachments.length ? ` · ${attachments.length}` : ''}</div>
+        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => inputRef.current?.click()}>
+          <Upload className="mr-1 h-3.5 w-3.5" />Upload
+        </Button>
+        <input ref={inputRef} type="file" multiple className="hidden" onChange={(e) => upload(e.target.files)} />
+      </div>
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDrag(true) }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => { e.preventDefault(); setDrag(false); upload(e.dataTransfer.files) }}
+        className={`space-y-1 rounded-md border border-dashed p-2 ${drag ? 'border-primary bg-primary/10' : 'border-border'}`}
+      >
+        {attachments.length === 0 && <div className="py-1 text-center text-xs text-muted-foreground">Drop files here or use Upload.</div>}
+        {attachments.map((a) => (
+          <div key={a.id} className="flex items-center gap-2 rounded-md border bg-muted/20 p-2">
+            <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <a href={api.taskAttachmentUrl(taskId, a.id)} target="_blank" rel="noreferrer" className="block truncate text-xs font-medium text-foreground hover:underline" title={a.filename}>{a.filename}</a>
+              <div className="text-[10px] text-muted-foreground">{fmtBytes(a.bytes)} · {nameOf(a.uploadedBy)}</div>
+            </div>
+            <a href={api.taskAttachmentUrl(taskId, a.id)} download={a.filename} className="text-muted-foreground hover:text-foreground" title="Download"><Download className="h-3.5 w-3.5" /></a>
+            <button disabled={busy} onClick={() => del(a.id)} className="text-muted-foreground hover:text-destructive" title="Remove"><Trash2 className="h-3.5 w-3.5" /></button>
+          </div>
+        ))}
+      </div>
+      {hint && <div className="mt-1 font-mono text-xs text-destructive">{hint}</div>}
     </div>
   )
 }
