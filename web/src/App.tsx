@@ -584,8 +584,11 @@ function Console({ me }: { me: Member }) {
   }, [messages, state?.tenantName, state?.tenant])
 
   const refreshState = () => api.state().then(setState)
-  const deleteAgent = async (id: string) => {
-    if (!confirm(`Delete agent "${id}"? Its folder (agent.json + CLAUDE.md) is permanently removed. Its memory and audit history are kept.`)) return
+  const deleteAgent = async (id: string, builtIn?: boolean) => {
+    const note = builtIn
+      ? ` This is a built-in agent — you can re-add it later from the agent library.`
+      : ''
+    if (!confirm(`Delete agent "${id}"? Its folder (agent.json + CLAUDE.md) is permanently removed. Its memory and audit history are kept.${note}`)) return
     const r = await api.deleteAgent(id)
     if (r.error) { alert(r.error); return }
     await refreshState()
@@ -941,7 +944,7 @@ function AgentsPage({
   run: (agentId: string, task: string) => Promise<string | null>
   onEdit: (id: string) => void
   onNew: () => void
-  onDelete: (id: string) => void
+  onDelete: (id: string, builtIn?: boolean) => void
   onDuplicate: (id: string) => void
   onRescan: () => Promise<void>
   onImport: (file: File) => Promise<void>
@@ -1067,7 +1070,7 @@ function AgentsPage({
             </Button>
           )}
           {canEdit && agent.deletable && (
-            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-destructive" onClick={() => onDelete(agent.id)} title="delete agent (removes its folder)">
+            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-destructive" onClick={() => onDelete(agent.id, agent.builtIn)} title="delete agent (removes its folder)">
               <Trash2 className="h-4 w-4" />
             </Button>
           )}

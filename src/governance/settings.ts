@@ -47,6 +47,7 @@ const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JS
 const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
+const SUPPRESSED_BUILTINS_KEY = 'suppressed_builtins'; // built-in agent ids an admin deleted (JSON string[]); boot won't re-seed them
 
 /** The workspace emergency stop. When engaged, the gate denies EVERY action, fleet-wide, until cleared. */
 export interface KillSwitchState {
@@ -501,6 +502,38 @@ export class SettingsStore {
   setKillSwitch(engaged: boolean, reason: string | undefined, by?: string): KillSwitchState {
     this.set(KILL_SWITCH_KEY, JSON.stringify({ engaged: !!engaged, reason: reason?.trim() || undefined }), by);
     return this.killSwitch();
+  }
+
+  // ── suppressed built-in agents (durable removal tombstone) ───────────────────────
+  // A built-in agent is seeded from the catalog into the data home on boot, so deleting its folder
+  // isn't durable — the next boot restores it. When an admin deletes one we record its id here as a
+  // tombstone; `seedBuiltinAgents` skips any id on this list, so the removal sticks. Re-installing the
+  // agent from the library clears the tombstone.
+
+  /** The built-in agent ids an admin has deleted (so boot won't re-seed them). */
+  suppressedBuiltins(): string[] {
+    const raw = this.getRow(SUPPRESSED_BUILTINS_KEY)?.value;
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw) as unknown;
+      return Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Tombstone a built-in id so boot won't re-seed it. Idempotent. */
+  suppressBuiltin(id: string, by?: string): string[] {
+    const next = [...new Set([...this.suppressedBuiltins(), id])];
+    this.set(SUPPRESSED_BUILTINS_KEY, JSON.stringify(next), by);
+    return next;
+  }
+
+  /** Clear a built-in's tombstone (e.g. on re-install), so boot seeds it again. Idempotent. */
+  unsuppressBuiltin(id: string, by?: string): string[] {
+    const next = this.suppressedBuiltins().filter((x) => x !== id);
+    this.set(SUPPRESSED_BUILTINS_KEY, JSON.stringify(next), by);
+    return next;
   }
 
 }

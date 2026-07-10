@@ -1965,6 +1965,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     try {
       const manifest = installAgentFromCatalog(os.paths.bundledAgents, os.paths.userAgents, agentInstall[1]);
       os.registerAgent(manifest);
+      // Installing a built-in clears any deletion tombstone, so it seeds normally again on future boots.
+      os.settings.unsuppressBuiltin(manifest.id, me.email);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.installed', data: { agent: manifest.id, source: 'catalog', dir: manifest.dir } });
       return sendJson(res, 200, { ok: true, id: manifest.id });
     } catch (e) {
@@ -2003,9 +2005,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true, id: newId });
   }
 
-  // ── delete a user-created agent: deregister + remove its folder — owner/admin only ──
-  //    Only agents that live UNDER the data home can be deleted; the bundled examples that
-  //    ship with the software are read-only (they'd reappear on restart anyway).
+  // ── delete an agent: deregister + remove its folder — owner/admin only ──
+  //    Any agent that lives UNDER the data home can be deleted. A seeded built-in lives there too, so
+  //    it's deletable — but deleting its folder alone wouldn't stick (boot re-seeds it), so we also
+  //    tombstone its id in settings (suppressedBuiltins) to make the removal durable. Re-installing it
+  //    from the agent library clears that tombstone. An agent whose folder is OUTSIDE the home (a
+  //    bundled example registered straight from the catalog) stays read-only.
   const agentDel = p.match(/^\/api\/agents\/([\w.-]+)$/);
   if (method === 'DELETE' && agentDel) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -2029,7 +2034,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     let memoriesForgotten = 0;
     try { memoriesForgotten = (await os.memory.forgetAgent?.(os.tenant, id)) ?? 0; } catch { /* best-effort */ }
     fs.rmSync(dir, { recursive: true, force: true });
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.deleted', data: { agent: id, dir, memoriesForgotten } });
+    // Deleting a built-in's folder isn't durable on its own (boot re-seeds it) — tombstone the id so the
+    // removal survives a restart. A user-created agent isn't seeded, so it needs no tombstone.
+    const builtin = BUILTIN_SEED_IDS.includes(id);
+    if (builtin) os.settings.suppressBuiltin(id, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.deleted', data: { agent: id, dir, memoriesForgotten, builtin } });
     return sendJson(res, 200, { ok: true, memoriesForgotten });
   }
 

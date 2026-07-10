@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.84.0] — 2026-07-10
+### Fixed
+- **Removing a built-in agent now sticks.** A built-in agent (`agent-author`, `engineer`, `support`,
+  `marketer`, `researcher`) is seeded from the catalog into the data home on boot, so it lives under the
+  home and always showed a delete button — but deleting its folder wasn't durable: the next server boot
+  re-seeded it and the agent came back. Deleting a built-in now records a tombstone
+  (`settings.suppressed_builtins`); `seedBuiltinAgents` skips any tombstoned id, so the removal survives a
+  restart. Re-installing the agent from the agent library (`POST /api/agents/catalog/:id/install`) clears
+  the tombstone, so it seeds normally again. The console's delete confirmation now tells you a built-in can
+  be re-added later, and `agent.deleted` audit rows carry a `builtin` flag.
+
 ## [0.83.1] — 2026-07-10
 ### Added
 - **Fail fast on an unsupported Node.** The OS depends on the built-in `node:sqlite` (`DatabaseSync`),

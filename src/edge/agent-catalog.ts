@@ -109,7 +109,11 @@ export function installAgentFromCatalog(catalogDir: string | undefined, userAgen
 export function seedBuiltinAgents(os: AgentOS): void {
   if (!os.paths) return; // demo/tests run in-memory with no agents home to write into
   const catalogDir = os.paths.bundledAgents;
+  // A built-in an admin deleted is tombstoned so its removal is durable — don't restore it. Re-installing
+  // it from the agent library clears the tombstone (POST /api/agents/catalog/:id/install).
+  const suppressed = new Set(os.settings.suppressedBuiltins());
   for (const id of BUILTIN_SEED_IDS) {
+    if (suppressed.has(id)) continue;
     const dest = path.join(os.paths.userAgents, id);
     if (fs.existsSync(dest)) {
       // Already on disk — loadAgentsFrom(userAgents) has registered it; nothing to seed.
