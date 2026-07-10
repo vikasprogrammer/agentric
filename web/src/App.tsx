@@ -874,7 +874,7 @@ function Console({ me }: { me: Member }) {
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} />}
-          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} onOpen={openTerminal} nav={nav} />}
+          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} />}
@@ -3672,12 +3672,16 @@ function CommentBox({ onSubmit }: { onSubmit: (text: string) => Promise<void> })
 
 // ── Automations ──────────────────────────────────────────────────────────────────
 const CRON_PRESETS: { label: string; value: string }[] = [
+  { label: 'Every 5 minutes', value: '*/5 * * * *' },
   { label: 'Every 15 minutes', value: '*/15 * * * *' },
   { label: 'Every 30 minutes', value: '*/30 * * * *' },
   { label: 'Every hour', value: '0 * * * *' },
+  { label: 'Every 2 hours', value: '0 */2 * * *' },
   { label: 'Every 6 hours', value: '0 */6 * * *' },
+  { label: 'Every 12 hours', value: '0 */12 * * *' },
   { label: 'Every day at midnight', value: '0 0 * * *' },
   { label: 'Every day at 9:00 AM', value: '0 9 * * *' },
+  { label: 'Every day at 6:00 PM', value: '0 18 * * *' },
   { label: 'Weekdays at 9:00 AM', value: '0 9 * * 1-5' },
   { label: 'Every Monday at 9:00 AM', value: '0 9 * * 1' },
   { label: 'First of the month at 9:00 AM', value: '0 9 1 * *' },
@@ -3688,6 +3692,66 @@ const SCHEDULE_ITEMS: Record<string, string> = {
   ...Object.fromEntries(CRON_PRESETS.map((p) => [p.value, p.label])),
   custom: 'Custom cron expression…',
 }
+
+// ── cron → human ("*/30 * * * *" → "Every 30 minutes") ──────────────────────────────
+// Covers the shapes our builder + presets can produce; anything more exotic (ranges/lists in the
+// time fields, month restrictions) falls back to the raw expression so we never lie about a schedule.
+const DOW_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const DOW_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+function ordinal(n: number): string {
+  const s = ['th', 'st', 'nd', 'rd'], v = n % 100
+  return n + (s[(v - 20) % 10] || s[v] || s[0])
+}
+function fmtClock(minute: number, hour: number): string {
+  const h12 = hour % 12 === 0 ? 12 : hour % 12
+  return `${h12}:${String(minute).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`
+}
+/** Turn a comma-list of single-digit weekdays ("1,3,5") into "Every Mon, Wed, Fri" (or full name if one). */
+function dowPhrase(dow: string): string | null {
+  const nums: number[] = []
+  for (const p of dow.split(',')) {
+    if (!/^[0-7]$/.test(p)) return null
+    nums.push(Number(p) % 7) // 7 ≡ 0 (Sunday)
+  }
+  if (!nums.length) return null
+  if (nums.length === 1) return `Every ${DOW_FULL[nums[0]]}`
+  return `Every ${nums.map((n) => DOW_ABBR[n]).join(', ')}`
+}
+function cronToHuman(expr?: string | null): string {
+  if (!expr) return ''
+  const parts = expr.trim().split(/\s+/)
+  if (parts.length !== 5) return expr
+  const [mn, hr, dom, mon, dow] = parts
+  const int = (s: string) => (/^\d+$/.test(s) ? Number(s) : null)
+  let m: RegExpMatchArray | null
+  // Interval shapes — no fixed time of day.
+  if (mn === '*' && hr === '*' && dom === '*' && mon === '*' && dow === '*') return 'Every minute'
+  if ((m = mn.match(/^\*\/(\d+)$/)) && hr === '*' && dom === '*' && mon === '*' && dow === '*') return `Every ${m[1]} minutes`
+  if (int(mn) !== null && hr === '*' && dom === '*' && mon === '*' && dow === '*')
+    return int(mn) === 0 ? 'Every hour' : `Hourly at :${String(int(mn)).padStart(2, '0')}`
+  if (int(mn) !== null && (m = hr.match(/^\*\/(\d+)$/)) && dom === '*' && mon === '*' && dow === '*') return `Every ${m[1]} hours`
+  // Fixed time of day — needs a concrete minute+hour, else it's too complex to phrase.
+  const mmv = int(mn), hhv = int(hr)
+  if (mmv === null || hhv === null || mon !== '*') return expr
+  const at = fmtClock(mmv, hhv)
+  const domStar = dom === '*', dowStar = dow === '*'
+  if (domStar && dowStar) return `Every day at ${at}`
+  if (domStar && !dowStar) {
+    if (dow === '1-5') return `Weekdays at ${at}`
+    if (dow === '0,6' || dow === '6,0' || dow === '6,7') return `Weekends at ${at}`
+    const phrase = dowPhrase(dow)
+    return phrase ? `${phrase} at ${at}` : expr
+  }
+  if (!domStar && dowStar) {
+    const d = int(dom)
+    return d !== null ? `Monthly on the ${ordinal(d)} at ${at}` : expr
+  }
+  return expr
+}
+/** Wall-clock in the server's zone (cron fires server-local), so "9 AM" reads as 9 AM regardless of the viewer's tz. */
+function fmtInServerTz(ms: number, tz?: string): string {
+  try { return new Date(ms).toLocaleString(undefined, tz ? { timeZone: tz } : undefined) } catch { return new Date(ms).toLocaleString() }
+}
 const TRIGGER_ITEMS: Record<string, string> = {
   cron: 'Schedule (cron)',
   webhook: 'Webhook',
@@ -3696,7 +3760,7 @@ const TRIGGER_ITEMS: Record<string, string> = {
   composio: 'Composio event',
 }
 
-function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: AgentInfo[]; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
+function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; agents: AgentInfo[]; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
@@ -3844,6 +3908,12 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                       </SelectContent>
                     </Select>
                     {scheduleCustom && <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} className="mt-2 font-mono" placeholder="*/30 * * * *" />}
+                    {scheduleCustom && (() => { const h = cronToHuman(schedule); return (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {h && h !== schedule.trim() ? <>▸ <span className="text-foreground">{h}</span></> : 'Enter a valid 5-field cron expression.'}
+                        {serverTz && <> · server time ({serverTz})</>}
+                      </p>
+                    ) })()}
                   </Field>
                 ) : type === 'webhook' ? (
                   <Field label="Webhook" help="A secret URL is generated on create — POST to it to fire this automation.">
@@ -3891,13 +3961,13 @@ function AutomationsPage({ me, agents, onOpen, nav }: { me: Member; agents: Agen
                   </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
                     {a.agentId}
-                    {a.type === 'cron' && <span className="ml-2 font-mono">{a.schedule}</span>}
+                    {a.type === 'cron' && a.schedule && <span className="ml-2" title={a.schedule}>{cronToHuman(a.schedule)}</span>}
                     {(a.type === 'composio' || a.type === 'slack' || a.type === 'discord') && <span className="ml-2 font-mono">{a.filter || 'any event'}</span>}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
                     {a.nextRunAt ? (
-                      <span className="inline-flex items-center gap-1 text-emerald-600" title={new Date(a.nextRunAt).toLocaleString()}>
-                        <Clock className="h-3 w-3" />next in {timeUntil(a.nextRunAt)} · {new Date(a.nextRunAt).toLocaleString()}
+                      <span className="inline-flex items-center gap-1 text-emerald-600" title={serverTz ? `${fmtInServerTz(a.nextRunAt, serverTz)} (${serverTz})` : new Date(a.nextRunAt).toLocaleString()}>
+                        <Clock className="h-3 w-3" />next in {timeUntil(a.nextRunAt)} · {fmtInServerTz(a.nextRunAt, serverTz)}{serverTz ? ` (${serverTz})` : ''}
                       </span>
                     ) : a.type === 'cron' && !a.enabled ? (
                       <span className="text-amber-600">paused — won't fire while disabled</span>

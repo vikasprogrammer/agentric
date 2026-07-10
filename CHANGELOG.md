@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.76.0] — 2026-07-10
+### Changed
+- **Automations speak human, not cron.** The Automations list now renders a schedule as friendly prose
+  ("Every 30 minutes", "Weekdays at 9:00 AM", "Every Mon, Wed, Fri at 2:30 PM") instead of the raw
+  `*/30 * * * *` — a new `cronToHuman()` describer covers the common shapes and falls back to the raw
+  expression (kept on hover) for anything it can't phrase, so it never misstates a schedule. The New/Edit
+  form gains more presets (every 5 min, every 2/12 hours, 6 PM daily, …) and, when you drop to a custom
+  cron, a live **"▸ Every weekday at 9:00 AM"** preview under the box so you can see what you typed means.
+- **Times are labelled with the server's timezone.** `/api/state` now returns the box's IANA zone
+  (`serverTz`); cron fires in server-local time, so the console labels next-run and the schedule preview
+  with it (e.g. `· server time (America/New_York)`) — a viewer in another zone no longer misreads "9 AM".
+
 ## [0.75.0] — 2026-07-10
 ### Changed
 - **The browser terminal is now a first-party xterm.js client, not an embedded ttyd iframe.** A new

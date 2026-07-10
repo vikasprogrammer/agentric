@@ -1109,6 +1109,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       tenant: os.tenant,
       tenantName: os.tenantName,
       version: VERSION,
+      // The IANA zone the box runs in — cron schedules fire in this local time, so the console labels
+      // times/next-run with it (a browser in another zone would otherwise misread "9 AM").
+      serverTz: Intl.DateTimeFormat().resolvedOptions().timeZone,
       policy: os.policy.id,
       home: os.paths?.home,
       me,

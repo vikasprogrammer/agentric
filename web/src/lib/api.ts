@@ -58,6 +58,8 @@ export interface StateResp {
   tenantName?: string
   /** Software version (package.json), shown in the sidebar so a browser and the box can be compared. */
   version?: string
+  /** IANA timezone the server runs in — cron automations fire in this local time; the UI labels times with it. */
+  serverTz?: string
   policy: string
   home?: string
   me: Member
