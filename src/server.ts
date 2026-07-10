@@ -1455,6 +1455,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.stopSession(id, me.email) });
   }
+  // Human verdict on a finished run — 👍/👎 (or null to clear). The ground-truth signal for the agent
+  // maturity score. Same per-member gate as stop: you can rate any run you're allowed to see.
+  const rateMatch = p.match(/^\/api\/sessions\/([\w-]+)\/rate$/);
+  if (method === 'POST' && rateMatch) {
+    const id = rateMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const b = await readBody(req);
+    const rating = b.rating;
+    if (rating !== 'up' && rating !== 'down' && rating !== null) return sendJson(res, 400, { error: "rating must be 'up', 'down', or null" });
+    return sendJson(res, 200, tm.rateSession(id, me, rating));
+  }
   // Deliberately resume a stopped session: lift the stop-block so the ttyd attach wrapper resurrects it
   // (`claude --resume`) on the next reconnect. The actual relaunch happens in attach.sh when the terminal
   // (re)connects; this just clears the "stay stopped" sentinel. Same per-member gate as stop.

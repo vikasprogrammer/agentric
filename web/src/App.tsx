@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -182,6 +182,20 @@ function RuntimeBadge({ runtime }: { runtime: AgentInfo['runtime'] }) {
     <Badge variant={claude ? 'default' : 'secondary'} className="px-1.5 py-0 text-[10px] font-normal">
       {claude ? 'claude' : 'mock'}
     </Badge>
+  )
+}
+
+/** Compact fleet-wide trust signal on an agent chip — the maturity score (0–100), coloured by band.
+ *  Renders nothing until the agent has run (confidence 'none'), so an unproven agent isn't badged. */
+function MaturityBadge({ s, className = '' }: { s?: AgentStats; className?: string }) {
+  if (!s || s.confidence === 'none' || s.runs.total === 0) return null
+  const m = Math.round(s.maturity * 100)
+  const tone = s.maturity >= 0.66 ? 'text-emerald-600 border-emerald-500/40 dark:text-emerald-500' : s.maturity >= 0.33 ? 'text-amber-600 border-amber-500/40 dark:text-amber-500' : 'text-rose-600 border-rose-500/40 dark:text-rose-500'
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-0.5 rounded border px-1 py-0 text-[10px] font-medium tabular-nums ${tone} ${className}`}
+      title={`maturity ${m}/100 · ${s.runs.total} run${s.runs.total === 1 ? '' : 's'} · ${Math.round(s.autonomy * 100)}% autonomous · ${s.confidence} confidence — trust to run with less oversight`}>
+      <Shield className="h-2.5 w-2.5" /> {m}
+    </span>
   )
 }
 
@@ -643,6 +657,11 @@ function Console({ me }: { me: Member }) {
     await api.stopSession(id)
     setSessions(await api.sessions())
   }
+  // Human verdict on a finished run — feeds the agent maturity score. Clicking the active thumb clears it.
+  const rateSession = async (id: string, rating: 'up' | 'down' | null) => {
+    await api.rateSession(id, rating)
+    setSessions(await api.sessions())
+  }
   const deleteSession = async (id: string, tmux: string) => {
     if (!confirm('Delete this session? Its inbox messages and transcript files are removed; the audit log is kept.')) return
     await api.deleteSession(id)
@@ -873,7 +892,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage me={me} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage me={me} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} />}
@@ -947,6 +966,13 @@ function AgentsPage({
   const [view, setView] = useState<AgentsView>(() => (localStorage.getItem(AGENTS_VIEW_KEY) === 'grid' ? 'grid' : 'split'))
   const setViewPersist = (v: AgentsView) => { setView(v); localStorage.setItem(AGENTS_VIEW_KEY, v) }
   const [query, setQuery] = useState('')
+  // Fleet-wide maturity, keyed by agent id — the trust-at-a-glance signal on each agent chip.
+  const [maturity, setMaturity] = useState<Record<string, AgentStats>>({})
+  useEffect(() => {
+    let ok = true
+    api.agentStatsAll().then((r) => { if (ok) setMaturity(Object.fromEntries(r.stats.map((s) => [s.agentId, s]))) }).catch(() => {})
+    return () => { ok = false }
+  }, [])
 
   // The chosen agent is driven by the URL (`#/agents/<id>`) so a refresh keeps it. When the URL names
   // no agent (a bare `#/agents`), fall back to the last one you used (remembered across visits) then
@@ -1132,6 +1158,7 @@ function AgentsPage({
                       <span className="flex flex-wrap items-center gap-1">
                         <RuntimeBadge runtime={a.runtime} />
                         {a.builtIn && <BuiltInBadge />}
+                        <MaturityBadge s={maturity[a.id]} />
                       </span>
                       {a.description && <span className="line-clamp-2 text-[11px] text-muted-foreground">{a.description}</span>}
                     </button>
@@ -1158,7 +1185,10 @@ function AgentsPage({
                     <button key={a.id} type="button" onClick={() => pick(a.id)} title={a.description} className={'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition ' + (active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}>
                       <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{a.id}</span>
-                      {a.builtIn && <span className="ml-auto shrink-0"><BuiltInBadge /></span>}
+                      <span className="ml-auto flex shrink-0 items-center gap-1">
+                        <MaturityBadge s={maturity[a.id]} />
+                        {a.builtIn && <BuiltInBadge />}
+                      </span>
                     </button>
                   )
                 })}
@@ -1441,8 +1471,26 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
   )
 }
 
+/** 👍/👎 verdict on a finished run — the ground-truth signal that feeds the agent's maturity score.
+ *  Clicking the already-active thumb clears the verdict. */
+function RunRating({ session, onRate }: { session: Session; onRate: (id: string, r: 'up' | 'down' | null) => void }) {
+  const r = session.rating
+  const set = (v: 'up' | 'down') => onRate(session.id, r === v ? null : v)
+  const rated = r ? `rated ${r === 'up' ? '👍' : '👎'}${session.ratedByLabel ? ' by ' + session.ratedByLabel : ''} — feeds agent maturity` : 'rate this run — feeds the agent maturity score'
+  return (
+    <span className="inline-flex items-center gap-0.5" title={rated}>
+      <button onClick={(e) => { e.stopPropagation(); set('up') }} className={`rounded p-0.5 hover:bg-muted ${r === 'up' ? 'text-emerald-600 dark:text-emerald-500' : 'text-muted-foreground'}`} title="thumbs up — this run did what I wanted" aria-label="rate up">
+        <ThumbsUp className="h-3 w-3" />
+      </button>
+      <button onClick={(e) => { e.stopPropagation(); set('down') }} className={`rounded p-0.5 hover:bg-muted ${r === 'down' ? 'text-rose-600 dark:text-rose-500' : 'text-muted-foreground'}`} title="thumbs down — this run didn't do what I wanted" aria-label="rate down">
+        <ThumbsDown className="h-3 w-3" />
+      </button>
+    </span>
+  )
+}
+
 function SessionsPage({
-  me, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  me, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   me: Member
   sessions: Session[]
@@ -1457,6 +1505,7 @@ function SessionsPage({
   onSpawn: () => void
   onStop: (id: string) => void
   onDelete: (id: string, tmux: string) => void
+  onRate: (id: string, rating: 'up' | 'down' | null) => void
   onBulkStop: (ids: string[]) => void
   onBulkDelete: (ids: string[]) => void
   /** Current hash-query string — the persisted filter state, read once to seed the filters. */
@@ -1778,6 +1827,12 @@ function SessionsPage({
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 </div>
               </button>
+              {/* Human verdict — only for finished runs; stays visible once rated, faint-until-hover otherwise. */}
+              {!isLive(s) && (
+                <div className={`mt-1.5 transition-opacity ${s.rating ? '' : 'opacity-40 group-hover:opacity-100'}`}>
+                  <RunRating session={s} onRate={onRate} />
+                </div>
+              )}
               <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
                   <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="reopen and continue this session (claude --resume)">
@@ -1834,6 +1889,10 @@ function SessionsPage({
                 <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
+              {/* Human verdict — finished runs only; stays visible once rated, faint-until-hover otherwise. */}
+              <div className={`shrink-0 transition-opacity ${!isLive(s) ? (s.rating ? '' : 'opacity-40 group-hover:opacity-100') : 'invisible'}`}>
+                {!isLive(s) && <RunRating session={s} onRate={onRate} />}
+              </div>
               <div className="flex w-32 shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="resume — reopen and continue this session (claude --resume)">
@@ -4936,12 +4995,18 @@ function AgentTrustCard({ agentId }: { agentId: string }) {
               <Stat label="Overrides" value={String(s.deniedRuns)} hint={`${s.actions.rejected} rejected · ${s.actions.killswitch} killswitch`} tone={s.deniedRuns > 0 ? 'warn' : undefined} />
               <Stat label="Outcomes" value={s.successRate === null ? '—' : `${pct(s.successRate)}%`} hint={`${s.outcomes.success}✓ ${s.outcomes.failure}✗ ${s.outcomes.inconclusive}·`} />
             </div>
-            {(s.tasks.done + s.tasks.blocked + s.tasks.cancelled) > 0 && (
-              <div className="text-xs text-muted-foreground">Assigned tasks: {s.tasks.done} done · {s.tasks.blocked} blocked · {s.tasks.cancelled} cancelled</div>
-            )}
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {(s.rated.up + s.rated.down) > 0 && (
+                <span>Human verdicts: <span className="text-emerald-600 dark:text-emerald-500">{s.rated.up}👍</span> · <span className="text-rose-600 dark:text-rose-500">{s.rated.down}👎</span></span>
+              )}
+              {(s.tasks.done + s.tasks.blocked + s.tasks.cancelled) > 0 && (
+                <span>Assigned tasks: {s.tasks.done} done · {s.tasks.blocked} blocked · {s.tasks.cancelled} cancelled</span>
+              )}
+            </div>
             <p className="text-[11px] leading-relaxed text-muted-foreground">
               A high outcome rate alone doesn't earn trust — an agent that needs a human to approve every action stays low-maturity
-              by design. Denials (a human or policy saying “no”) and small samples both pull the score down.
+              by design. Denials (a human or policy saying “no”) and small samples both pull the score down. Rate a finished run
+              👍/👎 from the Sessions list to feed the score a ground-truth verdict.
             </p>
           </>
         )}
