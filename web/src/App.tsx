@@ -997,7 +997,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage me={me} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
@@ -1311,12 +1311,15 @@ function AgentsPage({
 
 // ── Sessions ───────────────────────────────────────────────────────────────────
 /** Who started a session — a person icon + name for members, a bot icon for automations. */
-function StartedBy({ label, className = '' }: { label?: string; className?: string }) {
+function StartedBy({ label, spawnedBy, members = [], className = '' }: { label?: string; spawnedBy?: string; members?: Member[]; className?: string }) {
   if (!label) return <span className={`flex items-center gap-1 text-xs text-muted-foreground/60 ${className}`}>—</span>
   const isAuto = label.startsWith('Automation')
+  // A member-started session shows that member's avatar; an automation shows the Bot glyph
+  // (memberOfPrincipal returns undefined for automation:/task:/chat: ids); anything else, the person.
+  const mem = memberOfPrincipal(spawnedBy, members)
   return (
     <span className={`flex items-center gap-1 text-xs text-muted-foreground ${className}`} title={`started by ${label}`}>
-      {isAuto ? <Bot className="h-3 w-3 shrink-0" /> : <User className="h-3 w-3 shrink-0" />}
+      {mem ? <MemberAvatar member={mem} className="h-3 w-3 text-[7px]" /> : isAuto ? <Bot className="h-3 w-3 shrink-0" /> : <User className="h-3 w-3 shrink-0" />}
       <span className="truncate">{label}</span>
     </span>
   )
@@ -1632,9 +1635,10 @@ function RunRating({ session, onRate }: { session: Session; onRate: (id: string,
 }
 
 function SessionsPage({
-  me, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   me: Member
+  members: Member[]
   sessions: Session[]
   waiting: Set<string>
   selected: Selected
@@ -1970,7 +1974,7 @@ function SessionsPage({
                 </div>
                 <div className="mt-1 truncate text-xs text-muted-foreground">{s.agent} · {statusLabel(s)} · <span className="font-mono">{s.id}</span></div>
                 <div className="mt-1 flex items-center justify-between gap-2">
-                  <StartedBy label={s.spawnedByLabel} />
+                  <StartedBy label={s.spawnedByLabel} spawnedBy={s.spawnedBy} members={members} />
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 </div>
               </button>
@@ -2037,7 +2041,7 @@ function SessionsPage({
                 {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{s.agent}</span>
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground md:block" title={s.id}>{s.id}</span>
-                <StartedBy label={s.spawnedByLabel} className="w-40 shrink-0" />
+                <StartedBy label={s.spawnedByLabel} spawnedBy={s.spawnedBy} members={members} className="w-40 shrink-0" />
                 <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
@@ -2113,7 +2117,9 @@ function SessionFacts({ session: s, members = [] }: { session?: Session; members
       </span>
       {s.spawnedByLabel && (
         <span className="flex max-w-[200px] items-center gap-1" title={`started by ${s.spawnedByLabel}`}>
-          <Play className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          {memberOfPrincipal(s.spawnedBy, members)
+            ? <MemberAvatar member={memberOfPrincipal(s.spawnedBy, members)!} className="h-3.5 w-3.5 text-[8px] shrink-0" />
+            : <Play className="h-3.5 w-3.5 shrink-0 opacity-60" />}
           <span className="truncate">{s.spawnedByLabel}</span>
         </span>
       )}

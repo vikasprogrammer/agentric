@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.94.0] — 2026-07-10
+### Added
+- **Member avatars on a session's "started by" too.** The Sessions list (both the card grid and the
+  list view) and the terminal-header facts now show the avatar of the member who started a session,
+  instead of the generic person glyph. Automation-spawned runs keep the Bot/Play glyph
+  (`memberOfPrincipal` returns nothing for `automation:`/`task:`/`chat:` provenance), and unmapped ids
+  fall back to the person glyph — so nothing regresses. Client-only, reusing the raw `spawnedBy` id
+  already on the session and the shared `memberOfPrincipal` resolver (`StartedBy`/`SessionFacts`,
+  `web/src/App.tsx`). Completes avatar coverage across the Sessions page.
+
 ## [0.93.0] — 2026-07-10
 ### Added
 - **"Run now" on an automation asks headless vs interactive.** Firing an automation once from the
