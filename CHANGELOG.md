@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.102.0] — 2026-07-10
+### Added
+- **Console navigation is now made of real links — right-click "open in new tab", ⌘/ctrl/middle-click,
+  shift-click-new-window, and hover URL preview all work.** Every navigational element was a `<button>`
+  (or a `<div onClick>`) that mutated `window.location.hash`, so the browser saw no destination and
+  offered none of its native link affordances. They're now real `<a href="#/…">` anchors across the
+  whole app: the sidebar (primary + Manage nav, the collapsed icon rail, the session switcher, the
+  team/profile card), agent cards, session rows and terminal tabs, task board cards + list rows, inbox
+  action/feed items, docs, breadcrumbs, and the Connections/Settings tab strips. A plain left-click
+  still routes in place (preserving the existing query/filter semantics); only modified/middle clicks
+  fall through to the browser. Two module-level helpers back it — `navHref(route, detail)` builds the
+  hash and `onNavClick(cb)` intercepts unmodified left-clicks — and Base UI `Button`s opt in via
+  `render={<a href=… />}`. Rows with their own inner controls (inbox feed cards, task cards) use a
+  stretched-link overlay / title anchor so the row is openable without swallowing the nested buttons.
+
 ## [0.101.1] — 2026-07-10
 ### Fixed
 - **The terminal tab strip no longer auto-pops tabs for other people's sessions.** An owner/admin

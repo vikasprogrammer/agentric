@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -490,6 +490,27 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
   return { route: state.route, detail: state.detail, query: state.query, nav, setQuery }
 }
 
+/** Build an in-app hash href (`#/agents/<id>`) so a navigation element can be a real anchor —
+ *  which is the ONLY thing that gives the browser its native link affordances: right-click
+ *  "open in new tab", ⌘/ctrl/middle-click, shift-click-new-window, and hover URL preview.
+ *  Mirrors `hashFor` but always `#`-prefixed and without query (a new tab is a fresh context,
+ *  so page-local state like filters is intentionally dropped). */
+function navHref(r: Route, detail?: string): string {
+  return '#/' + r + (detail ? '/' + encodeURIComponent(detail) : '')
+}
+
+/** Wrap a nav callback for use as an anchor's onClick: a plain left-click routes in place (via
+ *  the callback, which keeps `nav()`'s query-preservation semantics), while ⌘/ctrl/shift/alt/
+ *  middle-click fall through to the browser so the href opens in a new tab/window. Spread the
+ *  returned handler onto an <a> that also carries the matching `navHref(...)`. */
+function onNavClick(go: () => void) {
+  return (e: ReactMouseEvent) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    e.preventDefault()
+    go()
+  }
+}
+
 export default function App() {
   // undefined = checking, null = not logged in (show Login), Member = authed.
   const [me, setMe] = useState<Member | null | undefined>(undefined)
@@ -849,10 +870,11 @@ function Console({ me }: { me: Member }) {
   const renderNavSession = (s: Session) => {
     const active = selected?.tmux === s.tmux && route === 'sessions'
     return (
-      <button
+      <a
         key={s.id}
-        onClick={() => openTerminal(s.tmux, s.agent + ' · ' + s.id)}
-        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted ${active ? 'bg-muted' : ''}`}
+        href={navHref('sessions', s.tmux)}
+        onClick={onNavClick(() => openTerminal(s.tmux, s.agent + ' · ' + s.id))}
+        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left no-underline text-foreground hover:bg-muted ${active ? 'bg-muted' : ''}`}
       >
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(s)}`} />
         <span className="min-w-0 flex-1">
@@ -862,7 +884,7 @@ function Console({ me }: { me: Member }) {
           </span>
           <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
         </span>
-      </button>
+      </a>
     )
   }
   // A live terminal takes the whole content area (no padding/scroll wrapper).
@@ -879,11 +901,11 @@ function Console({ me }: { me: Member }) {
           </Button>
           <div className="mt-1 text-base" title={state?.tenantName || state?.tenant || 'Agent OS'}>⚙️</div>
           <nav className="mt-2 flex flex-col items-center gap-1">
-            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={() => nav('inbox')}><InboxIcon className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={() => nav('agents')}><Bot className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'tasks' ? 'text-primary' : 'text-muted-foreground'}`} title="Tasks" onClick={() => nav('tasks')}><ListChecks className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Artifacts" onClick={() => nav('artifacts')}><Package className="h-4 w-4" /></Button>
-            <Button size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={() => nav('sessions')}><TerminalSquare className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('tasks')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'tasks' ? 'text-primary' : 'text-muted-foreground'}`} title="Tasks" onClick={onNavClick(() => nav('tasks'))}><ListChecks className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('artifacts')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Artifacts" onClick={onNavClick(() => nav('artifacts'))}><Package className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('sessions')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={onNavClick(() => nav('sessions'))}><TerminalSquare className="h-4 w-4" /></Button>
           </nav>
         </aside>
       )}
@@ -903,10 +925,10 @@ function Console({ me }: { me: Member }) {
             </Button>
           </div>
           <nav className="space-y-1">
-            <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} onClick={() => nav('inbox')} />
-            <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} onClick={() => nav('agents')} />
-            <NavItem icon={<ListChecks className="h-4 w-4" />} label="Tasks" active={route === 'tasks'} onClick={() => nav('tasks')} />
-            <NavItem icon={<Package className="h-4 w-4" />} label="Artifacts" active={route === 'artifacts'} onClick={() => nav('artifacts')} />
+            <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
+            <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
+            <NavItem icon={<ListChecks className="h-4 w-4" />} label="Tasks" active={route === 'tasks'} href={navHref('tasks')} onClick={() => nav('tasks')} />
+            <NavItem icon={<Package className="h-4 w-4" />} label="Artifacts" active={route === 'artifacts'} href={navHref('artifacts')} onClick={() => nav('artifacts')} />
           </nav>
         </div>
 
@@ -915,19 +937,20 @@ function Console({ me }: { me: Member }) {
           <div className="mb-2 flex items-center justify-between">
             <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Sessions</span>
             <div className="flex items-center gap-1">
-              <button
-                onClick={() => nav('sessions')}
-                className={`flex items-center gap-1 text-[11px] uppercase tracking-wider hover:text-foreground ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`}
+              <a
+                href={navHref('sessions')}
+                onClick={onNavClick(() => nav('sessions'))}
+                className={`flex items-center gap-1 text-[11px] uppercase tracking-wider no-underline hover:text-foreground ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`}
                 title="all sessions"
               >
                 All{runningSessions ? <span className="rounded-full bg-emerald-500/15 px-1 text-[10px] font-medium text-emerald-600">{runningSessions}</span> : null}
-              </button>
-              <Button size="icon" variant="ghost" className="h-5 w-5 text-emerald-600" onClick={() => nav('agents')} title="spawn an agent"><Plus className="h-3.5 w-3.5" /></Button>
+              </a>
+              <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className="h-5 w-5 text-emerald-600" onClick={onNavClick(() => nav('agents'))} title="spawn an agent"><Plus className="h-3.5 w-3.5" /></Button>
             </div>
           </div>
           {mySessions.length === 0 && (
             <div className="text-xs text-muted-foreground">
-              No sessions yet. <button className="text-primary underline" onClick={() => nav('agents')}>Spawn an agent</button>.
+              No sessions yet. <a href={navHref('agents')} className="text-primary underline" onClick={onNavClick(() => nav('agents'))}>Spawn an agent</a>.
             </div>
           )}
           <div className="space-y-0.5">
@@ -959,30 +982,30 @@ function Console({ me }: { me: Member }) {
           </button>
           {manageOpen && (
             <nav className="mb-1 space-y-1">
-              <NavItem icon={<Zap className="h-4 w-4" />} label="Automations" active={route === 'automations'} onClick={() => nav('automations')} />
-              <NavItem icon={<BookText className="h-4 w-4" />} label="Knowledge" active={route === 'kb'} onClick={() => nav('kb')} />
-              <NavItem icon={<Brain className="h-4 w-4" />} label="Memory" active={route === 'memory'} onClick={() => nav('memory')} />
+              <NavItem icon={<Zap className="h-4 w-4" />} label="Automations" active={route === 'automations'} href={navHref('automations')} onClick={() => nav('automations')} />
+              <NavItem icon={<BookText className="h-4 w-4" />} label="Knowledge" active={route === 'kb'} href={navHref('kb')} onClick={() => nav('kb')} />
+              <NavItem icon={<Brain className="h-4 w-4" />} label="Memory" active={route === 'memory'} href={navHref('memory')} onClick={() => nav('memory')} />
               {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<Sparkles className="h-4 w-4" />} label="Skills" active={route === 'skills'} onClick={() => nav('skills')} />
+                <NavItem icon={<Sparkles className="h-4 w-4" />} label="Skills" active={route === 'skills'} href={navHref('skills')} onClick={() => nav('skills')} />
               )}
-              <NavItem icon={<Plug className="h-4 w-4" />} label="Connections" active={route === 'connectors'} onClick={() => nav('connectors')} />
-              <NavItem icon={<Users className="h-4 w-4" />} label="Team" active={route === 'team'} onClick={() => nav('team')} />
+              <NavItem icon={<Plug className="h-4 w-4" />} label="Connections" active={route === 'connectors'} href={navHref('connectors')} onClick={() => nav('connectors')} />
+              <NavItem icon={<Users className="h-4 w-4" />} label="Team" active={route === 'team'} href={navHref('team')} onClick={() => nav('team')} />
               {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<FolderTree className="h-4 w-4" />} label="Files" active={route === 'files'} onClick={() => nav('files')} />
-              )}
-              {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<ScrollText className="h-4 w-4" />} label="Audit" active={route === 'audit'} onClick={() => nav('audit')} />
+                <NavItem icon={<FolderTree className="h-4 w-4" />} label="Files" active={route === 'files'} href={navHref('files')} onClick={() => nav('files')} />
               )}
               {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<Building2 className="h-4 w-4" />} label="Settings" active={route === 'settings'} onClick={() => nav('settings')} />
+                <NavItem icon={<ScrollText className="h-4 w-4" />} label="Audit" active={route === 'audit'} href={navHref('audit')} onClick={() => nav('audit')} />
               )}
-              <NavItem icon={<BookOpen className="h-4 w-4" />} label="Docs" active={route === 'docs'} onClick={() => nav('docs')} />
+              {(me.role === 'owner' || me.role === 'admin') && (
+                <NavItem icon={<Building2 className="h-4 w-4" />} label="Settings" active={route === 'settings'} href={navHref('settings')} onClick={() => nav('settings')} />
+              )}
+              <NavItem icon={<BookOpen className="h-4 w-4" />} label="Docs" active={route === 'docs'} href={navHref('docs')} onClick={() => nav('docs')} />
             </nav>
           )}
 
           <Separator className="my-3" />
           <div className="flex items-center justify-between">
-            <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => nav('team')} title="manage team">
+            <a href={navHref('team')} className="flex min-w-0 items-center gap-2 text-left text-foreground no-underline hover:underline" onClick={onNavClick(() => nav('team'))} title="manage team">
               <MemberAvatar member={state?.me ?? me} className="h-7 w-7 text-xs" />
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 text-sm font-medium leading-tight">
@@ -991,7 +1014,7 @@ function Console({ me }: { me: Member }) {
                 </span>
                 <span className="block truncate text-[11px] text-muted-foreground">{me.email}</span>
               </span>
-            </button>
+            </a>
             <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground" title="log out" onClick={async () => { await api.logout(); window.location.reload() }}>
               <LogOut className="h-4 w-4" />
             </Button>
@@ -1007,7 +1030,7 @@ function Console({ me }: { me: Member }) {
             <div className="flex min-w-0 flex-col gap-1">
               <div className="flex items-center gap-3">
                 <h1 className="max-w-[60vw] truncate text-sm font-semibold">{selected.title}</h1>
-                <Button size="sm" variant="outline" className="h-6 gap-1 px-2 text-xs" onClick={() => nav('sessions')} title="back to the full sessions list">
+                <Button render={<a href={navHref('sessions')} />} size="sm" variant="outline" className="h-6 gap-1 px-2 text-xs" onClick={onNavClick(() => nav('sessions'))} title="back to the full sessions list">
                   <ArrowLeft className="h-3.5 w-3.5" /> All sessions
                 </Button>
               </div>
@@ -1046,16 +1069,17 @@ function Console({ me }: { me: Member }) {
   )
 }
 
-function NavItem({ icon, label, active, badge, onClick }: { icon: ReactNode; label: string; active: boolean; badge?: number; onClick: () => void }) {
+function NavItem({ icon, label, active, badge, href, onClick }: { icon: ReactNode; label: string; active: boolean; badge?: number; href: string; onClick: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted ${active ? 'bg-muted font-medium text-primary' : 'text-foreground'}`}
+    <a
+      href={href}
+      onClick={onNavClick(onClick)}
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm no-underline hover:bg-muted ${active ? 'bg-muted font-medium text-primary' : 'text-foreground'}`}
     >
       {icon}
       <span className="flex-1 text-left">{label}</span>
       {badge ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{badge}</Badge> : null}
-    </button>
+    </a>
   )
 }
 
@@ -1190,7 +1214,7 @@ function AgentsPage({
         {agent.builtIn && <BuiltInBadge />}
         <div className="ml-auto flex items-center gap-1">
           {canEdit && agent.runtime === 'claude-code' && (
-            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={() => onEdit(agent.id)} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
+            <Button render={<a href={navHref('agent', agent.id)} />} size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={onNavClick(() => onEdit(agent.id))} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
               <SlidersHorizontal className="h-4 w-4" />
             </Button>
           )}
@@ -1283,7 +1307,7 @@ function AgentsPage({
                 {list.map((a) => {
                   const active = a.id === agentId
                   return (
-                    <button key={a.id} type="button" onClick={() => pick(a.id)} className={'flex flex-col gap-1.5 rounded-lg border p-3 text-left transition hover:border-primary/40 hover:bg-muted/40 ' + (active ? 'border-primary bg-primary/5 ring-1 ring-primary' : '')}>
+                    <a key={a.id} href={navHref('agents', a.id)} onClick={onNavClick(() => pick(a.id))} className={'flex flex-col gap-1.5 rounded-lg border p-3 text-left text-foreground no-underline transition hover:border-primary/40 hover:bg-muted/40 ' + (active ? 'border-primary bg-primary/5 ring-1 ring-primary' : '')}>
                       <span className="flex items-center gap-1.5">
                         <AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="truncate text-sm font-medium">{a.id}</span>
@@ -1294,7 +1318,7 @@ function AgentsPage({
                         <MaturityBadge s={maturity[a.id]} />
                       </span>
                       {a.description && <span className="line-clamp-2 text-[11px] text-muted-foreground">{a.description}</span>}
-                    </button>
+                    </a>
                   )
                 })}
               </div>
@@ -1315,14 +1339,14 @@ function AgentsPage({
                 {list.map((a) => {
                   const active = a.id === agentId
                   return (
-                    <button key={a.id} type="button" onClick={() => pick(a.id)} title={a.description} className={'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition ' + (active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}>
+                    <a key={a.id} href={navHref('agents', a.id)} onClick={onNavClick(() => pick(a.id))} title={a.description} className={'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm no-underline transition ' + (active ? 'bg-muted font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}>
                       <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{a.id}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-1">
                         <MaturityBadge s={maturity[a.id]} />
                         {a.builtIn && <BuiltInBadge />}
                       </span>
-                    </button>
+                    </a>
                   )
                 })}
               </div>
@@ -1618,14 +1642,13 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
       {/* top-right session toolbar: browse the agent's folder + attach an image */}
       <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5">
         {session?.agent && (
-          <button
-            type="button"
-            className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+          <a
+            href={navHref('files', 'agents/' + session.agent)}
+            className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 no-underline shadow hover:bg-neutral-700"
             title="browse this agent's folder in Files"
-            onClick={() => { window.location.hash = '/files/' + encodeURIComponent('agents/' + session.agent) }}
           >
             <FolderTree className="h-3.5 w-3.5" /> Files
-          </button>
+          </a>
         )}
         {/* 📎 attach button — opens a file picker; always works regardless of focus */}
         <label
@@ -1831,11 +1854,11 @@ function SessionsPage({
           selected.tmux === s.tmux ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800'
         }`}
       >
-        <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5">
+        <a href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5 text-inherit no-underline">
           <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
           <span className="max-w-[180px] truncate">{s.title}</span>
           {waiting.has(s.id) && <WaitingBell className="h-3 w-3" tone="text-indigo-300" />}
-        </button>
+        </a>
         {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
         <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
           {canResume(s) && (
@@ -2029,7 +2052,7 @@ function SessionsPage({
                 title="select"
                 className={`absolute right-2 top-2 h-3.5 w-3.5 cursor-pointer accent-primary transition-opacity ${sel.has(s.id) ? '' : 'opacity-0 group-hover:opacity-100'}`}
               />
-              <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} className="pr-6 text-left">
+              <a href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} className="block pr-6 text-left text-foreground no-underline">
                 <div className="flex items-center gap-2">
                   <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
                   <span className="truncate text-sm font-medium">{s.title}</span>
@@ -2043,7 +2066,7 @@ function SessionsPage({
                   <OriginBadge s={s} members={members} />
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 </div>
-              </button>
+              </a>
               {/* Human verdict — only for finished runs; stays visible once rated, faint-until-hover otherwise. */}
               {!isLive(s) && (
                 <div className={`mt-1.5 transition-opacity ${s.rating ? '' : 'opacity-40 group-hover:opacity-100'}`}>
@@ -2381,7 +2404,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
         </div>
         {time}
         <div className="flex shrink-0 gap-1">
-          <Button size="sm" className="h-7 px-2.5 text-xs" onClick={open}>Open</Button>
+          <Button render={<a href={navHref('sessions', 'aos-' + m.sessionId)} />} size="sm" className="h-7 px-2.5 text-xs" onClick={onNavClick(open)}>Open</Button>
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDismiss(m.id)}>Dismiss</Button>
         </div>
       </div>
@@ -2448,7 +2471,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
           <MsgHeading m={m}><span className="shrink-0 text-sky-600">· asks</span></MsgHeading>
           <div className="mt-1 whitespace-pre-line break-words text-sm">{m.body}</div>
         </div>
-        <button className="shrink-0 pt-0.5 text-[11px] text-muted-foreground underline hover:text-foreground" onClick={open}>open</button>
+        <a href={navHref('sessions', 'aos-' + m.sessionId)} className="shrink-0 pt-0.5 text-[11px] text-muted-foreground underline hover:text-foreground" onClick={onNavClick(open)}>open</a>
         {time}
       </div>
       <div className="mt-2 flex gap-1.5">
@@ -2469,6 +2492,10 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismi
   const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
   // A 'task' card has no session — it deep-links to the board (its taskId), not a terminal.
   const goTask = m.type === 'task' && meta.taskId && onOpenTask ? () => onOpenTask(meta.taskId!) : null
+  const rowAction = goArtifact ?? goTask ?? open
+  // The new-tab target mirrors the click action. Artifacts focus via React state (no hash detail),
+  // so their href can only reach the gallery; sessions/tasks deep-link fully.
+  const rowHref = goArtifact ? navHref('artifacts') : goTask ? navHref('tasks', meta.taskId!) : navHref('sessions', 'aos-' + m.sessionId)
 
   let Icon = Clock
   let iconCls = 'text-muted-foreground'
@@ -2529,9 +2556,11 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismi
 
   return (
     <div
-      onClick={goArtifact ?? goTask ?? open}
       className={`group relative flex cursor-pointer items-start gap-2.5 px-3 py-2 hover:bg-muted/50 ${highlight ? 'bg-amber-50/40' : ''}`}
     >
+      {/* Stretched-link overlay: makes the whole row a real anchor (right-click / ⌘-click / middle-
+          click → open in new tab) while the dismiss button below opts back on top via `z-10`. */}
+      <a href={rowHref} onClick={onNavClick(rowAction)} className="absolute inset-0 z-0" aria-label="open" />
       <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${unread ? 'bg-primary' : 'bg-transparent'}`} />
       <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${iconCls}`} />
       <div className="min-w-0 flex-1">
@@ -2547,7 +2576,7 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismi
         </div>
         {extra}
       </div>
-      <div className="relative shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">
+      <div className="relative z-10 shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">
         <span className={onDismiss ? 'group-hover:invisible' : undefined}>{timeAgo(m.createdAt)}</span>
         {onDismiss && (
           <button
@@ -2577,14 +2606,14 @@ function ConnectionsPage({ me, tab, onTab }: { me: Member | null; tab: string; o
       {isAdmin && (
         <div className="inline-flex gap-1 rounded-lg border bg-background p-1">
           {([['connected', 'Connected'], ['creds', 'Creds']] as const).map(([v, label]) => (
-            <button
+            <a
               key={v}
-              type="button"
-              onClick={() => onTab(v)}
-              className={`rounded-md px-3 py-1 text-xs transition-colors ${active === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+              href={navHref('connectors', v)}
+              onClick={onNavClick(() => onTab(v))}
+              className={`rounded-md px-3 py-1 text-xs no-underline transition-colors ${active === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}`}
             >
               {label}
-            </button>
+            </a>
           ))}
         </div>
       )}
@@ -3728,7 +3757,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         className={`w-full cursor-pointer rounded-md border border-l-[3px] p-2.5 text-left hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'ring-1 ring-primary' : ''} ${dragId === t.id ? 'opacity-50' : ''}`}
       >
         <div className="flex items-start justify-between gap-2">
-          <span className={`truncate text-sm font-medium ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
+          <a href={navHref('tasks', t.id)} draggable={false} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-sm font-medium text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
           <span className={`shrink-0 text-[10px] font-medium ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</span>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
@@ -3884,7 +3913,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                   const dm = dueMeta(t.dueAt, t.status)
                   return (
                     <tr key={t.id} onClick={() => openTask(t.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'bg-muted' : ''}`}>
-                      <td className="px-3 py-2"><span className={t.status === 'cancelled' ? 'line-through opacity-60' : ''}>{t.title}</span> {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
+                      <td className="px-3 py-2"><a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a> {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
                       <td className="px-3 py-2 capitalize text-muted-foreground">{t.status}</td>
                       <td className="px-3 py-2 text-muted-foreground">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</td>
                       <td className={`px-3 py-2 text-xs ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</td>
@@ -4625,11 +4654,11 @@ function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: s
         <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Manual</div>
         <div className="space-y-0.5">
           {docPages.map((p) => (
-            <button key={p.slug} onClick={() => onSelect(p.slug)} className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${sel.slug === p.slug ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>{p.title}</button>
+            <a key={p.slug} href={navHref('docs', p.slug)} onClick={onNavClick(() => onSelect(p.slug))} className={`block w-full truncate rounded px-2 py-1 text-left text-xs no-underline ${sel.slug === p.slug ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>{p.title}</a>
           ))}
         </div>
         <div className="text-[11px] leading-relaxed text-muted-foreground">
-          These docs ship with Agent OS. Your company's own pages live in <button className="text-primary underline" onClick={() => { window.location.hash = '/kb' }}>Knowledge</button>.
+          These docs ship with Agent OS. Your company's own pages live in <a href={navHref('kb')} className="text-primary underline">Knowledge</a>.
         </div>
       </div>
       <div className="min-w-0 max-w-3xl flex-1">
@@ -5166,9 +5195,9 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
 
   return (
     <div className="max-w-3xl space-y-4">
-      <button onClick={() => { window.location.hash = '/agents' }} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+      <a href={navHref('agents')} className="flex items-center gap-1 text-xs text-muted-foreground no-underline hover:text-foreground">
         <ArrowLeft className="h-3.5 w-3.5" /> Agents
-      </button>
+      </a>
       <p className="text-sm text-muted-foreground">
         A new agent is a folder under the data home holding an <span className="font-mono text-xs">agent.json</span> and a{' '}
         <span className="font-mono text-xs">CLAUDE.md</span>. It runs the real Claude (<span className="font-mono text-xs">claude-code</span>) in
@@ -5431,14 +5460,13 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
   return (
     <div className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
-        <button onClick={() => { window.location.hash = '/agents' }} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+        <a href={navHref('agents')} className="flex items-center gap-1 text-xs text-muted-foreground no-underline hover:text-foreground">
           <ArrowLeft className="h-3.5 w-3.5" /> Agents
-        </button>
+        </a>
         {/* Open the Files browser scoped to this agent's folder (only for agents that live under the
             data home — bundled examples live outside it and aren't browsable here). */}
         {info?.deletable && (
-          <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" title="browse this agent's files"
-            onClick={() => { window.location.hash = '/files/' + encodeURIComponent('agents/' + agentId) }}>
+          <Button render={<a href={navHref('files', 'agents/' + agentId)} />} size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" title="browse this agent's files">
             <FolderTree className="h-3.5 w-3.5" /> Files
           </Button>
         )}
@@ -5573,7 +5601,7 @@ function SkillsPage() {
         A skill is synced into its assigned claude-code agents at launch — an agent auto-invokes one when its <span className="font-mono text-xs">description</span> matches
         the task, or you can call it with <span className="font-mono text-xs">/name</span>. By default a skill reaches <span className="font-medium text-foreground">every agent</span>;
         use <span className="font-medium text-foreground">Assign</span> on a skill to scope it to specific agents. (A hand-authored skill dropped in an agent's own folder via{' '}
-        <button className="underline hover:text-foreground" onClick={() => { window.location.hash = '/files' }}>Files</button> still shadows the global one.)
+        <a href={navHref('files')} className="underline hover:text-foreground">Files</a> still shadows the global one.)
       </p>
 
       {!resp.enabled && (
@@ -6344,7 +6372,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                     <div className="flex shrink-0 gap-1.5">
                       {r.apply
                         ? <Button size="sm" onClick={() => applyRec(r.id)} disabled={busy}><Check className="mr-1 h-3.5 w-3.5" />Apply</Button>
-                        : r.link && <Button size="sm" variant="outline" onClick={() => { window.location.hash = r.link!.replace(/^#/, '') }}>Review</Button>}
+                        : r.link && <Button render={<a href={r.link.startsWith('#') ? r.link : '#' + r.link} />} size="sm" variant="outline">Review</Button>}
                       <Button size="sm" variant="ghost" onClick={() => dismissRec(r.id)} disabled={busy}>Dismiss</Button>
                     </div>
                   </div>
@@ -6558,15 +6586,15 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
   if (me.role !== 'owner' && me.role !== 'admin') return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
   return (
     <div className="flex gap-6">
-      <div className="flex w-48 shrink-0 flex-col gap-1 rounded-lg border bg-background p-1 self-start [&_button]:text-left">
-        <TabButton on={tab === 'company'} onClick={() => setTab('company')}>Company context</TabButton>
-        <TabButton on={tab === 'runtime'} onClick={() => setTab('runtime')}>Runtime defaults</TabButton>
-        <TabButton on={tab === 'theme'} onClick={() => setTab('theme')}>Theme</TabButton>
-        <TabButton on={tab === 'secrets'} onClick={() => setTab('secrets')}>Secrets</TabButton>
-        <TabButton on={tab === 'memory'} onClick={() => setTab('memory')}>Memory backend</TabButton>
-        <TabButton on={tab === 'governance'} onClick={() => setTab('governance')}>Governance</TabButton>
-        <TabButton on={tab === 'policy'} onClick={() => setTab('policy')}>Policy</TabButton>
-        <TabButton on={tab === 'system'} onClick={() => setTab('system')}>System</TabButton>
+      <div className="flex w-48 shrink-0 flex-col gap-1 rounded-lg border bg-background p-1 self-start [&_a]:text-left [&_button]:text-left">
+        <TabButton on={tab === 'company'} href={navHref('settings', 'company')} onClick={() => setTab('company')}>Company context</TabButton>
+        <TabButton on={tab === 'runtime'} href={navHref('settings', 'runtime')} onClick={() => setTab('runtime')}>Runtime defaults</TabButton>
+        <TabButton on={tab === 'theme'} href={navHref('settings', 'theme')} onClick={() => setTab('theme')}>Theme</TabButton>
+        <TabButton on={tab === 'secrets'} href={navHref('settings', 'secrets')} onClick={() => setTab('secrets')}>Secrets</TabButton>
+        <TabButton on={tab === 'memory'} href={navHref('settings', 'memory')} onClick={() => setTab('memory')}>Memory backend</TabButton>
+        <TabButton on={tab === 'governance'} href={navHref('settings', 'governance')} onClick={() => setTab('governance')}>Governance</TabButton>
+        <TabButton on={tab === 'policy'} href={navHref('settings', 'policy')} onClick={() => setTab('policy')}>Policy</TabButton>
+        <TabButton on={tab === 'system'} href={navHref('settings', 'system')} onClick={() => setTab('system')}>System</TabButton>
       </div>
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
@@ -7828,12 +7856,13 @@ function IntegrationsSettings({ me }: { me: Member }) {
   )
 }
 
-function TabButton({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button onClick={onClick} className={`rounded-md px-3 py-1 text-sm transition-colors ${on ? 'bg-muted font-medium text-primary' : 'text-muted-foreground hover:text-foreground'}`}>
-      {children}
-    </button>
-  )
+function TabButton({ on, onClick, href, children }: { on: boolean; onClick: () => void; href?: string; children: ReactNode }) {
+  const cls = `rounded-md px-3 py-1 text-sm no-underline transition-colors ${on ? 'bg-muted font-medium text-primary' : 'text-muted-foreground hover:text-foreground'}`
+  // A deep-linkable tab (one whose state lives in the URL hash) passes `href`, so it renders as a
+  // real anchor — right-click "open in new tab" works. Purely-local tabs omit href and stay buttons.
+  return href
+    ? <a href={href} onClick={onNavClick(onClick)} className={cls}>{children}</a>
+    : <button onClick={onClick} className={cls}>{children}</button>
 }
 
 function CompanySettings({ me }: { me: Member }) {
