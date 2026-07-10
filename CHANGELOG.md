@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.77.3] — 2026-07-10
+### Changed
+- **`npm run test:governance` refuses to run against a stale `dist/`.** The conformance suite exercises
+  the compiled `dist/` gate, not `src/`, so running it without rebuilding after a governance edit
+  validates old behaviour — which once made the host-governance rules look like "7 failures" that were
+  really just an un-rebuilt tree. The runner now bails (exit 2) with a "run `npm run build` first"
+  message when `dist/` is missing or older than any `src/*.ts`.
+
 ## [0.77.2] — 2026-07-10
 ### Fixed
 - **Terminal "Using the terminal" help modal now matches the (light) dialog theme.** It was styled for a

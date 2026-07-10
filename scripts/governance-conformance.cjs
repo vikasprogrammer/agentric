@@ -9,12 +9,43 @@
  *
  *   npm run build && node scripts/governance-conformance.cjs
  *
- * Exits 0 when every case matches, 1 otherwise (CI-friendly).
+ * Exits 0 when every case matches, 1 on a mismatch, 2 if dist/ is missing or stale (CI-friendly).
  */
 const path = require('path');
 const fs = require('fs');
 
 const ROOT = path.resolve(__dirname, '..');
+
+// Stale-dist guard. This suite exercises the BUILT `dist/` — the same compiled gate the live server
+// runs — NOT `src/`. So if you edit the enricher/policy in src/ and run this WITHOUT rebuilding, you
+// validate the OLD behaviour and get a false result (this exact trap once masked the host-governance
+// rules as "7 failures"). Refuse to run when dist/ is missing or older than any src/*.ts change, and
+// point at the fix. Walk mtimes: the newest src/*.ts must not be newer than the newest dist/*.js.
+function newestMtime(dir, ext) {
+  let newest = 0;
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(ext)) { const m = fs.statSync(p).mtimeMs; if (m > newest) newest = m; }
+    }
+  };
+  if (fs.existsSync(dir)) walk(dir);
+  return newest;
+}
+const DIST = path.join(ROOT, 'dist');
+const newestDist = newestMtime(DIST, '.js');
+if (newestDist === 0) {
+  console.error('governance-conformance: dist/ not built — run `npm run build` first.');
+  process.exit(2);
+}
+const newestSrc = newestMtime(path.join(ROOT, 'src'), '.ts');
+if (newestSrc > newestDist) {
+  console.error('governance-conformance: STALE dist/ — a src/*.ts is newer than the newest dist/*.js.');
+  console.error('  The suite runs the compiled gate, so a stale build validates old behaviour. Run `npm run build` first.');
+  process.exit(2);
+}
+
 const { enrichArgs, autoClearsApproval } = require(path.join(ROOT, 'dist/governance/enricher'));
 const { JsonPolicyEngine } = require(path.join(ROOT, 'dist/governance/policy'));
 
