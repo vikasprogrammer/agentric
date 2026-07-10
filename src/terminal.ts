@@ -109,6 +109,17 @@ lever to pull:
  */
 export type SessionStatus = 'running' | 'done' | 'stopped' | 'crashed';
 
+/**
+ * Every distinct way a session gets initiated, normalized for the console's origin badge. Resolved
+ * server-side by `sourceKind()` — the automation family (`cron`/`webhook`/`slack`/`discord`/`composio`/
+ * `scheduled`) is split by joining the triggering automation's `type`, which the raw `spawnedBy`
+ * (`automation:<id>`) can't tell the client. `manual` = a console member spawned it directly; `task` =
+ * the Tasks dispatcher; `chat` = the `/agent` chat router; `system` = an internal principal with no
+ * member (e.g. the consolidation gardener).
+ */
+export type SessionSourceKind =
+  | 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system';
+
 export interface Session {
   id: string;
   agent: string;
@@ -135,6 +146,15 @@ export interface Session {
   spawnedBy?: string;
   /** Human-readable provenance for the console (member name/email, or the automation's name). */
   spawnedByLabel?: string;
+  /** Normalized origin category — every distinct WAY a session gets initiated, resolved server-side
+   *  (the automation sub-types below need a join the raw `spawnedBy` can't give the client). Drives the
+   *  console's origin icon/badge. `manual` = a console member started it; the automation family splits by
+   *  trigger; `task`/`chat` = the dispatcher/chat-router; `system` = an internal principal (e.g. the
+   *  consolidation gardener). */
+  sourceKind?: SessionSourceKind;
+  /** True when the run launched headless (`claude -p`, non-interactive) rather than as an attachable
+   *  interactive TUI. The console badges the two differently. */
+  headless?: boolean;
   /** The member id this session ACTS AS (run_as) — distinct from `spawnedBy` provenance. A task- or
    *  chat-triggered run is spawned by `task:`/`automation:` but runs as (and is owned by) a member,
    *  so the console keys "my sessions" off this too. */
@@ -207,6 +227,7 @@ interface SessionRow {
   status: SessionStatus;
   spawned_by: string | null;
   run_as: string | null;
+  headless: number | null;
   created_at: number;
   updated_at: number;
   rating: string | null;
@@ -403,6 +424,7 @@ export class TerminalManager {
       alive: alive ? alive.has(r.tmux) : undefined,
       resumable: resumable.has(r.id),
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
+      sourceKind: this.sourceKind(r.spawned_by),
       runAsLabel: this.runAsLabel(r.run_as),
       ratedByLabel: this.runAsLabel(r.rated_by),
     }));
@@ -583,6 +605,30 @@ export class TerminalManager {
     if (spawnedBy.startsWith('task:')) return `Task · ${spawnedBy.slice('task:'.length)}${asSuffix}`;
     const m = this.os.team.getMember(spawnedBy);
     return m ? m.name || m.email : spawnedBy;
+  }
+
+  /** Normalize a session's raw provenance to a {@link SessionSourceKind} — the every-way-a-session-starts
+   *  taxonomy the console badges. The automation family is split by joining the triggering automation's
+   *  `type` (`once` → `scheduled`), which the bare `automation:<id>` can't tell the client; a `spawnedBy`
+   *  that resolves to no known member is an internal `system` principal. */
+  private sourceKind(spawnedBy: string | null): SessionSourceKind {
+    if (!spawnedBy) return 'system';
+    if (spawnedBy.startsWith('task:')) return 'task';
+    if (spawnedBy.startsWith('chat:')) return 'chat';
+    if (spawnedBy.startsWith('automation:')) {
+      const auto = this.db.prepare('SELECT type FROM automations WHERE id = ?').get<{ type: string }>(spawnedBy.slice('automation:'.length));
+      switch (auto?.type) {
+        case 'cron': return 'cron';
+        case 'webhook': return 'webhook';
+        case 'slack': return 'slack';
+        case 'discord': return 'discord';
+        case 'composio': return 'composio';
+        case 'once': return 'scheduled';
+        default: return 'cron'; // deleted/unknown automation → treat as a generic scheduled trigger
+      }
+    }
+    // A bare principal: a console member spawned it manually, or an internal system principal.
+    return this.os.team.getMember(spawnedBy) ? 'manual' : 'system';
   }
 
   /** The run-as member's display name (name → email), for the sessions-list Owner filter. Undefined
@@ -795,8 +841,8 @@ export class TerminalManager {
     const secret = randomBytes(24).toString('hex');
     const session: Session = { id, agent, title, task, tmux, status: 'running', createdAt: Date.now(), updatedAt: Date.now() };
     this.db
-      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, resident, last_activity, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, resident ? 1 : 0, resident ? session.createdAt : null, session.createdAt, session.createdAt);
+      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, resident, last_activity, headless, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, resident ? 1 : 0, resident ? session.createdAt : null, headless ? 1 : 0, session.createdAt, session.createdAt);
     // No spawn card — the Inbox is a feed of agent-authored signals (progress / questions / approvals /
     // completions / artifacts), not a session lifecycle log. A run that never speaks stays off the feed
     // and lives only on the Sessions page.
@@ -2336,7 +2382,7 @@ function titleFromSummary(summary: string): string {
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

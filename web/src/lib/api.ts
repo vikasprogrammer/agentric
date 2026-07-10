@@ -123,6 +123,14 @@ export interface Session {
   resumable?: boolean
   spawnedBy?: string
   spawnedByLabel?: string
+  /** Normalized origin category — how this session was initiated. `manual` = a console member; the
+   *  automation family splits by trigger (`cron`/`webhook`/`slack`/`discord`/`composio`/`scheduled`);
+   *  `task` = the Tasks dispatcher; `chat` = the `/agent` chat router; `system` = an internal principal.
+   *  Server-resolved (the automation sub-type needs a join the raw `spawnedBy` can't give). */
+  sourceKind?: 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system'
+  /** True when the run launched headless (`claude -p`, non-interactive) rather than as an attachable
+   *  interactive TUI. The list badges the two differently. */
+  headless?: boolean
   /** The member id this session runs AS (run_as). A task/chat-triggered run is spawnedBy `task:`/
    *  `automation:` but runs as a member — the sidebar keys "my sessions" off this too. */
   runAs?: string

@@ -532,6 +532,10 @@ function migrate(db: Db): void {
   // Last time a resident session saw a turn (spawn or a delivered follow-up) — the idle-reaper clock.
   // NULL for non-resident rows (never reaped on idle).
   addColumn(db, 'term_sessions', 'last_activity', 'INTEGER');
+  // Whether the run launched headless (`claude -p`, non-interactive → exits when done) vs an
+  // attachable interactive TUI. Persists what was previously a launch-only argument so the console can
+  // badge each session's mode. Older rows default 0 (interactive) — a cosmetic backfill only.
+  addColumn(db, 'term_sessions', 'headless', 'INTEGER NOT NULL DEFAULT 0');
 
   // Session status vocabulary widened: running|idle → running|done|stopped|crashed. Legacy terminal
   // rows collapsed every non-running end state into 'idle'; we can't retro-classify how they actually
