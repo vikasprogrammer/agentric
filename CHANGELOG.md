@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.73.1] — 2026-07-10
+### Docs
+- **README: "Running on macOS vs Linux" section.** Documents that agent sessions run in a tmux server
+  that outlives a server restart (re-adopted via `<home>/tmux.sock`), and the two systemd unit settings
+  that are **required** on Linux or a `systemctl restart` silently kills every session — `KillMode=process`
+  and `PrivateTmp=false` (both already correct in the bundled `agent-os.service`) — plus the operational
+  rule to never run `tmux` against the app socket as root. Captures the platform-difference lessons from
+  the v0.72.1/0.72.2 fixes.
+
 ## [0.73.0] — 2026-07-09
 ### Added
 - **Host connections — a new "Host" shape on the Connections page.** You can now register the hosts
