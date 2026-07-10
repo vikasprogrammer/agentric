@@ -233,6 +233,25 @@ export interface AgentRevision {
   createdAt: number
 }
 
+/** Per-agent trust / maturity stats (mirror of src/state/agent-stats.ts AgentStats). */
+export interface AgentStats {
+  agentId: string
+  runs: { total: number; running: number; done: number; stopped: number; crashed: number }
+  outcomes: { success: number; failure: number; inconclusive: number }
+  actions: { governed: number; humanGated: number; autoApproved: number; denied: number; rejected: number; killswitch: number; errors: number; budgetStops: number }
+  tasks: { done: number; blocked: number; cancelled: number }
+  deniedRuns: number
+  questions: number
+  firstRunAt: number | null
+  lastRunAt: number | null
+  autonomy: number
+  denialRate: number
+  successRate: number | null
+  volumeConfidence: number
+  maturity: number
+  confidence: 'none' | 'low' | 'medium' | 'high'
+}
+
 export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled'
 export interface Task {
   id: string
@@ -833,6 +852,8 @@ export const api = {
   agentCatalog: () => call<AgentCatalogResp>('GET', '/api/agents/catalog'),
   installAgentFromCatalog: (id: string) => call<{ ok: boolean; id?: string; error?: string }>('POST', `/api/agents/catalog/${encodeURIComponent(id)}/install`),
   rescanAgents: () => call<{ ok: boolean; added: string[]; updated: string[]; removed: string[]; errors: { folder: string; error: string }[]; error?: string }>('POST', '/api/agents/rescan'),
+  agentStats: (id: string) => call<{ stats: AgentStats }>('GET', `/api/agents/${encodeURIComponent(id)}/stats`),
+  agentStatsAll: () => call<{ stats: AgentStats[] }>('GET', '/api/agents/stats'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
   agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
