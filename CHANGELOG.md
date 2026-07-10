@@ -8,7 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.83.0] — 2026-07-10
+## [0.83.1] — 2026-07-10
+### Added
+- **Fail fast on an unsupported Node.** The OS depends on the built-in `node:sqlite` (`DatabaseSync`),
+  which only exists on Node ≥ 22.5 — but running under older Node (e.g. a box whose default `/usr/bin/node`
+  is v20 while the service uses nvm v22) crashed with a cryptic `ERR_UNKNOWN_BUILTIN_MODULE: No such
+  built-in module: node:sqlite` from deep inside a store module. A new side-effect `src/preflight.ts`,
+  imported first in `cli.ts` (before any `node:sqlite` import loads), now exits with one clear line:
+  *"agent-os requires Node >= 22.5.0 (found vX) … switch to Node 22.5+"*. Also added `engines.node
+  ">=22.5.0"` to `package.json` so `npm install` warns.
+
+### Docs
+- **Spec: `agent-os policy reconcile`** (`docs/policy-reconcile-plan.md`) — a governed command to align
+  every agent's `policyContext` to the enforced ruleset id (per-tenant or `--all`, dry-run by default,
+  audited + agent-revision snapshot), replacing the manual `sed` sweeps needed today when a tenant's
+  enforced id changes. Follow-up to the #136 mismatch warning; not yet implemented.
 ### Added
 - **Scheduler concurrency cap `AOS_MAX_CONCURRENT_SESSIONS` (#137).** Defense-in-depth against the
   OOM bursts that drove the globex crash rate (49/113 sessions): when set, the automation scheduler

@@ -9,6 +9,7 @@
  *   agent-os demo                  run the scripted governance demo in the terminal
  *   agent-os help                  show this help
  */
+import './preflight'; // MUST be first — fail fast on Node < 22.5 before any node:sqlite import loads.
 import * as path from 'path';
 import { bootstrap, startServer } from './server';
 import { init } from './init';
