@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.101.0] — 2026-07-10
+### Added
+- **The sessions list now shows how each run was initiated — and whether it's headed or headless.**
+  Origin used to collapse to a single "Started by" label with a coarse icon (member avatar / Bot /
+  generic person), so a task-dispatched run and a chat-router run were visually identical, and
+  headed-vs-headless wasn't surfaced or even stored. Now:
+  - Every session carries a server-resolved **`sourceKind`** — the full taxonomy of ways a session
+    starts: `manual` (a console member), the automation family split by trigger
+    (`cron`/`webhook`/`slack`/`discord`/`composio`/`scheduled`), `task` (the Tasks dispatcher), `chat`
+    (the `/agent` router), and `system` (an internal principal, e.g. the consolidation gardener). The
+    automation sub-type is resolved by joining the triggering automation's `type` — the raw
+    `automation:<id>` provenance can't tell the client that alone.
+  - A distinct **origin badge** (per-kind icon + label) replaces the old generic glyph; a manual run
+    still shows the starting member's avatar.
+  - Run **mode** (`headless` vs `interactive`) is now **persisted** on the session row (previously a
+    launch-only argument) and shown as a compact colored pill in both grid and list views, with a new
+    **Mode** filter (Any / Interactive / Headless).
+
 ## [0.100.0] — 2026-07-10
 ### Added
 - **Slack/Discord notifications now carry a one-tap deep-link back to the console.** The out-of-band

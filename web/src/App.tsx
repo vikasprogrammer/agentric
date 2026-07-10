@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react'
-import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, type LucideIcon } from 'lucide-react'
+import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -99,6 +99,31 @@ const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
+/** The mode axis of the sessions list: interactive (attachable TUI) vs headless (`claude -p`, exits when
+ *  done). Independent of who/what started it — an automation can be either, a manual spawn is always
+ *  interactive. */
+type SessionModeFilter = 'all' | 'interactive' | 'headless'
+const SESSION_MODE_LABELS: Record<SessionModeFilter, string> =
+  { all: 'Any mode', interactive: 'Interactive', headless: 'Headless' }
+
+/** Presentation for each normalized {@link Session.sourceKind} — the icon + short chip label the
+ *  sessions list badges every distinct way a session gets initiated. The server resolves the kind
+ *  (splitting the automation family by trigger); the client only maps it to a glyph. Falls back to
+ *  `system` for an unknown/missing kind. */
+const ORIGIN_META: Record<NonNullable<Session['sourceKind']>, { icon: LucideIcon; label: string }> = {
+  manual: { icon: User, label: 'Manual' },
+  cron: { icon: Clock, label: 'Cron' },
+  webhook: { icon: Webhook, label: 'Webhook' },
+  slack: { icon: MessageSquare, label: 'Slack' },
+  discord: { icon: Hash, label: 'Discord' },
+  composio: { icon: Plug, label: 'Composio' },
+  scheduled: { icon: CalendarClock, label: 'Scheduled' },
+  task: { icon: ListChecks, label: 'Task' },
+  chat: { icon: Send, label: 'Chat' },
+  system: { icon: Cpu, label: 'System' },
+}
+const originMeta = (kind?: Session['sourceKind']) => ORIGIN_META[kind ?? 'system'] ?? ORIGIN_META.system
+
 /** Sortable columns of the sessions list. `updated` is the default (most recently active first); it's
  *  the omitted value in the URL, so a clean `#/sessions` shows the freshest sessions on top. */
 type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status' | 'updated'
@@ -123,17 +148,19 @@ const compareSessions = (a: Session, b: Session, key: SessionSortKey): number =>
 
 /** The sessions-list view state (filters + sort), held in the URL hash query so it survives a
  *  refresh / deep-link. */
-interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; owner: string; mine: boolean; sortKey: SessionSortKey; sortDir: SortDir }
+interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; mode: SessionModeFilter; owner: string; mine: boolean; sortKey: SessionSortKey; sortDir: SortDir }
 const parseSessionFilters = (qs: string): SessionFilters => {
   const p = new URLSearchParams(qs)
   const status = p.get('status') ?? ''
   const source = p.get('source') ?? ''
+  const mode = p.get('mode') ?? ''
   const sort = p.get('sort') ?? ''
   return {
     q: p.get('q') ?? '',
     status: (status in SESSION_STATUS_LABELS ? status : 'all') as SessionStatusFilter,
     agent: p.get('agent') ?? 'all',
     source: (source in SESSION_SOURCE_LABELS ? source : 'all') as 'all' | SessionSource,
+    mode: (mode in SESSION_MODE_LABELS ? mode : 'all') as SessionModeFilter,
     owner: p.get('owner') ?? 'all',
     mine: p.get('mine') === '1',
     sortKey: (SESSION_SORT_KEYS.includes(sort as SessionSortKey) ? sort : DEFAULT_SORT_KEY) as SessionSortKey,
@@ -147,6 +174,7 @@ const sessionFiltersToParams = (f: SessionFilters): Record<string, string> => {
   if (f.status !== 'all') p.status = f.status
   if (f.agent !== 'all') p.agent = f.agent
   if (f.source !== 'all') p.source = f.source
+  if (f.mode !== 'all') p.mode = f.mode
   if (f.owner !== 'all') p.owner = f.owner
   // `mine` is serialized by the caller, not here: its default is role-dependent (ON for owner/admin,
   // OFF for members), so only a deviation from that per-viewer default is written to the URL.
@@ -1311,16 +1339,36 @@ function AgentsPage({
 
 // ── Sessions ───────────────────────────────────────────────────────────────────
 /** Who started a session — a person icon + name for members, a bot icon for automations. */
-function StartedBy({ label, spawnedBy, members = [], className = '' }: { label?: string; spawnedBy?: string; members?: Member[]; className?: string }) {
+/** The origin of a session — how it was initiated — as a distinct per-kind icon + its human label.
+ *  The icon comes from the server-resolved {@link Session.sourceKind} (so cron vs slack vs task vs chat
+ *  are all visually distinct, not collapsed to a generic glyph); a manual run still shows the starting
+ *  member's avatar. The text is `spawnedByLabel` (e.g. "Cron · Nightly digest · as Alice"). */
+function OriginBadge({ s, members = [], className = '' }: { s: Session; members?: Member[]; className?: string }) {
+  const label = s.spawnedByLabel
   if (!label) return <span className={`flex items-center gap-1 text-xs text-muted-foreground/60 ${className}`}>—</span>
-  const isAuto = label.startsWith('Automation')
-  // A member-started session shows that member's avatar; an automation shows the Bot glyph
-  // (memberOfPrincipal returns undefined for automation:/task:/chat: ids); anything else, the person.
-  const mem = memberOfPrincipal(spawnedBy, members)
+  const meta = originMeta(s.sourceKind)
+  const Icon = meta.icon
+  // A manually-started run shows the member's avatar; every other kind shows its category glyph.
+  const mem = s.sourceKind === 'manual' ? memberOfPrincipal(s.spawnedBy, members) : undefined
   return (
-    <span className={`flex items-center gap-1 text-xs text-muted-foreground ${className}`} title={`started by ${label}`}>
-      {mem ? <MemberAvatar member={mem} className="h-3 w-3 text-[7px]" /> : isAuto ? <Bot className="h-3 w-3 shrink-0" /> : <User className="h-3 w-3 shrink-0" />}
+    <span className={`flex items-center gap-1 text-xs text-muted-foreground ${className}`} title={`${meta.label} · ${label}`}>
+      {mem ? <MemberAvatar member={mem} className="h-3 w-3 text-[7px]" /> : <Icon className="h-3 w-3 shrink-0" />}
       <span className="truncate">{label}</span>
+    </span>
+  )
+}
+
+/** The run mode of a session — headless (`claude -p`, ran to completion and exited) vs interactive (an
+ *  attachable TUI a human can watch and steer). A compact colored pill, shown alongside the origin so
+ *  the list makes both axes — who started it AND how it runs — legible at a glance. */
+function ModeBadge({ headless, className = '' }: { headless?: boolean; className?: string }) {
+  return headless ? (
+    <span title="headless — ran `claude -p` non-interactively and exited when done" className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20 ${className}`}>
+      <Zap className="h-2.5 w-2.5 shrink-0" /> Headless
+    </span>
+  ) : (
+    <span title="interactive — an attachable TUI you can watch and steer" className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-500/20 ${className}`}>
+      <Terminal className="h-2.5 w-2.5 shrink-0" /> Interactive
     </span>
   )
 }
@@ -1676,6 +1724,7 @@ function SessionsPage({
   const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>(seed.status)
   const [agentFilter, setAgentFilter] = useState(seed.agent)
   const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>(seed.source)
+  const [modeFilter, setModeFilter] = useState<SessionModeFilter>(seed.mode) // interactive | headless | all
   const [ownerFilter, setOwnerFilter] = useState(seed.owner) // run-as member id, or 'all'
   // "My sessions" toggle. It narrows to the sessions the viewer is accountable for (spawned directly
   // OR runs as them) — same rule as the sidebar switcher's `mySessions`. It DEFAULTS ON for owner/admin
@@ -1689,12 +1738,12 @@ function SessionsPage({
   const [sortKey, setSortKey] = useState<SessionSortKey>(seed.sortKey)
   const [sortDir, setSortDir] = useState<SortDir>(seed.sortDir)
   useEffect(() => {
-    const params = sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter, mine, sortKey, sortDir })
+    const params = sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, mode: modeFilter, owner: ownerFilter, mine, sortKey, sortDir })
     if (mine !== isFleetViewer) params.mine = mine ? '1' : '0' // only persist a deviation from the per-viewer default
     onFiltersChange(params)
     // onFiltersChange is a stable replaceState wrapper; depending on the filter/sort values only is intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, statusFilter, agentFilter, sourceFilter, ownerFilter, mine, sortKey, sortDir])
+  }, [query, statusFilter, agentFilter, sourceFilter, modeFilter, ownerFilter, mine, sortKey, sortDir])
   // Clicking a column header sorts by it; clicking the active column flips direction. A fresh column
   // starts ascending, except `created` (time) which reads best newest-first.
   const toggleSort = (key: SessionSortKey) => {
@@ -1725,19 +1774,20 @@ function SessionsPage({
   const ownerLabel = (id: string) => (id === 'all' ? 'All owners' : ownerOptions.find((o) => o.id === id)?.label ?? id)
   // `mine` counts as "active" only when it deviates from the per-viewer default (My for owner/admin,
   // All for members), so the default view doesn't spuriously show the Clear-filters affordance.
-  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || ownerFilter !== 'all' || mine !== isFleetViewer
-  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setOwnerFilter('all'); setMine(isFleetViewer) }
+  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || modeFilter !== 'all' || ownerFilter !== 'all' || mine !== isFleetViewer
+  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setModeFilter('all'); setOwnerFilter('all'); setMine(isFleetViewer) }
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>
       matchesStatus(s, statusFilter) &&
       (agentFilter === 'all' || s.agent === agentFilter) &&
       (sourceFilter === 'all' || sessionSource(s) === sourceFilter) &&
+      (modeFilter === 'all' || (modeFilter === 'headless' ? !!s.headless : !s.headless)) &&
       (ownerFilter === 'all' || s.runAs === ownerFilter) &&
       (!mine || s.spawnedBy === me.id || s.runAs === me.id) &&
       (needle === '' || `${s.title} ${s.agent} ${s.id} ${s.task} ${s.spawnedByLabel ?? ''} ${s.runAsLabel ?? ''}`.toLowerCase().includes(needle)),
     )
-  }, [sessions, query, statusFilter, agentFilter, sourceFilter, ownerFilter, mine, me.id])
+  }, [sessions, query, statusFilter, agentFilter, sourceFilter, modeFilter, ownerFilter, mine, me.id])
   // Sorted view (both grid + list render this). A stable tiebreak on createdAt keeps equal keys in a
   // deterministic order rather than letting the sort shuffle them.
   const shown = useMemo(() => {
@@ -1932,6 +1982,14 @@ function SessionsPage({
             ))}
           </SelectContent>
         </Select>
+        <Select value={modeFilter} onValueChange={(v) => setModeFilter((v ?? 'all') as SessionModeFilter)}>
+          <SelectTrigger className="h-8 w-[130px] text-xs"><SelectValue>{(v) => SESSION_MODE_LABELS[(v ?? 'all') as SessionModeFilter]}</SelectValue></SelectTrigger>
+          <SelectContent>
+            {(Object.keys(SESSION_MODE_LABELS) as SessionModeFilter[]).map((v) => (
+              <SelectItem key={v} value={v}>{SESSION_MODE_LABELS[v]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {/* Owner (run-as) filter — only when more than one distinct owner exists (a single-owner
             workspace has nothing to narrow). */}
         {ownerOptions.length > 1 && (
@@ -1972,9 +2030,12 @@ function SessionsPage({
                   <span className="truncate text-sm font-medium">{s.title}</span>
                   {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 </div>
-                <div className="mt-1 truncate text-xs text-muted-foreground">{s.agent} · {statusLabel(s)} · <span className="font-mono">{s.id}</span></div>
+                <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                  <span className="truncate">{s.agent} · {statusLabel(s)} · <span className="font-mono">{s.id}</span></span>
+                  <ModeBadge headless={s.headless} />
+                </div>
                 <div className="mt-1 flex items-center justify-between gap-2">
-                  <StartedBy label={s.spawnedByLabel} spawnedBy={s.spawnedBy} members={members} />
+                  <OriginBadge s={s} members={members} />
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 </div>
               </button>
@@ -2021,6 +2082,7 @@ function SessionsPage({
               {sortHead('agent', 'Agent', 'hidden w-32 shrink-0 sm:flex')}
               {sortHead('id', 'ID', 'hidden w-20 shrink-0 md:flex')}
               {sortHead('startedBy', 'Started by', 'w-40 shrink-0')}
+              <span className="w-24 shrink-0">Mode</span>
               {sortHead('updated', 'Updated', 'w-20 shrink-0')}
               {sortHead('status', 'Status', 'w-16 shrink-0')}
             </div>
@@ -2041,7 +2103,8 @@ function SessionsPage({
                 {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{s.agent}</span>
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground md:block" title={s.id}>{s.id}</span>
-                <StartedBy label={s.spawnedByLabel} spawnedBy={s.spawnedBy} members={members} className="w-40 shrink-0" />
+                <OriginBadge s={s} members={members} className="w-40 shrink-0" />
+                <span className="flex w-24 shrink-0 items-center"><ModeBadge headless={s.headless} /></span>
                 <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
