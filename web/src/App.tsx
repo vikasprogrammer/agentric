@@ -2908,6 +2908,65 @@ const mdComponents = {
   img: (p: any) => <img className="my-2 max-w-full rounded" {...p} />,
 }
 
+/**
+ * A collapsible folder tree built from a flat list of '/'-separated path strings. Folders are implicit
+ * — one exists because an item lives in it (same model as KB sections). Selecting a folder calls
+ * `onSelect(path)`; '' selects the root ("All"). Presentational: the parent owns the selection + does
+ * the actual filtering. Shared by the Artifacts gallery and the Knowledge Base. Renders nothing when
+ * nothing is filed into a folder yet (a flat, folderless store shows no tree).
+ */
+function FolderNav({ paths, selected, onSelect, rootLabel = 'All' }: {
+  paths: string[]
+  selected: string
+  onSelect: (path: string) => void
+  rootLabel?: string
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // Every prefix of every path is a folder node.
+  const nodes = new Set<string>()
+  for (const p of paths) {
+    if (!p) continue
+    const segs = p.split('/')
+    for (let i = 1; i <= segs.length; i++) nodes.add(segs.slice(0, i).join('/'))
+  }
+  const within = (base: string) => paths.filter((p) => p === base || p.startsWith(base + '/')).length
+  const childrenOf = (parent: string) =>
+    [...nodes].filter((n) => (parent === '' ? !n.includes('/') : n.startsWith(parent + '/') && !n.slice(parent.length + 1).includes('/'))).sort()
+  const toggle = (n: string) => setCollapsed((c) => { const s = new Set(c); s.has(n) ? s.delete(n) : s.add(n); return s })
+
+  const roots = childrenOf('')
+  if (roots.length === 0) return null
+
+  const Row = ({ node, depth }: { node: string; depth: number }) => {
+    const kids = childrenOf(node)
+    const open = !collapsed.has(node)
+    const active = selected === node
+    return (
+      <div>
+        <div className={`flex items-center gap-1 rounded pr-1 text-xs ${active ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`} style={{ paddingLeft: depth * 12 }}>
+          {kids.length > 0
+            ? <button onClick={() => toggle(node)} className="flex h-5 w-4 shrink-0 items-center justify-center" title={open ? 'collapse' : 'expand'}><ChevronRight className={`h-3 w-3 transition-transform ${open ? 'rotate-90' : ''}`} /></button>
+            : <span className="w-4 shrink-0" />}
+          <button onClick={() => onSelect(node)} className="flex min-w-0 flex-1 items-center gap-1 py-1 text-left" title={node}>
+            <Folder className="h-3 w-3 shrink-0" /><span className="truncate">{node.split('/').pop()}</span>
+            <span className="ml-auto shrink-0 text-[10px] opacity-60">{within(node)}</span>
+          </button>
+        </div>
+        {open && kids.map((k) => <Row key={k} node={k} depth={depth + 1} />)}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-0.5 rounded-lg border p-1.5">
+      <button onClick={() => onSelect('')} className={`flex w-full items-center gap-1 rounded px-1 py-1 text-left text-xs ${selected === '' ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`}>
+        <FolderTree className="h-3 w-3 shrink-0" /><span>{rootLabel}</span><span className="ml-auto text-[10px] opacity-60">{paths.length}</span>
+      </button>
+      {roots.map((r) => <Row key={r} node={r} depth={0} />)}
+    </div>
+  )
+}
+
 function ArtifactIcon({ a, className }: { a: Artifact; className?: string }) {
   if (isPdfMime(a.mime)) return <FileText className={className ?? 'h-4 w-4 text-red-500'} />
   if (isImageMime(a.mime)) return <ImageIcon className={className ?? 'h-4 w-4 text-sky-500'} />
@@ -2951,6 +3010,7 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
   const [enabled, setEnabled] = useState(true)
   const [sel, setSel] = useState<string | undefined>(initialId)
   const [agentFilter, setAgentFilter] = useState('')
+  const [folder, setFolder] = useState('')
   const [hint, setHint] = useState('')
 
   const load = () => api.artifacts().then((r) => { setArtifacts(r.artifacts ?? []); setEnabled(r.enabled !== false) })
@@ -2958,7 +3018,8 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
   useEffect(() => { if (initialId) setSel(initialId) }, [initialId])
 
   const agents = Array.from(new Set(artifacts.map((a) => a.agent))).sort()
-  const shown = agentFilter ? artifacts.filter((a) => a.agent === agentFilter) : artifacts
+  const inFolder = (f: string) => folder === '' || f === folder || f.startsWith(folder + '/')
+  const shown = artifacts.filter((a) => (!agentFilter || a.agent === agentFilter) && inFolder(a.folder || ''))
   const selected = artifacts.find((a) => a.id === sel)
 
   const remove = async (id: string) => {
@@ -2966,6 +3027,14 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
     const r = await api.deleteArtifact(id)
     if (r.error) { setHint('⚠ ' + r.error); return }
     if (sel === id) setSel(undefined)
+    load()
+  }
+
+  const move = async (a: Artifact) => {
+    const to = window.prompt('Move to folder (e.g. reports/2024; nest with "/", blank = root):', a.folder || '')
+    if (to === null) return
+    const r = await api.moveArtifact(a.id, to.trim())
+    if (r.error || !r.ok) { setHint('⚠ ' + (r.error ?? 'move failed')); return }
     load()
   }
 
@@ -2990,7 +3059,9 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
       <div className="grid gap-3 lg:grid-cols-[minmax(260px,340px)_1fr]">
         {/* gallery list */}
         <div className="space-y-2">
-          {shown.length === 0 && <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">No artifacts yet. When an agent calls its <span className="font-mono">publish</span> tool, the deliverable shows up here.</div>}
+          <FolderNav paths={artifacts.map((a) => a.folder || '')} selected={folder} onSelect={setFolder} rootLabel="All artifacts" />
+          {folder && <div className="flex items-center gap-1 px-0.5 text-[11px] text-muted-foreground"><Folder className="h-3 w-3" /><span className="font-mono">{folder}/</span><button className="ml-auto underline hover:text-foreground" onClick={() => setFolder('')}>clear</button></div>}
+          {shown.length === 0 && <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">{folder ? <>No artifacts in <span className="font-mono">{folder}/</span>.</> : <>No artifacts yet. When an agent calls its <span className="font-mono">publish</span> tool, the deliverable shows up here.</>}</div>}
           {shown.map((a) => {
             const active = a.id === sel
             return (
@@ -3030,6 +3101,7 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
                     <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
                       <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{selected.agent}</Badge>
                       <span className="font-mono">{selected.filename}</span>
+                      {selected.folder && <span className="inline-flex items-center gap-0.5"><Folder className="h-3 w-3" /><span className="font-mono">{selected.folder}/</span></span>}
                       <span>· {fmtSize(selected.bytes)}</span>
                       <span>· session <span className="font-mono">{selected.sessionId}</span></span>
                     </div>
@@ -3037,7 +3109,10 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
                   <div className="flex shrink-0 gap-2">
                     <a href={api.artifactRawUrl(selected.id)} download={selected.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
                     {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
-                      <Button size="sm" variant="ghost" className="text-destructive" onClick={() => remove(selected.id)}><Trash2 className="h-4 w-4" /></Button>
+                      <>
+                        <Button size="sm" variant="ghost" onClick={() => move(selected)} title="Move to a folder"><FolderPlus className="h-4 w-4" /></Button>
+                        <Button size="sm" variant="ghost" className="text-destructive" onClick={() => remove(selected.id)}><Trash2 className="h-4 w-4" /></Button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -4672,6 +4747,7 @@ function KnowledgeBasePage({ me }: { me: Member }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const [pages, setPages] = useState<KbPage[] | null>(null)
   const [sections, setSections] = useState<string[]>([])
+  const [folder, setFolder] = useState('')
   const [query, setQuery] = useState('')
   const [sel, setSel] = useState<KbPage | null>(null)
   const [history, setHistory] = useState<KbRevision[]>([])
@@ -4718,13 +4794,14 @@ function KnowledgeBasePage({ me }: { me: Member }) {
           <Input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} placeholder="search the wiki…" className="h-8 text-xs" />
           <Button size="sm" variant="outline" className="h-8 shrink-0 px-2" onClick={() => load()}>Go</Button>
         </div>
-        <Button size="sm" className="w-full" onClick={() => { setCreating(true); setSel(null); setEditing(false) }}><Plus className="mr-1 h-3.5 w-3.5" />New page</Button>
+        <Button size="sm" className="w-full" onClick={() => { setCreating(true); setSel(null); setEditing(false); setNSection(folder ? folder + '/' : '') }}><Plus className="mr-1 h-3.5 w-3.5" />New page</Button>
+        <FolderNav paths={(pages ?? []).map((p) => p.section)} selected={folder} onSelect={setFolder} rootLabel="All pages" />
         <div className="space-y-3">
           {pages === null && <div className="text-xs text-muted-foreground">Loading…</div>}
           {pages !== null && pages.length === 0 && <div className="text-xs text-muted-foreground">No pages yet. Agents and you write them; the self-learning pass also keeps an <code className="text-[10px]">operations/fleet-learnings</code> page.</div>}
-          {sections.map((s) => (
+          {sections.filter((s) => folder === '' || s === folder || s.startsWith(folder + '/')).map((s) => (
             <div key={s}>
-              <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">{s}</div>
+              <div className="mb-1 truncate text-[10px] uppercase tracking-wider text-muted-foreground" title={s}>{s}</div>
               <div className="space-y-0.5">
                 {(pages ?? []).filter((p) => p.section === s).map((p) => (
                   <button key={p.id} onClick={() => open(p.id)} className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${sel?.id === p.id ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`} title={`${p.section}/${p.slug}`}>{p.title}</button>
@@ -4743,7 +4820,7 @@ function KnowledgeBasePage({ me }: { me: Member }) {
           <Card><CardContent className="space-y-3 p-4">
             <div className="text-sm font-medium">New page</div>
             <div className="grid gap-3 sm:grid-cols-3">
-              <Field label="Section" help="folder, e.g. engineering"><Input value={nSection} onChange={(e) => setNSection(e.target.value)} placeholder="engineering" className="font-mono text-xs" /></Field>
+              <Field label="Section" help="folder path — nest with / e.g. engineering/backend"><Input list="kb-sections" value={nSection} onChange={(e) => setNSection(e.target.value)} placeholder="engineering/backend" className="font-mono text-xs" /><datalist id="kb-sections">{sections.map((s) => <option key={s} value={s} />)}</datalist></Field>
               <Field label="Slug" help="url id, e.g. deploy-runbook"><Input value={nSlug} onChange={(e) => setNSlug(e.target.value)} placeholder="deploy-runbook" className="font-mono text-xs" /></Field>
               <Field label="Title"><Input value={nTitle} onChange={(e) => setNTitle(e.target.value)} placeholder="Deploy Runbook" /></Field>
             </div>

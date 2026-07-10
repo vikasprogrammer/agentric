@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.103.0] — 2026-07-10
+### Added
+- **Folders & sub-folders in the Artifacts gallery and the Knowledge Base.** Both surfaces were flat
+  lists (the KB grouped by a single-level `section`; Artifacts had no grouping at all), which doesn't
+  scale as they fill. Now items organize into a browsable, nested folder tree — for humans in the
+  console and for agents via their MCP tools:
+  - **Model: implicit path-strings** (no folder tables, no folder CRUD). A folder exists because an
+    item lives in it, exactly like KB sections already worked. **KB** `section` now accepts a nested
+    path (`engineering/backend`) — the `kb/<section>/<slug>.md` disk mirror and `(tenant,section,slug)`
+    index nest unchanged, so there's **no KB migration**. **Artifacts** gain a `folder` column
+    (`addColumn(db,'artifacts','folder',…)`, default `''` = root); the on-disk `<id>/<filename>`
+    layout is untouched — folder is pure organizing metadata.
+  - **Agents:** `kb_write`/`kb_search`/`kb_read` take nested section paths; `publish` gains an optional
+    `folder` (e.g. `reports/2024`). Every segment is normalized to `[a-z0-9-]` and `..`/absolute paths
+    collapse away, so a section/folder can never escape its root.
+  - **Console:** a shared collapsible `FolderNav` tree (with per-folder counts) drives both the KB
+    sidebar and the Artifacts gallery — select a folder to filter to its subtree. The new-page form
+    takes a nested section (with a datalist of existing folders); artifacts can be filed/moved via a new
+    `PATCH /api/artifacts/:id` (same gate as delete; audited `artifact.moved`).
+  - **Back-compat:** existing single-level KB sections render as root-level folders; existing artifacts
+    (empty `folder`) show under "All".
+
 ## [0.102.0] — 2026-07-10
 ### Added
 - **Console navigation is now made of real links — right-click "open in new tab", ⌘/ctrl/middle-click,

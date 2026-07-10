@@ -42,9 +42,9 @@ export class KbStore {
    * page row + FTS (via triggers), and mirrors the body to disk when a home is configured.
    */
   write(input: KbWriteInput): KbPage {
-    const section = normSeg(input.section);
+    const section = normPath(input.section);
     const slug = normSeg(input.slug);
-    if (!section || !slug) throw new Error('section and slug must be url-safe (letters, digits, hyphens)');
+    if (!section || !slug) throw new Error('section and slug must be url-safe (letters, digits, hyphens; section may nest with "/")');
 
     const now = Date.now();
     const existing = this.db
@@ -95,7 +95,7 @@ export class KbStore {
         .all<PageRow>(q.tenant, fetchN);
     }
     let pages = rows.map(toPage);
-    if (q.section) pages = pages.filter((p) => p.section === normSeg(q.section!));
+    if (q.section) pages = pages.filter((p) => p.section === normPath(q.section!));
     if (q.tags?.length) { const want = new Set(q.tags); pages = pages.filter((p) => p.tags.some((t) => want.has(t))); }
     return pages.slice(0, limit);
   }
@@ -103,7 +103,7 @@ export class KbStore {
   read(tenant: string, section: string, slug: string): KbPage | null {
     const r = this.db
       .prepare('SELECT * FROM kb_pages WHERE tenant = ? AND section = ? AND slug = ?')
-      .get<PageRow>(tenant, normSeg(section), normSeg(slug));
+      .get<PageRow>(tenant, normPath(section), normSeg(slug));
     return r ? toPage(r) : null;
   }
 
@@ -126,7 +126,7 @@ export class KbStore {
   /** All pages for a tenant (newest-updated first), optionally one section. */
   list(tenant: string, section?: string): KbPage[] {
     const rows = section
-      ? this.db.prepare('SELECT * FROM kb_pages WHERE tenant = ? AND section = ? ORDER BY updated_at DESC').all<PageRow>(tenant, normSeg(section))
+      ? this.db.prepare('SELECT * FROM kb_pages WHERE tenant = ? AND section = ? ORDER BY updated_at DESC').all<PageRow>(tenant, normPath(section))
       : this.db.prepare('SELECT * FROM kb_pages WHERE tenant = ? ORDER BY updated_at DESC').all<PageRow>(tenant);
     return rows.map(toPage);
   }
@@ -175,13 +175,22 @@ export class KbStore {
     if (!this.dir) return null;
     const root = path.resolve(this.dir);
     const abs = path.resolve(root, section, `${slug}.md`);
-    return abs === root || abs.startsWith(root + path.sep) ? abs : null; // section/slug are normSeg'd, so always true — defense in depth
+    return abs === root || abs.startsWith(root + path.sep) ? abs : null; // section is normPath'd (per-segment [a-z0-9-]), so always true — defense in depth
   }
 }
 
 /** Lowercase to a single url-safe path segment ([a-z0-9-]); '' if nothing usable. */
 function normSeg(s: string): string {
   return String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+}
+
+/**
+ * Normalize a section into a nested folder PATH: '/'-joined url-safe segments ('' if nothing usable).
+ * Each segment is normSeg'd, so `..`/absolute paths collapse to empty and are dropped — a section can
+ * never escape the KB root. A plain single-level section (`engineering`) round-trips unchanged.
+ */
+function normPath(s: string): string {
+  return String(s || '').split('/').map(normSeg).filter(Boolean).join('/');
 }
 
 /** Word tokens ORed as quoted FTS5 terms (quoting neutralises operator chars). '' → caller uses recency. */

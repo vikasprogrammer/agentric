@@ -718,7 +718,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const filePath = String(b.path || '').trim();
     if (!filePath) return sendJson(res, 400, { error: 'path is required' });
-    const out = tm.publishArtifact(session, { path: filePath, title: String(b.title || ''), description: b.description ? String(b.description) : undefined });
+    const out = tm.publishArtifact(session, { path: filePath, title: String(b.title || ''), description: b.description ? String(b.description) : undefined, folder: b.folder ? String(b.folder) : undefined });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
   // agent proposes a new skill (Lever 6 — procedural memory). Drafts a NOT-YET-PUBLISHED skill in the
@@ -2946,6 +2946,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return;
   }
   const artMatch = p.match(/^\/api\/artifacts\/([\w-]+)$/);
+  // Move an artifact into a folder ('' = root). Same gate as delete: owner/admin, or the member whose
+  // session produced it. Auto-apply + audited (`artifact.moved`) — folders are organizing metadata.
+  if (method === 'PATCH' && artMatch) {
+    const a = os.artifacts.get(artMatch[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!isAdmin(me) && a.source !== me.id) return sendJson(res, 403, { error: 'forbidden' });
+    const b = await readBody(req);
+    const folder = String(b.folder ?? '');
+    os.artifacts.move(a.id, folder);
+    const moved = os.artifacts.get(a.id);
+    os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.moved', data: { id: a.id, from: a.folder, to: moved?.folder ?? '' } });
+    return sendJson(res, 200, { ok: true, artifact: moved });
+  }
   if (method === 'DELETE' && artMatch) {
     const a = os.artifacts.get(artMatch[1]);
     if (!a) return sendJson(res, 404, { error: 'not found' });

@@ -189,6 +189,7 @@ export interface Artifact {
   kind: string
   title: string
   description?: string
+  folder: string
   filename: string
   relPath: string
   mime: string
@@ -1009,6 +1010,7 @@ export const api = {
 
   artifacts: () => call<{ artifacts: Artifact[]; enabled: boolean }>('GET', '/api/artifacts'),
   deleteArtifact: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/artifacts/' + id),
+  moveArtifact: (id: string, folder: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PATCH', '/api/artifacts/' + id, { folder }),
   /** Direct URL to an artifact's bytes (for <img>/<iframe>/download). `file` selects a sibling (sites). */
   artifactRawUrl: (id: string, file?: string) => `/api/artifacts/${id}/raw${file ? `?file=${encodeURIComponent(file)}` : ''}`,
 

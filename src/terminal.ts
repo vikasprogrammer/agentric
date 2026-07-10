@@ -1882,7 +1882,7 @@ export class TerminalManager {
    * it with full provenance (the session's spawned_by → `source`), posts an 'artifact' inbox card,
    * and audits it. The file path is resolved STRICTLY under the agent's own folder by the store.
    */
-  publishArtifact(sessionId: string, input: { path: string; title?: string; description?: string }): { ok: boolean; id?: string; error?: string } {
+  publishArtifact(sessionId: string, input: { path: string; title?: string; description?: string; folder?: string }): { ok: boolean; id?: string; error?: string } {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     const manifest = this.os.agents.get(agent);
@@ -1893,7 +1893,7 @@ export class TerminalManager {
     const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
     const title = (input.title || '').trim() || path.basename(input.path);
     const r = this.os.artifacts.publish({
-      sessionId, agent, source, title, description: input.description,
+      sessionId, agent, source, title, description: input.description, folder: input.folder,
       allowRoot: manifest.dir, srcPath: input.path,
     });
     if (!r.ok) return { ok: false, error: r.error };
@@ -1904,7 +1904,7 @@ export class TerminalManager {
       source, args: { artifactId: a.id, filename: a.filename, mime: a.mime, kind: a.kind },
       audienceKind: 'sessionOwner', audienceId: sessionId,
     });
-    this.audit(sessionId, agent, 'artifact.published', { id: a.id, filename: a.filename, bytes: a.bytes, mime: a.mime, title: a.title });
+    this.audit(sessionId, agent, 'artifact.published', { id: a.id, filename: a.filename, bytes: a.bytes, mime: a.mime, title: a.title, folder: a.folder });
     return { ok: true, id: a.id };
   }
 

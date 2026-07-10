@@ -582,6 +582,11 @@ function migrate(db: Db): void {
     INSERT INTO kb_fts(kb_fts, rowid, title, tags, body) VALUES('delete', old.rowid, old.title, old.tags, old.body);
     INSERT INTO kb_fts(rowid, title, tags, body) VALUES (new.rowid, new.title, new.tags, new.body);
   END`);
+
+  // Artifacts folders: a '/'-separated folder path ('' = root) that groups the gallery into a
+  // browsable tree. Pure organizing metadata — the on-disk <id>/<filename> layout is unchanged.
+  // Existing artifacts default to '' (root).
+  addColumn(db, 'artifacts', 'folder', "TEXT NOT NULL DEFAULT ''");
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

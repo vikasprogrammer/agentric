@@ -232,7 +232,7 @@ const TOOLS = [
       additionalProperties: false,
       properties: {
         query: { type: 'string', description: 'What to look for (free text).' },
-        section: { type: 'string', description: 'Optional: restrict to one section, e.g. "engineering".' },
+        section: { type: 'string', description: 'Optional: restrict to one section/folder path, e.g. "engineering" or "engineering/backend".' },
         tags: { type: 'array', items: { type: 'string' }, description: 'Optional tag filters.' },
         limit: { type: 'number', minimum: 1, maximum: 50, default: 8, description: 'Max results (default 8).' },
       },
@@ -247,7 +247,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        section: { type: 'string', description: 'The page\'s section, e.g. "engineering".' },
+        section: { type: 'string', description: 'The page\'s section (folder path), e.g. "engineering" or "engineering/backend".' },
         slug: { type: 'string', description: 'The page\'s slug, e.g. "deploy-runbook".' },
       },
       required: ['section', 'slug'],
@@ -264,7 +264,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        section: { type: 'string', description: 'Section/folder, e.g. "engineering" (lowercased, url-safe).' },
+        section: { type: 'string', description: 'Section/folder path, e.g. "engineering" or "engineering/backend" (lowercased, url-safe; nest sub-folders with "/").' },
         slug: { type: 'string', description: 'Page slug, e.g. "deploy-runbook" (identifies the page; created if absent).' },
         title: { type: 'string', description: 'Human title (required when creating a new page).' },
         body: { type: 'string', description: 'The full page markdown. Link related pages with [[section/slug]].' },
@@ -393,6 +393,7 @@ const TOOLS = [
         path: { type: 'string', description: 'Path to the file in your working folder (relative, e.g. "report.pdf").' },
         title: { type: 'string', description: 'A short human-readable title for the deliverable.' },
         description: { type: 'string', description: 'Optional one-line description / context.' },
+        folder: { type: 'string', description: 'Optional folder path to file it under, e.g. "reports/2024" (nest sub-folders with "/"). Omit for the gallery root.' },
       },
       required: ['path', 'title'],
     },
@@ -1002,11 +1003,13 @@ async function publish(args: Record<string, unknown>): Promise<string> {
       path: filePath,
       title: String(args.title ?? ''),
       description: args.description ? String(args.description) : undefined,
+      folder: args.folder ? String(args.folder) : undefined,
     }),
   });
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  const where = args.folder ? ` under "${String(args.folder)}"` : '';
   return d.ok
-    ? `Published "${filePath}" to the Artifacts gallery (id ${d.id}). The operator has been notified.`
+    ? `Published "${filePath}" to the Artifacts gallery${where} (id ${d.id}). The operator has been notified.`
     : `Could not publish: ${d.error ?? 'unknown error'}`;
 }
 
@@ -1162,7 +1165,7 @@ async function checkInbox(args: Record<string, unknown>): Promise<string> {
     .join('\n');
 }
 
-interface ArtifactLite { title: string; description?: string; kind: string; filename: string; bytes: number; createdAt: number }
+interface ArtifactLite { title: string; description?: string; folder?: string; kind: string; filename: string; bytes: number; createdAt: number }
 
 async function artifactsList(args: Record<string, unknown>): Promise<string> {
   const u = new URL(AOS_URL + '/api/agent/artifacts');
@@ -1174,7 +1177,7 @@ async function artifactsList(args: Record<string, unknown>): Promise<string> {
   const arts = data.artifacts ?? [];
   if (!arts.length) return 'You have not published any deliverables yet.';
   return arts
-    .map((a) => `- ${a.title}${a.description ? ` — ${a.description}` : ''} (${a.kind}, ${a.filename})`)
+    .map((a) => `- ${a.title}${a.description ? ` — ${a.description}` : ''} (${a.kind}, ${a.filename}${a.folder ? `, in ${a.folder}/` : ''})`)
     .join('\n');
 }
 

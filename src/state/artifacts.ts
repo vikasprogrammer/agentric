@@ -24,6 +24,7 @@ export interface Artifact {
   kind: string;
   title: string;
   description?: string;
+  folder: string; // '/'-separated folder path ('' = root); organizes the gallery into a browsable tree
   filename: string;
   relPath: string;
   mime: string;
@@ -39,6 +40,7 @@ interface ArtifactRow {
   kind: string;
   title: string;
   description: string | null;
+  folder: string | null;
   filename: string;
   rel_path: string;
   mime: string;
@@ -67,6 +69,7 @@ export class ArtifactStore {
     source?: string;
     title: string;
     description?: string;
+    folder?: string;
     allowRoot: string;
     srcPath: string;
     kind?: string;
@@ -96,6 +99,7 @@ export class ArtifactStore {
       kind: input.kind ?? 'file',
       title: input.title,
       description: input.description ?? null,
+      folder: normFolder(input.folder),
       filename,
       rel_path: path.join(id, filename),
       mime: mimeOf(filename),
@@ -104,12 +108,12 @@ export class ArtifactStore {
     };
     this.db
       .prepare(
-        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, filename, rel_path, mime, bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id, row.session_id, row.agent, row.source, row.kind, row.title, row.description,
-        row.filename, row.rel_path, row.mime, row.bytes, row.created_at,
+        row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.created_at,
       );
     return { ok: true, artifact: toArtifact(row) };
   }
@@ -148,6 +152,12 @@ export class ArtifactStore {
     return { absPath: abs, mime: mimeOf(abs), filename: path.basename(abs) };
   }
 
+  /** Move an artifact into a folder (metadata only — the on-disk id-dir never moves). '' = root. */
+  move(id: string, folder: string): boolean {
+    const info = this.db.prepare('UPDATE artifacts SET folder = ? WHERE id = ?').run(normFolder(folder), id);
+    return info.changes > 0;
+  }
+
   /** Remove an artifact: its row and its on-disk id-dir. */
   remove(id: string): boolean {
     const a = this.get(id);
@@ -167,12 +177,26 @@ function toArtifact(r: ArtifactRow): Artifact {
     kind: r.kind,
     title: r.title,
     description: r.description ?? undefined,
+    folder: r.folder ?? '',
     filename: r.filename,
     relPath: r.rel_path,
     mime: r.mime,
     bytes: r.bytes,
     createdAt: r.created_at,
   };
+}
+
+/**
+ * Normalize a folder into a '/'-separated path of url-safe segments ('' = root). Each segment is
+ * lowercased to [a-z0-9-] and empties are dropped, so `..`/absolute paths collapse away — a folder
+ * is pure organizing metadata and can never point at the filesystem. Mirrors KB's `normPath`.
+ */
+function normFolder(s?: string): string {
+  return String(s || '')
+    .split('/')
+    .map((seg) => seg.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64))
+    .filter(Boolean)
+    .join('/');
 }
 
 /** Resolve `rel` under `root`, rejecting escapes lexically AND after symlink resolution. The
