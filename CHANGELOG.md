@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.74.1] — 2026-07-10
+### Changed
+- **Session facts moved to the page header.** The owner/agent/started-by/age/status cluster from v0.74.0
+  now lives in the spare right-hand space of the main page header (next to the "All sessions" back button)
+  instead of the terminal tab strip, where it was squeezing the session tabs out of view. Same facts and
+  progressive hiding; the tab strip is back to full width.
+
 ## [0.74.0] — 2026-07-10
 ### Added
 - **Session detail top bar shows owner + facts.** The open session's terminal header (`#/sessions/<id>`)
