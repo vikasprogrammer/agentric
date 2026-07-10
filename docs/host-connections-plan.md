@@ -1,14 +1,17 @@
 # Host / Network Connections — Phase 2 of the access model (scoping plan)
 
-> **Status: 2a + 2b shipped (2026-07-10).** Decisions in §7 are resolved. **Phase 2a** (the `hosts`
+> **Status: 2a + 2b + 2c shipped (2026-07-10).** Decisions in §7 are resolved. **Phase 2a** (the `hosts`
 > table + Connections UI) shipped in v0.73.0. **Phase 2b** (the governance engine — egress parsing,
 > `net.connect`/`ssh.exec` reclassification, `netMode`, the master switch) shipped behind
-> **Settings → Governance → "Govern host access"** (off by default). Implementation:
-> `src/governance/host-match.ts` (parsing + matching), the `isShell` host block in
-> `src/governance/enricher.ts`, the reclassification in `TerminalManager.gate` (`src/terminal.ts`),
-> and the `net.connect`/`ssh.exec` rules in `config/policy/default.policy.json`. **Phase 2d** (kernel
-> egress enforcement under uid-isolation) remains future work. Builds on the north-star
-> [`access-model.md`](./access-model.md) and the decision layer [`governance-model.md`](./governance-model.md).
+> **Settings → Governance → "Govern host access"** (off by default): `src/governance/host-match.ts`
+> (parsing + matching), the `isShell` host block in `src/governance/enricher.ts`, the reclassification in
+> `TerminalManager.gate`, and the `net.connect`/`ssh.exec` rules in `config/policy/default.policy.json`.
+> **Phase 2c** (credential injection) shipped: `TerminalManager.injectHostCredentials` materialises a
+> granted SSH host's vault key into a session-scoped `ssh_config` + `ssh`/`scp` PATH shim (host-scoped
+> via `IdentitiesOnly`), so a plain `ssh` authenticates without the agent handling the key — local-lane
+> only (uid-isolation is a follow-up), CIDR matchers skipped. **Phase 2d** (kernel egress enforcement
+> under uid-isolation) remains future work. Builds on the north-star [`access-model.md`](./access-model.md)
+> and the decision layer [`governance-model.md`](./governance-model.md).
 
 ## 1. Goal
 

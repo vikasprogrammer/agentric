@@ -779,6 +779,9 @@ export class TerminalManager {
     if (o.resume) env.RESUME = '1';
     // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`).
     this.injectShellSecrets(env, o.agent, manifest, o.id);
+    // Phase 2c: granted Host connections' SSH keys → a session ssh_config + ssh/scp PATH shim, so the
+    // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
+    this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
     if (this.uidIsolation) {
       // Flag on: the launcher writes the files INTO the member's home and sets MCP_CONFIG/COMPANY_FILE itself.
       this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined }, agentSrc: manifest.dir });
@@ -1857,7 +1860,8 @@ export class TerminalManager {
     const prefix = `session-${sessionId}.`;
     try {
       for (const f of fs.readdirSync(dir)) {
-        if (f.startsWith(prefix)) fs.rmSync(path.join(dir, f), { force: true });
+        // `recursive` also clears the Phase 2c `session-<id>.d/` dir (keys + ssh_config + shim).
+        if (f.startsWith(prefix)) fs.rmSync(path.join(dir, f), { recursive: true, force: true });
       }
     } catch {
       /* dir may not exist yet — nothing to clean */
@@ -1930,6 +1934,69 @@ export class TerminalManager {
       env[key] = value;
       this.audit(sessionId, agent, 'shell.secret.injected', { key, principal: agent });
     }
+  }
+
+  /** Find the real `ssh`/`scp` on the PARENT PATH (which never includes a session shim dir), so the
+   *  injected wrapper can exec the genuine binary. Falls back to the conventional /usr/bin path. */
+  private resolveBin(name: string): string {
+    for (const d of (process.env.PATH ?? '').split(path.delimiter)) {
+      if (!d) continue;
+      const p = path.join(d, name);
+      try { fs.accessSync(p, fs.constants.X_OK); return p; } catch { /* keep looking */ }
+    }
+    return `/usr/bin/${name}`;
+  }
+
+  /**
+   * Phase 2c — deliver a granted Host connection's SSH-key credential to the session so a plain
+   * `ssh`/`scp` authenticates transparently, WITHOUT the agent handling the key. For each enabled
+   * SSH host bound to this run that carries a `secret:` credential, we resolve the key from the vault
+   * and write, under a session-private `session-<id>.d/` dir: the key (0600), an `ssh_config` mapping
+   * each Host pattern → its key (`IdentitiesOnly`, so the prod key is only ever OFFERED to prod hosts),
+   * and an `ssh`/`scp` shim on PATH that injects `-F <ssh_config>`. Host-scoped by construction.
+   *
+   * Local-lane only for now: under uid-isolation the files must land in the member's home via the
+   * launcher (a follow-up). A CIDR matcher can't be an ssh_config Host pattern, so those are skipped
+   * (the key still governs via the gate; it just isn't auto-offered). Audited per key.
+   */
+  private injectHostCredentials(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): void {
+    if (!this.os.paths || this.uidIsolation) return;
+    const hosts = this.os.hosts.sshCredsFor(actingMember);
+    if (!hosts.length) return;
+    const dir = path.join(this.os.paths.connectors, `session-${sessionId}.d`);
+    const keysDir = path.join(dir, 'keys');
+    const binDir = path.join(dir, 'bin');
+    fs.mkdirSync(keysDir, { recursive: true });
+    const cfg: string[] = [`# Agent OS host connections — session ${sessionId}`, ''];
+    let injected = 0;
+    for (const h of hosts) {
+      const m = h.match.trim();
+      if (m.includes('/')) { this.audit(sessionId, agent, 'host.cred.skipped', { host: h.id, reason: 'cidr-matcher', match: m }); continue; }
+      const ref = parseSecretRef(h.credential);
+      const principal = ref?.principal ?? actingMember ?? '*';
+      const key = ref ? this.os.secrets.getSync(this.os.tenant, principal, ref.key) : h.credential;
+      if (!key) { this.audit(sessionId, agent, 'host.secret.unresolved', { host: h.id, key: ref?.key ?? '(raw)', principal }); continue; }
+      const keyPath = path.join(keysDir, `${h.id}.key`);
+      fs.writeFileSync(keyPath, key.endsWith('\n') ? key : `${key}\n`, { mode: 0o600 });
+      const hostPat = m.replace(/:\d+$/, '');
+      const portM = m.match(/:(\d+)$/);
+      cfg.push(`Host ${hostPat}`, `  IdentityFile ${keyPath}`, `  IdentitiesOnly yes`);
+      if (portM) cfg.push(`  Port ${portM[1]}`);
+      cfg.push('');
+      injected++;
+      this.audit(sessionId, agent, 'host.secret.injected', { host: h.id, match: hostPat, principal });
+    }
+    if (!injected) { fs.rmSync(dir, { recursive: true, force: true }); return; }
+    const cfgPath = path.join(dir, 'ssh_config');
+    fs.writeFileSync(cfgPath, cfg.join('\n'), { mode: 0o600 });
+    fs.mkdirSync(binDir, { recursive: true });
+    for (const name of ['ssh', 'scp'] as const) {
+      const shim = path.join(binDir, name);
+      fs.writeFileSync(shim, `#!/bin/sh\nexec ${this.resolveBin(name)} -F "${cfgPath}" "$@"\n`, { mode: 0o755 });
+    }
+    // Prepend the shim dir so `ssh`/`scp` resolve to it (the launcher then prepends ~/.local/bin ahead,
+    // which won't shadow ssh in practice). Off-lane leaves env.PATH unset → seed from the parent PATH.
+    env.PATH = `${binDir}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`;
   }
 
   /** The JSON policy engine ignores ctx; provide a minimal stand-in to satisfy the type. */

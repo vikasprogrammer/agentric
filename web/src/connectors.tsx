@@ -740,8 +740,9 @@ function AddHostDialog({ me, host, scope, onClose, onSaved }: {
         <div className="space-y-3">
           <p className="text-xs text-muted-foreground">
             A <b>host</b> is a reachable destination — an SSH box, an internal service, a database — your agents may talk to.
-            <span className="text-foreground"> Not yet enforced:</span> this registers the destination and its credential; the
-            gate begins governing reaches to it in a later update.
+            When <b>host governance</b> is on (<a href="#/settings/governance" className="underline hover:text-foreground">Settings → Governance</a>),
+            reaches here are gated by policy; an SSH credential below is injected into the agent's shell at launch, so a plain
+            <span className="font-mono"> ssh</span> authenticates without the agent handling the key.
           </p>
 
           <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Prod database" /></Field>
@@ -756,7 +757,7 @@ function AddHostDialog({ me, host, scope, onClose, onSaved }: {
             <Segmented value={posture} onChange={setPosture} options={HOST_POSTURES} />
           </Field>
 
-          <Field label="Credential" help="Optional. A Secrets-vault reference (secret:KEY) to an SSH key or password, injected at launch. Leave blank for none.">
+          <Field label="Credential" help="Optional. A Secrets-vault reference (secret:KEY) to an SSH private key. For an SSH host it's materialised into a session-scoped ssh_config at launch (offered only to this host); blank for none. Non-SSH creds aren't injected yet.">
             <Input value={credential} onChange={(e) => setCredential(e.target.value)} placeholder={editing && host?.credential ? `${host.credential} (saved) — type to replace` : 'secret:SSH_KEY'} className="font-mono text-xs" />
           </Field>
 

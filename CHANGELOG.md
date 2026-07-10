@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.78.0] — 2026-07-10
+### Added
+- **Host credential injection (Phase 2c) — a granted SSH host's key is now delivered to the agent's
+  shell, so plain `ssh` just works.** When an agent session launches, each enabled SSH [Host
+  connection](./docs/host-connections-plan.md) bound to it that carries a `secret:KEY` credential has
+  its key resolved from the vault and materialised into a **session-scoped** `ssh_config` + an
+  `ssh`/`scp` PATH shim (`TerminalManager.injectHostCredentials`). The key is written `0600` under the
+  session's private dir and offered **only to its host** (`IdentitiesOnly` on the matched `Host`
+  pattern), so an agent can `ssh deploy@box.prod.internal` without ever handling the key — and the prod
+  key is never offered to other hosts. Cleaned up with the session; audited `host.secret.injected`.
+  Local-lane only for now (uid-isolation is a follow-up); CIDR-matcher hosts are skipped (an ssh_config
+  `Host` can't express a CIDR — governance still applies, the key just isn't auto-offered).
+
 ## [0.77.5] — 2026-07-10
 ### Fixed
 - **Editing an automation now scrolls the form into view.** The create/edit form renders at the top of the

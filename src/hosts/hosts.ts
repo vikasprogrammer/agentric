@@ -198,4 +198,17 @@ export class HostStore {
       .filter((h) => h.scope !== 'personal' || h.shared || (!!memberId && h.ownerMemberId === memberId))
       .map((h) => ({ match: h.match, protocol: h.protocol, posture: h.posture }));
   }
+
+  /**
+   * Enabled, credential-bearing SSH hosts bound to `memberId` — the input to Phase 2c key injection.
+   * Same binding as grantsFor, narrowed to hosts that (a) carry a credential and (b) speak ssh (or any).
+   * Returns the RAW credential (a `secret:KEY` ref, resolved by the caller against the vault). Same
+   * ownership binding as grantsFor.
+   */
+  sshCredsFor(memberId?: string): { id: string; name: string; match: string; credential: string }[] {
+    return this.list()
+      .filter((h) => h.enabled && h.credential && (h.protocol === 'ssh' || h.protocol === 'any'))
+      .filter((h) => h.scope !== 'personal' || h.shared || (!!memberId && h.ownerMemberId === memberId))
+      .map((h) => ({ id: h.id, name: h.name, match: h.match, credential: h.credential }));
+  }
 }
