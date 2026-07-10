@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.88.0] — 2026-07-10
+### Added
+- **Team members can attach a profile picture.** Each member now has an avatar that renders in the
+  Team roster and the sidebar user badge, falling back to their initial when unset. You set your own
+  from the Team page (hover your avatar → click to pick an image; a small ✕ removes it); owners/admins
+  may set anyone's. The console down-scales + center-crops the picked image to a small square JPEG
+  before upload, so avatars stay tiny in the DB and on every `/api/team` load. Stored as a
+  self-contained `data:` URL in a new `members.avatar` column (no file store to serve from), so it
+  survives restarts and travels with the member row. New routes `POST`/`DELETE /api/team/:id/avatar`
+  (self-or-admin gated, audited `member.avatar`, base64-image + size validated). Types + store +
+  server + web (`src/types.ts`, `src/state/db.ts`, `src/governance/team.ts`, `src/server.ts`,
+  `web/src/lib/api.ts`, `web/src/App.tsx`).
+
 ## [0.87.0] — 2026-07-10
 ### Added
 - **Video artifacts play inline in the deliverables gallery.** The artifact library now previews

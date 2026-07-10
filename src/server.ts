@@ -1251,6 +1251,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'identity.unlinked', data: { member: teamIdentDel[1], provider } });
     return sendJson(res, 200, { ok: true, identities: os.team.externalIdsFor(teamIdentDel[1]) });
   }
+  // Profile picture: a member sets their OWN avatar; owners/admins may set anyone's. The value is a
+  // self-contained data-URL image (the console resizes to a small square before upload), so there's no
+  // file store to serve from. Placed above the single-segment member routes so the /avatar suffix wins.
+  const teamAvatar = p.match(/^\/api\/team\/([\w-]+)\/avatar$/);
+  if ((method === 'POST' || method === 'DELETE') && teamAvatar) {
+    const targetId = teamAvatar[1];
+    if (targetId !== me.id && !isAdmin(me)) return sendJson(res, 403, { error: 'you can only change your own avatar' });
+    if (!os.team.getMember(targetId)) return sendJson(res, 404, { error: 'not found' });
+    let avatar: string | null = null;
+    if (method === 'POST') {
+      const b = await readBody(req);
+      const err = validateAvatar(b.avatar);
+      if (err) return sendJson(res, 400, { error: err });
+      avatar = String(b.avatar);
+    }
+    const updated = os.team.setAvatar(targetId, avatar);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.avatar', data: { member: targetId, set: !!avatar } });
+    return sendJson(res, 200, { ok: true, member: updated });
+  }
   const teamMember = p.match(/^\/api\/team\/([\w-]+)$/);
   if (method === 'DELETE' && teamMember) {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
@@ -3507,6 +3526,15 @@ function isAdmin(m: Member): boolean {
 }
 function roleOf(v: unknown): Role | undefined {
   return v === 'owner' || v === 'admin' || v === 'member' ? v : undefined;
+}
+/** Validate a profile-picture upload: a base64 data-URL of a common image type, size-capped. Returns
+ *  an error string, or null when acceptable. ~1.5 MB of base64 ≈ ~1.1 MB of image — the console
+ *  resizes to a small square first, so this only guards against a hand-crafted oversized request. */
+function validateAvatar(v: unknown): string | null {
+  if (typeof v !== 'string' || !v) return 'avatar is required';
+  if (!/^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(v)) return 'avatar must be a base64 image data URL';
+  if (v.length > 1_500_000) return 'image too large (max ~1MB)';
+  return null;
 }
 /** Build an absolute magic-link, honouring an nginx X-Forwarded-Proto in front of us. */
 function linkFor(req: http.IncomingMessage, token: string): string {

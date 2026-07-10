@@ -148,6 +148,72 @@ function RoleBadge({ role }: { role: Role }) {
   return <Badge variant={variant} className="px-1.5 py-0 text-[10px] font-normal">{ROLE_LABEL[role]}</Badge>
 }
 
+/** A member's profile picture — their uploaded avatar, or their initial in a muted circle. `className`
+ *  carries the size (e.g. `h-8 w-8 text-xs`). */
+function MemberAvatar({ member, className }: { member: Pick<Member, 'name' | 'avatar'>; className?: string }) {
+  const cls = `shrink-0 rounded-full bg-muted ${className ?? ''}`
+  return member.avatar
+    ? <img src={member.avatar} alt="" className={`${cls} object-cover`} />
+    : <span className={`grid place-items-center font-semibold uppercase text-foreground/70 ${cls}`}>{member.name.slice(0, 1)}</span>
+}
+
+/** Down-scale + center-crop a picked image into a small square JPEG data-URL, so avatars stay tiny in
+ *  the DB and on every /api/team load. */
+async function fileToAvatarDataUrl(file: File, size = 128): Promise<string> {
+  const url = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image()
+      i.onload = () => resolve(i)
+      i.onerror = () => reject(new Error('could not read image'))
+      i.src = url
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = size; canvas.height = size
+    const ctx = canvas.getContext('2d')!
+    const scale = Math.max(size / img.width, size / img.height) // cover-fit the square
+    const w = img.width * scale, h = img.height * scale
+    ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
+    return canvas.toDataURL('image/jpeg', 0.85)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+/** The member avatar plus (when `canEdit`) a click-to-upload overlay and a remove control. */
+function EditableAvatar({ member, canEdit, sizeClass, onChanged }: { member: Member; canEdit: boolean; sizeClass: string; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  if (!canEdit) return <MemberAvatar member={member} className={sizeClass} />
+  const pick = async (file?: File | null) => {
+    if (!file) return
+    setBusy(true); setErr('')
+    try {
+      const r = await api.setAvatar(member.id, await fileToAvatarDataUrl(file))
+      if ('error' in r && r.error) setErr(r.error); else onChanged()
+    } catch { setErr('could not read that image') } finally { setBusy(false) }
+  }
+  const clear = async () => { setBusy(true); setErr(''); try { await api.clearAvatar(member.id); onChanged() } finally { setBusy(false) } }
+  return (
+    <div className="group relative" title={err || 'Change photo'}>
+      <button type="button" className="block rounded-full disabled:cursor-default" onClick={() => inputRef.current?.click()} disabled={busy}>
+        <MemberAvatar member={member} className={`${sizeClass} ${busy ? 'opacity-50' : ''} cursor-pointer`} />
+        <span className="pointer-events-none absolute inset-0 grid place-items-center rounded-full bg-black/40 opacity-0 transition group-hover:opacity-100">
+          <Camera className="h-3.5 w-3.5 text-white" />
+        </span>
+      </button>
+      {member.avatar && (
+        <button type="button" title="Remove photo" onClick={clear} disabled={busy}
+          className="absolute -right-1 -top-1 grid h-4 w-4 place-items-center rounded-full border border-background bg-muted text-foreground/70 hover:text-destructive">
+          <X className="h-2.5 w-2.5" />
+        </button>
+      )}
+      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { pick(e.target.files?.[0]); e.target.value = '' }} />
+    </div>
+  )
+}
+
 /** Prefill the spawn box with the agent's first starter prompt, if it defines any. Otherwise the box
  *  starts empty and shows its "Describe the task…" placeholder — no generic filler. */
 const exampleTask = (a?: AgentInfo): string => a?.examplePrompts?.[0] ?? ''
@@ -853,7 +919,7 @@ function Console({ me }: { me: Member }) {
           <Separator className="my-3" />
           <div className="flex items-center justify-between">
             <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => nav('team')} title="manage team">
-              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-muted text-xs font-medium uppercase">{me.name.slice(0, 1)}</span>
+              <MemberAvatar member={state?.me ?? me} className="h-7 w-7 text-xs" />
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 text-sm font-medium leading-tight">
                   <span className="truncate">{me.name}</span>
@@ -898,7 +964,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
-          {route === 'team' && <TeamPage me={me} />}
+          {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
@@ -3077,7 +3143,7 @@ function IdentityEditor({ member, identities, onChange }: { member: Member; iden
   )
 }
 
-function TeamPage({ me }: { me: Member }) {
+function TeamPage({ me, onProfileChange }: { me: Member; onProfileChange: () => void }) {
   const [data, setData] = useState<TeamResp | null>(null)
   const [links, setLinks] = useState<Record<string, string>>({})
   const [email, setEmail] = useState('')
@@ -3158,7 +3224,7 @@ function TeamPage({ me }: { me: Member }) {
             <Card key={m.id}>
               <CardContent className="flex flex-wrap items-center justify-between gap-3 p-3">
                 <div className="flex min-w-0 items-center gap-2.5">
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-muted text-xs font-semibold uppercase text-foreground/70">{m.name.slice(0, 1)}</span>
+                  <EditableAvatar member={m} canEdit={m.id === me.id || isAdmin} sizeClass="h-8 w-8 text-xs" onChanged={() => { load(); if (m.id === me.id) onProfileChange() }} />
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5 text-sm font-medium">
                       <span className="truncate">{m.name}</span>
