@@ -3767,6 +3767,7 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
   const [openRuns, setOpenRuns] = useState<string | null>(null) // automation id whose Runs list is expanded
   const [showForm, setShowForm] = useState(false) // the New-automation form is collapsed until requested
   const [editId, setEditId] = useState<string | null>(null) // when set, the form edits this automation instead of creating
+  const formRef = useRef<HTMLDivElement>(null) // the create/edit form — scroll it into view when it opens (Edit sits below the fold)
   const [showSpent, setShowSpent] = useState(false) // reveal the collapsed "spent one-shots" section
   // create / edit form
   const [name, setName] = useState('')
@@ -3782,6 +3783,9 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
   const load = () => api.automations().then((r) => setItems(r.automations ?? []))
   useEffect(() => { load() }, [])
   useEffect(() => { if (!agentId && agents[0]) setAgentId(agents[0].id) }, [agents, agentId])
+  // The form mounts at the top of the section, but Edit buttons live on cards further down — scroll the
+  // form into view when it opens (or when switching which automation is being edited) so it isn't missed.
+  useEffect(() => { if (showForm) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, [showForm, editId])
 
   const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setEditId(null) }
   const startCreate = () => { resetForm(); setShowForm(true); setHint('') }
@@ -3860,7 +3864,7 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
           )}
         </div>
         {isAdmin && showForm && (
-          <Card className="mb-3 border-primary/30">
+          <Card ref={formRef} className="mb-3 border-primary/30">
             <CardContent className="space-y-3 p-4">
               <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{editId ? 'Edit automation' : 'New automation'}</div>
               <div className="grid grid-cols-2 gap-3">

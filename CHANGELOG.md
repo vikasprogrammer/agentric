@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.77.5] — 2026-07-10
+### Fixed
+- **Editing an automation now scrolls the form into view.** The create/edit form renders at the top of the
+  Automations section, but the Edit buttons sit on cards further down — clicking Edit while scrolled down
+  opened the populated form above the viewport, so it looked like "nothing happens." The form now scrolls
+  itself into view when it opens or when switching which automation is being edited.
+
 ## [0.77.4] — 2026-07-10
 ### Added
 - **`fleet-insights` maintainer skill** (`.claude/skills/fleet-insights/`). Mines agent sessions across
