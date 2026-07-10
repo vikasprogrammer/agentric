@@ -875,6 +875,50 @@ export class TerminalManager {
   }
 
   /**
+   * "Take over" a headless run: convert it into an attachable INTERACTIVE session so a human can watch and
+   * steer. A headless run is `claude -p` — non-interactive, and its pane dies on completion leaving no
+   * resurrect env. But it was pinned to `--session-id CLAUDE_SESSION_ID`, so its transcript persists on
+   * disk; we re-launch the interactive lane under the SAME id with `resume:true` (`claude --resume`), which
+   * writes the `session-<id>.env` the attach/resume path needs and picks up the conversation. If the `-p`
+   * run is still streaming we kill it first (the in-flight turn is lost — resume continues from the last
+   * COMPLETED turn; a `-p` process can't be promoted to a TUI in place). Idempotent-ish: converting an
+   * already-interactive live session is a no-op success (it's already headed). Returns an error string when
+   * the session can't be converted (unknown, not a claude-code run, or predates the pinned session id).
+   */
+  goInteractive(sessionId: string, by: string): { ok: boolean; error?: string } {
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, status, task FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; status: string; task: string }>(sessionId);
+    if (!row) return { ok: false, error: 'unknown session' };
+    // Only the real claude-code runtime resumes; a mock/other runtime has no transcript to continue.
+    const manifest = this.os.agents.get(row.agent);
+    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can go interactive' };
+    // No pinned claude id → the run predates resumable session ids (or never started claude); nothing to resume.
+    if (!row.claude_session_id) return { ok: false, error: 'this run has no resumable transcript' };
+    // Already an attachable interactive session (has a persisted resurrect env) and live → nothing to do.
+    const alreadyInteractive = !!this.os.paths && fs.existsSync(path.join(this.os.paths.connectors, `session-${sessionId}.env`));
+    if (alreadyInteractive && this.isAlive(sessionId)) return { ok: true };
+    const actingMember = row.run_as ?? undefined;
+    const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
+    const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    // If the headless `-p` pane is still alive, kill it so the tmux name frees for the interactive relaunch
+    // (backend.kill is synchronous). The in-flight turn ends here; the resume picks up the last saved turn.
+    const wasAlive = this.isAlive(sessionId);
+    if (wasAlive) this.backend.kill(this.spaceFor(actingMember ?? row.spawned_by ?? undefined), `aos-${sessionId}`);
+    // A prior stop must not veto the deliberate re-open; clear any sentinel before we relaunch/attach.
+    this.allowResume(sessionId);
+    this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    this.audit(sessionId, by, 'session.interactive', { agent: row.agent, wasAlive });
+    // Re-launch the interactive lane for the SAME row: headless:false → writes session-<id>.env; resume:true
+    // → `claude --resume CLAUDE_SESSION_ID`. This reuses the whole resume/attach machinery (no new env plumbing).
+    this.launchClaudeCode({
+      id: sessionId, agent: row.agent, task: row.task, secret: row.secret ?? randomBytes(24).toString('hex'),
+      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      headless: false, resident: false, resume: true, claudeSessionId: row.claude_session_id,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Idle reaper: kill resident (warm) chat sessions whose last turn was longer ago than the configured
    * timeout (Settings → Integrations; default 30 min). Frees the held claude process + MCP servers; the
    * thread's row stays (status → stopped) so a later reply revives it. `timeoutMin = 0` disables residence

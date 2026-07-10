@@ -1489,6 +1489,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.stopSession(id, me.email) });
   }
+  // Take over a headless run: convert it to an attachable interactive session (relaunch `claude --resume`
+  // under the same id). Kills the in-flight `-p` turn if still streaming. Same per-member gate as stop.
+  const interactiveMatch = p.match(/^\/api\/sessions\/([\w-]+)\/interactive$/);
+  if (method === 'POST' && interactiveMatch) {
+    const id = interactiveMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const r = tm.goInteractive(id, me.email);
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   // Human verdict on a finished run — 👍/👎 (or null to clear). The ground-truth signal for the agent
   // maturity score. Same per-member gate as stop: you can rate any run you're allowed to see.
   const rateMatch = p.match(/^\/api\/sessions\/([\w-]+)\/rate$/);

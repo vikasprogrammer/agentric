@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.91.0] — 2026-07-10
+### Added
+- **Take over a headless run — convert it to an interactive session you can watch and steer.** A
+  headless run (cron/webhook/chat/task automation) is `claude -p` — non-interactive and unattended.
+  From the console you can now promote one to a live, attachable interactive TUI: a **Take over
+  (go interactive)** control sits over the live-streaming terminal, a **Continue interactively** button
+  sits on a finished run's read-only transcript, and a **Take over** action appears on the run's row in
+  every Sessions list. It re-launches the same run interactively under its pinned `--session-id`
+  (`claude --resume`), so the conversation continues with full context; if the `-p` run is still
+  streaming it's stopped first (the in-flight turn ends and resume picks up from the last completed
+  turn). Reuses the existing resume/attach machinery — the relaunch writes the `session-<id>.env` the
+  headless lane skips, so the run becomes resumable/attachable like any interactive session. New route
+  `POST /api/sessions/:id/interactive` (same per-member gate as stop/resume) → `TerminalManager.goInteractive`;
+  audited `session.interactive`. Only claude-code runs with a pinned session id qualify.
+
 ## [0.90.0] — 2026-07-10
 ### Added
 - **Member avatars now show on the Tasks board too.** The profile pictures added in 0.88.0 are reused

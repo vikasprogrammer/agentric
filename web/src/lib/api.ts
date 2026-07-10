@@ -781,6 +781,9 @@ export const api = {
   rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
   /** Lift the stop-block so a stopped session resurrects (claude --resume) on the next terminal open. */
   resumeSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/resume`),
+  /** Take over a headless run: convert it to an attachable interactive session (claude --resume). Kills
+   *  the in-flight `-p` turn if still streaming; then open the terminal to watch/steer. */
+  goInteractive: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/interactive`),
   deleteSession: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/sessions/' + id),
   attach: (id: string) => call<{ url?: string; error?: string }>('GET', `/api/sessions/${id}/attach`),
   sessionTranscript: (id: string) => call<{ text?: string; error?: string }>('GET', `/api/sessions/${id}/transcript`),
