@@ -190,12 +190,27 @@ export class AutomemMemoryProvider implements MemoryProvider {
   }
 
   async health(): Promise<{ ok: boolean; backend: string; detail?: string }> {
+    let count: number | undefined;
     try {
       const res = (await this.req('GET', '/health')) as { status?: string; memory_count?: number };
-      return { ok: res.status === 'healthy', backend: 'automem', detail: `${res.memory_count ?? '?'} memories @ ${this.endpoint}` };
+      if (res.status !== 'healthy') return { ok: false, backend: 'automem', detail: `unhealthy @ ${this.endpoint}` };
+      count = res.memory_count;
     } catch (e) {
       return { ok: false, backend: 'automem', detail: e instanceof Error ? e.message : String(e) };
     }
+    // `/health` is UNAUTHENTICATED on automem, so a wrong/stale token still reports "healthy" here — and only
+    // surfaces as a 401 on the first authenticated write (store / migrate). Validate the token with a cheap
+    // authenticated read so a bad token fails loudly at Test/health time (green badge, Settings → Test, the
+    // drift banner) instead of mid-migration as an opaque `store failed → 401`.
+    try {
+      await this.req('GET', '/recall', new URLSearchParams({ limit: '1' }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Only a 401 means the token is bad; any other read quirk (e.g. a query-less 400) shouldn't mask a live
+      // server that `/health` already confirmed up.
+      if (msg.includes('→ 401')) return { ok: false, backend: 'automem', detail: 'token rejected (401) — check the token in Settings → Memory' };
+    }
+    return { ok: true, backend: 'automem', detail: `${count ?? '?'} memories @ ${this.endpoint}` };
   }
 
   private async req(method: 'GET' | 'POST' | 'PATCH' | 'DELETE', pathName: string, params?: URLSearchParams, body?: unknown): Promise<unknown> {

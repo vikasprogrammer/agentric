@@ -2473,7 +2473,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         });
       } catch (e) {
         // Stop cleanly: this orphan stays put (not deleted). The client retries with the SAME `before` to resume.
-        return sendJson(res, 500, { error: `store failed after ${migrated} migrated: ${e instanceof Error ? e.message : String(e)}`, before, migrated, skipped, remaining: remainingBefore(before) });
+        const raw = e instanceof Error ? e.message : String(e);
+        // A 401 here is the backend rejecting our token (automem's /health is unauthenticated, so a bad token
+        // passes the Test/health check and only bites on this first write) — point the operator at the fix.
+        const hint = raw.includes('→ 401') ? ' — backend rejected the token; check the token in Settings → Memory' : '';
+        return sendJson(res, 500, { error: `store failed after ${migrated} migrated: ${raw}${hint}`, before, migrated, skipped, remaining: remainingBefore(before) });
       }
       del.run(os.tenant, r.id); migrated++;
     }
