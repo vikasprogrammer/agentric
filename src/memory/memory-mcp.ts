@@ -20,6 +20,10 @@ const SECRET = process.env.AOS_SECRET || '';
 // Tenant id (multi-tenant): the server routes these loopback calls to THIS tenant's runtime via the
 // `x-aos-tenant` header (loopback has no Host subdomain). Empty → the server falls back to default.
 const TENANT = process.env.AOS_TENANT || '';
+// HEADLESS marks an unattended run (automation/cron/task, `claude -p`) — no human at the terminal and no
+// idle-reaper bound. A blocking `ask` therefore parks after a short window instead of hanging ~1h (#138).
+const HEADLESS = process.env.HEADLESS === '1';
+const UNATTENDED_ASK_WAIT_S = Number(process.env.AOS_UNATTENDED_ASK_WAIT_S) || 120;
 /** Headers for a loopback agent call: the session bearer + tenant route, plus any extras (e.g. JSON). */
 function H(extra: Record<string, string> = {}): Record<string, string> {
   return { 'x-aos-secret': SECRET, ...(TENANT ? { 'x-aos-tenant': TENANT } : {}), ...extra };
@@ -750,13 +754,25 @@ async function ask(args: Record<string, unknown>): Promise<string> {
   });
   const { id } = (await res.json()) as { id?: string };
   if (!id) return 'Could not post the question.';
-  // Poll the inbox for the human's answer (up to ~1h), same model as the gate hook.
-  for (let i = 0; i < 1800; i++) {
+  // Poll the inbox for the human's answer. An INTERACTIVE run waits ~1h (a human is at the terminal and
+  // may take a while). A HEADLESS run (automation/cron/task) has no human attached AND no idle-reaper
+  // bound, so an hour-long block just strands the session and holds its memory — the question is already
+  // in the operator's Inbox + DM'd the moment it was asked, so we only wait a short window in case an
+  // operator is live, then PARK (return stop-cleanly guidance rather than hang or guess).
+  const maxPolls = HEADLESS ? Math.max(1, Math.ceil(UNATTENDED_ASK_WAIT_S / 2)) : 1800;
+  for (let i = 0; i < maxPolls; i++) {
     await sleep(2000);
     const r = await fetch(`${AOS_URL}/api/ask/${id}`);
     const d = (await r.json()) as { status?: string; answer?: string };
     if (d.status === 'answered') return d.answer || '(the operator gave no answer)';
     if (d.status === 'cancelled') return 'The operator dismissed this question without answering. Proceed using your best judgement, or ask again if you are still blocked.';
+  }
+  if (HEADLESS) {
+    return 'No operator is available on this unattended run (automation/cron/headless), and none answered in ' +
+      `the ${UNATTENDED_ASK_WAIT_S}s window. Your question is recorded in the operator's Inbox and they have been ` +
+      'notified, so it is NOT lost. Do NOT proceed with any risky or irreversible action on a guess. Wrap up ' +
+      'now: call `report` to summarise what you did and note that you are blocked on this question, then end the ' +
+      'run. The operator will follow up (e.g. by answering and re-running you).';
   }
   return 'No answer yet (timed out waiting on the operator). Proceed using your best judgement or ask again.';
 }

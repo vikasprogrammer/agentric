@@ -12,8 +12,11 @@
 # own permission engine (the `auto`-mode classifier never runs, so there's no second, hidden
 # denial layered on top of ours). `"deny"` blocks the call. An approval that's still pending
 # blocks the hook synchronously (polling) until a human resolves it, then emits allow/deny —
-# so a headless `-p` run is governed identically to an interactive one with NO
-# `--dangerously-skip-permissions` (there's no prompt to answer; the hook itself is the gate).
+# so an interactive run is governed identically to one with NO `--dangerously-skip-permissions`
+# (there's no prompt to answer; the hook itself is the gate). A HEADLESS `-p` run (automation/cron)
+# has no human at the terminal and no idle-reaper bound, so it waits only a bounded window
+# (AOS_UNATTENDED_APPROVAL_WAIT_S, default 180s) and then FAILS CLOSED (deny) — it never falls through
+# to allow; the approval stays pending in the inbox for a human to act on and re-run (#138).
 # Built-in Read/Glob/Grep and the OS-owned mcp__agentos__* tools aren't world side effects, so
 # the hook stays silent (bare exit 0) and defers to Claude's normal permission flow — that's
 # what keeps the crown-jewel `permissions.deny` Read rules in force for the built-in Read tool.
@@ -72,10 +75,21 @@ while :; do
 done
 
 echo "Agent OS: this action needs approval — see the inbox. Waiting…" >&2
+# Interactive runs wait indefinitely for a human. A HEADLESS run has nobody at the terminal, so bound the
+# wait and FAIL CLOSED (deny) — we only ever stop THIS blocked call, never fall through to allow, and the
+# approval row stays pending in the inbox for a human to resolve + re-run.
+APPROVAL_WAIT_S="${AOS_UNATTENDED_APPROVAL_WAIT_S:-180}"
+waited=0
 while :; do
   sleep 1
   st=$(curl -s --max-time 10 "$AOS_URL/api/gate/$gid" -H "x-aos-tenant: ${AOS_TENANT:-}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.status||"")})')
   [ "$st" = "allow" ] && emit allow "Agent OS: approved by human."
   [ "$st" = "deny" ]  && emit deny "Agent OS: rejected by human."
   # any other status (pending / empty / gate momentarily unreachable) → keep waiting, never proceed
+  if [ "${HEADLESS:-}" = "1" ]; then
+    waited=$((waited + 1))
+    if [ "$waited" -ge "$APPROVAL_WAIT_S" ]; then
+      emit deny "Agent OS: no operator approved this within ${APPROVAL_WAIT_S}s on an unattended run — blocked (fail-closed). The approval is still in the inbox; a human can approve and re-run. Wrap up: report what you did and end the run."
+    fi
+  fi
 done
