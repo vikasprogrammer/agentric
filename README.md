@@ -51,6 +51,43 @@ Deploy it behind a reverse proxy (nginx/Tailscale) for HTTPS; the app's own invi
 everything, so no extra basic-auth is needed. See `docs/process-per-tenant.md` (Mac/Tailscale) or the
 Linux/systemd runbook in `CLAUDE.md`.
 
+### Running on macOS vs Linux
+
+The same single Node process fronts the app, the JSON API, **and the browser terminal** on both
+platforms — the only native deps are `tmux` and `ttyd` (`brew install tmux ttyd` / your distro's
+packages). Agent sessions run inside a **`tmux` server** that daemonises out of the Node process, so
+they're designed to **outlive a server restart**: on boot the app re-adopts whatever tmux sessions are
+still alive via the persistent socket at `<home>/tmux.sock` (it never re-spawns them). The difference
+between the platforms is entirely in how the process supervisor treats that surviving tmux server.
+
+- **macOS (dev / self-hosted).** Just `npm run serve`; nothing sits in front of the Node server — it
+  reverse-proxies `/terminal/` (HTTP + the ttyd WebSocket) to a local `ttyd` itself, login-gated with
+  the same per-session authz nginx enforces in prod. Under launchd there are no cgroups, so a restart
+  signals only the main process and the daemonised tmux server (and every agent session) survives
+  untouched. No extra configuration needed.
+
+- **Linux + systemd (production).** systemd supervises the service as a **cgroup**, and two unit
+  settings are **required** or a `systemctl restart` will silently kill every running agent session
+  (they resurface as `crashed`) — a footgun macOS never exposes. The bundled
+  [`agent-os.service`](agent-os.service) has both set correctly; if you write your own unit, mirror
+  them:
+
+  | Setting | Value | Why |
+  |---|---|---|
+  | `KillMode` | `process` | Default (`control-group`/`mixed`) SIGKILLs the **whole cgroup** on stop. A tmux daemon double-forks out of the process tree but **not** the cgroup, so it dies with the restart. `process` signals only the main PID and leaves the tmux server (and its sessions) running for the fresh process to re-adopt. |
+  | `PrivateTmp` | `false` | `true` gives each service *invocation* a throwaway `/tmp`; a session surviving a restart would be pinned to the old, torn-down `/tmp` namespace and the `claude` CLI's `mkdir /tmp/claude-<uid>` fails with `ENOENT`. `false` shares the host's stable `/tmp`. |
+
+  Front `/terminal/` with nginx `auth_request` → `/api/auth/me` (ttyd doesn't pass through the app in
+  prod, so the app's shared-terminal proxy is inert there — don't leave the writable terminals
+  ungated). Full runbook — nginx `X-Forwarded-*` handling, deploy steps, per-user uid isolation — is in
+  `CLAUDE.md`; multi-tenant fan-out is in `docs/process-per-tenant.md`.
+
+  > **Operational note:** because sessions now outlive the app, never run `tmux` against
+  > `<home>/tmux.sock` as root (e.g. `sudo tmux`) — it leaves the socket root-owned and the
+  > service (running as its own user) can no longer spawn sessions on it. If spawns start failing with
+  > `Permission denied`, check `ls -la <home>/tmux.sock` — the owner must be the service user; if a
+  > stale root-owned socket with no live server is there, remove it and the next spawn recreates it.
+
 `npm run demo` exercises the whole trust layer against mock capabilities and prints the exact
 append-only audit trail the gateway wrote for each run:
 
