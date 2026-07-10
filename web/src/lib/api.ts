@@ -201,6 +201,8 @@ export interface KbPage {
   createdAt: number
   updatedAt: number
   updatedBy: string
+  readCount: number
+  lastReadAt?: number
 }
 export interface Recommendation {
   id: string

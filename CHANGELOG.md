@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.97.0] — 2026-07-10
+### Added
+- **KB page view now shows how often agents read it.** The page metadata line (under the title) now
+  reads `… · read N× by agents` (or `never read by agents`), with the last-read timestamp on hover —
+  surfacing the `readCount`/`lastReadAt` added in v0.95.0 so a human can spot dead pages at a glance
+  before the eventual auto-archive pass exists (`MemoryBrowse`/KB viewer in `web/src/App.tsx`,
+  `KbPage` in `web/src/lib/api.ts`). Console-only, no server change.
+
 ## [0.96.0] — 2026-07-10
 ### Added
 - **Agents can now dispatch tasks, not just create them.** New `task_dispatch` MCP tool (→
