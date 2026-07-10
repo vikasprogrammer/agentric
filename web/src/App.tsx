@@ -1610,11 +1610,13 @@ function SessionsPage({
     const endedTabs = sessions.filter((s) => !isLive(s))
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
     const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s))
+    // The session whose terminal is on screen — drives the pinned detail cluster (owner/agent/status).
+    const cur = sessions.find((s) => s.tmux === selected.tmux)
     return (
       <div className="flex h-full flex-col">
         <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
           <TerminalSquare className="h-4 w-4 shrink-0" />
-          {/* Only the tabs scroll; the "All sessions" button stays pinned right so it's always reachable. */}
+          {/* Only the tabs scroll; the detail cluster stays pinned right so it's always readable. */}
           <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
             {liveTabs.map(renderTab)}
             {selectedEnded && renderTab(selectedEnded)}
@@ -1633,6 +1635,38 @@ function SessionsPage({
               </>
             )}
           </div>
+          {/* Pinned-right session facts — owner, agent, source, status, age. Same-height as the tab strip
+              (no wrap): each fact hides progressively on narrower panes so the row never grows taller. */}
+          {cur && (
+            <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[11px] text-neutral-400">
+              <span className="h-4 w-px bg-neutral-700" />
+              {cur.runAsLabel && (
+                <span className="hidden items-center gap-1 sm:flex" title={`runs as ${cur.runAsLabel}`}>
+                  <User className="h-3 w-3 shrink-0 text-neutral-500" />
+                  <span className="max-w-[140px] truncate text-neutral-200">{cur.runAsLabel}</span>
+                </span>
+              )}
+              <span className="hidden items-center gap-1 md:flex" title={`agent ${cur.agent}`}>
+                <Bot className="h-3 w-3 shrink-0 text-neutral-500" />
+                <span className="max-w-[140px] truncate">{cur.agent}</span>
+              </span>
+              {cur.spawnedByLabel && (
+                <span className="hidden max-w-[160px] items-center gap-1 truncate lg:flex" title={`started by ${cur.spawnedByLabel}`}>
+                  <Play className="h-3 w-3 shrink-0 text-neutral-500" />
+                  <span className="truncate">{cur.spawnedByLabel}</span>
+                </span>
+              )}
+              <span className="hidden items-center gap-1 md:flex" title={`created ${new Date(cur.createdAt).toLocaleString()}`}>
+                <Clock className="h-3 w-3 shrink-0 text-neutral-500" />
+                <span>{timeAgo(cur.createdAt)}</span>
+              </span>
+              <span className="flex items-center gap-1.5 rounded bg-neutral-800 px-1.5 py-0.5" title={`status: ${isLive(cur) ? 'running' : cur.status}`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${statusDot(cur)}`} />
+                <span className="text-neutral-200">{isLive(cur) ? 'running' : cur.status}</span>
+              </span>
+              <span className="hidden font-mono text-neutral-500 xl:inline" title={`session ${cur.id}`}>{cur.id}</span>
+            </div>
+          )}
         </div>
         <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity} />
       </div>
