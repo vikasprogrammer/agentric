@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.93.0] — 2026-07-10
+### Added
+- **"Run now" on an automation asks headless vs interactive.** Firing an automation once from the
+  console now pops a small chooser: **Interactive** (opens an attachable terminal you can watch and
+  steer, and drops you into it) or **Headless** (fire-and-forget `claude -p`, progress lands in the
+  Inbox). The pick is a per-run override — it does **not** change the automation's saved default mode.
+  The current default is labelled in the dialog. Server: `POST /api/automations/:id/run` accepts an
+  optional `{ mode }`, threaded through `Automations.fire` (new `opts.mode`, falling back to `a.mode`);
+  the `automation.fired` audit records the effective mode. Pairs with 0.91.0's headless "Take over".
+
 ## [0.92.0] — 2026-07-10
 ### Added
 - **Member avatars now show on sessions and the inbox too.** A session's **"run as"** facet (in the

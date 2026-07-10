@@ -4092,6 +4092,7 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
   const [openRuns, setOpenRuns] = useState<string | null>(null) // automation id whose Runs list is expanded
+  const [runPrompt, setRunPrompt] = useState<Automation | null>(null) // "Run now" asks headless vs interactive first
   const [showForm, setShowForm] = useState(false) // the New-automation form is collapsed until requested
   const [editId, setEditId] = useState<string | null>(null) // when set, the form edits this automation instead of creating
   const formRef = useRef<HTMLDivElement>(null) // the create/edit form — scroll it into view when it opens (Edit sits below the fold)
@@ -4149,16 +4150,17 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
   const setItemMode = async (a: Automation, m: 'interactive' | 'headless') => { setBusy(a.id); await api.updateAutomation(a.id, { mode: m }); await load(); setBusy('') }
   const toggle = async (a: Automation) => { setBusy(a.id); await api.updateAutomation(a.id, { enabled: !a.enabled }); await load(); setBusy('') }
   const remove = async (a: Automation) => { setBusy(a.id); await api.deleteAutomation(a.id); await load(); setBusy('') }
-  const runNow = async (a: Automation) => {
-    setBusy(a.id); setHint('')
-    const r = await api.runAutomation(a.id)
+  // Fire a one-off run in the chosen mode (overriding the automation's saved default just for this run).
+  const runNow = async (a: Automation, mode: 'interactive' | 'headless') => {
+    setRunPrompt(null); setBusy(a.id); setHint('')
+    const r = await api.runAutomation(a.id, mode)
     setBusy('')
     if (!r.ok) return setHint('⚠ ' + (r.reason || r.error || 'failed'))
     await load()
     // A headless run exits into a dead terminal — don't drop the operator onto it. Send them to the
-    // sessions list where the new run shows up; only interactive runs open the attachable TUI.
+    // sessions list where the new run shows up; interactive runs open the attachable TUI to watch/steer.
     if (r.sessionId) {
-      if (a.mode === 'headless') nav('sessions')
+      if (mode === 'headless') nav('sessions')
       else onOpen('aos-' + r.sessionId, a.agentId + ' · ' + r.sessionId)
     }
   }
@@ -4174,6 +4176,34 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
 
   return (
     <div className="max-w-4xl space-y-6">
+      {/* "Run now" asks headless vs interactive for this one-off run, without touching the saved default. */}
+      <Dialog open={!!runPrompt} onOpenChange={(o) => { if (!o) setRunPrompt(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Play className="h-4 w-4" /> Run “{runPrompt?.name}” now</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            How should this one-off run behave? This doesn’t change the automation’s saved default
+            {runPrompt ? <> (<span className="font-medium">{runPrompt.mode}</span>)</> : null}.
+          </p>
+          <div className="mt-1 grid gap-2">
+            <button disabled={busy === runPrompt?.id} onClick={() => runPrompt && runNow(runPrompt, 'interactive')}
+              className="rounded-lg border p-3 text-left transition-colors hover:bg-muted disabled:opacity-50">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Terminal className="h-4 w-4" /> Interactive — watch &amp; steer
+                {runPrompt?.mode === 'interactive' && <span className="text-[11px] font-normal text-muted-foreground">· current default</span>}
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">Opens an attachable terminal you can type into to take over. Stays open until closed.</div>
+            </button>
+            <button disabled={busy === runPrompt?.id} onClick={() => runPrompt && runNow(runPrompt, 'headless')}
+              className="rounded-lg border p-3 text-left transition-colors hover:bg-muted disabled:opacity-50">
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Zap className="h-4 w-4" /> Headless — fire and forget
+                {runPrompt?.mode === 'headless' && <span className="text-[11px] font-normal text-muted-foreground">· current default</span>}
+              </div>
+              <div className="mt-0.5 text-xs text-muted-foreground">Runs to completion unattended (<code>claude -p</code>) and exits; progress lands in the Inbox. You can still “Take over” a live headless run from Sessions.</div>
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <p className="text-sm text-muted-foreground">
         Automations run agents without you: on a <strong>cron schedule</strong>, when an external service hits a
         <strong> webhook</strong>, on a <strong>Composio event</strong>, or on a <strong>Slack</strong> / <strong>Discord
@@ -4320,7 +4350,7 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
                     <HistoryIcon className="mr-1 h-3.5 w-3.5" />Runs
                     <ChevronDown className={`ml-1 h-3.5 w-3.5 transition-transform ${openRuns === a.id ? 'rotate-180' : ''}`} />
                   </Button>
-                  <Button size="sm" variant="secondary" disabled={busy === a.id} onClick={() => runNow(a)} title="fire once now">
+                  <Button size="sm" variant="secondary" disabled={busy === a.id} onClick={() => setRunPrompt(a)} title="fire once now — pick headless or interactive">
                     <Play className="mr-1 h-3.5 w-3.5" />Run now
                   </Button>
                   {/* Manage controls only for automations this member may edit: owner (any) or the creator.

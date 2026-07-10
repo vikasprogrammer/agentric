@@ -387,7 +387,7 @@ export class Automations {
    * Spawn the automation's session. `guard: true` skips when the previous spawn is still alive —
    * the no-pile-ups rule for cron/webhook; "Run now" from the console passes guard: false.
    */
-  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string } } = { guard: true }): FireResult {
+  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string } } = { guard: true }): FireResult {
     if (opts.guard && a.lastSessionId && this.tm.isAlive(a.lastSessionId)) {
       return { ok: false, reason: 'previous session still running' };
     }
@@ -396,7 +396,11 @@ export class Automations {
     // one, e.g. the Slack user who @-mentioned the bot) is passed separately so the session binds their
     // connectors/Composio + lands in their inbox, while the audit/label still show what fired it.
     const spawnedBy = `automation:${a.id}`;
-    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, a.mode === 'headless', opts.slack, opts.discord, opts.runAs);
+    // A one-off "Run now" from the console may override the automation's saved mode — run it headless
+    // (fire-and-forget) or interactive (watch/steer it live). Scheduled/trigger firings pass no mode
+    // and keep the automation's own `a.mode`.
+    const mode: ExecMode = opts.mode ?? a.mode;
+    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs);
     this.db.prepare('UPDATE automations SET last_fired_at = ?, last_session_id = ? WHERE id = ?').run(Date.now(), s.id, a.id);
     this.os.audit.append({
       ts: Date.now(),
@@ -404,7 +408,7 @@ export class Automations {
       tenant: this.os.tenant,
       principal: opts.runAs ? `member:${opts.runAs}` : `automation:${a.id}`,
       type: 'automation.fired',
-      data: { automation: a.id, name: a.name, agent: a.agentId, trigger: a.type, mode: a.mode, runAs: opts.runAs ?? null },
+      data: { automation: a.id, name: a.name, agent: a.agentId, trigger: a.type, mode, runAs: opts.runAs ?? null },
     });
     return { ok: true, sessionId: s.id, tmux: s.tmux };
   }

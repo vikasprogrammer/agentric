@@ -1336,7 +1336,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const a = autos.get(autoRun[1]);
     if (!a) return sendJson(res, 404, { error: 'not found' });
     if (!os.team.canRun(me, a.agentId)) return sendJson(res, 403, { error: `you are not assigned to run "${a.agentId}"` });
-    const r = autos.fire(a, { guard: false }); // explicit human action — no pile-up guard
+    // Optional one-off mode override: the "Run now" dialog lets the human pick headless (fire-and-forget)
+    // or interactive (watch/steer live) for THIS run without changing the automation's saved default.
+    const b = await readBody(req);
+    const mode = b.mode === 'headless' ? 'headless' : b.mode === 'interactive' ? 'interactive' : undefined;
+    const r = autos.fire(a, { guard: false, mode }); // explicit human action — no pile-up guard
     return sendJson(res, 200, r);
   }
   const autoRuns = p.match(/^\/api\/automations\/([\w-]+)\/runs$/);
