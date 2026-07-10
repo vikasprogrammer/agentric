@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.91.1] — 2026-07-10
+### Fixed
+- **A bad automem token now fails loudly at Test/health time instead of mid-migration.** automem's
+  `/health` endpoint is unauthenticated, so a wrong/stale token still reported "healthy · N memories" —
+  the green backend badge, Settings → **Test connection**, and the drift banner all passed, and the bad
+  token only surfaced on the first authenticated write as an opaque `store failed after 0 migrated:
+  automem POST /memory → 401`. `AutomemMemoryProvider.health()` now follows the `/health` liveness probe
+  with a cheap authenticated `GET /recall?limit=1`: a 401 there is reported as `token rejected (401) —
+  check the token in Settings → Memory`, so a wrong token turns the badge red and blocks the confusing
+  migrate attempt. The migrate route's own 401 error also now appends that hint.
+
 ## [0.91.0] — 2026-07-10
 ### Added
 - **Take over a headless run — convert it to an interactive session you can watch and steer.** A
