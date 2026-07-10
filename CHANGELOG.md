@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.101.1] — 2026-07-10
+### Fixed
+- **The terminal tab strip no longer auto-pops tabs for other people's sessions.** An owner/admin
+  can see the whole fleet via `/api/sessions`, and the live-tab strip was built from that unfiltered
+  list — so every time any teammate (admin or member) spawned a session, a new terminal tab appeared
+  for the viewer. The strip now shows only the viewer's own runs (`spawnedBy`/`runAs` === me), matching
+  every other session surface (sidebar switcher, "My sessions" grid filter). The currently-open session
+  stays force-visible, so explicitly opening someone else's run (e.g. an admin taking over) still works.
+
 ## [0.101.0] — 2026-07-10
 ### Added
 - **The sessions list now shows how each run was initiated — and whether it's headed or headless.**

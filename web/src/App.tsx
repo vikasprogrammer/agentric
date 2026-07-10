@@ -1867,10 +1867,15 @@ function SessionsPage({
     // A tab the user "closed" (hidden set) is dropped from the strip without stopping the session —
     // except the one currently open, which always stays visible so it can't orphan the iframe.
     const visible = (s: Session) => !hiddenTabs.has(s.tmux) || s.tmux === selected.tmux
-    const liveTabs = sessions.filter((s) => isLive(s) && visible(s))
+    // Only the viewer's own runs auto-populate the strip — otherwise an owner/admin (who can see the
+    // whole fleet via /api/sessions) gets a new tab popped in every time anyone else spawns a session.
+    // The currently-open session stays force-visible so explicitly opening someone else's run (e.g. an
+    // admin taking over) still shows its tab and can't orphan the iframe.
+    const mine = (s: Session) => s.spawnedBy === me.id || s.runAs === me.id || s.tmux === selected.tmux
+    const liveTabs = sessions.filter((s) => isLive(s) && visible(s) && mine(s))
     const endedTabs = sessions.filter((s) => !isLive(s))
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
-    const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s))
+    const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s) && mine(s))
     return (
       <div className="flex h-full flex-col">
         <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
