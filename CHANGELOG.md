@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.77.4] — 2026-07-10
+### Added
+- **`fleet-insights` maintainer skill** (`.claude/skills/fleet-insights/`). Mines agent sessions across
+  all three tenants (northwind / globex / initech) read-only via a zero-dependency, schema-defensive
+  `node:sqlite` collector, ranks the friction into product insights, and ships the safe wins as a PR. The
+  Slack-egress fix below was the first change it produced.
+### Changed
+- **Slack egress gives agents an actionable error instead of a dead end.** When `slack_send`/`slack_reply`
+  failed (e.g. `missing_scope` or `not_in_channel` posting to a private channel), the agent got back the
+  raw Slack error code and no recourse — real fleet runs then stranded on repeated `ask`s to a human. Now
+  `explainSlackError` maps the common codes to a one-line remedy ("ask a human to `/invite` the bot", "add
+  the missing scope in Settings → Integrations and reinstall", …), `postMessage` surfaces the specific
+  `needed` scope, and `slack_reply` joins-and-retries once on `not_in_channel` for parity with `slack_send`.
+
 ## [0.77.3] — 2026-07-10
 ### Changed
 - **`npm run test:governance` refuses to run against a stale `dist/`.** The conformance suite exercises

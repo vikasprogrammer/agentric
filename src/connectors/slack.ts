@@ -52,9 +52,43 @@ export async function postMessage(
     });
     const j: any = await res.json().catch(() => ({}));
     if (j?.ok) return { ok: true, ts: String(j.ts || '') };
-    return { error: String(j?.error || `chat.postMessage failed (${res.status})`) };
+    // Slack returns the specific missing scope in `needed` on a `missing_scope` error — keep it so the
+    // egress layer can tell the agent exactly which scope to have an admin add.
+    const code = String(j?.error || `chat.postMessage failed (${res.status})`);
+    const needed = j?.needed ? ` (needed: ${j.needed})` : '';
+    return { error: code + needed };
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'chat.postMessage failed' };
+  }
+}
+
+/**
+ * Turn a raw Slack API error into a one-line, ACTIONABLE hint an unattended agent can act on itself —
+ * instead of stranding on a human. Derived from real fleet friction: a `compass` agent that produced a
+ * report but hit `missing_scope`/`not_in_channel` posting to a private channel had no recourse but to
+ * `ask` a human (repeatedly). The raw code is preserved (agents/audit still see it) and a remedy appended.
+ */
+export function explainSlackError(error: string, channelRef?: string): string {
+  const where = channelRef ? ` "${channelRef}"` : '';
+  const code = error.split(' ')[0]; // strip any appended "(needed: …)" for the match
+  switch (code) {
+    case 'not_in_channel':
+    case 'is_private':
+      return `${error} — the bot isn't a member of${where} and can't self-join it (private/restricted). ` +
+        `Ask a human to \`/invite\` the bot to that channel, or post to a public channel / DM the person instead.`;
+    case 'missing_scope':
+      return `${error} — the Slack app is missing a required OAuth scope. Ask an admin to add it in ` +
+        `Settings → Integrations and reinstall the app; then retry.`;
+    case 'channel_not_found':
+      return `${error} — no channel${where} is visible to the bot. Double-check the id/name, or the bot ` +
+        `may need to be invited to a private channel first.`;
+    case 'is_archived':
+      return `${error} — channel${where} is archived; pick a live channel.`;
+    case 'restricted_action':
+    case 'cant_post_message':
+      return `${error} — workspace policy blocks the bot from posting${where}. Escalate to a human.`;
+    default:
+      return error;
   }
 }
 

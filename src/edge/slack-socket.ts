@@ -16,7 +16,7 @@
  */
 import { AgentOS } from '../kernel';
 import { Automations } from './automations';
-import { joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage } from '../connectors/slack';
+import { explainSlackError, joinChannel, lookupBotUserId, lookupChannelByName, lookupUserByEmail, lookupUserEmail, openDmChannel, openSocketConnection, parseSlackEvent, postMessage } from '../connectors/slack';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -227,10 +227,17 @@ export class SlackSocket {
     if (!row) return { ok: false, error: 'no Slack thread bound to this session' };
     const body = (text || '').trim();
     if (!body) return { ok: false, error: 'empty reply' };
-    const res = await postMessage(this.os.settings.slackBotToken(), row.channel, body, row.thread_ts || undefined);
+    const token = this.os.settings.slackBotToken();
+    let res = await postMessage(token, row.channel, body, row.thread_ts || undefined);
+    // Parity with sendToChannel: a public channel the bot isn't in returns `not_in_channel`; join once
+    // and retry (a private channel's join fails, then explainSlackError guides the agent to get invited).
+    if ('error' in res && res.error.startsWith('not_in_channel')) {
+      await joinChannel(token, row.channel);
+      res = await postMessage(token, row.channel, body, row.thread_ts || undefined);
+    }
     if ('error' in res) {
       this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.reply.failed', data: { channel: row.channel, error: res.error } });
-      return { ok: false, error: res.error };
+      return { ok: false, error: explainSlackError(res.error, row.channel) };
     }
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.reply', data: { channel: row.channel, ts: res.ts, chars: body.length } });
     return { ok: true };
@@ -268,7 +275,7 @@ export class SlackSocket {
 
   private sendFailed(sessionId: string, channel: string, error: string): { ok: false; error: string } {
     this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'slack', type: 'slack.send.failed', data: { channel, error } });
-    return { ok: false, error };
+    return { ok: false, error: explainSlackError(error, channel) };
   }
 
   /**
