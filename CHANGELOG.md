@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.92.0] — 2026-07-10
+### Added
+- **Member avatars now show on sessions and the inbox too.** A session's **"run as"** facet (in the
+  terminal header) shows the acting member's avatar instead of the generic person glyph, and the
+  inbox **Activity feed** shows the avatar of whoever **resolved an approval** ("· by …") or
+  **answered a question**. Both fall back to the member's initial when they haven't uploaded a picture,
+  and to text-only (no avatar) for non-member principals — an automation-run session, or a resolver
+  that doesn't map to a loaded member — so nothing regresses. Purely client-side: the raw `runAs` id is
+  already on the session and `resolvedBy`/`answeredBy` on the message, so the pages just load the team
+  roster once and resolve id/email → member (`memberOfPrincipal` + a shared `PrincipalTag`,
+  `web/src/App.tsx`). With this, avatars now appear on every people-naming surface in the console —
+  sidebar, Team, Tasks, Sessions, Inbox.
+
 ## [0.91.1] — 2026-07-10
 ### Fixed
 - **A bad automem token now fails loudly at Test/health time instead of mid-migration.** automem's
