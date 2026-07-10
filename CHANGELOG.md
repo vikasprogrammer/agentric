@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.86.0] — 2026-07-10
+### Added
+- **`agent-os policy reconcile` — align agents' `policyContext` to the enforced ruleset.** The command
+  that retires the manual `sed` sweeps needed whenever a tenant's enforced policy id changes (the drift the
+  #136 warning reports). Rewrites every `<home>/agents/*/agent.json` whose `policyContext` diverges from the
+  tenant's enforced id — `--tenant <slug>` or `--all` across the control plane, **dry-run by default**
+  (`--yes` to apply). It only ever touches agent manifests, never the policy document (agents conform to the
+  policy, not the reverse). Pure filesystem like `tenant remove` (no server, runs over SSH): the enforced id
+  is read straight from each tenant's resolved policy file exactly as the runtime resolves it (home override
+  else bundled), and the apex tenant maps to the un-nested home just like the registry. Rewrites are a JSON
+  round-trip that preserves other fields + the on-disk format (no regex/`@`-interpolation footguns). New pure
+  `reconcileTenant()` (`src/governance/policy-reconcile.ts`) is shared-ready for a future audited
+  `POST /api/admin/policy/reconcile` + console banner. Test: `npm run test:policy-reconcile` (11/11).
+
 ## [0.85.0] — 2026-07-10
 ### Fixed
 - **Enricher no longer flags a hyphenated flag/compound as `risky` shell (#139).** `RISKY_SHELL` matched

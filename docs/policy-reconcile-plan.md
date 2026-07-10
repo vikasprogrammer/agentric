@@ -1,4 +1,18 @@
-# Plan: `agent-os policy reconcile` — align agent `policyContext` to the enforced ruleset
+# `agent-os policy reconcile` — align agent `policyContext` to the enforced ruleset
+
+> **Status: implemented (v0.84.0).** The CLI + pure `reconcileTenant()` shipped. The console banner and the
+> audited `POST /api/admin/policy/reconcile` mirror remain future work (see "Console mirror"). Two
+> deviations from the original plan, both to keep the CLI a pure box-side tool like `tenant remove`:
+> - **No `agent-revisions` snapshot.** That store tracks the self-editable fields (model, CLAUDE.md, …),
+>   not `policyContext`, so it's the wrong rollback vehicle. Recovery is the git-tracked home + the printed
+>   diff; the audited record lives in the API mirror.
+> - **No `loadAgentOS` / no audit row in the CLI.** Loading a full runtime would run `seedBuiltinAgents`
+>   and *install* missing bundled agents (a mutation reconcile must not cause). So the CLI reads the enforced
+>   id straight from the resolved policy file (identical to the runtime) and does not open the tenant DB —
+>   matching `tenant remove`, which also doesn't audit. The `policy.reconciled` audit event belongs to the
+>   API mirror, which already holds an `os.audit`.
+
+
 
 ## Problem
 
