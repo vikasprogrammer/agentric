@@ -228,6 +228,23 @@ function EditableAvatar({ member, canEdit, sizeClass, onChanged }: { member: Mem
   )
 }
 
+/** Resolve a "principal" string to a loaded member so its avatar can be shown. Sessions carry a raw
+ *  member id (`runAs`); approvals/questions store the resolver's email (`resolvedBy`/`answeredBy`) — so
+ *  match on id OR email. Returns undefined for non-member principals (agent:/automation:/task:/chat:/
+ *  system) or anything not in the loaded list, in which case callers render text only. */
+function memberOfPrincipal(id: string | undefined, members: Member[]): Member | undefined {
+  if (!id || /^(agent|automation|task|chat):/.test(id) || id === 'system') return undefined
+  return members.find((m) => m.id === id) || members.find((m) => m.email === id)
+}
+
+/** A person as a tiny avatar + text. Falls back to text only (no avatar) when the principal doesn't
+ *  resolve to a loaded member, so nothing regresses for automations or before members load. */
+function PrincipalTag({ id, label, members, avatarClass = 'h-3.5 w-3.5 text-[8px]' }: { id?: string; label?: string; members: Member[]; avatarClass?: string }) {
+  const mem = memberOfPrincipal(id, members)
+  const text = label ?? (mem ? mem.name || mem.email : id) ?? ''
+  return <>{mem && <MemberAvatar member={mem} className={`${avatarClass} shrink-0`} />}{text}</>
+}
+
 /** Prefill the spawn box with the agent's first starter prompt, if it defines any. Otherwise the box
  *  starts empty and shows its "Describe the task…" placeholder — no generic filler. */
 const exampleTask = (a?: AgentInfo): string => a?.examplePrompts?.[0] ?? ''
@@ -664,6 +681,11 @@ function Console({ me }: { me: Member }) {
   }, [messages, state?.tenantName, state?.tenant])
 
   const refreshState = () => api.state().then(setState)
+  // Team roster (with avatars) for attributing people across pages — the "run as" facet on a session
+  // and the "resolved/answered by" line in the inbox. Loaded once; a member without a picture shows
+  // their initial via MemberAvatar, so this only ever adds, never regresses.
+  const [members, setMembers] = useState<Member[]>([])
+  useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const deleteAgent = async (id: string, builtIn?: boolean) => {
     const note = builtIn
       ? ` This is a built-in agent — you can re-add it later from the agent library.`
@@ -961,7 +983,7 @@ function Console({ me }: { me: Member }) {
                   <ArrowLeft className="h-3.5 w-3.5" /> All sessions
                 </Button>
               </div>
-              <SessionFacts session={sessions.find((s) => s.tmux === selected.tmux)} />
+              <SessionFacts session={sessions.find((s) => s.tmux === selected.tmux)} members={members} />
             </div>
           ) : (
             <div className="flex items-center gap-3">
@@ -976,7 +998,7 @@ function Console({ me }: { me: Member }) {
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
-          {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
+          {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
@@ -2069,7 +2091,7 @@ const isImportant = (m: Msg): boolean =>
 /** Compact relative time for the feed: 12s · 5m · 3h · 2d · 4w. */
 /** The open session's facts, rendered as a subline under the session title (owner/agent/started-by/
  *  age/status). Its own row, so every fact shows; it wraps on a narrow viewport rather than hiding. */
-function SessionFacts({ session: s }: { session?: Session }) {
+function SessionFacts({ session: s, members = [] }: { session?: Session; members?: Member[] }) {
   if (!s) return null
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -2079,7 +2101,9 @@ function SessionFacts({ session: s }: { session?: Session }) {
       </span>
       {s.runAsLabel && (
         <span className="flex items-center gap-1" title={`runs as ${s.runAsLabel}`}>
-          <User className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          {memberOfPrincipal(s.runAs, members)
+            ? <MemberAvatar member={memberOfPrincipal(s.runAs, members)!} className="h-3.5 w-3.5 text-[8px] shrink-0" />
+            : <User className="h-3.5 w-3.5 shrink-0 opacity-60" />}
           <span className="max-w-[160px] truncate text-foreground">{s.runAsLabel}</span>
         </span>
       )}
@@ -2141,7 +2165,7 @@ function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
   )
 }
 
-function InboxPage({ messages, me, onOpen, onOpenArtifact, onOpenTask }: { messages: Msg[]; me: Member; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void; onOpenTask: (id: string) => void }) {
+function InboxPage({ messages, me, members, onOpen, onOpenArtifact, onOpenTask }: { messages: Msg[]; me: Member; members: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void; onOpenTask: (id: string) => void }) {
   // Read state is now PER-MEMBER + server-backed (m.read): it syncs across this member's devices/tabs
   // and one admin marking read no longer touches another's badge. `readIds` optimistically bridges the
   // gap until the next poll reflects the server truth.
@@ -2220,7 +2244,7 @@ function InboxPage({ messages, me, onOpen, onOpenArtifact, onOpenTask }: { messa
           <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">No activity yet.</div>
         ) : (
           <div className="divide-y divide-border/60 overflow-hidden rounded-lg border">
-            {activity.map((m) => <FeedItem key={m.id} m={m} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onOpenTask={onOpenTask} onDismiss={dismiss} unread={isUnread(m)} />)}
+            {activity.map((m) => <FeedItem key={m.id} m={m} members={members} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onOpenTask={onOpenTask} onDismiss={dismiss} unread={isUnread(m)} />)}
           </div>
         )}
       </section>
@@ -2336,7 +2360,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
 /** One read-only Activity-feed row — completion · artifact · progress update · resolved approval ·
  *  answered question · (legacy) start. Compact, the whole row opens the session (artifacts open the
  *  gallery); the timestamp swaps to a dismiss button on hover. */
-function FeedItem({ m, onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: { m: Msg; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onOpenTask?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
+function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: { m: Msg; members?: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onOpenTask?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
   const meta = (m.args ?? {}) as { artifactId?: string; filename?: string; taskId?: string; event?: string }
   const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
@@ -2366,7 +2390,7 @@ function FeedItem({ m, onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: 
     const cancelledA = m.status === 'cancelled'
     Icon = m.status === 'approved' ? CheckCircle2 : XCircle
     iconCls = m.status === 'approved' ? 'text-emerald-600' : cancelledA ? 'text-muted-foreground' : 'text-red-600'
-    verb = <>{m.title}{m.resolvedBy && !cancelledA && <span className="text-muted-foreground"> · by {m.resolvedBy}</span>}</>
+    verb = <>{m.title}{m.resolvedBy && !cancelledA && <span className="inline-flex items-center gap-1 text-muted-foreground"> · by <PrincipalTag id={m.resolvedBy} members={members} /></span>}</>
     badge = cancelledA
       ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">cancelled</Badge>
       : <Badge variant={m.status === 'approved' ? 'default' : 'destructive'} className="px-1.5 py-0 text-[10px]">{m.status}</Badge>
@@ -2375,7 +2399,7 @@ function FeedItem({ m, onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: 
     const cancelled = m.status === 'cancelled'
     verb = cancelled ? 'asked — dismissed unanswered' : 'asked'; detail = m.body
     if (cancelled) badge = <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">dismissed</Badge>
-    extra = m.answer ? <div className="mt-1 rounded bg-muted px-2 py-1 text-xs"><span className="text-muted-foreground">{m.answeredBy ? `${m.answeredBy}: ` : 'answer: '}</span>{m.answer}</div> : null
+    extra = m.answer ? <div className="mt-1 rounded bg-muted px-2 py-1 text-xs"><span className="mr-1 inline-flex items-center gap-1 text-muted-foreground">{m.answeredBy ? <><PrincipalTag id={m.answeredBy} members={members} />:</> : 'answer:'}</span>{m.answer}</div> : null
   } else if (isImportant(m)) {
     Icon = AlertTriangle; iconCls = 'text-amber-600'; highlight = true
     detail = m.body
