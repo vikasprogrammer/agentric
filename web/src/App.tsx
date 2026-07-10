@@ -134,7 +134,8 @@ const sessionFiltersToParams = (f: SessionFilters): Record<string, string> => {
   if (f.agent !== 'all') p.agent = f.agent
   if (f.source !== 'all') p.source = f.source
   if (f.owner !== 'all') p.owner = f.owner
-  if (f.mine) p.mine = '1'
+  // `mine` is serialized by the caller, not here: its default is role-dependent (ON for owner/admin,
+  // OFF for members), so only a deviation from that per-viewer default is written to the URL.
   if (f.sortKey !== DEFAULT_SORT_KEY) p.sort = f.sortKey
   if (f.sortDir !== 'desc') p.dir = f.sortDir
   return p
@@ -1481,14 +1482,21 @@ function SessionsPage({
   const [agentFilter, setAgentFilter] = useState(seed.agent)
   const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>(seed.source)
   const [ownerFilter, setOwnerFilter] = useState(seed.owner) // run-as member id, or 'all'
-  // "My sessions" toggle: owner/admin see the whole fleet by default; flipping this narrows to the
-  // sessions the viewer is accountable for (spawned directly OR runs as them) — same rule as the
-  // sidebar switcher's `mySessions`. For a member the two views coincide (they only see their own).
-  const [mine, setMine] = useState(seed.mine)
+  // "My sessions" toggle. It narrows to the sessions the viewer is accountable for (spawned directly
+  // OR runs as them) — same rule as the sidebar switcher's `mySessions`. It DEFAULTS ON for owner/admin
+  // (whose visibility is fleet-wide, so their unfiltered list is every session in the workspace) and
+  // OFF for a member (whose list is already only their own — narrowing it further could hide an
+  // automation-fired run they're entitled to, and the toggle is hidden for them anyway). An explicit
+  // `?mine=` in the URL wins over the default, so a deliberate choice survives a refresh / deep-link.
+  const isFleetViewer = me.role === 'owner' || me.role === 'admin'
+  const seedMineParam = useRef(new URLSearchParams(urlQuery).get('mine')).current
+  const [mine, setMine] = useState(seedMineParam === null ? isFleetViewer : seedMineParam === '1')
   const [sortKey, setSortKey] = useState<SessionSortKey>(seed.sortKey)
   const [sortDir, setSortDir] = useState<SortDir>(seed.sortDir)
   useEffect(() => {
-    onFiltersChange(sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter, mine, sortKey, sortDir }))
+    const params = sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter, mine, sortKey, sortDir })
+    if (mine !== isFleetViewer) params.mine = mine ? '1' : '0' // only persist a deviation from the per-viewer default
+    onFiltersChange(params)
     // onFiltersChange is a stable replaceState wrapper; depending on the filter/sort values only is intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, statusFilter, agentFilter, sourceFilter, ownerFilter, mine, sortKey, sortDir])
@@ -1520,8 +1528,10 @@ function SessionsPage({
     return [...m].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label))
   }, [sessions])
   const ownerLabel = (id: string) => (id === 'all' ? 'All owners' : ownerOptions.find((o) => o.id === id)?.label ?? id)
-  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || ownerFilter !== 'all' || mine
-  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setOwnerFilter('all'); setMine(false) }
+  // `mine` counts as "active" only when it deviates from the per-viewer default (My for owner/admin,
+  // All for members), so the default view doesn't spuriously show the Clear-filters affordance.
+  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || ownerFilter !== 'all' || mine !== isFleetViewer
+  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setOwnerFilter('all'); setMine(isFleetViewer) }
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>

@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.79.2] — 2026-07-10
+### Changed
+- **Sessions list now defaults to "My sessions" for owner/admin.** The scope toggle added in 0.79.0
+  now starts on **My sessions** for fleet-wide viewers (owner/admin) so their default view is the
+  sessions they're accountable for rather than every session in the workspace; **All** is one click
+  away. Members are unaffected (their list is already only their own, and the default stays All so an
+  automation-fired run they're entitled to is never hidden). The choice is role-relative: only a
+  deviation from the per-viewer default is written to the URL, so a deliberate All/My pick still
+  survives a refresh, and the default view no longer shows a spurious "Clear filters" affordance.
+
 ## [0.79.1] — 2026-07-10
 ### Fixed
 - **Warn on `policyContext` mismatch at agent registration.** An agent manifest's `policyContext` was
