@@ -7088,14 +7088,17 @@ function MemorySettings({ me }: { me: Member }) {
   const refreshView = () => api.memorySettings().then((v) => { if (!v.error) apply(v) }).catch(() => {})
   // Batched migrate: loop the endpoint (each call moves ≤ a batch) passing back the server's `before`
   // horizon until it reports `done`, showing progress. Safe to resume — a failed batch leaves rows put.
+  // Batched migrate. Each call moves one batch of orphans (rows written before the backend switch) and
+  // reports how many are left; the server anchors the orphan set to the switch time, so this loop is
+  // resume-safe — if you leave the tab mid-migration, just re-open and click again and it picks up exactly
+  // where it stopped (no duplicates, no false "done"). No client-side horizon to thread anymore.
   const doMigrate = async () => {
     setReconBusy(true); setReconMsg('Migrating…')
-    let before: number | undefined
     let migrated = 0, skipped = 0
     for (let guard = 0; guard < 10000; guard++) {
-      const r = await api.migrateMemory({ skipEpisodes: reconSkipEp, before })
+      const r = await api.migrateMemory({ skipEpisodes: reconSkipEp })
       if (r.error) { setReconBusy(false); return setReconMsg('⚠ ' + r.error) }
-      migrated += r.migrated ?? 0; skipped += r.skipped ?? 0; before = r.before
+      migrated += r.migrated ?? 0; skipped += r.skipped ?? 0
       if (r.done) break
       setReconMsg(`Migrating… ${migrated} moved${skipped ? ` / ${skipped} skipped` : ''}, ${r.remaining ?? 0} left`)
     }
@@ -7227,7 +7230,7 @@ function MemorySettings({ me }: { me: Member }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !reconBusy && setReconcileOpen(false)}>
           <div className="w-full max-w-lg space-y-3 rounded-lg border bg-background p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
             <div className="text-sm font-medium">Switched to {view?.backend} — reconcile the {view?.localCount ?? 0} existing {(view?.localCount ?? 0) === 1 ? 'memory' : 'memories'}?</div>
-            <p className="text-xs text-muted-foreground">Agents now recall from {view?.backend}, which has {view?.backendCount ?? 0}. Your {view?.drift ?? 0} local {(view?.drift ?? 0) === 1 ? 'memory' : 'memories'} aren't in it yet. <strong>Migrate</strong> copies them into {view?.backend}; <strong>Start fresh</strong> clears the local ledger; <strong>Later</strong> leaves them (the drift banner stays until you reconcile).</p>
+            <p className="text-xs text-muted-foreground">Agents now recall from {view?.backend}, which has {view?.backendCount ?? 0}. Your {view?.drift ?? 0} pre-switch {(view?.drift ?? 0) === 1 ? 'memory' : 'memories'} aren't in it yet. <strong>Migrate</strong> copies them into {view?.backend} (resume-safe — you can leave and continue later); <strong>Start fresh</strong> clears the local ledger; <strong>Later</strong> leaves them (the drift banner stays until you reconcile).</p>
             <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><input type="checkbox" checked={reconSkipEp} onChange={(e) => setReconSkipEp(e.target.checked)} />durable only — skip raw session episodes</label>
             <div className="flex flex-wrap items-center gap-2">
               <Button size="sm" onClick={doMigrate} disabled={reconBusy}><Upload className="mr-1 h-3.5 w-3.5" />Migrate to {view?.backend}</Button>
@@ -7256,8 +7259,8 @@ function MemorySettings({ me }: { me: Member }) {
           <div className="flex items-start gap-2">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
             <div>
-              <div className="font-medium text-amber-700">{view!.drift} {view!.drift === 1 ? 'memory is' : 'memories are'} in this workspace's local ledger but not in the active {view?.backend} store.</div>
-              <div className="mt-0.5 text-muted-foreground">Agents recall from {view?.backend} ({view?.backendCount ?? 0} there), so they can't see these {view?.localCount ?? 0} local rows. Migrate them into {view?.backend}, or clear the ledger so the count matches what's recallable.</div>
+              <div className="font-medium text-amber-700">{view!.drift} {view!.drift === 1 ? 'memory was' : 'memories were'} written before you switched to {view?.backend} and {view!.drift === 1 ? 'isn\'t' : 'aren\'t'} in it yet.</div>
+              <div className="mt-0.5 text-muted-foreground">Agents recall from {view?.backend} ({view?.backendCount ?? 0} there), so they can't see these {view?.drift ?? 0} older rows. Migrate copies them up, or clear the ledger to drop them. Migration is resume-safe — you can leave this tab and click Migrate again later to continue where it stopped.</div>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 pl-6">

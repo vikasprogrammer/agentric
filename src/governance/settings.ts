@@ -19,6 +19,7 @@ const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connect
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
 const MEMORY_KEY = 'memory_config'; // the live memory backend (JSON MemoryConfig; overrides the file default)
+const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active external backend became active — the stable orphan horizon for migration
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
 const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state (cumulative totals/topics/recent)
@@ -208,6 +209,19 @@ export class SettingsStore {
 
   setMemoryConfig(cfg: MemoryConfig, by?: string): void {
     this.set(MEMORY_KEY, JSON.stringify(cfg), by);
+  }
+
+  /** The timestamp the active external backend became active (set only on a real backend TYPE switch — not
+   *  a token/ranking re-save). The stable horizon for identifying "orphan" local rows the migration must
+   *  copy up: rows written BEFORE this are from the previous backend and aren't in the current one.
+   *  `undefined` → no switch on record (treat the ledger as already consistent). */
+  memorySwitchedAt(): number | undefined {
+    const n = Number(this.getRow(MEMORY_SWITCH_KEY)?.value);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  }
+
+  stampMemorySwitch(ts: number, by?: string): void {
+    this.set(MEMORY_SWITCH_KEY, String(ts), by);
   }
 
   // ── runtime defaults ───────────────────────────────────────────────────────────

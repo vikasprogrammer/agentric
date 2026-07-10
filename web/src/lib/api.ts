@@ -852,7 +852,7 @@ export const api = {
   ollamaStatus: (url: string) => call<OllamaStatus>('GET', '/api/settings/memory/ollama?url=' + encodeURIComponent(url)),
   maintainMemory: () => call<{ ok: boolean; pruned?: number; merged?: number; error?: string }>('POST', '/api/settings/memory/maintain'),
   // Batched: call with { skipEpisodes } first, then loop passing back the server-assigned `before` until `done`.
-  migrateMemory: (opts: { skipEpisodes: boolean; before?: number; limit?: number }) => call<{ ok: boolean; done?: boolean; before?: number; migrated?: number; skipped?: number; remaining?: number; note?: string; error?: string }>('POST', '/api/settings/memory/migrate', opts),
+  migrateMemory: (opts: { skipEpisodes: boolean; limit?: number }) => call<{ ok: boolean; done?: boolean; migrated?: number; skipped?: number; remaining?: number; note?: string; error?: string }>('POST', '/api/settings/memory/migrate', opts),
   clearMemoryLedger: () => call<{ ok: boolean; cleared?: number; error?: string }>('POST', '/api/settings/memory/clear'),
 
   kb: (q = '', section = '') => call<{ pages: KbPage[]; sections: string[]; enabled: boolean }>('GET', `/api/kb?q=${encodeURIComponent(q)}&section=${encodeURIComponent(section)}`),
