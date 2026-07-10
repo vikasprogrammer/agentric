@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.74.2] — 2026-07-10
+### Changed
+- **Session facts read as a subline under a smaller title.** Instead of sitting on the header's right
+  edge (v0.74.1), the owner/agent/started-by/age/status cluster now stacks directly beneath the open
+  session's title, which is dropped to a compact size. The facts row shows every fact and wraps on a
+  narrow viewport rather than hiding them; the status pill leads.
+
 ## [0.74.1] — 2026-07-10
 ### Changed
 - **Session facts moved to the page header.** The owner/agent/started-by/age/status cluster from v0.74.0
