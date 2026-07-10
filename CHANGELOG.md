@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.96.0] — 2026-07-10
+### Added
+- **Agents can now dispatch tasks, not just create them.** New `task_dispatch` MCP tool (→
+  `POST /api/tasks/dispatch` → `Automations.dispatchTask`) lets an agent kick an agent-assigned task
+  into a governed session immediately, instead of only filing it and waiting on the scheduler tick. This
+  closes the tasks-plan §9 "agent-triggered dispatch" future: file work with `task_create({
+  assignee:"agent:<id>" })`, then `task_dispatch` it to spawn the worker now. Distinct from `task_claim`
+  (which pulls a task into the caller's OWN session) — dispatch spawns a NEW session that runs the task to
+  completion and closes its own loop via `task_update`. Runaway brakes: `guard:true` (the pile-up guard
+  the console's explicit-human dispatch skips, so an agent can't stack parallel sessions on one task) plus
+  the existing `TASK_MAX_ATTEMPTS` ceiling; the spawned session runs-as the task `owner` (human
+  passthrough) and every effect still passes the gateway. Audited `task.dispatched` with `by:agent:<id>`.
+  35 always-on MCP tools now.
+
 ## [0.95.0] — 2026-07-10
 ### Added
 - **KB pages now count how often agents read them.** Every `kb_read` fetch by an agent bumps a

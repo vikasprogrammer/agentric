@@ -501,9 +501,14 @@ session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME
   (or a small pool), so a human can drop tasks on the board with no assignee and the fleet picks them up.
   This is the agent-spawns-agent frontier Automations also parks — needs a concurrency budget + a
   fairness/round-robin story first.
-- **Agent-triggered dispatch.** A `task_dispatch` MCP tool letting an agent spawn a worker for a task
+- ~~**Agent-triggered dispatch.** A `task_dispatch` MCP tool letting an agent spawn a worker for a task
   (today agents only `claim` into their own session). Gate it hard — it's how a runaway loop spawns
-  sessions.
+  sessions.~~ **SHIPPED (v0.96.0):** `task_dispatch` → `POST /api/tasks/dispatch` → `Automations.dispatchTask`
+  with `guard:true` (the pile-up guard the console's explicit-human dispatch skips), so an agent can kick an
+  agent-assigned task into a session immediately instead of waiting for the tick. Runaway brakes = the
+  pile-up guard (never two live sessions per task) + the `TASK_MAX_ATTEMPTS` ceiling (parks a failing task
+  `blocked`); the spawned session runs-as the task owner and every effect still passes the gateway. Still
+  open: per-run **budget attribution** + **recursion-depth** limiting on this spawn path.
 - **Optional policy brake on dispatch.** Run `Policy.classify('task.dispatch', {task})` in the dispatcher:
   green auto-spawns, yellow (a `budget`/`protected` label, or an estimated cost) suspends for approval, red
   needs owner — turning "start work" into a gated capability without touching the store. Designed for, off
