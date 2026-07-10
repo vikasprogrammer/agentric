@@ -1170,7 +1170,15 @@ export class TerminalManager {
       this.audit(sessionId, agent, 'gate.killswitch', { capability });
       return { decision: 'deny' };
     }
-    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
+    // Host-egress governance (Phase 2b): OFF unless the workspace switch is on. When on, pass the
+    // agent's granted host matchers (org + shared + the session's run-as member's personal) so the
+    // enricher can parse the egress target and compute host facts. `null` = feature off.
+    let hostGrants: { match: string; protocol: 'ssh' | 'http' | 'postgres' | 'any'; posture: 'allow' | 'ask' | 'never' }[] | null = null;
+    if (this.os.settings.hostGovernanceEnabled()) {
+      const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(sessionId)?.run_as ?? undefined;
+      hostGrants = this.os.hosts.grantsFor(runAs);
+    }
+    const args = enrichArgs(capability, rawArgs, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns(), hostGrants);
     // An outbound email is its own governed capability: reclassify so the policy gates it by recipient
     // (internal → green, external → yellow) instead of the generic connector-mutation tier.
     if (args.emailSend === true) {
@@ -1183,6 +1191,21 @@ export class TerminalManager {
         this.audit(sessionId, agent, 'gate.email.blocked', { capability, reason: emailDenial, recipients: args.emailRecipients ?? [] });
         this.audit(sessionId, agent, 'gate.decision', { capability, decision: { effect: 'deny', riskClass: 'deny', reason: emailDenial } });
         return { decision: 'deny' };
+      }
+    }
+    // Host egress reclassification (Phase 2b): shell.exec → net.connect / ssh.exec when this command
+    // reaches a host we should govern. netMode decides scope: 'allowlist' (lockdown) governs ALL
+    // egress; 'open' (default) governs only internal-looking, explicitly-listed, or unpinnable-host
+    // reaches — public-internet egress stays plain shell.exec. Host facts (hostAllowed/hostUnknown/
+    // hostPosture) ride along in `args` for the net.* policy rules.
+    if (hostGrants && args.netEgress === true) {
+      const netMode = this.os.agents.get(agent)?.netMode === 'allowlist' ? 'allowlist' : 'open';
+      const govern = netMode === 'allowlist'
+        ? true
+        : (args.hostUnknown === true || args.hostInternal === true || args.hostListed === true);
+      if (govern) {
+        capability = args.netProtocol === 'ssh' ? 'ssh.exec' : 'net.connect';
+        this.audit(sessionId, agent, 'gate.net.reclassified', { capability, host: (args.host as string) ?? null, netMode, hostAllowed: args.hostAllowed === true, hostUnknown: args.hostUnknown === true });
       }
     }
     const attempt: ActionAttempt = { capabilityId: capability, args, reasoning };

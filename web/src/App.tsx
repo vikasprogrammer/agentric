@@ -4776,6 +4776,8 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
   const [savedIcon, setSavedIcon] = useState<string | undefined>(undefined)
   const [secrets, setSecrets] = useState('')
   const [savedSecrets, setSavedSecrets] = useState('')
+  const [netMode, setNetMode] = useState<'open' | 'allowlist'>('open')
+  const [savedNetMode, setSavedNetMode] = useState<'open' | 'allowlist'>('open')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
@@ -4787,17 +4789,18 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
       const p = (r.examplePrompts ?? []).join('\n')
       const c = r.category ?? ''
       const s = (r.shellSecrets ?? []).join(' ')
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s)
+      const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setNetMode(nm); setSavedNetMode(nm)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || netMode !== savedNetMode
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
     const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
-    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     const t: RuntimeTuning = { model: r.model, effort: r.effort }
@@ -4805,7 +4808,8 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
     const s = (r.shellSecrets ?? []).join(' ')
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -4834,6 +4838,14 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
           <label className="text-xs font-medium">Shell secrets</label>
           <Input value={secrets} onChange={(e) => setSecrets(e.target.value)} className="font-mono text-sm" placeholder="e.g. GH_TOKEN  (space/comma separated env-var names)" />
           <p className="text-[11px] text-muted-foreground">Vault keys exported as env vars into this agent's shell (so CLIs like <span className="font-mono">gh</span> authenticate). Store the value in <span className="font-medium">Settings → Secrets</span> (key = the name here; set its principal to <span className="font-mono">{agentId}</span> for a per-agent value, or leave tenant-wide). Resolved at launch, audited per key.</p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Host access mode</label>
+          <select value={netMode} onChange={(e) => setNetMode(e.target.value === 'allowlist' ? 'allowlist' : 'open')} className="w-full rounded-md border bg-background px-2 py-1.5 text-sm">
+            <option value="open">Open — govern only internal / listed hosts (default)</option>
+            <option value="allowlist">Allowlist — lock to granted Host connections only</option>
+          </select>
+          <p className="text-[11px] text-muted-foreground">Only applies when <span className="font-medium">host governance</span> is on (Settings → Governance). <span className="font-mono">Open</span>: public-internet egress runs freely; internal-looking or listed <a href="#/connectors" className="underline hover:text-foreground">hosts</a> are gated. <span className="font-mono">Allowlist</span>: any reach to a host not granted to this agent pauses for approval.</p>
         </div>
         <div className="flex items-center gap-3">
           <Button size="sm" onClick={save} disabled={busy || !dirty}>{dirty ? 'Save' : 'Saved'}</Button>
@@ -6324,15 +6336,27 @@ function GovernanceSettings({ me }: { me: Member }) {
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  const [hostGov, setHostGov] = useState(false)
+  const [hostBusy, setHostBusy] = useState(false)
   const canEdit = me.role === 'owner' || me.role === 'admin'
+  const isOwner = me.role === 'owner'
 
   useEffect(() => {
     api.governance().then((r) => {
       if (r.error) return
       const v = { moneyCapUsd: r.moneyCapUsd, bulkDeleteCount: r.bulkDeleteCount }
-      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
+      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy }); setHostGov(!!r.hostGovernanceEnabled)
     }).catch(() => {})
   }, [])
+
+  const toggleHostGov = async () => {
+    setHostBusy(true)
+    const next = !hostGov
+    const r = await api.saveGovernance({ ...saved, hostGovernanceEnabled: next })
+    setHostBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setHostGov(!!r.hostGovernanceEnabled)
+  }
 
   const dirty = JSON.stringify(t) !== JSON.stringify(saved)
   const save = async () => {
@@ -6370,6 +6394,26 @@ function GovernanceSettings({ me }: { me: Member }) {
             {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
             {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <label className="flex items-start gap-3">
+            <input type="checkbox" className="mt-1" checked={hostGov} disabled={!isOwner || hostBusy} onChange={toggleHostGov} />
+            <span className="text-sm">
+              <span className="font-medium">Govern host access (SSH / internal network / databases)</span>
+              <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">beta</span>
+              <p className="mt-1 text-xs text-muted-foreground">
+                When on, an agent's shell reaches to a <a href="#/connectors" className="underline hover:text-foreground">Host connection</a> —
+                or to any internal-looking host (private IPs, <span className="font-mono">.internal</span>) — are classified as
+                <span className="font-mono"> net.connect</span>/<span className="font-mono">ssh.exec</span> and gated by policy (unlisted or
+                unrecognised hosts pause for approval; a host set to <em>never</em> is refused). Public-internet egress stays ungoverned unless an
+                agent is set to <span className="font-mono">allowlist</span> mode. Best-effort command parsing — a governance + audit layer, not a
+                firewall. Owner-only.
+              </p>
+            </span>
+          </label>
         </CardContent>
       </Card>
     </div>

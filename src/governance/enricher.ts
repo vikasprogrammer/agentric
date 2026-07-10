@@ -29,6 +29,7 @@
  */
 import * as path from 'node:path';
 import { ApprovalLevel, EnrichPattern, Role, canApprove } from '../types';
+import { computeHostFacts, type HostGrant } from './host-match';
 
 const DESTRUCTIVE: RegExp[] = [
   /\bdrop\s+(database|table|schema)\b/i,
@@ -104,6 +105,7 @@ export function enrichArgs(
   orgDomains: string[] = [],
   workdir?: string,
   patterns: EnrichPattern[] = [],
+  hostGrants?: HostGrant[] | null,
 ): Record<string, unknown> {
   const tool = typeof args.tool === 'string' ? args.tool : '';
   const input = (args.input && typeof args.input === 'object' ? args.input : args) as Record<string, unknown>;
@@ -196,7 +198,19 @@ export function enrichArgs(
     emailExternal = args.emailExternal === true || emailRecipients.length === 0 || externalCount > 0;
   }
 
+  // Host egress (Phase 2b): when host governance is ON, the caller passes the agent's granted host
+  // matchers (an array, possibly empty; `null`/undefined = feature off). For a shell command we parse
+  // the egress target and surface netEgress/host/hostAllowed/hostUnknown/hostPosture so the gate can
+  // reclassify shell.exec → net.connect/ssh.exec and the policy can gate on the host. Parsing is
+  // best-effort + fail-loud (host-match.ts) — never a firewall.
+  let hostFacts: Record<string, unknown> | undefined;
+  if (hostGrants && isShell && command) {
+    const hf = computeHostFacts(command, hostGrants);
+    if (hf.netEgress) hostFacts = hf as unknown as Record<string, unknown>;
+  }
+
   const facts: Record<string, unknown> = { ...args, destructive, risky };
+  if (hostFacts) Object.assign(facts, hostFacts);
   if (outsideWorkdir !== undefined) facts.outsideWorkdir = outsideWorkdir;
   if (amountUsd !== undefined) facts.amountUsd = amountUsd;
   if (deleteCount !== undefined) facts.deleteCount = deleteCount;

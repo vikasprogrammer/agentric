@@ -2032,7 +2032,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
@@ -2044,16 +2044,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // everything else.
     const prompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
     const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
+    // netMode is governance-sensitive (only owner/admin reach this route; a self-editing agent CANNOT
+    // change it). 'allowlist' locks the agent to its granted hosts; anything else → 'open'. Undefined
+    // ('open') is left off the manifest to keep it clean.
+    const netMode = 'netMode' in b ? (b.netMode === 'allowlist' ? 'allowlist' : 'open') : ag.netMode;
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, category, icon };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [], rev } });
-    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [], netMode: netMode ?? 'open', rev } });
+    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, netMode: netMode ?? 'open', category, icon });
   }
 
   // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──
@@ -2112,7 +2116,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── governance thresholds (the numeric caps the never-tier policy rules read) ──
   if (method === 'GET' && p === '/api/settings/governance') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    return sendJson(res, 200, { ...os.settings.governanceThresholds(), ...os.settings.governanceMeta() });
+    return sendJson(res, 200, { ...os.settings.governanceThresholds(), hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), ...os.settings.governanceMeta() });
   }
   if (method === 'PUT' && p === '/api/settings/governance') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -2121,8 +2125,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       { moneyCapUsd: Number(b.moneyCapUsd), bulkDeleteCount: Number(b.bulkDeleteCount), emailBulkCap: Number(b.emailBulkCap) },
       me.email,
     );
+    // Host-egress governance master switch (owner-only, since it changes WHAT gates). Only touched when
+    // the field is present, so a thresholds-only save leaves it unchanged.
+    if (typeof b.hostGovernanceEnabled === 'boolean') {
+      if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required to change host governance' });
+      os.settings.setHostGovernanceEnabled(b.hostGovernanceEnabled, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.host_governance.updated', data: { enabled: b.hostGovernanceEnabled } });
+    }
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.governance.updated', data: { ...saved } });
-    return sendJson(res, 200, { ok: true, ...saved });
+    return sendJson(res, 200, { ok: true, ...saved, hostGovernanceEnabled: os.settings.hostGovernanceEnabled() });
   }
 
   // ── custom governance patterns (operator regex → boolean fact the enricher sets, policy gates on) ──

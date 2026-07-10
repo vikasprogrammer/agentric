@@ -185,4 +185,17 @@ export class HostStore {
   listForConsole(viewerId: string, isAdmin: boolean): Host[] {
     return this.list().filter((h) => h.scope !== 'personal' || h.shared || isAdmin || h.ownerMemberId === viewerId);
   }
+
+  /**
+   * The ENABLED host grants that apply to a session running as `memberId` — org hosts (everyone) +
+   * shared personal + that member's own personal. Mirrors ConnectorStore.boundTo. Reduced to the
+   * matcher shape the enricher's host-fact computation needs (Phase 2b). Undefined member (system/
+   * automation spawn) sees org + shared only.
+   */
+  grantsFor(memberId?: string): { match: string; protocol: HostProtocol; posture: HostPosture }[] {
+    return this.list()
+      .filter((h) => h.enabled)
+      .filter((h) => h.scope !== 'personal' || h.shared || (!!memberId && h.ownerMemberId === memberId))
+      .map((h) => ({ match: h.match, protocol: h.protocol, posture: h.posture }));
+  }
 }

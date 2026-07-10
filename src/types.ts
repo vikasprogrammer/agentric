@@ -720,6 +720,11 @@ export interface AgentManifest extends RuntimeTuning {
    *  vault secret reaches the interactive shell — connectors get theirs via the MCP bag — so it's
    *  deliberately explicit per agent. Undefined/empty → nothing is exported. */
   shellSecrets?: string[];
+  /** Host-egress governance posture (Phase 2b — docs/host-connections-plan.md). Only takes effect when
+   *  workspace host governance is enabled. `'open'` (default): public-internet egress stays plain
+   *  shell.exec; only internal-looking or explicitly-listed hosts are governed. `'allowlist'` (lockdown):
+   *  ANY detected egress to a host not in this agent's grants pauses/denies. Undefined → 'open'. */
+  netMode?: 'open' | 'allowlist';
   /** The agent's visual icon. Either a built-in library id (a lucide icon name like `"Bot"`) or a raw
    *  custom `<svg>…</svg>` markup string the user uploaded. Undefined → the console falls back to a
    *  default glyph. Purely cosmetic. Rendered in an `<img>` so inline SVG can't execute scripts. */

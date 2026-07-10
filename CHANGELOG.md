@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.77.0] — 2026-07-10
+### Added
+- **Host governance (Phase 2b) — agents' SSH / internal-network / DB reaches are now gated by policy.**
+  With **Settings → Governance → "Govern host access"** on (owner-only, off by default), the gate parses
+  an agent's shell egress (`ssh`, `curl`, `psql`, `wget`, `nc`, …), extracts the destination host, and
+  reclassifies `shell.exec` → **`net.connect`** / **`ssh.exec`** so the policy can gate it: a reach to a
+  host that isn't a granted [Host connection](./docs/host-connections-plan.md) (or is internal-looking —
+  private IPs, `.internal`) pauses for approval; a host with posture **never** is refused; an
+  unparseable host (a variable/pipe) escalates rather than slips through. Per-agent **`netMode`** (agent
+  config): `open` (default — public-internet egress runs freely, only internal/listed hosts are governed)
+  or `allowlist` (lockdown — any un-granted reach pauses). New policy caps `net.connect`/`ssh.exec` rules.
+  Best-effort command parsing — a governance + audit layer, **not** a firewall (see
+  `docs/host-connections-plan.md` §2). Phase 2d (kernel egress enforcement) remains future work.
+
 ## [0.76.0] — 2026-07-10
 ### Changed
 - **Automations speak human, not cron.** The Automations list now renders a schedule as friendly prose

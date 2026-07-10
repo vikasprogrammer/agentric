@@ -36,9 +36,15 @@ for (const c of fixture.decisions) {
   const engine = new JsonPolicyEngine(policyDoc);
   const thresholds = c.thresholds || fixture.thresholdsDefault;
   engine.setThresholds(() => thresholds);
-  const args = enrichArgs(c.capability, c.args, c.orgDomains || [], c.workdir);
+  const args = enrichArgs(c.capability, c.args, c.orgDomains || [], c.workdir, c.patterns || [], c.hostGrants || null);
   // Mirror tm.gate: an email send is reclassified to its own capability so the recipient-aware rules apply.
-  const capability = args.emailSend === true ? 'email.send' : c.capability;
+  let capability = args.emailSend === true ? 'email.send' : c.capability;
+  // Mirror tm.gate host reclassification (Phase 2b): shell.exec → net.connect/ssh.exec per netMode.
+  if (c.hostGrants && args.netEgress === true) {
+    const netMode = c.netMode === 'allowlist' ? 'allowlist' : 'open';
+    const govern = netMode === 'allowlist' ? true : (args.hostUnknown === true || args.hostInternal === true || args.hostListed === true);
+    if (govern) capability = args.netProtocol === 'ssh' ? 'ssh.exec' : 'net.connect';
+  }
   const got = tag(engine.classify({ capabilityId: capability, args, reasoning: '' }, ctx));
   if (got === c.expect) pass++;
   else failures.push(`decision  ✗ ${c.name}\n            expected ${c.expect}, got ${got}  (facts: destructive=${args.destructive} risky=${args.risky} amountUsd=${args.amountUsd} deleteCount=${args.deleteCount})`);

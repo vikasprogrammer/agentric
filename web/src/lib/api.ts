@@ -835,15 +835,15 @@ export const api = {
   rescanAgents: () => call<{ ok: boolean; added: string[]; updated: string[]; removed: string[]; errors: { folder: string; error: string }[]; error?: string }>('POST', '/api/agents/rescan'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
-  agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
-  saveAgentConfig: (id: string, patch: RuntimeTuning & { description?: string; examplePrompts?: string[]; shellSecrets?: string[]; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; category?: string; icon?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
+  agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
+  saveAgentConfig: (id: string, patch: RuntimeTuning & { description?: string; examplePrompts?: string[]; shellSecrets?: string[]; netMode?: 'open' | 'allowlist'; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
   agentRevisions: (id: string) => call<{ agent: string; revisions: AgentRevision[]; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/revisions`),
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
 
-  governance: () => call<GovernanceThresholds & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
-  saveGovernance: (t: GovernanceThresholds) => call<{ ok: boolean; error?: string } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
+  governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
+  saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
 
   // Per-tenant console branding (accent colour + favicon badge).
   branding: () => call<Branding & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/branding'),

@@ -26,6 +26,7 @@ const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives inject
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
+const HOST_GOV_KEY = 'host_governance_enabled'; // master switch for Phase 2b host-egress governance ('1'|'0')
 const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
 const BRANDING_KEY = 'ui_branding'; // per-tenant web-console accent colour + favicon badge (JSON Branding)
 
@@ -362,6 +363,18 @@ export class SettingsStore {
     };
     this.set(GOVERNANCE_KEY, JSON.stringify(next), by);
     return next;
+  }
+
+  // ── host-egress governance master switch (Phase 2b — docs/host-connections-plan.md) ──
+  // OFF by default: registering hosts (Phase 2a) is inert until an admin flips this on, so the new
+  // gate behaviour (parsing ssh/curl targets, reclassifying to net.connect/ssh.exec) can bake safely.
+  hostGovernanceEnabled(): boolean {
+    return this.getRow(HOST_GOV_KEY)?.value === '1';
+  }
+
+  setHostGovernanceEnabled(on: boolean, by?: string): boolean {
+    this.set(HOST_GOV_KEY, on ? '1' : '0', by);
+    return on;
   }
 
   // ── custom governance patterns (operator regex → boolean fact the enricher sets) ──
