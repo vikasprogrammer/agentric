@@ -85,6 +85,12 @@ for (const c of fixture.decisions) {
   const got = tag(decision);
   if (got === c.expect) pass++;
   else failures.push(`decision  ✗ ${c.name}\n            expected ${c.expect}, got ${got}  (facts: destructive=${args.destructive} risky=${args.risky} amountUsd=${args.amountUsd} deleteCount=${args.deleteCount})`);
+  // Optional fact-level assertion: the default posture no longer GATES `risky`, so a change in what the
+  // enricher classifies as risky is invisible in the decision alone — assert the fact directly (#139).
+  if (typeof c.expectRisky === 'boolean') {
+    if (!!args.risky === c.expectRisky) pass++;
+    else failures.push(`risky     ✗ ${c.name}\n            expected risky=${c.expectRisky}, got ${!!args.risky}`);
+  }
 }
 
 for (const c of fixture.context) {
@@ -93,7 +99,8 @@ for (const c of fixture.context) {
   else failures.push(`context   ✗ ${c.name}\n            expected autoClear=${c.expectAutoClear}, got ${got}`);
 }
 
-const total = fixture.decisions.length + fixture.context.length;
+const riskyChecks = fixture.decisions.filter((c) => typeof c.expectRisky === 'boolean').length;
+const total = fixture.decisions.length + fixture.context.length + riskyChecks;
 if (failures.length) {
   console.error(`\nGOVERNANCE CONFORMANCE: ${pass}/${total} passed, ${failures.length} FAILED\n`);
   for (const f of failures) console.error('  ' + f);

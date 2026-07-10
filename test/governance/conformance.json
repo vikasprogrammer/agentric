@@ -26,7 +26,68 @@
           "command": "npm run deploy:prod"
         }
       },
-      "expect": "allow"
+      "expect": "allow",
+      "expectRisky": true
+    },
+    {
+      "name": "#139: gh pr merge --delete-branch is NOT risky (a flag, not a destructive verb)",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "gh pr merge 15 --repo acme/docs --squash --delete-branch"
+        }
+      },
+      "expect": "allow",
+      "expectRisky": false
+    },
+    {
+      "name": "#139: deploy-preview compound is NOT risky (hyphenated token)",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "gh workflow run deploy-preview.yml"
+        }
+      },
+      "expect": "allow",
+      "expectRisky": false
+    },
+    {
+      "name": "#139: gh run list is NOT risky (no destructive keyword)",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "gh run list --repo acme/docs --limit 1"
+        }
+      },
+      "expect": "allow",
+      "expectRisky": false
+    },
+    {
+      "name": "#139: drop table is destructive → never (and still matches, space-bounded)",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "psql -c 'drop table users'"
+        }
+      },
+      "expect": "never",
+      "expectRisky": true
+    },
+    {
+      "name": "#139: sudo systemctl restart IS still risky",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "sudo systemctl restart nginx"
+        }
+      },
+      "expect": "allow",
+      "expectRisky": true
     },
     {
       "name": "rm -rf data is never",

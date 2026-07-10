@@ -44,7 +44,11 @@ const DESTRUCTIVE: RegExp[] = [
 ];
 const DESTRUCTIVE_TOOL = /delete_site|drop_database|drop_table|drop_schema/i;
 const MUTATION_TOOL = /create|send|update|delete|remove|write|post|put|patch|merge|publish|upload|deploy|pay|refund|archive|invite|execute/i;
-const RISKY_SHELL = /\b(stripe|refund|deploy|prod|drop|delete|kubectl|systemctl|shutdown)\b/i;
+// Risky-shell keywords, but NOT when they're part of a hyphenated flag or compound token: the lookarounds
+// exclude a leading/trailing `-` so `gh pr merge --delete-branch`, `deploy-preview`, `--prod` don't trip
+// (a flag name isn't a destructive verb — #139), while `drop table`, `sudo systemctl restart`, `kubectl
+// delete` still match. `\w` in the lookarounds just mirrors the word-boundary these keywords already had.
+const RISKY_SHELL = /(?<![-\w])(stripe|refund|deploy|prod|drop|delete|kubectl|systemctl|shutdown)(?![-\w])/i;
 const AMOUNT_KEY = /amount.*usd|usd.*amount|amountusd|amount_usd/i;
 const PAYMENT_TOOL = /refund|payment|charge|payout|\bpay\b/i;
 const PAYMENT_AMOUNT_KEY = /^(amount|total|amount_cents|amountcents)$/i;

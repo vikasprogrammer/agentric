@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.85.0] — 2026-07-10
+### Fixed
+- **Enricher no longer flags a hyphenated flag/compound as `risky` shell (#139).** `RISKY_SHELL` matched
+  its keywords (`delete`, `drop`, `deploy`, `prod`, …) anywhere in the command, so `gh pr merge
+  --delete-branch` tripped on `--delete-branch` and multi-line blocks tripped on `deploy-preview`-style
+  tokens — over-firing the `shell.exec risky → ask` gate on routine ops. The regex now excludes a
+  leading/trailing `-` (and word char) via lookarounds, so a flag name isn't treated as a destructive
+  verb, while real commands (`drop table`, `sudo systemctl restart`, `kubectl delete`) still match. The
+  conformance runner gained an optional `expectRisky` fact assertion (the default posture no longer GATES
+  `risky`, so this is invisible in the decision alone) with fixtures covering both the false positives and
+  the true positives.
+
 ## [0.84.0] — 2026-07-10
 ### Fixed
 - **Removing a built-in agent now sticks.** A built-in agent (`agent-author`, `engineer`, `support`,
