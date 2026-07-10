@@ -3438,11 +3438,15 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const chatAgents = agents.filter((a) => a.runtime === 'claude-code')
   const nameOf = (id?: string) => principalLabel(id, members)
-  // Assignee glyph: an AGENT shows its OWN icon (from the manifest), a human shows the person glyph.
-  const assigneeIcon = (id: string | undefined, cls: string) =>
-    id?.startsWith('agent:')
-      ? <AgentIcon icon={agents.find((a) => a.id === id.slice('agent:'.length))?.icon} className={cls} />
-      : <User className={cls} />
+  // Assignee glyph: an AGENT shows its OWN icon (from the manifest); a member shows their avatar (or
+  // their initial when they haven't uploaded one); anyone/anything else (system, automation, unknown
+  // id) falls back to the person glyph.
+  const assigneeIcon = (id: string | undefined, cls: string) => {
+    if (id?.startsWith('agent:')) return <AgentIcon icon={agents.find((a) => a.id === id.slice('agent:'.length))?.icon} className={cls} />
+    const mem = id ? members.find((m) => m.id === id) : undefined
+    if (mem) return <MemberAvatar member={mem} className={`${cls} text-[8px]`} />
+    return <User className={cls} />
+  }
   // An assignee shown as a chip: its icon + friendly name. Used on cards, list rows, and select items.
   const assigneeChip = (id?: string, cls = 'h-3 w-3') => <span className="inline-flex items-center gap-1">{assigneeIcon(id, cls)}{nameOf(id)}</span>
 
@@ -3606,7 +3610,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                   <SelectContent>
                     <SelectItem value="none">Unassigned</SelectItem>
                     {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
-                    {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{m.name || m.email}</span></SelectItem>)}
+                    {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
                   </SelectContent>
                 </Select>
               </Field>
@@ -3753,7 +3757,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                       <SelectContent>
                         <SelectItem value="none">Unassigned</SelectItem>
                         {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
-                        {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{m.name || m.email}</span></SelectItem>)}
+                        {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
                       </SelectContent>
                     </Select>
                   </Field>
