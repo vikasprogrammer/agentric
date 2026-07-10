@@ -841,21 +841,25 @@ function Console({ me }: { me: Member }) {
       </aside>
 
       <main className="flex flex-1 flex-col overflow-hidden">
-        <div className="flex items-center justify-between border-b px-6 py-4">
-          <div className="flex items-center gap-3">
-            <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-              {route === 'sessions' && selected ? selected.title : route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
-            </h1>
-            {/* When a terminal is open the page fills with the iframe; this pins a way back to the list next to the title. */}
-            {route === 'sessions' && selected && (
-              <Button size="sm" variant="outline" className="h-7 gap-1 px-2 text-xs" onClick={() => nav('sessions')} title="back to the full sessions list">
-                <ArrowLeft className="h-3.5 w-3.5" /> All sessions
-              </Button>
-            )}
-          </div>
-          {/* Open-session facts fill the header's right-hand space instead of crowding the tab strip. */}
-          {route === 'sessions' && selected && (
-            <SessionFacts session={sessions.find((s) => s.tmux === selected.tmux)} />
+        <div className="flex items-center justify-between border-b px-6 py-3">
+          {route === 'sessions' && selected ? (
+            /* Open session: a compact title over its facts row, so the facts read as a subline rather
+               than crowding the terminal tab strip or the header's right edge. */
+            <div className="flex min-w-0 flex-col gap-1">
+              <div className="flex items-center gap-3">
+                <h1 className="max-w-[60vw] truncate text-sm font-semibold">{selected.title}</h1>
+                <Button size="sm" variant="outline" className="h-6 gap-1 px-2 text-xs" onClick={() => nav('sessions')} title="back to the full sessions list">
+                  <ArrowLeft className="h-3.5 w-3.5" /> All sessions
+                </Button>
+              </div>
+              <SessionFacts session={sessions.find((s) => s.tmux === selected.tmux)} />
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <h1 className="max-w-[60vw] truncate text-lg font-semibold">
+                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+              </h1>
+            </div>
           )}
         </div>
 
@@ -1858,36 +1862,35 @@ const isImportant = (m: Msg): boolean =>
   m.type === 'update' && !!(m.args as { important?: boolean } | undefined)?.important
 
 /** Compact relative time for the feed: 12s · 5m · 3h · 2d · 4w. */
-/** The open session's facts, shown on the right of the page header (owner/agent/started-by/age/status).
- *  Lives in the header's spare space so it never crowds the terminal tab strip. Each fact hides
- *  progressively on narrower viewports so the single-line header never wraps. */
+/** The open session's facts, rendered as a subline under the session title (owner/agent/started-by/
+ *  age/status). Its own row, so every fact shows; it wraps on a narrow viewport rather than hiding. */
 function SessionFacts({ session: s }: { session?: Session }) {
   if (!s) return null
   return (
-    <div className="flex shrink-0 items-center gap-3 whitespace-nowrap text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+      <span className="flex items-center gap-1.5" title={`status: ${statusLabel(s)}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+        <span className="text-foreground">{statusLabel(s)}</span>
+      </span>
       {s.runAsLabel && (
-        <span className="hidden items-center gap-1 md:flex" title={`runs as ${s.runAsLabel}`}>
+        <span className="flex items-center gap-1" title={`runs as ${s.runAsLabel}`}>
           <User className="h-3.5 w-3.5 shrink-0 opacity-60" />
-          <span className="max-w-[140px] truncate text-foreground">{s.runAsLabel}</span>
+          <span className="max-w-[160px] truncate text-foreground">{s.runAsLabel}</span>
         </span>
       )}
-      <span className="hidden items-center gap-1 lg:flex" title={`agent ${s.agent}`}>
+      <span className="flex items-center gap-1" title={`agent ${s.agent}`}>
         <Bot className="h-3.5 w-3.5 shrink-0 opacity-60" />
-        <span className="max-w-[140px] truncate">{s.agent}</span>
+        <span className="max-w-[160px] truncate">{s.agent}</span>
       </span>
       {s.spawnedByLabel && (
-        <span className="hidden max-w-[180px] items-center gap-1 xl:flex" title={`started by ${s.spawnedByLabel}`}>
+        <span className="flex max-w-[200px] items-center gap-1" title={`started by ${s.spawnedByLabel}`}>
           <Play className="h-3.5 w-3.5 shrink-0 opacity-60" />
           <span className="truncate">{s.spawnedByLabel}</span>
         </span>
       )}
-      <span className="hidden items-center gap-1 lg:flex" title={`created ${new Date(s.createdAt).toLocaleString()}`}>
+      <span className="flex items-center gap-1" title={`created ${new Date(s.createdAt).toLocaleString()}`}>
         <Clock className="h-3.5 w-3.5 shrink-0 opacity-60" />
         <span>{timeAgo(s.createdAt)} ago</span>
-      </span>
-      <span className="flex items-center gap-1.5 rounded-full border px-2 py-0.5" title={`status: ${statusLabel(s)}`}>
-        <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
-        <span className="text-foreground">{statusLabel(s)}</span>
       </span>
     </div>
   )
