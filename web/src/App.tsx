@@ -109,7 +109,7 @@ const compareSessions = (a: Session, b: Session, key: SessionSortKey): number =>
 
 /** The sessions-list view state (filters + sort), held in the URL hash query so it survives a
  *  refresh / deep-link. */
-interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; owner: string; sortKey: SessionSortKey; sortDir: SortDir }
+interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; owner: string; mine: boolean; sortKey: SessionSortKey; sortDir: SortDir }
 const parseSessionFilters = (qs: string): SessionFilters => {
   const p = new URLSearchParams(qs)
   const status = p.get('status') ?? ''
@@ -121,6 +121,7 @@ const parseSessionFilters = (qs: string): SessionFilters => {
     agent: p.get('agent') ?? 'all',
     source: (source in SESSION_SOURCE_LABELS ? source : 'all') as 'all' | SessionSource,
     owner: p.get('owner') ?? 'all',
+    mine: p.get('mine') === '1',
     sortKey: (SESSION_SORT_KEYS.includes(sort as SessionSortKey) ? sort : DEFAULT_SORT_KEY) as SessionSortKey,
     sortDir: (p.get('dir') === 'asc' ? 'asc' : 'desc') as SortDir,
   }
@@ -133,6 +134,7 @@ const sessionFiltersToParams = (f: SessionFilters): Record<string, string> => {
   if (f.agent !== 'all') p.agent = f.agent
   if (f.source !== 'all') p.source = f.source
   if (f.owner !== 'all') p.owner = f.owner
+  if (f.mine) p.mine = '1'
   if (f.sortKey !== DEFAULT_SORT_KEY) p.sort = f.sortKey
   if (f.sortDir !== 'desc') p.dir = f.sortDir
   return p
@@ -870,7 +872,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage me={me} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} />}
@@ -1439,8 +1441,9 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
 }
 
 function SessionsPage({
-  sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  me, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
+  me: Member
   sessions: Session[]
   waiting: Set<string>
   selected: Selected
@@ -1478,13 +1481,17 @@ function SessionsPage({
   const [agentFilter, setAgentFilter] = useState(seed.agent)
   const [sourceFilter, setSourceFilter] = useState<'all' | SessionSource>(seed.source)
   const [ownerFilter, setOwnerFilter] = useState(seed.owner) // run-as member id, or 'all'
+  // "My sessions" toggle: owner/admin see the whole fleet by default; flipping this narrows to the
+  // sessions the viewer is accountable for (spawned directly OR runs as them) — same rule as the
+  // sidebar switcher's `mySessions`. For a member the two views coincide (they only see their own).
+  const [mine, setMine] = useState(seed.mine)
   const [sortKey, setSortKey] = useState<SessionSortKey>(seed.sortKey)
   const [sortDir, setSortDir] = useState<SortDir>(seed.sortDir)
   useEffect(() => {
-    onFiltersChange(sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter, sortKey, sortDir }))
+    onFiltersChange(sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, owner: ownerFilter, mine, sortKey, sortDir }))
     // onFiltersChange is a stable replaceState wrapper; depending on the filter/sort values only is intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, statusFilter, agentFilter, sourceFilter, ownerFilter, sortKey, sortDir])
+  }, [query, statusFilter, agentFilter, sourceFilter, ownerFilter, mine, sortKey, sortDir])
   // Clicking a column header sorts by it; clicking the active column flips direction. A fresh column
   // starts ascending, except `created` (time) which reads best newest-first.
   const toggleSort = (key: SessionSortKey) => {
@@ -1513,8 +1520,8 @@ function SessionsPage({
     return [...m].map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label))
   }, [sessions])
   const ownerLabel = (id: string) => (id === 'all' ? 'All owners' : ownerOptions.find((o) => o.id === id)?.label ?? id)
-  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || ownerFilter !== 'all'
-  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setOwnerFilter('all') }
+  const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || ownerFilter !== 'all' || mine
+  const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setOwnerFilter('all'); setMine(false) }
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>
@@ -1522,9 +1529,10 @@ function SessionsPage({
       (agentFilter === 'all' || s.agent === agentFilter) &&
       (sourceFilter === 'all' || sessionSource(s) === sourceFilter) &&
       (ownerFilter === 'all' || s.runAs === ownerFilter) &&
+      (!mine || s.spawnedBy === me.id || s.runAs === me.id) &&
       (needle === '' || `${s.title} ${s.agent} ${s.id} ${s.task} ${s.spawnedByLabel ?? ''} ${s.runAsLabel ?? ''}`.toLowerCase().includes(needle)),
     )
-  }, [sessions, query, statusFilter, agentFilter, sourceFilter, ownerFilter])
+  }, [sessions, query, statusFilter, agentFilter, sourceFilter, ownerFilter, mine, me.id])
   // Sorted view (both grid + list render this). A stable tiebreak on createdAt keeps equal keys in a
   // deterministic order rather than letting the sort shuffle them.
   const shown = useMemo(() => {
@@ -1679,6 +1687,14 @@ function SessionsPage({
 
       {/* filters: free-text search + status/agent/source narrowers, applied client-side over the list */}
       <div className="flex flex-wrap items-center gap-2">
+        {/* My/All scope — only owner/admin see other people's sessions, so the toggle is meaningful
+            just for them (a member's list is already only their own). */}
+        {(me.role === 'owner' || me.role === 'admin') && (
+          <div className="inline-flex h-8 overflow-hidden rounded-md border text-xs">
+            <button onClick={() => setMine(false)} className={`px-2.5 ${!mine ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`} title="every session in the workspace">All</button>
+            <button onClick={() => setMine(true)} className={`border-l px-2.5 ${mine ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`} title="only sessions you started or that run as you">My sessions</button>
+          </div>
+        )}
         <div className="relative min-w-[180px] flex-1 sm:max-w-xs">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search sessions…" className="h-8 pl-7 text-sm" />

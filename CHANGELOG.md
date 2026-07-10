@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.79.0] — 2026-07-10
+### Added
+- **Sessions list: a "My sessions / All" scope toggle.** Owner and admin see the whole workspace's
+  sessions by default (their visibility is fleet-wide by design — `canViewSpawn` passes any session for
+  those roles), so an admin- or automation-spawned run shows up in an owner's active list automatically.
+  The new segmented toggle at the head of the Sessions filter bar narrows the view to the sessions the
+  viewer is accountable for — ones they spawned directly or that run **as** them (the same rule as the
+  sidebar switcher's "my sessions") — without changing who can *see* what. It persists in the URL hash
+  query alongside the other session filters (so a refresh/deep-link restores it) and is shown only to
+  owner/admin, since a member's list is already only their own.
+
 ## [0.78.0] — 2026-07-10
 ### Added
 - **Host credential injection (Phase 2c) — a granted SSH host's key is now delivered to the agent's
