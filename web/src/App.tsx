@@ -853,6 +853,10 @@ function Console({ me }: { me: Member }) {
               </Button>
             )}
           </div>
+          {/* Open-session facts fill the header's right-hand space instead of crowding the tab strip. */}
+          {route === 'sessions' && selected && (
+            <SessionFacts session={sessions.find((s) => s.tmux === selected.tmux)} />
+          )}
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
@@ -1610,13 +1614,11 @@ function SessionsPage({
     const endedTabs = sessions.filter((s) => !isLive(s))
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
     const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s))
-    // The session whose terminal is on screen — drives the pinned detail cluster (owner/agent/status).
-    const cur = sessions.find((s) => s.tmux === selected.tmux)
     return (
       <div className="flex h-full flex-col">
         <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
           <TerminalSquare className="h-4 w-4 shrink-0" />
-          {/* Only the tabs scroll; the detail cluster stays pinned right so it's always readable. */}
+          {/* Only the tabs scroll; the "ended" toggle stays pinned right so it's always reachable. */}
           <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
             {liveTabs.map(renderTab)}
             {selectedEnded && renderTab(selectedEnded)}
@@ -1635,38 +1637,6 @@ function SessionsPage({
               </>
             )}
           </div>
-          {/* Pinned-right session facts — owner, agent, source, status, age. Same-height as the tab strip
-              (no wrap): each fact hides progressively on narrower panes so the row never grows taller. */}
-          {cur && (
-            <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[11px] text-neutral-400">
-              <span className="h-4 w-px bg-neutral-700" />
-              {cur.runAsLabel && (
-                <span className="hidden items-center gap-1 sm:flex" title={`runs as ${cur.runAsLabel}`}>
-                  <User className="h-3 w-3 shrink-0 text-neutral-500" />
-                  <span className="max-w-[140px] truncate text-neutral-200">{cur.runAsLabel}</span>
-                </span>
-              )}
-              <span className="hidden items-center gap-1 md:flex" title={`agent ${cur.agent}`}>
-                <Bot className="h-3 w-3 shrink-0 text-neutral-500" />
-                <span className="max-w-[140px] truncate">{cur.agent}</span>
-              </span>
-              {cur.spawnedByLabel && (
-                <span className="hidden max-w-[160px] items-center gap-1 truncate lg:flex" title={`started by ${cur.spawnedByLabel}`}>
-                  <Play className="h-3 w-3 shrink-0 text-neutral-500" />
-                  <span className="truncate">{cur.spawnedByLabel}</span>
-                </span>
-              )}
-              <span className="hidden items-center gap-1 md:flex" title={`created ${new Date(cur.createdAt).toLocaleString()}`}>
-                <Clock className="h-3 w-3 shrink-0 text-neutral-500" />
-                <span>{timeAgo(cur.createdAt)}</span>
-              </span>
-              <span className="flex items-center gap-1.5 rounded bg-neutral-800 px-1.5 py-0.5" title={`status: ${isLive(cur) ? 'running' : cur.status}`}>
-                <span className={`h-1.5 w-1.5 rounded-full ${statusDot(cur)}`} />
-                <span className="text-neutral-200">{isLive(cur) ? 'running' : cur.status}</span>
-              </span>
-              <span className="hidden font-mono text-neutral-500 xl:inline" title={`session ${cur.id}`}>{cur.id}</span>
-            </div>
-          )}
         </div>
         <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity} />
       </div>
@@ -1888,6 +1858,41 @@ const isImportant = (m: Msg): boolean =>
   m.type === 'update' && !!(m.args as { important?: boolean } | undefined)?.important
 
 /** Compact relative time for the feed: 12s · 5m · 3h · 2d · 4w. */
+/** The open session's facts, shown on the right of the page header (owner/agent/started-by/age/status).
+ *  Lives in the header's spare space so it never crowds the terminal tab strip. Each fact hides
+ *  progressively on narrower viewports so the single-line header never wraps. */
+function SessionFacts({ session: s }: { session?: Session }) {
+  if (!s) return null
+  return (
+    <div className="flex shrink-0 items-center gap-3 whitespace-nowrap text-xs text-muted-foreground">
+      {s.runAsLabel && (
+        <span className="hidden items-center gap-1 md:flex" title={`runs as ${s.runAsLabel}`}>
+          <User className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          <span className="max-w-[140px] truncate text-foreground">{s.runAsLabel}</span>
+        </span>
+      )}
+      <span className="hidden items-center gap-1 lg:flex" title={`agent ${s.agent}`}>
+        <Bot className="h-3.5 w-3.5 shrink-0 opacity-60" />
+        <span className="max-w-[140px] truncate">{s.agent}</span>
+      </span>
+      {s.spawnedByLabel && (
+        <span className="hidden max-w-[180px] items-center gap-1 xl:flex" title={`started by ${s.spawnedByLabel}`}>
+          <Play className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          <span className="truncate">{s.spawnedByLabel}</span>
+        </span>
+      )}
+      <span className="hidden items-center gap-1 lg:flex" title={`created ${new Date(s.createdAt).toLocaleString()}`}>
+        <Clock className="h-3.5 w-3.5 shrink-0 opacity-60" />
+        <span>{timeAgo(s.createdAt)} ago</span>
+      </span>
+      <span className="flex items-center gap-1.5 rounded-full border px-2 py-0.5" title={`status: ${statusLabel(s)}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+        <span className="text-foreground">{statusLabel(s)}</span>
+      </span>
+    </div>
+  )
+}
+
 function timeAgo(ts: number): string {
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
   if (s < 60) return `${s}s`
