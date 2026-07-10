@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.86.1] — 2026-07-10
+### Fixed
+- **Saving Slack/Discord tokens no longer looks like it needs a server restart.** The server already
+  re-dials the Socket-Mode / Gateway connection live when tokens change (`SlackSocket.restart()` /
+  `DiscordSocket.restart()` on the cached per-tenant runtime — no process restart), but the Integrations
+  panel polled connection status only **once**, 1.2 s after saving. A Slack/Discord handshake (auth check →
+  WebSocket → READY) routinely takes longer than that, so the panel showed "Disconnected" mid-reconnect and
+  people restarted the whole box to fix a non-problem. The panel now polls with backoff (up to ~12 s) until
+  the touched platform settles — connected, or intentionally cleared — so it reflects the live reconnect.
+  Web-only change (`web/src/App.tsx`).
+
 ## [0.86.0] — 2026-07-10
 ### Added
 - **`agent-os policy reconcile` — align agents' `policyContext` to the enforced ruleset.** The command

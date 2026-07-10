@@ -7172,6 +7172,30 @@ function IntegrationsSettings({ me }: { me: Member }) {
     api.slackStatus().then((s) => { if (s && !s.error) setSlackState(s) }).catch(() => {})
     api.discordStatus().then((s) => { if (s && !s.error) setDiscordState(s) }).catch(() => {})
   }
+  // After a token change the server re-dials the Socket-Mode / Gateway connection live (no restart) —
+  // but the handshake (auth check → WebSocket → READY) can take several seconds. A single poll would
+  // catch a mid-handshake "Disconnected" and make the panel look broken (and tempt a needless server
+  // restart). So poll with backoff until the touched platform(s) settle: connected, or intentionally
+  // cleared (unconfigured stays down = terminal).
+  const pollReconnect = (want: { slack: boolean; discord: boolean }) => {
+    let tries = 0
+    const settled = (s?: { configured: boolean; connected: boolean } | null) => !!s && (!s.configured || s.connected)
+    const tick = async () => {
+      tries++
+      let slackDone = !want.slack, discordDone = !want.discord
+      if (want.slack) {
+        const s = await api.slackStatus().catch(() => null)
+        if (s && !s.error) { setSlackState(s); slackDone = settled(s) }
+      }
+      if (want.discord) {
+        const d = await api.discordStatus().catch(() => null)
+        if (d && !d.error) { setDiscordState(d); discordDone = settled(d) }
+      }
+      if ((slackDone && discordDone) || tries >= 8) return
+      setTimeout(tick, 1500)
+    }
+    setTimeout(tick, 800)
+  }
   useEffect(() => {
     api.integrations().then((r) => {
       if (r.error) return setHint('⚠ ' + r.error)
@@ -7188,8 +7212,11 @@ function IntegrationsSettings({ me }: { me: Member }) {
     setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
-    // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll the new state.
-    if (body.slackAppToken !== undefined || body.slackBotToken !== undefined || body.discordBotToken !== undefined) setTimeout(loadStatus, 1200)
+    // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
+    // reconnect settles so the panel reflects reality rather than a mid-handshake "Disconnected".
+    const wantSlack = body.slackAppToken !== undefined || body.slackBotToken !== undefined
+    const wantDiscord = body.discordBotToken !== undefined
+    if (wantSlack || wantDiscord) pollReconnect({ slack: wantSlack, discord: wantDiscord })
   }
 
   if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
