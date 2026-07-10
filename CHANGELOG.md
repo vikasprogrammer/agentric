@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.77.2] — 2026-07-10
+### Fixed
+- **Terminal "Using the terminal" help modal now matches the (light) dialog theme.** It was styled for a
+  dark surface (`text-neutral-300` on white), so the descriptions rendered washed-out and the key chips
+  looked heavy. Switched to the app's semantic tokens (`text-muted-foreground` / `bg-muted` /
+  `border-border` / `text-foreground`) so it reads correctly.
+
 ## [0.77.1] — 2026-07-10
 ### Fixed
 - **Terminal copy works over plain HTTP again.** The new first-party `<Xterm>` (v0.75.0) copied via

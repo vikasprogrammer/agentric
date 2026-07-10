@@ -1204,15 +1204,15 @@ function TerminalHelpModal({ open, onClose }: { open: boolean; onClose: () => vo
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <DialogContent className="max-w-lg">
         <DialogHeader><DialogTitle className="flex items-center gap-2"><TerminalSquare className="h-4 w-4" /> Using the terminal</DialogTitle></DialogHeader>
-        <div className="divide-y divide-neutral-800">
+        <div className="divide-y divide-border">
           {rows.map((r) => (
             <div key={r.keys} className="flex items-baseline gap-3 py-2">
-              <kbd className="shrink-0 whitespace-nowrap rounded border border-neutral-700 bg-neutral-800 px-1.5 py-0.5 font-mono text-[11px] text-neutral-200">{r.keys}</kbd>
-              <span className="text-sm text-neutral-300">{r.desc}</span>
+              <kbd className="shrink-0 whitespace-nowrap rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground">{r.keys}</kbd>
+              <span className="text-sm text-muted-foreground">{r.desc}</span>
             </div>
           ))}
         </div>
-        <p className="text-xs text-neutral-500">This is a live tmux session — closing the tab leaves it running; reopen it any time to reattach.</p>
+        <p className="text-xs text-muted-foreground">This is a live tmux session — closing the tab leaves it running; reopen it any time to reattach.</p>
       </DialogContent>
     </Dialog>
   )
