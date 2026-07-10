@@ -4,7 +4,7 @@
   "description": "Builds and refines other agents — interview a role, draft its prompt, and create it live.",
   "category": "System",
   "principal": "svc-agent-author",
-  "policyContext": "default@v1",
+  "policyContext": "default@v3",
   "runtime": "claude-code",
   "model": "claude-opus-4-8",
   "icon": "Wand2",

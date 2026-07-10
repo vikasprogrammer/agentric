@@ -4,7 +4,7 @@
   "description": "Sales generalist — qualifies leads, drafts outreach and follow-ups, prepares call notes and proposals.",
   "category": "Sales",
   "principal": "svc-sales",
-  "policyContext": "default@v1",
+  "policyContext": "default@v3",
   "runtime": "claude-code",
   "icon": "Handshake",
   "examplePrompts": [

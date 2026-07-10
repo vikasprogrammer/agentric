@@ -1,6 +1,6 @@
 {
   "name": "agent-os",
-  "version": "0.79.0",
+  "version": "0.79.1",
   "description": "A generic, governed operating system for running autonomous agents safely across brands. Ships with a local web console.",
   "license": "MIT",
   "type": "commonjs",
@@ -24,7 +24,8 @@
     "demo:dev": "ts-node src/demo.ts",
     "test:governance": "node scripts/governance-conformance.cjs",
     "test:enrich": "node scripts/test-enrich-patterns.cjs",
-    "test:context": "node scripts/context-injection-test.cjs"
+    "test:context": "node scripts/context-injection-test.cjs",
+    "test:policy-context": "node scripts/test-policy-context.cjs"
   },
   "keywords": [
     "agents",

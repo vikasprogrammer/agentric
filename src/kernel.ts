@@ -37,7 +37,7 @@ import { AgentRevisions } from './state/agent-revisions';
 import { TaskStore } from './state/tasks';
 import { StubIdentity } from './governance/identity';
 import { InMemoryIdempotencyStore } from './gateway/idempotency';
-import { JsonPolicyEngine, PolicyDocument } from './governance/policy';
+import { JsonPolicyEngine, PolicyDocument, policyContextMismatch } from './governance/policy';
 import { EnvSecretsVault, SqliteSecretsVault } from './edge/secrets';
 import { resolveMasterKey } from './edge/secret-crypto';
 import { seedBuiltinAgents } from './edge/agent-catalog';
@@ -93,6 +93,9 @@ export class AgentOS {
   readonly policy: PolicyEngine;
   readonly mock = new MockAdapter();
   readonly agents = new Map<string, AgentManifest>();
+  /** Agents already warned about a `policyContext` mismatch (keyed `id\0context`) — warn once per value,
+   *  not on every rescan. */
+  private readonly warnedPolicyContexts = new Set<string>();
   /** User-registered connectors (MCP servers) the claude-code runtime exposes to agents. */
   readonly connectors: ConnectorStore;
   /** Host connections — governed reachable destinations (SSH / internal HTTP / DB). See host-connections-plan.md. */
@@ -185,6 +188,16 @@ export class AgentOS {
   }
   registerAgent(manifest: AgentManifest): this {
     this.agents.set(manifest.id, manifest);
+    // Surface a `policyContext` that names a ruleset the engine isn't enforcing (see policyContextMismatch)
+    // — a silent mismatch means the agent's declared guardrails aren't the ones actually applied.
+    const key = `${manifest.id} ${manifest.policyContext ?? ''}`;
+    if (!this.warnedPolicyContexts.has(key)) {
+      const warning = policyContextMismatch(manifest.id, manifest.policyContext, this.policy.id);
+      if (warning) {
+        this.warnedPolicyContexts.add(key);
+        console.warn(warning);
+      }
+    }
     return this;
   }
   /** Drop an agent from the live registry (the on-disk folder is removed by the caller). */

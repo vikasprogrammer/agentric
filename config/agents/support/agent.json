@@ -4,7 +4,7 @@
   "description": "Support generalist — triages issues, answers questions, drafts replies, escalates what needs a human.",
   "category": "Support",
   "principal": "svc-support",
-  "policyContext": "default@v1",
+  "policyContext": "default@v3",
   "runtime": "claude-code",
   "icon": "Headphones",
   "examplePrompts": [

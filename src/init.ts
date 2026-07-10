@@ -31,7 +31,7 @@ function sampleManifest(id: string): string {
       version: '1.0.0',
       description: 'A real Claude session, opened in this folder, with every shell command gated by Agent OS.',
       principal: `svc-${id}`,
-      policyContext: 'default@v1',
+      policyContext: 'default@v3',
       runtime: 'claude-code',
       model: 'claude-opus-4-8',
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },

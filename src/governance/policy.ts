@@ -103,6 +103,29 @@ export function validatePolicyDocument(doc: unknown): string | null {
   return null;
 }
 
+/**
+ * The engine enforces exactly ONE loaded ruleset and `classify()` deliberately ignores per-agent
+ * `RunContext.policyContext` — so an agent whose manifest `policyContext` names a *different* ruleset is
+ * silently NOT governed by the policy it claims (a footgun: relabel the tenant's policy, or point an
+ * agent at a ruleset that has none of the red-line rules, and its guardrails vanish with no signal).
+ * Returns a human-readable warning when the declared context and the enforced ruleset disagree, or `null`
+ * when they match (or nothing is declared). Pure — the kernel calls it from `registerAgent` to surface the
+ * drift at load instead of leaving it silent.
+ */
+export function policyContextMismatch(
+  agentId: string,
+  declared: string | undefined,
+  enforced: string,
+): string | null {
+  if (!declared || declared === enforced) return null;
+  return (
+    `[policy] agent "${agentId}" declares policyContext "${declared}" but the enforced ruleset is ` +
+    `"${enforced}". Per-agent policy selection is not implemented, so this agent is governed by ` +
+    `"${enforced}", NOT "${declared}". Set its policyContext to "${enforced}" (or load the "${declared}" ` +
+    `ruleset) to remove this warning.`
+  );
+}
+
 /** Glob where `*` matches any run of characters; everything else is literal. */
 function globToRegExp(glob: string): RegExp {
   const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');

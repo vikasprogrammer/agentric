@@ -4,7 +4,7 @@
   "description": "Ops generalist — monitors systems, runs routine operational tasks, investigates incidents, keeps things running.",
   "category": "Ops",
   "principal": "svc-ops",
-  "policyContext": "default@v1",
+  "policyContext": "default@v3",
   "runtime": "claude-code",
   "icon": "Server",
   "examplePrompts": [

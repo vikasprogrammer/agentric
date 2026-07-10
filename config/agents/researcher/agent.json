@@ -4,7 +4,7 @@
   "description": "Research generalist — digs into questions, gathers and weighs sources, synthesizes clear findings.",
   "category": "Research",
   "principal": "svc-researcher",
-  "policyContext": "default@v1",
+  "policyContext": "default@v3",
   "runtime": "claude-code",
   "icon": "LineChart",
   "examplePrompts": [

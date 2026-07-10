@@ -4,7 +4,7 @@
   "description": "Marketing generalist — writes copy, posts and emails, plans campaigns, repurposes content.",
   "category": "Marketing",
   "principal": "svc-marketer",
-  "policyContext": "default@v1",
+  "policyContext": "default@v3",
   "runtime": "claude-code",
   "icon": "Megaphone",
   "examplePrompts": [

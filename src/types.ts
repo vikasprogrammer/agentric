@@ -703,6 +703,10 @@ export interface AgentManifest extends RuntimeTuning {
    *  Undefined → the agent shows under "Uncategorized". Purely organisational; no behavioural effect. */
   category?: string;
   principal: string;
+  /** The policy ruleset this agent expects to be governed by. The engine enforces a single loaded ruleset
+   *  (`os.policy.id`) and `classify()` ignores per-agent context, so this MUST match the enforced ruleset —
+   *  a mismatch is warned at registration (see {@link policyContextMismatch}) because the agent would
+   *  otherwise be governed by a different policy than it declares. */
   policyContext: string;
   runtime: 'mock' | 'claude-code';
   budget: Budget;
