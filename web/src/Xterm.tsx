@@ -31,6 +31,26 @@ const S_PREFS = 50 // '2'
 
 const enc = new TextEncoder()
 
+/** Write text to the clipboard in BOTH secure and insecure contexts. `navigator.clipboard` only exists
+ *  on https/localhost — but the console is often served over plain http on a tailnet host, where it's
+ *  undefined. Fall back to a hidden-textarea `execCommand('copy')` (the same trick ttyd used), which
+ *  works in insecure contexts as long as we're inside a user gesture (mouse-up / key-down). */
+function writeClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text)
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
+      document.body.appendChild(ta)
+      ta.focus(); ta.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(ta)
+      ok ? resolve() : reject(new Error('execCommand copy failed'))
+    } catch (e) { reject(e) }
+  })
+}
+
 /** Console-matched dark theme (neutral-950 bg, geist-ish selection). */
 export const AOS_THEME: ITheme = {
   background: '#0a0a0a',
@@ -126,7 +146,7 @@ export function Xterm({
     // We're in the app's own document (no iframe), so navigator.clipboard just works.
     const copySelection = () => {
       const sel = term.getSelection()
-      if (sel) navigator.clipboard?.writeText(sel).then(() => cbs.current.onCopy?.(), () => {})
+      if (sel) writeClipboard(sel).then(() => cbs.current.onCopy?.(), () => {})
     }
     const paste = async () => {
       try { const t = await navigator.clipboard?.readText(); if (t) send(C_INPUT + t) } catch { /* denied */ }
@@ -135,7 +155,7 @@ export function Xterm({
     // drops it; we honour it, so highlighting inside the TUI lands on the OS clipboard with no modifier.
     term.parser.registerOscHandler(52, (data) => {
       const b64 = data.split(';')[1] ?? ''
-      try { navigator.clipboard?.writeText(atob(b64)).then(() => cbs.current.onCopy?.(), () => {}) } catch { /* bad payload */ }
+      try { writeClipboard(atob(b64)).then(() => cbs.current.onCopy?.(), () => {}) } catch { /* bad payload */ }
       return true
     })
     // Cmd/Ctrl+C copies the selection (and ONLY when there is one — otherwise ^C passes through as

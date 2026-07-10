@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.77.1] — 2026-07-10
+### Fixed
+- **Terminal copy works over plain HTTP again.** The new first-party `<Xterm>` (v0.75.0) copied via
+  `navigator.clipboard`, which browsers expose only in secure contexts (https / localhost) — so on a
+  console served over plain http on a tailnet host, select-to-copy / ⌘-C / OSC 52 silently did nothing.
+  Copy now falls back to a hidden-textarea `execCommand('copy')` inside the user gesture (the same
+  technique ttyd used), so it works in insecure contexts too.
+
 ## [0.77.0] — 2026-07-10
 ### Added
 - **Host governance (Phase 2b) — agents' SSH / internal-network / DB reaches are now gated by policy.**
