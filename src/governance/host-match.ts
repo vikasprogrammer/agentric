@@ -12,6 +12,8 @@
  *
  * This is best-effort policy-layer governance, not a firewall (see the plan's §2 "honest constraint").
  */
+import type { Decision, ApprovalLevel } from '../types';
+import { riskClassForLevel } from '../types';
 
 /** The host-row protocol vocabulary (matches src/hosts/hosts.ts HostProtocol). Finer wire protocols
  *  (mysql/redis/mongo/nc) collapse to 'any' — matching is primarily by host, protocol only narrows. */
@@ -229,4 +231,38 @@ export function computeHostFacts(command: string, grants: HostGrant[]): HostFact
   if (match) { facts.hostListed = true; facts.hostAllowed = true; facts.hostPosture = match.posture; }
   else { facts.hostListed = false; facts.hostAllowed = false; }
   return facts;
+}
+
+// ── the built-in host-governance decision (engine-level, Phase 2b) ────────────────────
+
+/**
+ * The host-governance verdict, computed IN CODE from the enriched facts — applied by the gate whenever
+ * host governance is enabled, independent of the editable policy document. This is the fix for the
+ * propagation gap: a tenant whose persisted policy predates the host rules still gets governed, because
+ * the rules live here, not in the JSON the tenant may never have adopted. The editable policy still
+ * contributes the never-tier (destructive / over-cap spend / bulk delete) via its `*` rules; the gate
+ * combines the two with `stricterDecision` (the more restrictive wins), so `ssh box 'rm -rf /'` is still
+ * denied. Per-host `posture` is the owner's knob; the approval LEVEL is fixed by capability
+ * (ssh.exec → owner, net.connect → admin/head). Only meaningful for the reclassified host capabilities.
+ */
+export function hostGovernanceDecision(capability: string, facts: Record<string, unknown>): Decision {
+  const level: ApprovalLevel = capability === 'ssh.exec' ? 'owner' : 'head';
+  const rc = riskClassForLevel(level);
+  if (facts.hostPosture === 'never') return { effect: 'deny', riskClass: 'deny', reason: `${capability}: host posture is never` };
+  if (facts.hostUnknown === true) return { effect: 'approve', level, riskClass: rc, reason: `${capability}: host could not be identified` };
+  if (facts.hostAllowed === false) return { effect: 'approve', level, riskClass: rc, reason: `${capability}: host is not a granted connection` };
+  if (facts.hostPosture === 'ask') return { effect: 'approve', level, riskClass: rc, reason: `${capability}: host posture is ask` };
+  return { effect: 'allow', riskClass: 'green', reason: `${capability}: granted host` };
+}
+
+/** Restrictiveness rank of a decision: deny (3) > approve@owner (2) > approve@head (1) > allow (0). */
+export function decisionRank(d: Decision): number {
+  if (d.effect === 'deny') return 3;
+  if (d.effect === 'approve') return d.level === 'owner' ? 2 : 1;
+  return 0;
+}
+
+/** The more restrictive of two decisions (a tie keeps `a` — the editable-policy verdict). */
+export function stricterDecision(a: Decision, b: Decision): Decision {
+  return decisionRank(b) > decisionRank(a) ? b : a;
 }

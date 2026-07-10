@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.81.1] — 2026-07-10
+### Fixed
+- **Host governance now applies on every tenant, not just fresh ones.** The `net.connect`/`ssh.exec`
+  gating rules lived only in `config/policy/default.policy.json`, so a tenant with a **persisted policy**
+  that predated them (i.e. any existing workspace) silently no-op'd — enabling "Govern host access" did
+  nothing, and an ungranted `ssh` was allowed. Caught while dogfooding on the live tenant. The host
+  verdict is now applied by the **engine** (`hostGovernanceDecision` in `host-match.ts`), combined
+  most-restrictive with the editable policy's verdict in `TerminalManager.gate` — so enabling the feature
+  works regardless of the tenant's policy document, while the policy still contributes the never-tier
+  (`ssh box 'rm -rf /'` is still denied outright). The host rules were removed from the default policy
+  JSON (they're redundant with the built-in). No behaviour change for a fresh tenant.
+
 ## [0.81.0] — 2026-07-10
 ### Added
 - **Per-agent trust & maturity stats — "which agent can the system trust to run with less oversight?"**

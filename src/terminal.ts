@@ -15,6 +15,7 @@ import { Db } from './state/db';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
 import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
+import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, resolveRecipients } from './governance/recipients';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
@@ -1212,7 +1213,14 @@ export class TerminalManager {
       }
     }
     const attempt: ActionAttempt = { capabilityId: capability, args, reasoning };
-    const decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
+    let decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
+    // Host governance is applied by the ENGINE (not the editable policy), so enabling it works on any
+    // tenant even if its persisted policy predates the host rules. Combine with the policy verdict, most
+    // restrictive wins — so the never-tier (`ssh box 'rm -rf /'`) still denies, while an ungranted reach
+    // still pauses even when the tenant's policy has no host rule. Only for reclassified host caps.
+    if (hostGrants && (capability === 'net.connect' || capability === 'ssh.exec')) {
+      decision = stricterDecision(decision, hostGovernanceDecision(capability, args));
+    }
     this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning });
     this.audit(sessionId, agent, 'gate.decision', { capability, decision });
 

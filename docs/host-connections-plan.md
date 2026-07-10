@@ -4,8 +4,13 @@
 > table + Connections UI) shipped in v0.73.0. **Phase 2b** (the governance engine — egress parsing,
 > `net.connect`/`ssh.exec` reclassification, `netMode`, the master switch) shipped behind
 > **Settings → Governance → "Govern host access"** (off by default): `src/governance/host-match.ts`
-> (parsing + matching), the `isShell` host block in `src/governance/enricher.ts`, the reclassification in
-> `TerminalManager.gate`, and the `net.connect`/`ssh.exec` rules in `config/policy/default.policy.json`.
+> (parsing + matching + the built-in `hostGovernanceDecision`), the `isShell` host block in
+> `src/governance/enricher.ts`, and the reclassification + decision in `TerminalManager.gate`. **The host
+> verdict is applied by the ENGINE, not the editable policy** — combined most-restrictive with the
+> policy's own verdict — so enabling the feature works on any tenant even if its persisted policy predates
+> the rules (dogfooding on 2026-07-10 caught the opposite: rules that lived only in `default.policy.json`
+> silently no-op'd on an existing tenant). The policy still contributes the never-tier (`ssh box 'rm -rf /'`
+> is still denied).
 > **Phase 2c** (credential injection) shipped: `TerminalManager.injectHostCredentials` materialises a
 > granted SSH host's vault key into a session-scoped `ssh_config` + `ssh`/`scp` PATH shim (host-scoped
 > via `IdentitiesOnly`), so a plain `ssh` authenticates without the agent handling the key — local-lane

@@ -48,6 +48,7 @@ if (newestSrc > newestDist) {
 
 const { enrichArgs, autoClearsApproval } = require(path.join(ROOT, 'dist/governance/enricher'));
 const { JsonPolicyEngine } = require(path.join(ROOT, 'dist/governance/policy'));
+const { hostGovernanceDecision, stricterDecision } = require(path.join(ROOT, 'dist/governance/host-match'));
 
 const fixture = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/governance/conformance.json'), 'utf8'));
 const policyDoc = JSON.parse(fs.readFileSync(path.join(ROOT, 'config/policy/default.policy.json'), 'utf8'));
@@ -76,7 +77,12 @@ for (const c of fixture.decisions) {
     const govern = netMode === 'allowlist' ? true : (args.hostUnknown === true || args.hostInternal === true || args.hostListed === true);
     if (govern) capability = args.netProtocol === 'ssh' ? 'ssh.exec' : 'net.connect';
   }
-  const got = tag(engine.classify({ capabilityId: capability, args, reasoning: '' }, ctx));
+  let decision = engine.classify({ capabilityId: capability, args, reasoning: '' }, ctx);
+  // Mirror tm.gate: host governance is applied by the engine (not the JSON), combined most-restrictive.
+  if (c.hostGrants && (capability === 'net.connect' || capability === 'ssh.exec')) {
+    decision = stricterDecision(decision, hostGovernanceDecision(capability, args));
+  }
+  const got = tag(decision);
   if (got === c.expect) pass++;
   else failures.push(`decision  ✗ ${c.name}\n            expected ${c.expect}, got ${got}  (facts: destructive=${args.destructive} risky=${args.risky} amountUsd=${args.amountUsd} deleteCount=${args.deleteCount})`);
 }

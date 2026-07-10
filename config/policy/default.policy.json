@@ -1,6 +1,6 @@
 {
   "id": "default@v3",
-  "description": "What your agents may do on their own vs. what needs a human. The rule of thumb: LOCAL, reversible work runs freely (editing files, running shell, calling connectors); only OUTWARD-FACING or IRREVERSIBLE effects pause. never = refused outright regardless of who approves (irreversible: destructive ops, spend over $moneyCapUsd, bulk deletes over $bulkDeleteCount — both caps live in Settings → Governance; a host marked posture=never). ask = pauses for the named approver (external email, granting a new OAuth connection, reaching a host that isn't granted). Everything else allows. Host rules (net.connect/ssh.exec) only fire when host governance is enabled in Settings → Governance.",
+  "description": "What your agents may do on their own vs. what needs a human. The rule of thumb: LOCAL, reversible work runs freely (editing files, running shell, calling connectors); only OUTWARD-FACING or IRREVERSIBLE effects pause. never = refused outright regardless of who approves (irreversible: destructive ops, spend over $moneyCapUsd, bulk deletes over $bulkDeleteCount — both caps live in Settings → Governance). ask = pauses for the named approver (external email, granting a new OAuth connection). Everything else allows. NOTE: host governance (reaching SSH/internal/DB hosts) is applied by the ENGINE when enabled in Settings → Governance — it is not expressed as rules here, so it works on every tenant regardless of this document. See docs/host-connections-plan.md.",
   "default": { "action": "allow" },
   "rules": [
     { "match": { "capability": "*", "when": { "arg": "destructive", "op": "eq", "value": true } }, "action": "never" },
@@ -11,16 +11,6 @@
 
     { "match": { "capability": "secret.put" }, "action": "ask", "approver": "admin" },
 
-    { "match": { "capability": "connector.connect" }, "action": "ask", "approver": "owner" },
-
-    { "match": { "capability": "ssh.exec", "when": { "arg": "hostPosture", "op": "eq", "value": "never" } }, "action": "never" },
-    { "match": { "capability": "ssh.exec", "when": { "arg": "hostUnknown", "op": "eq", "value": true } }, "action": "ask", "approver": "owner" },
-    { "match": { "capability": "ssh.exec", "when": { "arg": "hostAllowed", "op": "eq", "value": false } }, "action": "ask", "approver": "owner" },
-    { "match": { "capability": "ssh.exec", "when": { "arg": "hostPosture", "op": "eq", "value": "ask" } }, "action": "ask", "approver": "owner" },
-
-    { "match": { "capability": "net.connect", "when": { "arg": "hostPosture", "op": "eq", "value": "never" } }, "action": "never" },
-    { "match": { "capability": "net.connect", "when": { "arg": "hostUnknown", "op": "eq", "value": true } }, "action": "ask", "approver": "admin" },
-    { "match": { "capability": "net.connect", "when": { "arg": "hostAllowed", "op": "eq", "value": false } }, "action": "ask", "approver": "admin" },
-    { "match": { "capability": "net.connect", "when": { "arg": "hostPosture", "op": "eq", "value": "ask" } }, "action": "ask", "approver": "admin" }
+    { "match": { "capability": "connector.connect" }, "action": "ask", "approver": "owner" }
   ]
 }
