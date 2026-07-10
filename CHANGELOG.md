@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.83.0] — 2026-07-10
+### Added
+- **Scheduler concurrency cap `AOS_MAX_CONCURRENT_SESSIONS` (#137).** Defense-in-depth against the
+  OOM bursts that drove the globex crash rate (49/113 sessions): when set, the automation scheduler
+  stops firing NEW cron / one-shot / task-dispatch spawns once that many sessions are already alive on
+  the box, and resumes as they finish. A deferred cron isn't stamped `lastFiredAt` (a `once` isn't
+  disabled), so it simply re-fires on the next tick — no queue. **Interactive and chat spawns are never
+  gated** (a human is waiting; a chat spawn has no natural retry) but they DO count toward the total, so
+  the scheduler backs off when a human is already loading the box. Fail-open if tmux liveness can't be
+  polled. Default **0 = unlimited** (opt-in; set per box to its RAM). Deferrals are audited as
+  `scheduler.deferred`. NB: the "false `crashed` episodes pollute the learning loop" worry from the
+  issue was unfounded — a spawn-death with zero work already skips the episode (`composeEpisode` returns
+  null); only a run OOM-killed mid-work records `crashed`, which needs a kill-cause breadcrumb to
+  distinguish infra-kill from a real crash (left as a follow-up).
+
 ## [0.82.0] — 2026-07-10
 ### Added
 - **Human 👍/👎 verdict on a finished run — the ground-truth signal for the maturity score.** A member who

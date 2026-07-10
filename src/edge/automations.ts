@@ -231,6 +231,10 @@ export function buildTaskPrompt(t: { id: string; title: string; body: string }):
 export class Automations {
   private readonly db: Db;
   private timer?: NodeJS.Timeout;
+  // Whole-box concurrency cap: the scheduler stops firing NEW cron/task spawns once this many sessions
+  // are alive (defense-in-depth against an OOM-inducing burst — see #137). Interactive/chat spawns are
+  // never gated (a human is waiting; a chat spawn has no natural retry). 0 = unlimited (opt-in per box).
+  private readonly maxConcurrent = Number(process.env.AOS_MAX_CONCURRENT_SESSIONS) || 0;
 
   constructor(
     private readonly os: AgentOS,
@@ -664,13 +668,22 @@ export class Automations {
   /** One scheduler pass — public so tests (and a future "catch-up" boot pass) can drive it. */
   tick(now: Date): void {
     const minute = Math.floor(now.getTime() / 60_000);
+    // Whole-box concurrency cap (#137). When set, count sessions already alive and stop firing NEW
+    // scheduler spawns once we hit the ceiling — a deferred cron/one-shot isn't stamped `lastFiredAt`
+    // (and a `once` isn't disabled), so it simply RE-FIRES next tick. No queue needed. 0 = unlimited.
+    const cap = this.maxConcurrent;
+    let running = cap > 0 ? this.tm.aliveSessionCount() : 0;
+    let deferred = 0;
+    const overCap = (): boolean => cap > 0 && running >= cap;
     for (const a of this.list()) {
       if (!a.enabled) continue;
       // One-shot deferred tasks: fire once when due, then disable so they never re-fire.
       if (a.type === 'once') {
         if (!a.runAt || a.lastFiredAt || now.getTime() < a.runAt) continue;
+        if (overCap()) { deferred++; continue; } // over cap → leave enabled; retry next tick
         try {
           this.fire(a, { guard: false, runAs: a.runAs });
+          running++;
         } catch {
           // a one-shot that errors on spawn shouldn't loop forever — fall through and disable it
         }
@@ -686,9 +699,15 @@ export class Automations {
       }
       if (!cronMatches(spec, now)) continue;
       if (a.lastFiredAt && Math.floor(a.lastFiredAt / 60_000) === minute) continue; // already fired this minute
-      this.fire(a, { guard: true });
+      if (overCap()) { deferred++; continue; } // over cap → not stamped, so it re-fires next tick
+      const r = this.fire(a, { guard: true });
+      if (r.ok) running++;
     }
-    this.dispatchTasks();
+    // Tasks share the same budget — dispatch only up to the remaining headroom (Infinity when uncapped).
+    this.dispatchTasks(cap > 0 ? Math.max(0, cap - running) : Infinity);
+    if (deferred > 0) {
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'scheduler', type: 'scheduler.deferred', data: { deferred, cap, running } });
+    }
     this.sweepOverdue(now);
   }
 
@@ -716,8 +735,9 @@ export class Automations {
    * per tick (don't stack a second on an agent already running a task session — the per-agent concurrency
    * cap). Guarded + attempt-ceilinged inside dispatchTask. Wrapped so a bad row never kills the scheduler.
    */
-  private dispatchTasks(): void {
+  private dispatchTasks(budget: number = Infinity): void {
     try {
+      if (budget <= 0) return; // whole-box concurrency cap already reached — dispatch nothing this tick
       // Agents already running a task session (their `task:<id>` spawn is still alive) — skip this tick.
       const busy = new Set<string>();
       for (const r of this.db
@@ -726,10 +746,11 @@ export class Automations {
         if (this.tm.isAlive(r.id)) busy.add(r.agent);
       }
       for (const t of this.os.tasks.dispatchable(this.os.tenant)) {
+        if (budget <= 0) break; // hit the concurrency cap mid-drain — the rest retry next tick
         const agentId = t.assignee!.slice('agent:'.length);
         if (busy.has(agentId)) continue;
         const r = this.dispatchTask(t.id, { guard: true });
-        if (r.ok) busy.add(agentId); // one per agent per tick
+        if (r.ok) { busy.add(agentId); budget--; } // one per agent per tick, and one off the cap budget
       }
     } catch {
       // never let the task sweep take down the automation scheduler

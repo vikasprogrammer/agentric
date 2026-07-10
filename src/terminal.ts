@@ -534,6 +534,22 @@ export class TerminalManager {
     return m ? m.name || m.email : undefined;
   }
 
+  /**
+   * How many sessions have a `running` row AND a live tmux pane right now — the whole-box concurrency
+   * measure for the scheduler cap (`AOS_MAX_CONCURRENT_SESSIONS`). Counts every provenance (interactive,
+   * chat, automation, task) since they all consume memory, so the scheduler backs off when a human is
+   * already loading the box. FAIL-OPEN: if liveness can't be polled (launcher backend / transient tmux
+   * failure) it returns 0 so a hiccup never freezes the scheduler into deferring everything.
+   */
+  aliveSessionCount(): number {
+    const alive = this.backend.aliveNames();
+    if (!alive) return 0;
+    const rows = this.db.prepare("SELECT tmux FROM term_sessions WHERE status = 'running'").all<{ tmux: string }>();
+    let n = 0;
+    for (const r of rows) if (alive.has(r.tmux)) n++;
+    return n;
+  }
+
   /** Is this session's tmux shell still alive? (The automations guard against pile-ups.) */
   isAlive(sessionId: string): boolean {
     const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);
