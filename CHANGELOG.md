@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.74.0] — 2026-07-10
+### Added
+- **Session detail top bar shows owner + facts.** The open session's terminal header (`#/sessions/<id>`)
+  now pins a right-aligned fact cluster next to the tab strip — owner (run-as member), agent, started-by,
+  age, a colored status pill, and the session id — reusing the existing row height (no taller header).
+  Facts hide progressively on narrower panes so the row never wraps; the status pill always stays visible.
+
 ## [0.73.1] — 2026-07-10
 ### Docs
 - **README: "Running on macOS vs Linux" section.** Documents that agent sessions run in a tmux server
