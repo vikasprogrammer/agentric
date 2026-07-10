@@ -4,14 +4,17 @@
  * signals already flowing through the governed gateway (audit_events), the sessions table, the
  * inbox self-reports (messages), the approvals plane, and the tasks board.
  *
- * A run's outcome is scored by the GOVERNED rule (a human denial or a crash can't be papered over
- * by an optimistic self-report):
+ * A run's outcome is scored best-available-source-wins, so an optimistic self-report can't paper over
+ * a human's judgement or a crash:
  *
- *   failure       if the run crashed, hit a denial (human reject / policy deny / killswitch /
- *                 budget stop), self-reported failure, OR its dispatching task ended `blocked`
- *   success       if its dispatching task ended `done`, OR the agent self-reported success on a
- *                 clean, un-denied run
- *   inconclusive  otherwise (still running, or ended with no verdict either way)
+ *   1. HUMAN VERDICT (ground truth) — a 👍/👎 a person gave the finished run trumps everything:
+ *      rating 'up' → success, 'down' → failure. This is the only true signal; when present, use it.
+ *   2. Otherwise the GOVERNED rule:
+ *        failure       run crashed, hit a denial (human reject / policy deny / killswitch / budget
+ *                      stop), self-reported failure, OR its dispatching task ended `blocked`
+ *        success       its dispatching task ended `done`, OR the agent self-reported success on a
+ *                      clean, un-denied run
+ *        inconclusive  otherwise (still running, or ended with no verdict either way)
  *
  * Maturity is NOT the success rate — it answers a different question ("trust to run alone"):
  *
@@ -45,6 +48,8 @@ export interface AgentStats {
     budgetStops: number;   // budget.exceeded
   };
   tasks: { done: number; blocked: number; cancelled: number };
+  /** Human 👍/👎 verdicts on this agent's runs — the ground-truth outcome signal. */
+  rated: { up: number; down: number };
   /** Distinct runs that hit any denial (reject / policy deny / killswitch / budget stop). */
   deniedRuns: number;
   /** question.asked — times the agent blocked on a human decision. */
@@ -60,7 +65,7 @@ export interface AgentStats {
   confidence: 'none' | 'low' | 'medium' | 'high';
 }
 
-interface SessionRow { id: string; agent: string; status: string; spawned_by: string | null; created_at: number; updated_at: number | null; }
+interface SessionRow { id: string; agent: string; status: string; spawned_by: string | null; created_at: number; updated_at: number | null; rating: string | null; }
 
 function blank(agentId: string): AgentStats {
   return {
@@ -69,6 +74,7 @@ function blank(agentId: string): AgentStats {
     outcomes: { success: 0, failure: 0, inconclusive: 0 },
     actions: { governed: 0, humanGated: 0, autoApproved: 0, denied: 0, rejected: 0, killswitch: 0, errors: 0, budgetStops: 0 },
     tasks: { done: 0, blocked: 0, cancelled: 0 },
+    rated: { up: 0, down: 0 },
     deniedRuns: 0,
     questions: 0,
     firstRunAt: null,
@@ -100,7 +106,7 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
 
   // ── 1. sessions → runs, status counts, activity window; and the run_id → agent join map ──
   const sessions = db.prepare(
-    'SELECT id, agent, status, spawned_by, created_at, COALESCE(updated_at, created_at) AS updated_at FROM term_sessions'
+    'SELECT id, agent, status, spawned_by, rating, created_at, COALESCE(updated_at, created_at) AS updated_at FROM term_sessions'
   ).all() as unknown as SessionRow[];
   const agentOf = new Map<string, string>();      // session id → agent
   const spawnedByOf = new Map<string, string | null>();
@@ -111,6 +117,8 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
     statusOf.set(r.id, r.status);
     const s = get(r.agent);
     s.runs.total++;
+    if (r.rating === 'up') s.rated.up++;
+    else if (r.rating === 'down') s.rated.down++;
     if (r.status === 'running') s.runs.running++;
     else if (r.status === 'stopped') s.runs.stopped++;
     else if (r.status === 'crashed') s.runs.crashed++;
@@ -180,7 +188,11 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
     const self = selfOutcome.get(r.id);
     const sb = spawnedByOf.get(r.id) ?? null;
     const taskStat = sb && sb.startsWith('task:') ? taskStatus.get(sb.slice('task:'.length)) : undefined;
-    if (crashed || denied || self === 'failure' || taskStat === 'blocked') s.outcomes.failure++;
+    // 1. A human's explicit verdict is ground truth — it trumps the governed heuristics below.
+    if (r.rating === 'up') s.outcomes.success++;
+    else if (r.rating === 'down') s.outcomes.failure++;
+    // 2. Otherwise fall back to the governed rule.
+    else if (crashed || denied || self === 'failure' || taskStat === 'blocked') s.outcomes.failure++;
     else if (taskStat === 'done' || (self === 'success' && !denied && r.status === 'done')) s.outcomes.success++;
     else s.outcomes.inconclusive++;
   }

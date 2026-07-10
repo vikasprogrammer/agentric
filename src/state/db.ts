@@ -534,6 +534,14 @@ function migrate(db: Db): void {
   // How a dispatched task session runs (headless work-to-completion vs. an attachable interactive TUI).
   // Older `tasks` rows (created before this column) default to today's behavior: headless.
   addColumn(db, 'tasks', 'mode', "TEXT NOT NULL DEFAULT 'headless'");
+
+  // Human verdict on a finished run — the ground-truth signal for the agent maturity score (a person
+  // who oversaw the run says it did / didn't do what they wanted). One verdict per session, latest wins.
+  // Feeds src/state/agent-stats.ts as the HIGHEST-confidence outcome layer, above the agent's own
+  // self-report and even a task result.
+  addColumn(db, 'term_sessions', 'rating', 'TEXT');       // 'up' | 'down' | NULL (unrated)
+  addColumn(db, 'term_sessions', 'rated_by', 'TEXT');     // member id who gave the verdict
+  addColumn(db, 'term_sessions', 'rated_at', 'INTEGER');  // when (epoch ms)
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

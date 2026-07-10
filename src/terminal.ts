@@ -145,6 +145,13 @@ export interface Session {
   /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
    *  first transition. Lets the sessions list sort by recent activity, not just creation. */
   updatedAt: number;
+  /** Human verdict on the finished run — a person who oversaw it saying it did ('up') / didn't ('down')
+   *  do what they wanted. The ground-truth signal for the agent maturity score. Undefined = unrated. */
+  rating?: 'up' | 'down';
+  /** The member id / display name who gave the verdict (for the byline). */
+  ratedBy?: string;
+  ratedByLabel?: string;
+  ratedAt?: number;
 }
 
 export interface FeedMessage {
@@ -201,6 +208,9 @@ interface SessionRow {
   run_as: string | null;
   created_at: number;
   updated_at: number;
+  rating: string | null;
+  rated_by: string | null;
+  rated_at: number | null;
 }
 interface MessageRow {
   id: string;
@@ -375,6 +385,7 @@ export class TerminalManager {
       resumable: resumable.has(r.id),
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
       runAsLabel: this.runAsLabel(r.run_as),
+      ratedByLabel: this.runAsLabel(r.rated_by),
     }));
   }
 
@@ -1817,6 +1828,23 @@ export class TerminalManager {
     return true;
   }
 
+  /**
+   * A human verdict on a finished run — 'up' (did what I wanted) / 'down' (didn't) / null (clear it).
+   * The ground-truth signal that feeds the agent maturity score above self-report + task result. One
+   * verdict per session (latest wins); the caller must be allowed to see the session (checked upstream).
+   */
+  rateSession(sessionId: string, by: Member, rating: 'up' | 'down' | null): { ok: boolean; error?: string } {
+    const r = this.db.prepare('SELECT id, agent FROM term_sessions WHERE id = ?').get<{ id: string; agent: string }>(sessionId);
+    if (!r) return { ok: false, error: 'unknown session' };
+    if (rating === null) {
+      this.db.prepare('UPDATE term_sessions SET rating = NULL, rated_by = NULL, rated_at = NULL WHERE id = ?').run(sessionId);
+    } else {
+      this.db.prepare('UPDATE term_sessions SET rating = ?, rated_by = ?, rated_at = ? WHERE id = ?').run(rating, by.id, Date.now(), sessionId);
+    }
+    this.audit(sessionId, by.email, 'session.rated', { rating, agent: r.agent });
+    return { ok: true };
+  }
+
   /** Path of a session's "do not auto-resurrect" sentinel (see stopSession / attach.sh). */
   private stopMarkerPath(sessionId: string): string | null {
     return this.os.paths ? path.join(this.os.paths.connectors, `session-${sessionId}.stopped`) : null;
@@ -2123,7 +2151,7 @@ function titleFromSummary(summary: string): string {
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

@@ -131,6 +131,11 @@ export interface Session {
   /** Last time the session's status changed (report/end/stop/resume/crash); = createdAt until the
    *  first transition. Sortable "Updated" column on the sessions list. */
   updatedAt: number
+  /** Human verdict on the finished run — 👍 ('up') / 👎 ('down'); feeds the agent maturity score. */
+  rating?: 'up' | 'down'
+  ratedBy?: string
+  ratedByLabel?: string
+  ratedAt?: number
 }
 export interface AuditEvent {
   id: number
@@ -240,6 +245,7 @@ export interface AgentStats {
   outcomes: { success: number; failure: number; inconclusive: number }
   actions: { governed: number; humanGated: number; autoApproved: number; denied: number; rejected: number; killswitch: number; errors: number; budgetStops: number }
   tasks: { done: number; blocked: number; cancelled: number }
+  rated: { up: number; down: number }
   deniedRuns: number
   questions: number
   firstRunAt: number | null
@@ -759,6 +765,7 @@ export const api = {
   messages: () => call<Msg[]>('GET', '/api/messages'),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
+  rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
   /** Lift the stop-block so a stopped session resurrects (claude --resume) on the next terminal open. */
   resumeSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/resume`),
   deleteSession: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/sessions/' + id),

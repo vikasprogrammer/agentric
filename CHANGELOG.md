@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.82.0] — 2026-07-10
+### Added
+- **Human 👍/👎 verdict on a finished run — the ground-truth signal for the maturity score.** A member who
+  oversaw a run can rate it from the Sessions list (grid + list views); the verdict becomes the
+  **highest-confidence outcome layer** in `src/state/agent-stats.ts`, sitting above the agent's own
+  self-report and even a task result (`up` → success, `down` → failure; clicking the active thumb clears
+  it). So a run the agent optimistically self-reported `success` flips to a failure the moment a human
+  thumbs it down. `POST /api/sessions/:id/rate` (`{rating: 'up'|'down'|null}`, gated by the same
+  can-view-session rule as stop), persisted on `term_sessions` (`rating`/`rated_by`/`rated_at`), audited
+  `session.rated`. `AgentStats` gains a `rated: {up, down}` tally, shown on the agent Trust card.
+- **Maturity surfaced across the fleet.** Beyond the per-agent Trust card, each agent chip on the Agents
+  page (grid + split rail) now carries a compact **maturity badge** (score + confidence, coloured by band,
+  hidden until an agent has run) — trust-at-a-glance across the whole fleet, fed by `GET /api/agents/stats`.
+
 ## [0.81.1] — 2026-07-10
 ### Fixed
 - **Host governance now applies on every tenant, not just fresh ones.** The `net.connect`/`ssh.exec`
