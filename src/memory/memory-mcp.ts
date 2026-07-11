@@ -571,6 +571,21 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  {
+    name: 'stop',
+    description:
+      'End THIS session now — the clean way to finish. Call it when the work is done, or when you are ' +
+      'blocked and staying alive to wait is pointless (defer with `schedule` first if the work should ' +
+      'resume later). This halts your run immediately: it cannot be undone from inside the session, so ' +
+      'do any final `report`/`update` BEFORE calling it. A stopped session stays stopped (it will not ' +
+      'auto-resume); a human can re-open it later from the console. Any of your pending questions or ' +
+      'approvals are cancelled, since you will no longer be around to act on the answers.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { reason: { type: 'string', description: 'Optional short note on why you are stopping — recorded in the audit trail.' } },
+    },
+  },
   // ── Tasks: the shared work queue (the durable unit of work, distinct from Memory + KB) ──
   {
     name: 'task_create',
@@ -1367,6 +1382,19 @@ async function unschedule(args: Record<string, unknown>): Promise<string> {
   return d.cancelled ? `Cancelled scheduled task ${id}.` : `Nothing to cancel for ${id} (already fired, or not yours).`;
 }
 
+async function stop(args: Record<string, unknown>): Promise<string> {
+  const reason = String(args.reason ?? '').trim();
+  const res = await fetch(AOS_URL + '/api/agent/stop', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, reason: reason || undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  if (!d.ok) return `Could not stop: ${d.error ?? 'unknown error'}`;
+  // The server halts this session ~150ms after acking, so this line is the last thing the run does.
+  return 'Ending this session now.';
+}
+
 // ── Tasks: the shared work queue ──────────────────────────────────────────────
 interface TaskLite { id: string; title: string; status: string; priority: number; assignee?: string; labels?: string[]; body?: string }
 interface TaskEventLite { kind: string; body?: string; author: string; createdAt: number }
@@ -1858,6 +1886,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'artifacts_list' ? await artifactsList(args)
         : name === 'schedule' ? await schedule(args)
         : name === 'unschedule' ? await unschedule(args)
+        : name === 'stop' ? await stop(args)
         : name === 'task_create' ? await taskCreate(args)
         : name === 'task_list' ? await taskList(args)
         : name === 'task_get' ? await taskGet(args)

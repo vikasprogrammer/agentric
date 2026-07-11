@@ -30,6 +30,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `artifacts_list` | `GET /api/agent/artifacts` | `ArtifactStore.list` + `ArtifactStore.folders` | R | list scoped to the agent's own deliverables; also returns the tenant-wide gallery folders so a `publish` files into the existing tree (discovery) |
 | `schedule` | `POST /api/agent/schedule` | `Automations.schedule` (`type:'once'`) | W | one-shot deferred self-run; same agent + run-as; bounded 1 min–30 days, ≤25 pending/agent |
 | `unschedule` | `POST /api/agent/schedule/cancel` | `Automations.cancelScheduled` | W | cancel a pending one, scoped to the agent |
+| `stop` | `POST /api/agent/stop` | `TerminalManager.stopSession` (`by` = agent id) | W | the session ends ITSELF — same halt as the console kill (kills tmux, cancels its pending questions/approvals, blocks auto-resume, writes a `stopped` episode). Server acks then halts ~150ms later so the reply flushes first; audited `session.stopped` with the agent id + optional `reason` |
 | `list_capabilities` | `GET /api/agent/policy` | policy preview | R | |
 | `policy_check` | `POST /api/agent/policy/check` | policy preview | R | dry-run, no side effects |
 | `directory_lookup` | `GET /api/agent/directory` | `TeamStore` | R | people + their chat identities |
@@ -58,7 +59,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
 
-43 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+44 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 

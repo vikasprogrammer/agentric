@@ -2159,8 +2159,10 @@ export class TerminalManager {
    * Stop a running session: kill its tmux shell (terminate a runaway/hung agent) and flip the row
    * to `idle`. The row, its messages and on-disk files all stay — this is "halt", not "remove".
    * Emits no feed card (lifecycle noise); the audit log records the stop. No-op on unknown id.
+   * Called both by a human (console kill, `by` = member email) and by the agent itself ending its
+   * own run (`stop` MCP tool → /api/agent/stop, `by` = agent id, optional `reason`).
    */
-  stopSession(sessionId: string, by: string): boolean {
+  stopSession(sessionId: string, by: string, reason?: string): boolean {
     const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return false;
     this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
@@ -2181,7 +2183,9 @@ export class TerminalManager {
     // session did nothing worth remembering.
     this.writeEpisode(sessionId, r.agent, 'stopped');
     // No "Stopped" card — a human halting a run is lifecycle noise; the audit log records who/when.
-    this.audit(sessionId, by, 'session.stopped', { tmux: r.tmux });
+    // `by` distinguishes a human halt (member email) from a self-stop (the agent id, via the `stop`
+    // MCP tool → /api/agent/stop); an agent-supplied `reason` rides along for the audit trail.
+    this.audit(sessionId, by, 'session.stopped', { tmux: r.tmux, ...(reason ? { reason } : {}) });
     return true;
   }
 

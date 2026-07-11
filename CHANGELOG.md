@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.111.0] — 2026-07-11
+### Added
+- **A session can now stop itself.** New always-on MCP tool `stop` lets an agent end its OWN run when
+  the work is done or it's blocked with no point waiting (defer with `schedule` first if it should
+  resume later). It loops back to `POST /api/agent/stop`, which runs the same `TerminalManager.stopSession`
+  halt the console kill button performs — kills the tmux, cancels the session's pending questions/approvals,
+  blocks auto-resume, and records a `stopped` episode — but with `by` = the agent id and an optional
+  `reason` in the audit trail. The server acks first and halts ~150ms later so the tool's reply flushes
+  before the process is torn down (`src/memory/memory-mcp.ts`, `src/server.ts`, `src/terminal.ts`).
+
 ## [0.110.1] — 2026-07-11
 ### Fixed
 - **Session tabs no longer look "grabbed" on hover.** The drag-reorderable tabs used a `cursor-grab`
