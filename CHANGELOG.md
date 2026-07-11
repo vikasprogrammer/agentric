@@ -8,7 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.115.1] — 2026-07-11
+## [0.115.2] — 2026-07-11
+### Fixed
+- **Same-session skill delivery now reaches console-spawned interactive sessions.** Phase 3's
+  `TerminalManager.refreshAgentSkills` filtered on `resident = 1`, but a console-spawned interactive TUI
+  is `headless = 0, resident = 0` (the `resident` flag marks chat-continuity sessions, not console runs) —
+  so approving a skill for an agent with a live interactive session returned `reloaded: 0` and delivered
+  nothing until the next launch. Filter is now `headless = 0` (any live claude REPL we can inject into),
+  which covers both console TUIs and resident chat sessions. Found by dogfooding the request→approve flow
+  with a real `engineer` agent on the live instance.
 ### Added
 - **"Go to session" link after planning a goal.** When "Plan this goal" spawns the strategist, the
   confirmation banner now shows a **Go to session →** link (using the returned `sessionId`) so you can jump
