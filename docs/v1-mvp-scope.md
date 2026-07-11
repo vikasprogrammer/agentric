@@ -4,7 +4,8 @@ The authoritative IN/OUT + milestone tracker for the first internal release (Glo
 dogfooding). This is a **re-plan**: it merges the frozen chat-channels v1 scope (developed on a
 separate branch) with what *this* repo (`main`) has actually shipped — memory, knowledge base,
 self-learning, multi-tenancy, and native Slack via Socket Mode. Graded against the code on
-2026-06-29. `docs/PILLARS.md` tracks per-pillar maturity; `docs/connectors-and-triggers.md` and
+2026-06-29 (**skills scope refreshed 2026-07-11:** import + human-gated agent-request + procedural
++ same-session delivery all shipped — moved from deferred to done). `docs/PILLARS.md` tracks per-pillar maturity; `docs/connectors-and-triggers.md` and
 `docs/phase-a-scope.md` carry the detailed build notes.
 
 > **Why a re-plan.** The original frozen v1 lived on the `agent-os-1-chat-channels` branch and built
@@ -37,13 +38,13 @@ self-learning, multi-tenancy, and native Slack via Socket Mode. Graded against t
 |---|---|
 | Agents, sessions, inbox, team/roles/login, policy engine+editor (pillars 1–5) — ✅ shipped | Email **ingress** (Mailgun) |
 | Phase A uid isolation **deployed** (`AOS_UID_ISOLATION=1`) | Conversational DM / gateway chat threads (multi-turn) |
-| Connectors with **service + personal + shared** identity | Per-agent connector/skill grant matrices |
+| Connectors with **service + personal + shared** identity | Per-agent **connector** grant matrix (per-agent **skill** scoping shipped — `skill_assignments`) |
 | **Slack** ingress (Socket Mode, run-as member) + egress — ✅ shipped | Agent-built Tools/Apps (pillar 13) |
 | **Discord** ingress + egress | Secrets vault (connector creds stay plaintext in DB — documented debt) |
 | **Act-as-member** email — agent acts under the individual's accounts (UC5) | Foreign CLIs (Codex/Gemini runtimes) |
 | Cron + webhook automations — ✅ shipped | Email invite delivery, SSO |
-| Audit viewer + chat approval notifications | **Procedural skills (Lever 6)** — auto-propose a `SKILL.md` from recurring successful procedures, human-gated ([`procedural-skills-plan.md`](./procedural-skills-plan.md)) |
-| **Already shipped here** (was deferred in the frozen plan): Memory layer (9), Knowledge Base (15), Dreaming / self-learning (10), Multi-tenancy | |
+| Audit viewer + chat approval notifications | Curated/versioned skill **marketplace** beyond raw GitHub/skills.sh import |
+| **Already shipped here** (was deferred in the frozen plan): Memory layer (9), Knowledge Base (15), Dreaming / self-learning (10), Multi-tenancy, **Skills (12)** — library + import (bundled catalog / any GitHub repo / skills.sh / `.zip`), **human-gated agent-request** (`skill_find` / `skill_request`, agents never self-install), procedural `skill_propose` (Lever 6, [`procedural-skills-plan.md`](./procedural-skills-plan.md)), and **same-session delivery** (`/reload-skills`) | |
 
 ## Channel matrix (v1)
 
