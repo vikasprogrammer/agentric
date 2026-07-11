@@ -748,13 +748,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, out.ok ? 200 : 400, out);
   }
   // agent discovers what's installable (`skill_find`) — its own library (with an `active` flag) + the
-  // bundled catalog. Read-only; the counterpart to `skill_request`. Pre-auth loopback, session-secret gated.
+  // bundled catalog, and (when `q` is given) matching skills from the skills.sh directory (remote repos).
+  // Read-only; the counterpart to `skill_request`. Pre-auth loopback, session-secret gated.
   if (method === 'GET' && p === '/api/skills/discover') {
     const session = String(url.searchParams.get('session') || '');
     const agent = tm.sessionAgent(session);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
-    return sendJson(res, 200, tm.requestableSkills(agent));
+    const local = tm.requestableSkills(agent);
+    const q = String(url.searchParams.get('q') || '').trim();
+    let remote: { name: string; source: string; installs: number; installed: boolean }[] = [];
+    if (q) {
+      try {
+        const have = new Set(os.skills.list().map((s) => s.name));
+        remote = (await searchSkillsh(q)).map((h) => ({ name: h.name, source: h.source, installs: h.installs, installed: have.has(h.name.toLowerCase()) }));
+      } catch { /* a skills.sh outage must not break local discovery — just return no remote hits */ }
+    }
+    return sendJson(res, 200, { ...local, remote });
   }
   // agent ASKS a human to install an existing catalog skill (`skill_request`) — it never installs
   // itself. Posts an owner/admin 'skill.request' card; the install happens only when a human approves
@@ -767,7 +777,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const name = String(b.name || '').trim();
     if (!name) return sendJson(res, 400, { error: 'name is required' });
-    const out = tm.requestSkill(session, agent, { name, source: b.source ? String(b.source) : undefined, rationale: b.rationale ? String(b.rationale) : undefined });
+    const out = await tm.requestSkill(session, agent, { name, source: b.source ? String(b.source) : undefined, rationale: b.rationale ? String(b.rationale) : undefined });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
   // native Slack egress: the agent posts its reply back to the thread that triggered the session.
@@ -2773,10 +2783,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (card.status !== 'open') return sendJson(res, 409, { error: 'this request was already resolved' });
     const b = await readBody(req);
     try {
-      const s = os.skills.get(card.skill) ?? os.skills.install(card.skill); // idempotent if already installed
+      // Install from wherever the request pointed: the bundled catalog, or the remote GitHub repo the
+      // agent named (owner/repo, resolved to `path` at request time). Idempotent if already installed.
+      let s = os.skills.get(card.skill);
+      if (!s) {
+        if (card.source === 'catalog') {
+          s = os.skills.install(card.skill);
+        } else {
+          const files = await fetchSkill(card.source, card.path, card.skill);
+          s = os.skills.installFiles(card.skill, files);
+        }
+      }
       if (b.scope === 'agent') os.skills.setAssignment(s.name, [card.agent]); // else stays all-agents
       tm.setSkillRequestStatus(skillReqApprove[1], 'approved');
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.installed', data: { skill: s.name, source: 'agent-request', requestedBy: card.agent, scope: b.scope === 'agent' ? 'agent' : 'all' } });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.installed', data: { skill: s.name, source: 'agent-request', from: card.source, requestedBy: card.agent, scope: b.scope === 'agent' ? 'agent' : 'all' } });
       return sendJson(res, 200, { ok: true, skill: s });
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });

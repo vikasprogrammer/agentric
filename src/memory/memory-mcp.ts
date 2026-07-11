@@ -426,25 +426,35 @@ const TOOLS = [
     description:
       'Discover installable SKILLS — the reusable playbooks packaged for this workspace. Returns your ' +
       "library (the skills you already have, each flagged whether it's active for you) plus the bundled " +
-      'catalog of ready-made skills you could ask to have installed. Call this when a task looks like it ' +
-      'has an established procedure you lack, BEFORE working it out from scratch — if a fitting catalog ' +
-      "skill exists, request it with `skill_request`. You cannot install skills yourself; a human does.",
+      'catalog of ready-made skills you could ask to have installed. Pass a `query` to ALSO search the ' +
+      'public skills.sh directory (thousands of community skills across GitHub repos) — each remote hit ' +
+      'comes back with its `source` (owner/repo), which you pass to `skill_request`. Call this when a ' +
+      'task looks like it has an established procedure you lack, BEFORE working it out from scratch — if a ' +
+      'fitting skill exists, request it with `skill_request`. You cannot install skills yourself; a human does.',
     annotations: { readOnlyHint: true },
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
-  },
-  {
-    name: 'skill_request',
-    description:
-      'Ask a human to INSTALL an existing catalog skill for the workspace (find installable skills with ' +
-      '`skill_find`). You do NOT install it yourself — this raises a request card an owner/admin reviews; ' +
-      'once approved the skill is in the library and available to you on your next session. Use it when a ' +
-      "catalog skill would help with your work. Pass the skill's `name` and, optionally, a `rationale` " +
-      'saying why you need it (helps the reviewer decide quickly).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        name: { type: 'string', description: 'The catalog skill id to install (from skill_find).' },
+        query: { type: 'string', description: 'Optional search term — also surfaces matching community skills from the skills.sh directory (remote GitHub repos).' },
+      },
+    },
+  },
+  {
+    name: 'skill_request',
+    description:
+      'Ask a human to INSTALL a skill for the workspace (find installable skills with `skill_find`). You ' +
+      'do NOT install it yourself — this raises a request card an owner/admin reviews; once approved the ' +
+      'skill is in the library and available to you on your next session. Use it when a skill would help ' +
+      "your work. Pass the skill's `name`; for a community skill from `skill_find`'s query results, also " +
+      "pass its `source` (the `owner/repo`). Omit `source` for a bundled-catalog skill. Optionally add a " +
+      '`rationale` saying why you need it (helps the reviewer decide quickly).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'The skill id to install (from skill_find).' },
+        source: { type: 'string', description: "Optional: the community source `owner/repo` (from a skill_find query hit). Omit for a bundled-catalog skill." },
         rationale: { type: 'string', description: 'Optional: why you need this skill / what task it unblocks.' },
       },
       required: ['name'],
@@ -1045,18 +1055,22 @@ async function skillPropose(args: Record<string, unknown>): Promise<string> {
     : `Could not propose skill: ${d.error ?? 'unknown error'}`;
 }
 
-async function skillFind(_args: Record<string, unknown>): Promise<string> {
+async function skillFind(args: Record<string, unknown>): Promise<string> {
   const u = new URL(AOS_URL + '/api/skills/discover');
   u.searchParams.set('session', SESSION);
+  const query = String(args.query ?? '').trim();
+  if (query) u.searchParams.set('q', query);
   const res = await fetch(u, { headers: H() });
   const d = (await res.json()) as {
     installed?: Array<{ name: string; description: string; active: boolean }>;
     catalog?: Array<{ name: string; description: string; installed: boolean }>;
+    remote?: Array<{ name: string; source: string; installs: number; installed: boolean }>;
     error?: string;
   };
   if (d.error) return `Could not list skills: ${d.error}`;
   const active = (d.installed ?? []).filter((s) => s.active);
   const requestable = (d.catalog ?? []).filter((s) => !s.installed);
+  const remote = (d.remote ?? []).filter((s) => !s.installed);
   const lines: string[] = [];
   lines.push(active.length ? `Active for you (${active.length}):` : 'No skills are active for you yet.');
   for (const s of active) lines.push(`  • ${s.name} — ${s.description}`);
@@ -1066,22 +1080,32 @@ async function skillFind(_args: Record<string, unknown>): Promise<string> {
   } else {
     lines.push('', 'Nothing new in the catalog to request — everything is already installed.');
   }
+  if (query) {
+    if (remote.length) {
+      lines.push('', `Community skills matching "${query}" — ask with skill_request({name, source}) (${remote.length}):`);
+      for (const s of remote) lines.push(`  • ${s.name} — source: ${s.source}${s.installs ? ` (${s.installs} installs)` : ''}`);
+    } else {
+      lines.push('', `No community (skills.sh) skills matched "${query}".`);
+    }
+  }
   return lines.join('\n');
 }
 
 async function skillRequest(args: Record<string, unknown>): Promise<string> {
   const name = String(args.name ?? '').trim();
-  if (!name) return 'skill_request needs the name of a catalog skill (see skill_find).';
+  const source = String(args.source ?? '').trim();
+  if (!name) return 'skill_request needs the name of a skill (see skill_find).';
   const res = await fetch(AOS_URL + '/api/skills/request', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, agent: AGENT, name, rationale: args.rationale ? String(args.rationale) : undefined }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, name, source: source || undefined, rationale: args.rationale ? String(args.rationale) : undefined }),
   });
   const d = (await res.json()) as { ok?: boolean; status?: string; error?: string };
   if (!d.ok) return `Could not request skill: ${d.error ?? 'unknown error'}`;
+  const label = source ? `"${name}" (from ${source})` : `"${name}"`;
   if (d.status === 'installed') return `"${name}" is already installed and available to you.`;
-  if (d.status === 'duplicate') return `A request for "${name}" is already awaiting review.`;
-  return `Requested "${name}" — an owner/admin will review and install it. It'll be available to you on your next session (not this one).`;
+  if (d.status === 'duplicate') return `A request for ${label} is already awaiting review.`;
+  return `Requested ${label} — an owner/admin will review and install it. It'll be available to you on your next session (not this one).`;
 }
 
 async function update(args: Record<string, unknown>): Promise<string> {
