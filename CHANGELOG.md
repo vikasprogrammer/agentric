@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.117.1] — 2026-07-11
+### Fixed
+- **Self-update no longer blocks itself on lockfile churn.** The in-console "Update & restart" button ran
+  `npm install`, which routinely rewrites `package-lock.json` (registry metadata / lockfile-format drift) —
+  leaving the tree dirty so the *next* update refused with "The box has uncommitted changes — commit or stash
+  them before updating". The updater now treats the regenerable lockfiles (`package-lock.json`,
+  `web/package-lock.json`) as non-blocking: it discards their churn (`git checkout --`) before the ff-pull and
+  excludes them from the dirty check (so the button isn't disabled either). Edits to any *other* tracked file
+  still block, as before.
+
 ## [0.117.0] — 2026-07-11
 ### Added
 - **Task dependencies — plans become enforced pipelines, not just ordered to-do lists.** A task can now

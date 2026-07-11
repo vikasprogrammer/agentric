@@ -20,6 +20,12 @@
  * incoming commit ever did collide with an untracked path, `git pull --ff-only` aborts cleanly and we
  * surface its error, so pre-blocking on untracked files would only produce false "can't update" states.
  *
+ * The lockfiles (`package-lock.json`, `web/package-lock.json`) are a further exception: the `npm install`
+ * steps below routinely rewrite them (registry metadata / lockfile-format drift), so a SUCCESSFUL update
+ * leaves the tree dirty and would block its own next run with "uncommitted changes". They're build-derived
+ * and never hand-edited on a deploy box, so we discard any lockfile churn (`git checkout --`) before the
+ * ff-pull and don't count it as dirty — only edits to OTHER tracked files disable the button.
+ *
  * The git repo is process-wide (shared by every tenant in a multi-tenant runtime), so the cache is a
  * module-level singleton rather than per-tenant.
  */
@@ -67,9 +73,24 @@ function git(args: string[], timeout = 30_000): { ok: boolean; out: string; err:
   return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
 }
 
-/** True only when TRACKED files are modified/staged — untracked files don't block an ff-only pull. */
+/** Build-derived, box-local files an `npm install` rewrites — never a meaningful edit on a deploy box. */
+const REGENERABLE = new Set(['package-lock.json', 'web/package-lock.json']);
+
+/** Paths of TRACKED files that differ from HEAD (staged or unstaged); untracked files excluded.
+ *  `diff --name-only HEAD` yields bare paths — no porcelain status columns to strip/mis-slice. */
+function dirtyTrackedFiles(): string[] {
+  return git(['diff', '--name-only', 'HEAD']).out.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/** True only when a NON-regenerable tracked file is modified/staged — the case an ff-only pull can't survive. */
 function hasTrackedChanges(): boolean {
-  return git(['status', '--porcelain', '--untracked-files=no']).out.length > 0;
+  return dirtyTrackedFiles().some((f) => !REGENERABLE.has(f));
+}
+
+/** Discard any lockfile churn left by a prior `npm install` so the tree is clean for an ff-only pull. */
+function restoreLockfiles(): void {
+  const dirty = dirtyTrackedFiles().filter((f) => REGENERABLE.has(f));
+  if (dirty.length) git(['checkout', '--', ...dirty]);
 }
 
 let cache: UpdateStatus | null = null;
@@ -147,6 +168,7 @@ export async function applyUpdate(tenant: string): Promise<ApplyResult> {
     return r.status === 0;
   };
 
+  restoreLockfiles(); // drop lockfile churn from a prior update so it doesn't read as a dirty tree
   if (hasTrackedChanges())
     return { ok: false, steps, restarting: false, error: 'tracked files have uncommitted changes — commit or stash them on the box first' };
 
