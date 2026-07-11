@@ -173,12 +173,23 @@ export class GoalStore {
     return goal;
   }
 
-  /** Hard delete + cascade the activity log. (Detaches children by clearing their parent_id.) */
+  /**
+   * Hard delete + cascade the activity log. Detaches (never deletes) related work: child GOALS lose their
+   * parent_id, and linked TASKS lose their goal_id — a task is real work that may still be valid, so
+   * deleting its goal unlinks it (leaving it on the board) rather than destroying it. Each detached task
+   * gets a timeline note so the unlink is traceable.
+   */
   remove(id: string): boolean {
     const res = this.db.prepare('DELETE FROM goals WHERE id = ?').run(id);
     if (res.changes === 0) return false;
     this.db.prepare('DELETE FROM goal_events WHERE goal_id = ?').run(id);
     this.db.prepare('UPDATE goals SET parent_id = NULL WHERE parent_id = ?').run(id);
+    for (const t of this.db.prepare('SELECT id FROM tasks WHERE goal_id = ?').all<{ id: string }>(id)) {
+      this.db
+        .prepare('INSERT INTO task_events (id, task_id, kind, body, author, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(randomUUID().slice(0, 8), t.id, 'link', 'goal deleted — detached', 'system', null, Date.now());
+    }
+    this.db.prepare('UPDATE tasks SET goal_id = NULL WHERE goal_id = ?').run(id);
     return true;
   }
 

@@ -315,10 +315,14 @@ export class TaskStore {
 
   /** All tasks linked to a goal (newest-updated first) — feeds the goal's derived progress + detail view. */
   tasksForGoal(goalId: string): Task[] {
-    return this.db
-      .prepare('SELECT * FROM tasks WHERE goal_id = ? ORDER BY updated_at DESC')
-      .all<TaskRow>(goalId)
-      .map(toTask);
+    // Creation order = the order the strategist filed the plan (its pipeline order), so a numbered plan
+    // reads top-to-bottom. attachDeps so the goal detail can show each task's blockers / "waiting" state.
+    return this.attachDeps(
+      this.db
+        .prepare('SELECT * FROM tasks WHERE goal_id = ? ORDER BY created_at ASC')
+        .all<TaskRow>(goalId)
+        .map(toTask),
+    );
   }
 
   // ── Dependencies ─────────────────────────────────────────────────────────────────────────────────
