@@ -4311,7 +4311,11 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                   {detail.progress && detail.progress.total > 0 && <GoalProgressBar p={detail.progress} className="mb-2" />}
                   <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
                     {detail.tasks.length === 0 && <div className="text-xs text-muted-foreground">No tasks linked yet — set this goal on a task to ground work under it.</div>}
-                    {detail.tasks.map((t) => (
+                    {detail.tasks.map((t) => {
+                      // Dependency gating — resolve each blocker from this goal's own tasks (no extra fetch).
+                      // A dep is *unmet* only if its blocker is present here AND not yet done/cancelled.
+                      const unmet = (t.dependsOn ?? []).filter((id) => { const b = detail.tasks.find((x) => x.id === id); return b && b.status !== 'done' && b.status !== 'cancelled' }).length
+                      return (
                       <a
                         key={t.id}
                         href={navHref('tasks', t.id)}
@@ -4320,8 +4324,10 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                       >
                         <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] capitalize ${taskStatusTone(t.status)}`}>{t.status}</span>
                         <span className={`min-w-0 flex-1 truncate text-foreground ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
+                        {unmet > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmet}</span>}
                       </a>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
 

@@ -83,6 +83,8 @@ export class Strategist {
       'File tasks in ORDER: when a step can only start after an earlier one finishes, capture the earlier',
       "task's id from its result and pass it as the later task's dependsOn — a dependent won't dispatch until",
       'its blockers are done, so this turns your plan into an enforced pipeline (not just a to-do list).',
+      'NUMBER the titles: prefix each task title with its step number in run order — "1. ", "2. ", … — so',
+      'the sequence is visible at a glance on the board (a parallel/independent track can share a number).',
       'Do NOT set autoDispatch — leave the plan for a human to review and dispatch. Finish with report.',
     );
     return lines.join('\n');
@@ -138,6 +140,8 @@ review and dispatch. You are the bridge from a strategic objective to actual wor
    - **Set \`dependsOn\` to encode ORDER.** When a step can't start until an earlier one finishes, file the
      earlier task first, capture its id, and pass it in the later task's \`dependsOn\`. A dependent won't
      dispatch until every blocker is done — that makes your plan an enforced pipeline, not a flat list.
+   - **Number the titles.** Prefix each task title with its step number in execution order ("1. …",
+     "2. …", …) so the sequence is obvious on the board — matching the \`dependsOn\` order.
 4. **Propose strategy, don't set it.** If the goal genuinely needs sub-objectives, \`goal_propose\` them for
    a human to activate — never create or activate goals yourself. Tasks are yours to file; strategy is the
    human's to own.

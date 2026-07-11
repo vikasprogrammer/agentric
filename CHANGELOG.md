@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.119.0] — 2026-07-11
+### Added
+- **The strategist numbers task titles.** It now prefixes each task it files with its step number in run
+  order ("1. …", "2. …"), so a plan's sequence is visible at a glance on the board (instruction lives in
+  its per-run prompt, so the already-provisioned agent picks it up).
+- **Dependencies are visible in the Goal detail modal.** The goal's "Linked tasks" list now shows a
+  **"⏳ waiting on N"** chip on any task with unfinished blockers (matching the Tasks board), and the linked
+  tasks read in **creation/pipeline order** — `TaskStore.tasksForGoal` now attaches `dependsOn` and orders
+  by `created_at` (it previously did neither, so the modal couldn't show gating).
+### Changed
+- **Deleting a goal detaches its tasks instead of orphaning them.** `GoalStore.remove` now clears
+  `goal_id` on every linked task (with a timeline note) rather than leaving a dangling reference — a task
+  is real work, so it survives on the board, unlinked. (Child goals already detached this way.)
+
 ## [0.118.0] — 2026-07-11
 ### Added
 - **Feedback shortcut in the sidebar.** The console's **Manage** group now has a **Feedback** link (under
