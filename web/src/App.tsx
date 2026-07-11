@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { type Branding, type PublicBranding } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -2549,6 +2549,11 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismi
     Icon = Sparkles; iconCls = 'text-violet-600'; highlight = true
     verb = 'proposed a skill'; detail = m.body
     badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
+  } else if (m.type === 'skill.request') {
+    Icon = Sparkles; iconCls = 'text-violet-600'; highlight = m.status === 'open'
+    const resolved = m.status === 'approved' ? 'installed' : m.status === 'rejected' ? 'dismissed' : ''
+    verb = 'requested a skill'; detail = m.body
+    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Skills'}</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
@@ -5663,9 +5668,11 @@ function SkillsPage() {
   const [uploading, setUploading] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
+  const [requests, setRequests] = useState<SkillRequest[]>([])
+  const loadRequests = () => api.skillRequests().then((r) => setRequests(r.requests ?? [])).catch(() => setRequests([]))
   const load = () => api.skills().then(setResp).catch(() => setResp({ enabled: false, skills: [] }))
   useEffect(() => {
-    load()
+    load(); loadRequests()
     api.state().then((s) => setAgents(s.agents.filter((a) => a.runtime === 'claude-code').map((a) => a.id))).catch(() => {})
   }, [])
 
@@ -5710,6 +5717,21 @@ function SkillsPage() {
         <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
           Skills need a data home — none is configured for this instance.
         </div>
+      )}
+
+      {requests.length > 0 && (
+        <section className="space-y-2 rounded-lg border border-sky-200 bg-sky-50/40 p-3">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-sky-700">
+            <Sparkles className="h-3.5 w-3.5" />Requested by agents · {requests.length}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            An agent asked (via <span className="font-mono">skill_request</span>) to have a catalog skill installed — it <span className="font-medium text-foreground">cannot install one itself</span>.
+            Install adds the skill to the Library (available on the agent's next session); or dismiss the request.
+          </p>
+          <div className="space-y-2">
+            {requests.map((r) => <AgentSkillRequestCard key={r.id} r={r} onChanged={() => { loadRequests(); load() }} />)}
+          </div>
+        </section>
       )}
 
       {proposed.length > 0 && (
@@ -6141,6 +6163,55 @@ function NewSkillForm({ onCancel, onCreated }: { onCancel: () => void; onCreated
 /** A skill an agent drafted via `skill_propose`, awaiting a human's review. Review opens the draft in an
  *  editable box (edits save to the same SKILL.md); Publish drops the `.aos-proposed` marker so it goes
  *  live on each agent's next session; Dismiss deletes the draft. Owner/admin only (the page is gated). */
+/** A single agent skill-request awaiting review (via `skill_request`) — the human installs the named
+ *  catalog skill into the Library (all agents, or scoped to just the requester) or dismisses it. */
+function AgentSkillRequestCard({ r, onChanged }: { r: SkillRequest; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const [scoped, setScoped] = useState(false)
+  const install = async () => {
+    setBusy(true); setHint('')
+    const res = await api.approveSkillRequest(r.id, scoped ? 'agent' : 'all')
+    setBusy(false)
+    if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
+    onChanged()
+  }
+  const dismiss = async () => {
+    setBusy(true); setHint('')
+    const res = await api.dismissSkillRequest(r.id)
+    setBusy(false)
+    if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
+    onChanged()
+  }
+  return (
+    <Card className="border-sky-200">
+      <CardContent className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-sm font-medium">{r.skill}</span>
+              <Badge variant="outline" className="border-sky-300 px-1.5 py-0 text-[10px] font-normal text-sky-700">requested</Badge>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              by <span className="font-mono">{r.agent}</span>{r.createdAt ? ` · ${timeAgo(r.createdAt)}` : ''}
+              {r.rationale ? <> · <span className="italic">“{r.rationale}”</span></> : null}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title="scope this skill to only the requesting agent (default: all agents)">
+              <input type="checkbox" checked={scoped} disabled={busy} onChange={(e) => setScoped(e.target.checked)} />
+              {r.agent} only
+            </label>
+            <Button size="sm" disabled={busy} onClick={install}><Check className="mr-1 h-3.5 w-3.5" />Install</Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="dismiss" disabled={busy} onClick={dismiss}><Trash2 className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        {hint && <div className="mt-2 text-xs text-destructive">{hint}</div>}
+      </CardContent>
+    </Card>
+  )
+}
+
 function ProposedSkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void }) {
   const [reviewing, setReviewing] = useState(false)
   const [content, setContent] = useState('')

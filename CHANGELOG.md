@@ -8,7 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.104.0] — 2026-07-11
+## [0.105.0] — 2026-07-11
+### Added
+- **Agents can ask a human to install a skill — and only ask.** An agent can now discover and request
+  skills from the workspace's integrated library on the fly, but it can never install one itself; a
+  human approves every install. Two new always-on MCP tools:
+  - **`skill_find`** (read-only) — lists what's installable: the agent's own library (each flagged
+    whether it's `active` for that agent) plus the bundled catalog of ready-made skills. The agent
+    calls this when a task looks like it has an established procedure it lacks.
+  - **`skill_request`** — asks an owner/admin to install a named catalog skill. It validates the name
+    against the catalog (a typo fails fast), dedupes an already-open request, and posts a
+    `skill.request` inbox card addressed to owner/admins. The agent is told it's requested and will be
+    available on its next session — it does NOT install anything.
+  - **Human review** on the Skills page (a new "Requested by agents" section) and in the Inbox: an
+    owner/admin **Installs** the skill into the Library (all agents, or scoped to just the requester via
+    a toggle) or **Dismisses** the request. Routes `GET /api/skills/requests`,
+    `POST /api/skills/requests/:id/approve`, `POST /api/skills/requests/:id/dismiss` (all owner/admin);
+    the loopback `GET /api/skills/discover` + `POST /api/skills/request` are session-secret-gated like
+    the other agent tools. Audited `skill.requested` (agent asked) and `skill.installed`
+    (`source: 'agent-request'`, human approved). Delivery is next-session; live same-session delivery
+    is a later phase.
 ### Added
 - **Deep-link permalinks for Knowledge Base pages and Artifacts.** Opening a KB page or an artifact
   was in-memory only — the URL stayed at `#/kb` / `#/artifacts`, so a page/deliverable couldn't be

@@ -422,6 +422,35 @@ const TOOLS = [
     },
   },
   {
+    name: 'skill_find',
+    description:
+      'Discover installable SKILLS — the reusable playbooks packaged for this workspace. Returns your ' +
+      "library (the skills you already have, each flagged whether it's active for you) plus the bundled " +
+      'catalog of ready-made skills you could ask to have installed. Call this when a task looks like it ' +
+      'has an established procedure you lack, BEFORE working it out from scratch — if a fitting catalog ' +
+      "skill exists, request it with `skill_request`. You cannot install skills yourself; a human does.",
+    annotations: { readOnlyHint: true },
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'skill_request',
+    description:
+      'Ask a human to INSTALL an existing catalog skill for the workspace (find installable skills with ' +
+      '`skill_find`). You do NOT install it yourself — this raises a request card an owner/admin reviews; ' +
+      'once approved the skill is in the library and available to you on your next session. Use it when a ' +
+      "catalog skill would help with your work. Pass the skill's `name` and, optionally, a `rationale` " +
+      'saying why you need it (helps the reviewer decide quickly).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'The catalog skill id to install (from skill_find).' },
+        rationale: { type: 'string', description: 'Optional: why you need this skill / what task it unblocks.' },
+      },
+      required: ['name'],
+    },
+  },
+  {
     name: 'list_capabilities',
     description:
       'List the governed capabilities and how policy treats each one right now: allowed outright, ' +
@@ -964,6 +993,45 @@ async function skillPropose(args: Record<string, unknown>): Promise<string> {
   return d.ok
     ? `Proposed skill "${d.skill ?? name}" — it's a draft in the inbox for an owner/admin to review and publish. It won't be active until then.`
     : `Could not propose skill: ${d.error ?? 'unknown error'}`;
+}
+
+async function skillFind(_args: Record<string, unknown>): Promise<string> {
+  const u = new URL(AOS_URL + '/api/skills/discover');
+  u.searchParams.set('session', SESSION);
+  const res = await fetch(u, { headers: H() });
+  const d = (await res.json()) as {
+    installed?: Array<{ name: string; description: string; active: boolean }>;
+    catalog?: Array<{ name: string; description: string; installed: boolean }>;
+    error?: string;
+  };
+  if (d.error) return `Could not list skills: ${d.error}`;
+  const active = (d.installed ?? []).filter((s) => s.active);
+  const requestable = (d.catalog ?? []).filter((s) => !s.installed);
+  const lines: string[] = [];
+  lines.push(active.length ? `Active for you (${active.length}):` : 'No skills are active for you yet.');
+  for (const s of active) lines.push(`  • ${s.name} — ${s.description}`);
+  if (requestable.length) {
+    lines.push('', `Installable from the catalog — ask with skill_request({name}) (${requestable.length}):`);
+    for (const s of requestable) lines.push(`  • ${s.name} — ${s.description}`);
+  } else {
+    lines.push('', 'Nothing new in the catalog to request — everything is already installed.');
+  }
+  return lines.join('\n');
+}
+
+async function skillRequest(args: Record<string, unknown>): Promise<string> {
+  const name = String(args.name ?? '').trim();
+  if (!name) return 'skill_request needs the name of a catalog skill (see skill_find).';
+  const res = await fetch(AOS_URL + '/api/skills/request', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, name, rationale: args.rationale ? String(args.rationale) : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; status?: string; error?: string };
+  if (!d.ok) return `Could not request skill: ${d.error ?? 'unknown error'}`;
+  if (d.status === 'installed') return `"${name}" is already installed and available to you.`;
+  if (d.status === 'duplicate') return `A request for "${name}" is already awaiting review.`;
+  return `Requested "${name}" — an owner/admin will review and install it. It'll be available to you on your next session (not this one).`;
 }
 
 async function update(args: Record<string, unknown>): Promise<string> {
@@ -1629,6 +1697,8 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'notify' ? await notify(args)
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
+        : name === 'skill_find' ? await skillFind(args)
+        : name === 'skill_request' ? await skillRequest(args)
         : name === 'slack_reply' ? await slackReply(args)
         : name === 'discord_reply' ? await discordReply(args)
         : name === 'slack_send' ? await slackSend(args)
