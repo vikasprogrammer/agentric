@@ -188,7 +188,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 43 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 44 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`artifacts_list` (session cards are
@@ -202,7 +202,9 @@ Key modules:
   omitted ⇒ bundled catalog, `source:'owner/repo'` ⇒ a remote GitHub repo resolved at request time; posts a
   `skill.request` card, human installs via `POST /api/skills/requests/:id/approve` — catalog install or
   `fetchSkill`+`installFiles`, available next session). Scheduling: `schedule`/`unschedule`
-  (one-shot deferred self-run via a `type:'once'` automation). Tasks (shared work queue):
+  (one-shot deferred self-run via a `type:'once'` automation) + `stop` (the session ENDS ITSELF —
+  loopback to `/api/agent/stop` → the same `TerminalManager.stopSession` halt the console kill button
+  performs, `by` = the agent id). Tasks (shared work queue):
   `task_create`/`task_list`/`task_get`/`task_claim`/`task_update`/`task_wait`/`task_dispatch`/`task_attach`
   (file/claim/drain durable work + attach a file from the agent's folder onto a task; an
   agent-assigned `autoDispatch` task spawns a governed session — the A2A delegation path; per-task `mode`

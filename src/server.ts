@@ -666,6 +666,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (cancelled) os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'automation.cancelled', data: { id } });
     return sendJson(res, 200, { ok: true, cancelled });
   }
+  // agent ENDS ITS OWN session — the self-stop escape hatch (work is done / blocked with no point
+  // waiting). Same halt the console kill button performs (stopSession: kills tmux, cancels pending
+  // questions/approvals, blocks auto-resume, records a `stopped` episode), but `by` = the agent id.
+  if (method === 'POST' && p === '/api/agent/stop') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const reason = String(b.reason || '').trim() || undefined;
+    // Ack first, halt just after: stopSession kills the tmux that is running THIS caller, so deferring
+    // the kill a beat lets the 200 flush back to the agent before its process group is torn down.
+    setTimeout(() => { try { tm.stopSession(session, agent, reason); } catch { /* best effort — the session is going away regardless */ } }, 150);
+    return sendJson(res, 200, { ok: true });
+  }
 
   // ask-human: the agent posts a question (→ inbox) and polls until a human answers it.
   if (method === 'POST' && p === '/api/ask') {
