@@ -132,3 +132,13 @@
     @apply font-sans;
     }
 }
+
+/* Scrollable strips (e.g. the session tab bar) that hint overflow with an edge
+   fade instead of a chunky native scrollbar. */
+.no-scrollbar {
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* old Edge */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;                  /* Chrome/Safari */
+}

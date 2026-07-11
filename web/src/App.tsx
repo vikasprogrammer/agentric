@@ -1719,6 +1719,15 @@ function RunRating({ session, onRate }: { session: Session; onRate: (id: string,
   )
 }
 
+// Fades the session tab strip's edges to hint off-screen tabs (paired with `.no-scrollbar`). Each edge
+// dissolves over 24px only when there's more to scroll that way; a fully-visible strip stays crisp.
+function edgeFadeMask(fade: { left: boolean; right: boolean }): string | undefined {
+  if (!fade.left && !fade.right) return undefined
+  const l = fade.left ? '24px' : '0px'
+  const r = fade.right ? '24px' : '0px'
+  return `linear-gradient(to right, transparent 0, black ${l}, black calc(100% - ${r}), transparent 100%)`
+}
+
 function SessionsPage({
   me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
@@ -1749,6 +1758,25 @@ function SessionsPage({
   // Terminal switcher bar: live tabs stay pinned; ended (stopped/done/crashed) ones collapse behind a
   // toggle so the bar doesn't accrete every past run. The open session always shows even if it ended.
   const [showEnded, setShowEnded] = useState(false)
+
+  // Tab strip overflow hint: instead of a chunky native scrollbar (`.no-scrollbar` hides it), we fade
+  // whichever edge has more tabs off-screen. `fade` mirrors the scroll position; recomputed on scroll,
+  // on resize, and after every render (tab count changes) — guarded to skip when the strip isn't mounted.
+  const stripRef = useRef<HTMLDivElement>(null)
+  const [fade, setFade] = useState({ left: false, right: false })
+  const syncFade = () => {
+    const el = stripRef.current
+    if (!el) return
+    const left = el.scrollLeft > 1
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setFade((p) => (p.left === left && p.right === right ? p : { left, right }))
+  }
+  useEffect(() => { syncFade() })
+  useEffect(() => {
+    const onResize = () => syncFade()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // The session whose agent-os primitive activity is open in the modal timeline (null = closed).
   const [inspect, setInspect] = useState<Session | null>(null)
@@ -1918,7 +1946,12 @@ function SessionsPage({
         <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
           <TerminalSquare className="h-4 w-4 shrink-0" />
           {/* Only the tabs scroll; the "ended" toggle stays pinned right so it's always reachable. */}
-          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
+          <div
+            ref={stripRef}
+            onScroll={syncFade}
+            className="no-scrollbar flex min-w-0 flex-1 items-center gap-2 overflow-x-auto"
+            style={{ maskImage: edgeFadeMask(fade), WebkitMaskImage: edgeFadeMask(fade) }}
+          >
             {liveTabs.map(renderTab)}
             {selectedEnded && renderTab(selectedEnded)}
             {showEnded && collapsibleEnded.map(renderTab)}
