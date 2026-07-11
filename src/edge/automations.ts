@@ -9,6 +9,9 @@
  * engine. Zero-dependency cron: a minimal 5-field parser below (minute hour dom month dow).
  */
 import { randomBytes, randomUUID } from 'crypto';
+import { execFileSync } from 'child_process';
+import * as os from 'os';
+import * as path from 'path';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
@@ -217,15 +220,52 @@ export const TASK_MAX_ATTEMPTS = 3;
 /**
  * The prompt a dispatched session runs: the task, plus the tools to close its own loop. Mirrors how the
  * KB gardener writes back what it learned — the run is self-closing, so no human has to reconcile status.
+ *
+ * When `goalMode` is set (a headless task WITH single-line acceptance `criteria`, on a `claude` that
+ * supports `/goal`), the prompt opens with `/goal <criteria>` as line 1 — an independent evaluator then
+ * drives the session across turns until the criteria hold (autonomous convergence; spiked viable, see
+ * goals-plan.md §C). `task_update(done)` stays the OS system-of-record, folded into the same turn so the
+ * goal clearing and the task closing are atomic; the existing attempt-ceiling/guard net covers a miss.
  */
-export function buildTaskPrompt(t: { id: string; title: string; body: string }): string {
-  return (
+export function buildTaskPrompt(t: { id: string; title: string; body: string; criteria?: string }, opts: { goalMode?: boolean } = {}): string {
+  const converging = !!(opts.goalMode && t.criteria);
+  const close = converging
+    ? `When you have satisfied the goal above, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }) in that same turn.\n`
+    : `When finished, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }).\n`;
+  const base =
     `You are working task ${t.id}: ${t.title}\n\n` +
     `${t.body || '(no description provided)'}\n\n` +
-    `When finished, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }).\n` +
+    close +
     `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n` +
-    `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`
-  );
+    `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`;
+  return converging ? `/goal ${t.criteria}\n\n${base}` : base;
+}
+
+// Whether the installed `claude` supports the `/goal` slash command (v2.1.139+). Probed once via
+// `claude --version` and cached — an older binary would treat a leading `/goal` as literal text, so we
+// only emit it when supported and otherwise fall back to today's plain prompt. See goals-plan.md §C.
+// Resolves the binary the SAME way `terminal/claude-launch.sh` does: a launchd/systemd parent ships a
+// minimal PATH without `~/.local/bin`, so a bare `claude` lookup would fail in prod even though sessions
+// launch fine — try `$CLAUDE_BIN`, then PATH, then the documented `~/.local/bin/claude`.
+let goalCliSupport: boolean | undefined;
+export function claudeSupportsGoal(): boolean {
+  if (goalCliSupport !== undefined) return goalCliSupport;
+  const candidates = [process.env.CLAUDE_BIN, 'claude', path.join(os.homedir(), '.local/bin/claude')].filter(Boolean) as string[];
+  for (const bin of candidates) {
+    try {
+      const out = execFileSync(bin, ['--version'], { encoding: 'utf8', timeout: 5000 });
+      const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
+      if (m) { goalCliSupport = atLeastVersion([+m[1], +m[2], +m[3]], [2, 1, 139]); return goalCliSupport; }
+    } catch {
+      /* try the next candidate location */
+    }
+  }
+  goalCliSupport = false; // no `claude` resolvable (tests/demo) → never emit `/goal`
+  return goalCliSupport;
+}
+function atLeastVersion(v: number[], min: number[]): boolean {
+  for (let i = 0; i < 3; i++) if (v[i] !== min[i]) return v[i] > min[i];
+  return true;
 }
 
 export class Automations {
@@ -438,7 +478,10 @@ export class Automations {
       this.os.tasks.update(id, { status: 'blocked', note: `auto-dispatch gave up after ${t.attempts} attempts`, by: 'system' });
       return { ok: false, reason: `attempt ceiling reached (${TASK_MAX_ATTEMPTS})` };
     }
-    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner);
+    // A headless task with acceptance criteria runs under a `/goal` convergence condition (when the
+    // installed claude supports it); interactive tasks keep the plain prompt (a human drives those).
+    const goalMode = t.mode !== 'interactive' && !!t.criteria && claudeSupportsGoal();
+    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner);
     this.os.tasks.markDispatched(t.id, s.id);
     this.os.audit.append({
       ts: Date.now(),

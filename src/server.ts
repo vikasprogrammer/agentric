@@ -970,6 +970,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         parentId: typeof b.parentId === 'string' ? b.parentId : undefined,
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
         autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true',
+        goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
+        criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
         dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: `agent:${agent}`,
       });
@@ -1031,6 +1033,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       priority: typeof b.priority === 'number' ? b.priority : undefined,
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
+      goalId: b.goalId === null ? null : (typeof b.goalId === 'string' ? b.goalId : undefined),
+      criteria: b.criteria === null ? null : (typeof b.criteria === 'string' ? b.criteria : undefined),
       dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
       note: typeof b.note === 'string' ? b.note : undefined,
       by: `agent:${agent}`,
@@ -1114,7 +1118,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const found = os.goals.withEvents(url.searchParams.get('id') || '');
     if (!found) return sendJson(res, 404, { error: 'goal not found' });
-    return sendJson(res, 200, found);
+    return sendJson(res, 200, { ...found, tasks: os.tasks.tasksForGoal(found.goal.id), progress: os.goals.progress(found.goal.id) });
   }
   // agent proposes a new goal — drafts a NOT-YET-ACTIVE goal (status 'draft') + posts a 'goal.proposed'
   // inbox card for an owner/admin to review and activate. Auto-apply + audited, like skill_propose.
@@ -1927,6 +1931,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         parentId: typeof b.parentId === 'string' ? b.parentId : undefined,
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
         autoDispatch: b.autoDispatch === true,
+        goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
+        criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
         dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: me.id,
       });
@@ -1949,6 +1955,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       priority: typeof b.priority === 'number' ? b.priority : undefined,
       labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
+      goalId: b.goalId === null ? null : (typeof b.goalId === 'string' ? b.goalId : undefined),
+      criteria: b.criteria === null ? null : (typeof b.criteria === 'string' ? b.criteria : undefined),
       dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
       note: typeof b.note === 'string' ? b.note : undefined,
       by: me.id,
@@ -1988,7 +1996,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const goalComment = p.match(/^\/api\/goals\/([\w-]+)\/comment$/);
   if (method === 'GET' && p === '/api/goals') {
     const goals = os.goals.list({ tenant: os.tenant, status: (url.searchParams.get('status') as GoalStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
-    return sendJson(res, 200, { goals, counts: os.goals.counts(os.tenant) });
+    // Derived progress per goal (from its linked tasks) for the page's progress bars — keyed by id.
+    const progress = Object.fromEntries(goals.map((g) => [g.id, os.goals.progress(g.id)]));
+    return sendJson(res, 200, { goals, counts: os.goals.counts(os.tenant), progress });
   }
   if (goalComment && method === 'POST') {
     const b = await readBody(req);
@@ -2001,7 +2011,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (goalId && method === 'GET') {
     const found = os.goals.withEvents(goalId[1]);
     if (!found) return sendJson(res, 404, { error: 'goal not found' });
-    return sendJson(res, 200, found);
+    return sendJson(res, 200, { ...found, tasks: os.tasks.tasksForGoal(found.goal.id), progress: os.goals.progress(found.goal.id) });
   }
   if (method === 'POST' && p === '/api/goals') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });

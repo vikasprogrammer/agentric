@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.109.0] — 2026-07-11
+### Added
+- **Goals — Slice 2: task linkage, derived progress, and `/goal`-driven convergence.** Goals stop being
+  decoration and start *steering + measuring* work. See `docs/goals-plan.md`.
+  - **Goal ↔ Task linkage.** Tasks gain a nullable `goal_id` — a task can ladder up to the strategic goal
+    it advances (`tasks.goal_id`, `TaskStore.tasksForGoal`). Set/changed via the console task form and the
+    `task_create`/`task_update` MCP tools (`goalId`).
+  - **Derived progress.** `GoalStore.progress()` computes a goal's % from the status of its linked tasks
+    (done ÷ non-cancelled) — never a hand-maintained number, so it can't rot. Surfaced on the Goals page
+    (per-goal progress bar + a linked-tasks section on the detail) and in `goal_get`.
+  - **`/goal`-driven task convergence.** Tasks gain an optional single-line `criteria`. When a headless
+    auto-dispatched task carries criteria — and the installed `claude` supports it (v2.1.139+, probed once
+    via `claude --version` and cached) — its dispatched session now runs under a Claude Code `/goal`
+    completion condition (`buildTaskPrompt` prepends `/goal <criteria>`), so an independent evaluator
+    drives the worker to convergence instead of a single best-effort pass. `task_update(done)` stays the
+    system-of-record (folded into the converging turn); the existing attempt-ceiling/guard net covers a
+    miss. Interactive tasks keep the plain prompt. Criteria is stored single-line (a `/goal` condition
+    delimits at the newline).
+- Deferred to a fast-follow: **B — the Dreaming goal-lens** (reasoning over goal progress in the
+  self-learning pass), which is most useful once linkage data accrues. See `docs/goals-plan.md` §B.
+
 ## [0.108.2] — 2026-07-11
 ### Added
 - **Drag to rearrange session tabs.** The live tabs in the terminal switcher bar can now be dragged into

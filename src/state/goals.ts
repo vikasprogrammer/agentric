@@ -14,7 +14,7 @@
  */
 import { randomUUID } from 'crypto';
 import { Db } from './db';
-import { Goal, GoalCreateInput, GoalEvent, GoalQuery, GoalStatus, GoalUpdateInput } from '../types';
+import { Goal, GoalCreateInput, GoalEvent, GoalProgress, GoalQuery, GoalStatus, GoalUpdateInput, TaskStatus } from '../types';
 
 interface GoalRow {
   id: string; tenant: string; title: string; body: string; status: string;
@@ -191,6 +191,24 @@ export class GoalStore {
       if (r.status in out) out[r.status] = r.n;
     }
     return out;
+  }
+
+  /**
+   * Derive a goal's progress from the tasks linked to it (tasks.goal_id) — never a hand-maintained number,
+   * so it can't rot. `percent` = done ÷ (non-cancelled linked tasks); 0 when nothing is linked yet.
+   */
+  progress(goalId: string): GoalProgress {
+    const byStatus = { todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 } as Record<TaskStatus, number>;
+    for (const r of this.db
+      .prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE goal_id = ? GROUP BY status')
+      .all<{ status: TaskStatus; n: number }>(goalId)) {
+      if (r.status in byStatus) byStatus[r.status] = r.n;
+    }
+    const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
+    const counted = total - byStatus.cancelled; // cancelled work doesn't count against the goal
+    const done = byStatus.done;
+    const percent = counted > 0 ? Math.round((done / counted) * 100) : 0;
+    return { total, done, counted, percent, byStatus };
   }
 
   /** Append one row to the append-only activity log. */

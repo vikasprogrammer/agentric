@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { type Branding, type PublicBranding } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -3759,19 +3759,33 @@ const goalStatusBorder = (s: GoalStatus): string => ({
   achieved: 'border-l-emerald-500',
   abandoned: 'border-l-red-500',
 }[s])
+// Derived-progress meter for a goal (share of its linked tasks that are done). A thin emerald bar +
+// a "done/total tasks" caption; renders nothing when the goal has no linked tasks.
+function GoalProgressBar({ p, className = '' }: { p?: GoalProgress; className?: string }) {
+  if (!p || p.total === 0) return null
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${p.percent}%` }} />
+      </div>
+      <div className="mt-0.5 text-[10px] text-muted-foreground">{p.percent}% · {p.done}/{p.total} tasks</div>
+    </div>
+  )
+}
 
 function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const [goals, setGoals] = useState<Goal[] | null>(null)
   const [counts, setCounts] = useState<GoalCounts>({ draft: 0, active: 0, achieved: 0, abandoned: 0 })
+  const [progress, setProgress] = useState<Record<string, GoalProgress>>({})
   const [q, setQ] = useState('')
   const [fStatus, setFStatus] = useState<GoalStatus | ''>('') // '' = all
   // Selection is URL-driven (#/goals/<id>) so a goal detail is a shareable permalink.
   const selId = goalId || null
   const openGoal = (id: string) => nav('goals', id)
   const closeGoal = () => { setEditing(false); nav('goals') }
-  const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[] } | null>(null)
+  const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; progress?: GoalProgress } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // create form
@@ -3798,6 +3812,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     const r = await api.goals(q, fStatus)
     setGoals(r.goals ?? [])
     if (r.counts) setCounts(r.counts)
+    setProgress(r.progress ?? {})
   }
   useEffect(() => { load() }, [q, fStatus])
   // Live refresh so an agent moving a goal reflects without a manual reload. Pause while a
@@ -3810,7 +3825,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [] }) })
+    api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) })
   }, [selId, goals, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
 
@@ -3835,7 +3850,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     await load()
     await refreshDetail(detail.goal.id)
   }
-  const refreshDetail = async (id: string) => { const r = await api.goal(id); if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [] }) }
+  const refreshDetail = async (id: string) => { const r = await api.goal(id); if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) }
 
   if (!goals) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -3846,6 +3861,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
         <td className="px-3 py-2"><a href={navHref('goals', g.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openGoal(g.id))(e) }} className={`text-foreground no-underline hover:underline ${g.status === 'abandoned' ? 'line-through opacity-60' : ''}`}>{g.title}</a> {g.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
         <td className={`px-3 py-2 text-xs capitalize ${goalStatusTone(g.status)}`}>{g.status}</td>
         <td className="px-3 py-2 text-xs text-muted-foreground">{g.target || '—'}</td>
+        <td className="px-3 py-2">{progress[g.id]?.total ? <GoalProgressBar p={progress[g.id]} className="w-28" /> : <span className="text-xs text-muted-foreground">—</span>}</td>
         <td className="px-3 py-2 text-muted-foreground">{g.owner ? ownerChip(g.owner) : '—'}</td>
         <td className="px-3 py-2 text-xs">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</td>
         <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(g.updatedAt).toLocaleDateString()}</td>
@@ -3913,6 +3929,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
               <th className="px-3 py-2 text-left font-medium">Goal</th>
               <th className="px-3 py-2 text-left font-medium">Status</th>
               <th className="px-3 py-2 text-left font-medium">Target</th>
+              <th className="px-3 py-2 text-left font-medium">Progress</th>
               <th className="px-3 py-2 text-left font-medium">Owner</th>
               <th className="px-3 py-2 text-left font-medium">Due</th>
               <th className="px-3 py-2 text-left font-medium">Updated</th>
@@ -3920,7 +3937,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
           </thead>
           <tbody>
             {visible.map(row)}
-            {visible.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-muted-foreground">No goals match.</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-sm text-muted-foreground">No goals match.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -3988,6 +4005,29 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                 </div>
                 {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
 
+                {/* Linked tasks — the work grounded under this goal, plus its derived progress. */}
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Linked tasks{detail.tasks.length ? ` · ${detail.tasks.length}` : ''}</span>
+                    {detail.progress && detail.progress.total > 0 && <span className="text-[11px] text-muted-foreground">{detail.progress.percent}% · {detail.progress.done}/{detail.progress.total} done</span>}
+                  </div>
+                  {detail.progress && detail.progress.total > 0 && <GoalProgressBar p={detail.progress} className="mb-2" />}
+                  <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
+                    {detail.tasks.length === 0 && <div className="text-xs text-muted-foreground">No tasks linked yet — set this goal on a task to ground work under it.</div>}
+                    {detail.tasks.map((t) => (
+                      <a
+                        key={t.id}
+                        href={navHref('tasks', t.id)}
+                        onClick={onNavClick(() => nav('tasks', t.id))}
+                        className="flex items-center gap-2 rounded-md border bg-muted/20 px-2 py-1.5 text-xs no-underline hover:bg-muted"
+                      >
+                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] capitalize ${taskStatusTone(t.status)}`}>{t.status}</span>
+                        <span className={`min-w-0 flex-1 truncate text-foreground ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+
                 <CommentBox onSubmit={async (text) => { await api.commentGoal(detail.goal.id, text); await refreshDetail(detail.goal.id) }} />
 
                 <div>
@@ -4039,6 +4079,14 @@ const PRIORITY_ITEMS: Record<string, string> = Object.fromEntries(PRIORITY_LABEL
 const priorityTone = (p: number) => ['text-red-600', 'text-amber-600', 'text-muted-foreground', 'text-muted-foreground/70'][p] ?? 'text-muted-foreground'
 // A colored left edge so priority reads at a glance on a dense board (urgent red → low none).
 const priorityBorder = (p: number) => ['border-l-red-500', 'border-l-amber-500', 'border-l-transparent', 'border-l-transparent'][p] ?? 'border-l-transparent'
+// Tinted pill for a task status — used on the goal's linked-tasks list.
+const taskStatusTone = (s: TaskStatus): string => ({
+  todo: 'bg-muted text-muted-foreground',
+  doing: 'bg-sky-500/15 text-sky-600',
+  blocked: 'bg-amber-500/15 text-amber-600',
+  done: 'bg-emerald-500/15 text-emerald-600',
+  cancelled: 'bg-muted text-muted-foreground',
+}[s])
 
 /** Friendly name for a task principal: agent id, member name, or a system/automation actor. */
 function principalLabel(id: string | undefined, members: Member[]): string {
@@ -4074,6 +4122,11 @@ const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00
 function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
+  // Goals to populate the task↔goal selector (and to resolve a task's goal title for its chip). Pull
+  // active goals for the picker but keep the full list so a task linked to a since-archived goal still names it.
+  const [goals, setGoals] = useState<Goal[]>([])
+  useEffect(() => { api.goals().then((r) => setGoals(r.goals ?? [])).catch(() => {}) }, [])
+  const goalTitle = (id?: string) => (id ? goals.find((g) => g.id === id)?.title || id : '')
   const [tasks, setTasks] = useState<Task[] | null>(null)
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   const [q, setQ] = useState('')
@@ -4091,6 +4144,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [fAssignee, setFAssignee] = useState('') // '' = all
   const [fLabel, setFLabel] = useState('')
   const [fPriority, setFPriority] = useState('') // '' = all
+  const [fGoal, setFGoal] = useState('') // '' = all
   const [fOverdue, setFOverdue] = useState(false)
   const [sort, setSort] = useState<'priority' | 'due' | 'updated'>('priority')
   // drag-and-drop
@@ -4105,6 +4159,8 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [autoDispatch, setAutoDispatch] = useState(false)
   const [mode, setMode] = useState<'headless' | 'interactive'>('headless')
   const [due, setDue] = useState('')
+  const [goalId, setGoalId] = useState('') // '' = no goal
+  const [criteria, setCriteria] = useState('')
   // drawer inline edit
   const [editing, setEditing] = useState(false)
   const [eTitle, setETitle] = useState('')
@@ -4154,18 +4210,20 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     if (fAssignee && t.assignee !== fAssignee) return false
     if (fLabel && !t.labels.includes(fLabel)) return false
     if (fPriority !== '' && t.priority !== Number(fPriority)) return false
+    if (fGoal && t.goalId !== fGoal) return false
     if (fOverdue && !dueMeta(t.dueAt, t.status)?.overdue) return false
     return true
   })
-  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fOverdue
-  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFOverdue(false) }
+  const goalsPresent = [...new Set((tasks ?? []).map((t) => t.goalId).filter(Boolean) as string[])]
+  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue
+  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false) }
 
   const create = async () => {
     setHint('')
-    const req: AddTaskReq = { title, body: body || undefined, assignee: assignee || undefined, priority, mode, autoDispatch: autoDispatch && assignee.startsWith('agent:'), dueAt: fromDateInput(due) ?? undefined }
+    const req: AddTaskReq = { title, body: body || undefined, assignee: assignee || undefined, priority, mode, autoDispatch: autoDispatch && assignee.startsWith('agent:'), dueAt: fromDateInput(due) ?? undefined, goalId: goalId || undefined, criteria: criteria.trim() || undefined }
     const r = await api.addTask(req)
     if (r.error) return setHint('⚠ ' + r.error)
-    setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setShowNew(false)
+    setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setGoalId(''); setCriteria(''); setShowNew(false)
     load()
   }
   const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); setBusy(false) }
@@ -4218,6 +4276,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           {t.assignee && <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
+          {t.goalId && <Badge variant="outline" className="max-w-[10rem] gap-1 truncate px-1.5 py-0 text-[10px]"><Target className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{goalTitle(t.goalId)}</span></Badge>}
           {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
           <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
         </div>
@@ -4263,6 +4322,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent><SelectItem value="all">Any priority</SelectItem>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
         </Select>
+        {goalsPresent.length > 0 && (
+          <Select items={{ all: 'Any goal', ...Object.fromEntries(goalsPresent.map((g) => [g, goalTitle(g)])) }} value={fGoal || 'all'} onValueChange={(v) => setFGoal(v === 'all' ? '' : v || '')}>
+            <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="all">Any goal</SelectItem>{goalsPresent.map((g) => <SelectItem key={g} value={g}>{goalTitle(g)}</SelectItem>)}</SelectContent>
+          </Select>
+        )}
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue</button>
         {view === 'list' && (
           <Select items={{ priority: 'Sort: Priority', due: 'Sort: Due date', updated: 'Sort: Updated' }} value={sort} onValueChange={(v) => v && setSort(v as typeof sort)}>
@@ -4302,6 +4367,21 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                   <input type="checkbox" checked={autoDispatch} disabled={!assignee.startsWith('agent:')} onChange={(e) => setAutoDispatch(e.target.checked)} />
                   spawn a session
                 </label>
+              </Field>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field label="Goal">
+                <Select value={goalId || 'none'} onValueChange={(v) => setGoalId(!v || v === 'none' ? '' : v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">— none —</SelectItem>
+                    {goals.filter((g) => g.status === 'active').map((g) => <SelectItem key={g.id} value={g.id}><span className="flex items-center gap-1.5"><Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{g.title}</span></SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Criteria">
+                <Input value={criteria} onChange={(e) => setCriteria(e.target.value)} placeholder="e.g. all tests green on main" />
+                <p className="mt-1 text-[11px] text-muted-foreground">Single-line acceptance condition — when set on a headless auto-dispatched task, the worker runs under a <code>/goal</code> and converges until it holds.</p>
               </Field>
             </div>
             {assignee.startsWith('agent:') && (
@@ -4367,7 +4447,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                   const dm = dueMeta(t.dueAt, t.status)
                   return (
                     <tr key={t.id} onClick={() => openTask(t.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'bg-muted' : ''}`}>
-                      <td className="px-3 py-2"><a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a> {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
+                      <td className="px-3 py-2"><a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a> {t.goalId && <Badge variant="outline" className="ml-1 gap-1 px-1 py-0 text-[10px]"><Target className="h-2.5 w-2.5" />{goalTitle(t.goalId)}</Badge>} {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
                       <td className="px-3 py-2 capitalize text-muted-foreground">{t.status}</td>
                       <td className="px-3 py-2 text-muted-foreground">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</td>
                       <td className={`px-3 py-2 text-xs ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</td>
@@ -4441,6 +4521,28 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                     <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
                   </Field>
                 </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <Field label="Goal">
+                    <Select value={detail.task.goalId || 'none'} onValueChange={(v) => patch(detail.task.id, { goalId: !v || v === 'none' ? null : v })}>
+                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">— none —</SelectItem>
+                        {/* Include the currently-linked goal even if it isn't active, so the label stays correct. */}
+                        {goals.filter((g) => g.status === 'active' || g.id === detail.task.goalId).map((g) => <SelectItem key={g.id} value={g.id}><span className="flex items-center gap-1.5"><Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{g.title}</span></SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="Criteria">
+                    <Input
+                      value={detail.task.criteria ?? ''}
+                      placeholder="e.g. all tests green on main"
+                      className="h-8"
+                      onChange={(e) => setDetail((d) => d ? { ...d, task: { ...d.task, criteria: e.target.value } } : d)}
+                      onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.task.criteria ?? '')) patch(detail.task.id, { criteria: v || null }) }}
+                    />
+                  </Field>
+                </div>
+                {detail.task.criteria && <div className="text-xs text-muted-foreground">◎ converges when: <span className="text-foreground">{detail.task.criteria}</span></div>}
                 {(detail.task.assignee || '').startsWith('agent:') && (
                   <Field label="Run mode">
                     <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>

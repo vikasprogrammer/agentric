@@ -25,7 +25,8 @@ import { Task, TaskAttachment, TaskCreateInput, TaskEvent, TaskQuery, TaskStatus
 interface TaskRow {
   id: string; tenant: string; title: string; body: string; status: string; priority: number;
   labels: string; assignee: string | null; owner: string | null; parent_id: string | null;
-  mode: string; auto_dispatch: number; due_at: number | null; attempts: number; last_session_id: string | null;
+  mode: string; auto_dispatch: number; goal_id: string | null; criteria: string | null;
+  due_at: number | null; attempts: number; last_session_id: string | null;
   created_by: string; created_at: number; updated_at: number; updated_by: string;
   rank?: number;
 }
@@ -83,13 +84,17 @@ export class TaskStore {
     this.db
       .prepare(`INSERT INTO tasks
         (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, auto_dispatch,
-         due_at, attempts, last_session_id, created_by, created_at, updated_at, updated_by)
-        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`)
+         goal_id, criteria, due_at, attempts, last_session_id, created_by, created_at, updated_at, updated_by)
+        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', priority,
         JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
-        mode, input.autoDispatch ? 1 : 0, input.dueAt ?? null, input.createdBy, now, now, input.createdBy,
+        mode, input.autoDispatch ? 1 : 0, input.goalId ?? null, oneLine(input.criteria),
+        input.dueAt ?? null, input.createdBy, now, now, input.createdBy,
       );
+    if (input.goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(input.goalId)) {
+      this.addEvent(id, 'link', `goal:${input.goalId}`, input.createdBy);
+    }
     this.addEvent(id, 'status', '→todo', input.createdBy);
     if (input.parentId && this.get(input.parentId)) this.addEvent(input.parentId, 'link', `task:${id}`, input.createdBy);
     const task = this.get(id)!;
@@ -190,6 +195,11 @@ export class TaskStore {
     }
     if (input.priority !== undefined) { sets.push('priority = ?'); vals.push(clampPriority(input.priority)); }
     if (input.mode !== undefined) { sets.push('mode = ?'); vals.push(input.mode === 'interactive' ? 'interactive' : 'headless'); }
+    if (input.goalId !== undefined && (input.goalId ?? null) !== (t.goalId ?? null)) {
+      sets.push('goal_id = ?'); vals.push(input.goalId ?? null);
+      this.addEvent(id, 'link', input.goalId ? `goal:${input.goalId}` : 'unlinked from goal', input.by);
+    }
+    if (input.criteria !== undefined) { sets.push('criteria = ?'); vals.push(oneLine(input.criteria)); }
     if (input.labels !== undefined) { sets.push('labels = ?'); vals.push(JSON.stringify(input.labels)); }
     if (input.note && input.note.trim()) this.addEvent(id, 'comment', input.note.trim(), input.by);
 
@@ -285,6 +295,14 @@ export class TaskStore {
       .prepare(`SELECT * FROM tasks WHERE tenant = ? AND status = 'todo' AND auto_dispatch = 1
                  AND assignee LIKE 'agent:%' ORDER BY priority, created_at`)
       .all<TaskRow>(tenant)
+      .map(toTask);
+  }
+
+  /** All tasks linked to a goal (newest-updated first) — feeds the goal's derived progress + detail view. */
+  tasksForGoal(goalId: string): Task[] {
+    return this.db
+      .prepare('SELECT * FROM tasks WHERE goal_id = ? ORDER BY updated_at DESC')
+      .all<TaskRow>(goalId)
       .map(toTask);
   }
 
@@ -384,6 +402,15 @@ function clampPriority(p?: number): number {
   return Math.max(0, Math.min(3, Math.round(p)));
 }
 
+/** Collapse to a single trimmed line (or null). A `/goal` condition delimits at the first newline, so a
+ *  multi-line acceptance criterion would spill into the prose body — keep it one line. undefined → leave. */
+function oneLine(s: string | null | undefined): string | null {
+  if (s === undefined) return null;
+  if (s === null) return null;
+  const clean = s.replace(/\s+/g, ' ').trim();
+  return clean || null;
+}
+
 /** Word tokens ORed as quoted FTS5 terms (quoting neutralises operator chars). '' → caller uses recency. */
 function toFtsQuery(query?: string): string {
   if (!query) return '';
@@ -398,6 +425,7 @@ function toTask(r: TaskRow): Task {
     priority: r.priority, labels: JSON.parse(r.labels) as string[], assignee: r.assignee ?? undefined,
     owner: r.owner ?? undefined, parentId: r.parent_id ?? undefined,
     mode: r.mode === 'interactive' ? 'interactive' : 'headless', autoDispatch: r.auto_dispatch === 1,
+    goalId: r.goal_id ?? undefined, criteria: r.criteria ?? undefined,
     dueAt: r.due_at ?? undefined, attempts: r.attempts, lastSessionId: r.last_session_id ?? undefined,
     createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at, updatedBy: r.updated_by,
   };
