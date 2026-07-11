@@ -20,6 +20,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
+import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
@@ -2031,6 +2032,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // steering-wheel concern). Auto-apply + audited; the append-only goal_events log is the safety net.
   const goalId = p.match(/^\/api\/goals\/([\w-]+)$/);
   const goalComment = p.match(/^\/api\/goals\/([\w-]+)\/comment$/);
+  const goalPlan = p.match(/^\/api\/goals\/([\w-]+)\/plan$/);
+  // "Plan this goal" — spawn the strategist (a governed headless agent) to turn the goal into a reviewable
+  // task plan linked to it. File-only: it files tasks, a human dispatches. Owner/admin, like goal edits.
+  if (goalPlan && method === 'POST') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const goal = os.goals.get(goalPlan[1]);
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    const r = await new Strategist(os, tm).plan(goal.id, me.email, me.id);
+    if (r.spawned) os.audit.append({ ts: Date.now(), runId: r.sessionId ?? '-', tenant: os.tenant, principal: me.email, type: 'goal.plan.requested', data: { goalId: goal.id } });
+    return sendJson(res, r.spawned ? 200 : 409, r.spawned ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
+  }
   if (method === 'GET' && p === '/api/goals') {
     const goals = os.goals.list({ tenant: os.tenant, status: (url.searchParams.get('status') as GoalStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
     // Derived progress per goal (from its linked tasks) for the page's progress bars — keyed by id.

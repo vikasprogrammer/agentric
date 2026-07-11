@@ -199,8 +199,11 @@ export class GoalStore {
    */
   progress(goalId: string): GoalProgress {
     const byStatus = { todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 } as Record<TaskStatus, number>;
+    // Count LEAF linked tasks only — a task that has sub-tasks is a grouping/umbrella (its children carry
+    // the real work), so counting both it and its children would double-count and lag the bar.
     for (const r of this.db
-      .prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE goal_id = ? GROUP BY status')
+      .prepare(`SELECT status, COUNT(*) AS n FROM tasks t WHERE t.goal_id = ?
+                 AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id) GROUP BY status`)
       .all<{ status: TaskStatus; n: number }>(goalId)) {
       if (r.status in byStatus) byStatus[r.status] = r.n;
     }

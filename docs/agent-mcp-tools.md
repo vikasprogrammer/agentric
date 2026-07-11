@@ -34,7 +34,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `list_capabilities` | `GET /api/agent/policy` | policy preview | R | |
 | `policy_check` | `POST /api/agent/policy/check` | policy preview | R | dry-run, no side effects |
 | `directory_lookup` | `GET /api/agent/directory` | `TeamStore` | R | people + their chat identities |
-| `task_create` | `POST /api/tasks/create` | `TaskStore.create` | W | files a unit of work; author `agent:<id>`; owner = run-as (delegation passthrough); `mode` headless/interactive for the dispatched run; optional `due` (ISO date) soft deadline; optional `goalId` (link to a strategic goal) + single-line `criteria` (drives a headless dispatch under a `/goal` convergence condition — Slice 2) |
+| `task_create` | `POST /api/tasks/create` | `TaskStore.create` | W | files a unit of work; author `agent:<id>`; owner = run-as (delegation passthrough); `mode` headless/interactive for the dispatched run; optional `due` (ISO date) soft deadline; optional `goalId` (link to a strategic goal; a sub-task inherits its parent's `goalId` when omitted) + single-line `criteria` (drives a headless dispatch under a `/goal` convergence condition — Slice 2) |
 | `task_list` | `GET /api/tasks/list` | `TaskStore.list` | R | `assignee:"me"` → self; board query/FTS |
 | `task_get` | `GET /api/tasks/get` | `TaskStore.withEvents` | R | task + full activity timeline |
 | `task_claim` | `POST /api/tasks/claim` | `TaskStore.claim` | W | atomic take (→ doing); loses if already claimed |

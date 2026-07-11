@@ -197,6 +197,40 @@ session is alive; convergence there stays manual).
 
 ---
 
+## Slice 3 — the strategy agent (the outbound edge)  ✅ Phase 1 shipped (v0.114.0)
+
+Slices 1–2 gave goals an **inbound** edge only: work links *up* to a goal and progress flows up. Nothing
+flowed *down* — you had to hand-file and hand-link every task, which is why goals felt like a place work
+reports to rather than something you *use*. Slice 3 adds the **outbound** edge: a goal can plan itself.
+
+**The insight:** this is a *role*, not plumbing — a **strategy agent** ("goal steward") whose job is
+goal → work. And it's mostly an agent definition, not engine code: it reuses `goal_get`, `list_agents`,
+`task_create`, and the consolidation gardener's "provision a governed headless agent + spawn it" mold.
+
+**Phase 1 (shipped):**
+- **`Strategist`** (`src/edge/strategist.ts`) — provisions a headless `strategist` agent on first use and
+  spawns it against a goal. Triggered by **"Plan this goal"** on the Goal page → `POST /api/goals/:id/plan`
+  (owner/admin; audited `goal.planned`), run-as the human who clicked.
+- Its contract (CLAUDE.md): read the goal + progress + already-linked tasks → identify the GAP → **file**
+  the tasks to close it, linked to the goal, assigned to specialists. **File-only** (a human dispatches);
+  proposes sub-goals via `goal_propose` but never activates them; idempotent on re-run.
+- Two supporting rules so its plans measure cleanly: **`goalId` inheritance** (a sub-task inherits its
+  parent's goal) and **leaf-progress** (`GoalStore.progress()` counts only leaf linked tasks, so an
+  umbrella grouping doesn't inflate the bar).
+
+**Decoupled from Dreaming — deliberately.** An assessment of the self-learning subsystem found Dreaming is
+a *deterministic tally aggregator, dormant by default, with zero goal awareness* — it cannot act as an
+intelligent "this goal is stalled → plan it" sensor. So the strategist is **human-triggered and stands
+alone**. The only reusable asset borrowed from that subsystem is the spawn-a-governed-agent scaffolding.
+
+**Phase 2 (deferred):** a **deterministic goal-stall auto-trigger** — on the scheduler tick, an active
+goal that is overdue / flat-progress / idle spawns the strategist (guarded, reusing the `dispatchTask`
+mold). Net-new and cheap (the Goals plane already computes `progress()` + `dueAt`); explicitly NOT a
+dependency on Dreaming's stub intelligence.
+
+**Phase 3 (later, separate concern):** if/when Dreaming gains real LLM reasoning, fold stall-judgment into
+it — a Dreaming upgrade tracked against its 🟡 Partial grade, not a blocker for goals.
+
 ## Out of scope (both slices)
 
 - **Agent-authored strategy with real authority.** Humans own goals + acceptance criteria; agents `goal_list`/

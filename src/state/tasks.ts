@@ -81,6 +81,13 @@ export class TaskStore {
     const labels = input.labels ?? [];
     const priority = clampPriority(input.priority);
     const mode = input.mode === 'interactive' ? 'interactive' : 'headless';
+    // A sub-task inherits its parent's goal when it doesn't name one — so a strategist's umbrella + its
+    // sub-tasks all roll up to the same goal without the agent stamping goalId on every child.
+    let goalId = input.goalId ?? null;
+    if (!goalId && input.parentId) {
+      const parent = this.db.prepare('SELECT goal_id FROM tasks WHERE id = ?').get<{ goal_id: string | null }>(input.parentId);
+      goalId = parent?.goal_id ?? null;
+    }
     this.db
       .prepare(`INSERT INTO tasks
         (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, auto_dispatch,
@@ -89,11 +96,11 @@ export class TaskStore {
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', priority,
         JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
-        mode, input.autoDispatch ? 1 : 0, input.goalId ?? null, oneLine(input.criteria),
+        mode, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
         input.dueAt ?? null, input.createdBy, now, now, input.createdBy,
       );
-    if (input.goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(input.goalId)) {
-      this.addEvent(id, 'link', `goal:${input.goalId}`, input.createdBy);
+    if (goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId)) {
+      this.addEvent(id, 'link', `goal:${goalId}`, input.createdBy);
     }
     this.addEvent(id, 'status', '→todo', input.createdBy);
     if (input.parentId && this.get(input.parentId)) this.addEvent(input.parentId, 'link', `task:${id}`, input.createdBy);

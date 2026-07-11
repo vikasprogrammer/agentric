@@ -3792,6 +3792,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const [eTitle, setETitle] = useState('')
   const [eBody, setEBody] = useState('')
   const [confirmDel, setConfirmDel] = useState(false)
+  const [planNote, setPlanNote] = useState('') // inline confirmation for "Plan this goal"
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const nameOf = (id?: string) => principalLabel(id, members)
@@ -3819,7 +3820,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) })
   }, [selId, goals, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote('') }, [selId]) // fresh drawer per selection
 
   const visible = goals ?? []
 
@@ -3833,6 +3834,16 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   }
   const patch = async (id: string, b: Parameters<typeof api.patchGoal>[1]) => { setBusy(true); await api.patchGoal(id, b); await load(); await refreshDetail(id); setBusy(false) }
   const remove = async (id: string) => { setBusy(true); await api.deleteGoal(id); closeGoal(); setConfirmDel(false); await load(); setBusy(false) }
+  // Kick off the strategist agent to draft a plan of tasks under this goal. Files a reviewable
+  // plan (no dispatch) — refresh the detail shortly after so newly-filed tasks show up.
+  const plan = async (id: string) => {
+    setPlanNote(''); setHint(''); setBusy(true)
+    const r = await api.planGoal(id)
+    setBusy(false)
+    if (!r.ok) return setHint('⚠ ' + (r.error || 'Could not start the strategist.'))
+    setPlanNote('Strategist is drafting a plan — tasks will appear under this goal shortly.')
+    setTimeout(() => refreshDetail(id), 6000)
+  }
   const startEdit = () => { if (!detail) return; setETitle(detail.goal.title); setEBody(detail.goal.body); setEditing(true) }
   const saveEdit = async () => {
     if (!detail) return
@@ -4001,8 +4012,16 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                 <div>
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Linked tasks{detail.tasks.length ? ` · ${detail.tasks.length}` : ''}</span>
-                    {detail.progress && detail.progress.total > 0 && <span className="text-[11px] text-muted-foreground">{detail.progress.percent}% · {detail.progress.done}/{detail.progress.total} done</span>}
+                    <div className="flex items-center gap-2">
+                      {detail.progress && detail.progress.total > 0 && <span className="text-[11px] text-muted-foreground">{detail.progress.percent}% · {detail.progress.done}/{detail.progress.total} done</span>}
+                      {isAdmin && (detail.goal.status === 'active' || detail.goal.status === 'draft') && (
+                        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => plan(detail.goal.id)}>
+                          <Wand2 className="mr-1 h-3.5 w-3.5" />Plan this goal
+                        </Button>
+                      )}
+                    </div>
                   </div>
+                  {planNote && <div className="mb-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">{planNote}</div>}
                   {detail.progress && detail.progress.total > 0 && <GoalProgressBar p={detail.progress} className="mb-2" />}
                   <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
                     {detail.tasks.length === 0 && <div className="text-xs text-muted-foreground">No tasks linked yet — set this goal on a task to ground work under it.</div>}
