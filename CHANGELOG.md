@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.110.1] — 2026-07-11
+### Fixed
+- **Session tabs no longer look "grabbed" on hover.** The drag-reorderable tabs used a `cursor-grab`
+  (open-hand) cursor on hover, which over the tab's black padding read as if a drag had already started.
+  Dropped it — hovering shows the normal cursor, and the grabbing cursor only appears while you're
+  actually pressing/dragging a tab. Drag-to-reorder itself is unchanged (`web/src/App.tsx`).
+
 ## [0.110.0] — 2026-07-11
 ### Added
 - **Agent skill-requests reach beyond the bundled catalog — the whole skills.sh / GitHub universe
