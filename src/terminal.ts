@@ -177,7 +177,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -1231,7 +1231,25 @@ export class TerminalManager {
         /* preamble is best-effort; a query failure must never block a session launch */
       }
     }
-    return [company, AGENT_OS_OPERATING_NOTES, messaging, fleet, team, preamble, learned]
+    // The strategic layer — the active company goals this agent's work should ladder up to. Injected so
+    // "why am I doing this" is answerable straight from the prompt (goal_list is the live equivalent).
+    // Human-owned; toggleable in Settings. Capped so a long goal list can't dominate every prompt.
+    let goalsSection = '';
+    if (this.os.settings.injectGoals()) {
+      const active = this.os.goals.active(this.os.tenant).slice(0, 12);
+      if (active.length) {
+        goalsSection =
+          '# Company goals — the direction your work serves\n\n' +
+          'These are the active goals the whole fleet is working toward. Keep them in mind when you pick ' +
+          'up or file work: prefer tasks that advance a goal, and link work to one where it fits ' +
+          '(`goal_list` shows them live). You can `goal_propose` a new goal for a human to approve — you ' +
+          'cannot activate or edit one yourself.\n\n' +
+          active
+            .map((g) => `- ${g.title}${g.target ? ` — target: ${g.target}` : ''}${g.body ? `\n  ${g.body.replace(/\s+/g, ' ').trim().slice(0, 200)}` : ''}`)
+            .join('\n');
+      }
+    }
+    return [company, AGENT_OS_OPERATING_NOTES, messaging, goalsSection, fleet, team, preamble, learned]
       .filter(Boolean)
       .join('\n\n');
   }
@@ -1673,6 +1691,20 @@ export class TerminalManager {
     this.addMessage({
       type: 'task', sessionId: `task:${input.taskId}`, agent: input.agent, title: input.title,
       body: input.body, status: 'open', args: { taskId: input.taskId, event: input.event },
+      audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
+    });
+  }
+
+  /**
+   * Post an inbox card for an agent's goal PROPOSAL (a draft goal an owner/admin must review + activate),
+   * addressed to an explicit {@link Audience} (admins). Like {@link postTaskCard} it uses the `goal:<id>`
+   * sentinel for `session_id` (no session backs a goal) so visibility is governed by the audience, and
+   * `args.goalId` deep-links the card to the Goals page. Public so the loopback propose route can call it.
+   */
+  postGoalCard(input: { goalId: string; agent: string; title: string; body: string; audience: Audience }): void {
+    this.addMessage({
+      type: 'goal.proposed', sessionId: `goal:${input.goalId}`, agent: input.agent, title: input.title,
+      body: input.body, status: 'open', args: { goalId: input.goalId },
       audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
     });
   }

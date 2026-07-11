@@ -35,6 +35,7 @@ import { ArtifactStore } from './state/artifacts';
 import { KbStore } from './state/kb';
 import { AgentRevisions } from './state/agent-revisions';
 import { TaskStore } from './state/tasks';
+import { GoalStore } from './state/goals';
 import { StubIdentity } from './governance/identity';
 import { InMemoryIdempotencyStore } from './gateway/idempotency';
 import { JsonPolicyEngine, PolicyDocument, policyContextMismatch } from './governance/policy';
@@ -85,6 +86,8 @@ export class AgentOS {
   readonly agentRevisions: AgentRevisions;
   /** The shared work queue — durable tasks humans + agents create, claim, and drain (auto-dispatchable). */
   readonly tasks: TaskStore;
+  /** The strategic layer work ladders up to — human-owned goals agents read + propose. See goals-plan.md. */
+  readonly goals: GoalStore;
   readonly identity = new StubIdentity();
   readonly idempotency = new InMemoryIdempotencyStore();
   /** The secrets vault: encrypted-at-rest in the workspace DB, with the env vault as a fallback. */
@@ -131,6 +134,8 @@ export class AgentOS {
     // Task rows are db-only structured state (§Decision 2), but attachments are real files, so the
     // store also gets the on-disk attachments dir (snapshot model, like artifacts).
     this.tasks = new TaskStore(this.db, opts.paths?.taskAttachments);
+    // Goals are pure db-only structured state (no attachments/on-disk mirror) → the db alone.
+    this.goals = new GoalStore(this.db);
     this.memory = createMemoryProvider(opts.memory ?? { backend: 'sqlite' }, this.db);
 
     const sinks: AuditSink[] = [this.memoryAudit, new SqliteAuditSink(this.db)];

@@ -682,6 +682,56 @@ const TOOLS = [
       required: ['id'],
     },
   },
+  // ── Goals: the strategic layer your work ladders up to (read + propose; humans decide) ──
+  {
+    name: 'goal_list',
+    description:
+      'List the company GOALS — the strategic direction the whole fleet works toward, above the task ' +
+      'board. Check this to orient your work: prefer tasks that advance an active goal. Filter by `status` ' +
+      "(default shows all) or a free-text `query`. You cannot change a goal here — that's a human decision " +
+      '(use `goal_propose` to suggest a new one). Read-only.',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        status: { type: 'string', enum: ['draft', 'active', 'achieved', 'abandoned'], description: 'Only goals in this status (default: all).' },
+        query: { type: 'string', description: 'Full-text search over title/body/labels.' },
+        limit: { type: 'number', minimum: 1, maximum: 200, description: 'Max results (default 100).' },
+      },
+    },
+  },
+  {
+    name: 'goal_get',
+    description: 'Read one goal in full — its description, target, status, and complete activity timeline. Read-only.',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'string', description: 'The goal id.' } },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'goal_propose',
+    description:
+      'Propose a new company GOAL for a human to review and activate — a strategic objective the fleet ' +
+      'should work toward. Use this when you have spotted a direction worth making explicit (not a one-off ' +
+      "task — file that with task_create). Your proposal is a DRAFT: it is NOT active and doesn't steer " +
+      'anyone until an owner/admin reviews and activates it (an inbox card notifies them). Pass a short ' +
+      '`title`, an optional `body` (the what/why), and an optional free-text `target` caption.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        title: { type: 'string', description: 'A short goal title, e.g. "Grow Globex signups 20% this quarter".' },
+        body: { type: 'string', description: 'The what/why — enough for a human to judge and refine it.' },
+        target: { type: 'string', description: 'Optional free-text target caption, e.g. "20% MoM signup growth".' },
+        labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },
+      },
+      required: ['title'],
+    },
+  },
   // ── Agents: author new agents (the agent-author's build tools) ──
   {
     name: 'agent_create',
@@ -1299,6 +1349,54 @@ async function taskWait(args: Record<string, unknown>): Promise<string> {
   return `Task ${id} hasn't finished within ${maxWaitS}s${where}. It's still running in the background — call task_wait or task_get "${id}" again to keep watching, or move on and check back later.`;
 }
 
+// ── Goals: read the strategic layer + propose a new one ───────────────────────
+async function goalList(args: Record<string, unknown>): Promise<string> {
+  const u = new URL(AOS_URL + '/api/goals/list');
+  u.searchParams.set('session', SESSION);
+  if (args.status) u.searchParams.set('status', String(args.status));
+  if (args.query) u.searchParams.set('q', String(args.query));
+  if (typeof args.limit === 'number') u.searchParams.set('limit', String(args.limit));
+  const res = await fetch(u, { headers: H() });
+  const data = (await res.json()) as { goals?: Array<{ id: string; title: string; status: string; target?: string }> };
+  const goals = data.goals ?? [];
+  if (!goals.length) return 'No goals match. If you see a direction worth making explicit, suggest one with goal_propose.';
+  return goals
+    .map((g) => `- [${g.status}] ${g.id} — ${g.title}${g.target ? ` (target: ${g.target})` : ''}`)
+    .join('\n') + '\n(Use goal_get <id> for detail.)';
+}
+
+async function goalGet(args: Record<string, unknown>): Promise<string> {
+  const u = new URL(AOS_URL + '/api/goals/get');
+  u.searchParams.set('session', SESSION);
+  u.searchParams.set('id', String(args.id ?? ''));
+  const res = await fetch(u, { headers: H() });
+  if (!res.ok) return 'Goal not found.';
+  const d = (await res.json()) as { goal?: { id: string; title: string; body?: string; status: string; target?: string }; events?: Array<{ kind: string; body?: string; author: string }> };
+  if (!d.goal) return 'Goal not found.';
+  const g = d.goal;
+  const timeline = (d.events ?? []).map((e) => `  · ${e.kind}${e.body ? `: ${e.body}` : ''} — ${e.author}`).join('\n');
+  return `${g.id} · [${g.status}]${g.target ? ` · target: ${g.target}` : ''}\n# ${g.title}\n${g.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}`;
+}
+
+async function goalPropose(args: Record<string, unknown>): Promise<string> {
+  const title = String(args.title ?? '').trim();
+  if (!title) return 'A goal needs a title.';
+  const res = await fetch(AOS_URL + '/api/goals/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, title,
+      body: args.body !== undefined ? String(args.body) : undefined,
+      target: args.target !== undefined ? String(args.target) : undefined,
+      labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  return d.ok
+    ? `Proposed goal ${d.id}: "${title}" — it's a draft in the inbox for an owner/admin to review and activate. It won't steer the fleet until then.`
+    : `Could not propose goal: ${d.error ?? 'unknown error'}`;
+}
+
 // ── Agents: author new agents ─────────────────────────────────────────────────
 async function agentCreate(args: Record<string, unknown>): Promise<string> {
   const id = String(args.id ?? '').trim().toLowerCase();
@@ -1657,6 +1755,9 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_wait' ? await taskWait(args)
         : name === 'task_attach' ? await taskAttach(args)
         : name === 'task_dispatch' ? await taskDispatch(args)
+        : name === 'goal_list' ? await goalList(args)
+        : name === 'goal_get' ? await goalGet(args)
+        : name === 'goal_propose' ? await goalPropose(args)
         : name === 'agent_create' ? await agentCreate(args)
         : name === 'agent_update' ? await agentUpdate(args)
         : name === 'agent_history' ? await agentHistory()

@@ -445,6 +445,56 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_attachments ON task_attachments(task_id, created_at);
 
+    -- Goals — the strategic layer work ladders up to (Goal → Task → Session). Human-owned, tenant-wide,
+    -- persistent. Mirrors the Tasks shape: db-only structured state + an append-only event log as the
+    -- audit/rollback backbone (auto-apply + audited, no gate). Slice 2 links a task up via tasks.goal_id;
+    -- v1 is the object + its own timeline. See docs/goals-plan.md.
+    CREATE TABLE IF NOT EXISTS goals (
+      id         TEXT PRIMARY KEY,               -- short uuid (8)
+      tenant     TEXT NOT NULL,
+      title      TEXT NOT NULL,
+      body       TEXT NOT NULL DEFAULT '',       -- markdown "what / why"
+      status     TEXT NOT NULL DEFAULT 'active', -- draft | active | achieved | abandoned
+      target     TEXT,                           -- free-text target caption (v1); numeric metrics later
+      owner      TEXT,                           -- member id accountable for the goal
+      parent_id  TEXT,                           -- hierarchy: strategy → objective → key result (nullable)
+      labels     TEXT NOT NULL DEFAULT '[]',     -- JSON string[]
+      due_at     INTEGER,                        -- optional soft horizon (epoch ms)
+      created_by TEXT NOT NULL,                  -- member id | 'agent:<id>'
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_goals_board ON goals(tenant, status);
+    CREATE INDEX IF NOT EXISTS idx_goals_parent ON goals(parent_id);
+
+    -- Append-only activity log for a goal (status changes, edits, comments, task links) — the Goals
+    -- analog of task_events / kb_revisions. The reversibility/audit backbone.
+    CREATE TABLE IF NOT EXISTS goal_events (
+      id         TEXT PRIMARY KEY,
+      goal_id    TEXT NOT NULL,
+      kind       TEXT NOT NULL,                  -- status | comment | edit | link
+      body       TEXT,                           -- note text, or "active→achieved", or "task:<id>"
+      author     TEXT NOT NULL,                  -- member id | 'agent:<id>' | 'system'
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_goal_events ON goal_events(goal_id, created_at);
+
+    -- FTS5 over title+body+labels for the Goals page search (mirrors tasks_fts exactly).
+    CREATE VIRTUAL TABLE IF NOT EXISTS goals_fts USING fts5(
+      title, body, labels, content='goals', content_rowid='rowid'
+    );
+    CREATE TRIGGER IF NOT EXISTS goals_ai AFTER INSERT ON goals BEGIN
+      INSERT INTO goals_fts(rowid, title, body, labels) VALUES (new.rowid, new.title, new.body, new.labels);
+    END;
+    CREATE TRIGGER IF NOT EXISTS goals_ad AFTER DELETE ON goals BEGIN
+      INSERT INTO goals_fts(goals_fts, rowid, title, body, labels) VALUES('delete', old.rowid, old.title, old.body, old.labels);
+    END;
+    CREATE TRIGGER IF NOT EXISTS goals_au AFTER UPDATE ON goals BEGIN
+      INSERT INTO goals_fts(goals_fts, rowid, title, body, labels) VALUES('delete', old.rowid, old.title, old.body, old.labels);
+      INSERT INTO goals_fts(rowid, title, body, labels) VALUES (new.rowid, new.title, new.body, new.labels);
+    END;
+
     -- Which agents a library skill is scoped to (the skill artifact itself stays on disk under
     -- home/skills/name). Same join-table shape as assignments (members->agents). A skill with
     -- NO rows here is materialised into EVERY claude-code agent (the default & today's behavior);
