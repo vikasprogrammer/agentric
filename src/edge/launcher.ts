@@ -66,7 +66,7 @@ const AGENT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;      // agent id = a folder nam
 /** env keys the app may set on a session (everything else is dropped). */
 export const ENV_ALLOWLIST = new Set([
   'AOS_URL', 'SESSION', 'AGENT', 'TASK_B64', 'AOS_SECRET', 'CLAUDE_SESSION_ID',
-  'HEADLESS', 'LOG_DIR', 'AGENT_DIR', 'HOOK', 'MCP_CONFIG', 'COMPANY_FILE', 'PATH',
+  'UNATTENDED', 'RESIDENT', 'RESUME', 'AGENT_DIR', 'HOOK', 'MCP_CONFIG', 'COMPANY_FILE', 'PATH',
 ]);
 const TTYD_PORT_MIN = 7700;
 const TTYD_PORT_MAX = 7999;
@@ -316,13 +316,13 @@ export class LauncherDaemon {
 
   /**
    * Write per-session files (the `.mcp.json` + company markdown) INTO the member's home so the member
-   * uid can read them, and return the env additions (MCP_CONFIG/COMPANY_FILE/LOG_DIR) pointing at them.
+   * uid can read them, and return the env additions (MCP_CONFIG/COMPANY_FILE) pointing at them.
    * Written as root then chowned to the member uid, 0600. (The app can't write the member's 0700 home.)
    */
   private writeSessionFiles(member: string, uid: number, sessionId: string, files?: { mcp?: string; company?: string }): Record<string, string> {
     const dir = this.sessionsDir(member);
     this.prepareDir(dir, uid); // mkdir + chown uid + 0700
-    const extra: Record<string, string> = { LOG_DIR: dir }; // headless transcripts land here too (member-writable)
+    const extra: Record<string, string> = {};
     const put = (name: string, contents: string, envKey: string): void => {
       const f = path.join(dir, name);
       fs.writeFileSync(f, contents, { mode: 0o600 });
@@ -406,7 +406,7 @@ export class LauncherDaemon {
     const uid = ensured.uid;
 
     // Materialise the session's .mcp.json / company file into the member home (readable by the member
-    // uid) and point MCP_CONFIG/COMPANY_FILE/LOG_DIR at them — overriding any app-supplied values.
+    // uid) and point MCP_CONFIG/COMPANY_FILE at them — overriding any app-supplied values.
     const fileEnv = this.writeSessionFiles(member, uid, req.sessionId!, req.files);
     const env = { ...sanitizeEnv(req.env), ...fileEnv };
     // Per-member agent working copy: AGENT_DIR must be a dir the member uid owns + can write.

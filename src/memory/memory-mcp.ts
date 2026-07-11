@@ -20,9 +20,10 @@ const SECRET = process.env.AOS_SECRET || '';
 // Tenant id (multi-tenant): the server routes these loopback calls to THIS tenant's runtime via the
 // `x-aos-tenant` header (loopback has no Host subdomain). Empty → the server falls back to default.
 const TENANT = process.env.AOS_TENANT || '';
-// HEADLESS marks an unattended run (automation/cron/task, `claude -p`) — no human at the terminal and no
-// idle-reaper bound. A blocking `ask` therefore parks after a short window instead of hanging ~1h (#138).
-const HEADLESS = process.env.HEADLESS === '1';
+// UNATTENDED marks an automation/cron/task run — nobody at the terminal (it's an attachable TUI the
+// server tears down at turn-end). A blocking `ask` therefore parks after a short window instead of
+// hanging ~1h (#138). (Renamed from HEADLESS when unattended runs stopped being `claude -p`.)
+const UNATTENDED = process.env.UNATTENDED === '1';
 const UNATTENDED_ASK_WAIT_S = Number(process.env.AOS_UNATTENDED_ASK_WAIT_S) || 120;
 // How long a delegating agent blocks in `task_wait` for a handed-off task to reach a terminal state. A
 // delegated task can legitimately run many minutes, so this is far longer than the ask window — but still
@@ -946,11 +947,13 @@ async function ask(args: Record<string, unknown>): Promise<string> {
   const { id } = (await res.json()) as { id?: string };
   if (!id) return 'Could not post the question.';
   // Poll the inbox for the human's answer. An INTERACTIVE run waits ~1h (a human is at the terminal and
-  // may take a while). A HEADLESS run (automation/cron/task) has no human attached AND no idle-reaper
-  // bound, so an hour-long block just strands the session and holds its memory — the question is already
-  // in the operator's Inbox + DM'd the moment it was asked, so we only wait a short window in case an
-  // operator is live, then PARK (return stop-cleanly guidance rather than hang or guess).
-  const maxPolls = HEADLESS ? Math.max(1, Math.ceil(UNATTENDED_ASK_WAIT_S / 2)) : 1800;
+  // may take a while). An UNATTENDED run (automation/cron/task) has nobody attached, so an hour-long block
+  // just strands the session and holds its memory — the question is already in the operator's Inbox +
+  // DM'd the moment it was asked, so we only wait a short window in case an operator is live, then PARK
+  // (return stop-cleanly guidance rather than hang or guess). NOTE: a pending question also keeps the
+  // pane alive server-side (markTurnIdle won't reap a run blocked on a person), so parking here is what
+  // lets the pane finally close.
+  const maxPolls = UNATTENDED ? Math.max(1, Math.ceil(UNATTENDED_ASK_WAIT_S / 2)) : 1800;
   for (let i = 0; i < maxPolls; i++) {
     await sleep(2000);
     const r = await fetch(`${AOS_URL}/api/ask/${id}`);
@@ -958,8 +961,8 @@ async function ask(args: Record<string, unknown>): Promise<string> {
     if (d.status === 'answered') return d.answer || '(the operator gave no answer)';
     if (d.status === 'cancelled') return 'The operator dismissed this question without answering. Proceed using your best judgement, or ask again if you are still blocked.';
   }
-  if (HEADLESS) {
-    return 'No operator is available on this unattended run (automation/cron/headless), and none answered in ' +
+  if (UNATTENDED) {
+    return 'No operator is available on this unattended run (automation/cron/task), and none answered in ' +
       `the ${UNATTENDED_ASK_WAIT_S}s window. Your question is recorded in the operator's Inbox and they have been ` +
       'notified, so it is NOT lost. Do NOT proceed with any risky or irreversible action on a guess. Wrap up ' +
       'now: call `report` to summarise what you did and note that you are blocked on this question, then end the ' +
@@ -1447,9 +1450,9 @@ async function taskWait(args: Record<string, unknown>): Promise<string> {
   const id = String(args.id ?? '').trim();
   if (!id) return 'Which task? (id is required).';
   const requested = typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : undefined;
-  // Interactive callers can afford a long block (a human can steer); headless park sooner so a stuck child
-  // can't strand them. An explicit timeoutSeconds always wins. Clamped to [10s, 6h].
-  const ceilingS = HEADLESS ? TASK_WAIT_S : Math.max(TASK_WAIT_S, 3600);
+  // Interactive callers can afford a long block (a human can steer); unattended runs park sooner so a stuck
+  // child can't strand them. An explicit timeoutSeconds always wins. Clamped to [10s, 6h].
+  const ceilingS = UNATTENDED ? TASK_WAIT_S : Math.max(TASK_WAIT_S, 3600);
   const maxWaitS = Math.min(21600, Math.max(10, requested ?? ceilingS));
   const deadline = Date.now() + maxWaitS * 1000;
   let lastStatus = '';

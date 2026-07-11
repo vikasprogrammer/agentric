@@ -155,9 +155,13 @@ export interface Session {
    *  trigger; `task`/`chat` = the dispatcher/chat-router; `system` = an internal principal (e.g. the
    *  consolidation gardener). */
   sourceKind?: SessionSourceKind;
-  /** True when the run launched headless (`claude -p`, non-interactive) rather than as an attachable
-   *  interactive TUI. The console badges the two differently. */
+  /** True when the run launched unattended (an automation/cron/task run). These now run as an attachable
+   *  interactive TUI (not `claude -p`) that a human can take over live; the console badges them as
+   *  unattended vs. a member's own interactive session. */
   headless?: boolean;
+  /** The member id who "took over" (claimed) this unattended run to watch/steer it — set makes the
+   *  session sticky (never auto-reaped at turn-end). Undefined = nobody has claimed it. */
+  claimedBy?: string;
   /** The member id this session ACTS AS (run_as) — distinct from `spawnedBy` provenance. A task- or
    *  chat-triggered run is spawned by `task:`/`automation:` but runs as (and is owned by) a member,
    *  so the console keys "my sessions" off this too. */
@@ -231,6 +235,8 @@ interface SessionRow {
   spawned_by: string | null;
   run_as: string | null;
   headless: number | null;
+  claimed_by: string | null;
+  claimed_at: number | null;
   created_at: number;
   updated_at: number;
   rating: string | null;
@@ -898,7 +904,12 @@ export class TerminalManager {
     const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord);
     const companyMd = this.buildCompanyMd(o.agent);
     this.materializeSkills(o.id, o.agent, manifest.dir);
-    if (o.headless) env.HEADLESS = '1';
+    // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
+    // human can take one over mid-run by simply attaching (no kill, no resume). The launcher's UNATTENDED
+    // lane runs interactive + `--dangerously-skip-permissions` (the gate hook still governs every effect),
+    // and the run is torn down at turn-end by the server (Stop-hook → markTurnIdle) rather than by the
+    // process exiting. See docs/attachable-sessions-plan.md.
+    if (o.headless) env.UNATTENDED = '1';
     // Resident (warm) chat session: the launcher's RESIDENT lane keeps an interactive claude alive so
     // thread follow-ups are delivered by send-keys (see deliverToResident / reviveResident).
     if (o.resident) env.RESIDENT = '1';
@@ -933,7 +944,6 @@ export class TerminalManager {
       if (mcpFile) env.MCP_CONFIG = mcpFile;
       const companyFile = this.writeSessionFile(o.id, 'company.md', companyMd);
       if (companyFile) env.COMPANY_FILE = companyFile;
-      if (o.headless) env.LOG_DIR = this.os.paths?.connectors ?? '/tmp';
       if (!o.headless) this.writeEnvFile(o.id, env);
       this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher] });
     }
@@ -988,61 +998,55 @@ export class TerminalManager {
   }
 
   /**
-   * "Take over" a headless run: convert it into an attachable INTERACTIVE session so a human can watch and
-   * steer. A headless run is `claude -p` — non-interactive, and its pane dies on completion leaving no
-   * resurrect env. But it was pinned to `--session-id CLAUDE_SESSION_ID`, so its transcript persists on
-   * disk; we re-launch the interactive lane under the SAME id with `resume:true` (`claude --resume`), which
-   * writes the `session-<id>.env` the attach/resume path needs and picks up the conversation. If the `-p`
-   * run is still streaming we kill it first (the in-flight turn is lost — resume continues from the last
-   * COMPLETED turn; a `-p` process can't be promoted to a TUI in place). Idempotent-ish: converting an
-   * already-interactive live session is a no-op success (it's already headed). Returns an error string when
-   * the session can't be converted (unknown, not a claude-code run, or predates the pinned session id).
+   * "Take over" an unattended run: CLAIM its live, attachable TUI so a human can watch and steer — with
+   * ZERO disruption. Unattended automation/task runs are now a real interactive claude in a detached tmux
+   * pane (not `claude -p`), so there is nothing to kill and nothing to resume: we just mark the row claimed
+   * and the caller attaches to the still-streaming pane. Claiming makes the session STICKY — the turn-end
+   * (`markTurnIdle`) and idle-backstop reapers leave a claimed run alone, so it keeps its TUI instead of
+   * being auto-closed when it next goes idle. Also flips `headless → 0` (it is now attended) and clears any
+   * stay-stopped sentinel so a re-open resurrects cleanly. Idempotent: claiming an already-claimed or an
+   * interactive session is a no-op success. Returns an error only for an unknown / non-claude-code run.
    */
-  goInteractive(sessionId: string, by: string): { ok: boolean; error?: string } {
-    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, status, task FROM term_sessions WHERE id = ?')
-      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; status: string; task: string }>(sessionId);
+  claimSession(sessionId: string, by: string): { ok: boolean; error?: string } {
+    const row = this.db.prepare('SELECT agent, claimed_by FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; claimed_by: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
-    // Only the real claude-code runtime resumes; a mock/other runtime has no transcript to continue.
+    // Only the real claude-code runtime has an attachable governed TUI; a mock/other runtime has nothing to take over.
     const manifest = this.os.agents.get(row.agent);
-    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can go interactive' };
-    // No pinned claude id → the run predates resumable session ids (or never started claude); nothing to resume.
-    if (!row.claude_session_id) return { ok: false, error: 'this run has no resumable transcript' };
-    // Already an attachable interactive session (has a persisted resurrect env) and live → nothing to do.
-    const alreadyInteractive = !!this.os.paths && fs.existsSync(path.join(this.os.paths.connectors, `session-${sessionId}.env`));
-    if (alreadyInteractive && this.isAlive(sessionId)) return { ok: true };
-    const actingMember = row.run_as ?? undefined;
-    const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
-    const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
-    // If the headless `-p` pane is still alive, kill it so the tmux name frees for the interactive relaunch
-    // (backend.kill is synchronous). The in-flight turn ends here; the resume picks up the last saved turn.
-    const wasAlive = this.isAlive(sessionId);
-    if (wasAlive) this.backend.kill(this.spaceFor(actingMember ?? row.spawned_by ?? undefined), `aos-${sessionId}`);
-    // A prior stop must not veto the deliberate re-open; clear any sentinel before we relaunch/attach.
+    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be taken over' };
+    if (row.claimed_by) return { ok: true }; // already taken over — the pane is already sticky/attachable
+    // A prior stop must not veto the deliberate take-over; clear any sentinel so a re-open resurrects.
     this.allowResume(sessionId);
-    this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
-    this.audit(sessionId, by, 'session.interactive', { agent: row.agent, wasAlive });
-    // Re-launch the interactive lane for the SAME row: headless:false → writes session-<id>.env; resume:true
-    // → `claude --resume CLAUDE_SESSION_ID`. This reuses the whole resume/attach machinery (no new env plumbing).
-    this.launchClaudeCode({
-      id: sessionId, agent: row.agent, task: row.task, secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
-      headless: false, resident: false, resume: true, claudeSessionId: row.claude_session_id,
-    });
+    this.db.prepare("UPDATE term_sessions SET headless = 0, claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ?")
+      .run(by, Date.now(), Date.now(), sessionId);
+    // No kill, no relaunch — the live pane keeps streaming; the caller opens ttyd and attaches to it.
+    this.audit(sessionId, by, 'session.claimed', { agent: row.agent });
     return { ok: true };
   }
 
   /**
-   * Idle reaper: kill resident (warm) chat sessions whose last turn was longer ago than the configured
-   * timeout (Settings → Integrations; default 30 min). Frees the held claude process + MCP servers; the
-   * thread's row stays (status → stopped) so a later reply revives it. `timeoutMin = 0` disables residence
-   * → reap everything resident. Run from the process-wide 60s sweep in server.ts. Never throws.
+   * Idle reaper (run from the process-wide 60s sweep in server.ts). Two jobs, one pass; never throws:
+   *
+   *  1. RESIDENT (warm chat) sessions whose last turn is older than the configured timeout
+   *     (Settings → Integrations; default 30 min) → killed, row → `stopped`, revivable on a later reply.
+   *     `timeoutMin = 0` disables residence → reap all now.
+   *
+   *  2. UNATTENDED backstop — the safety net for the Stop-hook fast path (`markTurnIdle`). An
+   *     automation/task run is now an attachable interactive TUI, torn down at turn-end by the Stop
+   *     beacon; if that beacon never lands (transport failure), or a human attached then detached without
+   *     a further turn, the run would linger. So we also reap unattended (`headless=1`, non-resident,
+   *     UNCLAIMED) running rows that have SEEN at least one turn-end beacon (`last_activity` stamped, so we
+   *     never touch a mid-first-turn long run) and have been idle past the same timeout with NO client
+   *     attached and no pending human block.
    */
-  reapIdleResidents(): void {
+  reapIdleSessions(): void {
     const timeoutMin = this.os.settings.chatIdleTimeoutMinutes();
     const cutoff = timeoutMin > 0 ? Date.now() - timeoutMin * 60_000 : Date.now() + 1; // 0 → reap all now
-    const rows = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status = 'running' AND COALESCE(last_activity, created_at) < ?")
+
+    // (1) resident warm-chat idle reap — unchanged behavior.
+    const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status = 'running' AND COALESCE(last_activity, created_at) < ?")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff);
-    for (const r of rows) {
+    for (const r of residents) {
       try {
         this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
         this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
@@ -1055,6 +1059,72 @@ export class TerminalManager {
         this.audit(r.id, r.agent, 'chat.reaped', { idleMin: timeoutMin });
       } catch { /* one bad row must not stop the sweep */ }
     }
+
+    // (2) unattended turn-end backstop. `last_activity IS NOT NULL` = a turn-end beacon has fired, so this
+    // never reaps a run still working its first turn (that row's last_activity is NULL until markTurnIdle).
+    const stragglers = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE headless = 1 AND resident = 0 AND claimed_by IS NULL AND status = 'running' AND last_activity IS NOT NULL AND last_activity < ?")
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff);
+    for (const r of stragglers) {
+      try {
+        const space = this.spaceFor(r.run_as ?? r.spawned_by);
+        if (this.backend.hasClient(space, r.tmux) === true) continue; // a human is still watching — leave it
+        if (this.hasPendingHumanBlock(r.id)) continue;               // blocked on an answer/approval — keep alive
+        this.teardownUnattended(r.id, space, r.tmux, 'idle-backstop');
+      } catch { /* one bad row must not stop the sweep */ }
+    }
+  }
+
+  /**
+   * Stop-hook fast path (POST /api/turn-idle, fired by terminal/stop-hook.sh when claude finishes a turn).
+   * For an UNATTENDED run this is the normal end-of-run teardown: if no human has claimed or is watching it
+   * and it isn't blocked on a person, close it NOW — capture the transcript, mark it done, kill the pane so
+   * the automations pile-up guard releases immediately (parity with the old `claude -p` exit). Otherwise
+   * (claimed / attached / blocked) it stays a live TUI; we only stamp the turn-end time so the idle backstop
+   * has a clock. No-op for interactive/resident runs and for anything not running.
+   */
+  markTurnIdle(sessionId: string): void {
+    const r = this.db.prepare('SELECT tmux, status, headless, resident, claimed_by, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ tmux: string; status: string; headless: number; resident: number; claimed_by: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!r || r.status !== 'running' || !r.headless || r.resident) return; // only unattended, still-running runs
+    // Record the turn-end time regardless of the decision below — it's the idle backstop's clock and the
+    // signal that this run has completed at least one turn (so the backstop won't reap a mid-turn run).
+    this.db.prepare('UPDATE term_sessions SET last_activity = ? WHERE id = ?').run(Date.now(), sessionId);
+    if (r.claimed_by) return;                       // taken over → sticky, the human owns its lifecycle
+    if (this.hasPendingHumanBlock(sessionId)) return; // waiting on an answer/approval → keep the pane alive
+    const space = this.spaceFor(r.run_as ?? r.spawned_by);
+    if (this.backend.hasClient(space, r.tmux) === true) return; // a human is watching live → don't close on them
+    this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
+  }
+
+  /** Close a finished unattended run: snapshot its pane for the console transcript view, mark it done
+   *  (blocks resurrection + writes the episode), then kill the pane so tmux drops and the pile-up guard
+   *  releases. Shared by the Stop-hook fast path and the idle backstop. */
+  private teardownUnattended(sessionId: string, space: string, tmux: string, reason: string): void {
+    this.captureTranscript(sessionId, space, tmux);
+    this.markEnded(sessionId);   // status → done (if still running), blockResume, writeEpisode
+    this.backend.kill(space, tmux);
+    this.audit(sessionId, 'system', 'session.reaped', { reason });
+  }
+
+  /** Is this session blocked on a human right now (a pending question OR a pending approval)? Used to
+   *  keep an unattended run's pane alive while it legitimately waits, instead of reaping mid-`ask`. */
+  private hasPendingHumanBlock(sessionId: string): boolean {
+    const q = this.db.prepare("SELECT 1 FROM questions WHERE run_id = ? AND status = 'pending' LIMIT 1").get(sessionId);
+    if (q) return true;
+    return this.os.approvals.pending(this.os.tenant).some((a) => a.runId === sessionId);
+  }
+
+  /** Snapshot a live pane's scrollback to `<connectors>/session-<id>.log` (0600) so the console's
+   *  transcript view survives the pane being killed — the replacement for the old headless `-p` tee.
+   *  Best-effort: no paths, an unreachable socket, or a launcher backend (capturePane → null) → skip. */
+  private captureTranscript(sessionId: string, space: string, tmux: string): void {
+    if (!this.os.paths) return;
+    try {
+      const text = this.backend.capturePane(space, tmux);
+      if (text == null) return;
+      fs.mkdirSync(this.os.paths.connectors, { recursive: true }); // the dir exists once a session wrote its .mcp.json, but don't depend on it
+      fs.writeFileSync(path.join(this.os.paths.connectors, `session-${sessionId}.log`), text, { mode: 0o600 });
+    } catch { /* transcript capture is a nicety — never block teardown */ }
   }
 
   /** `{ AOS_URL, SESSION, AGENT, TASK_B64, AOS_SECRET }` — the base env every runner/launcher inherits. */
@@ -2200,7 +2270,11 @@ export class TerminalManager {
   stopSession(sessionId: string, by: string, reason?: string): boolean {
     const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return false;
-    this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
+    const space = this.spaceFor(r.run_as ?? r.spawned_by);
+    // Snapshot the pane before we kill it, so the console transcript view still shows what the run did
+    // (an attachable unattended run has no `-p` tee to fall back on). Best-effort; never blocks the stop.
+    this.captureTranscript(sessionId, space, r.tmux);
+    this.backend.kill(space, r.tmux);
     if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
     // The agent that asked is now dead — no one can answer its open questions or act on its approvals.
@@ -2547,7 +2621,7 @@ function titleFromSummary(summary: string): string {
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

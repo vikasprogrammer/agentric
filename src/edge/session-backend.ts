@@ -40,6 +40,15 @@ export interface SessionBackend {
   injectText(space: string, tmuxName: string, text: string, submit: boolean): boolean;
   /** Live tmux session names, or null when liveness can't be polled (→ rely on end signals). */
   aliveNames(): Set<string> | null;
+  /** Is a browser terminal currently ATTACHED to `tmuxName` (tmux has ≥1 client on the session)?
+   *  Distinguishes "a human is watching this live pane" from "running but unobserved" — the signal the
+   *  turn-end/idle reapers use to leave a taken-over run alone. `null` when it can't be determined
+   *  (launcher backend: the member's tmux socket is uid-private) → callers fall back to timeout reaping. */
+  hasClient(space: string, tmuxName: string): boolean | null;
+  /** Snapshot the visible scrollback of `tmuxName` as text (tmux capture-pane, full history), for the
+   *  console's "what did this run do" transcript view once its pane is gone. `null` when unavailable
+   *  (no such session, or the socket can't be reached). Replaces the old `-p` stdout tee. */
+  capturePane(space: string, tmuxName: string): string | null;
   /**
    * Ensure a browser can attach to `tmuxName` and return the iframe URL. Local → the classic shared
    * `/terminal/?arg=…` (one ttyd). Launcher → bring up the member's own ttyd and return a
@@ -135,6 +144,21 @@ export class LocalSessionBackend implements SessionBackend {
     return new Set((r.stdout || '').split('\n').filter(Boolean));
   }
 
+  hasClient(_space: string, tmuxName: string): boolean | null {
+    // `list-clients -t <session>` prints one line per attached ttyd/xterm client; empty → nobody watching.
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-clients', '-t', tmuxName, '-F', '#{client_name}'], { encoding: 'utf8' });
+    if (r.error) return null;              // couldn't poll → unknown (don't reap on a hiccup)
+    if (r.status !== 0) return false;      // no such session / no server → nothing attached
+    return (r.stdout || '').split('\n').some(Boolean);
+  }
+
+  capturePane(_space: string, tmuxName: string): string | null {
+    // -p: print to stdout; -J: join wrapped lines; -S -: from the start of the scrollback history.
+    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'capture-pane', '-p', '-J', '-S', '-', '-t', tmuxName], { encoding: 'utf8' });
+    if (r.error || r.status !== 0) return null;
+    return r.stdout || '';
+  }
+
   async attachUrl(_space: string, tmuxName: string): Promise<string> {
     return TERMINAL_URL(null, tmuxName); // the single shared ttyd, fronted by nginx as today
   }
@@ -174,7 +198,7 @@ export class LauncherSessionBackend implements SessionBackend {
   spawn(space: string, spec: SpawnSpec): void {
     this.seen.add(space);
     // Fire-and-forget (like the local spawn) — surface only failures to the audit log. The launcher
-    // writes spec.files into the member home (member-readable) and sets MCP_CONFIG/COMPANY_FILE/LOG_DIR.
+    // writes spec.files into the member home (member-readable) and sets MCP_CONFIG/COMPANY_FILE.
     this.client
       .startSession(space, spec.sessionId, spec.tmuxName, spec.env, spec.argv, { files: spec.files, agent: spec.agent, agentSrc: spec.agentSrc })
       .then((r) => { if (!r.ok) this.onError(spec.sessionId, spec.agent, r.error ?? 'launcher start failed'); })
@@ -197,6 +221,14 @@ export class LauncherSessionBackend implements SessionBackend {
     // flip to idle via the explicit /api/ended + /api/report signals; precise launcher-side liveness
     // (a `list_sessions` verb) is a later refinement.
     return null;
+  }
+
+  hasClient(_space: string, _tmuxName: string): boolean | null {
+    return null; // uid-private socket — attachment can't be polled from the app (→ timeout-reap fallback).
+  }
+
+  capturePane(_space: string, _tmuxName: string): string | null {
+    return null; // uid-private socket — the app can't capture the pane (a launcher verb is a later refinement).
   }
 
   async attachUrl(space: string, tmuxName: string): Promise<string> {

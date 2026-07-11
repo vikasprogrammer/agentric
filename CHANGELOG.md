@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.113.0] — 2026-07-11
+### Changed
+- **Take-over is now lossless — unattended runs are an attachable TUI, not `claude -p`.** Automation/cron/
+  task runs launch as a real interactive claude in a detached tmux pane (`--dangerously-skip-permissions`;
+  the PreToolUse gate still governs every effect), so "take over" (`POST /api/sessions/:id/interactive` →
+  `TerminalManager.claimSession`) just marks the live run **claimed** and the console attaches to the
+  still-streaming pane — no kill, no `--resume`, no discarded turn (the old `goInteractive` killed the
+  in-flight `-p` turn and resumed from the last completed one, which read as the run "stopping"). A claimed
+  run is **sticky** (never auto-closed). See `docs/attachable-sessions-plan.md`.
+  - **Server-driven teardown.** A new **Stop hook** (`terminal/stop-hook.sh`) beacons `/api/turn-idle` when
+    claude finishes a turn; `markTurnIdle` closes an unattended run at turn-end — capturing its pane to the
+    transcript log, marking it `done`, and killing the pane so tmux drops and the automations pile-up guard
+    releases (parity with the old `-p` exit) — UNLESS it's claimed, a human is attached, or it's blocked on
+    a person. The idle sweep (`reapIdleResidents` → `reapIdleSessions`) gains a backstop for beaconless
+    stragglers (only ones that have seen a turn-end beacon, so a long first turn is never reaped mid-run).
+  - **New:** `term_sessions.claimed_by`/`claimed_at`; `SessionBackend.hasClient()` (attach detection) +
+    `capturePane()` (transcript snapshot, replacing the `-p` stdout tee); launch env `UNATTENDED=1`
+    (was `HEADLESS=1`), honored by the gate hook's bounded approval wait and the memory MCP's `ask`/
+    `task_wait` parking.
+
 ## [0.112.0] — 2026-07-11
 ### Added
 - **Same-session skill delivery (Phase 3).** When an owner/admin approves an agent's `skill_request`
