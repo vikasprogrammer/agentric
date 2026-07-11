@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.106.0] — 2026-07-11
+### Added
+- **A public marketing landing page at `/landing`.** A standalone, self-contained static HTML page
+  (no auth, no React, no external requests) that introduces Agent OS as an operating system for a
+  fleet of autonomous agents — the fleet, memory, shared knowledge/tasks, chat, governance, and
+  self-improvement — with governance as one capability rather than the whole pitch. "Soft Ambient"
+  visual identity: warm plush neutrals, rounded display type, soft cards, a faint dawn glow, a live
+  fleet roster, and full light/dark theming. Served straight off disk from `public/landing.html`
+  (`src/server.ts` → `LANDING_HTML`, a public route above the member-auth gate) so it can be iterated
+  on without a web build. First cut — copy and design to be refined.
+
 ## [0.105.0] — 2026-07-11
 ### Added
 - **Agents can now discover the existing folder tree before filing into it.** #178 taught agents the
