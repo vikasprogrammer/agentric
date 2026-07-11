@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -447,6 +447,10 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
     </div>
   )
 }
+
+/** Where the sidebar "Feedback" shortcut points — the project's GitHub issues tab, for bug reports
+ *  and feature requests. Opens in a new tab. */
+const FEEDBACK_URL = 'https://github.com/vikasprogrammer/agent-os/issues'
 
 /** Minimal hash router — `#/<page>` with an optional detail segment (`#/sessions/<tmux>`) so a
  *  deep-linked view (an open terminal, later other pages' selections) survives a refresh and
@@ -1066,6 +1070,17 @@ function Console({ me }: { me: Member }) {
                 <NavItem icon={<Building2 className="h-4 w-4" />} label="Settings" active={route === 'settings'} href={navHref('settings')} onClick={() => nav('settings')} />
               )}
               <NavItem icon={<BookOpen className="h-4 w-4" />} label="Docs" active={route === 'docs'} href={navHref('docs')} onClick={() => nav('docs')} />
+              <a
+                href={FEEDBACK_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground no-underline hover:bg-muted"
+                title="Report a bug or request a feature on GitHub"
+              >
+                <Bug className="h-4 w-4" />
+                <span className="flex-1 text-left">Feedback</span>
+                <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+              </a>
             </nav>
           )}
 

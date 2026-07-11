@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.118.0] — 2026-07-11
+## [0.119.0] — 2026-07-11
 ### Added
 - **The strategist numbers task titles.** It now prefixes each task it files with its step number in run
   order ("1. …", "2. …"), so a plan's sequence is visible at a glance on the board (instruction lives in
@@ -21,6 +21,22 @@ new version heading in the same commit.
 - **Deleting a goal detaches its tasks instead of orphaning them.** `GoalStore.remove` now clears
   `goal_id` on every linked task (with a timeline note) rather than leaving a dangling reference — a task
   is real work, so it survives on the board, unlinked. (Child goals already detached this way.)
+
+## [0.118.0] — 2026-07-11
+### Added
+- **Feedback shortcut in the sidebar.** The console's **Manage** group now has a **Feedback** link (under
+  Docs) that opens the project's GitHub issues tab (`vikasprogrammer/agent-os/issues`) in a new tab — a
+  one-click path to report a bug or request a feature.
+
+## [0.117.1] — 2026-07-11
+### Fixed
+- **Self-update no longer blocks itself on lockfile churn.** The in-console "Update & restart" button ran
+  `npm install`, which routinely rewrites `package-lock.json` (registry metadata / lockfile-format drift) —
+  leaving the tree dirty so the *next* update refused with "The box has uncommitted changes — commit or stash
+  them before updating". The updater now treats the regenerable lockfiles (`package-lock.json`,
+  `web/package-lock.json`) as non-blocking: it discards their churn (`git checkout --`) before the ff-pull and
+  excludes them from the dirty check (so the button isn't disabled either). Edits to any *other* tracked file
+  still block, as before.
 
 ## [0.117.0] — 2026-07-11
 ### Added
