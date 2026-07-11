@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.118.0] — 2026-07-11
+### Added
+- **Feedback shortcut in the sidebar.** The console's **Manage** group now has a **Feedback** link (under
+  Docs) that opens the project's GitHub issues tab (`vikasprogrammer/agent-os/issues`) in a new tab — a
+  one-click path to report a bug or request a feature.
+
 ## [0.117.1] — 2026-07-11
 ### Fixed
 - **Self-update no longer blocks itself on lockfile churn.** The in-console "Update & restart" button ran
