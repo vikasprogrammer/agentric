@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.111.0] — 2026-07-11
+### Added
+- **Same-session skill delivery (Phase 3).** When an owner/admin approves an agent's `skill_request`
+  and that agent has a LIVE interactive (resident) session, the skill is now usable *in that session*
+  instead of only on its next launch. On approve, `TerminalManager.refreshAgentSkills` re-materialises
+  the library into the agent's watched `.claude/skills` (so the new skill lands as a folder Claude Code's
+  file-watcher detects) and injects **`/reload-skills`** into the live tmux session to force a re-scan +
+  re-surface skill descriptions. The approve response returns `reloaded` (how many live sessions were
+  refreshed).
+  - **Enabling fix:** `SkillsStore.materialize` now always creates `<agent>/.claude/skills` at launch,
+    even for an agent with zero skills — Claude Code only *watches* a skills dir that existed at startup,
+    so without this the very first skill added mid-session wouldn't be picked up until a restart.
+  - **Scope / safety:** delivery targets only `resident` + running + alive sessions; a headless
+    `claude -p` run has no REPL and exits anyway, so it gets the skill on its next run (unchanged). The
+    `/reload-skills` inject is gated on `claude` ≥ 2.1.152 — on an older binary the re-materialise still
+    happens (the watcher exposes the skill as `/name` next turn), only the forced rescan is skipped. New
+    audit event `skills.reloaded`.
+  - Refactored the cached `claude --version` feature-probe into a shared `src/edge/claude-cli.ts`
+    (`claudeVersion`/`claudeSupportsGoal`/`claudeSupportsReloadSkills`).
+
 ## [0.110.1] — 2026-07-11
 ### Fixed
 - **Session tabs no longer look "grabbed" on hover.** The drag-reorderable tabs used a `cursor-grab`

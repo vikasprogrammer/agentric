@@ -334,6 +334,12 @@ export class SkillsStore {
   materialize(claudeDir: string, agent?: string): string[] {
     if (!this.dir) return [];
     const target = path.join(claudeDir, 'skills');
+    // Always create the skills dir, even when this agent has NO skills yet. Claude Code only *watches*
+    // a `.claude/skills/` that existed at launch — a brand-new top-level dir created mid-session is not
+    // picked up (even by `/reload-skills`) until the session restarts. Creating it empty up front makes
+    // it watched, so a skill materialised later (same-session delivery) is auto-detected. Harmless when
+    // skills do exist (they'd create it anyway).
+    fs.mkdirSync(target, { recursive: true });
     const managed = new Set<string>(); // names we own in the target right now
     const handAuthored = new Set<string>(); // agent's own — leave alone, they shadow globals
     if (fs.existsSync(target)) {
