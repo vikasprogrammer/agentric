@@ -8665,6 +8665,10 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
+  const [image, setImage] = useState<IntegrationsResp['image']>({ openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false })
+  const [orKey, setOrKey] = useState('')
+  const [atKey, setAtKey] = useState('')
+  const [imgModel, setImgModel] = useState('')
   const [chatRouter, setChatRouter] = useState(true)
   const [chatIdle, setChatIdle] = useState(30)
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
@@ -8680,11 +8684,14 @@ function IntegrationsSettings({ me }: { me: Member }) {
   // Defensive defaults so an older backend (one that predates a field) never white-screens the page.
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
   const DISCORD_DEFAULT = { botToken: false, configured: false }
+  const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const apply = (r: IntegrationsResp) => {
     if (r.composio) setComposio(r.composio)
     if (r.webhook) setWebhook(r.webhook)
     setSlack(r.slack ?? SLACK_DEFAULT)
     setDiscord(r.discord ?? DISCORD_DEFAULT)
+    setImage(r.image ?? IMAGE_DEFAULT)
+    if (r.image) setImgModel(r.image.defaultModel || '')
     if (typeof r.chatRouter === 'boolean') setChatRouter(r.chatRouter)
     if (typeof r.chatIdleTimeoutMin === 'number') setChatIdle(r.chatIdleTimeoutMin)
     setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
@@ -8725,12 +8732,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
     loadStatus()
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setOrKey(''); setAtKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
     // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
@@ -8968,6 +8975,68 @@ function IntegrationsSettings({ me }: { me: Member }) {
               </div>
             )
           })()}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              Image generation
+              {image.configured
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">on · {image.backend === 'openrouter' ? 'OpenRouter' : 'Atlas Cloud'}</Badge>
+                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Gives every agent an <code className="text-[11px]">image_generate</code> tool (Claude can't draw natively).
+              Generated images land in the <strong>Artifacts</strong> gallery and the run is cost-metered + audited. Set
+              <strong> one</strong> backend key — <strong>OpenRouter</strong> (recommended: reports the exact per-image cost) or
+              <strong> Atlas Cloud</strong> (broadest catalog; also covers video later). If both are set, OpenRouter is used.
+            </p>
+          </div>
+
+          <Field label="OpenRouter API key" help="openrouter.ai → Keys. One Bearer key reaches 30+ image models; usage.cost is debited per request.">
+            <Input
+              type="password"
+              value={orKey}
+              onChange={(e) => setOrKey(e.target.value)}
+              placeholder={image.openRouter ? '•••• (saved) — type a new key to replace' : 'sk-or-…'}
+              className="font-mono text-xs"
+            />
+            {image.openRouter && (
+              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ openRouterKey: '' }, 'removed')} disabled={busy}>Remove key</button>
+            )}
+          </Field>
+
+          <Field label="Atlas Cloud API key" help="atlascloud.ai → API keys. OpenAI-compatible; covers image + video under one key.">
+            <Input
+              type="password"
+              value={atKey}
+              onChange={(e) => setAtKey(e.target.value)}
+              placeholder={image.atlas ? '•••• (saved) — type a new key to replace' : 'atlas key'}
+              className="font-mono text-xs"
+            />
+            {image.atlas && (
+              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ atlasKey: '' }, 'removed')} disabled={busy}>Remove key</button>
+            )}
+          </Field>
+
+          <Field label="Default model" help="Optional — a backend-specific model id used when an agent doesn't name one. Blank = the backend's built-in default.">
+            <Input
+              value={imgModel}
+              onChange={(e) => setImgModel(e.target.value)}
+              onBlur={() => { if (imgModel.trim() !== (image.defaultModel || '')) save({ imageDefaultModel: imgModel.trim() }, 'default model saved') }}
+              placeholder="e.g. google/gemini-3.1-flash-image-preview (OpenRouter) or flux.2 (Atlas)"
+              className="font-mono text-xs"
+            />
+          </Field>
+
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={() => save({ ...(orKey.trim() ? { openRouterKey: orKey.trim() } : {}), ...(atKey.trim() ? { atlasKey: atKey.trim() } : {}) }, 'saved')}
+              disabled={busy || (!orKey.trim() && !atKey.trim())}
+            >Save</Button>
+          </div>
         </CardContent>
       </Card>
     </div>

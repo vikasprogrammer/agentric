@@ -118,6 +118,57 @@ export class ArtifactStore {
     return { ok: true, artifact: toArtifact(row) };
   }
 
+  /**
+   * Ingest bytes that originate SERVER-SIDE (not from an agent's working folder) straight into the
+   * gallery — the path a generated image/video takes. Same table + id-dir shape as `publish`, but the
+   * source is a Buffer we already hold, so there's no `allowRoot`/containment check (nothing the agent
+   * named is being read from disk). The caller owns provenance (sessionId/agent/source) + title.
+   */
+  ingest(input: {
+    sessionId: string;
+    agent: string;
+    source?: string;
+    title: string;
+    description?: string;
+    folder?: string;
+    filename: string;
+    bytes: Buffer;
+    kind?: string;
+  }): PublishResult {
+    if (!this.dir) return { ok: false, error: 'no data home configured (artifacts disabled)' };
+    const filename = path.basename(input.filename) || 'image.png';
+    const id = randomUUID().slice(0, 8);
+    const destDir = path.join(this.dir, id);
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.writeFileSync(path.join(destDir, filename), input.bytes);
+
+    const row: ArtifactRow = {
+      id,
+      session_id: input.sessionId,
+      agent: input.agent,
+      source: input.source ?? null,
+      kind: input.kind ?? 'file',
+      title: input.title,
+      description: input.description ?? null,
+      folder: normFolder(input.folder),
+      filename,
+      rel_path: path.join(id, filename),
+      mime: mimeOf(filename),
+      bytes: input.bytes.length,
+      created_at: Date.now(),
+    };
+    this.db
+      .prepare(
+        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        row.id, row.session_id, row.agent, row.source, row.kind, row.title, row.description,
+        row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.created_at,
+      );
+    return { ok: true, artifact: toArtifact(row) };
+  }
+
   /** All artifacts, newest first. The server filters by viewer (inbox visibility rule). */
   list(): Artifact[] {
     return this.db

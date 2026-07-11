@@ -737,6 +737,8 @@ export interface IntegrationsResp {
   slack: { appToken: boolean; botToken: boolean; configured: boolean }
   /** Native Discord (Gateway) — whether the bot token is set; never the token. */
   discord: { botToken: boolean; configured: boolean }
+  /** Image generation backend — which keys are set (never the keys), the active backend, default model. */
+  image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean }
   /** Generic `/agent` chat router: when on, an unmatched Slack/Discord message reaches any agent by name. */
   chatRouter: boolean
   /** Warm (resident) Slack thread session idle-kill, minutes. 0 = residence off (every reply cold-starts). */
@@ -1021,7 +1023,7 @@ export const api = {
   disconnectApp: (body: { id: string; scope: 'company' | 'personal' }) =>
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   slackStatus: () => call<SlackStatus>('GET', '/api/settings/slack/status'),
   discordStatus: () => call<DiscordStatus>('GET', '/api/settings/discord/status'),
 

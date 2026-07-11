@@ -58,8 +58,9 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `slack_dm` | `POST /api/agent/slack/dm` | `SlackSocket.dmMember` | W | proactive DM by Slack user id or email; audited `slack.dm`; only when `SLACK_EGRESS=1` |
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
+| `image_generate` | `POST /api/agent/image/generate` | `TerminalManager.generateImage` → `ImageBackend` + `ArtifactStore.ingest` | W | text→image (Claude can't draw natively). Governed as capability `image.generate` with `amountUsd`=estimate (the money-cap `never` rule applies), then the vendor call (OpenRouter default / Atlas alt, `resolveImageBackend`); each image is `ingest`ed into the gallery (`kind:'image'`, folder `generated-images`) + an owner-scoped inbox card; audited `image.generated` with the REAL cost (OpenRouter `usage.cost`) else the estimate. Only when `IMAGE_GEN=1` (a backend key set in Settings → Integrations) |
 
-44 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+44 always-on tools + 7 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 

@@ -18,6 +18,9 @@ const COMPOSIO_WEBHOOK_KEY = 'composio_webhook_secret';
 const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connections:write)
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
+const IMAGE_OPENROUTER_KEY = 'image_openrouter_key'; // OpenRouter Unified Image API key (default backend)
+const IMAGE_ATLAS_KEY = 'image_atlas_key'; // Atlas Cloud key (alt backend; covers video later)
+const IMAGE_MODEL_KEY = 'image_default_model'; // workspace default image model id (backend-specific); '' = adapter default
 const MEMORY_KEY = 'memory_config'; // the live memory backend (JSON MemoryConfig; overrides the file default)
 const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active external backend became active — the stable orphan horizon for migration
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
@@ -182,6 +185,57 @@ export class SettingsStore {
   }
   setDiscordBotToken(token: string, by?: string): void {
     this.set(DISCORD_BOT_TOKEN_KEY, token.trim(), by);
+  }
+
+  // ── image generation ─────────────────────────────────────────────────────────────
+  // Keys for the `image_generate` capability's backend. OpenRouter (default) reports the real per-
+  // request cost in-band; Atlas is the alternative (and the future video lane). Either key present
+  // ⇒ the tool is offered to sessions. Backend selection lives in resolveImageBackend (edge/image-gen).
+
+  /** OpenRouter Unified Image API key, or '' when unset. */
+  openRouterKey(): string {
+    return this.getRow(IMAGE_OPENROUTER_KEY)?.value?.trim() ?? '';
+  }
+  /** Atlas Cloud key, or '' when unset. */
+  atlasKey(): string {
+    return this.getRow(IMAGE_ATLAS_KEY)?.value?.trim() ?? '';
+  }
+  /** Workspace default image model id (backend-specific), or '' to use the adapter's own default. */
+  imageDefaultModel(): string {
+    return this.getRow(IMAGE_MODEL_KEY)?.value?.trim() ?? '';
+  }
+  /** At least one backend key present → the tool is exposed. */
+  imageGenConfigured(): boolean {
+    return !!this.openRouterKey() || !!this.atlasKey();
+  }
+  /** Which backend a run would use (OpenRouter wins when both set) — for the console + status. */
+  imageGenBackend(): 'openrouter' | 'atlas' | null {
+    if (this.openRouterKey()) return 'openrouter';
+    if (this.atlasKey()) return 'atlas';
+    return null;
+  }
+  /** Whether each image key is set (never returns the secret) + the default model + last editor. */
+  imageGenMeta(): { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; updatedAt?: number; updatedBy?: string } {
+    const or = this.getRow(IMAGE_OPENROUTER_KEY);
+    const at = this.getRow(IMAGE_ATLAS_KEY);
+    const newest = [or, at].filter(Boolean).sort((a, b) => (b!.updated_at ?? 0) - (a!.updated_at ?? 0))[0];
+    return {
+      openRouter: !!or?.value,
+      atlas: !!at?.value,
+      backend: this.imageGenBackend(),
+      defaultModel: this.imageDefaultModel(),
+      updatedAt: newest?.updated_at ?? undefined,
+      updatedBy: newest?.updated_by ?? undefined,
+    };
+  }
+  setOpenRouterKey(key: string, by?: string): void {
+    this.set(IMAGE_OPENROUTER_KEY, key.trim(), by);
+  }
+  setAtlasKey(key: string, by?: string): void {
+    this.set(IMAGE_ATLAS_KEY, key.trim(), by);
+  }
+  setImageDefaultModel(model: string, by?: string): void {
+    this.set(IMAGE_MODEL_KEY, model.trim(), by);
   }
 
   // ── memory backend ───────────────────────────────────────────────────────────────

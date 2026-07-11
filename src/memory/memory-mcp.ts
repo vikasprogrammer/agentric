@@ -83,6 +83,8 @@ const DISCORD_REPLY_TOOL = {
 // are NOT thread-bound: the agent names a channel or person, so it can message anyone / anywhere.
 const SLACK_EGRESS = process.env.SLACK_EGRESS === '1';
 const DISCORD_EGRESS = process.env.DISCORD_EGRESS === '1';
+// IMAGE_GEN: '1' when a workspace image backend (OpenRouter/Atlas) is configured — exposes image_generate.
+const IMAGE_GEN = process.env.IMAGE_GEN === '1';
 
 const SLACK_SEND_TOOL = {
   name: 'slack_send',
@@ -143,6 +145,25 @@ const DISCORD_DM_TOOL = {
       text: { type: 'string', description: 'The message to send (Discord markdown supported).' },
     },
     required: ['to', 'text'],
+  },
+};
+
+const IMAGE_GENERATE_TOOL = {
+  name: 'image_generate',
+  description:
+    'Generate image(s) from a text prompt. Use this whenever you need to CREATE an image — you cannot ' +
+    'draw natively. Each image is saved to the Artifacts gallery (and an inbox card) and the tool ' +
+    'returns the artifact id(s); reference those rather than expecting the raw bytes. The generation is ' +
+    'governed (cost-metered + audited).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string', description: 'What to draw — be specific about subject, style, composition, colours.' },
+      model: { type: 'string', description: 'Optional model id (backend-specific). Omit to use the workspace default.' },
+      size: { type: 'string', description: 'Optional dimensions, e.g. "1024x1024". Omit for the model default.' },
+      n: { type: 'number', description: 'How many images to generate (1–4, default 1).' },
+    },
+    required: ['prompt'],
   },
 };
 
@@ -995,6 +1016,25 @@ async function discordReply(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; error?: string };
   return d.ok ? 'Posted to Discord.' : `Could not post to Discord: ${d.error ?? 'unknown error'}`;
+}
+
+async function imageGenerate(args: Record<string, unknown>): Promise<string> {
+  const prompt = String(args.prompt ?? '').trim();
+  if (!prompt) return 'A prompt is required.';
+  const body: Record<string, unknown> = { session: SESSION, prompt };
+  if (typeof args.model === 'string' && args.model.trim()) body.model = args.model.trim();
+  if (typeof args.size === 'string' && args.size.trim()) body.size = args.size.trim();
+  if (args.n !== undefined) body.n = Number(args.n);
+  const res = await fetch(AOS_URL + '/api/agent/image/generate', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number };
+  if (!d.ok) return `Could not generate image: ${d.error ?? 'unknown error'}`;
+  const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
+  const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
+  return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Artifacts gallery: ${list}.`;
 }
 
 async function slackSend(args: Record<string, unknown>): Promise<string> {
@@ -1858,6 +1898,7 @@ async function handle(req: JsonRpc): Promise<void> {
       ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : []),
       ...(SLACK_EGRESS ? [SLACK_SEND_TOOL, SLACK_DM_TOOL] : []),
       ...(DISCORD_EGRESS ? [DISCORD_SEND_TOOL, DISCORD_DM_TOOL] : []),
+      ...(IMAGE_GEN ? [IMAGE_GENERATE_TOOL] : []),
     ] } });
     return;
   }
@@ -1890,6 +1931,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'slack_dm' ? await slackDm(args)
         : name === 'discord_send' ? await discordSend(args)
         : name === 'discord_dm' ? await discordDm(args)
+        : name === 'image_generate' ? await imageGenerate(args)
         : name === 'list_capabilities' ? await listCapabilities()
         : name === 'policy_check' ? await policyCheck(args)
         : name === 'directory_lookup' ? await directoryLookup(args)

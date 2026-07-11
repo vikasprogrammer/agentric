@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.120.0] — 2026-07-11
+### Added
+- **Image generation — agents can now draw.** Claude can't create images natively, so `image_generate`
+  is a new OS-owned MCP tool: an agent gives a prompt, the image(s) land in the **Artifacts** gallery
+  (folder `generated-images`, `kind:'image'`) + an owner-scoped inbox card, and the tool returns the
+  artifact ids. Fully governed — the run is policy-classified as `image.generate` with the estimated
+  `amountUsd`, so the default **money-cap** rule gates a runaway spend for free, and it's audited
+  `image.generated` with the **real** per-image cost when the backend reports it. The vendor sits behind
+  a swappable `ImageBackend` (`src/edge/image-gen.ts`): **OpenRouter** (default — one Bearer POST reaches
+  30+ models and returns `usage.cost` for exact metering) or **Atlas Cloud** (OpenAI-compatible; the
+  future video lane too). URL-or-base64 vendor output is normalised to bytes and snapshotted immediately
+  (vendor URLs can expire in minutes) via the new `ArtifactStore.ingest` (server-side bytes → gallery).
+  Backend keys + optional default model live in **Settings → Integrations** (`IMAGE_GEN=1` exposes the
+  tool when a key is set). Design + provider research in `docs/media-integrations-plan.md`.
+  (`src/edge/image-gen.ts`, `src/state/artifacts.ts`, `src/terminal.ts`, `src/server.ts`,
+  `src/governance/settings.ts`, `src/memory/memory-mcp.ts`, `web/src/App.tsx`)
+
 ## [0.119.0] — 2026-07-11
 ### Added
 - **The strategist numbers task titles.** It now prefixes each task it files with its step number in run

@@ -829,6 +829,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = await slack.sendToChannel(session, String(b.channel || ''), String(b.text || ''));
     return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
   }
+  // OS-owned image generation (`image_generate` MCP tool): govern → vendor call → snapshot each image
+  // into the Artifacts gallery. Pre-auth loopback, session-secret gated like the other agent tools;
+  // TerminalManager.generateImage owns the gate/backend/artifact/audit path.
+  if (method === 'POST' && p === '/api/agent/image/generate') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const out = await tm.generateImage(session, {
+      prompt: String(b.prompt || ''),
+      model: b.model ? String(b.model) : undefined,
+      size: b.size ? String(b.size) : undefined,
+      n: b.n !== undefined ? Number(b.n) : undefined,
+    });
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
   // native Slack egress (proactive): DM a person by Slack user id or email. Audited as `slack.dm`.
   if (method === 'POST' && p === '/api/agent/slack/dm') {
     const b = await readBody(req);
@@ -2650,6 +2666,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
     }
     if (discordTouched && discord) void discord.restart();
+    // Image generation backend keys (OpenRouter default / Atlas alt) + optional default model.
+    if (typeof b.openRouterKey === 'string') os.settings.setOpenRouterKey(b.openRouterKey, me.email);
+    if (typeof b.atlasKey === 'string') os.settings.setAtlasKey(b.atlasKey, me.email);
+    if (typeof b.imageDefaultModel === 'string') os.settings.setImageDefaultModel(b.imageDefaultModel, me.email);
     // Generic `/agent` chat router toggle (Slack + Discord fallback when no automation matches).
     if (typeof b.chatRouter === 'boolean') os.settings.setChatRouterEnabled(b.chatRouter, me.email);
     // Warm (resident) Slack thread session idle-kill, minutes (0 = disable residence → cold replies).
@@ -3798,6 +3818,7 @@ function integrationsView(os: AgentOS): {
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
+  image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   chatRouter: boolean;
   chatIdleTimeoutMin: number;
   updatedAt?: number;
@@ -3806,11 +3827,13 @@ function integrationsView(os: AgentOS): {
   const meta = os.settings.composioMeta();
   const slack = os.settings.slackMeta();
   const discord = os.settings.discordMeta();
+  const image = os.settings.imageGenMeta();
   return {
     composio: { set: meta.set, hint: redactSecret(os.settings.composioApiKey()) },
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
+    image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     chatRouter: os.settings.chatRouterEnabled(),
     chatIdleTimeoutMin: os.settings.chatIdleTimeoutMinutes(),
     updatedAt: meta.updatedAt,

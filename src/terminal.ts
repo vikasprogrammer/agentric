@@ -21,6 +21,7 @@ import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
 import { claudeSupportsReloadSkills } from './edge/claude-cli';
+import { DEFAULT_IMAGE_COST_USD, resolveImageBackend } from './edge/image-gen';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -1416,6 +1417,8 @@ export class TerminalManager {
         ...(discordReply ? { DISCORD_REPLY: '1' } : {}),
         ...(this.os.settings.slackConfigured() ? { SLACK_EGRESS: '1' } : {}),
         ...(this.os.settings.discordConfigured() ? { DISCORD_EGRESS: '1' } : {}),
+        // IMAGE_GEN: '1' exposes `image_generate` when a backend key (OpenRouter/Atlas) is configured.
+        ...(this.os.settings.imageGenConfigured() ? { IMAGE_GEN: '1' } : {}),
       },
     };
     return JSON.stringify(config, null, 2);
@@ -2177,6 +2180,74 @@ export class TerminalManager {
     });
     this.audit(sessionId, agent, 'artifact.published', { id: a.id, filename: a.filename, bytes: a.bytes, mime: a.mime, title: a.title, folder: a.folder });
     return { ok: true, id: a.id };
+  }
+
+  /**
+   * Generate image(s) from a prompt (the `image_generate` MCP path) and snapshot each into the
+   * Artifacts gallery. Claude can't draw natively, so this is a first-class governed capability:
+   *  1. the run is policy-classified as `image.generate` with `amountUsd` = the pre-estimate, so the
+   *     default money-cap `never` rule gates a runaway spend for free (and an owner can add a rule);
+   *  2. the vendor call (OpenRouter default, else Atlas) returns bytes we `ingest` server-side —
+   *     vendor URLs can expire in minutes, so we never store the URL as the deliverable;
+   *  3. each image lands as an `image` artifact + an owner-scoped inbox card, and the run is audited
+   *     with the REAL cost when the backend reports it (OpenRouter `usage.cost`), else the estimate.
+   */
+  async generateImage(sessionId: string, input: { prompt: string; model?: string; size?: string; n?: number }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; error?: string }> {
+    const agent = this.sessionAgent(sessionId);
+    if (!agent) return { ok: false, error: 'unknown session' };
+    if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
+    const prompt = (input.prompt || '').trim();
+    if (!prompt) return { ok: false, error: 'a prompt is required' };
+    const n = Math.max(1, Math.min(4, Math.floor(input.n ?? 1)));
+
+    const backend = resolveImageBackend({
+      openRouterKey: this.os.settings.openRouterKey(),
+      atlasKey: this.os.settings.atlasKey(),
+      defaultModel: this.os.settings.imageDefaultModel() || undefined,
+    });
+    if (!backend) return { ok: false, error: 'image generation is not configured — set an OpenRouter or Atlas key in Settings → Integrations' };
+
+    // Govern BEFORE spending: classify with the estimated dollar cost so the money-cap rule applies.
+    const estimateUsd = +(n * DEFAULT_IMAGE_COST_USD).toFixed(4);
+    const model = input.model?.trim() || backend.defaultModel;
+    const gate = this.gate(sessionId, agent, 'image.generate', { prompt, model, n, amountUsd: estimateUsd }, `generate ${n} image(s) with ${model}`);
+    if (gate.decision === 'deny') return { ok: false, error: 'blocked by policy' };
+    if (gate.decision === 'pending') return { ok: false, error: 'this generation needs human approval — an approval request was filed; retry once it is approved' };
+
+    let result;
+    try {
+      result = await backend.generate({ prompt, model: input.model, size: input.size, n });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.audit(sessionId, agent, 'image.failed', { model, n, error: msg });
+      return { ok: false, error: msg };
+    }
+
+    const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
+    const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
+    const shortPrompt = prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt;
+    const stamp = Date.now();
+    const out: { id: string; filename: string; mime: string }[] = [];
+    result.images.forEach((img, i) => {
+      const filename = `image-${stamp}${result.images.length > 1 ? `-${i + 1}` : ''}.${img.ext}`;
+      const r = this.os.artifacts.ingest({
+        sessionId, agent, source, title: shortPrompt, description: prompt,
+        folder: 'generated-images', filename, bytes: img.bytes, kind: 'image',
+      });
+      if (!r.ok) return;
+      const a = r.artifact;
+      out.push({ id: a.id, filename: a.filename, mime: a.mime });
+      this.addMessage({
+        type: 'artifact', sessionId, agent, title: `Image — ${agent}`, body: a.title, status: 'open',
+        source, args: { artifactId: a.id, filename: a.filename, mime: a.mime, kind: a.kind },
+        audienceKind: 'sessionOwner', audienceId: sessionId,
+      });
+    });
+    if (!out.length) return { ok: false, error: 'generation succeeded but no image could be stored' };
+
+    const costUsd = result.costUsd ?? estimateUsd;
+    this.audit(sessionId, agent, 'image.generated', { model: result.model, backend: backend.name, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id), prompt: shortPrompt });
+    return { ok: true, artifacts: out, model: result.model, costUsd };
   }
 
   /**
