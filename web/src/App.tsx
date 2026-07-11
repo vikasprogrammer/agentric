@@ -4052,6 +4052,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const [eBody, setEBody] = useState('')
   const [confirmDel, setConfirmDel] = useState(false)
   const [planNote, setPlanNote] = useState('') // inline confirmation for "Plan this goal"
+  const [planSession, setPlanSession] = useState('') // the strategist session id, so the user can jump to it
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const nameOf = (id?: string) => principalLabel(id, members)
@@ -4079,7 +4080,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) })
   }, [selId, goals, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote('') }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession('') }, [selId]) // fresh drawer per selection
 
   const visible = goals ?? []
 
@@ -4101,6 +4102,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     setBusy(false)
     if (!r.ok) return setHint('⚠ ' + (r.error || 'Could not start the strategist.'))
     setPlanNote('Strategist is drafting a plan — tasks will appear under this goal shortly.')
+    setPlanSession(r.sessionId ?? '')
     setTimeout(() => refreshDetail(id), 6000)
   }
   const startEdit = () => { if (!detail) return; setETitle(detail.goal.title); setEBody(detail.goal.body); setEditing(true) }
@@ -4280,7 +4282,16 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                       )}
                     </div>
                   </div>
-                  {planNote && <div className="mb-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">{planNote}</div>}
+                  {planNote && (
+                    <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+                      <span>{planNote}</span>
+                      {planSession && (
+                        <a href={navHref('sessions', 'aos-' + planSession)} onClick={onNavClick(() => nav('sessions', 'aos-' + planSession))} className="inline-flex shrink-0 items-center gap-1 font-medium no-underline hover:underline">
+                          Go to session<ChevronRight className="h-3 w-3" />
+                        </a>
+                      )}
+                    </div>
+                  )}
                   {detail.progress && detail.progress.total > 0 && <GoalProgressBar p={detail.progress} className="mb-2" />}
                   <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
                     {detail.tasks.length === 0 && <div className="text-xs text-muted-foreground">No tasks linked yet — set this goal on a task to ground work under it.</div>}
