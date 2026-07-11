@@ -25,6 +25,8 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `notify` | `POST /api/notify` | messages + member DM | W | notify ONE named teammate (`to` = name/email); inbox card addressed to them + Slack/Discord DM; the escape hatch from session-owner scoping — see below |
 | `publish` | `POST /api/publish` | `ArtifactStore` | W | snapshots the file; optional `folder` path (`reports/2024`) files it into a gallery folder |
 | `skill_propose` | `POST /api/skills/propose` | `SkillsStore.propose` + messages | W | drafts a `.aos-proposed` skill (never materialised) + posts a `skill.proposed` inbox card to owner/admins; audited `skill.proposed`. Human publishes via `POST /api/skills/:name/publish` (owner/admin) or dismisses via `DELETE /api/skills/:name` |
+| `skill_find` | `GET /api/skills/discover` | `TerminalManager.requestableSkills` | R | the caller's installed library (each flagged `active` for this agent) + the bundled catalog — what's installable to ask for |
+| `skill_request` | `POST /api/skills/request` | `TerminalManager.requestSkill` + messages | W | **asks** an owner/admin to install an existing catalog skill (never installs itself); validates the name against the catalog, dedupes an open request, posts a `skill.request` inbox card to owner/admins; audited `skill.requested`. Human installs via `POST /api/skills/requests/:id/approve` (owner/admin; optional `scope:'agent'`) or dismisses via `POST /api/skills/requests/:id/dismiss` |
 | `artifacts_list` | `GET /api/agent/artifacts` | `ArtifactStore.list` + `ArtifactStore.folders` | R | list scoped to the agent's own deliverables; also returns the tenant-wide gallery folders so a `publish` files into the existing tree (discovery) |
 | `schedule` | `POST /api/agent/schedule` | `Automations.schedule` (`type:'once'`) | W | one-shot deferred self-run; same agent + run-as; bounded 1 min–30 days, ≤25 pending/agent |
 | `unschedule` | `POST /api/agent/schedule/cancel` | `Automations.cancelScheduled` | W | cancel a pending one, scoped to the agent |
@@ -56,7 +58,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `discord_send` | `POST /api/agent/discord/send` | `DiscordSocket.sendToChannel` | W | proactive post to any channel by id; audited `discord.send`; only when `DISCORD_EGRESS=1` (Discord configured) |
 | `discord_dm` | `POST /api/agent/discord/dm` | `DiscordSocket.dmMember` | W | proactive DM by Discord user id; audited `discord.dm`; only when `DISCORD_EGRESS=1` |
 
-37 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
+43 always-on tools + 6 conditional. Read-only tools carry `annotations.readOnlyHint`; `forget`
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 

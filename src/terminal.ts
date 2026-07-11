@@ -18,6 +18,7 @@ import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
+import { SkillSummary, CatalogSkill } from './governance/skills';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -177,7 +178,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request';
   sessionId: string;
   agent: string;
   title: string;
@@ -1861,6 +1862,77 @@ export class TerminalManager {
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+  }
+
+  /**
+   * The skills an agent could ask to have installed — what `skill_find` returns. `installed` is the
+   * tenant's library (each flagged whether it's active for THIS agent, i.e. materialised at launch);
+   * `catalog` is the bundled software catalog with an `installed` flag already. Phase 1 covers the
+   * catalog + library; remote sources (skills.sh / GitHub) come later. */
+  requestableSkills(agent: string): { installed: (SkillSummary & { active: boolean })[]; catalog: CatalogSkill[] } {
+    const installed = this.os.skills.list()
+      .filter((s) => !s.proposed)
+      .map((s) => ({ ...s, active: s.agents.length === 0 || s.agents.includes(agent) }));
+    return { installed, catalog: this.os.skills.catalog() };
+  }
+
+  /**
+   * Agent asks a human to INSTALL an existing skill from the catalog (it never installs itself — the
+   * `skill_request` tool). Validates the name against the catalog so a typo fails fast, short-circuits
+   * when it's already in the library or already requested, else posts an owner/admin-addressed
+   * 'skill.request' card and audits `skill.requested`. The human approves via POST
+   * /api/skills/requests/:id/approve, which does the actual install. */
+  requestSkill(sessionId: string, agent: string, input: { name: string; source?: string; rationale?: string }): { ok: boolean; status?: 'requested' | 'installed' | 'duplicate'; error?: string } {
+    const name = (input.name || '').trim().toLowerCase();
+    if (!name) return { ok: false, error: 'a skill name is required' };
+    if (this.os.skills.get(name)) return { ok: true, status: 'installed' }; // already in the library
+    const cat = this.os.skills.catalog().find((c) => c.name === name);
+    if (!cat) return { ok: false, error: `"${name}" is not in the skill catalog — call skill_find to see what's installable` };
+    // Dedupe against an already-open request for the same skill (any session).
+    const open = this.db
+      .prepare(`SELECT args FROM messages WHERE type = 'skill.request' AND status = 'open'`)
+      .all<{ args: string | null }>()
+      .some((r) => { try { return JSON.parse(r.args || '{}').skill === name; } catch { return false; } });
+    if (open) return { ok: true, status: 'duplicate' };
+    this.addMessage({
+      type: 'skill.request', sessionId, agent,
+      title: `Skill requested — ${name}`,
+      body: (input.rationale?.trim() || cat.description || `${agent} wants the "${name}" skill installed.`).trim(),
+      status: 'open',
+      args: { skill: name, source: input.source || 'catalog', ...(input.rationale ? { rationale: input.rationale } : {}) },
+      // Installing a skill is an owner/admin act — address the review card to the admin tier.
+      audienceKind: 'admins',
+    });
+    this.audit(sessionId, agent, 'skill.requested', { name, source: input.source || 'catalog', rationale: input.rationale });
+    return { ok: true, status: 'requested' };
+  }
+
+  /** Read a 'skill.request' card's payload (for the approve/dismiss routes). undefined if not one. */
+  skillRequestCard(id: string): { skill: string; source: string; agent: string; status: string } | undefined {
+    const row = this.db
+      .prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'skill.request'`)
+      .get<{ agent: string; args: string | null; status: string }>(id);
+    if (!row) return undefined;
+    let a: Record<string, unknown> = {};
+    try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+    return { skill: String(a.skill ?? ''), source: String(a.source ?? 'catalog'), agent: row.agent, status: row.status };
+  }
+
+  /** Mark a 'skill.request' card resolved once a human approved (installed) or dismissed it. */
+  setSkillRequestStatus(id: string, status: 'approved' | 'rejected'): void {
+    this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'skill.request'`).run(status, id);
+  }
+
+  /** Open (unresolved) skill.request cards — the Skills page's agent-request review section. */
+  openSkillRequests(): { id: string; skill: string; source: string; agent: string; rationale?: string; createdAt: number }[] {
+    return this.db
+      .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'skill.request' AND status = 'open' ORDER BY created_at DESC`)
+      .all<{ id: string; agent: string; args: string | null; created_at: number }>()
+      .map((r) => {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
+        return { id: r.id, skill: String(a.skill ?? ''), source: String(a.source ?? 'catalog'), agent: r.agent, rationale: a.rationale ? String(a.rationale) : undefined, createdAt: r.created_at };
+      });
   }
 
   /** Agent posts a mid-task progress update to the Inbox feed. Unlike the (now removed) spawn/stop/exit

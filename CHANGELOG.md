@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.108.0] — 2026-07-11
+## [0.109.0] — 2026-07-11
 ### Added
 - **Goals — Slice 2: task linkage, derived progress, and `/goal`-driven convergence.** Goals stop being
   decoration and start *steering + measuring* work. See `docs/goals-plan.md`.
@@ -28,6 +28,43 @@ new version heading in the same commit.
     delimits at the newline).
 - Deferred to a fast-follow: **B — the Dreaming goal-lens** (reasoning over goal progress in the
   self-learning pass), which is most useful once linkage data accrues. See `docs/goals-plan.md` §B.
+
+## [0.108.2] — 2026-07-11
+### Added
+- **Drag to rearrange session tabs.** The live tabs in the terminal switcher bar can now be dragged into
+  any order — grab a tab and drop it where you want; the strip reflows as you cross each sibling and the
+  dragged tab dims while held. The arrangement persists per browser (`localStorage: aos_tab_order`), so
+  it survives refreshes. Newly-spawned sessions land at the end of your arrangement; ended tabs (behind
+  the "N ended" toggle) keep their natural order (`web/src/App.tsx`, `orderTabs`/`reorderTabs`).
+
+## [0.108.1] — 2026-07-11
+### Changed
+- **Session tab strip no longer shows an ugly native horizontal scrollbar.** When more session tabs are
+  open than fit the switcher bar, the chunky OS scrollbar is hidden (`.no-scrollbar`) and replaced with
+  a soft 24px edge fade that appears only on the side(s) with off-screen tabs — a subtle "there's more"
+  hint that matches the slim dark toolbar. The strip still scrolls via trackpad/shift-wheel; the "N
+  ended" toggle stays pinned right as before (`web/src/App.tsx`, `edgeFadeMask`).
+
+## [0.108.0] — 2026-07-11
+### Added
+- **Agents can ask a human to install a skill — and only ask.** An agent can now discover and request
+  skills from the workspace's integrated library on the fly, but it can never install one itself; a
+  human approves every install. Two new always-on MCP tools:
+  - **`skill_find`** (read-only) — lists what's installable: the agent's own library (each flagged
+    whether it's `active` for that agent) plus the bundled catalog of ready-made skills. The agent
+    calls this when a task looks like it has an established procedure it lacks.
+  - **`skill_request`** — asks an owner/admin to install a named catalog skill. It validates the name
+    against the catalog (a typo fails fast), dedupes an already-open request, and posts a
+    `skill.request` inbox card addressed to owner/admins. The agent is told it's requested and will be
+    available on its next session — it does NOT install anything.
+  - **Human review** on the Skills page (a new "Requested by agents" section) and in the Inbox: an
+    owner/admin **Installs** the skill into the Library (all agents, or scoped to just the requester via
+    a toggle) or **Dismisses** the request. Routes `GET /api/skills/requests`,
+    `POST /api/skills/requests/:id/approve`, `POST /api/skills/requests/:id/dismiss` (all owner/admin);
+    the loopback `GET /api/skills/discover` + `POST /api/skills/request` are session-secret-gated like
+    the other agent tools. Audited `skill.requested` (agent asked) and `skill.installed`
+    (`source: 'agent-request'`, human approved). Delivery is next-session; live same-session delivery
+    is a later phase.
 
 ## [0.107.0] — 2026-07-11
 ### Added

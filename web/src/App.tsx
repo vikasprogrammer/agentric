@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { type Branding, type PublicBranding } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -1719,6 +1719,15 @@ function RunRating({ session, onRate }: { session: Session; onRate: (id: string,
   )
 }
 
+// Fades the session tab strip's edges to hint off-screen tabs (paired with `.no-scrollbar`). Each edge
+// dissolves over 24px only when there's more to scroll that way; a fully-visible strip stays crisp.
+function edgeFadeMask(fade: { left: boolean; right: boolean }): string | undefined {
+  if (!fade.left && !fade.right) return undefined
+  const l = fade.left ? '24px' : '0px'
+  const r = fade.right ? '24px' : '0px'
+  return `linear-gradient(to right, transparent 0, black ${l}, black calc(100% - ${r}), transparent 100%)`
+}
+
 function SessionsPage({
   me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
@@ -1749,6 +1758,50 @@ function SessionsPage({
   // Terminal switcher bar: live tabs stay pinned; ended (stopped/done/crashed) ones collapse behind a
   // toggle so the bar doesn't accrete every past run. The open session always shows even if it ended.
   const [showEnded, setShowEnded] = useState(false)
+
+  // Tab strip overflow hint: instead of a chunky native scrollbar (`.no-scrollbar` hides it), we fade
+  // whichever edge has more tabs off-screen. `fade` mirrors the scroll position; recomputed on scroll,
+  // on resize, and after every render (tab count changes) — guarded to skip when the strip isn't mounted.
+  const stripRef = useRef<HTMLDivElement>(null)
+  const [fade, setFade] = useState({ left: false, right: false })
+  const syncFade = () => {
+    const el = stripRef.current
+    if (!el) return
+    const left = el.scrollLeft > 1
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setFade((p) => (p.left === left && p.right === right ? p : { left, right }))
+  }
+  useEffect(() => { syncFade() })
+  useEffect(() => {
+    const onResize = () => syncFade()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // Manual tab order: the live strip is drag-reorderable. `tabOrder` is the user's arrangement of live
+  // tmuxes (persisted); `orderTabs` sorts any list by it, leaving un-arranged tabs in their natural
+  // (newest-first) order at the end. `dragTmux` is the tab currently being dragged (dimmed while held).
+  const [tabOrder, setTabOrder] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('aos_tab_order') || '[]') } catch { return [] }
+  })
+  useEffect(() => { localStorage.setItem('aos_tab_order', JSON.stringify(tabOrder)) }, [tabOrder])
+  const [dragTmux, setDragTmux] = useState<string | null>(null)
+  const orderTabs = (list: Session[]) => {
+    const rank = new Map(tabOrder.map((t, i) => [t, i]))
+    // Stable sort keeps un-ranked tabs (rank ∞) in their incoming order behind the arranged ones.
+    return [...list].sort((a, b) => (rank.get(a.tmux) ?? Infinity) - (rank.get(b.tmux) ?? Infinity))
+  }
+  // Move `dragged` to sit where `target` is, within the current visual live order. Called as the
+  // pointer crosses each tab so the strip reflows live; persisting only the live ids prunes stale ones.
+  const reorderTabs = (liveOrder: string[], dragged: string, target: string) => {
+    if (!dragged || dragged === target) return
+    const ids = liveOrder.slice()
+    const from = ids.indexOf(dragged)
+    const to = ids.indexOf(target)
+    if (from === -1 || to === -1) return
+    ids.splice(to, 0, ids.splice(from, 1)[0])
+    setTabOrder(ids)
+  }
 
   // The session whose agent-os primitive activity is open in the modal timeline (null = closed).
   const [inspect, setInspect] = useState<Session | null>(null)
@@ -1861,14 +1914,22 @@ function SessionsPage({
 
   // A terminal is open → fill the whole area: a slim switcher bar + the iframe taking the rest.
   if (selected) {
-    const renderTab = (s: Session) => (
+    // `draggable` is set only for the live tabs — they're the reorderable set. Dragging a tab reflows
+    // the strip as the pointer crosses each sibling (onDragEnter); the inner link is un-draggable so the
+    // browser's native link-drag doesn't hijack the gesture.
+    const renderTab = (s: Session, draggable = false) => (
       <div
         key={s.id}
+        draggable={draggable}
+        onDragStart={draggable ? (e) => { setDragTmux(s.tmux); e.dataTransfer.effectAllowed = 'move' } : undefined}
+        onDragEnter={draggable ? () => reorderTabs(liveTabs.map((t) => t.tmux), dragTmux ?? '', s.tmux) : undefined}
+        onDragOver={draggable ? (e) => e.preventDefault() : undefined}
+        onDragEnd={draggable ? () => setDragTmux(null) : undefined}
         className={`group/tab flex shrink-0 items-center gap-1.5 rounded px-2 py-1 ${
           selected.tmux === s.tmux ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800'
-        }`}
+        } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${dragTmux === s.tmux ? 'opacity-50' : ''}`}
       >
-        <a href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5 text-inherit no-underline">
+        <a draggable={false} href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5 text-inherit no-underline">
           <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
           <span className="max-w-[180px] truncate">{s.title}</span>
           {waiting.has(s.id) && <WaitingBell className="h-3 w-3" tone="text-indigo-300" />}
@@ -1909,7 +1970,7 @@ function SessionsPage({
     // The currently-open session stays force-visible so explicitly opening someone else's run (e.g. an
     // admin taking over) still shows its tab and can't orphan the iframe.
     const mine = (s: Session) => s.spawnedBy === me.id || s.runAs === me.id || s.tmux === selected.tmux
-    const liveTabs = sessions.filter((s) => isLive(s) && visible(s) && mine(s))
+    const liveTabs = orderTabs(sessions.filter((s) => isLive(s) && visible(s) && mine(s)))
     const endedTabs = sessions.filter((s) => !isLive(s))
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
     const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s) && mine(s))
@@ -1918,10 +1979,15 @@ function SessionsPage({
         <div className="flex items-center gap-2 border-b bg-neutral-900 px-2 py-1.5 text-xs text-neutral-300">
           <TerminalSquare className="h-4 w-4 shrink-0" />
           {/* Only the tabs scroll; the "ended" toggle stays pinned right so it's always reachable. */}
-          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
-            {liveTabs.map(renderTab)}
+          <div
+            ref={stripRef}
+            onScroll={syncFade}
+            className="no-scrollbar flex min-w-0 flex-1 items-center gap-2 overflow-x-auto"
+            style={{ maskImage: edgeFadeMask(fade), WebkitMaskImage: edgeFadeMask(fade) }}
+          >
+            {liveTabs.map((s) => renderTab(s, true))}
             {selectedEnded && renderTab(selectedEnded)}
-            {showEnded && collapsibleEnded.map(renderTab)}
+            {showEnded && collapsibleEnded.map((s) => renderTab(s))}
             {collapsibleEnded.length > 0 && (
               <>
                 <span className="h-4 w-px shrink-0 bg-neutral-700" />
@@ -2558,6 +2624,11 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     Icon = Target; iconCls = 'text-indigo-600'; highlight = true
     verb = 'proposed a goal'; detail = m.body
     badge = <Badge variant="outline" className="border-indigo-300 px-1.5 py-0 text-[10px] font-normal text-indigo-700">Goal proposed</Badge>
+  } else if (m.type === 'skill.request') {
+    Icon = Sparkles; iconCls = 'text-violet-600'; highlight = m.status === 'open'
+    const resolved = m.status === 'approved' ? 'installed' : m.status === 'rejected' ? 'dismissed' : ''
+    verb = 'requested a skill'; detail = m.body
+    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Skills'}</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
@@ -6061,9 +6132,11 @@ function SkillsPage() {
   const [uploading, setUploading] = useState(false)
   const [uploadMsg, setUploadMsg] = useState('')
   const fileInput = useRef<HTMLInputElement>(null)
+  const [requests, setRequests] = useState<SkillRequest[]>([])
+  const loadRequests = () => api.skillRequests().then((r) => setRequests(r.requests ?? [])).catch(() => setRequests([]))
   const load = () => api.skills().then(setResp).catch(() => setResp({ enabled: false, skills: [] }))
   useEffect(() => {
-    load()
+    load(); loadRequests()
     api.state().then((s) => setAgents(s.agents.filter((a) => a.runtime === 'claude-code').map((a) => a.id))).catch(() => {})
   }, [])
 
@@ -6108,6 +6181,21 @@ function SkillsPage() {
         <div className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
           Skills need a data home — none is configured for this instance.
         </div>
+      )}
+
+      {requests.length > 0 && (
+        <section className="space-y-2 rounded-lg border border-sky-200 bg-sky-50/40 p-3">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-sky-700">
+            <Sparkles className="h-3.5 w-3.5" />Requested by agents · {requests.length}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            An agent asked (via <span className="font-mono">skill_request</span>) to have a catalog skill installed — it <span className="font-medium text-foreground">cannot install one itself</span>.
+            Install adds the skill to the Library (available on the agent's next session); or dismiss the request.
+          </p>
+          <div className="space-y-2">
+            {requests.map((r) => <AgentSkillRequestCard key={r.id} r={r} onChanged={() => { loadRequests(); load() }} />)}
+          </div>
+        </section>
       )}
 
       {proposed.length > 0 && (
@@ -6539,6 +6627,55 @@ function NewSkillForm({ onCancel, onCreated }: { onCancel: () => void; onCreated
 /** A skill an agent drafted via `skill_propose`, awaiting a human's review. Review opens the draft in an
  *  editable box (edits save to the same SKILL.md); Publish drops the `.aos-proposed` marker so it goes
  *  live on each agent's next session; Dismiss deletes the draft. Owner/admin only (the page is gated). */
+/** A single agent skill-request awaiting review (via `skill_request`) — the human installs the named
+ *  catalog skill into the Library (all agents, or scoped to just the requester) or dismisses it. */
+function AgentSkillRequestCard({ r, onChanged }: { r: SkillRequest; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const [scoped, setScoped] = useState(false)
+  const install = async () => {
+    setBusy(true); setHint('')
+    const res = await api.approveSkillRequest(r.id, scoped ? 'agent' : 'all')
+    setBusy(false)
+    if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
+    onChanged()
+  }
+  const dismiss = async () => {
+    setBusy(true); setHint('')
+    const res = await api.dismissSkillRequest(r.id)
+    setBusy(false)
+    if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
+    onChanged()
+  }
+  return (
+    <Card className="border-sky-200">
+      <CardContent className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-sm font-medium">{r.skill}</span>
+              <Badge variant="outline" className="border-sky-300 px-1.5 py-0 text-[10px] font-normal text-sky-700">requested</Badge>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              by <span className="font-mono">{r.agent}</span>{r.createdAt ? ` · ${timeAgo(r.createdAt)}` : ''}
+              {r.rationale ? <> · <span className="italic">“{r.rationale}”</span></> : null}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title="scope this skill to only the requesting agent (default: all agents)">
+              <input type="checkbox" checked={scoped} disabled={busy} onChange={(e) => setScoped(e.target.checked)} />
+              {r.agent} only
+            </label>
+            <Button size="sm" disabled={busy} onClick={install}><Check className="mr-1 h-3.5 w-3.5" />Install</Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="dismiss" disabled={busy} onClick={dismiss}><Trash2 className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        {hint && <div className="mt-2 text-xs text-destructive">{hint}</div>}
+      </CardContent>
+    </Card>
+  )
+}
+
 function ProposedSkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void }) {
   const [reviewing, setReviewing] = useState(false)
   const [content, setContent] = useState('')
