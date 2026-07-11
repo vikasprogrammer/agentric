@@ -1916,7 +1916,8 @@ function SessionsPage({
   if (selected) {
     // `draggable` is set only for the live tabs — they're the reorderable set. Dragging a tab reflows
     // the strip as the pointer crosses each sibling (onDragEnter); the inner link is un-draggable so the
-    // browser's native link-drag doesn't hijack the gesture.
+    // browser's native link-drag doesn't hijack the gesture. No `cursor-grab` on hover (it read as
+    // "already grabbing" over the tab's padding) — the grabbing cursor only shows while pressed/dragging.
     const renderTab = (s: Session, draggable = false) => (
       <div
         key={s.id}
@@ -1927,7 +1928,7 @@ function SessionsPage({
         onDragEnd={draggable ? () => setDragTmux(null) : undefined}
         className={`group/tab flex shrink-0 items-center gap-1.5 rounded px-2 py-1 ${
           selected.tmux === s.tmux ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800'
-        } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${dragTmux === s.tmux ? 'opacity-50' : ''}`}
+        } ${draggable ? 'active:cursor-grabbing' : ''} ${dragTmux === s.tmux ? 'opacity-50' : ''}`}
       >
         <a draggable={false} href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5 text-inherit no-underline">
           <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
