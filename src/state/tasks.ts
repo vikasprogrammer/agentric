@@ -104,6 +104,7 @@ export class TaskStore {
     }
     this.addEvent(id, 'status', '→todo', input.createdBy);
     if (input.parentId && this.get(input.parentId)) this.addEvent(input.parentId, 'link', `task:${id}`, input.createdBy);
+    if (input.dependsOn && input.dependsOn.length) this.setDeps(id, input.dependsOn, input.createdBy);
     const task = this.get(id)!;
     this.notify({ task, kind: 'created', by: input.createdBy });
     return task;
@@ -111,7 +112,7 @@ export class TaskStore {
 
   get(id: string): Task | undefined {
     const r = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get<TaskRow>(id);
-    return r ? toTask(r) : undefined;
+    return r ? this.withDeps(toTask(r)) : undefined;
   }
 
   /** A task + its full activity timeline (oldest first). */
@@ -163,7 +164,7 @@ export class TaskStore {
     if (q.status) tasks = tasks.filter((t) => t.status === q.status);
     if (q.assignee) tasks = tasks.filter((t) => t.assignee === q.assignee);
     if (q.label) tasks = tasks.filter((t) => t.labels.includes(q.label!));
-    return tasks.slice(0, limit);
+    return this.attachDeps(tasks.slice(0, limit));
   }
 
   /**
@@ -207,6 +208,7 @@ export class TaskStore {
       this.addEvent(id, 'link', input.goalId ? `goal:${input.goalId}` : 'unlinked from goal', input.by);
     }
     if (input.criteria !== undefined) { sets.push('criteria = ?'); vals.push(oneLine(input.criteria)); }
+    if (input.dependsOn !== undefined) this.setDeps(id, input.dependsOn, input.by); // join table, not a task column
     if (input.labels !== undefined) { sets.push('labels = ?'); vals.push(JSON.stringify(input.labels)); }
     if (input.note && input.note.trim()) this.addEvent(id, 'comment', input.note.trim(), input.by);
 
@@ -259,6 +261,7 @@ export class TaskStore {
     if (res.changes === 0) return false;
     this.db.prepare('DELETE FROM task_events WHERE task_id = ?').run(id);
     this.db.prepare('DELETE FROM task_attachments WHERE task_id = ?').run(id);
+    this.db.prepare('DELETE FROM task_deps WHERE task_id = ? OR depends_on = ?').run(id, id);
     if (this.dir) fs.rmSync(path.join(this.dir, id), { recursive: true, force: true });
     return true;
   }
@@ -296,11 +299,16 @@ export class TaskStore {
     return true;
   }
 
-  /** Tasks eligible for auto-dispatch: todo, assigned to an agent, auto_dispatch on. Priority-first. */
+  /** Tasks eligible for auto-dispatch: todo, assigned to an agent, auto_dispatch on, and with every
+   *  dependency satisfied (done/cancelled). The unmet-dep exclusion is what walks a plan in pipeline
+   *  order — a dependent stays out of the candidate set until its blockers finish. Priority-first. */
   dispatchable(tenant: string): Task[] {
     return this.db
-      .prepare(`SELECT * FROM tasks WHERE tenant = ? AND status = 'todo' AND auto_dispatch = 1
-                 AND assignee LIKE 'agent:%' ORDER BY priority, created_at`)
+      .prepare(`SELECT * FROM tasks t WHERE t.tenant = ? AND t.status = 'todo' AND t.auto_dispatch = 1
+                 AND t.assignee LIKE 'agent:%'
+                 AND NOT EXISTS (SELECT 1 FROM task_deps d JOIN tasks b ON b.id = d.depends_on
+                                  WHERE d.task_id = t.id AND b.status NOT IN ('done','cancelled'))
+                 ORDER BY t.priority, t.created_at`)
       .all<TaskRow>(tenant)
       .map(toTask);
   }
@@ -311,6 +319,92 @@ export class TaskStore {
       .prepare('SELECT * FROM tasks WHERE goal_id = ? ORDER BY updated_at DESC')
       .all<TaskRow>(goalId)
       .map(toTask);
+  }
+
+  // ── Dependencies ─────────────────────────────────────────────────────────────────────────────────
+  // A task_deps edge (task_id → depends_on) means task_id is BLOCKED BY depends_on. A task is ready to
+  // dispatch only when every blocker is done/cancelled (see dispatchable + dispatchTask). Set by the
+  // strategist's plan (and editable in the console) to turn an implicit sequence into an enforced pipeline.
+
+  /** The task ids this task is blocked by. */
+  deps(id: string): string[] {
+    return this.db.prepare('SELECT depends_on FROM task_deps WHERE task_id = ?').all<{ depends_on: string }>(id).map((r) => r.depends_on);
+  }
+
+  /** The task ids blocked by this one (its dependents) — "what this unblocks". */
+  dependents(id: string): string[] {
+    return this.db.prepare('SELECT task_id FROM task_deps WHERE depends_on = ?').all<{ task_id: string }>(id).map((r) => r.task_id);
+  }
+
+  /** The subset of this task's blockers that are NOT yet done/cancelled (a missing blocker counts as met). */
+  unmetDeps(id: string): string[] {
+    return this.db
+      .prepare(`SELECT d.depends_on FROM task_deps d JOIN tasks b ON b.id = d.depends_on
+                 WHERE d.task_id = ? AND b.status NOT IN ('done','cancelled')`)
+      .all<{ depends_on: string }>(id)
+      .map((r) => r.depends_on);
+  }
+
+  /**
+   * Replace a task's dependency set. Skips a dep that is missing, self, a duplicate, or would create a
+   * cycle (so the graph stays a DAG). Logs a `link` event; returns the applied dependency ids.
+   */
+  setDeps(taskId: string, depIds: string[], by: string): string[] {
+    if (!this.get(taskId)) return [];
+    const applied: string[] = [];
+    for (const raw of depIds) {
+      const dep = String(raw ?? '').trim();
+      if (!dep || dep === taskId || applied.includes(dep)) continue;
+      if (!this.db.prepare('SELECT 1 FROM tasks WHERE id = ?').get(dep)) continue; // blocker must exist
+      if (this.wouldCycle(taskId, dep)) continue; // dep already (transitively) depends on taskId
+      applied.push(dep);
+    }
+    this.db.prepare('DELETE FROM task_deps WHERE task_id = ?').run(taskId);
+    const ins = this.db.prepare('INSERT OR IGNORE INTO task_deps (task_id, depends_on) VALUES (?, ?)');
+    for (const dep of applied) ins.run(taskId, dep);
+    this.addEvent(taskId, 'link', applied.length ? `depends on ${applied.join(', ')}` : 'dependencies cleared', by);
+    return applied;
+  }
+
+  /** Would adding taskId→dep create a cycle? True iff `dep` already reaches `taskId` via depends_on edges. */
+  private wouldCycle(taskId: string, dep: string): boolean {
+    const seen = new Set<string>();
+    const stack = [dep];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      if (cur === taskId) return true;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      for (const r of this.db.prepare('SELECT depends_on FROM task_deps WHERE task_id = ?').all<{ depends_on: string }>(cur)) stack.push(r.depends_on);
+    }
+    return false;
+  }
+
+  /** Attach `dependsOn` to a task DTO (single read). */
+  private withDeps(task: Task): Task {
+    const d = this.deps(task.id);
+    if (d.length) task.dependsOn = d;
+    return task;
+  }
+
+  /** Attach `dependsOn` to a batch of task DTOs in one query (the board path). */
+  private attachDeps(tasks: Task[]): Task[] {
+    if (!tasks.length) return tasks;
+    const ids = tasks.map((t) => t.id);
+    const rows = this.db
+      .prepare(`SELECT task_id, depends_on FROM task_deps WHERE task_id IN (${ids.map(() => '?').join(',')})`)
+      .all<{ task_id: string; depends_on: string }>(...ids);
+    const byTask = new Map<string, string[]>();
+    for (const r of rows) {
+      const arr = byTask.get(r.task_id) ?? [];
+      arr.push(r.depends_on);
+      byTask.set(r.task_id, arr);
+    }
+    for (const t of tasks) {
+      const d = byTask.get(t.id);
+      if (d && d.length) t.dependsOn = d;
+    }
+    return tasks;
   }
 
   // ── Attachments ────────────────────────────────────────────────────────────────────────────────

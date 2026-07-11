@@ -217,6 +217,10 @@ goal → work. And it's mostly an agent definition, not engine code: it reuses `
 - Two supporting rules so its plans measure cleanly: **`goalId` inheritance** (a sub-task inherits its
   parent's goal) and **leaf-progress** (`GoalStore.progress()` counts only leaf linked tasks, so an
   umbrella grouping doesn't inflate the bar).
+- **Task dependencies** (v0.117.0) make the plan an *enforced pipeline*: the strategist sets `dependsOn`
+  on tasks that must wait for earlier ones, and the dispatcher only spawns a task once its blockers are
+  done — so a plan runs in order instead of all-at-once. This is what makes bounded auto-dispatch (Phase 2)
+  safe: the tick can walk a goal's tasks in dependency order.
 
 **Decoupled from Dreaming — deliberately.** An assessment of the self-learning subsystem found Dreaming is
 a *deterministic tally aggregator, dormant by default, with zero goal awareness* — it cannot act as an

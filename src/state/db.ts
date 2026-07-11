@@ -445,6 +445,15 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_attachments ON task_attachments(task_id, created_at);
 
+    -- Task dependencies: task_id is blocked by depends_on (both in this tenant). A task is READY to dispatch
+    -- only when every depends_on is done/cancelled — the enforced-pipeline edge a strategist's plan sets.
+    CREATE TABLE IF NOT EXISTS task_deps (
+      task_id    TEXT NOT NULL,   -- the dependent (blocked) task
+      depends_on TEXT NOT NULL,   -- the blocker it waits on
+      PRIMARY KEY (task_id, depends_on)
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_deps_on ON task_deps(depends_on);
+
     -- Goals — the strategic layer work ladders up to (Goal → Task → Session). Human-owned, tenant-wide,
     -- persistent. Mirrors the Tasks shape: db-only structured state + an append-only event log as the
     -- audit/rollback backbone (auto-apply + audited, no gate). Slice 2 links a task up via tasks.goal_id;

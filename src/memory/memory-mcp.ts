@@ -612,6 +612,7 @@ const TOOLS = [
         parentId: { type: 'string', description: 'Parent task id, to file this as a sub-task.' },
         goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
         criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds.' },
+        dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this task is BLOCKED BY — it will not dispatch until they are all done. To encode a pipeline: file the earlier steps first, capture their ids from the results, and pass them here so this step waits for them.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
         due: { type: 'string', description: 'Optional soft deadline as an ISO date, e.g. "2026-07-15" or "2026-07-15T17:00:00Z".' },
@@ -683,6 +684,7 @@ const TOOLS = [
         labels: { type: 'array', items: { type: 'string' }, description: 'Replace the label set.' },
         goalId: { type: 'string', description: 'Link this task to a strategic goal (or null to unlink).' },
         criteria: { type: 'string', description: 'Set the single-line acceptance condition for `/goal` convergence on dispatch (or null to clear).' },
+        dependsOn: { type: 'array', items: { type: 'string' }, description: 'Replace the set of task ids this task is blocked by (won\'t dispatch until they finish); [] clears them.' },
         due: { type: 'string', description: 'Set a soft deadline as an ISO date (e.g. "2026-07-15"), or "" / null to clear it.' },
       },
       required: ['id'],
@@ -1399,7 +1401,7 @@ async function stop(args: Record<string, unknown>): Promise<string> {
 }
 
 // ── Tasks: the shared work queue ──────────────────────────────────────────────
-interface TaskLite { id: string; title: string; status: string; priority: number; assignee?: string; labels?: string[]; body?: string }
+interface TaskLite { id: string; title: string; status: string; priority: number; assignee?: string; labels?: string[]; body?: string; goalId?: string; criteria?: string; dependsOn?: string[] }
 interface TaskEventLite { kind: string; body?: string; author: string; createdAt: number }
 interface TaskAttachmentLite { id: string; filename: string; mime: string; bytes: number; uploadedBy: string }
 
@@ -1426,6 +1428,7 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
       goalId: args.goalId !== undefined ? String(args.goalId) : undefined,
       criteria: args.criteria !== undefined ? String(args.criteria) : undefined,
+      dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn.map(String) : undefined,
       // `wait` implies autoDispatch — you can't block on work that never starts.
       autoDispatch: args.autoDispatch === true || args.wait === true,
       mode: args.mode === 'interactive' ? 'interactive' : undefined,
@@ -1674,7 +1677,7 @@ async function taskGet(args: Record<string, unknown>): Promise<string> {
   u.searchParams.set('id', String(args.id ?? ''));
   const res = await fetch(u, { headers: H() });
   if (!res.ok) return 'Task not found.';
-  const d = (await res.json()) as { task?: TaskLite; events?: TaskEventLite[]; attachments?: TaskAttachmentLite[] };
+  const d = (await res.json()) as { task?: TaskLite; events?: TaskEventLite[]; attachments?: TaskAttachmentLite[]; dependents?: string[] };
   if (!d.task) return 'Task not found.';
   const t = d.task;
   const timeline = (d.events ?? [])
@@ -1684,7 +1687,12 @@ async function taskGet(args: Record<string, unknown>): Promise<string> {
     .map((a) => `  · ${a.filename} (${a.mime}, ${a.bytes} bytes) — ${a.uploadedBy}`)
     .join('\n');
   const attachSection = d.attachments?.length ? `\n\nAttachments:\n${files}` : '';
-  return `${t.id} · [${t.status}] · P${t.priority}${t.assignee ? ` · ${t.assignee}` : ''}\n# ${t.title}\n${t.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${attachSection}`;
+  // Dependencies: what this task waits on (it won't dispatch until they're done) and what it unblocks.
+  const depLines: string[] = [];
+  if (t.dependsOn?.length) depLines.push(`Depends on (won't run until these finish): ${t.dependsOn.join(', ')}`);
+  if (d.dependents?.length) depLines.push(`Blocks (waiting on this): ${d.dependents.join(', ')}`);
+  const depSection = depLines.length ? `\n${depLines.join('\n')}` : '';
+  return `${t.id} · [${t.status}] · P${t.priority}${t.assignee ? ` · ${t.assignee}` : ''}${depSection}\n# ${t.title}\n${t.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${attachSection}`;
 }
 
 async function taskAttach(args: Record<string, unknown>): Promise<string> {
@@ -1727,6 +1735,7 @@ async function taskUpdate(args: Record<string, unknown>): Promise<string> {
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
       goalId: args.goalId === null ? null : (args.goalId !== undefined ? String(args.goalId) : undefined),
       criteria: args.criteria === null ? null : (args.criteria !== undefined ? String(args.criteria) : undefined),
+      dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn.map(String) : undefined,
       dueAt: parseDue(args.due),
     }),
   });

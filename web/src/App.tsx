@@ -4417,7 +4417,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const selId = taskId || null
   const openTask = (id: string) => nav('tasks', id)
   const closeTask = () => { setEditing(false); nav('tasks') }
-  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[] } | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // view + filters
@@ -4443,6 +4443,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [due, setDue] = useState('')
   const [goalId, setGoalId] = useState('') // '' = no goal
   const [criteria, setCriteria] = useState('')
+  const [newDeps, setNewDeps] = useState<string[]>([]) // blocker task ids for the create form
   // drawer inline edit
   const [editing, setEditing] = useState(false)
   const [eTitle, setETitle] = useState('')
@@ -4464,6 +4465,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // An assignee shown as a chip: its icon + friendly name. Used on cards, list rows, and select items.
   const assigneeChip = (id?: string, cls = 'h-3 w-3') => <span className="inline-flex items-center gap-1">{assigneeIcon(id, cls)}{nameOf(id)}</span>
 
+  // Dependency helpers — resolve blocker/dependent metadata from the tasks the board already loaded
+  // (no per-blocker fetch). A dependency is *satisfied* when its blocker is done/cancelled.
+  const taskById = (id: string) => (tasks ?? []).find((t) => t.id === id)
+  const depSatisfied = (blockerId: string) => { const b = taskById(blockerId); return !b || b.status === 'done' || b.status === 'cancelled' }
+  const unmetCount = (t: Task) => (t.dependsOn ?? []).filter((id) => !depSatisfied(id)).length
+
   const load = async () => {
     const r = await api.tasks(q)
     setTasks(r.tasks ?? [])
@@ -4480,7 +4487,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [] }) })
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [] }) })
   }, [selId, tasks, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
 
@@ -4502,10 +4509,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
   const create = async () => {
     setHint('')
-    const req: AddTaskReq = { title, body: body || undefined, assignee: assignee || undefined, priority, mode, autoDispatch: autoDispatch && assignee.startsWith('agent:'), dueAt: fromDateInput(due) ?? undefined, goalId: goalId || undefined, criteria: criteria.trim() || undefined }
+    const req: AddTaskReq = { title, body: body || undefined, assignee: assignee || undefined, priority, mode, autoDispatch: autoDispatch && assignee.startsWith('agent:'), dueAt: fromDateInput(due) ?? undefined, goalId: goalId || undefined, criteria: criteria.trim() || undefined, dependsOn: newDeps.length ? newDeps : undefined }
     const r = await api.addTask(req)
     if (r.error) return setHint('⚠ ' + r.error)
-    setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setGoalId(''); setCriteria(''); setShowNew(false)
+    setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setGoalId(''); setCriteria(''); setNewDeps([]); setShowNew(false)
     load()
   }
   const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); setBusy(false) }
@@ -4532,10 +4539,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
     setEditing(false); setBusy(false)
     await load()
-    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [] })
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [] })
   }
-  // Re-pull the open task's detail (events + attachments) after a mutation that doesn't move columns.
-  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [] }) }
+  // Re-pull the open task's detail (events + attachments + dependency edges) after a mutation that doesn't move columns.
+  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [] }) }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -4557,6 +4564,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
           {t.assignee && <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
+          {unmetCount(t) > 0 && <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmetCount(t)}</span>}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
           {t.goalId && <Badge variant="outline" className="max-w-[10rem] gap-1 truncate px-1.5 py-0 text-[10px]"><Target className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{goalTitle(t.goalId)}</span></Badge>}
           {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
@@ -4666,6 +4674,27 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                 <p className="mt-1 text-[11px] text-muted-foreground">Single-line acceptance condition — when set on a headless auto-dispatched task, the worker runs under a <code>/goal</code> and converges until it holds.</p>
               </Field>
             </div>
+            <Field label="Blocked by">
+              {newDeps.length > 0 && (
+                <div className="mb-1.5 flex flex-wrap gap-1">
+                  {newDeps.map((id) => {
+                    const t = (tasks ?? []).find((x) => x.id === id)
+                    return <Badge key={id} variant="secondary" className="gap-1 px-1.5 py-0.5 text-[11px]"><span className="max-w-[12rem] truncate">{t ? t.title : id}</span><button onClick={() => setNewDeps((d) => d.filter((x) => x !== id))} className="hover:text-destructive"><X className="h-3 w-3" /></button></Badge>
+                  })}
+                </div>
+              )}
+              <Select value="" onValueChange={(v) => { if (v && !newDeps.includes(v)) setNewDeps((d) => [...d, v]) }}>
+                <SelectTrigger><SelectValue placeholder="+ Add a blocker task…" /></SelectTrigger>
+                <SelectContent>
+                  {(tasks ?? []).filter((t) => !newDeps.includes(t.id)).length === 0
+                    ? <SelectItem value="__none" disabled>No tasks yet</SelectItem>
+                    : (tasks ?? []).filter((t) => !newDeps.includes(t.id)).map((t) => (
+                      <SelectItem key={t.id} value={t.id}><span className="flex items-center gap-1.5"><TaskStatusPill status={t.status} /><span className="truncate">{t.title}</span></span></SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-[11px] text-muted-foreground">This task won't auto-dispatch until every blocker is <code>done</code> or <code>cancelled</code>.</p>
+            </Field>
             {assignee.startsWith('agent:') && (
               <Field label="Run mode">
                 <Select items={{ headless: 'Headless — works to completion, then exits', interactive: 'Interactive — attachable TUI you can watch/drive' }} value={mode} onValueChange={(v) => v && setMode(v as 'headless' | 'interactive')}>
@@ -4729,7 +4758,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                   const dm = dueMeta(t.dueAt, t.status)
                   return (
                     <tr key={t.id} onClick={() => openTask(t.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'bg-muted' : ''}`}>
-                      <td className="px-3 py-2"><a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a> {t.goalId && <Badge variant="outline" className="ml-1 gap-1 px-1 py-0 text-[10px]"><Target className="h-2.5 w-2.5" />{goalTitle(t.goalId)}</Badge>} {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
+                      <td className="px-3 py-2"><a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a> {t.goalId && <Badge variant="outline" className="ml-1 gap-1 px-1 py-0 text-[10px]"><Target className="h-2.5 w-2.5" />{goalTitle(t.goalId)}</Badge>} {unmetCount(t) > 0 && <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmetCount(t)}</span>} {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
                       <td className="px-3 py-2 capitalize text-muted-foreground">{t.status}</td>
                       <td className="px-3 py-2 text-muted-foreground">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</td>
                       <td className={`px-3 py-2 text-xs ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</td>
@@ -4825,6 +4854,16 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                   </Field>
                 </div>
                 {detail.task.criteria && <div className="text-xs text-muted-foreground">◎ converges when: <span className="text-foreground">{detail.task.criteria}</span></div>}
+
+                <TaskDependencies
+                  task={detail.task}
+                  dependents={detail.dependents}
+                  tasks={tasks}
+                  canEdit={!busy}
+                  onOpen={openTask}
+                  onSave={async (deps) => { await patch(detail.task.id, { dependsOn: deps }); await refreshDetail(detail.task.id) }}
+                />
+
                 {(detail.task.assignee || '').startsWith('agent:') && (
                   <Field label="Run mode">
                     <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
@@ -4890,6 +4929,103 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             )}
           </DialogContent>
         </Dialog>
+      )}
+    </div>
+  )
+}
+
+/** Small status pill for a task, colour-keyed by state. Reused in the Dependencies section. */
+function TaskStatusPill({ status }: { status: TaskStatus }) {
+  const tone = status === 'done' ? 'bg-emerald-500/15 text-emerald-600'
+    : status === 'cancelled' ? 'bg-muted text-muted-foreground line-through'
+    : status === 'blocked' ? 'bg-red-500/15 text-red-600'
+    : status === 'doing' ? 'bg-blue-500/15 text-blue-600'
+    : 'bg-amber-500/15 text-amber-600'
+  return <span className={`shrink-0 rounded px-1.5 py-0 text-[10px] font-medium capitalize ${tone}`}>{status}</span>
+}
+
+/**
+ * Dependencies section of the task drawer. Renders two edges — "Depends on" (this task's blockers) and
+ * "Blocks" (the reverse edge, `dependents`) — resolving each id → title/status from the already-loaded
+ * board (no per-blocker fetch). An editor adds/removes blockers and PATCHes the whole `dependsOn` set.
+ */
+function TaskDependencies({ task, dependents, tasks, canEdit, onOpen, onSave }: {
+  task: Task
+  dependents: string[]
+  tasks: Task[] | null
+  canEdit: boolean
+  onOpen: (id: string) => void
+  onSave: (deps: string[]) => Promise<void>
+}) {
+  const [adding, setAdding] = useState('')
+  const [busy, setBusy] = useState(false)
+  const deps = task.dependsOn ?? []
+  const byId = (id: string) => (tasks ?? []).find((t) => t.id === id)
+  const satisfied = (id: string) => { const b = byId(id); return !b || b.status === 'done' || b.status === 'cancelled' }
+
+  const setDeps = async (next: string[]) => { setBusy(true); await onSave(next); setBusy(false); setAdding('') }
+  const add = (id: string) => { if (id && !deps.includes(id)) setDeps([...deps, id]) }
+  const remove = (id: string) => setDeps(deps.filter((x) => x !== id))
+
+  // Candidate blockers: any OTHER task not already a blocker. Same-goal tasks first for convenience.
+  const candidates = (tasks ?? [])
+    .filter((t) => t.id !== task.id && !deps.includes(t.id))
+    .sort((a, b) => {
+      const ag = task.goalId && a.goalId === task.goalId ? 0 : 1
+      const bg = task.goalId && b.goalId === task.goalId ? 0 : 1
+      return ag - bg || b.updatedAt - a.updatedAt
+    })
+
+  const edge = (id: string, kind: 'blocker' | 'dependent') => {
+    const t = byId(id)
+    const unmet = kind === 'blocker' && !satisfied(id)
+    return (
+      <div key={id} className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs ${unmet ? 'border-amber-500/40 bg-amber-500/10' : 'bg-muted/20'}`}>
+        {kind === 'blocker' && <span className="shrink-0 text-[11px]" title={unmet ? 'Unmet — blocker not finished' : 'Satisfied'}>{unmet ? '⏳' : '✓'}</span>}
+        <a href={navHref('tasks', id)} onClick={(e) => { e.preventDefault(); onOpen(id) }} className="min-w-0 flex-1 truncate text-foreground no-underline hover:underline">
+          {t ? t.title : <span className="font-mono opacity-70">{id}</span>}
+        </a>
+        {t && <TaskStatusPill status={t.status} />}
+        {kind === 'blocker' && canEdit && <button onClick={() => remove(id)} disabled={busy} className="shrink-0 text-muted-foreground hover:text-destructive" title="Remove dependency"><X className="h-3 w-3" /></button>}
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Dependencies</div>
+
+      <div>
+        <div className="mb-1 text-[11px] text-muted-foreground">Depends on {deps.length > 0 && <span className="opacity-70">· {deps.length}</span>}</div>
+        {deps.length === 0
+          ? <div className="text-xs text-muted-foreground">No blockers.</div>
+          : <div className="space-y-1">{deps.map((id) => edge(id, 'blocker'))}</div>}
+        {canEdit && (
+          <div className="mt-1.5">
+            <Select value={adding} onValueChange={(v) => v && add(v)}>
+              <SelectTrigger className="h-8"><SelectValue placeholder={busy ? 'Saving…' : '+ Add a blocker…'} /></SelectTrigger>
+              <SelectContent>
+                {candidates.length === 0
+                  ? <SelectItem value="__none" disabled>No other tasks</SelectItem>
+                  : candidates.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      <span className="flex items-center gap-1.5">
+                        <TaskStatusPill status={t.status} />
+                        <span className="truncate">{t.title}</span>
+                      </span>
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+      </div>
+
+      {dependents.length > 0 && (
+        <div>
+          <div className="mb-1 text-[11px] text-muted-foreground">Blocks <span className="opacity-70">· {dependents.length}</span></div>
+          <div className="space-y-1">{dependents.map((id) => edge(id, 'dependent'))}</div>
+        </div>
       )}
     </div>
   )

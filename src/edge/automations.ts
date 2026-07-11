@@ -455,6 +455,11 @@ export class Automations {
       this.os.tasks.update(id, { status: 'blocked', note: `auto-dispatch gave up after ${t.attempts} attempts`, by: 'system' });
       return { ok: false, reason: `attempt ceiling reached (${TASK_MAX_ATTEMPTS})` };
     }
+    // Pipeline gate: never spawn a task whose dependencies aren't finished. dispatchable() already
+    // excludes these from the tick; this guards the direct paths (console dispatch / task_dispatch /
+    // task_wait). The task stays todo and becomes dispatchable once its blockers reach done/cancelled.
+    const unmet = this.os.tasks.unmetDeps(id);
+    if (unmet.length) return { ok: false, reason: `waiting on ${unmet.length} unfinished ${unmet.length === 1 ? 'dependency' : 'dependencies'} (${unmet.join(', ')})` };
     // A headless task with acceptance criteria runs under a `/goal` convergence condition (when the
     // installed claude supports it); interactive tasks keep the plain prompt (a human drives those).
     const goalMode = t.mode !== 'interactive' && !!t.criteria && claudeSupportsGoal();
