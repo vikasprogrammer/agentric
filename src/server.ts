@@ -2822,7 +2822,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (b.scope === 'agent') os.skills.setAssignment(s.name, [card.agent]); // else stays all-agents
       tm.setSkillRequestStatus(skillReqApprove[1], 'approved');
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.installed', data: { skill: s.name, source: 'agent-request', from: card.source, requestedBy: card.agent, scope: b.scope === 'agent' ? 'agent' : 'all' } });
-      return sendJson(res, 200, { ok: true, skill: s });
+      // Phase 3: if the requesting agent has a live interactive session, deliver the skill NOW
+      // (materialise into its watched .claude/skills + `/reload-skills`) instead of waiting for next launch.
+      const { reloaded } = tm.refreshAgentSkills(card.agent);
+      return sendJson(res, 200, { ok: true, skill: s, reloaded });
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }

@@ -20,6 +20,7 @@ import { Audience, approvalAudience, resolveRecipients } from './governance/reci
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
+import { claudeSupportsReloadSkills } from './edge/claude-cli';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -1361,6 +1362,40 @@ export class TerminalManager {
     }
   }
 
+  /**
+   * Phase 3 same-session skill delivery. After a skill is installed for `agent` (an approved
+   * `skill_request`), push it into that agent's LIVE interactive (resident) sessions instead of waiting
+   * for their next launch: re-materialise the library into the agent's watched `.claude/skills` (so the
+   * new skill lands as a folder claude's file-watcher picks up), then inject `/reload-skills` to force a
+   * re-scan + re-surface skill descriptions. Best-effort and non-disruptive to correctness:
+   *  - only resident+running+alive sessions (a headless `claude -p` run has no REPL to inject into and
+   *    exits anyway — it gets the skill on its next run, which is the existing behavior);
+   *  - the `/reload-skills` inject is gated on `claude` ≥ 2.1.152 — on an older binary we still
+   *    re-materialise (the watcher exposes the skill as `/name` next turn), we just skip the forced rescan.
+   * Returns how many live sessions were refreshed.
+   */
+  refreshAgentSkills(agent: string): { reloaded: number } {
+    const manifest = this.os.agents.get(agent);
+    if (!manifest || manifest.runtime !== 'claude-code' || !manifest.dir) return { reloaded: 0 };
+    const rows = this.db
+      .prepare(`SELECT id, tmux, run_as, spawned_by FROM term_sessions WHERE agent = ? AND status = 'running' AND resident = 1`)
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null }>(agent)
+      .filter((r) => this.isAlive(r.id));
+    if (!rows.length) return { reloaded: 0 };
+    // Sync the library (incl. the just-installed skill) into the agent's watched .claude/skills — once;
+    // all of the agent's sessions run out of the same folder.
+    this.materializeSkills(rows[0].id, agent, manifest.dir);
+    if (!claudeSupportsReloadSkills()) return { reloaded: 0 }; // watcher still exposes it next turn
+    let reloaded = 0;
+    for (const r of rows) {
+      if (this.backend.injectText(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux, '/reload-skills', true)) {
+        reloaded++;
+        this.audit(r.id, agent, 'skills.reloaded', { agent });
+      }
+    }
+    return { reloaded };
+  }
+
   say(sessionId: string, body: string): void {
     const s = this.db.prepare('SELECT agent FROM term_sessions WHERE id = ?').get<{ agent: string }>(sessionId);
     if (!s) return;
@@ -2418,7 +2453,7 @@ function shSingleQuote(v: string): string {
 const EPISODE_NOISE = new Set([
   'session.created', 'session.ended', 'session.reported', 'session.resumed', 'session.stopped',
   'session.error', 'session.tuning', 'session.progress', 'session.notified', 'session.attachment',
-  'skills.materialized', 'skills.error', 'connector.minted', 'connector.mint.failed',
+  'skills.materialized', 'skills.reloaded', 'skills.error', 'connector.minted', 'connector.mint.failed',
   'connector.secret.unresolved', 'shell.secret.injected', 'shell.secret.unresolved',
   'gate.attempt', 'gate.killswitch', 'approval.resolved',
   'approval.auto_approved', 'episode.stored', 'episode.error',
