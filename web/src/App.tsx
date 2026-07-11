@@ -1778,6 +1778,31 @@ function SessionsPage({
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
+  // Manual tab order: the live strip is drag-reorderable. `tabOrder` is the user's arrangement of live
+  // tmuxes (persisted); `orderTabs` sorts any list by it, leaving un-arranged tabs in their natural
+  // (newest-first) order at the end. `dragTmux` is the tab currently being dragged (dimmed while held).
+  const [tabOrder, setTabOrder] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('aos_tab_order') || '[]') } catch { return [] }
+  })
+  useEffect(() => { localStorage.setItem('aos_tab_order', JSON.stringify(tabOrder)) }, [tabOrder])
+  const [dragTmux, setDragTmux] = useState<string | null>(null)
+  const orderTabs = (list: Session[]) => {
+    const rank = new Map(tabOrder.map((t, i) => [t, i]))
+    // Stable sort keeps un-ranked tabs (rank ∞) in their incoming order behind the arranged ones.
+    return [...list].sort((a, b) => (rank.get(a.tmux) ?? Infinity) - (rank.get(b.tmux) ?? Infinity))
+  }
+  // Move `dragged` to sit where `target` is, within the current visual live order. Called as the
+  // pointer crosses each tab so the strip reflows live; persisting only the live ids prunes stale ones.
+  const reorderTabs = (liveOrder: string[], dragged: string, target: string) => {
+    if (!dragged || dragged === target) return
+    const ids = liveOrder.slice()
+    const from = ids.indexOf(dragged)
+    const to = ids.indexOf(target)
+    if (from === -1 || to === -1) return
+    ids.splice(to, 0, ids.splice(from, 1)[0])
+    setTabOrder(ids)
+  }
+
   // The session whose agent-os primitive activity is open in the modal timeline (null = closed).
   const [inspect, setInspect] = useState<Session | null>(null)
 
@@ -1889,14 +1914,22 @@ function SessionsPage({
 
   // A terminal is open → fill the whole area: a slim switcher bar + the iframe taking the rest.
   if (selected) {
-    const renderTab = (s: Session) => (
+    // `draggable` is set only for the live tabs — they're the reorderable set. Dragging a tab reflows
+    // the strip as the pointer crosses each sibling (onDragEnter); the inner link is un-draggable so the
+    // browser's native link-drag doesn't hijack the gesture.
+    const renderTab = (s: Session, draggable = false) => (
       <div
         key={s.id}
+        draggable={draggable}
+        onDragStart={draggable ? (e) => { setDragTmux(s.tmux); e.dataTransfer.effectAllowed = 'move' } : undefined}
+        onDragEnter={draggable ? () => reorderTabs(liveTabs.map((t) => t.tmux), dragTmux ?? '', s.tmux) : undefined}
+        onDragOver={draggable ? (e) => e.preventDefault() : undefined}
+        onDragEnd={draggable ? () => setDragTmux(null) : undefined}
         className={`group/tab flex shrink-0 items-center gap-1.5 rounded px-2 py-1 ${
           selected.tmux === s.tmux ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800'
-        }`}
+        } ${draggable ? 'cursor-grab active:cursor-grabbing' : ''} ${dragTmux === s.tmux ? 'opacity-50' : ''}`}
       >
-        <a href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5 text-inherit no-underline">
+        <a draggable={false} href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5 text-inherit no-underline">
           <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
           <span className="max-w-[180px] truncate">{s.title}</span>
           {waiting.has(s.id) && <WaitingBell className="h-3 w-3" tone="text-indigo-300" />}
@@ -1937,7 +1970,7 @@ function SessionsPage({
     // The currently-open session stays force-visible so explicitly opening someone else's run (e.g. an
     // admin taking over) still shows its tab and can't orphan the iframe.
     const mine = (s: Session) => s.spawnedBy === me.id || s.runAs === me.id || s.tmux === selected.tmux
-    const liveTabs = sessions.filter((s) => isLive(s) && visible(s) && mine(s))
+    const liveTabs = orderTabs(sessions.filter((s) => isLive(s) && visible(s) && mine(s)))
     const endedTabs = sessions.filter((s) => !isLive(s))
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
     const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s) && mine(s))
@@ -1952,9 +1985,9 @@ function SessionsPage({
             className="no-scrollbar flex min-w-0 flex-1 items-center gap-2 overflow-x-auto"
             style={{ maskImage: edgeFadeMask(fade), WebkitMaskImage: edgeFadeMask(fade) }}
           >
-            {liveTabs.map(renderTab)}
+            {liveTabs.map((s) => renderTab(s, true))}
             {selectedEnded && renderTab(selectedEnded)}
-            {showEnded && collapsibleEnded.map(renderTab)}
+            {showEnded && collapsibleEnded.map((s) => renderTab(s))}
             {collapsibleEnded.length > 0 && (
               <>
                 <span className="h-4 w-px shrink-0 bg-neutral-700" />

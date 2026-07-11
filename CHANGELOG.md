@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.108.2] — 2026-07-11
+### Added
+- **Drag to rearrange session tabs.** The live tabs in the terminal switcher bar can now be dragged into
+  any order — grab a tab and drop it where you want; the strip reflows as you cross each sibling and the
+  dragged tab dims while held. The arrangement persists per browser (`localStorage: aos_tab_order`), so
+  it survives refreshes. Newly-spawned sessions land at the end of your arrangement; ended tabs (behind
+  the "N ended" toggle) keep their natural order (`web/src/App.tsx`, `orderTabs`/`reorderTabs`).
+
 ## [0.108.1] — 2026-07-11
 ### Changed
 - **Session tab strip no longer shows an ugly native horizontal scrollbar.** When more session tabs are
