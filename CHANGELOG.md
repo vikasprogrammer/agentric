@@ -8,7 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.116.0] — 2026-07-11
+## [0.116.1] — 2026-07-11
+### Fixed
+- **Publishing a proposed skill now delivers same-session too.** Same-session delivery (materialise +
+  `/reload-skills` into a live interactive run) was wired only into the `skill_request` **approve** path,
+  so publishing a `skill_propose` draft — the human-gated procedural-skills flow — only reached agents on
+  their next launch, an inconsistency an audit surfaced. `POST /api/skills/:name/publish` now calls
+  `TerminalManager.refreshAgentSkills` for the **proposing agent** (captured before publish drops the
+  `.aos-proposed` marker) and returns `reloaded`. Bounded to the proposer — console catalog/remote installs
+  stay next-launch by design (they install for the whole fleet, so a broadcast reload would be disruptive).
 ### Changed
 - **Automations page redesign — compact, scannable cards.** The old layout put a full-width six-control
   toolbar (Runs · Run now · mode-select · Disable · Edit · trash) plus three badges on every card, which
