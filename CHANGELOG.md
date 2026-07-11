@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.116.0] — 2026-07-11
+### Changed
+- **Automations page redesign — compact, scannable cards.** The old layout put a full-width six-control
+  toolbar (Runs · Run now · mode-select · Disable · Edit · trash) plus three badges on every card, which
+  read as clutter once more than a couple of automations existed. Each automation is now a tight row: the
+  trigger type is a **glyph** (schedule/webhook/Slack/Discord/Composio) instead of a badge, the agent ·
+  trigger-summary · run-mode collapse into one meta line, and the status line shows just **next-in** +
+  **last-fired**. The only always-visible action is **Run now**; everything secondary (Past runs,
+  Enable/Disable, switch run-mode, Edit, Delete) moves into a **kebab (⋯) menu**. Paused automations dim.
+  New reusable `web/src/components/ui/dropdown-menu.tsx` (Base UI `menu`). (`web/src/App.tsx`)
+
 ## [0.115.3] — 2026-07-11
 ### Changed
 - **Landing page reflects what's shipped.** The public `/landing` capability grid gains two cards for

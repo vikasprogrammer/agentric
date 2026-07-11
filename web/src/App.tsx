@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target } from 'lucide-react'
-import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, type LucideIcon } from 'lucide-react'
+import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
@@ -5056,6 +5057,30 @@ const TRIGGER_ITEMS: Record<string, string> = {
   composio: 'Composio event',
 }
 
+/** The glyph that marks an automation's trigger family — a scannable stand-in for the old `type` badge. */
+function triggerIcon(type: Automation['type']): LucideIcon {
+  switch (type) {
+    case 'cron': return CalendarClock
+    case 'webhook': return Webhook
+    case 'slack': return Hash
+    case 'discord': return MessageSquare
+    case 'once': return Clock
+    default: return Zap
+  }
+}
+/** One-line, human trigger summary for the card's meta row (schedule phrasing, or event + filter scope). */
+function triggerSummary(a: Automation): string {
+  switch (a.type) {
+    case 'cron': return a.schedule ? cronToHuman(a.schedule) : 'Schedule'
+    case 'webhook': return 'Webhook'
+    case 'slack': return `Slack · ${a.filter || 'any message'}`
+    case 'discord': return `Discord · ${a.filter || 'any message'}`
+    case 'composio': return `Composio · ${a.filter || 'any event'}`
+    case 'once': return 'One-shot'
+    default: return a.type
+  }
+}
+
 function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; agents: AgentInfo[]; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
@@ -5278,80 +5303,95 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
         )}
         {active.length === 0 && !showForm && <div className="text-sm text-muted-foreground">No active automations{spent.length ? ' — only spent one-shot runs remain (below).' : isAdmin ? ' yet — click New automation to create one.' : '.'}</div>}
         <div className="space-y-2">
-          {active.map((a) => (
-            <Card key={a.id}>
-              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-                <div className="min-w-0">
+          {active.map((a) => {
+            const TrigIcon = triggerIcon(a.type)
+            const canManage = isAdmin && a.canManage !== false
+            return (
+            <Card key={a.id} className={a.enabled ? '' : 'opacity-60'}>
+              <CardContent className="flex items-start gap-3 p-3.5">
+                {/* Trigger glyph — the type badge, promoted to a scannable icon. */}
+                <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${a.enabled ? 'bg-amber-500/10 text-amber-600' : 'bg-muted text-muted-foreground/50'}`} title={TRIGGER_ITEMS[a.type] ?? a.type}>
+                  <TrigIcon className="h-4 w-4" />
+                </div>
+                {/* Body */}
+                <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <Zap className={`h-4 w-4 shrink-0 ${a.enabled ? 'text-amber-500' : 'text-muted-foreground/40'}`} />
                     <span className="truncate text-sm font-medium">{a.name}</span>
-                    <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{a.type}</Badge>
-                    <Badge variant="outline" className="px-1.5 py-0 text-[10px]">{a.mode === 'headless' ? 'headless' : 'interactive'}</Badge>
-                    {!a.enabled && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">disabled</Badge>}
+                    {!a.enabled && <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">paused</Badge>}
                   </div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">
-                    {a.agentId}
-                    {a.type === 'cron' && a.schedule && <span className="ml-2" title={a.schedule}>{cronToHuman(a.schedule)}</span>}
-                    {(a.type === 'composio' || a.type === 'slack' || a.type === 'discord') && <span className="ml-2 font-mono">{a.filter || 'any event'}</span>}
+                  <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
+                    <AgentIcon icon={agents.find((ag) => ag.id === a.agentId)?.icon} className="h-3 w-3 shrink-0" />
+                    <span className="truncate font-medium text-foreground/75">{a.agentId}</span>
+                    <span className="text-muted-foreground/40">·</span>
+                    <span className="truncate" title={a.type === 'cron' ? a.schedule ?? undefined : undefined}>{triggerSummary(a)}</span>
+                    <span className="text-muted-foreground/40">·</span>
+                    <span>{a.mode}</span>
                   </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
                     {a.nextRunAt ? (
                       <span className="inline-flex items-center gap-1 text-emerald-600" title={serverTz ? `${fmtInServerTz(a.nextRunAt, serverTz)} (${serverTz})` : new Date(a.nextRunAt).toLocaleString()}>
-                        <Clock className="h-3 w-3" />next in {timeUntil(a.nextRunAt)} · {fmtInServerTz(a.nextRunAt, serverTz)}{serverTz ? ` (${serverTz})` : ''}
+                        <Clock className="h-3 w-3" />next in {timeUntil(a.nextRunAt)}
                       </span>
                     ) : a.type === 'cron' && !a.enabled ? (
                       <span className="text-amber-600">paused — won't fire while disabled</span>
                     ) : a.type !== 'cron' ? (
-                      <span>fires on {a.type === 'webhook' ? 'webhook' : `${a.type} message`} — no schedule</span>
+                      <span className="inline-flex items-center gap-1"><Zap className="h-3 w-3" />on demand</span>
                     ) : null}
+                    {(a.nextRunAt || a.type !== 'cron') && <span className="text-muted-foreground/40">·</span>}
                     <span title={a.lastFiredAt ? new Date(a.lastFiredAt).toLocaleString() : undefined}>
                       {a.lastFiredAt ? `last fired ${timeAgo(a.lastFiredAt)} ago` : 'never fired'}
                     </span>
                   </div>
                   {a.type === 'cron' && a.mode === 'interactive' && (
-                    <div className="mt-1 text-[11px] text-amber-600">Interactive sessions stay open until closed — this cron won't re-fire while its last run is still running.</div>
+                    <div className="mt-1 flex items-start gap-1 text-[11px] text-amber-600"><AlertTriangle className="mt-px h-3 w-3 shrink-0" />Interactive runs stay open — this cron won't re-fire while its last run is live.</div>
                   )}
-                  <div className="mt-1 truncate text-xs text-muted-foreground">{a.task}</div>
-                  {a.hookUrl && <div className="mt-2 w-full max-w-xl"><CopyLink link={a.hookUrl} /></div>}
+                  <div className="mt-1 truncate text-xs text-muted-foreground/80">{a.task}</div>
+                  {a.hookUrl && <div className="mt-2 max-w-xl"><CopyLink link={a.hookUrl} /></div>}
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button size="sm" variant="ghost" onClick={() => setOpenRuns((cur) => (cur === a.id ? null : a.id))} title="show past runs of this automation">
-                    <HistoryIcon className="mr-1 h-3.5 w-3.5" />Runs
-                    <ChevronDown className={`ml-1 h-3.5 w-3.5 transition-transform ${openRuns === a.id ? 'rotate-180' : ''}`} />
-                  </Button>
+                {/* Actions — primary Run now, everything else tucked behind the kebab. */}
+                <div className="flex shrink-0 items-center gap-1">
                   <Button size="sm" variant="secondary" disabled={busy === a.id} onClick={() => setRunPrompt(a)} title="fire once now — pick headless or interactive">
                     <Play className="mr-1 h-3.5 w-3.5" />Run now
                   </Button>
-                  {/* Manage controls only for automations this member may edit: owner (any) or the creator.
-                      `canManage !== false` keeps them for older payloads without the flag; the server enforces. */}
-                  {isAdmin && a.canManage !== false && (
-                    <>
-                      <Select value={a.mode} onValueChange={(v) => v && v !== a.mode && setItemMode(a, v as 'interactive' | 'headless')}>
-                        <SelectTrigger className="h-8 w-32"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="headless">headless</SelectItem>
-                          <SelectItem value="interactive">interactive</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Button size="sm" variant="outline" disabled={busy === a.id} onClick={() => toggle(a)}>
-                        {a.enabled ? 'Disable' : 'Enable'}
-                      </Button>
-                      <Button size="sm" variant="outline" disabled={busy === a.id} onClick={() => startEdit(a)} title="edit name, schedule, task…">
-                        <Pencil className="mr-1 h-3.5 w-3.5" />Edit
-                      </Button>
-                      <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === a.id} onClick={() => remove(a)} title="remove">
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </>
-                  )}
-                  {isAdmin && a.canManage === false && (
-                    <span className="text-[11px] text-muted-foreground" title="Only the creator or the owner can change this automation">created by another member</span>
-                  )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={<Button size="icon" variant="ghost" className="h-8 w-8" disabled={busy === a.id} title="more actions"><MoreHorizontal className="h-4 w-4" /></Button>}
+                    />
+                    <DropdownMenuContent>
+                      <DropdownMenuItem onClick={() => setOpenRuns((cur) => (cur === a.id ? null : a.id))}>
+                        <HistoryIcon className="h-4 w-4" />{openRuns === a.id ? 'Hide past runs' : 'Past runs'}
+                      </DropdownMenuItem>
+                      {/* Manage items only for automations this member may edit: owner (any) or the creator.
+                          The server enforces; `canManage !== false` keeps them for older payloads. */}
+                      {canManage && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => toggle(a)}>
+                            {a.enabled ? <><PowerOff className="h-4 w-4" />Disable</> : <><Power className="h-4 w-4" />Enable</>}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => setItemMode(a, a.mode === 'headless' ? 'interactive' : 'headless')}>
+                            <SlidersHorizontal className="h-4 w-4" />Switch to {a.mode === 'headless' ? 'interactive' : 'headless'}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => startEdit(a)}>
+                            <Pencil className="h-4 w-4" />Edit…
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem variant="destructive" onClick={() => remove(a)}>
+                            <Trash2 className="h-4 w-4" />Delete
+                          </DropdownMenuItem>
+                        </>
+                      )}
+                      {isAdmin && a.canManage === false && (
+                        <DropdownMenuItem disabled><User className="h-4 w-4" />Created by another member</DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </CardContent>
               {openRuns === a.id && <AutomationRuns id={a.id} onOpen={onOpen} />}
             </Card>
-          ))}
+            )
+          })}
         </div>
         {hint && <div className="mt-2 font-mono text-xs text-destructive">{hint}</div>}
       </section>
