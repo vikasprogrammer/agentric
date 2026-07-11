@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.105.0] — 2026-07-11
+### Added
+- **Agents can now discover the existing folder tree before filing into it.** #178 taught agents the
+  folder *syntax* (nested KB `section` paths, a `folder` on `publish`), but nothing let them see what
+  folders already existed — so an agent could file into `eng` when the tree already had
+  `engineering/backend`. Now the "look before you write" tools return the taxonomy:
+  - `kb_search` also returns the existing KB **sections** (`GET /api/kb/search` → `sections`, via
+    `KbStore.sections`) and lists them in the tool output — shown even when the query matches nothing.
+  - `artifacts_list` also returns the tenant-wide gallery **folders** (`GET /api/agent/artifacts` →
+    `folders`, via a new `ArtifactStore.folders()`) so a `publish` can reuse an existing folder; the
+    artifact list itself stays scoped to the agent's own outputs.
+  - `kb_write` / `publish` folder-arg descriptions now nudge reuse over invention; the stale flat
+    `kb_history` / `kb_revert` `section` examples were updated to show nesting.
+
 ## [0.104.0] — 2026-07-11
 ### Added
 - **Deep-link permalinks for Knowledge Base pages and Artifacts.** Opening a KB page or an artifact

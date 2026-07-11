@@ -616,7 +616,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 50);
     const artifacts = os.artifacts.list().filter((a) => a.agent === agent).slice(0, limit);
-    return sendJson(res, 200, { artifacts, enabled: os.artifacts.enabled });
+    // `folders` is the tenant-wide folder taxonomy (all agents) so a publisher can file into the
+    // existing tree instead of inventing a new folder; the artifact LIST stays own-scoped.
+    return sendJson(res, 200, { artifacts, folders: os.artifacts.folders(), enabled: os.artifacts.enabled });
   }
   // agent schedules a ONE-SHOT deferred run of itself (a follow-up / "check back later"). Stored as a
   // `once` automation that runs the same agent under the same run-as identity, bounded by the SCHEDULE_*
@@ -840,7 +842,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       section: url.searchParams.get('section') || undefined,
       tags: tags.length ? tags : undefined, limit: Number(url.searchParams.get('limit')) || 12,
     });
-    return sendJson(res, 200, { pages });
+    // `sections` is the full folder tree (all existing section paths) so an agent can file a new page
+    // into the existing structure instead of inventing an inconsistent folder name.
+    return sendJson(res, 200, { pages, sections: os.kb.sections(os.tenant) });
   }
   if (method === 'GET' && p === '/api/kb/read') {
     const session = url.searchParams.get('session') || '';

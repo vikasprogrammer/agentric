@@ -264,7 +264,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        section: { type: 'string', description: 'Section/folder path, e.g. "engineering" or "engineering/backend" (lowercased, url-safe; nest sub-folders with "/").' },
+        section: { type: 'string', description: 'Section/folder path, e.g. "engineering" or "engineering/backend" (lowercased, url-safe; nest sub-folders with "/"). Reuse an existing folder (kb_search lists them) rather than inventing a new one.' },
         slug: { type: 'string', description: 'Page slug, e.g. "deploy-runbook" (identifies the page; created if absent).' },
         title: { type: 'string', description: 'Human title (required when creating a new page).' },
         body: { type: 'string', description: 'The full page markdown. Link related pages with [[section/slug]].' },
@@ -285,7 +285,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        section: { type: 'string', description: 'The page\'s section, e.g. "engineering".' },
+        section: { type: 'string', description: 'The page\'s section (folder path), e.g. "engineering" or "engineering/backend".' },
         slug: { type: 'string', description: 'The page\'s slug, e.g. "deploy-runbook".' },
       },
       required: ['section', 'slug'],
@@ -301,7 +301,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        section: { type: 'string', description: 'The page\'s section.' },
+        section: { type: 'string', description: 'The page\'s section (folder path), e.g. "engineering" or "engineering/backend".' },
         slug: { type: 'string', description: 'The page\'s slug.' },
         rev: { type: 'number', minimum: 1, description: 'The revision number to restore (from kb_history).' },
       },
@@ -393,7 +393,7 @@ const TOOLS = [
         path: { type: 'string', description: 'Path to the file in your working folder (relative, e.g. "report.pdf").' },
         title: { type: 'string', description: 'A short human-readable title for the deliverable.' },
         description: { type: 'string', description: 'Optional one-line description / context.' },
-        folder: { type: 'string', description: 'Optional folder path to file it under, e.g. "reports/2024" (nest sub-folders with "/"). Omit for the gallery root.' },
+        folder: { type: 'string', description: 'Optional folder path to file it under, e.g. "reports/2024" (nest sub-folders with "/"). Reuse an existing gallery folder (artifacts_list shows them) rather than inventing a new one. Omit for the gallery root.' },
       },
       required: ['path', 'title'],
     },
@@ -1080,12 +1080,15 @@ async function kbSearch(args: Record<string, unknown>): Promise<string> {
   if (Array.isArray(args.tags) && args.tags.length) u.searchParams.set('tags', args.tags.map(String).join(','));
   u.searchParams.set('limit', String(typeof args.limit === 'number' ? args.limit : 8));
   const res = await fetch(u, { headers: H() });
-  const data = (await res.json()) as { pages?: KbPageLite[] };
+  const data = (await res.json()) as { pages?: KbPageLite[]; sections?: string[] };
   const pages = data.pages ?? [];
-  if (!pages.length) return 'No knowledge-base pages found.';
+  // Always surface the existing folder tree so a new page lands in the established structure rather
+  // than an inconsistent new folder (e.g. reuse `engineering/backend`, don't invent `eng`).
+  const folders = data.sections?.length ? `\n\nExisting folders (reuse one when filing a new page): ${data.sections.join(', ')}` : '';
+  if (!pages.length) return `No knowledge-base pages found.${folders}`;
   return pages
     .map((p) => `- ${p.section}/${p.slug} — ${p.title}${p.tags?.length ? ` [${p.tags.join(', ')}]` : ''}`)
-    .join('\n') + '\n(Use kb_read with a section + slug to open a page.)';
+    .join('\n') + '\n(Use kb_read with a section + slug to open a page.)' + folders;
 }
 
 async function kbRead(args: Record<string, unknown>): Promise<string> {
@@ -1172,13 +1175,16 @@ async function artifactsList(args: Record<string, unknown>): Promise<string> {
   u.searchParams.set('session', SESSION);
   u.searchParams.set('limit', String(typeof args.limit === 'number' ? args.limit : 20));
   const res = await fetch(u, { headers: H() });
-  const data = (await res.json()) as { artifacts?: ArtifactLite[]; enabled?: boolean };
+  const data = (await res.json()) as { artifacts?: ArtifactLite[]; folders?: string[]; enabled?: boolean };
   if (data.enabled === false) return 'The Artifacts gallery is disabled in this workspace.';
   const arts = data.artifacts ?? [];
-  if (!arts.length) return 'You have not published any deliverables yet.';
+  // The gallery's existing folders (all agents) so a `publish` files into the established tree rather
+  // than inventing a new folder. Shown even when you personally have nothing published yet.
+  const folders = data.folders?.length ? `\n\nGallery folders (pass one as \`folder\` to publish): ${data.folders.join(', ')}` : '';
+  if (!arts.length) return `You have not published any deliverables yet.${folders}`;
   return arts
     .map((a) => `- ${a.title}${a.description ? ` — ${a.description}` : ''} (${a.kind}, ${a.filename}${a.folder ? `, in ${a.folder}/` : ''})`)
-    .join('\n');
+    .join('\n') + folders;
 }
 
 async function schedule(args: Record<string, unknown>): Promise<string> {

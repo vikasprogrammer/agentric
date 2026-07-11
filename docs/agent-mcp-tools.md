@@ -13,7 +13,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `remember` | `POST /api/memory/remember` | `MemoryProvider.store` | W | `shared:true` may be downgraded in a curated workspace |
 | `revise` | `POST /api/memory/revise` | `MemoryProvider.update` | W | author-guarded; audited `memory.revised` |
 | `forget` | `POST /api/memory/forget` | `MemoryProvider.delete` | W | author-guarded; audited `memory.forgotten` |
-| `kb_search` | `GET /api/kb/search` | `KbStore.search` | R | |
+| `kb_search` | `GET /api/kb/search` | `KbStore.search` + `KbStore.sections` | R | also returns the existing section/folder tree so a new page files into the established structure (discovery) |
 | `kb_read` | `GET /api/kb/read` | `KbStore.read` | R | |
 | `kb_write` | `POST /api/kb/write` | `KbStore.write` | W | versioned; author `agent:<id>`; `section` may nest with `/` (`engineering/backend`) → folder tree |
 | `kb_history` | `GET /api/kb/history` | `KbStore.history` | R | newest-first revisions |
@@ -25,7 +25,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `notify` | `POST /api/notify` | messages + member DM | W | notify ONE named teammate (`to` = name/email); inbox card addressed to them + Slack/Discord DM; the escape hatch from session-owner scoping — see below |
 | `publish` | `POST /api/publish` | `ArtifactStore` | W | snapshots the file; optional `folder` path (`reports/2024`) files it into a gallery folder |
 | `skill_propose` | `POST /api/skills/propose` | `SkillsStore.propose` + messages | W | drafts a `.aos-proposed` skill (never materialised) + posts a `skill.proposed` inbox card to owner/admins; audited `skill.proposed`. Human publishes via `POST /api/skills/:name/publish` (owner/admin) or dismisses via `DELETE /api/skills/:name` |
-| `artifacts_list` | `GET /api/agent/artifacts` | `ArtifactStore.list` | R | scoped to the agent's own deliverables |
+| `artifacts_list` | `GET /api/agent/artifacts` | `ArtifactStore.list` + `ArtifactStore.folders` | R | list scoped to the agent's own deliverables; also returns the tenant-wide gallery folders so a `publish` files into the existing tree (discovery) |
 | `schedule` | `POST /api/agent/schedule` | `Automations.schedule` (`type:'once'`) | W | one-shot deferred self-run; same agent + run-as; bounded 1 min–30 days, ≤25 pending/agent |
 | `unschedule` | `POST /api/agent/schedule/cancel` | `Automations.cancelScheduled` | W | cancel a pending one, scoped to the agent |
 | `list_capabilities` | `GET /api/agent/policy` | policy preview | R | |

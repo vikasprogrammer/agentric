@@ -126,6 +126,15 @@ export class ArtifactStore {
       .map(toArtifact);
   }
 
+  /** Distinct non-empty folder paths in use (for agent discovery — file into the existing tree
+   *  rather than inventing a new folder). Tenant-wide; the paths are organizing labels, not contents. */
+  folders(): string[] {
+    return this.db
+      .prepare("SELECT DISTINCT folder FROM artifacts WHERE folder <> '' ORDER BY folder")
+      .all<{ folder: string }>()
+      .map((r) => r.folder);
+  }
+
   get(id: string): Artifact | undefined {
     const r = this.db.prepare('SELECT * FROM artifacts WHERE id = ?').get<ArtifactRow>(id);
     return r ? toArtifact(r) : undefined;
