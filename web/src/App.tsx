@@ -818,8 +818,17 @@ function Console({ me }: { me: Member }) {
   // Deep-link from an inbox 'artifact' card into the gallery, pre-opening that artifact's preview.
   const openArtifact = (id: string) => nav('artifacts', id)
   const stopSession = async (id: string) => {
+    const stopped = sessions.find((s) => s.id === id)
     await api.stopSession(id)
-    setSessions(await api.sessions())
+    const fresh = await api.sessions()
+    setSessions(fresh)
+    // If you stopped the session you're currently viewing, don't sit on a dead terminal:
+    // hop to the next open session, or fall back to the all-sessions list when none remain.
+    if (stopped && selected?.tmux === stopped.tmux) {
+      const next = fresh.find((s) => isLive(s) && s.tmux !== stopped.tmux && !hiddenTabs.has(s.tmux))
+      if (next) nav('sessions', next.tmux)
+      else nav('sessions')
+    }
   }
   // Human verdict on a finished run — feeds the agent maturity score. Clicking the active thumb clears it.
   const rateSession = async (id: string, rating: 'up' | 'down' | null) => {
