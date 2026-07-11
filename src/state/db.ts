@@ -622,6 +622,13 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'rated_by', 'TEXT');     // member id who gave the verdict
   addColumn(db, 'term_sessions', 'rated_at', 'INTEGER');  // when (epoch ms)
 
+  // Take-over: a human "claimed" an unattended run to watch/steer it live. Setting this makes the
+  // session STICKY — the turn-end (`markTurnIdle`) and idle backstop reapers never tear it down, so a
+  // claimed run keeps its live TUI instead of being auto-closed when it goes idle. NULL = unclaimed
+  // (the default; every existing row). See docs/attachable-sessions-plan.md.
+  addColumn(db, 'term_sessions', 'claimed_by', 'TEXT');    // member id who took it over (NULL = unclaimed)
+  addColumn(db, 'term_sessions', 'claimed_at', 'INTEGER'); // when (epoch ms)
+
   // Profile picture: a small square `data:image/…;base64,…` URL. NULL → the UI shows the member's
   // initial. Members set their own from the Team page; owners/admins may set anyone's.
   addColumn(db, 'members', 'avatar', 'TEXT');

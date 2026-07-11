@@ -173,10 +173,16 @@ Key modules:
   thread-create failure → channel fallback). The `discord_reply` MCP tool is bound to `discord_threads`;
   `DISCORD_REPLY=1` exposes it. `discord.connected` records the READY guild count. Reconnect backoff + zombie
   detection mirror SlackSocket.
-  Per-automation **execution mode**: `headless` (default) runs `claude -p --dangerously-skip-permissions`
-  (the PreToolUse gate hook still runs + blocks risky Bash under that flag) and exits so the session goes
-  `idle` and the guard releases; `interactive` keeps the attachable TUI (a cron won't re-fire while it's
-  alive). `HEADLESS=1` selects the lane in `terminal/claude-launch.sh`.
+  Per-automation **execution mode**: `headless` (default) and `interactive` now run the SAME way — an
+  attachable interactive claude TUI (NOT `claude -p`) with `--dangerously-skip-permissions` (the PreToolUse
+  gate hook still runs + blocks risky Bash under that flag). The difference is teardown: an `headless`
+  (unattended) run is closed by the SERVER at turn-end — the Stop hook (`terminal/stop-hook.sh`) beacons
+  `/api/turn-idle` → `TerminalManager.markTurnIdle` kills the pane so tmux drops and the pile-up guard
+  releases (parity with the old `-p` exit) UNLESS a human has taken it over / is watching / it's blocked on
+  a person; `interactive` stays live until closed. `UNATTENDED=1` (was `HEADLESS=1`) selects the lane in
+  `terminal/claude-launch.sh`. **Take-over** is now lossless: `POST /api/sessions/:id/interactive` →
+  `claimSession` just marks the live run claimed (sticky, no kill/resume) and the console attaches to the
+  still-streaming pane. See `docs/attachable-sessions-plan.md`.
 - `src/memory/` — the **memory plane** (per-agent persistent recall). `index.ts` factory →
   `sqlite-provider.ts` (default; FTS5 bm25 keyword recall, **+ optional in-JS-cosine hybrid** when an
   embedder is set), `libsql-provider.ts` (native in-file vectors; opt-in `@libsql/client`),

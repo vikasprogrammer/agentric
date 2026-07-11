@@ -60,16 +60,15 @@ const resumeAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void
   void api.resumeSession(s.id).finally(() => onOpen(s.tmux, s.agent + ' · ' + s.id))
 }
 
-/** A headless run (automation/cron/chat/task) is `claude -p` — non-interactive, and it writes no resurrect
- *  env, so it's never `resumable`. It CAN be "taken over": relaunched as an attachable interactive session
- *  (`claude --resume` under the same pinned id) so a human can watch and steer. Offered while it's live
- *  (streaming) or after it finished (continue the transcript). Interactive runs already have a live/Resume
- *  path, so they never show this. Server re-checks it's a claude-code run with a resumable transcript. */
+/** An unattended run (automation/cron/chat/task) is now an ATTACHABLE interactive TUI (not `claude -p`),
+ *  so while it's LIVE you can "take over" — claim it and attach to the still-streaming pane with nothing
+ *  interrupted. Offered only while live: a finished run has no pane to attach to (you view its transcript
+ *  instead). Interactive runs already have a live/Resume path, so they never show this. */
 const canGoInteractive = (s: Session): boolean =>
-  !s.resumable && (isLive(s) || s.status === 'done' || s.status === 'crashed')
+  !s.resumable && !s.claimedBy && isLive(s)
 
-/** Take over a headless run: convert it to an interactive session server-side (kills the in-flight `-p`
- *  turn if still streaming), THEN open/focus its terminal so the user lands in the live, attachable TUI. */
+/** Take over an unattended run: CLAIM it server-side (no kill, no resume — nothing interrupted), THEN
+ *  open/focus its terminal so the user lands in the live, attachable TUI it was already running in. */
 const takeOverAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void): void => {
   void api.goInteractive(s.id).finally(() => onOpen(s.tmux, s.agent + ' · ' + s.id))
 }
@@ -1452,10 +1451,10 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
   const [wsUrl, setWsUrl] = useState('')
   const [err, setErr] = useState('')
   const [transcript, setTranscript] = useState<string | null>(null)
-  // "Take over" state: converting a headless run to interactive re-launches it server-side, but the
-  // `session` prop (and its `resumable`/`status`) only refreshes on the next poll. `overrideAttach`
-  // forces the attach path immediately; `nonce` re-runs the attach fetch and remounts <Xterm> so it
-  // reconnects to the freshly-spawned interactive pane. Reset when the viewed session changes.
+  // "Take over" state: claiming an unattended run doesn't relaunch it (the pane is already a live TUI) —
+  // we just want to hide the overlay button and stay attached. `overrideAttach` hides the button
+  // immediately (the `session` prop's `claimedBy` only reflects on the next poll); `nonce` re-runs the
+  // attach fetch so <Xterm> is freshly connected to the live pane. Reset when the viewed session changes.
   const [overrideAttach, setOverrideAttach] = useState(false)
   const [nonce, setNonce] = useState(0)
   const [takingOver, setTakingOver] = useState(false)
@@ -1467,21 +1466,20 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
     return n >= TERM_FONT_MIN && n <= TERM_FONT_MAX ? n : 14
   })
   useEffect(() => { localStorage.setItem('aos_terminal_font', String(fontSize)) }, [fontSize])
-  // A finished headless run (and a crashed headless run) has no resurrectable pane — never resumable
-  // and no longer live — so attaching would show a dead terminal. Show its captured transcript instead.
-  // Interactive ended sessions stay resumable and keep the normal attach/resume path untouched. Once
-  // taken over (overrideAttach), force the live attach path even before the prop reflects the new state.
+  // A finished/crashed unattended run has no live pane — never resumable and no longer live — so attaching
+  // would show a dead terminal. Show its captured transcript instead. Interactive ended sessions stay
+  // resumable and keep the normal attach/resume path untouched.
   const ended = Boolean(session) && !isLive(session!) && !session!.resumable && !overrideAttach
-  // A headless run can be promoted to an attachable interactive session (see canGoInteractive). Offer it
-  // both while streaming (live) and after it ended (continue) — hidden once taken over.
+  // A LIVE unattended run can be taken over — attach to its streaming pane (see canGoInteractive). Hidden
+  // once claimed (overrideAttach flips it off immediately; the prop's claimedBy follows on the next poll).
   const showTakeover = Boolean(session) && !overrideAttach && canGoInteractive(session!)
   const takeOver = async () => {
     if (!session?.id || takingOver) return
     setTakingOver(true); setErr('')
     const r = await api.goInteractive(session.id)
     setTakingOver(false)
-    if (!r.ok) { setErr(r.error || 'could not go interactive'); return }
-    // Drop the read-only transcript (if any) and force a fresh attach to the new interactive pane.
+    if (!r.ok) { setErr(r.error || 'could not take over this run'); return }
+    // Claimed — the live pane keeps streaming; just hide the button and (re)attach to it cleanly.
     setTranscript(null); setOverrideAttach(true); setNonce((n) => n + 1)
   }
   useEffect(() => {
@@ -1508,14 +1506,7 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
   if (transcript != null) return (
     <div className="flex min-h-0 flex-1 flex-col bg-black">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
-        <span>Session ended · headless transcript (read-only)</span>
-        {showTakeover && (
-          <button onClick={takeOver} disabled={takingOver}
-            className="flex items-center gap-1 rounded border border-sky-800 px-2 py-0.5 text-sky-300 hover:bg-sky-950 disabled:opacity-50"
-            title="continue this run in an interactive session you can watch and steer (claude --resume)">
-            <Terminal className="h-3 w-3" /> {takingOver ? 'opening…' : 'Continue interactively'}
-          </button>
-        )}
+        <span>Session ended · transcript (read-only)</span>
       </div>
       <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs leading-relaxed text-neutral-300">{transcript || '(no output captured)'}</pre>
     </div>
@@ -1527,8 +1518,8 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
       {showTakeover && (
         <button onClick={takeOver} disabled={takingOver}
           className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-sky-700 bg-neutral-900/90 px-3 py-1 text-xs text-sky-300 shadow hover:bg-sky-950 disabled:opacity-50"
-          title="take over — this headless run is unattended; convert it to an interactive session you can type into (ends the current turn, then resumes)">
-          <Terminal className="h-3.5 w-3.5" /> {takingOver ? 'taking over…' : 'Take over (go interactive)'}
+          title="take over — attach to this live unattended run and steer it by typing; nothing is interrupted">
+          <Terminal className="h-3.5 w-3.5" /> {takingOver ? 'taking over…' : 'Take over'}
         </button>
       )}
       <ImageDropZone session={session} onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}
@@ -1943,7 +1934,7 @@ function SessionsPage({
             </button>
           )}
           {canGoInteractive(s) && (
-            <button className="rounded p-0.5 text-sky-400 hover:bg-neutral-600 hover:text-sky-300" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — convert this headless run to an interactive session you can watch and steer">
+            <button className="rounded p-0.5 text-sky-400 hover:bg-neutral-600 hover:text-sky-300" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — attach to this live run and steer it; nothing is interrupted">
               <Terminal className="h-3 w-3" />
             </button>
           )}
@@ -2161,7 +2152,7 @@ function SessionsPage({
                   </Button>
                 )}
                 {canGoInteractive(s) && (
-                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — convert this headless run to an interactive session you can watch and steer">
+                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — attach to this live run and steer it; nothing is interrupted">
                     <Terminal className="h-3 w-3" /> Take over
                   </Button>
                 )}
@@ -2228,7 +2219,7 @@ function SessionsPage({
                   </Button>
                 )}
                 {canGoInteractive(s) && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — convert this headless run to an interactive session you can watch and steer">
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — attach to this live run and steer it; nothing is interrupted">
                     <Terminal className="h-3.5 w-3.5" />
                   </Button>
                 )}
@@ -4885,10 +4876,10 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
             <button disabled={busy === runPrompt?.id} onClick={() => runPrompt && runNow(runPrompt, 'headless')}
               className="rounded-lg border p-3 text-left transition-colors hover:bg-muted disabled:opacity-50">
               <div className="flex items-center gap-2 text-sm font-medium">
-                <Zap className="h-4 w-4" /> Headless — fire and forget
+                <Zap className="h-4 w-4" /> Unattended — fire and forget
                 {runPrompt?.mode === 'headless' && <span className="text-[11px] font-normal text-muted-foreground">· current default</span>}
               </div>
-              <div className="mt-0.5 text-xs text-muted-foreground">Runs to completion unattended (<code>claude -p</code>) and exits; progress lands in the Inbox. You can still “Take over” a live headless run from Sessions.</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">Runs unattended in an attachable terminal; progress lands in the Inbox and it closes when the task completes. “Take over” a live run anytime from Sessions.</div>
             </button>
           </div>
         </DialogContent>

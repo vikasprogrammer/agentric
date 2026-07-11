@@ -128,9 +128,12 @@ export interface Session {
    *  `task` = the Tasks dispatcher; `chat` = the `/agent` chat router; `system` = an internal principal.
    *  Server-resolved (the automation sub-type needs a join the raw `spawnedBy` can't give). */
   sourceKind?: 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system'
-  /** True when the run launched headless (`claude -p`, non-interactive) rather than as an attachable
-   *  interactive TUI. The list badges the two differently. */
+  /** True when the run launched unattended (an automation/cron/task run). These now run as an attachable
+   *  interactive TUI a human can take over live; the list badges them as unattended vs. a member session. */
   headless?: boolean
+  /** The member id who "took over" (claimed) this unattended run — set means it's sticky (won't be
+   *  auto-closed at turn-end) and the Take-over affordance is hidden. Undefined = unclaimed. */
+  claimedBy?: string
   /** The member id this session runs AS (run_as). A task/chat-triggered run is spawnedBy `task:`/
    *  `automation:` but runs as a member — the sidebar keys "my sessions" off this too. */
   runAs?: string

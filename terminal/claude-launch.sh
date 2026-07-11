@@ -11,9 +11,10 @@
 #   TASK_B64   base64-encoded task text (becomes claude's opening prompt)
 #   AGENT_DIR  the agent's folder — claude opens here and writes its memory/scratch here
 #   HOOK       absolute path to gate-hook.sh (the PreToolUse gate)
-#   HEADLESS   "1" → run non-interactively (`claude -p`) and exit when done (automations);
-#              unset/empty → interactive attachable TUI that stays live (manual spawns)
-#   LOG_DIR    where to tee the headless run transcript (headless only)
+#   UNATTENDED "1" → an unattended automation/cron/task run: an INTERACTIVE, attachable TUI (so a human
+#              can take it over live) run with --dangerously-skip-permissions; the server tears it down
+#              at turn-end via the Stop hook (no `claude -p`). unset/empty → a member's own interactive
+#              session. (RESIDENT is the warm-chat variant; both share the unattended lane below.)
 set -u
 # RESUME path: ttyd's attach wrapper (attach.sh) re-launches us against a session whose tmux shell
 # was killed (stopped/ended). The new tmux session does NOT inherit the original launch env, so
@@ -49,6 +50,9 @@ cd "$AGENT_DIR" 2>/dev/null || { red "agent folder not found: $AGENT_DIR"; exec 
 # interactive sessions. Enumerating a partial list caused exactly that gap; the server name covers all.
 # The Notification hook lives beside the gate hook; derive its path so it's correct on every machine.
 NOTIFY_HOOK="$(dirname "$HOOK")/notify-hook.sh"
+# The Stop hook (fires when claude finishes a turn) lives beside them — it beacons /api/turn-idle so the
+# server can tear down an UNATTENDED run at turn-end (parity with the old `claude -p` exit).
+STOP_HOOK="$(dirname "$HOOK")/stop-hook.sh"
 # The Agent OS status line renderer (native claude statusLine) lives beside the hooks too.
 STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # NO OS-level Bash sandbox. Governance is the gate hook (PreToolUse), which is now the SOLE
@@ -94,6 +98,9 @@ cat > .claude/aos-settings.json <<JSON
     ],
     "Notification": [
       { "hooks": [ { "type": "command", "command": "bash '$NOTIFY_HOOK'" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "bash '$STOP_HOOK'" } ] }
     ]
   },
   "statusLine": { "type": "command", "command": "node '$STATUSLINE'", "padding": 1, "refreshInterval": 5 }
@@ -199,52 +206,27 @@ RUNTIME_ARGS=()
 # expands to nothing when MCP_ARGS/SYS_ARGS are empty instead of tripping "unbound variable".
 COMMON_ARGS=(--settings .claude/aos-settings.json "${MCP_ARGS[@]+"${MCP_ARGS[@]}"}" "${SYS_ARGS[@]+"${SYS_ARGS[@]}"}" "${RUNTIME_ARGS[@]+"${RUNTIME_ARGS[@]}"}")
 
-if [ "${HEADLESS:-}" = "1" ]; then
-  # Headless lane (automations): run the task to completion non-interactively, then EXIT. The pane
-  # dies → tmux drops the session → Agent OS marks it idle and the pile-up guard releases, so the
-  # next cron/webhook firing isn't skipped. No TUI, so the interactive-scroll issues don't apply.
+if [ "${RESIDENT:-}" = "1" ] || [ "${UNATTENDED:-}" = "1" ]; then
+  # UNATTENDED lane — the single path for every run with no human at the keyboard: automation/cron/task
+  # runs (UNATTENDED=1) AND warm chat sessions (RESIDENT=1). An INTERACTIVE, ATTACHABLE claude (NOT
+  # `claude -p`), so a person can "take over" a live run by simply attaching — no kill, no resume, no lost
+  # turn. Unattended, so --dangerously-skip-permissions (there's no one to answer a native prompt) — the
+  # SAME PreToolUse gate hook still runs and still BLOCKS risky Bash for inbox approval under the flag, so
+  # Bash stays governed; the flag only removes prompts claude can't ask.
   #
-  # --dangerously-skip-permissions: there's no human to answer permission prompts here, and in -p
-  # mode an unapproved tool would otherwise ABORT the run. The SAME PreToolUse gate hook still runs
-  # and still BLOCKS risky Bash for inbox approval even under this flag — so Bash stays governed;
-  # the flag only removes the prompts claude can't ask non-interactively.
-  LOG="${LOG_DIR:-/tmp}/session-$SESSION.log"
-  # Create the transcript 0600 before writing — it can contain connector output / secrets, so it must
-  # not be world-readable (matches the 0600 .mcp.json the server writes). umask in a subshell so the
-  # restriction applies only to this file, not to anything claude writes during the run.
-  ( umask 077; : > "$LOG" ) 2>/dev/null || true
-  dim "headless run — transcript → $LOG. This pane closes when the task completes."
-  echo
-  # Pin the run to CLAUDE_SESSION_ID (`--session-id`) so a later chat-thread follow-up can `--resume`
-  # the SAME transcript and keep context. RESUME=1 (a thread follow-up) resumes it, seeding the new
-  # message as the next turn; if the resume fails (no persisted transcript) fall back to a fresh run so
-  # the user still gets an answer (context lost, but no dead end). No id set → mint-your-own as before.
-  if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
-    dim "resuming claude session $CLAUDE_SESSION_ID (thread follow-up) …"
-    claude -p "$TASK" --resume "$CLAUDE_SESSION_ID" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG" \
-      || claude -p "$TASK" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
-  elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
-    claude -p "$TASK" --session-id "$CLAUDE_SESSION_ID" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
-  else
-    claude -p "$TASK" --dangerously-skip-permissions "${COMMON_ARGS[@]}" 2>&1 | tee -a "$LOG"
-  fi
-  notify_ended
-  exit 0
-fi
-
-if [ "${RESIDENT:-}" = "1" ]; then
-  # RESIDENT (warm chat) lane: an INTERACTIVE claude that STAYS ALIVE after it answers, so a Slack/Discord
-  # thread follow-up is delivered by typing into this very pane (tmux send-keys) — fast, no cold reload of
-  # MCP servers / transcript. Unattended (no human to answer prompts), so --dangerously-skip-permissions —
-  # the SAME PreToolUse gate hook still runs and still BLOCKS risky Bash for inbox approval under the flag.
-  # Seeded with the first message ($TASK); RESUME=1 continues a prior transcript, still seeded with the new
-  # message. The OS keeps it warm and the idle reaper kills it after the configured timeout. On an abnormal
-  # exit (crash/quit) the pane just ends → the row goes done and the next follow-up revives it fresh (no
-  # ungoverned holding shell, matching the interactive lane's security stance).
+  # Teardown is SERVER-driven, not by the process exiting: when claude finishes a turn the Stop hook beacons
+  # /api/turn-idle and the server closes an unattended run (kills this pane → tmux drops → the automations
+  # pile-up guard releases, parity with the old `-p` exit) UNLESS a human has taken it over / is watching /
+  # it's blocked on a person. A RESIDENT (chat) run instead stays warm for send-keys follow-ups until the
+  # idle reaper. Seeded with $TASK; RESUME=1 continues a prior transcript (chat thread continuity).
   export CLAUDE_CODE_NO_FLICKER=1
   export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
   RES_ARGS=(--dangerously-skip-permissions "${COMMON_ARGS[@]}")
-  dim "resident warm chat session — unattended (gate hook still governs); kept warm for fast follow-ups"
+  if [ "${RESIDENT:-}" = "1" ]; then
+    dim "resident warm chat session — unattended (gate hook still governs); kept warm for fast follow-ups"
+  else
+    dim "unattended run — attachable TUI (gate hook still governs); take it over anytime. Closes at turn-end."
+  fi
   echo
   if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
     notify_resumed
@@ -259,8 +241,8 @@ if [ "${RESIDENT:-}" = "1" ]; then
   exit 0
 fi
 
-# INTERACTIVE lane only (the headless/resident branches above already exited). Add the permission mode
-# here — NOT in COMMON_ARGS — so it never touches the headless `-p --dangerously-skip-permissions` run.
+# INTERACTIVE lane only (the unattended/resident branch above already exited). Add the permission mode
+# here — NOT in COMMON_ARGS — so it never touches the unattended `--dangerously-skip-permissions` run.
 # Defaults to `auto` if the env is unset (e.g. resuming a session launched before this knob existed).
 COMMON_ARGS+=(--permission-mode "${CLAUDE_PERMISSION_MODE:-auto}")
 dim "permission mode: ${CLAUDE_PERMISSION_MODE:-auto} (gate hook still governs every side effect)"

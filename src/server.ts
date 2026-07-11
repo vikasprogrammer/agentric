@@ -212,7 +212,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   // Idle GC (A5): reclaim idle members' uids/ttyds. No-op under the local backend, so always-on is safe.
   const reaper = setInterval(() => registry.forEach((rt) => {
     try { rt.tm.reapIdleSpaces(); } catch { /* never let the sweep crash */ }
-    try { rt.tm.reapIdleResidents(); } catch { /* warm-chat idle reaper — never let it crash the sweep */ }
+    try { rt.tm.reapIdleSessions(); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
   }), 60_000);
   reaper.unref?.();
   // Memory upkeep + self-learning: hourly check per tenant; each is a no-op unless that tenant opted in.
@@ -865,6 +865,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     tm.markEnded(session);
+    return sendJson(res, 200, { ok: true });
+  }
+  // Claude Code Stop hook (stop-hook.sh): claude finished a turn. For an UNATTENDED (automation/task)
+  // run this is the end-of-run signal — the server closes it now UNLESS a human has taken it over / is
+  // watching / it's blocked on a person (see markTurnIdle). Best-effort, session-secret gated.
+  if (method === 'POST' && p === '/api/turn-idle') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    tm.markTurnIdle(session);
     return sendJson(res, 200, { ok: true });
   }
   // Claude Code Notification hook (notify-hook.sh): the session is blocked waiting on the human
@@ -1666,14 +1677,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.stopSession(id, me.email) });
   }
-  // Take over a headless run: convert it to an attachable interactive session (relaunch `claude --resume`
-  // under the same id). Kills the in-flight `-p` turn if still streaming. Same per-member gate as stop.
+  // Take over an unattended run: CLAIM its live TUI so the caller can attach and steer — no kill, no
+  // resume, nothing interrupted (the run is already an attachable interactive session). Marks it sticky so
+  // it isn't auto-closed at turn-end. The frontend opens ttyd right after. Same per-member gate as stop.
   const interactiveMatch = p.match(/^\/api\/sessions\/([\w-]+)\/interactive$/);
   if (method === 'POST' && interactiveMatch) {
     const id = interactiveMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
-    const r = tm.goInteractive(id, me.email);
+    const r = tm.claimSession(id, me.email);
     return sendJson(res, r.ok ? 200 : 400, r);
   }
   // Human verdict on a finished run — 👍/👎 (or null to clear). The ground-truth signal for the agent
