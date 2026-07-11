@@ -1465,12 +1465,15 @@ export class TerminalManager {
 
   /**
    * Phase 3 same-session skill delivery. After a skill is installed for `agent` (an approved
-   * `skill_request`), push it into that agent's LIVE interactive (resident) sessions instead of waiting
-   * for their next launch: re-materialise the library into the agent's watched `.claude/skills` (so the
-   * new skill lands as a folder claude's file-watcher picks up), then inject `/reload-skills` to force a
-   * re-scan + re-surface skill descriptions. Best-effort and non-disruptive to correctness:
-   *  - only resident+running+alive sessions (a headless `claude -p` run has no REPL to inject into and
-   *    exits anyway — it gets the skill on its next run, which is the existing behavior);
+   * `skill_request`), push it into that agent's LIVE interactive sessions instead of waiting for their
+   * next launch: re-materialise the library into the agent's watched `.claude/skills` (so the new skill
+   * lands as a folder claude's file-watcher picks up), then inject `/reload-skills` to force a re-scan +
+   * re-surface skill descriptions. Best-effort and non-disruptive to correctness:
+   *  - only INTERACTIVE (`headless = 0`) running+alive sessions — those have a live claude REPL we can
+   *    send-keys into. This covers both a console-spawned TUI (`resident = 0`) and a chat-continuity
+   *    resident session; a headless `claude -p` run has no REPL and exits anyway, so it gets the skill on
+   *    its next run (the existing behavior). (Filtering on `resident` here was the bug dogfooding caught:
+   *    a console interactive session is `headless = 0, resident = 0`, so it was skipped.)
    *  - the `/reload-skills` inject is gated on `claude` ≥ 2.1.152 — on an older binary we still
    *    re-materialise (the watcher exposes the skill as `/name` next turn), we just skip the forced rescan.
    * Returns how many live sessions were refreshed.
@@ -1479,7 +1482,7 @@ export class TerminalManager {
     const manifest = this.os.agents.get(agent);
     if (!manifest || manifest.runtime !== 'claude-code' || !manifest.dir) return { reloaded: 0 };
     const rows = this.db
-      .prepare(`SELECT id, tmux, run_as, spawned_by FROM term_sessions WHERE agent = ? AND status = 'running' AND resident = 1`)
+      .prepare(`SELECT id, tmux, run_as, spawned_by FROM term_sessions WHERE agent = ? AND status = 'running' AND headless = 0`)
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null }>(agent)
       .filter((r) => this.isAlive(r.id));
     if (!rows.length) return { reloaded: 0 };
