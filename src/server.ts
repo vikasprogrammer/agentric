@@ -747,6 +747,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = tm.proposeSkill(session, agent, { name, description, body, rationale: b.rationale ? String(b.rationale) : undefined });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
+  // agent discovers what's installable (`skill_find`) — its own library (with an `active` flag) + the
+  // bundled catalog. Read-only; the counterpart to `skill_request`. Pre-auth loopback, session-secret gated.
+  if (method === 'GET' && p === '/api/skills/discover') {
+    const session = String(url.searchParams.get('session') || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    return sendJson(res, 200, tm.requestableSkills(agent));
+  }
+  // agent ASKS a human to install an existing catalog skill (`skill_request`) — it never installs
+  // itself. Posts an owner/admin 'skill.request' card; the install happens only when a human approves
+  // (POST /api/skills/requests/:id/approve). Pre-auth loopback, session-secret gated.
+  if (method === 'POST' && p === '/api/skills/request') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const name = String(b.name || '').trim();
+    if (!name) return sendJson(res, 400, { error: 'name is required' });
+    const out = tm.requestSkill(session, agent, { name, source: b.source ? String(b.source) : undefined, rationale: b.rationale ? String(b.rationale) : undefined });
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
   // native Slack egress: the agent posts its reply back to the thread that triggered the session.
   // Channel/thread come from the server-side binding (slack_threads) — the agent only sends text.
   if (method === 'POST' && p === '/api/agent/slack/reply') {
@@ -2732,6 +2755,43 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ok) return sendJson(res, 404, { error: 'no such proposed skill' });
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name } });
     return sendJson(res, 200, { ok: true, skill: os.skills.get(name) });
+  }
+  // List open agent skill-requests for the Skills page review section (owner/admin).
+  if (method === 'GET' && p === '/api/skills/requests') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { requests: tm.openSkillRequests() });
+  }
+  // Approve an agent's skill.request card (owner/admin): install the requested catalog skill into the
+  // library, optionally scope it to just the requesting agent, and mark the card resolved. The install
+  // is the human's act — the agent only ever asked. Audited `skill.installed` (source agent-request).
+  const skillReqApprove = p.match(/^\/api\/skills\/requests\/([\w.-]+)\/approve$/);
+  if (method === 'POST' && skillReqApprove) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.skills.enabled) return sendJson(res, 400, { error: 'installing skills requires a data home' });
+    const card = tm.skillRequestCard(skillReqApprove[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such skill request' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this request was already resolved' });
+    const b = await readBody(req);
+    try {
+      const s = os.skills.get(card.skill) ?? os.skills.install(card.skill); // idempotent if already installed
+      if (b.scope === 'agent') os.skills.setAssignment(s.name, [card.agent]); // else stays all-agents
+      tm.setSkillRequestStatus(skillReqApprove[1], 'approved');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.installed', data: { skill: s.name, source: 'agent-request', requestedBy: card.agent, scope: b.scope === 'agent' ? 'agent' : 'all' } });
+      return sendJson(res, 200, { ok: true, skill: s });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // Dismiss an agent's skill.request card (owner/admin) without installing — marks it resolved.
+  const skillReqReject = p.match(/^\/api\/skills\/requests\/([\w.-]+)\/dismiss$/);
+  if (method === 'POST' && skillReqReject) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const card = tm.skillRequestCard(skillReqReject[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such skill request' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this request was already resolved' });
+    tm.setSkillRequestStatus(skillReqReject[1], 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.request.dismissed', data: { skill: card.skill, requestedBy: card.agent } });
+    return sendJson(res, 200, { ok: true });
   }
   // Duplicate an installed skill under a new name — a deep copy (markers stripped, assignments reset
   // to all-agents). Owner/admin only. MUST precede the generic /api/skills/:name route (the trailing

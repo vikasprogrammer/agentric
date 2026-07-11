@@ -365,7 +365,7 @@ export interface AddGoalReq {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request'
   sessionId: string
   agent: string
   title: string
@@ -657,6 +657,10 @@ export interface RemoteCatalogResp {
 /** A skills.sh directory hit — a skill in some repo, with its install count and source owner/repo. */
 export interface SkillshHit { skillId: string; name: string; installs: number; source: string; installed?: boolean }
 export interface SkillshResp { query: string; hits: SkillshHit[]; error?: string }
+
+/** An agent's pending request to have a catalog skill installed (via `skill_request`). */
+export interface SkillRequest { id: string; skill: string; source: string; agent: string; rationale?: string; createdAt: number }
+export interface SkillRequestsResp { requests: SkillRequest[]; error?: string }
 
 export interface CompanySettings {
   companyMd: string
@@ -998,6 +1002,11 @@ export const api = {
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/' + encodeURIComponent(name) + '/publish'),
   setSkillAgents: (name: string, agents: string[]) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('PUT', '/api/skills/' + encodeURIComponent(name) + '/agents', { agents }),
+  skillRequests: () => call<SkillRequestsResp>('GET', '/api/skills/requests'),
+  approveSkillRequest: (id: string, scope?: 'agent' | 'all') =>
+    call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/requests/' + encodeURIComponent(id) + '/approve', scope ? { scope } : {}),
+  dismissSkillRequest: (id: string) =>
+    call<{ ok: boolean; error?: string }>('POST', '/api/skills/requests/' + encodeURIComponent(id) + '/dismiss'),
   skillCatalog: () => call<CatalogResp>('GET', '/api/skills/catalog'),
   installSkill: (name: string) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/catalog/' + encodeURIComponent(name) + '/install'),
