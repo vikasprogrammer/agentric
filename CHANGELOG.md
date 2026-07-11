@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.114.0] — 2026-07-11
+### Added
+- **Goals — the strategy agent ("goal steward"): the outbound edge (goal → work).** Goals could be linked
+  to and measured (Slices 1–2), but nothing turned a goal *into* work — you had to hand-file and hand-link
+  every task. Now a goal can plan itself. See `docs/goals-plan.md`.
+  - **"Plan this goal"** on the Goal page (owner/admin) spawns a governed, headless **`strategist`** agent
+    (`src/edge/strategist.ts`, provisioned on first use like the consolidation gardener; `POST
+    /api/goals/:id/plan`, audited `goal.planned`). It reads the goal + its current progress + already-linked
+    tasks, works out the GAP to the target, and **files** the tasks needed to close it — linked to the goal,
+    assigned to the right specialists (`list_agents`). **File-only**: it produces a reviewable plan that
+    lands in the goal's linked-tasks section; a human dispatches. It proposes sub-goals (`goal_propose`) but
+    never activates them, and is idempotent on re-run (fills gaps, doesn't duplicate).
+  - **`goalId` inheritance** — a sub-task (`task_create({ parentId })`) now inherits its parent's goal when
+    it doesn't name one, so an umbrella + its sub-tasks all roll up to the same goal automatically.
+  - **Leaf-progress** — `GoalStore.progress()` now counts only *leaf* linked tasks (a task with sub-tasks is
+    a grouping), so an umbrella no longer inflates or lags the progress bar.
+  - Deliberately **decoupled from Dreaming**: today's self-learning pass is a deterministic tally aggregator
+    with no goal awareness, so it can't act as a "this goal is stalled → plan it" sensor. The strategist is
+    human-triggered and stands alone; a deterministic goal-stall auto-trigger is a separate later phase.
+
 ## [0.113.1] — 2026-07-11
 ### Fixed
 - **Stopping the open session no longer strands you on a dead terminal.** When you stop the session
