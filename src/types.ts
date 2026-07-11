@@ -666,6 +666,74 @@ export interface TaskQuery {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Goals — the strategic layer work ladders up to (Goal → Task → Session). Human-owned,
+// tenant-wide, persistent; agents read + propose, humans decide. See docs/goals-plan.md.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type GoalStatus = 'draft' | 'active' | 'achieved' | 'abandoned';
+
+export interface Goal {
+  id: string;
+  tenant: string;
+  title: string;
+  body: string; // markdown "what / why" narrative
+  status: GoalStatus;
+  target?: string; // free-text target caption (v1); numeric/derived metrics come later
+  owner?: string; // member id accountable for the goal
+  parentId?: string; // hierarchy: strategy → objective → key result
+  labels: string[];
+  dueAt?: number; // optional soft horizon (epoch ms)
+  createdBy: string; // member id | 'agent:<id>'
+  createdAt: number;
+  updatedAt: number;
+  updatedBy: string;
+}
+
+export interface GoalEvent {
+  id: string;
+  goalId: string;
+  kind: 'status' | 'comment' | 'edit' | 'link';
+  body?: string;
+  author: string; // member id | 'agent:<id>' | 'system'
+  createdAt: number;
+}
+
+export interface GoalCreateInput {
+  tenant: string;
+  title: string;
+  body?: string;
+  status?: GoalStatus; // default 'active' (console) — the agent propose path passes 'draft'
+  target?: string;
+  owner?: string;
+  parentId?: string;
+  labels?: string[];
+  dueAt?: number;
+  createdBy: string; // member id | 'agent:<id>'
+}
+
+export interface GoalUpdateInput {
+  title?: string;
+  body?: string;
+  status?: GoalStatus;
+  target?: string | null; // null clears the target caption
+  owner?: string | null; // null clears the owner
+  parentId?: string | null; // null detaches from a parent
+  labels?: string[];
+  dueAt?: number | null; // null clears the horizon
+  note?: string; // free-text comment → appended as a goal_event
+  by: string; // author (member id | 'agent:<id>')
+}
+
+export interface GoalQuery {
+  tenant: string;
+  status?: GoalStatus;
+  ownerId?: string;
+  parentId?: string;
+  query?: string; // FTS over title/body/labels
+  limit?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Agent + runtime
 // ─────────────────────────────────────────────────────────────────────────────
 

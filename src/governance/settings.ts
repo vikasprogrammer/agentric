@@ -22,6 +22,7 @@ const MEMORY_KEY = 'memory_config'; // the live memory backend (JSON MemoryConfi
 const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active external backend became active — the stable orphan horizon for migration
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
+const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state (cumulative totals/topics/recent)
 const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives injected into every agent's prompt
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
@@ -320,6 +321,14 @@ export class SettingsStore {
   }
   setApplyLearnings(on: boolean, by?: string): void {
     this.set(LEARNED_APPLY_KEY, on ? 'on' : 'off', by);
+  }
+
+  /** Whether the active goals ride in every agent's prompt (the "direction" channel). Default true. */
+  injectGoals(): boolean {
+    return this.getRow(GOALS_INJECT_KEY)?.value !== 'off';
+  }
+  setInjectGoals(on: boolean, by?: string): void {
+    this.set(GOALS_INJECT_KEY, on ? 'on' : 'off', by);
   }
 
   /** Open config recommendations + dismissed ids. The dreamer regenerates `open` each pass (minus the

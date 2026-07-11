@@ -29,7 +29,7 @@ import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAll
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus } from './types';
+import { AgentManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus, GoalStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
@@ -1070,6 +1070,56 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, r.ok ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
   }
 
+  // ── Goals (agent loopback) ───────────────────────────────────────────────────
+  // Agents READ the strategic layer (goal_list/goal_get) and PROPOSE drafts (goal_propose). They cannot
+  // activate or edit a goal — that stays a human owner/admin action on the console. See docs/goals-plan.md.
+  if (method === 'GET' && p === '/api/goals/list') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const goals = os.goals.list({
+      tenant: os.tenant,
+      status: (url.searchParams.get('status') as GoalStatus) || undefined,
+      query: url.searchParams.get('q') || undefined,
+      limit: Number(url.searchParams.get('limit')) || undefined,
+    });
+    return sendJson(res, 200, { goals });
+  }
+  if (method === 'GET' && p === '/api/goals/get') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const found = os.goals.withEvents(url.searchParams.get('id') || '');
+    if (!found) return sendJson(res, 404, { error: 'goal not found' });
+    return sendJson(res, 200, found);
+  }
+  // agent proposes a new goal — drafts a NOT-YET-ACTIVE goal (status 'draft') + posts a 'goal.proposed'
+  // inbox card for an owner/admin to review and activate. Auto-apply + audited, like skill_propose.
+  if (method === 'POST' && p === '/api/goals/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const title = String(b.title || '').trim();
+    if (!title) return sendJson(res, 400, { error: 'title is required' });
+    try {
+      const goal = os.goals.create({
+        tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
+        status: 'draft',
+        target: typeof b.target === 'string' && b.target ? b.target : undefined,
+        owner: tm.sessionRunAs(session),
+        labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
+        createdBy: `agent:${agent}`,
+      });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'goal.proposed', data: { id: goal.id, title: goal.title } });
+      tm.postGoalCard({ goalId: goal.id, agent, title: `Goal proposed — ${goal.title}`, body: goal.body || '(no description)', audience: { kind: 'admins' } });
+      return sendJson(res, 200, { ok: true, id: goal.id });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   // ── Agents (agent loopback) ──────────────────────────────────────────────────
   // The agent-author (and any agent, as the delegation surface) creates/refines agents AS ITSELF. Like
   // the tasks/kb tools this is auto-apply + audited (creating a definition escalates nothing — every
@@ -1905,6 +1955,76 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const ok = os.tasks.remove(taskId[1]);
     if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'task.deleted', data: { id: taskId[1] } });
+    return sendJson(res, ok ? 200 : 404, { ok });
+  }
+
+  // ── Goals (console) ──────────────────────────────────────────────────────────
+  // The strategic layer humans own. Reads are any-member; mutations are owner/admin (strategy is a
+  // steering-wheel concern). Auto-apply + audited; the append-only goal_events log is the safety net.
+  const goalId = p.match(/^\/api\/goals\/([\w-]+)$/);
+  const goalComment = p.match(/^\/api\/goals\/([\w-]+)\/comment$/);
+  if (method === 'GET' && p === '/api/goals') {
+    const goals = os.goals.list({ tenant: os.tenant, status: (url.searchParams.get('status') as GoalStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
+    return sendJson(res, 200, { goals, counts: os.goals.counts(os.tenant) });
+  }
+  if (goalComment && method === 'POST') {
+    const b = await readBody(req);
+    const note = String(b.body || '').trim();
+    if (!note) return sendJson(res, 400, { error: 'a comment body is required' });
+    const goal = os.goals.update(goalComment[1], { note, by: me.id });
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    return sendJson(res, 200, { ok: true, goal });
+  }
+  if (goalId && method === 'GET') {
+    const found = os.goals.withEvents(goalId[1]);
+    if (!found) return sendJson(res, 404, { error: 'goal not found' });
+    return sendJson(res, 200, found);
+  }
+  if (method === 'POST' && p === '/api/goals') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const title = String(b.title || '').trim();
+    if (!title) return sendJson(res, 400, { error: 'title is required' });
+    try {
+      const goal = os.goals.create({
+        tenant: os.tenant, title, body: b.body !== undefined ? String(b.body) : '',
+        status: typeof b.status === 'string' ? (b.status as GoalStatus) : 'active',
+        target: typeof b.target === 'string' && b.target ? b.target : undefined,
+        owner: typeof b.owner === 'string' && b.owner ? b.owner : undefined,
+        parentId: typeof b.parentId === 'string' && b.parentId ? b.parentId : undefined,
+        labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
+        dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
+        createdBy: me.id,
+      });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.created', data: { id: goal.id, title: goal.title, status: goal.status } });
+      return sendJson(res, 200, { ok: true, goal });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  if (goalId && method === 'PATCH') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const goal = os.goals.update(goalId[1], {
+      title: typeof b.title === 'string' ? b.title : undefined,
+      body: typeof b.body === 'string' ? b.body : undefined,
+      status: typeof b.status === 'string' ? (b.status as GoalStatus) : undefined,
+      target: b.target === null ? null : (typeof b.target === 'string' ? b.target : undefined),
+      owner: b.owner === null ? null : (typeof b.owner === 'string' ? b.owner : undefined),
+      parentId: b.parentId === null ? null : (typeof b.parentId === 'string' ? b.parentId : undefined),
+      labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
+      dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
+      note: typeof b.note === 'string' ? b.note : undefined,
+      by: me.id,
+    });
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.updated', data: { id: goal.id, status: goal.status } });
+    return sendJson(res, 200, { ok: true, goal });
+  }
+  if (goalId && method === 'DELETE') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const ok = os.goals.remove(goalId[1]);
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.deleted', data: { id: goalId[1] } });
     return sendJson(res, ok ? 200 : 404, { ok });
   }
 

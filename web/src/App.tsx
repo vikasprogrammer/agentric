@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
 import { type Branding, type PublicBranding } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -21,9 +21,9 @@ import { Xterm } from './Xterm'
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs'
+type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'tasks', 'memory', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs']
+const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs']
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -914,6 +914,7 @@ function Console({ me }: { me: Member }) {
           <nav className="mt-2 flex flex-col items-center gap-1">
             <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('goals')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'goals' ? 'text-primary' : 'text-muted-foreground'}`} title="Goals" onClick={onNavClick(() => nav('goals'))}><Target className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('tasks')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'tasks' ? 'text-primary' : 'text-muted-foreground'}`} title="Tasks" onClick={onNavClick(() => nav('tasks'))}><ListChecks className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('artifacts')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Artifacts" onClick={onNavClick(() => nav('artifacts'))}><Package className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('sessions')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={onNavClick(() => nav('sessions'))}><TerminalSquare className="h-4 w-4" /></Button>
@@ -938,6 +939,7 @@ function Console({ me }: { me: Member }) {
           <nav className="space-y-1">
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
+            <NavItem icon={<Target className="h-4 w-4" />} label="Goals" active={route === 'goals'} href={navHref('goals')} onClick={() => nav('goals')} />
             <NavItem icon={<ListChecks className="h-4 w-4" />} label="Tasks" active={route === 'tasks'} href={navHref('tasks')} onClick={() => nav('tasks')} />
             <NavItem icon={<Package className="h-4 w-4" />} label="Artifacts" active={route === 'artifacts'} href={navHref('artifacts')} onClick={() => nav('artifacts')} />
           </nav>
@@ -1050,7 +1052,7 @@ function Console({ me }: { me: Member }) {
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
               </h1>
             </div>
           )}
@@ -1060,10 +1062,11 @@ function Console({ me }: { me: Member }) {
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
-          {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} />}
+          {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
+          {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} permalink={detail} nav={nav} />}
@@ -2273,7 +2276,7 @@ function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
   )
 }
 
-function InboxPage({ messages: propMessages, me, members, onOpen, onOpenArtifact, onOpenTask }: { messages: Msg[]; me: Member; members: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void; onOpenTask: (id: string) => void }) {
+function InboxPage({ messages: propMessages, me, members, onOpen, onOpenArtifact, onOpenTask, onOpenGoal }: { messages: Msg[]; me: Member; members: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact: (id: string) => void; onOpenTask: (id: string) => void; onOpenGoal: (id: string) => void }) {
   // Read state is now PER-MEMBER + server-backed (m.read): it syncs across this member's devices/tabs
   // and one admin marking read no longer touches another's badge. `readIds` optimistically bridges the
   // gap until the next poll reflects the server truth.
@@ -2381,7 +2384,7 @@ function InboxPage({ messages: propMessages, me, members, onOpen, onOpenArtifact
           <div className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">No activity yet.</div>
         ) : (
           <div className="divide-y divide-border/60 overflow-hidden rounded-lg border">
-            {activity.map((m) => <FeedItem key={m.id} m={m} members={members} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onOpenTask={onOpenTask} onDismiss={dismiss} unread={isUnread(m)} />)}
+            {activity.map((m) => <FeedItem key={m.id} m={m} members={members} onOpen={onOpen} onOpenArtifact={onOpenArtifact} onOpenTask={onOpenTask} onOpenGoal={onOpenGoal} onDismiss={dismiss} unread={isUnread(m)} />)}
           </div>
         )}
       </section>
@@ -2497,16 +2500,18 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
 /** One read-only Activity-feed row — completion · artifact · progress update · resolved approval ·
  *  answered question · (legacy) start. Compact, the whole row opens the session (artifacts open the
  *  gallery); the timestamp swaps to a dismiss button on hover. */
-function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismiss, unread }: { m: Msg; members?: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onOpenTask?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
+function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenGoal, onDismiss, unread }: { m: Msg; members?: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onOpenTask?: (id: string) => void; onOpenGoal?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
-  const meta = (m.args ?? {}) as { artifactId?: string; filename?: string; taskId?: string; event?: string }
+  const meta = (m.args ?? {}) as { artifactId?: string; filename?: string; taskId?: string; goalId?: string; event?: string }
   const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
   // A 'task' card has no session — it deep-links to the board (its taskId), not a terminal.
   const goTask = m.type === 'task' && meta.taskId && onOpenTask ? () => onOpenTask(meta.taskId!) : null
-  const rowAction = goArtifact ?? goTask ?? open
-  // The new-tab target mirrors the click action — all three deep-link fully (artifact by id, task by
-  // id, else the session terminal).
-  const rowHref = goArtifact ? navHref('artifacts', meta.artifactId!) : goTask ? navHref('tasks', meta.taskId!) : navHref('sessions', 'aos-' + m.sessionId)
+  // A 'goal.proposed' card deep-links to the Goals page for that goal (no session).
+  const goGoal = m.type === 'goal.proposed' && meta.goalId && onOpenGoal ? () => onOpenGoal(meta.goalId!) : null
+  const rowAction = goArtifact ?? goTask ?? goGoal ?? open
+  // The new-tab target mirrors the click action — each deep-links fully (artifact by id, task by
+  // id, goal by id, else the session terminal).
+  const rowHref = goArtifact ? navHref('artifacts', meta.artifactId!) : goTask ? navHref('tasks', meta.taskId!) : goGoal ? navHref('goals', meta.goalId!) : navHref('sessions', 'aos-' + m.sessionId)
 
   let Icon = Clock
   let iconCls = 'text-muted-foreground'
@@ -2549,6 +2554,10 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismi
     Icon = Sparkles; iconCls = 'text-violet-600'; highlight = true
     verb = 'proposed a skill'; detail = m.body
     badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
+  } else if (m.type === 'goal.proposed') {
+    Icon = Target; iconCls = 'text-indigo-600'; highlight = true
+    verb = 'proposed a goal'; detail = m.body
+    badge = <Badge variant="outline" className="border-indigo-300 px-1.5 py-0 text-[10px] font-normal text-indigo-700">Goal proposed</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
@@ -3654,6 +3663,293 @@ function TeamPage({ me, onProfileChange }: { me: Member; onProfileChange: () => 
             })}
           </div>
         </section>
+      )}
+    </div>
+  )
+}
+
+// ── Goals ──────────────────────────────────────────────────────────────────────
+const GOAL_STATUSES: { status: GoalStatus; label: string }[] = [
+  { status: 'draft', label: 'Draft' },
+  { status: 'active', label: 'Active' },
+  { status: 'achieved', label: 'Achieved' },
+  { status: 'abandoned', label: 'Abandoned' },
+]
+// Per-status accent for the badge/dot — draft muted, active sky, achieved emerald, abandoned red.
+const goalStatusTone = (s: GoalStatus): string => ({
+  draft: 'text-muted-foreground',
+  active: 'text-sky-600',
+  achieved: 'text-emerald-600',
+  abandoned: 'text-red-600',
+}[s])
+const goalStatusBorder = (s: GoalStatus): string => ({
+  draft: 'border-l-transparent',
+  active: 'border-l-sky-500',
+  achieved: 'border-l-emerald-500',
+  abandoned: 'border-l-red-500',
+}[s])
+
+function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void }) {
+  const [members, setMembers] = useState<Member[]>([])
+  useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
+  const [goals, setGoals] = useState<Goal[] | null>(null)
+  const [counts, setCounts] = useState<GoalCounts>({ draft: 0, active: 0, achieved: 0, abandoned: 0 })
+  const [q, setQ] = useState('')
+  const [fStatus, setFStatus] = useState<GoalStatus | ''>('') // '' = all
+  // Selection is URL-driven (#/goals/<id>) so a goal detail is a shareable permalink.
+  const selId = goalId || null
+  const openGoal = (id: string) => nav('goals', id)
+  const closeGoal = () => { setEditing(false); nav('goals') }
+  const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[] } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  // create form
+  const [showNew, setShowNew] = useState(false)
+  const [title, setTitle] = useState('')
+  const [body, setBody] = useState('')
+  const [target, setTarget] = useState('')
+  const [owner, setOwner] = useState('') // '' = unassigned, else member id
+  const [due, setDue] = useState('')
+  // drawer inline edit
+  const [editing, setEditing] = useState(false)
+  const [eTitle, setETitle] = useState('')
+  const [eBody, setEBody] = useState('')
+  const [confirmDel, setConfirmDel] = useState(false)
+
+  const isAdmin = me.role === 'owner' || me.role === 'admin'
+  const nameOf = (id?: string) => principalLabel(id, members)
+  const ownerChip = (id?: string) => {
+    const mem = id ? members.find((m) => m.id === id) : undefined
+    return <span className="inline-flex items-center gap-1">{mem ? <MemberAvatar member={mem} className="h-3.5 w-3.5 text-[8px]" /> : <User className="h-3.5 w-3.5" />}{nameOf(id)}</span>
+  }
+
+  const load = async () => {
+    const r = await api.goals(q, fStatus)
+    setGoals(r.goals ?? [])
+    if (r.counts) setCounts(r.counts)
+  }
+  useEffect(() => { load() }, [q, fStatus])
+  // Live refresh so an agent moving a goal reflects without a manual reload. Pause while a
+  // form/inline-edit is open so it can't clobber unsaved text.
+  useEffect(() => {
+    const paused = () => showNew || editing
+    const t = setInterval(() => { if (!paused()) load() }, 5000)
+    return () => clearInterval(t)
+  }, [q, fStatus, showNew, editing])
+  useEffect(() => {
+    if (!selId) { setDetail(null); return }
+    if (editing) return // don't overwrite an in-progress edit on a background refresh
+    api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [] }) })
+  }, [selId, goals, editing])
+  useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
+
+  const visible = goals ?? []
+
+  const create = async () => {
+    setHint('')
+    const req: AddGoalReq = { title, body: body || undefined, target: target || undefined, owner: owner || undefined, dueAt: fromDateInput(due) ?? undefined }
+    const r = await api.addGoal(req)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setTitle(''); setBody(''); setTarget(''); setOwner(''); setDue(''); setShowNew(false)
+    load()
+  }
+  const patch = async (id: string, b: Parameters<typeof api.patchGoal>[1]) => { setBusy(true); await api.patchGoal(id, b); await load(); await refreshDetail(id); setBusy(false) }
+  const remove = async (id: string) => { setBusy(true); await api.deleteGoal(id); closeGoal(); setConfirmDel(false); await load(); setBusy(false) }
+  const startEdit = () => { if (!detail) return; setETitle(detail.goal.title); setEBody(detail.goal.body); setEditing(true) }
+  const saveEdit = async () => {
+    if (!detail) return
+    setBusy(true)
+    await api.patchGoal(detail.goal.id, { title: eTitle, body: eBody })
+    setEditing(false); setBusy(false)
+    await load()
+    await refreshDetail(detail.goal.id)
+  }
+  const refreshDetail = async (id: string) => { const r = await api.goal(id); if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [] }) }
+
+  if (!goals) return <div className="text-sm text-muted-foreground">Loading…</div>
+
+  const row = (g: Goal) => {
+    const dm = dueMeta(g.dueAt, g.status === 'achieved' || g.status === 'abandoned' ? 'done' : 'todo')
+    return (
+      <tr key={g.id} onClick={() => openGoal(g.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${goalStatusBorder(g.status)} ${selId === g.id ? 'bg-muted' : ''}`}>
+        <td className="px-3 py-2"><a href={navHref('goals', g.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openGoal(g.id))(e) }} className={`text-foreground no-underline hover:underline ${g.status === 'abandoned' ? 'line-through opacity-60' : ''}`}>{g.title}</a> {g.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
+        <td className={`px-3 py-2 text-xs capitalize ${goalStatusTone(g.status)}`}>{g.status}</td>
+        <td className="px-3 py-2 text-xs text-muted-foreground">{g.target || '—'}</td>
+        <td className="px-3 py-2 text-muted-foreground">{g.owner ? ownerChip(g.owner) : '—'}</td>
+        <td className="px-3 py-2 text-xs">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</td>
+        <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(g.updatedAt).toLocaleDateString()}</td>
+      </tr>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="mr-auto max-w-xl text-sm text-muted-foreground">
+          The top of the strategy→task ladder. Frame the outcomes the fleet is working toward; agents propose
+          goals for you to review, and each one grounds the tasks beneath it.
+        </p>
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search goals…" className="h-8 w-48 pl-7" />
+        </div>
+        {isAdmin && <Button size="sm" onClick={() => setShowNew((v) => !v)}><Plus className="mr-1 h-3.5 w-3.5" />New goal</Button>}
+      </div>
+
+      {/* Status filter — per-status pills with counts. */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <div className="inline-flex overflow-hidden rounded-md border">
+          <button onClick={() => setFStatus('')} className={`px-2.5 py-1 ${fStatus === '' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>All</button>
+          {GOAL_STATUSES.map((s) => (
+            <button key={s.status} onClick={() => setFStatus(s.status)} className={`border-l px-2.5 py-1 ${fStatus === s.status ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>
+              {s.label} <span className="opacity-70">{counts[s.status]}</span>
+            </button>
+          ))}
+        </div>
+        <span className="ml-auto text-muted-foreground">{visible.length} shown</span>
+      </div>
+
+      {showNew && isAdmin && (
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <Field label="Title"><Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Cut onboarding time in half" /></Field>
+            <Field label="Details"><Textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Why this matters, the strategy, what success looks like." /></Field>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <Field label="Target"><Input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="e.g. < 10 min by Q3" /></Field>
+              <Field label="Owner">
+                <Select value={owner || 'none'} onValueChange={(v) => setOwner(!v || v === 'none' ? '' : v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Unassigned</SelectItem>
+                    {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Due date"><Input type="date" value={due} onChange={(e) => setDue(e.target.value)} className="h-9" /></Field>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" disabled={!title.trim()} onClick={create}>Create goal</Button>
+              {hint && <span className="font-mono text-xs text-destructive">{hint}</span>}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full text-sm">
+          <thead className="border-b bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
+            <tr>
+              <th className="px-3 py-2 text-left font-medium">Goal</th>
+              <th className="px-3 py-2 text-left font-medium">Status</th>
+              <th className="px-3 py-2 text-left font-medium">Target</th>
+              <th className="px-3 py-2 text-left font-medium">Owner</th>
+              <th className="px-3 py-2 text-left font-medium">Due</th>
+              <th className="px-3 py-2 text-left font-medium">Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map(row)}
+            {visible.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-muted-foreground">No goals match.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {detail && (
+        <Dialog open onOpenChange={(o) => { if (!o) closeGoal() }}>
+          <DialogContent className="max-h-[88vh] w-full max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl lg:max-w-3xl">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 pr-8">
+                {editing ? 'Edit goal' : (
+                  <>
+                    <span className="min-w-0 flex-1 truncate">{detail.goal.title}</span>
+                    {isAdmin && <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>}
+                  </>
+                )}
+              </DialogTitle>
+            </DialogHeader>
+
+            {editing ? (
+              <div className="space-y-3">
+                <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
+                <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={10} className="font-mono text-xs" /></Field>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3.5">
+                <div className="font-mono text-xs text-muted-foreground">{detail.goal.id}{detail.goal.createdBy ? ` · by ${nameOf(detail.goal.createdBy)}` : ''}</div>
+                {detail.goal.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.goal.body}</ReactMarkdown></div>}
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <Field label="Status">
+                    {isAdmin ? (
+                      <Select value={detail.goal.status} onValueChange={(v) => v && patch(detail.goal.id, { status: v as GoalStatus })}>
+                        <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                        <SelectContent>{GOAL_STATUSES.map((s) => <SelectItem key={s.status} value={s.status}>{s.label}</SelectItem>)}</SelectContent>
+                      </Select>
+                    ) : <div className={`h-8 text-sm capitalize ${goalStatusTone(detail.goal.status)}`}>{detail.goal.status}</div>}
+                  </Field>
+                  <Field label="Owner">
+                    {isAdmin ? (
+                      <Select value={detail.goal.owner || 'none'} onValueChange={(v) => patch(detail.goal.id, { owner: !v || v === 'none' ? null : v })}>
+                        <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">Unassigned</SelectItem>
+                          {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    ) : <div className="h-8 text-sm text-muted-foreground">{detail.goal.owner ? ownerChip(detail.goal.owner) : '—'}</div>}
+                  </Field>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <Field label="Target">
+                    {isAdmin
+                      ? <Input value={detail.goal.target ?? ''} placeholder="e.g. < 10 min by Q3" className="h-8" onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.goal.target ?? '')) patch(detail.goal.id, { target: v || null }) }} onChange={(e) => setDetail((d) => d ? { ...d, goal: { ...d.goal, target: e.target.value } } : d)} />
+                      : <div className="h-8 text-sm text-muted-foreground">{detail.goal.target || '—'}</div>}
+                  </Field>
+                  <Field label="Due date">
+                    {isAdmin
+                      ? <Input type="date" value={toDateInput(detail.goal.dueAt)} onChange={(e) => patch(detail.goal.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
+                      : <div className="h-8 text-sm text-muted-foreground">{detail.goal.dueAt ? new Date(detail.goal.dueAt).toLocaleDateString() : '—'}</div>}
+                  </Field>
+                </div>
+                {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
+
+                <CommentBox onSubmit={async (text) => { await api.commentGoal(detail.goal.id, text); await refreshDetail(detail.goal.id) }} />
+
+                <div>
+                  <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity</div>
+                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                    {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
+                    {detail.events.slice().reverse().map((e) => (
+                      <div key={e.id} className="rounded-md border bg-muted/20 p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
+                          <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+                        </div>
+                        {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
+                        <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {isAdmin && (
+                  confirmDel
+                    ? <div className="flex items-center gap-2">
+                        <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.goal.id)}>Confirm delete</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
+                      </div>
+                    : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
+                        <Trash2 className="mr-1 h-3.5 w-3.5" />Delete goal
+                      </Button>
+                )}
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )

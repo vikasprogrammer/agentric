@@ -326,9 +326,46 @@ export interface AddTaskReq {
   dueAt?: number
 }
 
+export type GoalStatus = 'draft' | 'active' | 'achieved' | 'abandoned'
+export interface Goal {
+  id: string
+  tenant: string
+  title: string
+  body: string
+  status: GoalStatus
+  target?: string
+  owner?: string
+  parentId?: string
+  labels: string[]
+  dueAt?: number
+  createdBy: string
+  createdAt: number
+  updatedAt: number
+  updatedBy: string
+}
+export interface GoalEvent {
+  id: string
+  goalId: string
+  kind: 'status' | 'comment' | 'edit' | 'link'
+  body?: string
+  author: string
+  createdAt: number
+}
+export type GoalCounts = Record<GoalStatus, number>
+export interface AddGoalReq {
+  title: string
+  body?: string
+  status?: GoalStatus
+  target?: string
+  owner?: string
+  parentId?: string
+  labels?: string[]
+  dueAt?: number
+}
+
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed'
   sessionId: string
   agent: string
   title: string
@@ -887,6 +924,13 @@ export const api = {
   deleteTaskAttachment: (taskId: string, attId: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${taskId}/attachments/${attId}`),
   /** Direct URL to an attachment's bytes (inline; for download/preview links). */
   taskAttachmentUrl: (taskId: string, attId: string) => `/api/tasks/${taskId}/attachments/${attId}/raw`,
+
+  goals: (q = '', status = '') => call<{ goals: Goal[]; counts: GoalCounts }>('GET', `/api/goals?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  goal: (id: string) => call<{ goal?: Goal; events?: GoalEvent[]; error?: string }>('GET', `/api/goals/${id}`),
+  addGoal: (b: AddGoalReq) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', '/api/goals', b),
+  patchGoal: (id: string, b: { title?: string; body?: string; status?: GoalStatus; target?: string | null; owner?: string | null; parentId?: string | null; labels?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; goal?: Goal; error?: string }>('PATCH', `/api/goals/${id}`, b),
+  commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
+  deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),

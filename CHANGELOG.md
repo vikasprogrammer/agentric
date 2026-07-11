@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.107.0] — 2026-07-11
+### Added
+- **Goals — the strategic layer work ladders up to (Slice 1).** The fleet's ladder started at Task —
+  there was no "why" above it. Goals add a human-owned, tenant-wide, persistent object the whole fleet
+  orients to (Goal → Task → Session). Deliberately *not* another prose blob: a structured object agents
+  read + propose and humans own. See `docs/goals-plan.md`.
+  - New **Goals plane**: `GoalStore` (`src/state/goals.ts`) + `goals`/`goal_events`/`goals_fts` tables,
+    mirroring the Tasks shape — db-only structured state, an append-only event log as the audit/rollback
+    backbone (auto-apply + audited, no gate), FTS search, status machine `draft → active → achieved |
+    abandoned`, and `parent_id` hierarchy (strategy → objective → key result). Wired as `os.goals`.
+  - **Console routes** (`/api/goals*`): list + per-status counts, detail + timeline, create/edit/delete
+    (owner/admin — strategy is a steering-wheel concern), and per-member comments.
+  - **Agent MCP tools**: `goal_list` / `goal_get` (always-on, read-only) so any agent can orient to the
+    current strategy, and `goal_propose` — an agent drafts a NOT-YET-ACTIVE goal + a `goal.proposed`
+    inbox card for an owner/admin to activate (gated like `skill_propose`; agents read + propose, humans
+    decide — no agent write path to an active goal).
+  - **Context injection**: the active goals now ride in every agent's prompt (`buildCompanyMd`), so
+    "why am I doing this" is answerable straight from the prompt. Toggleable in Settings
+    (`settings.injectGoals`, default on), capped so a long goal list can't dominate the prompt.
+  - New **Goals** page in the console (primary nav, above Tasks — the top of the ladder).
+
 ## [0.106.0] — 2026-07-11
 ### Added
 - **A public marketing landing page at `/landing`.** A standalone, self-contained static HTML page
