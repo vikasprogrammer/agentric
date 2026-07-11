@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.115.3] — 2026-07-11
+### Changed
+- **Landing page reflects what's shipped.** The public `/landing` capability grid gains two cards for
+  recent work — **Goals** ("Set the goal; the fleet plans the work" — the strategist agent that reads the
+  gap to a target and files the tasks to close it) and **Awareness** ("Know the moment one needs you" —
+  the in-app notification bell/toasts + opt-in Slack/Discord DMs). Goals is also woven into the hero pitch,
+  and the section count moves from "Six things" to "Eight". (`public/landing.html`)
+
 ## [0.115.2] — 2026-07-11
 ### Fixed
 - **Same-session skill delivery now reaches console-spawned interactive sessions.** Phase 3's
@@ -17,6 +25,8 @@ new version heading in the same commit.
   nothing until the next launch. Filter is now `headless = 0` (any live claude REPL we can inject into),
   which covers both console TUIs and resident chat sessions. Found by dogfooding the request→approve flow
   with a real `engineer` agent on the live instance.
+
+## [0.115.1] — 2026-07-11
 ### Added
 - **"Go to session" link after planning a goal.** When "Plan this goal" spawns the strategist, the
   confirmation banner now shows a **Go to session →** link (using the returned `sessionId`) so you can jump
