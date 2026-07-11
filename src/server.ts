@@ -2818,10 +2818,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && /^\/api\/skills\/([\w.-]+)\/publish$/.test(p)) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const name = p.match(/^\/api\/skills\/([\w.-]+)\/publish$/)![1];
+    // Capture the proposing agent BEFORE publish drops the `.aos-proposed` marker (which clears `proposal`).
+    const proposer = os.skills.get(name)?.proposal?.agent;
     const ok = os.skills.publish(name);
     if (!ok) return sendJson(res, 404, { error: 'no such proposed skill' });
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name } });
-    return sendJson(res, 200, { ok: true, skill: os.skills.get(name) });
+    // Same-session delivery (mirrors the skill_request approve path): if the proposing agent has a live
+    // interactive session, materialise the now-published skill into it + `/reload-skills` instead of
+    // waiting for next launch. Bounded to the proposer — a broadcast to the whole fleet would be disruptive.
+    const reloaded = proposer ? tm.refreshAgentSkills(proposer).reloaded : 0;
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name, reloaded } });
+    return sendJson(res, 200, { ok: true, skill: os.skills.get(name), reloaded });
   }
   // List open agent skill-requests for the Skills page review section (owner/admin).
   if (method === 'GET' && p === '/api/skills/requests') {
