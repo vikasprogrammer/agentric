@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.113.1] — 2026-07-11
+### Fixed
+- **Stopping the open session no longer strands you on a dead terminal.** When you stop the session
+  you're currently viewing in the terminal view, the console now hops to the next open (live) session,
+  or falls back to the all-sessions list when none remain — mirroring the existing "close tab"
+  behaviour. Stopping a session from the list or a background tab leaves your current view untouched.
+
 ## [0.113.0] — 2026-07-11
 ### Changed
 - **Take-over is now lossless — unattended runs are an attachable TUI, not `claude -p`.** Automation/cron/
@@ -27,7 +34,6 @@ new version heading in the same commit.
     `capturePane()` (transcript snapshot, replacing the `-p` stdout tee); launch env `UNATTENDED=1`
     (was `HEADLESS=1`), honored by the gate hook's bounded approval wait and the memory MCP's `ask`/
     `task_wait` parking.
-
 ## [0.112.0] — 2026-07-11
 ### Added
 - **Same-session skill delivery (Phase 3).** When an owner/admin approves an agent's `skill_request`
