@@ -197,9 +197,11 @@ Key modules:
   named teammate, and owner/admin flip to `?scope=all` for oversight). Skills: `skill_propose` (draft a
   reusable playbook — Lever 6 procedural memory; lands as a NOT-YET-PUBLISHED `.aos-proposed` skill +
   a `skill.proposed` inbox card, gated behind an owner/admin publish), plus `skill_find` (discover the
-  installed library + bundled catalog) / `skill_request` (ASK an owner/admin to install a catalog skill —
-  never self-installs; posts a `skill.request` card, human installs via `POST /api/skills/requests/:id/approve`,
-  available next session). Scheduling: `schedule`/`unschedule`
+  installed library + bundled catalog, and — with a `query` — matching community skills from the skills.sh
+  directory) / `skill_request` (ASK an owner/admin to install a skill — never self-installs; `source`
+  omitted ⇒ bundled catalog, `source:'owner/repo'` ⇒ a remote GitHub repo resolved at request time; posts a
+  `skill.request` card, human installs via `POST /api/skills/requests/:id/approve` — catalog install or
+  `fetchSkill`+`installFiles`, available next session). Scheduling: `schedule`/`unschedule`
   (one-shot deferred self-run via a `type:'once'` automation). Tasks (shared work queue):
   `task_create`/`task_list`/`task_get`/`task_claim`/`task_update`/`task_wait`/`task_dispatch`/`task_attach`
   (file/claim/drain durable work + attach a file from the agent's folder onto a task; an

@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.110.0] — 2026-07-11
+### Added
+- **Agent skill-requests reach beyond the bundled catalog — the whole skills.sh / GitHub universe
+  (Phase 2).** `skill_find` and `skill_request` (shipped in 0.108.0 for the bundled catalog) now cover
+  remote community skills, still human-gated end to end:
+  - **`skill_find({ query })`** — with a `query`, discovery also searches the public **skills.sh**
+    directory (thousands of community skills across GitHub repos). Each remote hit comes back with its
+    `source` (`owner/repo`). Without a query it's unchanged (library + bundled catalog only), and a
+    skills.sh outage degrades gracefully to no remote hits rather than failing local discovery.
+  - **`skill_request({ name, source })`** — pass a hit's `source` to request a **remote** skill. The
+    server resolves it against the repo at request time (`browseRepo`) so a typo or missing skill fails
+    fast, and stashes the resolved path so approval installs cleanly. Omitting `source` still means the
+    bundled catalog.
+  - **Approval** branches on the source: a catalog request installs via `SkillsStore.install`; a remote
+    request installs via `fetchSkill` + `installFiles` (the same governed remote-install path the console
+    uses). Audited `skill.installed` now records `from` (catalog or `owner/repo`). The "Requested by
+    agents" review card shows the source. Dedupe keys on skill **+ source**.
+  - Phase 3 (same-session delivery) remains deferred — an approved skill still arrives on the agent's
+    next session.
+
 ## [0.109.0] — 2026-07-11
 ### Added
 - **Goals — Slice 2: task linkage, derived progress, and `/goal`-driven convergence.** Goals stop being

@@ -6655,6 +6655,9 @@ function AgentSkillRequestCard({ r, onChanged }: { r: SkillRequest; onChanged: (
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-mono text-sm font-medium">{r.skill}</span>
               <Badge variant="outline" className="border-sky-300 px-1.5 py-0 text-[10px] font-normal text-sky-700">requested</Badge>
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground" title={r.source === 'catalog' ? 'bundled catalog skill' : 'community skill from a GitHub repo'}>
+                {r.source === 'catalog' ? 'catalog' : r.source}
+              </Badge>
             </div>
             <div className="mt-1 text-[11px] text-muted-foreground">
               by <span className="font-mono">{r.agent}</span>{r.createdAt ? ` · ${timeAgo(r.createdAt)}` : ''}
