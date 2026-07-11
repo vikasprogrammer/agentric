@@ -463,7 +463,7 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
     const head = slash === -1 ? path : path.slice(0, slash)
     const rest = slash === -1 ? '' : path.slice(slash + 1)
     const route = (ROUTES as string[]).includes(head) ? (head as Route) : 'inbox'
-    return { route, detail: rest ? decodeURIComponent(rest) : '', query }
+    return { route, detail: rest ? decodeDetail(rest) : '', query }
   }
   const [state, setState] = useState(parse)
   useEffect(() => {
@@ -472,7 +472,7 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
     return () => window.removeEventListener('hashchange', on)
   }, [])
   const hashFor = (r: Route, detail?: string, query?: string) =>
-    '/' + r + (detail ? '/' + encodeURIComponent(detail) : '') + (query ? '?' + query : '')
+    '/' + r + (detail ? '/' + encodeDetail(detail) : '') + (query ? '?' + query : '')
   const nav = (r: Route, detail?: string) => {
     // Preserve the query only within the same route (so opening/closing a session's terminal keeps
     // the active filters); switching pages drops it.
@@ -496,7 +496,19 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
  *  Mirrors `hashFor` but always `#`-prefixed and without query (a new tab is a fresh context,
  *  so page-local state like filters is intentionally dropped). */
 function navHref(r: Route, detail?: string): string {
-  return '#/' + r + (detail ? '/' + encodeURIComponent(detail) : '')
+  return '#/' + r + (detail ? '/' + encodeDetail(detail) : '')
+}
+
+/** A route `detail` may be a '/'-separated path — KB `section/slug` (with a NESTED section like
+ *  `engineering/backend/deploy-runbook`) or Files `agents/<name>`. Encode/decode PER SEGMENT so real
+ *  slashes stay readable in the URL (`#/kb/engineering/backend/deploy-runbook`) while special chars
+ *  inside a segment are still escaped. Back-compat: an old whole-encoded `%2F` URL still decodes right
+ *  — a segment carrying no literal '/' round-trips either way. */
+function encodeDetail(detail: string): string {
+  return detail.split('/').map(encodeURIComponent).join('/')
+}
+function decodeDetail(raw: string): string {
+  try { return raw.split('/').map(decodeURIComponent).join('/') } catch { return raw }
 }
 
 /** Wrap a nav callback for use as an anchor's onClick: a plain left-click routes in place (via
@@ -805,8 +817,7 @@ function Console({ me }: { me: Member }) {
     }
   }
   // Deep-link from an inbox 'artifact' card into the gallery, pre-opening that artifact's preview.
-  const [artifactFocus, setArtifactFocus] = useState<string | undefined>(undefined)
-  const openArtifact = (id: string) => { setArtifactFocus(id); nav('artifacts') }
+  const openArtifact = (id: string) => nav('artifacts', id)
   const stopSession = async (id: string) => {
     await api.stopSession(id)
     setSessions(await api.sessions())
@@ -1055,10 +1066,10 @@ function Console({ me }: { me: Member }) {
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
-          {route === 'kb' && <KnowledgeBasePage me={me} />}
+          {route === 'kb' && <KnowledgeBasePage me={me} permalink={detail} nav={nav} />}
           {route === 'skills' && <SkillsPage />}
           {route === 'files' && <FilesPage initialDir={detail} />}
-          {route === 'artifacts' && <ArtifactsPage me={me} initialId={artifactFocus} />}
+          {route === 'artifacts' && <ArtifactsPage me={me} permalink={detail} nav={nav} />}
           {route === 'audit' && <AuditPage />}
           {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} />}
           {route === 'settings' && <SettingsPage me={me} state={state} tab={detail} onTab={(t) => nav('settings', t)} />}
@@ -2493,9 +2504,9 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onDismi
   // A 'task' card has no session — it deep-links to the board (its taskId), not a terminal.
   const goTask = m.type === 'task' && meta.taskId && onOpenTask ? () => onOpenTask(meta.taskId!) : null
   const rowAction = goArtifact ?? goTask ?? open
-  // The new-tab target mirrors the click action. Artifacts focus via React state (no hash detail),
-  // so their href can only reach the gallery; sessions/tasks deep-link fully.
-  const rowHref = goArtifact ? navHref('artifacts') : goTask ? navHref('tasks', meta.taskId!) : navHref('sessions', 'aos-' + m.sessionId)
+  // The new-tab target mirrors the click action — all three deep-link fully (artifact by id, task by
+  // id, else the session terminal).
+  const rowHref = goArtifact ? navHref('artifacts', meta.artifactId!) : goTask ? navHref('tasks', meta.taskId!) : navHref('sessions', 'aos-' + m.sessionId)
 
   let Icon = Clock
   let iconCls = 'text-muted-foreground'
@@ -3005,18 +3016,19 @@ function ArtifactBody({ a }: { a: Artifact }) {
   )
 }
 
-function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
+function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; nav: (r: Route, detail?: string) => void }) {
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [enabled, setEnabled] = useState(true)
-  const [sel, setSel] = useState<string | undefined>(initialId)
   const [agentFilter, setAgentFilter] = useState('')
   const [folder, setFolder] = useState('')
   const [hint, setHint] = useState('')
 
   const load = () => api.artifacts().then((r) => { setArtifacts(r.artifacts ?? []); setEnabled(r.enabled !== false) })
   useEffect(() => { load() }, [])
-  useEffect(() => { if (initialId) setSel(initialId) }, [initialId])
 
+  // The URL is the source of truth for the open artifact: `#/artifacts/<id>` deep-links to one
+  // deliverable (shareable, back/forward, and the Inbox 'artifact' card links straight here).
+  const sel = permalink || undefined
   const agents = Array.from(new Set(artifacts.map((a) => a.agent))).sort()
   const inFolder = (f: string) => folder === '' || f === folder || f.startsWith(folder + '/')
   const shown = artifacts.filter((a) => (!agentFilter || a.agent === agentFilter) && inFolder(a.folder || ''))
@@ -3026,7 +3038,7 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
     if (!confirm('Delete this artifact? Its snapshotted file is permanently removed (the audit log is kept).')) return
     const r = await api.deleteArtifact(id)
     if (r.error) { setHint('⚠ ' + r.error); return }
-    if (sel === id) setSel(undefined)
+    if (sel === id) nav('artifacts')
     load()
   }
 
@@ -3065,7 +3077,7 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
           {shown.map((a) => {
             const active = a.id === sel
             return (
-              <button key={a.id} onClick={() => setSel(a.id)} className={`w-full overflow-hidden rounded-lg border text-left transition hover:border-primary/50 ${active ? 'border-primary ring-1 ring-primary/30' : ''}`}>
+              <a key={a.id} href={navHref('artifacts', a.id)} onClick={onNavClick(() => nav('artifacts', a.id))} className={`block w-full overflow-hidden rounded-lg border text-left text-foreground no-underline transition hover:border-primary/50 ${active ? 'border-primary ring-1 ring-primary/30' : ''}`}>
                 <div className="flex items-start gap-2.5 p-2.5">
                   {isImageMime(a.mime)
                     ? <img src={api.artifactRawUrl(a.id)} alt="" className="h-10 w-10 shrink-0 rounded border object-cover" />
@@ -3084,7 +3096,7 @@ function ArtifactsPage({ me, initialId }: { me: Member; initialId?: string }) {
                     <div className="mt-0.5 text-[11px] text-muted-foreground">{fmtSize(a.bytes)} · {new Date(a.createdAt).toLocaleString()}</div>
                   </div>
                 </div>
-              </button>
+              </a>
             )
           })}
         </div>
@@ -4743,7 +4755,7 @@ function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: s
   )
 }
 
-function KnowledgeBasePage({ me }: { me: Member }) {
+function KnowledgeBasePage({ me, permalink, nav }: { me: Member; permalink: string; nav: (r: Route, detail?: string) => void }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const [pages, setPages] = useState<KbPage[] | null>(null)
   const [sections, setSections] = useState<string[]>([])
@@ -4765,6 +4777,19 @@ function KnowledgeBasePage({ me }: { me: Member }) {
   const load = (q = query) => api.kb(q).then((r) => { setPages(r.pages ?? []); setSections(r.sections ?? []) }).catch(() => setPages([]))
   useEffect(() => { load('') /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
 
+  // The URL is the source of truth for which page is open: `#/kb/<section>/<slug>` (section may nest).
+  // Resolve the permalink against the loaded list and open it — this drives deep-links, back/forward,
+  // and the initial cold load (once `pages` arrives). Clicking a page navigates; this effect opens it.
+  useEffect(() => {
+    if (pages === null) return                                  // wait for the list
+    if (!permalink) { if (!creating) setSel(null); return }      // bare #/kb → landing
+    if (sel && permalink === `${sel.section}/${sel.slug}`) return // already showing it
+    const cut = permalink.lastIndexOf('/')
+    const target = pages.find((p) => p.section === permalink.slice(0, cut) && p.slug === permalink.slice(cut + 1))
+    if (target) open(target.id)
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [permalink, pages])
+
   const open = (id: string) => {
     setCreating(false); setEditing(false); setViewRev(null); setShowHist(false); setHint('')
     api.kbPage(id).then((r) => setSel(r.page ?? null)).catch(() => {})
@@ -4781,10 +4806,10 @@ function KnowledgeBasePage({ me }: { me: Member }) {
     setBusy(true); setHint('')
     const r = await api.kbCreate({ section: nSection.trim(), slug: nSlug.trim(), title: nTitle.trim() || nSlug.trim(), body: nBody, tags: nTags.split(',').map((t) => t.trim()).filter(Boolean) })
     setBusy(false); if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
-    setCreating(false); setNSection(''); setNSlug(''); setNTitle(''); setNBody(''); setNTags(''); await load(); if (r.page) open(r.page.id)
+    setCreating(false); setNSection(''); setNSlug(''); setNTitle(''); setNBody(''); setNTags(''); await load(); if (r.page) nav('kb', `${r.page.section}/${r.page.slug}`)
   }
   const revert = async (rev: number) => { if (!sel || !window.confirm(`Revert to rev ${rev}? This creates a new revision.`)) return; const r = await api.kbRevert(sel.id, rev); if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed')); open(sel.id); load() }
-  const remove = async () => { if (!sel || !window.confirm('Delete this page? Its revision history is kept.')) return; const r = await api.kbDelete(sel.id); if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed')); setSel(null); load() }
+  const remove = async () => { if (!sel || !window.confirm('Delete this page? Its revision history is kept.')) return; const r = await api.kbDelete(sel.id); if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed')); setSel(null); nav('kb'); load() }
 
   return (
     <div className="flex gap-4">
@@ -4794,7 +4819,7 @@ function KnowledgeBasePage({ me }: { me: Member }) {
           <Input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} placeholder="search the wiki…" className="h-8 text-xs" />
           <Button size="sm" variant="outline" className="h-8 shrink-0 px-2" onClick={() => load()}>Go</Button>
         </div>
-        <Button size="sm" className="w-full" onClick={() => { setCreating(true); setSel(null); setEditing(false); setNSection(folder ? folder + '/' : '') }}><Plus className="mr-1 h-3.5 w-3.5" />New page</Button>
+        <Button size="sm" className="w-full" onClick={() => { setCreating(true); setSel(null); setEditing(false); setNSection(folder ? folder + '/' : ''); nav('kb') }}><Plus className="mr-1 h-3.5 w-3.5" />New page</Button>
         <FolderNav paths={(pages ?? []).map((p) => p.section)} selected={folder} onSelect={setFolder} rootLabel="All pages" />
         <div className="space-y-3">
           {pages === null && <div className="text-xs text-muted-foreground">Loading…</div>}
@@ -4804,7 +4829,7 @@ function KnowledgeBasePage({ me }: { me: Member }) {
               <div className="mb-1 truncate text-[10px] uppercase tracking-wider text-muted-foreground" title={s}>{s}</div>
               <div className="space-y-0.5">
                 {(pages ?? []).filter((p) => p.section === s).map((p) => (
-                  <button key={p.id} onClick={() => open(p.id)} className={`block w-full truncate rounded px-2 py-1 text-left text-xs ${sel?.id === p.id ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`} title={`${p.section}/${p.slug}`}>{p.title}</button>
+                  <a key={p.id} href={navHref('kb', `${p.section}/${p.slug}`)} onClick={onNavClick(() => nav('kb', `${p.section}/${p.slug}`))} className={`block w-full truncate rounded px-2 py-1 text-left text-xs no-underline ${sel?.id === p.id ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-muted/50'}`} title={`${p.section}/${p.slug}`}>{p.title}</a>
                 ))}
               </div>
             </div>
@@ -4828,7 +4853,7 @@ function KnowledgeBasePage({ me }: { me: Member }) {
             <Field label="Tags" help="comma-separated"><Input value={nTags} onChange={(e) => setNTags(e.target.value)} placeholder="deploy, ops" /></Field>
             <div className="flex gap-2">
               <Button onClick={create} disabled={busy || !nSection.trim() || !nSlug.trim()}><Check className="mr-1 h-4 w-4" />Create</Button>
-              <Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button>
+              <Button variant="ghost" onClick={() => { setCreating(false); nav('kb') }}>Cancel</Button>
             </div>
           </CardContent></Card>
         ) : sel ? (
@@ -4836,7 +4861,7 @@ function KnowledgeBasePage({ me }: { me: Member }) {
             <div className="flex items-start justify-between gap-2">
               <div>
                 <div className="text-lg font-semibold">{sel.title}</div>
-                <div className="text-[11px] text-muted-foreground"><code>{sel.section}/{sel.slug}</code> · rev {sel.rev} · updated {new Date(sel.updatedAt).toLocaleString()} by {sel.updatedBy} · <span title={sel.lastReadAt ? `last read by an agent ${new Date(sel.lastReadAt).toLocaleString()}` : 'no agent has fetched this page yet'}>{sel.readCount ? `read ${sel.readCount}× by agents` : 'never read by agents'}</span></div>
+                <div className="text-[11px] text-muted-foreground"><a href={navHref('kb', `${sel.section}/${sel.slug}`)} onClick={onNavClick(() => nav('kb', `${sel.section}/${sel.slug}`))} className="text-inherit no-underline hover:underline" title="permalink — right-click to copy the link to this page"><code>{sel.section}/{sel.slug}</code></a> · rev {sel.rev} · updated {new Date(sel.updatedAt).toLocaleString()} by {sel.updatedBy} · <span title={sel.lastReadAt ? `last read by an agent ${new Date(sel.lastReadAt).toLocaleString()}` : 'no agent has fetched this page yet'}>{sel.readCount ? `read ${sel.readCount}× by agents` : 'never read by agents'}</span></div>
                 {sel.tags.length > 0 && <div className="mt-1 flex flex-wrap gap-1">{sel.tags.map((t) => <Badge key={t} variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{t}</Badge>)}</div>}
               </div>
               {!editing && (

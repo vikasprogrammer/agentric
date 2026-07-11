@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.104.0] — 2026-07-11
+### Added
+- **Deep-link permalinks for Knowledge Base pages and Artifacts.** Opening a KB page or an artifact
+  was in-memory only — the URL stayed at `#/kb` / `#/artifacts`, so a page/deliverable couldn't be
+  bookmarked, shared, or reopened by link, and a browser reload lost the selection. Now the URL is the
+  source of truth for what's open:
+  - **KB:** `#/kb/<section>/<slug>` — with nested sections rendered readably
+    (`#/kb/engineering/backend/deploy-runbook`). Selecting a page navigates; loading that URL (or
+    back/forward) resolves and opens it. Sidebar page rows are now real `<a>` anchors (right-click "copy
+    link", ⌘/ctrl/middle-click open-in-new-tab), and the page header's `section/slug` is a self-permalink.
+  - **Artifacts:** `#/artifacts/<id>` — gallery cards are anchors, the selection round-trips through the
+    URL, and the Inbox 'artifact' card now deep-links straight to the specific deliverable (previously it
+    could only reach the gallery).
+  - **Routing:** the hash-route `detail` codec now encodes/decodes **per path segment**, so a nested
+    detail (KB `section/slug`, Files `agents/<name>`) keeps real `/`s in the URL instead of `%2F`.
+    Backward-compatible — old whole-encoded `%2F` links still resolve.
+
 ## [0.103.0] — 2026-07-10
 ### Added
 - **Folders & sub-folders in the Artifacts gallery and the Knowledge Base.** Both surfaces were flat
