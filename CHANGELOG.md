@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.115.1] — 2026-07-11
+### Added
+- **"Go to session" link after planning a goal.** When "Plan this goal" spawns the strategist, the
+  confirmation banner now shows a **Go to session →** link (using the returned `sessionId`) so you can jump
+  straight into the strategist's run instead of only waiting for its filed tasks to appear.
+
 ## [0.115.0] — 2026-07-11
 ### Added
 - **In-app session notifications — a Facebook-style bell + toasts.** The console now surfaces when one of
