@@ -49,6 +49,7 @@ interface MemorySettingsView {
 }
 
 const CONSOLE_HTML = path.resolve(__dirname, '../public/console.html');
+const LANDING_HTML = path.resolve(__dirname, '../public/landing.html');
 const WEB_DIST = path.resolve(__dirname, '../web/dist');
 
 /** The agents Agent OS ships with, code-provisioned into every home on boot (the department
@@ -271,6 +272,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendFile(res, fs.existsSync(idx) ? idx : CONSOLE_HTML, 'text/html; charset=utf-8');
   }
   if (method === 'GET' && p === '/health') return sendJson(res, 200, { ok: true, tenant: os.tenant, name: os.tenantName, version: VERSION });
+  // Public marketing landing page — a standalone static HTML doc (no auth, no React). Served straight
+  // off disk from public/landing.html so it can be iterated on without a web build. Distinct from the
+  // console SPA at '/', which stays the app.
+  if (method === 'GET' && p === '/landing') {
+    if (fs.existsSync(LANDING_HTML)) return sendFile(res, LANDING_HTML, 'text/html; charset=utf-8');
+    return end(res, 404);
+  }
   // static assets from the built React app (web/dist)
   if (method === 'GET' && (p.startsWith('/assets/') || /\.(js|css|svg|png|ico|woff2?|json|map)$/.test(p))) {
     const file = path.join(WEB_DIST, p.replace(/^\/+/, ''));

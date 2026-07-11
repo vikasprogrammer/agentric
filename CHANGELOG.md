@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.106.0] — 2026-07-11
+## [0.107.0] — 2026-07-11
 ### Added
 - **Goals — the strategic layer work ladders up to (Slice 1).** The fleet's ladder started at Task —
   there was no "why" above it. Goals add a human-owned, tenant-wide, persistent object the whole fleet
@@ -28,6 +28,17 @@ new version heading in the same commit.
     "why am I doing this" is answerable straight from the prompt. Toggleable in Settings
     (`settings.injectGoals`, default on), capped so a long goal list can't dominate the prompt.
   - New **Goals** page in the console (primary nav, above Tasks — the top of the ladder).
+
+## [0.106.0] — 2026-07-11
+### Added
+- **A public marketing landing page at `/landing`.** A standalone, self-contained static HTML page
+  (no auth, no React, no external requests) that introduces Agent OS as an operating system for a
+  fleet of autonomous agents — the fleet, memory, shared knowledge/tasks, chat, governance, and
+  self-improvement — with governance as one capability rather than the whole pitch. "Soft Ambient"
+  visual identity: warm plush neutrals, rounded display type, soft cards, a faint dawn glow, a live
+  fleet roster, and full light/dark theming. Served straight off disk from `public/landing.html`
+  (`src/server.ts` → `LANDING_HTML`, a public route above the member-auth gate) so it can be iterated
+  on without a web build. First cut — copy and design to be refined.
 
 ## [0.105.0] — 2026-07-11
 ### Added
