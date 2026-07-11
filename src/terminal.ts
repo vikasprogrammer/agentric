@@ -19,6 +19,7 @@ import { hostGovernanceDecision, stricterDecision } from './governance/host-matc
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { SkillSummary, CatalogSkill } from './governance/skills';
+import { browseRepo, RemoteCatalog } from './governance/skill-registry';
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -1882,40 +1883,61 @@ export class TerminalManager {
    * when it's already in the library or already requested, else posts an owner/admin-addressed
    * 'skill.request' card and audits `skill.requested`. The human approves via POST
    * /api/skills/requests/:id/approve, which does the actual install. */
-  requestSkill(sessionId: string, agent: string, input: { name: string; source?: string; rationale?: string }): { ok: boolean; status?: 'requested' | 'installed' | 'duplicate'; error?: string } {
+  async requestSkill(sessionId: string, agent: string, input: { name: string; source?: string; rationale?: string }): Promise<{ ok: boolean; status?: 'requested' | 'installed' | 'duplicate'; error?: string }> {
     const name = (input.name || '').trim().toLowerCase();
     if (!name) return { ok: false, error: 'a skill name is required' };
     if (this.os.skills.get(name)) return { ok: true, status: 'installed' }; // already in the library
-    const cat = this.os.skills.catalog().find((c) => c.name === name);
-    if (!cat) return { ok: false, error: `"${name}" is not in the skill catalog — call skill_find to see what's installable` };
-    // Dedupe against an already-open request for the same skill (any session).
+    let source = (input.source || 'catalog').trim();
+    const remote = source !== '' && source !== 'catalog';
+    let description = '';
+    let path = '';
+    if (!remote) {
+      source = 'catalog';
+      const cat = this.os.skills.catalog().find((c) => c.name === name);
+      if (!cat) return { ok: false, error: `"${name}" is not in the skill catalog — call skill_find to see what's installable` };
+      description = cat.description;
+    } else {
+      // Remote source (a GitHub repo, e.g. surfaced by skill_find's `query` search). Resolve it NOW so a
+      // typo / missing skill fails fast, and stash the resolved path so approve installs without re-guessing.
+      let cat: RemoteCatalog;
+      try { cat = await browseRepo(source); }
+      catch (e) { return { ok: false, error: `could not read source "${source}": ${e instanceof Error ? e.message : String(e)}` }; }
+      const hit = cat.skills.find((s) => s.name === name);
+      if (!hit) return { ok: false, error: `no skill named "${name}" in ${cat.repo} — call skill_find with a query to see what's available` };
+      source = cat.repo; // normalized owner/repo
+      description = hit.description;
+      path = hit.path;
+    }
+    // Dedupe against an already-open request for the same skill from the same source.
     const open = this.db
       .prepare(`SELECT args FROM messages WHERE type = 'skill.request' AND status = 'open'`)
       .all<{ args: string | null }>()
-      .some((r) => { try { return JSON.parse(r.args || '{}').skill === name; } catch { return false; } });
+      .some((r) => { try { const a = JSON.parse(r.args || '{}'); return a.skill === name && (a.source || 'catalog') === source; } catch { return false; } });
     if (open) return { ok: true, status: 'duplicate' };
     this.addMessage({
       type: 'skill.request', sessionId, agent,
       title: `Skill requested — ${name}`,
-      body: (input.rationale?.trim() || cat.description || `${agent} wants the "${name}" skill installed.`).trim(),
+      body: (input.rationale?.trim() || description || `${agent} wants the "${name}" skill installed${remote ? ` from ${source}` : ''}.`).trim(),
       status: 'open',
-      args: { skill: name, source: input.source || 'catalog', ...(input.rationale ? { rationale: input.rationale } : {}) },
+      args: { skill: name, source, ...(path ? { path } : {}), ...(input.rationale ? { rationale: input.rationale } : {}) },
       // Installing a skill is an owner/admin act — address the review card to the admin tier.
       audienceKind: 'admins',
     });
-    this.audit(sessionId, agent, 'skill.requested', { name, source: input.source || 'catalog', rationale: input.rationale });
+    this.audit(sessionId, agent, 'skill.requested', { name, source, rationale: input.rationale });
     return { ok: true, status: 'requested' };
   }
 
-  /** Read a 'skill.request' card's payload (for the approve/dismiss routes). undefined if not one. */
-  skillRequestCard(id: string): { skill: string; source: string; agent: string; status: string } | undefined {
+  /** Read a 'skill.request' card's payload (for the approve/dismiss routes). undefined if not one.
+   *  `source` is 'catalog' or an `owner/repo`; `path` is the skill's folder within a remote repo (empty
+   *  for catalog / a name-resolved remote install). */
+  skillRequestCard(id: string): { skill: string; source: string; path: string; agent: string; status: string } | undefined {
     const row = this.db
       .prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'skill.request'`)
       .get<{ agent: string; args: string | null; status: string }>(id);
     if (!row) return undefined;
     let a: Record<string, unknown> = {};
     try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
-    return { skill: String(a.skill ?? ''), source: String(a.source ?? 'catalog'), agent: row.agent, status: row.status };
+    return { skill: String(a.skill ?? ''), source: String(a.source ?? 'catalog'), path: String(a.path ?? ''), agent: row.agent, status: row.status };
   }
 
   /** Mark a 'skill.request' card resolved once a human approved (installed) or dismissed it. */
