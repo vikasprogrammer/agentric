@@ -9,9 +9,10 @@ as the **chat-channels v1** work landed, **§4 Team** (added the `member_identit
 **§7 Automations** (added native **Slack + Discord** ingress, run-as the sending member; regraded ✅)
 were updated. **Updated 2026-07-11:** **§12 Skills** regraded 🟡 → ✅ — skill **import** (bundled
 catalog + any GitHub repo / skills.sh + `.zip`), the **agent-driven, human-gated request flow**
-(`skill_find`/`skill_request` → owner/admin install, never self-install) with **same-session delivery**
-(`/reload-skills` into a live interactive run), and procedural `skill_propose` all shipped. All other
-grades + narratives still hold. Live v1 milestone tracker: `docs/v1-mvp-scope.md`.
+(`skill_find`/`skill_request` → owner/admin install, never self-install), procedural `skill_propose`, and
+**same-session delivery** (`/reload-skills` into a live interactive run) on BOTH gating paths — approve
+*and* publish (`refreshAgentSkills` targets `headless = 0` sessions; the earlier `resident`-only filter
+was a bug). All other grades + narratives still hold. Live v1 milestone tracker: `docs/v1-mvp-scope.md`.
 
 **Cross-cutting:** how agents are *granted* reach — the relationship between §3 Connectors, §5 Policy,
 and §8 Secrets — is mapped in [`access-model.md`](./access-model.md) (`Creds → Connections →
@@ -415,18 +416,25 @@ community skills from skills.sh); `skill_request` raises an owner/admin **`skill
 a named catalog skill or a remote `owner/repo` (resolved against the repo at request time so a typo fails
 fast). The human **Installs** it from the Skills page's "Requested by agents" section (all agents, or
 scoped to just the requester) or **Dismisses** it; audited `skill.requested` → `skill.installed`
-(`source: agent-request`). **Same-session delivery:** if the requesting agent has a live *interactive*
-session at approval, `TerminalManager.refreshAgentSkills` materialises the skill into its watched
-`.claude/skills` and injects **`/reload-skills`** (claude ≥ 2.1.152) so it's usable *in that run*; a
-headless run has already exited and gets it on its next launch. (`materialize` now always creates
-`.claude/skills` at launch — even for a zero-skill agent — because Claude Code only watches a dir that
-existed at startup.)
+(`source: agent-request`); on approval it delivers **same-session** (below).
+
+**Same-session delivery** (shared by both human-gating paths — approve above, publish below). A newly
+installed/published skill normally reaches agents on their next launch, but if the agent has a LIVE
+session it lands *in that run*: `TerminalManager.refreshAgentSkills` materialises the skill into the
+agent's watched `.claude/skills` and injects **`/reload-skills`** (claude ≥ 2.1.152). It targets any
+INTERACTIVE session (`headless = 0` — a console TUI *or* a resident chat session; the earlier `resident`
+filter was a bug that skipped console runs) and reports `reloaded`. A headless `claude -p` run has no REPL
+and has exited anyway, so it gets the skill next launch. Enabling detail: `materialize` now always creates
+`.claude/skills` at launch — even for a zero-skill agent — because Claude Code only watches a directory
+that existed at startup.
 
 **Procedural memory (Lever 6 of the learning loop).** The fleet turns its own repeated successes into
 skills: any agent post-task (and the consolidation gardener across a batch) `skill_propose`s a `SKILL.md`
 from a recurring, reusable procedure. A proposal is staged as a `.aos-proposed` draft that `materialize()`
 **skips** — invisible to agents until a human reviews and **Publishes** it from the Skills page (a
 `skill.proposed` card notifies owner/admins), reusing the Dreaming recommendations' approval pattern.
+Publishing gets the **same same-session delivery** as an approved request (above) — the just-published
+skill lands in the proposing agent's live session immediately, not just on its next launch.
 Spec: [`procedural-skills-plan.md`](./procedural-skills-plan.md).
 
 **Gaps.** Mock-runtime agents don't receive skills (they're scripted); the console's Files page can't yet
