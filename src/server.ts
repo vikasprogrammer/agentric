@@ -1725,6 +1725,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // default `mine` narrows to cards addressed to the viewer so owner/admin aren't flooded.
   if (method === 'GET' && p === '/api/messages') return sendJson(res, 200, tm.listMessages(me, inboxScope(url, me)));
 
+  // This member's own notification preferences (which session events ping them, toasts/sound/DM). Per
+  // person, not workspace-wide — every role reads/writes their OWN, so it's not admin-gated.
+  if (method === 'GET' && p === '/api/me/prefs') return sendJson(res, 200, os.team.notificationPrefs(me.id));
+  if (method === 'PUT' && p === '/api/me/prefs') {
+    const b = await readBody(req);
+    return sendJson(res, 200, os.team.setNotificationPrefs(me.id, b));
+  }
+
   // Dismiss the whole Activity feed at once (soft hide). Leaves action-required items (pending
   // approvals/questions, waiting notifications) in place. Same per-viewer visibility as the feed.
   if (method === 'POST' && p === '/api/messages/dismiss-all') {

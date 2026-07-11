@@ -407,6 +407,22 @@ export interface Msg {
   createdAt: number
 }
 
+/** Per-member notification preferences (mirrors src/types.ts NotificationPrefs). Which session events
+ *  ping ME in the console bell + toast, and whether they also chime / DM me on Slack/Discord. */
+export interface NotificationPrefs {
+  events: { completed: boolean; waiting: boolean; crashed: boolean; approval: boolean; question: boolean }
+  toasts: boolean
+  sound: boolean
+  dm: boolean
+}
+
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
+  events: { completed: true, waiting: true, crashed: true, approval: true, question: true },
+  toasts: true,
+  sound: false,
+  dm: false,
+}
+
 export type ExecMode = 'interactive' | 'headless'
 export interface Automation {
   id: string
@@ -871,6 +887,9 @@ export const api = {
   dismissAllMessages: (scope: 'mine' | 'all' = 'mine') => call<{ ok: boolean; dismissed?: number; error?: string }>('POST', `/api/messages/dismiss-all${scope === 'all' ? '?scope=all' : ''}`),
   markRead: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/messages/${id}/read`),
   markAllRead: (scope: 'mine' | 'all' = 'mine') => call<{ ok: boolean; read?: number; error?: string }>('POST', `/api/messages/read-all${scope === 'all' ? '?scope=all' : ''}`),
+  /** This member's own notification preferences (bell/toast/sound/DM + which event kinds). */
+  notificationPrefs: () => call<NotificationPrefs>('GET', '/api/me/prefs'),
+  saveNotificationPrefs: (prefs: NotificationPrefs) => call<NotificationPrefs>('PUT', '/api/me/prefs', prefs),
 
   team: () => call<TeamResp>('GET', '/api/team'),
   audit: (f: { session?: string; type?: string; principal?: string; limit?: number } = {}) => {

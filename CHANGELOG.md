@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.115.0] — 2026-07-11
+### Added
+- **In-app session notifications — a Facebook-style bell + toasts.** The console now surfaces when one of
+  your sessions changes state: it's **waiting** on you (permission prompt / idle / `agent_needs_input`),
+  it **finished**, it **crashed**, or it needs an **approval / answer**. A new header bell shows an
+  unread count and a dropdown of recent notifications (click one to jump to the session or Inbox);
+  fresh events also **toast** in from the bottom-right with an optional chime. Per-member
+  **notification settings** (in the bell's gear) let each person choose which events ping them, toggle
+  toasts/sound, and opt into a **Slack/Discord DM** for complete/waiting events. Completions and crashes
+  now always leave a feed card — a run that exits without calling `report` gets a "Finished" fallback, and
+  a crashed session gets a "Crashed" card — so nothing finishes silently. Prefs persist per member in a new
+  `member_prefs` table (`GET`/`PUT /api/me/prefs`); the browser-tab 🔔 badge now reflects the full unread
+  count. (`src/types.ts`, `src/state/db.ts`, `src/governance/team.ts`, `src/terminal.ts`,
+  `src/tenant-registry.ts`, `src/server.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`)
+
 ## [0.114.0] — 2026-07-11
 ### Added
 - **Goals — the strategy agent ("goal steward"): the outbound edge (goal → work).** Goals could be linked

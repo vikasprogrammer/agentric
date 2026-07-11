@@ -310,6 +310,20 @@ export interface MemberNotice {
   important: boolean;
 }
 
+/** What the session-event notifier sink receives when one of a member's own sessions changes state —
+ *  it started waiting on them, finished, or crashed. The registry DMs the run's owner (its `run_as`,
+ *  else the console member who spawned it) on Slack/Discord IF that member opted into `dm` notifications.
+ *  The inbox card is written inline regardless; this is only the out-of-band push, gated on preference so
+ *  it doesn't flood. Approvals/questions have their own (always-on) notifiers — this covers the newer
+ *  complete/waiting/crashed events the console added a bell for. */
+export interface SessionEventNotice {
+  sessionId: string;
+  agent: string;
+  kind: 'waiting' | 'completed' | 'crashed';
+  title: string;
+  message: string;
+}
+
 export class TerminalManager {
   /** Scripted demo runner — for `runtime: mock` agents. */
   private readonly runner = path.resolve(__dirname, '../terminal/agent-runner.sh');
@@ -346,6 +360,14 @@ export class TerminalManager {
    *  registry DMs the target member on their linked Slack/Discord (the inbox card is written inline). */
   private memberNotifier?: (notice: MemberNotice) => void;
   setMemberNotifier(fn: (notice: MemberNotice) => void): void { this.memberNotifier = fn; }
+  /** Optional sink notified when one of a member's sessions starts waiting / finishes / crashes, so the
+   *  registry can DM the run's owner out-of-band (gated on their `dm` preference). Set by the registry
+   *  once the chat sockets exist; absent = no push (the inbox card is always written regardless). */
+  private sessionEventNotifier?: (notice: SessionEventNotice) => void;
+  setSessionEventNotifier(fn: (notice: SessionEventNotice) => void): void { this.sessionEventNotifier = fn; }
+  private fireSessionEvent(sessionId: string, agent: string, kind: SessionEventNotice['kind'], title: string, message: string): void {
+    try { this.sessionEventNotifier?.({ sessionId, agent, kind, title, message }); } catch { /* advisory — never let a push wedge the caller */ }
+  }
 
   constructor(
     private readonly os: AgentOS,
@@ -423,6 +445,15 @@ export class TerminalManager {
           // A crashed agent can't answer or act — retire its open questions + approvals like a clean stop.
           this.cancelPendingQuestions(r.id, 'system');
           this.cancelPendingApprovals(r.id, 'system');
+          // Surface the crash to the owner: a 'completed' card (outcome 'crashed') is the only feed entry a
+          // crash produces, since it fires no clean end signal. Guarded on hasCompleted so a run that had
+          // already reported before its pane died isn't double-carded; the status flip makes it once-only.
+          if (!this.hasCompleted(r.id)) {
+            const title = `Crashed — ${r.agent}`;
+            const body = 'The session ended unexpectedly (the process died).';
+            this.addMessage({ type: 'completed', sessionId: r.id, agent: r.agent, title, body, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: r.id });
+            this.fireSessionEvent(r.id, r.agent, 'crashed', title, body);
+          }
         }
       }
     }
@@ -1900,11 +1931,16 @@ export class TerminalManager {
    *  kinds get a card — auth/elicitation noise is dropped. Best-effort, never blocks (the hook can't). */
   notify(sessionId: string, agent: string, kind: string, message: string): void {
     if (!this.hasSession(sessionId)) return;
-    if (kind !== 'permission_prompt' && kind !== 'idle_prompt') return;
+    // The human-actionable Notification kinds only: a permission prompt / idle wait in the TUI, or the
+    // newer `agent_needs_input` Claude Code emits when it's blocked on the human. Auth/elicitation noise
+    // and the per-turn `agent_completed` are dropped here (session completion is signalled by markEnded).
+    if (kind !== 'permission_prompt' && kind !== 'idle_prompt' && kind !== 'agent_needs_input') return;
     this.clearNotifications(sessionId);
     const fallback = kind === 'permission_prompt' ? 'Claude needs permission to continue.' : 'Claude is waiting for your input.';
-    this.addMessage({ type: 'notification', sessionId, agent, title: `Waiting — ${agent}`, body: (message || '').trim() || fallback, status: 'open', audienceKind: 'sessionOwner', audienceId: sessionId });
+    const body = (message || '').trim() || fallback;
+    this.addMessage({ type: 'notification', sessionId, agent, title: `Waiting — ${agent}`, body, status: 'open', audienceKind: 'sessionOwner', audienceId: sessionId });
     this.audit(sessionId, agent, 'session.notified', { kind, message });
+    this.fireSessionEvent(sessionId, agent, 'waiting', `Waiting — ${agent}`, body);
   }
 
   /** Drop any open 'waiting' notification for a session — once it reports/ends, the bell is stale. */
@@ -1920,6 +1956,7 @@ export class TerminalManager {
     if (this.hasCompleted(sessionId)) return;
     this.clearNotifications(sessionId);
     this.addMessage({ type: 'completed', sessionId, agent, title: `Completed — ${agent}`, body: summary || '(no summary)', status: 'open', outcome, audienceKind: 'sessionOwner', audienceId: sessionId });
+    this.fireSessionEvent(sessionId, agent, 'completed', `Completed — ${agent}`, summary || `Finished (${outcome}).`);
     // Close the chat loop: a chat-triggered run's completion goes back to the thread the human pinged
     // from, not just the console. No-op for non-chat runs. The agent's own `slack_reply`/`discord_reply`
     // still work for finer-grained replies; this guarantees the outcome lands even if it never called them.
@@ -2192,7 +2229,11 @@ export class TerminalManager {
   markEnded(sessionId: string): void {
     const s = this.db.prepare('SELECT agent, status FROM term_sessions WHERE id = ?').get<{ agent: string; status: string }>(sessionId);
     if (!s) return;
-    if (s.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'done', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    // A "natural end": the row was still live and the process returned on its own — as opposed to a human
+    // `stopSession` (already 'stopped') or a crash the sweep caught ('crashed'). Only a natural end earns
+    // the completion-fallback card below, so closing a session yourself doesn't ping you about it.
+    const naturalEnd = s.status === 'running';
+    if (naturalEnd) this.db.prepare("UPDATE term_sessions SET status = 'done', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
     // claude exited on its own. The launcher normally holds the pane on a "press [r] to resume" prompt,
     // but if that pane dies (an idle/detached `read` bailing out), ttyd's silent auto-reconnect would
@@ -2204,8 +2245,16 @@ export class TerminalManager {
     // already landed by now if the agent left one, so writeEpisode prefers it; otherwise it summarises
     // the audit stream. Best-effort + idempotent; never blocks the end signal.
     this.writeEpisode(sessionId, s.agent);
-    // No "Ended" card — exit is lifecycle noise. The agent's own `report` is the meaningful completion
-    // signal; a run that exits without reporting simply leaves no feed entry.
+    // Completion fallback: a run that exits without leaving its own `report` card still tells its owner it
+    // finished — the "session complete" bell/toast the console shows. Posted AFTER writeEpisode so this
+    // synthetic card can't be mistaken for the agent's own summary when composing the episode, and gated
+    // on `hasCompleted` so it never doubles a real report. Owner-scoped like every session card.
+    if (naturalEnd && !this.hasCompleted(sessionId)) {
+      const title = `Finished — ${s.agent}`;
+      const body = 'The session ended.';
+      this.addMessage({ type: 'completed', sessionId, agent: s.agent, title, body, status: 'open', outcome: 'ended', audienceKind: 'sessionOwner', audienceId: sessionId });
+      this.fireSessionEvent(sessionId, s.agent, 'completed', title, body);
+    }
     this.audit(sessionId, s.agent, 'session.ended', {});
   }
 

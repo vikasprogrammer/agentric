@@ -14,7 +14,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice } from './terminal';
+import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
@@ -214,6 +214,10 @@ export class TenantRegistry {
     // Agent → teammate: when an agent uses the `notify` tool, the inbox card is written inline (addressed
     // to the target member); this sink DMs that member on their linked Slack/Discord too.
     tm.setMemberNotifier((notice) => { void notifyMember(os, slack, discord, notice); });
+    // Session lifecycle → chat: when one of a member's sessions starts waiting / finishes / crashes, DM
+    // the run's owner IF they opted into `dm` notifications (default off — the inbox bell already covers
+    // it). The complete/waiting/crashed twin of the always-on approval/question DMs above.
+    tm.setSessionEventNotifier((notice) => { void notifySessionEvent(os, slack, discord, consoleOrigin, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
     return { record: rec, os, tm, autos, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
@@ -399,6 +403,24 @@ export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
   const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\nOpen the Agent OS console → Inbox.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'member.notified', data: { to: notice.to, important: notice.important, dms } });
+}
+
+/**
+ * DM the owner of a session that just changed state (started waiting / finished / crashed), on their
+ * linked Slack/Discord — the lifecycle twin of {@link notifyMember}. Unlike approvals/questions this is
+ * OPT-IN: only fires when the run's owner set their `dm` notification preference, since the inbox bell
+ * already surfaces every one of these. Targets the `sessionOwner` audience only — a pure automation/task
+ * run with no human owner pings nobody (there's no one whose bell it belongs to). Best-effort, audited.
+ */
+export async function notifySessionEvent(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: SessionEventNotice): Promise<void> {
+  const targets = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId })
+    .filter((m) => os.team.notificationPrefs(m.id).dm);
+  if (!targets.length) return;
+  const icon = notice.kind === 'waiting' ? '🔔' : notice.kind === 'crashed' ? '💥' : '✅';
+  const url = consolePage(consoleOrigin, 'sessions');
+  const text = (p: ChatPlatform) => `${icon} ${notice.title}\n${notice.message}\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
+  const dms = await deliverDM(slack, discord, os, targets, text);
+  os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'session.event.notified', data: { kind: notice.kind, agent: notice.agent, targets: targets.length, dms } });
 }
 
 /** Launch a ttyd bound to one tenant's tmux socket on `ttydPort`. (Moved verbatim from server.ts.) */

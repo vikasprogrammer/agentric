@@ -518,6 +518,16 @@ function migrate(db: Db): void {
       dismissed_at INTEGER,
       PRIMARY KEY (message_id, member_id)
     );
+
+    -- Per-member preferences (JSON blob). Today it holds notification prefs (which session events ping
+    -- me, whether toasts/sound/DM fire); a single row per member keyed by member id. Absent row = the
+    -- code defaults (see DEFAULT_NOTIFICATION_PREFS). Kept separate from the shared settings table
+    -- because these are per-person, not workspace-wide.
+    CREATE TABLE IF NOT EXISTS member_prefs (
+      member_id    TEXT PRIMARY KEY,
+      prefs        TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL
+    );
   `);
 
   // Idempotent column additions for the inbox feed (older DBs won't have these).

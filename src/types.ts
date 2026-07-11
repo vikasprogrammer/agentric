@@ -40,6 +40,60 @@ export interface Member {
 }
 
 /**
+ * Per-member notification preferences — which session events raise an in-app notification for THIS
+ * person, and through which channels. The inbox card itself is always written (audience-scoped as
+ * before); these prefs only decide what pings the member: the console bell/toast counts (client-side
+ * filtering) and whether the same event also DMs them on Slack/Discord (server-side, read by the
+ * session-event notifier). Stored per member in `member_prefs`; every field defaults ON except the DM
+ * push and sound, which are opt-in to avoid noise. Approvals/questions already DM their approver/owner
+ * regardless — the `dm` toggle here governs the newer complete/waiting pushes.
+ */
+export interface NotificationPrefs {
+  /** Which event kinds count toward this member's bell + surface a toast. */
+  events: {
+    completed: boolean;
+    waiting: boolean;
+    crashed: boolean;
+    approval: boolean;
+    question: boolean;
+  };
+  /** Show a transient toast when a new notification arrives while the console is open. */
+  toasts: boolean;
+  /** Play a short chime alongside a new toast. */
+  sound: boolean;
+  /** Also DM this member on Slack/Discord when one of their sessions completes or starts waiting. */
+  dm: boolean;
+}
+
+export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
+  events: { completed: true, waiting: true, crashed: true, approval: true, question: true },
+  toasts: true,
+  sound: false,
+  dm: false,
+};
+
+/** Merge a partial (possibly untrusted JSON) prefs object over the defaults so a stored row that
+ *  predates a new field, or a bad payload, can never drop a setting. Unknown keys are ignored. */
+export function sanitizeNotificationPrefs(input: unknown): NotificationPrefs {
+  const p = (input && typeof input === 'object' ? input : {}) as Partial<NotificationPrefs>;
+  const e = (p.events && typeof p.events === 'object' ? p.events : {}) as Partial<NotificationPrefs['events']>;
+  const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d);
+  const d = DEFAULT_NOTIFICATION_PREFS;
+  return {
+    events: {
+      completed: bool(e.completed, d.events.completed),
+      waiting: bool(e.waiting, d.events.waiting),
+      crashed: bool(e.crashed, d.events.crashed),
+      approval: bool(e.approval, d.events.approval),
+      question: bool(e.question, d.events.question),
+    },
+    toasts: bool(p.toasts, d.toasts),
+    sound: bool(p.sound, d.sound),
+    dm: bool(p.dm, d.dm),
+  };
+}
+
+/**
  * The external accounts a member is known by on other platforms — the join key that lets a chat
  * trigger (Slack/Discord) run AS the right person. One external id maps to at most one member
  * (enforced by the table's `(provider, external_id)` primary key), so run-as is never ambiguous.

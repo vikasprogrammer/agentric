@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'crypto';
 import { Db } from '../state/db';
-import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove } from '../types';
+import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs } from '../types';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // login cookie valid for 30 days
@@ -54,6 +54,30 @@ export class TeamStore {
   }
   count(): number {
     return this.db.prepare('SELECT COUNT(*) AS n FROM members').get<{ n: number }>()!.n;
+  }
+
+  // ── per-member notification preferences ──────────────────────────────────────
+  /** This member's notification prefs, merged over the defaults (missing row → all defaults). */
+  notificationPrefs(memberId: string): NotificationPrefs {
+    const row = this.db.prepare('SELECT prefs FROM member_prefs WHERE member_id = ?').get<{ prefs: string }>(memberId);
+    if (!row) return sanitizeNotificationPrefs(undefined);
+    try {
+      return sanitizeNotificationPrefs(JSON.parse(row.prefs));
+    } catch {
+      return sanitizeNotificationPrefs(undefined);
+    }
+  }
+
+  /** Persist a member's notification prefs (sanitized over the defaults) and return the resolved set. */
+  setNotificationPrefs(memberId: string, prefs: unknown): NotificationPrefs {
+    const clean = sanitizeNotificationPrefs(prefs);
+    this.db
+      .prepare(
+        `INSERT INTO member_prefs (member_id, prefs, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(member_id) DO UPDATE SET prefs = excluded.prefs, updated_at = excluded.updated_at`,
+      )
+      .run(memberId, JSON.stringify(clean), Date.now());
+    return clean;
   }
 
   /**

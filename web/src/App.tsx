@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
-import { type Branding, type PublicBranding } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
 import { docPages } from '@/docs'
@@ -694,6 +694,18 @@ function Console({ me }: { me: Member }) {
   // re-binding them every render / going stale on the captured `messages`.
   const messagesRef = useRef<Msg[]>([])
   messagesRef.current = messages
+  // This member's notification preferences (which events ping me, toasts/sound/DM). Loaded once; the
+  // bell's settings panel writes through `saveNotificationPrefs`. Defaults keep the bell fully on until
+  // the real prefs land, so a slow load never silently mutes anyone.
+  const [prefs, setPrefs] = useState<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS)
+  useEffect(() => { api.notificationPrefs().then(setPrefs).catch(() => {}) }, [])
+  const savePrefs = async (p: NotificationPrefs) => { setPrefs(p); try { await api.saveNotificationPrefs(p) } catch { /* keep the optimistic value */ } }
+  // Transient toast pop-ins for freshly-arrived notifications (Facebook-chat style). `seenNotifyIds`
+  // seeds on the first poll so a page load doesn't flood with toasts for the existing backlog; only
+  // ids that appear AFTER that raise a toast.
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const seenNotifyIds = useRef<Set<string> | null>(null)
+  const dismissToast = (key: string) => setToasts((t) => t.filter((x) => x.key !== key))
   const { route, detail, query: urlQuery, nav, setQuery: setUrlQuery } = useHashRoute()
   // The open terminal is a URL detail (`#/sessions/<tmux>`), not local state, so a refresh /
   // back-forward reopens the same session. Title is best-effort from the loaded list (falls back to
@@ -731,14 +743,28 @@ function Console({ me }: { me: Member }) {
     return () => clearInterval(t)
   }, [])
 
-  // Browser-tab badge: a 🔔 + count of sessions where Claude is waiting on you (one open
-  // notification per session), so the tab nags even when the console isn't focused. The tenant
-  // name leads the title so several instances are distinguishable across browser tabs.
+  // Browser-tab badge: a 🔔 + the bell's unread count (waiting + completions + crashes + approvals +
+  // questions, filtered by this member's prefs), so the tab nags even when the console isn't focused.
+  // The tenant name leads the title so several instances are distinguishable across browser tabs.
+  const notifyItems = useMemo(() => buildNotifyItems(messages, prefs), [messages, prefs])
+  const notifyUnread = notifyItems.filter((x) => x.unread).length
   useEffect(() => {
-    const n = messages.filter((m) => m.type === 'notification' && m.status === 'open').length
     const base = `${state?.tenantName || state?.tenant ? `${state.tenantName || state.tenant} · ` : ''}Agent OS`
-    document.title = n > 0 ? `🔔 (${n}) ${base}` : base
-  }, [messages, state?.tenantName, state?.tenant])
+    document.title = notifyUnread > 0 ? `🔔 (${notifyUnread}) ${base}` : base
+  }, [notifyUnread, state?.tenantName, state?.tenant])
+
+  // Toast pop-ins: watch the unread notification set and surface a toast for any item that's newly
+  // appeared since the last poll (seeded on first load so the backlog stays quiet). Respects the
+  // member's toast + sound prefs; each toast auto-dismisses itself (see ToastCard).
+  useEffect(() => {
+    const unread = notifyItems.filter((x) => x.unread)
+    if (seenNotifyIds.current === null) { seenNotifyIds.current = new Set(messages.map((m) => m.id)); return }
+    const fresh = unread.filter((x) => !seenNotifyIds.current!.has(x.m.id))
+    seenNotifyIds.current = new Set(messages.map((m) => m.id))
+    if (!fresh.length || !prefs.toasts) return
+    setToasts((t) => [...fresh.map((x) => ({ key: x.m.id, m: x.m, kind: x.kind })), ...t].slice(0, 4))
+    if (prefs.sound) chimeOnce()
+  }, [notifyItems, messages, prefs.toasts, prefs.sound])
 
   const refreshState = () => api.state().then(setState)
   // Team roster (with avatars) for attributing people across pages — the "run as" facet on a session
@@ -864,6 +890,24 @@ function Console({ me }: { me: Member }) {
     setSessions(await api.sessions())
     openTerminal(r.tmux, agentId + ' · ' + r.id)
     return null
+  }
+
+  // Click a bell item / toast → go to the thing it's about. A session-scoped kind (waiting/finished/
+  // crashed) opens that session's terminal (which clears its waiting bell); an approval/question opens
+  // the Inbox to act on it. Informational cards (completed/crashed) are marked read on open.
+  const openNotification = (m: Msg) => {
+    if (!m.read && m.type === 'completed') {
+      setMessages((ms) => ms.map((x) => (x.id === m.id ? { ...x, read: true } : x)))
+      void api.markRead(m.id)
+    }
+    const kind = notifyKindOf(m)
+    const sess = sessions.find((s) => s.id === m.sessionId)
+    if ((kind === 'waiting' || kind === 'completed' || kind === 'crashed') && sess) openTerminal(sess.tmux)
+    else nav('inbox')
+  }
+  const markAllNotificationsRead = async () => {
+    setMessages((ms) => ms.map((x) => ({ ...x, read: true })))
+    try { await api.markAllRead() } catch { /* optimistic */ }
   }
 
   const pendingApprovals = messages.filter(isActionRequired).length
@@ -1064,6 +1108,7 @@ function Console({ me }: { me: Member }) {
               </h1>
             </div>
           )}
+          <NotificationsBell items={notifyItems} unread={notifyUnread} prefs={prefs} onOpen={openNotification} onMarkAllRead={markAllNotificationsRead} onSavePrefs={savePrefs} />
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
@@ -1087,6 +1132,211 @@ function Console({ me }: { me: Member }) {
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
       </main>
+      <ToastHost toasts={toasts} onOpen={openNotification} onDismiss={dismissToast} />
+    </div>
+  )
+}
+
+// ── Notifications (bell + toasts) ────────────────────────────────────────────────
+/** The five session events the console notifies on. `waiting`/`approval`/`question` are action-required
+ *  (they stay "unread" until resolved); `completed`/`crashed` are informational and clear once read. */
+export type NotifyKind = 'completed' | 'waiting' | 'crashed' | 'approval' | 'question'
+export interface NotifyItem { m: Msg; kind: NotifyKind; unread: boolean }
+interface ToastItem { key: string; m: Msg; kind: NotifyKind }
+
+/** Which notification a feed message represents (or null if it isn't a notify-worthy one). Mirrors the
+ *  server-side card types: an open 'notification' is a waiting session; a 'completed' card is a finish
+ *  unless its outcome is 'crashed'. Only unresolved approvals/questions notify. */
+function notifyKindOf(m: Msg): NotifyKind | null {
+  if (m.type === 'approval' && m.status === 'pending') return 'approval'
+  if (m.type === 'question' && m.status === 'pending') return 'question'
+  if (m.type === 'notification' && m.status === 'open') return 'waiting'
+  if (m.type === 'completed') return m.outcome === 'crashed' ? 'crashed' : 'completed'
+  return null
+}
+/** Action-required kinds count as unread until resolved; a completed/crashed card clears once read. */
+function isUnreadNotify(m: Msg, kind: NotifyKind): boolean {
+  return kind === 'completed' || kind === 'crashed' ? !m.read : true
+}
+/** The member's enabled notifications, newest first — the bell list + tab-badge + toast source. */
+function buildNotifyItems(messages: Msg[], prefs: NotificationPrefs): NotifyItem[] {
+  const out: NotifyItem[] = []
+  for (const m of messages) {
+    const kind = notifyKindOf(m)
+    if (!kind || !prefs.events[kind]) continue
+    out.push({ m, kind, unread: isUnreadNotify(m, kind) })
+  }
+  return out.sort((a, b) => b.m.createdAt - a.m.createdAt)
+}
+
+const NOTIFY_META: Record<NotifyKind, { label: string; icon: LucideIcon; tone: string }> = {
+  waiting: { label: 'Waiting on you', icon: Bell, tone: 'text-indigo-500' },
+  completed: { label: 'Finished', icon: CheckCircle2, tone: 'text-emerald-500' },
+  crashed: { label: 'Crashed', icon: AlertTriangle, tone: 'text-red-500' },
+  approval: { label: 'Needs approval', icon: Shield, tone: 'text-amber-500' },
+  question: { label: 'Question for you', icon: HelpCircle, tone: 'text-sky-500' },
+}
+
+/** Compact relative age: now · 12s · 5m · 3h · 2d · 4w. */
+function notifyAgo(ts: number): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000))
+  if (s < 5) return 'now'
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60); if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60); if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24); if (d < 7) return `${d}d`
+  return `${Math.floor(d / 7)}w`
+}
+
+/** A short, self-contained chime for a new toast (WebAudio — no asset). Best-effort; silent if the
+ *  browser blocks audio before a user gesture. */
+function chimeOnce(): void {
+  try {
+    const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AC) return
+    const ctx = new AC()
+    const o = ctx.createOscillator(); const g = ctx.createGain()
+    o.connect(g); g.connect(ctx.destination)
+    o.type = 'sine'; o.frequency.value = 880
+    g.gain.setValueAtTime(0.0001, ctx.currentTime)
+    g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.02)
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.32)
+    o.start(); o.stop(ctx.currentTime + 0.34)
+    o.onended = () => { try { void ctx.close() } catch { /* already closed */ } }
+  } catch { /* audio unavailable */ }
+}
+
+/** One toast card — pops in bottom-right, auto-dismisses after 6s, click to open the session. */
+function ToastCard({ toast, onOpen, onDismiss }: { toast: ToastItem; onOpen: (m: Msg) => void; onDismiss: (key: string) => void }) {
+  useEffect(() => { const t = setTimeout(() => onDismiss(toast.key), 6000); return () => clearTimeout(t) }, [toast.key])
+  const meta = NOTIFY_META[toast.kind]
+  const Icon = meta.icon
+  return (
+    <div
+      className="pointer-events-auto flex w-80 items-start gap-3 rounded-lg border bg-background p-3 shadow-lg animate-in slide-in-from-bottom-2 fade-in"
+      role="status"
+    >
+      <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${meta.tone}`} />
+      <button className="min-w-0 flex-1 text-left" onClick={() => { onOpen(toast.m); onDismiss(toast.key) }}>
+        <p className="truncate text-sm font-medium">{toast.m.sessionTitle || toast.m.title}</p>
+        <p className="truncate text-xs text-muted-foreground">{meta.label} · {toast.m.agent}</p>
+      </button>
+      <button className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted" title="dismiss" onClick={() => onDismiss(toast.key)}>
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
+
+/** The fixed toast stack (bottom-right). Rendered once at the app root. */
+function ToastHost({ toasts, onOpen, onDismiss }: { toasts: ToastItem[]; onOpen: (m: Msg) => void; onDismiss: (key: string) => void }) {
+  if (!toasts.length) return null
+  return (
+    <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+      {toasts.map((t) => <ToastCard key={t.key} toast={t} onOpen={onOpen} onDismiss={onDismiss} />)}
+    </div>
+  )
+}
+
+/** The header notification bell: a count badge + a dropdown of recent notifications, plus a per-member
+ *  settings panel. Reuses the already-polled `messages` (via `items`), so it adds no new request cost. */
+function NotificationsBell({ items, unread, prefs, onOpen, onMarkAllRead, onSavePrefs }: {
+  items: NotifyItem[]
+  unread: number
+  prefs: NotificationPrefs
+  onOpen: (m: Msg) => void
+  onMarkAllRead: () => void
+  onSavePrefs: (p: NotificationPrefs) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [showPrefs, setShowPrefs] = useState(false)
+  const recent = items.slice(0, 12)
+  const toggleEvent = (k: NotifyKind) => onSavePrefs({ ...prefs, events: { ...prefs.events, [k]: !prefs.events[k] } })
+  return (
+    <div className="relative">
+      <button
+        className="relative rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+        title="Notifications"
+        onClick={() => { setOpen((o) => !o); setShowPrefs(false) }}
+      >
+        <Bell className="h-5 w-5" />
+        {unread > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
+            {unread > 99 ? '99+' : unread}
+          </span>
+        )}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-50 mt-2 w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-lg border bg-background shadow-xl">
+            <div className="flex items-center justify-between border-b px-3 py-2">
+              <span className="text-sm font-semibold">Notifications</span>
+              <div className="flex items-center gap-1">
+                {unread > 0 && (
+                  <button className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground" onClick={onMarkAllRead}>
+                    Mark all read
+                  </button>
+                )}
+                <button className={`rounded p-1 hover:bg-muted ${showPrefs ? 'text-foreground' : 'text-muted-foreground'}`} title="Notification settings" onClick={() => setShowPrefs((s) => !s)}>
+                  <Cog className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+            {showPrefs ? (
+              <div className="space-y-2 p-3 text-sm">
+                <p className="text-xs font-medium text-muted-foreground">Notify me about</p>
+                {(Object.keys(NOTIFY_META) as NotifyKind[]).map((k) => (
+                  <label key={k} className="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" checked={prefs.events[k]} onChange={() => toggleEvent(k)} />
+                    <span>{NOTIFY_META[k].label}</span>
+                  </label>
+                ))}
+                <div className="my-1 border-t" />
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={prefs.toasts} onChange={() => onSavePrefs({ ...prefs, toasts: !prefs.toasts })} />
+                  <span>Show pop-in toasts</span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={prefs.sound} onChange={() => onSavePrefs({ ...prefs, sound: !prefs.sound })} />
+                  <span>Play a sound</span>
+                </label>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={prefs.dm} onChange={() => onSavePrefs({ ...prefs, dm: !prefs.dm })} />
+                  <span>Also DM me on Slack/Discord</span>
+                </label>
+              </div>
+            ) : recent.length === 0 ? (
+              <div className="px-3 py-8 text-center text-sm text-muted-foreground">You're all caught up.</div>
+            ) : (
+              <ul className="max-h-96 overflow-y-auto">
+                {recent.map(({ m, kind, unread: un }) => {
+                  const meta = NOTIFY_META[kind]
+                  const Icon = meta.icon
+                  return (
+                    <li key={m.id}>
+                      <button
+                        className={`flex w-full items-start gap-3 border-b px-3 py-2 text-left last:border-b-0 hover:bg-muted ${un ? 'bg-muted/40' : ''}`}
+                        onClick={() => { onOpen(m); setOpen(false) }}
+                      >
+                        <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${meta.tone}`} />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="truncate text-sm font-medium">{m.sessionTitle || m.title}</span>
+                            <span className="shrink-0 text-[11px] text-muted-foreground">{notifyAgo(m.createdAt)}</span>
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">{meta.label} · {m.agent}</span>
+                        </span>
+                        {un && <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-indigo-500" />}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
     </div>
   )
 }
