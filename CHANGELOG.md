@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.108.1] — 2026-07-11
+### Changed
+- **Session tab strip no longer shows an ugly native horizontal scrollbar.** When more session tabs are
+  open than fit the switcher bar, the chunky OS scrollbar is hidden (`.no-scrollbar`) and replaced with
+  a soft 24px edge fade that appears only on the side(s) with off-screen tabs — a subtle "there's more"
+  hint that matches the slim dark toolbar. The strip still scrolls via trackpad/shift-wheel; the "N
+  ended" toggle stays pinned right as before (`web/src/App.tsx`, `edgeFadeMask`).
+
 ## [0.108.0] — 2026-07-11
 ### Added
 - **Agents can ask a human to install a skill — and only ask.** An agent can now discover and request
