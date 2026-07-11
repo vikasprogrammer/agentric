@@ -9,7 +9,6 @@
  * engine. Zero-dependency cron: a minimal 5-field parser below (minute hour dom month dow).
  */
 import { randomBytes, randomUUID } from 'crypto';
-import { execFileSync } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import { AgentOS } from '../kernel';
@@ -241,32 +240,10 @@ export function buildTaskPrompt(t: { id: string; title: string; body: string; cr
   return converging ? `/goal ${t.criteria}\n\n${base}` : base;
 }
 
-// Whether the installed `claude` supports the `/goal` slash command (v2.1.139+). Probed once via
-// `claude --version` and cached — an older binary would treat a leading `/goal` as literal text, so we
-// only emit it when supported and otherwise fall back to today's plain prompt. See goals-plan.md §C.
-// Resolves the binary the SAME way `terminal/claude-launch.sh` does: a launchd/systemd parent ships a
-// minimal PATH without `~/.local/bin`, so a bare `claude` lookup would fail in prod even though sessions
-// launch fine — try `$CLAUDE_BIN`, then PATH, then the documented `~/.local/bin/claude`.
-let goalCliSupport: boolean | undefined;
-export function claudeSupportsGoal(): boolean {
-  if (goalCliSupport !== undefined) return goalCliSupport;
-  const candidates = [process.env.CLAUDE_BIN, 'claude', path.join(os.homedir(), '.local/bin/claude')].filter(Boolean) as string[];
-  for (const bin of candidates) {
-    try {
-      const out = execFileSync(bin, ['--version'], { encoding: 'utf8', timeout: 5000 });
-      const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
-      if (m) { goalCliSupport = atLeastVersion([+m[1], +m[2], +m[3]], [2, 1, 139]); return goalCliSupport; }
-    } catch {
-      /* try the next candidate location */
-    }
-  }
-  goalCliSupport = false; // no `claude` resolvable (tests/demo) → never emit `/goal`
-  return goalCliSupport;
-}
-function atLeastVersion(v: number[], min: number[]): boolean {
-  for (let i = 0; i < 3; i++) if (v[i] !== min[i]) return v[i] > min[i];
-  return true;
-}
+// `/goal` CLI support (v2.1.139+) is probed + cached in the shared claude-cli module; imported for use
+// here and re-exported so existing importers (tests) keep their import path. See goals-plan.md §C.
+import { claudeSupportsGoal } from './claude-cli';
+export { claudeSupportsGoal };
 
 export class Automations {
   private readonly db: Db;

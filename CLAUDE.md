@@ -201,7 +201,11 @@ Key modules:
   directory) / `skill_request` (ASK an owner/admin to install a skill — never self-installs; `source`
   omitted ⇒ bundled catalog, `source:'owner/repo'` ⇒ a remote GitHub repo resolved at request time; posts a
   `skill.request` card, human installs via `POST /api/skills/requests/:id/approve` — catalog install or
-  `fetchSkill`+`installFiles`, available next session). Scheduling: `schedule`/`unschedule`
+  `fetchSkill`+`installFiles`. Delivery: next launch normally, but if the requesting agent has a LIVE
+  interactive (resident) session, `TerminalManager.refreshAgentSkills` materialises the skill into its
+  watched `.claude/skills` + injects `/reload-skills` (claude ≥2.1.152) so it's usable same-session —
+  headless runs, which exit, still get it next run. `.claude/skills` is always created at launch even for
+  a zero-skill agent, since claude only watches a dir that existed at startup). Scheduling: `schedule`/`unschedule`
   (one-shot deferred self-run via a `type:'once'` automation) + `stop` (the session ENDS ITSELF —
   loopback to `/api/agent/stop` → the same `TerminalManager.stopSession` halt the console kill button
   performs, `by` = the agent id). Tasks (shared work queue):
