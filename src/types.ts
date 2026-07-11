@@ -596,6 +596,8 @@ export interface Task {
   parentId?: string;
   mode: 'headless' | 'interactive'; // how a dispatched session runs (default headless: work-to-completion)
   autoDispatch: boolean;
+  goalId?: string; // the strategic Goal this task advances (Slice 2 linkage)
+  criteria?: string; // single-line acceptance condition; drives a headless run under a `/goal` on dispatch
   dueAt?: number;
   attempts: number;
   lastSessionId?: string;
@@ -639,6 +641,8 @@ export interface TaskCreateInput {
   parentId?: string;
   mode?: 'headless' | 'interactive';
   autoDispatch?: boolean;
+  goalId?: string; // link to a strategic Goal (Slice 2)
+  criteria?: string; // single-line acceptance condition → `/goal` convergence on a headless dispatch
   dueAt?: number;
   createdBy: string; // member id | 'agent:<id>'
 }
@@ -651,6 +655,8 @@ export interface TaskUpdateInput {
   priority?: number;
   labels?: string[];
   mode?: 'headless' | 'interactive';
+  goalId?: string | null; // link/unlink (null) the strategic Goal
+  criteria?: string | null; // set/clear (null) the acceptance condition
   dueAt?: number | null; // epoch ms soft deadline; null clears it
   note?: string; // free-text comment → appended as a task_event
   by: string; // author (member id | 'agent:<id>')
@@ -731,6 +737,15 @@ export interface GoalQuery {
   parentId?: string;
   query?: string; // FTS over title/body/labels
   limit?: number;
+}
+
+/** A goal's progress, DERIVED from the tasks linked to it (never hand-maintained). */
+export interface GoalProgress {
+  total: number; // all linked tasks
+  done: number; // linked tasks in `done`
+  counted: number; // total minus cancelled (the denominator for percent)
+  percent: number; // done ÷ counted, 0–100 (0 when nothing linked)
+  byStatus: Record<TaskStatus, number>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

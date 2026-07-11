@@ -283,6 +283,8 @@ export interface Task {
   assignee?: string
   owner?: string
   parentId?: string
+  goalId?: string
+  criteria?: string
   mode: 'headless' | 'interactive'
   autoDispatch: boolean
   dueAt?: number
@@ -321,6 +323,8 @@ export interface AddTaskReq {
   priority?: number
   labels?: string[]
   parentId?: string
+  goalId?: string
+  criteria?: string
   mode?: 'headless' | 'interactive'
   autoDispatch?: boolean
   dueAt?: number
@@ -352,6 +356,13 @@ export interface GoalEvent {
   createdAt: number
 }
 export type GoalCounts = Record<GoalStatus, number>
+export interface GoalProgress {
+  total: number
+  done: number
+  counted: number
+  percent: number
+  byStatus: Record<TaskStatus, number>
+}
 export interface AddGoalReq {
   title: string
   body?: string
@@ -912,7 +923,7 @@ export const api = {
   tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[] }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; error?: string }>('GET', `/api/tasks/${id}`),
   addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
-  patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
+  patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; goalId?: string | null; criteria?: string | null; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
   dispatchTask: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/tasks/${id}/dispatch`),
   deleteTask: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${id}`),
@@ -925,8 +936,8 @@ export const api = {
   /** Direct URL to an attachment's bytes (inline; for download/preview links). */
   taskAttachmentUrl: (taskId: string, attId: string) => `/api/tasks/${taskId}/attachments/${attId}/raw`,
 
-  goals: (q = '', status = '') => call<{ goals: Goal[]; counts: GoalCounts }>('GET', `/api/goals?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
-  goal: (id: string) => call<{ goal?: Goal; events?: GoalEvent[]; error?: string }>('GET', `/api/goals/${id}`),
+  goals: (q = '', status = '') => call<{ goals: Goal[]; counts: GoalCounts; progress: Record<string, GoalProgress> }>('GET', `/api/goals?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  goal: (id: string) => call<{ goal?: Goal; events?: GoalEvent[]; tasks?: Task[]; progress?: GoalProgress; error?: string }>('GET', `/api/goals/${id}`),
   addGoal: (b: AddGoalReq) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', '/api/goals', b),
   patchGoal: (id: string, b: { title?: string; body?: string; status?: GoalStatus; target?: string | null; owner?: string | null; parentId?: string | null; labels?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; goal?: Goal; error?: string }>('PATCH', `/api/goals/${id}`, b),
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),

@@ -117,6 +117,12 @@ CI = `npm run test:governance` from repo root.
 
 Where goals stop being decoration and start steering + measuring work.
 
+> **Status (v0.108.0):** **A (linkage + derived progress)** and **C (`/goal` convergence)** shipped —
+> they're the tightly-coupled core (linkage enables progress; `/goal` enables convergence) and C was
+> already spiked. **B (the Dreaming goal-lens)** is deferred to a fast-follow: it reasons over linkage
+> data that only exists once A is in use, and it touches the self-learning engine's config-recommendation
+> semantics (a separable, riskier surface). Section B below is the remaining work.
+
 ### A. Goal ↔ Task linkage
 - Add nullable `goal_id` to `tasks` (`src/state/tasks.ts` + `db.ts` migration).
 - `TaskStore.tasksForGoal(goalId)`; `GoalStore.progress(goalId)` derives % from linked-task status.

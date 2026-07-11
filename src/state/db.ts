@@ -608,6 +608,12 @@ function migrate(db: Db): void {
   // Older `tasks` rows (created before this column) default to today's behavior: headless.
   addColumn(db, 'tasks', 'mode', "TEXT NOT NULL DEFAULT 'headless'");
 
+  // Slice 2 — link a task up to the strategic Goal it advances (nullable; older rows have none), and an
+  // optional single-line acceptance `criteria` that, when set on a headless task, drives its dispatched
+  // session under a Claude Code `/goal` completion condition (autonomous convergence). See goals-plan.md.
+  addColumn(db, 'tasks', 'goal_id', 'TEXT');
+  addColumn(db, 'tasks', 'criteria', 'TEXT');
+
   // Human verdict on a finished run — the ground-truth signal for the agent maturity score (a person
   // who oversaw the run says it did / didn't do what they wanted). One verdict per session, latest wins.
   // Feeds src/state/agent-stats.ts as the HIGHEST-confidence outcome layer, above the agent's own

@@ -555,6 +555,8 @@ const TOOLS = [
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low (default 2).' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },
         parentId: { type: 'string', description: 'Parent task id, to file this as a sub-task.' },
+        goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
+        criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
         due: { type: 'string', description: 'Optional soft deadline as an ISO date, e.g. "2026-07-15" or "2026-07-15T17:00:00Z".' },
@@ -624,6 +626,8 @@ const TOOLS = [
         assignee: { type: 'string', description: 'Reassign: "agent:<id>", a member id, "me", or null to unassign.' },
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low.' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Replace the label set.' },
+        goalId: { type: 'string', description: 'Link this task to a strategic goal (or null to unlink).' },
+        criteria: { type: 'string', description: 'Set the single-line acceptance condition for `/goal` convergence on dispatch (or null to clear).' },
         due: { type: 'string', description: 'Set a soft deadline as an ISO date (e.g. "2026-07-15"), or "" / null to clear it.' },
       },
       required: ['id'],
@@ -1297,6 +1301,8 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       priority: typeof args.priority === 'number' ? args.priority : undefined,
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
       parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
+      goalId: args.goalId !== undefined ? String(args.goalId) : undefined,
+      criteria: args.criteria !== undefined ? String(args.criteria) : undefined,
       // `wait` implies autoDispatch — you can't block on work that never starts.
       autoDispatch: args.autoDispatch === true || args.wait === true,
       mode: args.mode === 'interactive' ? 'interactive' : undefined,
@@ -1371,11 +1377,20 @@ async function goalGet(args: Record<string, unknown>): Promise<string> {
   u.searchParams.set('id', String(args.id ?? ''));
   const res = await fetch(u, { headers: H() });
   if (!res.ok) return 'Goal not found.';
-  const d = (await res.json()) as { goal?: { id: string; title: string; body?: string; status: string; target?: string }; events?: Array<{ kind: string; body?: string; author: string }> };
+  const d = (await res.json()) as {
+    goal?: { id: string; title: string; body?: string; status: string; target?: string };
+    events?: Array<{ kind: string; body?: string; author: string }>;
+    tasks?: Array<{ id: string; title: string; status: string }>;
+    progress?: { total: number; done: number; percent: number };
+  };
   if (!d.goal) return 'Goal not found.';
   const g = d.goal;
   const timeline = (d.events ?? []).map((e) => `  · ${e.kind}${e.body ? `: ${e.body}` : ''} — ${e.author}`).join('\n');
-  return `${g.id} · [${g.status}]${g.target ? ` · target: ${g.target}` : ''}\n# ${g.title}\n${g.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}`;
+  const p = d.progress;
+  const progressLine = p && p.total ? `\nProgress: ${p.percent}% (${p.done}/${p.total} linked tasks done)` : '\nProgress: no tasks linked yet — link work with task_create/task_update({ goalId: "' + g.id + '" }).';
+  const taskLines = (d.tasks ?? []).map((t) => `  · [${t.status}] ${t.id} — ${t.title}`).join('\n');
+  const tasksSection = d.tasks?.length ? `\n\nLinked tasks:\n${taskLines}` : '';
+  return `${g.id} · [${g.status}]${g.target ? ` · target: ${g.target}` : ''}${progressLine}\n# ${g.title}\n${g.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${tasksSection}`;
 }
 
 async function goalPropose(args: Record<string, unknown>): Promise<string> {
@@ -1587,6 +1602,8 @@ async function taskUpdate(args: Record<string, unknown>): Promise<string> {
       assignee: args.assignee === null ? null : (args.assignee !== undefined ? String(args.assignee) : undefined),
       priority: typeof args.priority === 'number' ? args.priority : undefined,
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
+      goalId: args.goalId === null ? null : (args.goalId !== undefined ? String(args.goalId) : undefined),
+      criteria: args.criteria === null ? null : (args.criteria !== undefined ? String(args.criteria) : undefined),
       dueAt: parseDue(args.due),
     }),
   });
