@@ -7,8 +7,11 @@ rewritten to match — **§10 Dreaming** (the compounding self-learning engine h
 still read 🌱 Seed) and **§15 Knowledge Base** (graded ✅ in the table but had no detail section). Then,
 as the **chat-channels v1** work landed, **§4 Team** (added the `member_identities` identity map) and
 **§7 Automations** (added native **Slack + Discord** ingress, run-as the sending member; regraded ✅)
-were updated. All other grades + narratives still hold. Live v1 milestone tracker:
-`docs/v1-mvp-scope.md`.
+were updated. **Updated 2026-07-11:** **§12 Skills** regraded 🟡 → ✅ — skill **import** (bundled
+catalog + any GitHub repo / skills.sh + `.zip`), the **agent-driven, human-gated request flow**
+(`skill_find`/`skill_request` → owner/admin install, never self-install) with **same-session delivery**
+(`/reload-skills` into a live interactive run), and procedural `skill_propose` all shipped. All other
+grades + narratives still hold. Live v1 milestone tracker: `docs/v1-mvp-scope.md`.
 
 **Cross-cutting:** how agents are *granted* reach — the relationship between §3 Connectors, §5 Policy,
 and §8 Secrets — is mapped in [`access-model.md`](./access-model.md) (`Creds → Connections →
@@ -32,7 +35,7 @@ Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`]
 | 9 | Memory layer | 🟡 | Per-agent + **shared workspace-wide** `remember`/`recall` (+ agent self-correction via `revise`/`forget`, recall returns ids) MCP server + console **Memory hub** (Overview / Memories / Self-learning tabs) live; three backends — sqlite (keyword, or hybrid keyword+vector with embeddings), libsql (native vectors), automem — switchable live in Settings → Memory backend. **Episodic↔semantic encoding loop** ships: graded auto session-end **episodes** (salience-weighted by effort+friction+outcome), deliberate **lessons** (the `report` `lessons` field), **retrieval reinforcement** (rank ↑ frequently-recalled, recency from last-use, prune the never-recalled), prune+dedupe maintenance, and tenant-scoped sharing; ANN still pending. See [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) |
 | 10 | Dreaming / Self-learning | 🟡 | A periodic Dreamer reflects on recent episodes + outcomes + friction, **compounds** them into persisted cumulative state (growing KB page + shared memory Insight), and closes the loop two ways: (a) distilled **guidance injected into every agent's prompt** at launch, and (b) **approval-gated config recommendations** a human Applies/Dismisses. Plus the **consolidation gardener** (a governed headless `consolidator` agent that abstracts recent episodes+lessons into shared memories + KB pages) — now the second half of one **"reflect"** pass (deterministic tally then gardener), surfaced as a single **Reflect now** button in the Memory hub → Self-learning. The whole system is framed by four verbs (Capture · Recall · Distil · Apply) in [`memory-model.md`](./memory-model.md); mechanism in [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) |
 | 11 | Company Settings | 🟡 | Company context (markdown) edited in console, appended to every claude-code agent's system prompt. Tenant branding not folded in yet |
-| 12 | Skills of agents | 🟡 | Global skills library (native `.claude/skills`) edited in console, synced into every claude-code agent at launch, with per-agent audience assignment. **Procedural memory (Lever 6):** the fleet drafts its OWN skills — the always-on `skill_propose` tool (+ the consolidation gardener) stages a `.aos-proposed` draft that `materialize()` skips until a human **Publishes** it from the Skills page (a `skill.proposed` inbox card notifies owner/admins); human-gated only. See [`procedural-skills-plan.md`](./procedural-skills-plan.md) |
+| 12 | Skills of agents | ✅ | Global skills library (native `.claude/skills`) edited in console, synced into claude-code agents at launch, with per-agent audience assignment. **Imported** from a bundled catalog or any public GitHub repo / the skills.sh directory. **Agent-driven, human-gated:** agents `skill_find` (own library + catalog + skills.sh) and `skill_request` a catalog/remote skill — an owner/admin installs it (agents never self-install); approval delivers **same-session** to a live interactive run (materialise + `/reload-skills`) or next launch. **Procedural memory (Lever 6):** the fleet drafts its OWN skills — `skill_propose` (+ the consolidation gardener) stages a `.aos-proposed` draft that `materialize()` skips until a human **Publishes** it (a `skill.proposed` inbox card notifies owner/admins). See [`procedural-skills-plan.md`](./procedural-skills-plan.md) |
 | 13 | Tools / Apps | ⬜ | Agent-built tools don't exist (closest: hand-written capability registry) |
 | 14 | Artifacts / Deliverables | ✅ | Agents `publish` finished files (PDF/Markdown/image) to a governed gallery; snapshotted, provenance-scoped, previewed in-console |
 | 15 | Knowledge Base | ✅ | Shared, tenant-wide living wiki: `KbStore` (markdown-on-disk + SQLite/FTS), revision chain + revert, `kb_search`/`kb_read`/`kb_write` MCP tools, and a console **Knowledge** page (browse/view/edit/history/revert). Agents + humans co-author; every edit versioned + auditable. No deep hierarchy / diff view yet |
@@ -381,36 +384,56 @@ them in here. No markdown preview in the editor. Mock-runtime agents don't recei
 > control plane (`src/state/control.ts`), provisioned superadmin-only (`agent-os tenant create` /
 > `POST /api/admin/tenants`). The DB file remains the tenant boundary. See `docs/scoping-model.md`.
 
-## 12. Skills of agents — 🟡 Partial
+## 12. Skills of agents — ✅ Working
 
 **The idea.** Reusable, named playbooks an agent can reach for ("write release notes", "knows our
 refund SOP") — shareable across agents rather than buried in each CLAUDE.md.
 
 **Today.** A workspace-global skills library lives in the data home (`<home>/skills/<name>/SKILL.md`
 + supporting files) in Claude Code's native `.claude/skills` format (`src/governance/skills.ts`,
-`SkillsStore`). A console **Skills page** (Manage nav, owner/admin) lists/creates/edits/deletes
-library skills — each SKILL.md edited as text, with its `description` driving auto-invocation. Like the
-Company context, skills are **global**: at session launch `TerminalManager.materializeSkills` syncs the
-whole library into the claude-code agent's project `.claude/skills/` (there's no per-invocation skills
-flag — discovery is filesystem-native), so every agent gets them and the CLI auto-selects by
-description (or you call `/name`). Managed skills carry an `.aos-managed` marker so a re-sync never
-clobbers a **per-agent** skill hand-placed in the agent's own folder — and a same-named agent skill
-**shadows** the global one. Per-agent skills are inspected via the **Files** page
-(`agents/<id>/.claude/skills/`). The gateway invariant holds: a skill's `allowed-tools` only suppresses
-claude's own permission prompts; the PreToolUse gate hook still gates risky Bash.
+`SkillsStore`). A console **Skills page** (Manage nav, owner/admin) lists/creates/edits/deletes/duplicates
+library skills — each SKILL.md edited as text, with its `description` driving auto-invocation. At session
+launch `TerminalManager.materializeSkills` syncs the library into the claude-code agent's project
+`.claude/skills/` (discovery is filesystem-native — no per-invocation flag), so the agent auto-selects by
+description (or you call `/name`). **Per-agent audience:** a `skill_assignments` table scopes a skill to
+specific agents (an "Assign" control per skill; empty = every agent) — so a skill need not be global.
+Managed skills carry an `.aos-managed` marker so a re-sync never clobbers a **per-agent** skill
+hand-placed in the agent's own folder, and a same-named agent skill **shadows** the global one. The
+gateway invariant holds: a skill's `allowed-tools` only suppresses claude's own permission prompts; the
+PreToolUse gate hook still gates risky Bash.
 
-**Gaps.** No per-agent grants matrix (every global skill goes to every agent — per-agent customisation
-is filesystem-only via Files, and Files can't yet create skill folders); no skill marketplace/import;
-mock-runtime agents don't receive skills (they're scripted); supporting-file editing is view-only in
-the console (edit SKILL.md text; richer assets via Files). A future step mirrors agent↔member
-assignment: a `skill_grants` table for per-agent scoping.
+**Import (marketplace).** The library is filled from three sources, all owner/admin, all landing as plain
+files re-governed like any other skill: a **bundled catalog** that ships with the software
+(`config/skills` → `install`); **any public GitHub repo** (the Git trees API + `raw`, zero-dep —
+`src/governance/skill-registry.ts`), which also covers the **skills.sh** directory (`npx skills add
+owner/repo`); and a **`.zip` upload/drag-drop**. Featured one-click preset repos are shown in the console.
 
-**Planned — procedural skills (Lever 6 of the learning loop).** Skills are authored/installed today;
-nothing turns the fleet's own repeated successes into skills. The plan closes the episodic→**procedural**
-gap (the layer Hermes Agent leads with): a governed producer (any agent post-task, and the consolidation
-gardener across the batch) proposes a `SKILL.md` from a recurring, reusable procedure, staged as a draft
-**not** materialised to agents until a human reviews and publishes it — reusing the skills store + the
-Dreaming recommendations' approval pattern. Spec: [`procedural-skills-plan.md`](./procedural-skills-plan.md).
+**Agent-driven, human-gated (the request flow).** Agents don't just receive skills — they can **ask** for
+them and never install one themselves. Two always-on MCP tools: `skill_find` discovers what's installable
+(the agent's own library with an `active` flag, the bundled catalog, and — with a `query` — matching
+community skills from skills.sh); `skill_request` raises an owner/admin **`skill.request`** inbox card for
+a named catalog skill or a remote `owner/repo` (resolved against the repo at request time so a typo fails
+fast). The human **Installs** it from the Skills page's "Requested by agents" section (all agents, or
+scoped to just the requester) or **Dismisses** it; audited `skill.requested` → `skill.installed`
+(`source: agent-request`). **Same-session delivery:** if the requesting agent has a live *interactive*
+session at approval, `TerminalManager.refreshAgentSkills` materialises the skill into its watched
+`.claude/skills` and injects **`/reload-skills`** (claude ≥ 2.1.152) so it's usable *in that run*; a
+headless run has already exited and gets it on its next launch. (`materialize` now always creates
+`.claude/skills` at launch — even for a zero-skill agent — because Claude Code only watches a dir that
+existed at startup.)
+
+**Procedural memory (Lever 6 of the learning loop).** The fleet turns its own repeated successes into
+skills: any agent post-task (and the consolidation gardener across a batch) `skill_propose`s a `SKILL.md`
+from a recurring, reusable procedure. A proposal is staged as a `.aos-proposed` draft that `materialize()`
+**skips** — invisible to agents until a human reviews and **Publishes** it from the Skills page (a
+`skill.proposed` card notifies owner/admins), reusing the Dreaming recommendations' approval pattern.
+Spec: [`procedural-skills-plan.md`](./procedural-skills-plan.md).
+
+**Gaps.** Mock-runtime agents don't receive skills (they're scripted); the console's Files page can't yet
+create skill folders and supporting-file editing there is view-only (edit SKILL.md text in the Skills
+page, richer assets via Files); same-session delivery reaches only live *interactive* sessions (headless
+= next launch). Remote import is rate-limited by the unauthenticated GitHub API unless `GITHUB_TOKEN` is
+set.
 This is the natural extension of Pillar 10 (Distil now emits facts → memories/KB; Lever 6 adds procedures → skills).
 
 ## 13. Tools / Apps — ⬜ Not started
