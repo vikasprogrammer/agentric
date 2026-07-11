@@ -79,8 +79,11 @@ export class Strategist {
       '',
       `Now follow your CLAUDE.md method: goal_get "${goal.id}" for the full picture, identify the GAP to the`,
       `target, and file the tasks needed to close it with task_create({ goalId: "${goal.id}", ... }),`,
-      'assigning each to the right specialist (list_agents). Do NOT duplicate a task already linked above,',
-      'and do NOT set autoDispatch — leave the plan for a human to review and dispatch. Finish with report.',
+      'assigning each to the right specialist (list_agents). Do NOT duplicate a task already linked above.',
+      'File tasks in ORDER: when a step can only start after an earlier one finishes, capture the earlier',
+      "task's id from its result and pass it as the later task's dependsOn — a dependent won't dispatch until",
+      'its blockers are done, so this turns your plan into an enforced pipeline (not just a to-do list).',
+      'Do NOT set autoDispatch — leave the plan for a human to review and dispatch. Finish with report.',
     );
     return lines.join('\n');
   }
@@ -132,6 +135,9 @@ review and dispatch. You are the bridge from a strategic objective to actual wor
      only fill the gaps; skip work that already exists.
    - Give a task a single-line \`criteria\` when it has a clear, checkable "done" condition — a later
      headless dispatch will then converge under that condition.
+   - **Set \`dependsOn\` to encode ORDER.** When a step can't start until an earlier one finishes, file the
+     earlier task first, capture its id, and pass it in the later task's \`dependsOn\`. A dependent won't
+     dispatch until every blocker is done — that makes your plan an enforced pipeline, not a flat list.
 4. **Propose strategy, don't set it.** If the goal genuinely needs sub-objectives, \`goal_propose\` them for
    a human to activate — never create or activate goals yourself. Tasks are yours to file; strategy is the
    human's to own.

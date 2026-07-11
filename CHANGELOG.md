@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.117.0] — 2026-07-11
+### Added
+- **Task dependencies — plans become enforced pipelines, not just ordered to-do lists.** A task can now
+  be **blocked by** other tasks (`dependsOn`); a dependency is satisfied when the blocker is done/cancelled.
+  - New `task_deps` join table + `Task.dependsOn`; set via the console task editor and the
+    `task_create`/`task_update` MCP tools (`dependsOn`). Integrity-guarded: self-deps, missing blockers, and
+    cycles are rejected (the graph stays a DAG); deleting a task cleans up edges pointing at it.
+  - **Dispatch is gated on dependencies** — `TaskStore.dispatchable()` excludes any task with an unfinished
+    blocker, and `Automations.dispatchTask` refuses one directly (console dispatch / `task_dispatch` /
+    `task_wait`). So the scheduler **walks a plan in order**: a dependent stays `todo` until its blockers
+    finish, then becomes dispatchable on the next tick.
+  - The **strategist** now sets `dependsOn` when it files a plan (instruction lives in its per-run prompt, so
+    the already-provisioned agent picks it up), turning its implicit sequence into a real pipeline.
+  - Console: a **Dependencies** section on the task detail (blockers + what it blocks, with an editor) and a
+    **"waiting on N"** chip on the board when a task has unmet blockers. `goal_get`/`task_get` surface deps too.
+
 ## [0.116.1] — 2026-07-11
 ### Fixed
 - **Publishing a proposed skill now delivers same-session too.** Same-session delivery (materialise +
@@ -17,6 +33,8 @@ new version heading in the same commit.
   `TerminalManager.refreshAgentSkills` for the **proposing agent** (captured before publish drops the
   `.aos-proposed` marker) and returns `reloaded`. Bounded to the proposer — console catalog/remote installs
   stay next-launch by design (they install for the whole fleet, so a broadcast reload would be disruptive).
+
+## [0.116.0] — 2026-07-11
 ### Changed
 - **Automations page redesign — compact, scannable cards.** The old layout put a full-width six-control
   toolbar (Runs · Run now · mode-select · Disable · Edit · trash) plus three badges on every card, which

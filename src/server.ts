@@ -1009,6 +1009,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true',
         goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
+        dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
         dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: `agent:${agent}`,
       });
@@ -1044,7 +1045,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const found = os.tasks.withEvents(url.searchParams.get('id') || '');
     if (!found) return sendJson(res, 404, { error: 'task not found' });
-    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id) });
+    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id) });
   }
   if (method === 'POST' && p === '/api/tasks/claim') {
     const b = await readBody(req);
@@ -1072,6 +1073,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
       goalId: b.goalId === null ? null : (typeof b.goalId === 'string' ? b.goalId : undefined),
       criteria: b.criteria === null ? null : (typeof b.criteria === 'string' ? b.criteria : undefined),
+      dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
       dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
       note: typeof b.note === 'string' ? b.note : undefined,
       by: `agent:${agent}`,
@@ -1925,7 +1927,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);
     if (!found) return sendJson(res, 404, { error: 'task not found' });
-    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id) });
+    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id) });
   }
   // Upload a file onto a task (raw bytes in the body; original name in ?name=). Any member, like a task edit.
   if (taskAttachments && method === 'POST') {
@@ -1979,6 +1981,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         autoDispatch: b.autoDispatch === true,
         goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
+        dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
         dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: me.id,
       });
@@ -2003,6 +2006,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       mode: b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined,
       goalId: b.goalId === null ? null : (typeof b.goalId === 'string' ? b.goalId : undefined),
       criteria: b.criteria === null ? null : (typeof b.criteria === 'string' ? b.criteria : undefined),
+      dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
       dueAt: b.dueAt === null ? null : (typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined),
       note: typeof b.note === 'string' ? b.note : undefined,
       by: me.id,

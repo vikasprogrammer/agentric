@@ -652,6 +652,7 @@ export interface Task {
   autoDispatch: boolean;
   goalId?: string; // the strategic Goal this task advances (Slice 2 linkage)
   criteria?: string; // single-line acceptance condition; drives a headless run under a `/goal` on dispatch
+  dependsOn?: string[]; // task ids this task is blocked by — it won't dispatch until they're done/cancelled
   dueAt?: number;
   attempts: number;
   lastSessionId?: string;
@@ -697,6 +698,7 @@ export interface TaskCreateInput {
   autoDispatch?: boolean;
   goalId?: string; // link to a strategic Goal (Slice 2)
   criteria?: string; // single-line acceptance condition → `/goal` convergence on a headless dispatch
+  dependsOn?: string[]; // task ids this task is blocked by (won't dispatch until they finish)
   dueAt?: number;
   createdBy: string; // member id | 'agent:<id>'
 }
@@ -711,6 +713,7 @@ export interface TaskUpdateInput {
   mode?: 'headless' | 'interactive';
   goalId?: string | null; // link/unlink (null) the strategic Goal
   criteria?: string | null; // set/clear (null) the acceptance condition
+  dependsOn?: string[]; // replace the dependency set (task ids this task is blocked by); [] clears it
   dueAt?: number | null; // epoch ms soft deadline; null clears it
   note?: string; // free-text comment → appended as a task_event
   by: string; // author (member id | 'agent:<id>')
