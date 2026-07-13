@@ -964,8 +964,10 @@ function Console({ me }: { me: Member }) {
   // (spawnedBy is my member id) OR ones a trigger spawned that run AS me (runAs): a Task I own that
   // auto-dispatched, a chat message I sent. Those have a `task:`/`automation:` provenance, so keying
   // only off spawnedBy hid them from their owner's sidebar. Running first, then newest first.
+  // Closing a tab (hiddenTabs) drops it here too — mirroring the terminal strip's `visible()` — so a
+  // "closed" session leaves both viewports; the still-open one always stays. Reopen it from All sessions.
   const mySessions = sessions
-    .filter((s) => s.spawnedBy === me.id || s.runAs === me.id)
+    .filter((s) => (s.spawnedBy === me.id || s.runAs === me.id) && (!hiddenTabs.has(s.tmux) || s.tmux === selected?.tmux))
     .sort((a, b) => {
       const rank = (s: Session) => (isLive(s) ? 0 : 1) // live first; all terminal (dead) states tie
       return rank(a) - rank(b) || b.createdAt - a.createdAt

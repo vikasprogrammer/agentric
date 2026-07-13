@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.124.1] — 2026-07-13
+### Fixed
+- **Closing a terminal tab now removes the session from the left sidebar too.** Closing a tab detaches it
+  from the terminal strip but leaves the session running — however the sidebar's "Sessions" switcher never
+  consulted `hiddenTabs`, so a "closed" session lingered there (and could be reopened from it), out of sync
+  with the strip. The sidebar list now applies the same `hiddenTabs` filter the strip does (keeping the
+  currently-open session visible), so a closed tab leaves both viewports while staying alive and reopenable
+  from **All sessions**.
+
 ## [0.124.0] — 2026-07-13
 ### Added
 - **Pinnable sidebar nav — each member curates their own Main.** Every secondary nav item is now pinnable:
