@@ -920,6 +920,9 @@ export const api = {
   /** This member's own notification preferences (bell/toast/sound/DM + which event kinds). */
   notificationPrefs: () => call<NotificationPrefs>('GET', '/api/me/prefs'),
   saveNotificationPrefs: (prefs: NotificationPrefs) => call<NotificationPrefs>('PUT', '/api/me/prefs', prefs),
+  // This member's personal context (free-text injected into every session run as them).
+  myContext: () => call<{ context: string }>('GET', '/api/me/context'),
+  saveMyContext: (context: string) => call<{ context: string }>('PUT', '/api/me/context', { context }),
   /** Persist this member's pinned sidebar nav (the keys promoted to Main). Returns the resolved list. */
   saveNavPins: (pinned: string[]) => call<{ pinned: string[] }>('PUT', '/api/me/nav', { pinned }),
 

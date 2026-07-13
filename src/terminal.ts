@@ -1300,6 +1300,22 @@ export class TerminalManager {
    *  terminal hyperlinks (OSC 8) aren't clickable — the agent must surface raw URLs as plain text. */
   private buildCompanyMd(selfAgent?: string, actingMember?: string): string {
     const company = this.os.settings.company().companyMd.trim();
+    // Per-member personal context: free-text the human you run AS chose to inject into their sessions
+    // (their working style, standing preferences, domain notes). Self-service, owner-scoped — set on
+    // the Profile page. Only present when acting as a real member who wrote something.
+    let memberCtx = '';
+    if (actingMember) {
+      const ctx = this.os.team.memberContext(actingMember).trim();
+      if (ctx) {
+        const who = this.os.team.getMember(actingMember)?.name || 'the person you run as';
+        memberCtx =
+          `# Personal context from ${who} — the person you are running as\n\n` +
+          `${who} added this to steer sessions run on their behalf. Treat it as their standing ` +
+          'preferences and instructions for how you work for them, secondary to the task at hand and ' +
+          'these operating notes.\n\n' +
+          ctx;
+      }
+    }
     // Close the self-learning loop: the Dreamer's distilled guidance rides in every agent's prompt, so
     // the fleet's accumulated experience shapes each new session. Toggleable in Settings → Self-learning.
     const learned = this.os.settings.applyLearnings() ? this.os.settings.learnedGuidance().trim() : '';
@@ -1431,7 +1447,7 @@ export class TerminalManager {
             .join('\n');
       }
     }
-    return [company, AGENT_OS_OPERATING_NOTES, messaging, github, goalsSection, fleet, team, preamble, learned]
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, goalsSection, fleet, team, preamble, learned]
       .filter(Boolean)
       .join('\n\n');
   }

@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.135.0] — 2026-07-13
+### Added
+- **Per-member personal context + a self-service Profile page.** Each member can now add free-text
+  **"My context"** that is injected into the system prompt of every session that runs **as them** (their
+  working style, standing preferences, domain notes) — read at launch by `buildCompanyMd` and labelled as
+  the operator's standing instructions, secondary to the task and the operating notes. Stored in the
+  `member_prefs` blob (trimmed, capped at 8,000 chars), edited at `GET`/`PUT /api/me/context` (self-service,
+  no role gate; audited `member.context.set`). A new **Profile** page (reachable from the sidebar profile
+  row and the bell's gear) collects the member's *own* settings in one place: avatar + name, My context,
+  notification preferences (moved off the notification bell, which is now feed-only), and their chat
+  identities (Slack/Discord/email/GitHub run-as handles — a member may now edit their **own** handles; the
+  `/api/team/:id/identities` routes accept self as well as admin). The **Team** page stays focused on
+  managing *other* people (roster, roles, invites, agent access). (`ProfilePage`/`NotificationsBell` in
+  `web/src/App.tsx`; `TeamStore.memberContext`/`setMemberContext`; `buildCompanyMd` in `src/terminal.ts`.)
+
 ## [0.134.0] — 2026-07-13
 ### Added
 - **The Library now renders published HTML files as a live page**, not as raw source. HTML deliverables
