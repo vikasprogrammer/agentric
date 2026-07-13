@@ -8,7 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.128.3] — 2026-07-13
+## [0.128.4] — 2026-07-13
+### Changed
+- **Settings → Integrations: one "Media generation" card for image + video.** The two separate cards
+  (each re-explaining the shared Atlas Cloud key, the video one awkwardly pointing back to "the Image
+  section above") are merged into a single card: the **Atlas Cloud key** sits at the top since one key
+  powers both, then an **Images** subsection (default image model) and a **Video** subsection (default
+  video model + the optional fal.ai wider-catalog key) hang off it. Status now reads as two chips
+  (`image · on`, `video · Atlas`/`fal.ai`). Also fixes a JSX whitespace bug that rendered
+  "Library​with" (missing space) in the old video blurb. Console copy/layout only — no API or schema change.
 ### Changed
 - **Docs say "Library" (not "Artifacts").** Finishes the Artifacts→Library rename (v0.122.0, v0.128.2) by
   updating the prose that lagged: the in-console **Docs** pages (core-concepts, getting-started,

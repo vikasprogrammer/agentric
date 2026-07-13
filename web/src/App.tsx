@@ -9106,23 +9106,29 @@ function IntegrationsSettings({ me }: { me: Member }) {
         </CardContent>
       </Card>
 
+      {/* One card for both media tools — a single Atlas key powers image + video, so it lives at the top,
+          then per-medium defaults hang off it. (fal.ai is an optional wider-catalog override for video only.) */}
       <Card>
-        <CardContent className="space-y-3 p-4">
+        <CardContent className="space-y-4 p-4">
           <div>
             <div className="flex items-center gap-2 text-sm font-medium">
-              Image generation
+              Media generation
               {image.configured
-                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">on · Atlas Cloud</Badge>
-                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">image · on</Badge>
+                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">image · off</Badge>}
+              {video.configured
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">video · {video.backend === 'fal' ? 'fal.ai' : 'Atlas'}</Badge>
+                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">video · off</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
-              Gives every agent an <code className="text-[11px]">image_generate</code> tool (Claude can't draw natively).
-              Generated images land in the <strong>Library</strong> and the run is cost-metered + audited.
-              Powered by <strong>Atlas Cloud</strong> — the same key also drives video below.
+              Gives every agent <code className="text-[11px]">image_generate</code> and <code className="text-[11px]">video_generate</code> tools
+              (Claude can't draw or film natively). Output lands in the <strong>Library</strong>, cost-metered + audited.
+              One <strong>Atlas Cloud</strong> key powers both — images return in seconds; video renders <strong>asynchronously</strong> (usually minutes)
+              and posts an inbox card when the clip is ready.
             </p>
           </div>
 
-          <Field label="Atlas Cloud API key" help="atlascloud.ai → API keys. Covers image + video under one key.">
+          <Field label="Atlas Cloud API key" help="atlascloud.ai → API keys. One key covers both image and video.">
             <Input
               type="password"
               value={atKey}
@@ -9130,80 +9136,61 @@ function IntegrationsSettings({ me }: { me: Member }) {
               placeholder={image.atlas ? '•••• (saved) — type a new key to replace' : 'atlas key'}
               className="font-mono text-xs"
             />
-            {image.atlas && (
-              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ atlasKey: '' }, 'removed')} disabled={busy}>Remove key</button>
-            )}
-          </Field>
-
-          <Field label="Default model" help="Optional — an Atlas image model id used when an agent doesn't name one. Blank = Atlas's built-in default. Full catalog: GET /api/v1/models on Atlas.">
-            <Input
-              value={imgModel}
-              onChange={(e) => setImgModel(e.target.value)}
-              onBlur={() => { if (imgModel.trim() !== (image.defaultModel || '')) save({ imageDefaultModel: imgModel.trim() }, 'default model saved') }}
-              placeholder="e.g. google/nano-banana-2/text-to-image · openai/gpt-image-1.5/text-to-image · black-forest-labs/flux-2-pro/text-to-image"
-              className="font-mono text-xs"
-            />
-          </Field>
-
-          <div className="flex items-center gap-3">
-            <Button
-              onClick={() => save({ ...(atKey.trim() ? { atlasKey: atKey.trim() } : {}) }, 'saved')}
-              disabled={busy || !atKey.trim()}
-            >Save</Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="space-y-3 p-4">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-medium">
-              Video generation
-              {video.configured
-                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">on · {video.backend === 'fal' ? 'fal.ai' : 'Atlas Cloud'}</Badge>
-                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
+            <div className="mt-1 flex items-center gap-3">
+              <Button
+                size="sm"
+                onClick={() => save({ ...(atKey.trim() ? { atlasKey: atKey.trim() } : {}) }, 'saved')}
+                disabled={busy || !atKey.trim()}
+              >Save key</Button>
+              {image.atlas && (
+                <button type="button" className="text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ atlasKey: '' }, 'removed')} disabled={busy}>Remove</button>
+              )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              Gives every agent a <code className="text-[11px]">video_generate</code> tool. Video renders
-              <strong> asynchronously</strong> (usually minutes) — the finished clip lands in the <strong>Library</strong>
-              with an inbox card, cost-metered + audited. Powered by your <strong>Atlas Cloud</strong> key (the same
-              one used for images). Optionally add a <strong>fal.ai</strong> key for the widest catalog (Veo, Kling, Seedance…) —
-              fal is used when set.
-            </p>
+          </Field>
+
+          <div className="space-y-3 border-t pt-3">
+            <div className="text-xs font-medium text-muted-foreground">Images</div>
+            <Field label="Default image model" help="Optional — an Atlas image model id used when an agent doesn't name one. Blank = Atlas's built-in default. Full catalog: GET /api/v1/models on Atlas.">
+              <Input
+                value={imgModel}
+                onChange={(e) => setImgModel(e.target.value)}
+                onBlur={() => { if (imgModel.trim() !== (image.defaultModel || '')) save({ imageDefaultModel: imgModel.trim() }, 'default model saved') }}
+                placeholder="e.g. google/nano-banana-2/text-to-image · openai/gpt-image-1.5/text-to-image · black-forest-labs/flux-2-pro/text-to-image"
+                className="font-mono text-xs"
+              />
+            </Field>
           </div>
 
-          <Field label="fal.ai API key" help="fal.ai → dashboard → Keys. Reaches the full video catalog via one key (queue API).">
-            <Input
-              type="password"
-              value={falKey}
-              onChange={(e) => setFalKey(e.target.value)}
-              placeholder={video.fal ? '•••• (saved) — type a new key to replace' : 'fal key (key_id:key_secret)'}
-              className="font-mono text-xs"
-            />
-            {video.fal && (
-              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ falKey: '' }, 'removed')} disabled={busy}>Remove key</button>
-            )}
-          </Field>
-
-          <p className="text-[11px] text-muted-foreground">
-            Atlas Cloud also does video — set its key in the Image section above and it covers both.
-          </p>
-
-          <Field label="Default video model" help="Optional — a backend-specific model id used when an agent doesn't name one. Blank = the backend's built-in default.">
-            <Input
-              value={vidModel}
-              onChange={(e) => setVidModel(e.target.value)}
-              onBlur={() => { if (vidModel.trim() !== (video.defaultModel || '')) save({ videoDefaultModel: vidModel.trim() }, 'default model saved') }}
-              placeholder="e.g. fal-ai/veo3/fast (fal) or bytedance/seedance-2.0/text-to-video (Atlas)"
-              className="font-mono text-xs"
-            />
-          </Field>
-
-          <div className="flex items-center gap-3">
-            <Button
-              onClick={() => save({ ...(falKey.trim() ? { falKey: falKey.trim() } : {}) }, 'saved')}
-              disabled={busy || !falKey.trim()}
-            >Save</Button>
+          <div className="space-y-3 border-t pt-3">
+            <div className="text-xs font-medium text-muted-foreground">Video</div>
+            <Field label="Default video model" help="Optional — a backend-specific model id used when an agent doesn't name one. Blank = the active backend's built-in default.">
+              <Input
+                value={vidModel}
+                onChange={(e) => setVidModel(e.target.value)}
+                onBlur={() => { if (vidModel.trim() !== (video.defaultModel || '')) save({ videoDefaultModel: vidModel.trim() }, 'default model saved') }}
+                placeholder="e.g. bytedance/seedance-2.0/text-to-video (Atlas) or fal-ai/veo3/fast (fal)"
+                className="font-mono text-xs"
+              />
+            </Field>
+            <Field label="fal.ai API key (optional)" help="fal.ai → dashboard → Keys. Widest video catalog (Veo, Kling, Seedance…) via one key. When set, fal handles video instead of Atlas.">
+              <Input
+                type="password"
+                value={falKey}
+                onChange={(e) => setFalKey(e.target.value)}
+                placeholder={video.fal ? '•••• (saved) — type a new key to replace' : 'fal key (key_id:key_secret)'}
+                className="font-mono text-xs"
+              />
+              <div className="mt-1 flex items-center gap-3">
+                <Button
+                  size="sm"
+                  onClick={() => save({ ...(falKey.trim() ? { falKey: falKey.trim() } : {}) }, 'saved')}
+                  disabled={busy || !falKey.trim()}
+                >Save key</Button>
+                {video.fal && (
+                  <button type="button" className="text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ falKey: '' }, 'removed')} disabled={busy}>Remove</button>
+                )}
+              </div>
+            </Field>
           </div>
         </CardContent>
       </Card>
