@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.169.0] — 2026-07-13
+### Changed
+- **Tasks — List and Focus views redesigned** (completing the Board redesign from 0.167.0; the three now
+  share one visual language — state dots, priority pips, the live-session treatment). **List** is now a
+  dense, grouped triage queue instead of a flat table: a **Group by** control (Priority / Status /
+  Assignee / None) pivots the whole list, each row carries a state dot + priority pips + inline goal/
+  blocker/label chips, a live row shows an inline **live · m:ss** marker, and hovering an agent-assigned
+  queued/blocked task reveals a **quick-dispatch** (`↻ dispatch`) action; live rows one-click **attach**.
+  **Focus** is a new master–detail mode (third view toggle, `PanelLeftOpen`): a queue rail on the left,
+  the full task record inline on the right — no modal — so selecting a task swaps the record in place.
+  The detail's **Activity** is now a **typed timeline** (dispatch = amber, status/claim = sky, comment =
+  slate) with a live-session banner + attach at the top. The modal drawer (Board/List) and the Focus
+  panel render the **same** detail body, so a task edits identically in both. The remembered view
+  persists per browser. `web/src/App.tsx` only; motion is `motion-safe`.
+
 ## [0.168.2] — 2026-07-13
 ### Fixed
 - **Insights page now uses the full content width.** It carried a `max-w-5xl` cap with no `mx-auto`, so it
