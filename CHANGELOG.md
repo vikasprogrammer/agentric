@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.131.0] — 2026-07-13
+### Added
+- **Plain `git` now authenticates with the injected token, not just `gh`.** The GitHub token is exported
+  as `GH_TOKEN`/`GITHUB_TOKEN` (which `gh` reads natively), but `git push`/`clone` over HTTPS doesn't use
+  those on its own — so previously only half the toolchain was authenticated. Launch now also installs a
+  **github.com-scoped git credential helper** via `GIT_CONFIG_*` env vars (no file writes, session-scoped,
+  reads `$GH_TOKEN` at call time so a rotated token still works; resets any inherited helper first, uses the
+  `x-access-token` username GitHub expects). So a session that has a token — a member's own or the agent
+  bot's — can `git push` **and** `gh pr create` transparently. No-op when no token is present or for non-
+  github.com/SSH remotes. (`TerminalManager.configureGitCredentials`; verified against real `git`.)
+- **Sessions now nudge an unconnected member to link their GitHub.** When a session runs **as** someone
+  who hasn't linked their own GitHub account, the launch context tells the agent so — so if the task
+  involves pushing code or opening a PR, the agent `ask`s the right person to fix it instead of silently
+  committing as the shared bot (or failing auth). Two cases, two messages: if the workspace **GitHub App is
+  configured**, it points them at the **1-click Connect GitHub** (Connections → Connected → Mine); if **no
+  App is set up**, it asks an **owner/admin** to create one first (Connections → Creds → GitHub → Create
+  GitHub App). Fires only when acting as a real member who isn't connected — a connected member's token is
+  injected and just works, and a pure automation (no run-as person) gets no personal steer. Contextual, so
+  it only reaches a human when git is actually relevant. (`TerminalManager.buildCompanyMd`;
+  `scripts/github-per-member-test.cjs` now 53/53.)
+
 ## [0.130.0] — 2026-07-13
 ### Added
 - **Default-model pickers are now live dropdowns (Settings → Integrations → Media generation).** The image
@@ -18,6 +39,8 @@ new version heading in the same commit.
   catalog or still type any id** (free text preserved). The list refreshes when the Atlas key changes; a
   fetch failure or missing key falls back to a plain free-text field. Agents can still override the model
   per call — this only sets the fleet default.
+
+## [0.129.0] — 2026-07-13
 ### Added
 - **One-click GitHub App setup — no more manual walkthrough.** The **Connections → Creds → GitHub** card
   now creates the company GitHub App for you via GitHub's **App-manifest flow**: click **Create GitHub App**

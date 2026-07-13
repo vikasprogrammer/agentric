@@ -223,6 +223,42 @@ async function main() {
   r = await fetch(base + '/api/github/manifest', { headers: { cookie: `aos_sid=${macc.sid}` } });
   assert(r.status === 403, 'non-admin is forbidden from the manifest setup');
 
+  // ─── 6) Launch-context git-identity steer (buildCompanyMd) ──────────────────
+  console.log('\n\x1b[1m6) Launch-context git steer (unconnected member is pointed at the fix)\x1b[0m');
+  osx.agents.set('coder', { id: 'coder', runtime: 'claude-code', description: 'A coding agent', dir: '/tmp/x' });
+  // App configured (from section 5) but the owner hasn't linked → steer to the 1-click connect.
+  gid.clear(ownerId);
+  let md = tm.buildCompanyMd('coder', ownerId);
+  assert(/Git identity — you are not yet acting as a person on GitHub/.test(md), 'configured + unlinked → "connect your GitHub" steer');
+  assert(/Connect GitHub/.test(md) && !/Create GitHub App/.test(md), 'unlinked steer points at the 1-click member connect, not the admin setup');
+
+  // App NOT configured → steer to ask an owner/admin to set it up.
+  osx.settings.setGithubClientId('', 'owner@test'); gid.setClientSecret('', 'owner@test');
+  md = tm.buildCompanyMd('coder', ownerId);
+  assert(/GitHub is not set up for this workspace/.test(md) && /Create GitHub App/.test(md), 'unconfigured → "ask an owner/admin to set up the App" steer');
+
+  // Connected member → no steer at all (their token is injected and just works).
+  osx.settings.setGithubClientId('Iv1.x', 'owner@test'); gid.setClientSecret('sec', 'owner@test');
+  gid.save(ownerId, { token: 'gho_live', login: 'octocat', connectedAt: Date.now() });
+  md = tm.buildCompanyMd('coder', ownerId);
+  assert(!/Git identity/.test(md), 'connected member → no git-identity steer');
+
+  // No run-as identity (pure automation) → no personal steer.
+  md = tm.buildCompanyMd('coder');
+  assert(!/Git identity/.test(md), 'no run-as member → no git-identity steer');
+  gid.clear(ownerId);
+
+  // ─── 7) git credential helper (plain `git`, not just `gh`) ──────────────────
+  console.log('\n\x1b[1m7) git credential helper (git + gh both authenticate)\x1b[0m');
+  const genv = { GH_TOKEN: 'gho_abc' };
+  tm.configureGitCredentials(genv);
+  assert(genv.GIT_CONFIG_COUNT === '2', 'sets GIT_CONFIG_COUNT for two entries');
+  assert(genv.GIT_CONFIG_KEY_0 === 'credential.https://github.com.helper' && genv.GIT_CONFIG_VALUE_0 === '', 'entry 0 resets any inherited github.com helper');
+  assert(genv.GIT_CONFIG_KEY_1 === 'credential.https://github.com.helper' && /username=x-access-token/.test(genv.GIT_CONFIG_VALUE_1) && /\$GH_TOKEN/.test(genv.GIT_CONFIG_VALUE_1), 'entry 1 is a github.com helper that echoes x-access-token + $GH_TOKEN');
+  const noTok = {};
+  tm.configureGitCredentials(noTok);
+  assert(noTok.GIT_CONFIG_COUNT === undefined, 'no GH_TOKEN → no git credential config (nothing to authenticate with)');
+
   server.close();
   registry.forEach && registry.forEach((x) => { try { x.tm.shutdown && x.tm.shutdown(); } catch { /* */ } });
 

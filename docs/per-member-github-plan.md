@@ -64,6 +64,13 @@ company-bot `GH_TOKEN` when an agent opts in via `shellSecrets`), we call **`inj
 Precedence is deliberate and documented inline: **member token > agent bot token**. Both remain governed
 by the PreToolUse Bash gate-hook exactly as before — this only changes *which identity* the shell holds.
 
+**Both `git` and `gh` (v0.130.0).** `gh` reads `GH_TOKEN`/`GITHUB_TOKEN` natively, but plain `git push`
+over HTTPS does not — so `configureGitCredentials` also installs a **github.com-scoped git credential
+helper** via `GIT_CONFIG_*` env vars (git ≥2.31; no file writes; reads `$GH_TOKEN` at call time). It
+resets any inherited helper first and returns the `x-access-token` username GitHub expects. Runs whenever
+a token was injected (member or bot), so the whole toolchain authenticates; no-op otherwise and for
+non-github.com/SSH remotes.
+
 ## Token lifecycle
 
 - **Store:** vault, `principal = member id`, key `github_user`, JSON blob (encrypted).
@@ -84,6 +91,16 @@ by the PreToolUse Bash gate-hook exactly as before — this only changes *which 
 
 `state` is a random token held in a short-lived in-process map keyed to `{ tenant, memberId, exp }`;
 the callback additionally requires `state.memberId === me.id` (defence-in-depth against a leaked state).
+
+## Nudging an unconnected member (v0.130.0)
+
+The feature is otherwise passive — an unconnected member's session just falls back to the bot token. To
+close that discovery gap, `buildCompanyMd` adds a **git-identity steer** to the launch context when the
+run-as member hasn't linked GitHub: if the App is configured it points the agent to have them **Connect
+GitHub** in one click; if the App isn't set up it asks an owner/admin to create it first. The agent
+raises it via `ask` only when the task actually touches git, so it's contextual rather than a blanket
+ping. No steer when the member is connected (token injected, just works) or when there's no run-as person
+(a pure automation). Covered by `scripts/github-per-member-test.cjs` §6.
 
 ## Identity note
 
