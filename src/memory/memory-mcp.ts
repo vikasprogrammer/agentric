@@ -1206,8 +1206,8 @@ async function videoGenerate(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; error?: string; status?: string; jobId?: string; artifact?: { id: string; filename: string }; model?: string; costUsd?: number };
-  if (!d.ok) return `Could not generate video: ${d.error ?? 'unknown error'}`;
+  const d = (await res.json()) as { ok?: boolean; error?: string; vendor?: string; retryable?: boolean; status?: string; jobId?: string; artifact?: { id: string; filename: string }; model?: string; costUsd?: number };
+  if (!d.ok) return `video_generate error: ${mediaErrorHint(d)}`;
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
   if (d.status === 'done' && d.artifact) {
     return `Video ready with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${d.artifact.id} (${d.artifact.filename}).`;
