@@ -8604,7 +8604,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                   : preview.byAgent.map((a) => (
                       <div key={a.agent} className="mt-2">
                         <div className="font-medium">{a.agent}</div>
-                        {a.lines.map((l, i) => <div key={i} className="truncate text-muted-foreground">• {l.title}</div>)}
+                        {a.lines.map((l, i) => <div key={i} className="truncate text-muted-foreground">• {l.title}{l.count ? ` (×${l.count})` : ''}</div>)}
                         {a.more > 0 && <div className="text-muted-foreground">• +{a.more} more</div>}
                       </div>
                     ))}
