@@ -20,7 +20,7 @@ import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
-import { DreamingEngine } from './edge/dreaming';
+import { DreamingEngine, recommendationResolved } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
@@ -2381,9 +2381,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // history on the Dreaming page. Topics are omitted (large); pass the compact bits the UI renders.
     const raw = os.settings.dreamingState() as { firstPass?: number; passes?: number; totals?: Record<string, number>; recent?: unknown[] } | null;
     const state = raw ? { firstPass: raw.firstPass, passes: raw.passes, totals: raw.totals, recent: raw.recent } : undefined;
+    // Drop any open recommendation whose condition is already resolved (e.g. effort set to "high" in
+    // Settings after the pass proposed it) — recs regenerate only on a full pass, so this prevents a stale
+    // card lingering between passes. Persist the cleanup so it's actually cleared, not just hidden.
+    const recsStored = os.settings.recommendations();
+    const effort = os.settings.runtimeDefaults().effort;
+    const openRecs = recsStored.open.filter((r) => !recommendationResolved(r, effort));
+    if (openRecs.length !== recsStored.open.length) os.settings.setRecommendations({ open: openRecs, dismissed: recsStored.dismissed }, 'system');
     return sendJson(res, 200, {
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
-      applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, state, alertsEnabled: os.settings.insightsAlertsEnabled(),
+      applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: openRecs, state, alertsEnabled: os.settings.insightsAlertsEnabled(),
       measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
       insights: buildInsights(os), // owner insights — per-agent scorecard + friction map
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },

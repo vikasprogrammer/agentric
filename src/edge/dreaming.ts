@@ -298,6 +298,18 @@ export function deriveGuidance(s: DreamState): string {
 }
 
 /**
+ * Whether an OPEN recommendation's condition is already resolved, so it should no longer be shown.
+ * Recommendations are regenerated only when a full reflect pass runs; between passes a leftover can
+ * linger after a human has already acted (e.g. they set effort to `high` in Settings). This drops those
+ * at read time so a stale card can't nag. Only recs with a clean "resolved?" signal are pruned; advisory
+ * ones (policy/budget) clear on the next pass.
+ */
+export function recommendationResolved(rec: Recommendation, currentEffort: string | undefined): boolean {
+  if (rec.id === 'runtime.effort.high') return currentEffort === 'high' || currentEffort === 'xhigh' || currentEffort === 'max';
+  return false;
+}
+
+/**
  * Propose config tuning from cumulative friction — each is a human-gated suggestion, never auto-applied.
  * `apply` present → directly applyable (a reversible runtime-defaults change); otherwise advisory.
  */
