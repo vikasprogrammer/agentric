@@ -87,6 +87,8 @@ const DISCORD_EGRESS = process.env.DISCORD_EGRESS === '1';
 const IMAGE_GEN = process.env.IMAGE_GEN === '1';
 // VIDEO_GEN: '1' when a video backend (fal/Atlas) is configured — exposes video_generate.
 const VIDEO_GEN = process.env.VIDEO_GEN === '1';
+// VIDEO_UNDERSTAND: '1' when Atlas is configured (its multimodal LLMs do video→text) — exposes video_understand.
+const VIDEO_UNDERSTAND = process.env.VIDEO_UNDERSTAND === '1';
 
 const SLACK_SEND_TOOL = {
   name: 'slack_send',
@@ -213,6 +215,28 @@ const VIDEO_GENERATE_TOOL = {
       image: { type: 'string', description: 'Optional image to animate (image-to-video). A Library artifact id, a file path in your working folder (written or uploaded), or an http(s) image URL.' },
     },
     required: ['prompt'],
+  },
+};
+
+const VIDEO_UNDERSTAND_TOOL = {
+  name: 'video_understand',
+  description:
+    'WATCH a video and answer a question about it (video → text). Use this whenever you need to know what is ' +
+    "IN a video — you cannot see video natively. It delegates to a video-capable model and returns a TEXT " +
+    'description/answer directly (no artifact). Pass `video` (a Library artifact id, e.g. one video_generate ' +
+    'just made; a file path in your working folder, written OR uploaded into the session; or an http(s) video ' +
+    'URL) and an optional `prompt` for what to find out ("summarise", "is there a person?", "transcribe any ' +
+    'on-screen text", "what happens at the end?"). Omit `prompt` for a general description. Also works on an ' +
+    'image if you set `kind:"image"` (but you can usually read images directly). Governed (cost-metered + audited).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      video: { type: 'string', description: 'The video to watch: a Library artifact id, a file path in your working folder (written or uploaded), or an http(s) video URL.' },
+      prompt: { type: 'string', description: 'What to find out about the video. Omit for a general detailed description.' },
+      kind: { type: 'string', enum: ['video', 'image'], description: 'Media type (default "video"). Set "image" to analyse a still image instead.' },
+      model: { type: 'string', description: 'Optional Atlas multimodal model id override (must accept video input). Omit for the default.' },
+    },
+    required: ['video'],
   },
 };
 
@@ -1163,6 +1187,24 @@ async function videoGenerate(args: Record<string, unknown>): Promise<string> {
   return `Video is rendering with ${d.model ?? 'the default model'}${cost} (job ${d.jobId ?? '?'}). It'll appear in the Library and post an inbox card when done — no need to wait; let the user know it's on the way.`;
 }
 
+async function videoUnderstand(args: Record<string, unknown>): Promise<string> {
+  const video = String(args.video ?? '').trim();
+  if (!video) return 'A `video` is required (a Library artifact id, a working-folder file path, or a video URL).';
+  const body: Record<string, unknown> = { session: SESSION, video };
+  if (typeof args.prompt === 'string' && args.prompt.trim()) body.prompt = args.prompt.trim();
+  if (args.kind === 'image') body.kind = 'image';
+  if (typeof args.model === 'string' && args.model.trim()) body.model = args.model.trim();
+  const res = await fetch(AOS_URL + '/api/agent/video/understand', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string; text?: string; model?: string; costUsd?: number };
+  if (!d.ok) return `Could not analyse the video: ${d.error ?? 'unknown error'}`;
+  const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
+  return `${d.text ?? '(no answer)'}\n\n— via ${d.model ?? 'a multimodal model'}${cost}`;
+}
+
 async function slackSend(args: Record<string, unknown>): Promise<string> {
   const channel = String(args.channel ?? '').trim();
   const text = String(args.text ?? '').trim();
@@ -2048,6 +2090,7 @@ async function handle(req: JsonRpc): Promise<void> {
       ...(DISCORD_EGRESS ? [DISCORD_SEND_TOOL, DISCORD_DM_TOOL] : []),
       ...(IMAGE_GEN ? [IMAGE_GENERATE_TOOL, IMAGE_EDIT_TOOL] : []),
       ...(VIDEO_GEN ? [VIDEO_GENERATE_TOOL] : []),
+      ...(VIDEO_UNDERSTAND ? [VIDEO_UNDERSTAND_TOOL] : []),
     ] } });
     return;
   }
@@ -2084,6 +2127,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'image_generate' ? await imageGenerate(args)
         : name === 'image_edit' ? await imageEdit(args)
         : name === 'video_generate' ? await videoGenerate(args)
+        : name === 'video_understand' ? await videoUnderstand(args)
         : name === 'list_capabilities' ? await listCapabilities()
         : name === 'policy_check' ? await policyCheck(args)
         : name === 'directory_lookup' ? await directoryLookup(args)

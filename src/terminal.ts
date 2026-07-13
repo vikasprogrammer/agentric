@@ -24,6 +24,7 @@ import { browseRepo, RemoteCatalog } from './governance/skill-registry';
 import { claudeSupportsReloadSkills } from './edge/claude-cli';
 import { DEFAULT_IMAGE_COST_USD, resolveImageBackend } from './edge/image-gen';
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
+import { understandMedia } from './edge/media-understand';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
@@ -1521,6 +1522,8 @@ export class TerminalManager {
         ...(this.os.settings.imageGenConfigured() ? { IMAGE_GEN: '1' } : {}),
         // VIDEO_GEN: '1' exposes `video_generate` when a video backend key (fal/Atlas) is configured.
         ...(this.os.settings.videoGenConfigured() ? { VIDEO_GEN: '1' } : {}),
+        // VIDEO_UNDERSTAND: '1' exposes `video_understand` (video→text) — needs Atlas (its multimodal LLMs).
+        ...(this.os.settings.atlasKey() ? { VIDEO_UNDERSTAND: '1' } : {}),
       },
     };
     return JSON.stringify(config, null, 2);
@@ -2465,6 +2468,47 @@ export class TerminalManager {
   }
 
   /**
+   * Understand a VIDEO (or image) — the `video_understand` MCP path. Claude can't natively watch a video,
+   * so this delegates to an Atlas video-capable multimodal LLM (chat endpoint, a `video_url` content part)
+   * and returns the model's TEXT answer directly to the agent — no artifact. The source is any ref
+   * `resolveImageRef` accepts (Library id, working-folder file, or URL), resolved to a base64 data URL so
+   * a clip the agent just generated or was handed can be analysed with no public hosting. Governed like the
+   * other media calls: classified `video.understand` with a cost estimate (money-cap applies), audited.
+   */
+  async understandVideo(sessionId: string, input: { video: string; prompt?: string; model?: string; kind?: 'video' | 'image' }): Promise<{ ok: boolean; text?: string; model?: string; costUsd?: number; error?: string }> {
+    const agent = this.sessionAgent(sessionId);
+    if (!agent) return { ok: false, error: 'unknown session' };
+    const atlasKey = this.os.settings.atlasKey();
+    if (!atlasKey) return { ok: false, error: 'video understanding needs an Atlas Cloud key — set one in Settings → Integrations' };
+    const kind = input.kind === 'image' ? 'image' : 'video';
+    const ref = (input.video || '').trim();
+    if (!ref) return { ok: false, error: `a ${kind} is required — a Library artifact id, a working-folder path, or a URL` };
+    const resolved = this.resolveImageRef(agent, ref, kind);
+    if ('error' in resolved) return { ok: false, error: resolved.error };
+    const prompt = (input.prompt || '').trim() || (kind === 'video' ? 'Describe this video in detail — what happens, who/what is in it, notable actions and setting.' : 'Describe this image in detail.');
+
+    // Token-priced LLM call; the exact cost isn't known ahead of time. Estimate for the money-cap gate.
+    const estimateUsd = DEFAULT_IMAGE_COST_USD;
+    const model = input.model?.trim() || 'qwen/qwen3.5-27b';
+    const gate = this.gate(sessionId, agent, 'video.understand', { prompt, model, kind, amountUsd: estimateUsd }, `understand a ${kind} with ${model}`);
+    if (gate.decision === 'deny') return { ok: false, error: 'blocked by policy' };
+    if (gate.decision === 'pending') return { ok: false, error: 'this needs human approval — an approval request was filed; retry once it is approved' };
+
+    let result;
+    try {
+      result = await understandMedia({ atlasKey, model: input.model, mediaUrl: resolved.url, kind, prompt });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.audit(sessionId, agent, 'video.understand.failed', { model, kind, error: msg });
+      return { ok: false, error: msg };
+    }
+
+    const costUsd = result.costUsd ?? estimateUsd;
+    this.audit(sessionId, agent, 'video.understood', { model: result.model, kind, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', chars: result.text.length });
+    return { ok: true, text: result.text, model: result.model, costUsd };
+  }
+
+  /**
    * Resolve an agent-supplied image reference for image-to-video into something a vendor accepts inline
    * (a `data:` URL or a passthrough http URL). Supports every place a session's image can live:
    *   1. an http(s) or data: URL           → passed straight through
@@ -2475,10 +2519,11 @@ export class TerminalManager {
    * through to the Library. Non-image inputs and unresolvable refs are rejected. Inlining as base64 means
    * the agent needs no public hosting step for something it just made or was handed.
    */
-  private resolveImageRef(agent: string, ref: string): { url: string } | { error: string } {
+  private resolveImageRef(agent: string, ref: string, kind: 'image' | 'video' = 'image'): { url: string } | { error: string } {
     if (/^https?:\/\//i.test(ref) || ref.startsWith('data:')) return { url: ref };
+    const wantMime = new RegExp(`^${kind}/`);
     const toDataUrl = (absPath: string, mime: string): { url: string } | { error: string } => {
-      if (!/^image\//.test(mime)) return { error: `"${ref}" is ${mime}, not an image` };
+      if (!wantMime.test(mime)) return { error: `"${ref}" is ${mime}, not ${kind === 'image' ? 'an image' : 'a video'}` };
       try {
         return { url: `data:${mime};base64,${fs.readFileSync(absPath).toString('base64')}` };
       } catch (e) {
@@ -2502,7 +2547,7 @@ export class TerminalManager {
       const rp = this.os.artifacts.readPath(ref);
       if (rp) return toDataUrl(rp.absPath, a.mime || rp.mime);
     }
-    return { error: `couldn't resolve image "${ref}" — pass an http(s) URL, a file path in your working folder, or a Library artifact id` };
+    return { error: `couldn't resolve ${kind} "${ref}" — pass an http(s) URL, a file path in your working folder, or a Library artifact id` };
   }
 
   /**
