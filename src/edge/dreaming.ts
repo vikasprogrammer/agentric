@@ -34,10 +34,16 @@ interface DreamState {
   totals: Tally;
   topics: Record<string, { count: number; lastSeen: number }>;
   recent: RecentEntry[];
+  /** High-water mark of the newest activity ts this loop has already consumed (H2). Kept SEPARATE from
+   *  the run clock (`learning.dreamed` audit ts, which drives cadence) so a late-written episode can't
+   *  fall into the gap between a pass's `until` and the next `since` and be silently skipped. Absent on
+   *  states written before this field existed → we fall back to the old marker (see `dream`). */
+  watermark?: number;
 }
 
 interface EpisodeRow { content: string; created_at: number }
-interface AuditRow { type: string; data: string }
+interface OutcomeRow { run_id: string | null; ts: number; type: string; data: string }
+interface FrictionRow { ts: number; type: string; data: string }
 
 const DREAM_SECTION = 'operations';
 const DREAM_SLUG = 'fleet-learnings';
@@ -52,24 +58,41 @@ export class DreamingEngine {
   async dream(by = 'automation:dreamer'): Promise<DreamResult> {
     const db = this.os.db;
     const until = Date.now();
-    const last = db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
-    const since = last?.t ?? until - 7 * 24 * 3_600_000;
+    const prior = this.load();
+    // H2: window on a durable **data watermark** — the newest activity ts we've already consumed —
+    // NOT the run clock. Migration-safe: states written before `watermark` existed fall back to the old
+    // `learning.dreamed` marker, then to a 7-day cold start.
+    const lastMark = db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
+    const since = prior?.watermark ?? lastMark?.t ?? until - 7 * 24 * 3_600_000;
     const window = { since, until };
 
     const episodes = db
       .prepare("SELECT content, created_at FROM memories WHERE created_at > ? AND tags LIKE '%\"episode\"%' ORDER BY created_at")
       .all<EpisodeRow>(since);
-    const outcomes = db
-      .prepare("SELECT type, data FROM audit_events WHERE ts > ? AND type IN ('session.reported','session.ended','session.stopped','run.completed')")
-      .all<AuditRow>(since);
+    const outcomeRows = db
+      .prepare("SELECT run_id, ts, type, data FROM audit_events WHERE ts > ? AND type IN ('session.reported','session.ended','session.stopped','run.completed') ORDER BY ts")
+      .all<OutcomeRow>(since);
     const frictionRows = db
-      .prepare("SELECT type, data FROM audit_events WHERE ts > ? AND type IN ('budget.exceeded','episode.error','approval.resolved')")
-      .all<AuditRow>(since);
+      .prepare("SELECT ts, type, data FROM audit_events WHERE ts > ? AND type IN ('budget.exceeded','episode.error','approval.resolved')")
+      .all<FrictionRow>(since);
 
-    if (!episodes.length && !outcomes.length) {
-      const st = this.load();
-      return { skipped: true, window, passes: st?.passes };
+    if (!episodes.length && !outcomeRows.length) {
+      return { skipped: true, window, passes: prior?.passes };
     }
+
+    // H3: collapse the terminal-event rows to ONE canonical row per session — a single session emits
+    // several (`session.reported` AND `session.ended`, plus crash sweeps), which otherwise inflates the
+    // session count and double-tallies the outcome, skewing the success rate that drives guidance +
+    // recommendations. Prefer the agent's own reported outcome (it carries the real outcome), then
+    // run.completed, then ended, then stopped.
+    const OUTCOME_RANK: Record<string, number> = { 'session.reported': 3, 'run.completed': 2, 'session.ended': 1, 'session.stopped': 0 };
+    const bySession = new Map<string, OutcomeRow>();
+    for (const r of outcomeRows) {
+      const key = r.run_id || `anon:${r.ts}`;
+      const cur = bySession.get(key);
+      if (!cur || (OUTCOME_RANK[r.type] ?? -1) > (OUTCOME_RANK[cur.type] ?? -1)) bySession.set(key, r);
+    }
+    const outcomes = [...bySession.values()];
 
     // ── this window's tallies ──
     const win: Tally = { sessions: outcomes.length, episodes: episodes.length, success: 0, failure: 0, partial: 0, stopped: 0, unknown: 0, rejected: 0, budgetStops: 0, errors: 0 };
@@ -84,9 +107,17 @@ export class DreamingEngine {
     }
     const winTopics = topicCounts(episodes);
 
+    // H2: advance the watermark to the newest ts we actually consumed (never `until`), so anything that
+    // landed between that ts and now is picked up next pass instead of falling into a gap.
+    let watermark = since;
+    for (const e of episodes) if (e.created_at > watermark) watermark = e.created_at;
+    for (const r of outcomeRows) if (r.ts > watermark) watermark = r.ts;
+    for (const f of frictionRows) if (f.ts > watermark) watermark = f.ts;
+
     // ── fold into the cumulative state ──
-    const state = this.load() ?? { firstPass: until, passes: 0, totals: zeroTally(), topics: {}, recent: [] };
+    const state = prior ?? { firstPass: until, passes: 0, totals: zeroTally(), topics: {}, recent: [], watermark: since };
     state.passes += 1;
+    state.watermark = watermark;
     for (const k of Object.keys(win) as (keyof Tally)[]) state.totals[k] += win[k];
     for (const [topic, n] of winTopics) {
       const cur = state.topics[topic] ?? { count: 0, lastSeen: 0 };

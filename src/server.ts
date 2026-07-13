@@ -277,13 +277,24 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
       }
     }
     const everyHours = os.settings.dreamingEveryHours();
-    if (everyHours && Date.now() - (lastDream.get(os.tenant) || 0) >= everyHours * 3_600_000) {
-      lastDream.set(os.tenant, Date.now());
-      // One "reflect" concept, whether manual or scheduled: the cheap deterministic pass, then the
-      // memory-gardener over new material (it no-ops when there's too little to be worth an agent run).
-      void new DreamingEngine(os).dream('scheduler')
-        .then(() => new Consolidation(os, rt.tm).run('automation:consolidation'))
-        .catch(() => { /* never let the scheduler crash the server */ });
+    if (everyHours) {
+      // H1: DURABLE cadence. `lastDream` is in-memory, so before this fix a restart (frequent on this box
+      // — every build/deploy) emptied it and the next tick fired a pass immediately, turning "reflect
+      // every 24h" into "reflect on every restart" — each pass spawns a BILLED consolidator agent. Seed
+      // the clock once per process from the last real pass (the `learning.dreamed` audit ts) so cadence
+      // survives restarts. (Mirrors how the digest gates on its durable `digest.posted` audit.)
+      if (!lastDream.has(os.tenant)) {
+        const last = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
+        lastDream.set(os.tenant, last?.t ?? 0);
+      }
+      if (Date.now() - (lastDream.get(os.tenant) || 0) >= everyHours * 3_600_000) {
+        lastDream.set(os.tenant, Date.now());
+        // One "reflect" concept, whether manual or scheduled: the cheap deterministic pass, then the
+        // memory-gardener over new material (it no-ops when there's too little to be worth an agent run).
+        void new DreamingEngine(os).dream('scheduler')
+          .then(() => new Consolidation(os, rt.tm).run('automation:consolidation'))
+          .catch(() => { /* never let the scheduler crash the server */ });
+      }
     }
     // Daily digest — the "what got done today" standup. Rides this same hourly tick but gates its own
     // Slack post (enabled + channel + past digestHour + not yet posted today); the dashboard/KB render
