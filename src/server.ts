@@ -3853,6 +3853,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.deleted', data: { secretPrincipal: principal, key } });
     return sendJson(res, ok ? 200 : 404, { ok });
   }
+  // Assign a secret to agents — each assigned agent gets it as a shell env var at launch (the inverse
+  // view of a manifest's `shellSecrets`). Full-set replace, like PUT /api/skills/:name/agents. Unknown
+  // agent ids are dropped (the picker only offers real ones). Injection only — never a read grant.
+  if (method === 'PUT' && p === '/api/secrets/agents') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const key = b.key ? String(b.key).trim() : '';
+    if (!key) return sendJson(res, 400, { error: 'key is required' });
+    const principal = b.principal ? String(b.principal).trim() : '*';
+    const known = new Set(os.agents.keys());
+    const agents = Array.isArray(b.agents)
+      ? b.agents.map((a: unknown) => String(a).trim()).filter((a: string) => known.has(a))
+      : [];
+    os.secrets.setAssignedAgents(os.tenant, principal, key, agents);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.assigned', data: { secretPrincipal: principal, key, agents } });
+    return sendJson(res, 200, { ok: true, agents });
+  }
 
   // ── approvals (shared with the console) ──────────────────────────────────────
   // ── audit viewer (owner/admin): the queryable SQLite mirror of the JSONL system-of-record ──

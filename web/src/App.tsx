@@ -7968,7 +7968,7 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
         {tab === 'company' ? <CompanySettings me={me} />
           : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /></div>
           : tab === 'theme' ? <ThemeSettings me={me} state={state} />
-          : tab === 'secrets' ? <SecretsSettings me={me} />
+          : tab === 'secrets' ? <SecretsSettings me={me} agents={state?.agents ?? []} />
           : tab === 'memory' ? <MemorySettings me={me} />
           : tab === 'governance' ? <GovernanceSettings me={me} />
           : tab === 'system' ? <SystemSettings state={state} me={me} />
@@ -8326,7 +8326,7 @@ function SoftwarePanel({ me }: { me: Member }) {
 /** Settings → Secrets — the encrypted-at-rest vault. Credentials are sealed (AES-256-GCM) under the
  *  workspace master key and read only INSIDE the gateway by capabilities; agents never see raw values.
  *  The console can set/replace/delete a secret but can never read one back — only its key + provenance. */
-function SecretsSettings({ me }: { me: Member }) {
+function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
   const [secrets, setSecrets] = useState<SecretMeta[]>([])
   const [loading, setLoading] = useState(true)
   const [key, setKey] = useState('')
@@ -8334,10 +8334,19 @@ function SecretsSettings({ me }: { me: Member }) {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  const [openRow, setOpenRow] = useState<string | null>(null)
   const canEdit = me.role === 'owner' || me.role === 'admin'
 
   const refresh = () => api.secrets().then((r) => { if (!r.error) setSecrets(r.secrets); setLoading(false) }).catch(() => setLoading(false))
   useEffect(() => { refresh() }, [])
+
+  const toggleAgent = async (s: SecretMeta, agentId: string) => {
+    const cur = s.agents ?? []
+    const next = cur.includes(agentId) ? cur.filter((a) => a !== agentId) : [...cur, agentId]
+    setSecrets((prev) => prev.map((x) => (x.principal === s.principal && x.key === s.key ? { ...x, agents: next } : x)))
+    const r = await api.setSecretAgents(s.principal, s.key, next)
+    if (r.error) refresh() // roll back the optimistic toggle on failure
+  }
 
   const save = async () => {
     const k = key.trim()
@@ -8389,24 +8398,57 @@ function SecretsSettings({ me }: { me: Member }) {
           {loading ? <p className="p-4 text-sm text-muted-foreground">Loading…</p>
             : secrets.length === 0 ? <p className="p-4 text-sm text-muted-foreground">No secrets stored yet.</p>
             : <div className="divide-y">
-                {secrets.map((s) => (
-                  <div key={`${s.principal}:${s.key}`} className="flex items-center justify-between gap-3 px-4 py-2.5">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-sm">{s.key}</span>
-                        {s.principal !== '*' && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{s.principal}</span>}
+                {secrets.map((s) => {
+                  const rid = `${s.principal}:${s.key}`
+                  const assigned = s.agents ?? []
+                  const open = openRow === rid
+                  return (
+                  <div key={rid} className="px-4 py-2.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm">{s.key}</span>
+                          {s.principal !== '*' && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{s.principal}</span>}
+                        </div>
+                        <span className="text-[11px] text-muted-foreground">
+                          updated {timeAgo(s.updatedAt)}{s.updatedBy ? ` by ${s.updatedBy}` : ''}
+                        </span>
                       </div>
-                      <span className="text-[11px] text-muted-foreground">
-                        updated {timeAgo(s.updatedAt)}{s.updatedBy ? ` by ${s.updatedBy}` : ''}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-3">
+                        {canEdit && (
+                          <button onClick={() => setOpenRow(open ? null : rid)} className="text-[11px] text-muted-foreground hover:text-foreground">
+                            {assigned.length ? `injected into ${assigned.length} agent${assigned.length > 1 ? 's' : ''}` : 'assign to agents'}
+                          </button>
+                        )}
+                        {canEdit && (
+                          <button onClick={() => del(s)} className="text-muted-foreground hover:text-destructive" title="Delete secret">
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    {canEdit && (
-                      <button onClick={() => del(s)} className="shrink-0 text-muted-foreground hover:text-destructive" title="Delete secret">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                    {open && canEdit && (
+                      <div className="mt-2 rounded-md border bg-muted/30 p-2.5">
+                        <p className="mb-2 text-[11px] text-muted-foreground">
+                          Assigned agents get <span className="font-mono">{s.key}</span> as a shell environment variable at launch (so a plain CLI authenticates). This does not change who can <span className="font-mono">secret_get</span> it.
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {agents.length === 0 && <span className="text-[11px] text-muted-foreground">No agents to assign.</span>}
+                          {agents.map((a) => {
+                            const on = assigned.includes(a.id)
+                            return (
+                              <button key={a.id} onClick={() => toggleAgent(s, a.id)}
+                                className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${on ? 'border-primary bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:text-foreground'}`}>
+                                {on ? '✓ ' : ''}{a.id}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
                     )}
                   </div>
-                ))}
+                  )
+                })}
               </div>}
         </CardContent>
       </Card>

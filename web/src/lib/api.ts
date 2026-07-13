@@ -756,6 +756,8 @@ export interface SecretMeta {
   key: string
   updatedAt: number
   updatedBy?: string
+  /** Agent ids this secret is injected into (as a shell env var) at launch — the assignment list. */
+  agents: string[]
 }
 
 /** Numeric governance caps the never-tier policy rules read ($moneyCapUsd / $bulkDeleteCount). */
@@ -1075,6 +1077,7 @@ export const api = {
   secrets: () => call<{ secrets: SecretMeta[]; error?: string }>('GET', '/api/secrets'),
   setSecret: (key: string, value: string, principal?: string) => call<{ ok: boolean; error?: string }>('POST', '/api/secrets', { key, value, principal }),
   deleteSecret: (key: string, principal?: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/secrets', { key, principal }),
+  setSecretAgents: (principal: string, key: string, agents: string[]) => call<{ ok: boolean; agents?: string[]; error?: string }>('PUT', '/api/secrets/agents', { principal, key, agents }),
   killSwitch: () => call<{ engaged: boolean; reason?: string; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/kill-switch'),
   setKillSwitch: (engaged: boolean, reason?: string, haltSessions?: boolean) => call<{ ok: boolean; engaged: boolean; reason?: string; halted?: number; updatedBy?: string; error?: string }>('POST', '/api/settings/kill-switch', { engaged, reason, haltSessions }),
 

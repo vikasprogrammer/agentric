@@ -1011,6 +1011,9 @@ export class TerminalManager {
     if (o.resume) env.RESUME = '1';
     // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`).
     this.injectShellSecrets(env, o.agent, manifest, o.id);
+    // Secrets ASSIGNED to this agent from the Secrets page — the inverse view of `shellSecrets`,
+    // granted centrally rather than declared in the manifest. Same env-var injection, additive.
+    this.injectAssignedSecrets(env, o.agent, o.id);
     // Per-member git: if THIS run's run-as human has linked their own GitHub account, their token
     // OVERRIDES the agent bot's GH_TOKEN — so git push / gh pr are authored as the actual person.
     this.injectMemberGithub(env, o.agent, o.actingMember, o.id);
@@ -3131,6 +3134,25 @@ export class TerminalManager {
       }
       env[key] = value;
       this.audit(sessionId, agent, 'shell.secret.injected', { key, principal: agent });
+    }
+  }
+
+  /**
+   * Secrets an owner/admin ASSIGNED to this agent from the Secrets page (the inverse view of the
+   * manifest's `shellSecrets`). Each assignment names a stored secret by its (owner-principal, key);
+   * we resolve that value and export it as a shell env var named after the key — same mechanism as
+   * `injectShellSecrets`, just granted centrally instead of self-declared. `via: 'assignment'` in the
+   * audit distinguishes the two paths. Injection only — an assignment never widens `secret_get`.
+   */
+  private injectAssignedSecrets(env: Record<string, string>, agent: string, sessionId: string): void {
+    for (const { principal, key } of this.os.secrets.assignmentsForAgent(this.os.tenant, agent)) {
+      const value = this.os.secrets.getSync(this.os.tenant, principal, key);
+      if (value === undefined) {
+        this.audit(sessionId, agent, 'shell.secret.unresolved', { key, principal, via: 'assignment' });
+        continue;
+      }
+      env[key] = value;
+      this.audit(sessionId, agent, 'shell.secret.injected', { key, principal, via: 'assignment' });
     }
   }
 
