@@ -47,6 +47,27 @@ web flow against the company's GitHub App (or a classic OAuth App — the flow i
    - the member's `login` in `member_identities` (provider `github`) — the non-secret, queryable handle
      that also powers attribution + the Team page's Chat-IDs row.
 
+## Company-bot baseline — the universal git credential (Model C, v0.152.0)
+
+Per-member login attributes git to the human, but it requires each member to connect and doesn't cover
+automation runs (no human). Per-agent `GH_TOKEN` PATs cover those, but they're long-lived static secrets,
+one per agent. Both are workarounds for a missing baseline. The installed App can provide it: with the
+App's **App ID** (setting `github_app_id`) + **RSA private key** (vault `github_private_key`), the OS mints
+short-lived, org-scoped **installation access tokens** (`ghs_…`, acting as the App bot) that push on every
+installed repo — so **every session can git-push with no per-agent PAT**.
+
+`GithubIdentity.ensureBotToken` signs an App JWT, resolves the installation id from `listInstallations`
+(cached in `github_installation_id`; re-resolved if the App is reinstalled), mints, and caches the token in
+the vault (`github_bot_token`, principal `*`) so the **synchronous** launch path reads it without a network
+call. `injectGithubBaseline` injects it at launch, refreshing in the background near expiry. Saving the
+credentials (`PUT /api/settings/integrations`) mints once to validate + pre-warm (audited
+`github.bot_token.minted` / `.failed`); the Creds card shows a **Company-bot token: active** badge.
+
+**Precedence (highest wins):** connected **member** token → explicit **agent** `GH_TOKEN` (shellSecret /
+assigned) → **bot** baseline. So the bot fills the gap for agents without a PAT and members who haven't
+connected; an agent's curated PAT is respected; a connected human's token still authors their commits.
+This lets per-agent PATs be retired: remove them and those agents fall through to the bot automatically.
+
 ## Launch wiring — run-as picks the credential
 
 In `TerminalManager.launchClaudeCode`, right after the agent-scoped `injectShellSecrets` (which sets the

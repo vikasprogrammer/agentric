@@ -11,14 +11,20 @@
  * Constructed on demand from the pieces the caller already holds (`os.secrets`, `os.settings`,
  * `os.tenant`) — no kernel wiring, so the blast radius stays small.
  */
-import { authorizeUrl, exchangeUserCode, refreshUserToken, githubUser, UserToken } from '../connectors/github';
+import { authorizeUrl, exchangeUserCode, refreshUserToken, githubUser, UserToken, listInstallations, mintInstallationToken } from '../connectors/github';
 
 /** The vault key (per-member principal) holding the JSON token blob. */
 const USER_BLOB_KEY = 'github_user';
 /** The vault key (tenant-wide `*` principal) holding the App's OAuth client secret. */
 const CLIENT_SECRET_KEY = 'github_client_secret';
+/** The vault key (tenant-wide `*`) holding the App's RSA private key — the company-bot minter's credential. */
+const PRIVATE_KEY_KEY = 'github_private_key';
+/** The vault key (tenant-wide `*`) caching the current installation (bot) token so launch reads it sync. */
+const BOT_TOKEN_KEY = 'github_bot_token';
 /** Refresh an expiring token this many ms before it actually expires. */
 const REFRESH_SKEW_MS = 10 * 60_000;
+/** The bot (installation) token lasts ~1 h; refresh with a wide skew so an injected token has plenty of life. */
+const BOT_REFRESH_SKEW_MS = 25 * 60_000;
 
 /** The stored per-member credential. Only `token`/`refreshToken` are secret; `login`/`expiresAt` are metadata. */
 export interface MemberGithub {
@@ -28,6 +34,12 @@ export interface MemberGithub {
   expiresAt?: number;
   login: string;
   connectedAt: number;
+}
+
+/** The cached company-bot installation token — an org-scoped credential every session can use as GH_TOKEN. */
+export interface BotToken {
+  token: string;
+  expiresAt: number;
 }
 
 /** The minimal slice of AgentOS this store needs — kept structural so it's trivial to construct/test. */
@@ -43,6 +55,10 @@ interface GithubDeps {
     setGithubClientId(v: string, by?: string): void;
     githubAppSlug(): string;
     setGithubAppSlug(v: string, by?: string): void;
+    githubAppId(): string;
+    setGithubAppId(v: string, by?: string): void;
+    githubInstallationId(): string;
+    setGithubInstallationId(v: string, by?: string): void;
   };
 }
 
@@ -70,6 +86,94 @@ export class GithubIdentity {
     this.os.settings.setGithubClientId(app.clientId, by);
     this.setClientSecret(app.clientSecret, by);
     this.os.settings.setGithubAppSlug(app.slug, by);
+  }
+
+  // ── company-bot (installation token) — the universal git baseline ────────────
+  // The App's App ID (setting) + RSA private key (vault) let us mint short-lived, org-scoped
+  // **installation access tokens** that act as the App bot on every installed repo — the credential a
+  // session uses when the run-as human hasn't linked their own GitHub and the agent has no PAT. Minting
+  // is a network call, but the launch path is synchronous, so we cache the current token in the vault
+  // (like member tokens) and read it sync at launch, refreshing in the background — see loadBotToken /
+  // ensureBotToken. Deleting the private key drops the cache too.
+  appId(): string {
+    return this.os.settings.githubAppId();
+  }
+  setAppId(v: string, by?: string): void {
+    this.os.settings.setGithubAppId(v, by);
+  }
+  privateKey(): string {
+    return this.os.secrets.getSync(this.os.tenant, '*', PRIVATE_KEY_KEY) ?? '';
+  }
+  setPrivateKey(value: string, by?: string): void {
+    const v = value.trim();
+    if (v) {
+      this.os.secrets.set(this.os.tenant, PRIVATE_KEY_KEY, v, { principal: '*', updatedBy: by });
+    } else {
+      // Clearing the key detaches the bot entirely — drop the cached token + resolved installation.
+      this.os.secrets.delete(this.os.tenant, PRIVATE_KEY_KEY, '*');
+      this.os.secrets.delete(this.os.tenant, BOT_TOKEN_KEY, '*');
+      this.os.settings.setGithubInstallationId('', by);
+    }
+  }
+  /** App id + private key present — the minimum to mint an installation (bot) token. */
+  botConfigured(): boolean {
+    return !!this.appId() && !!this.privateKey();
+  }
+
+  /** Read the cached bot token (sync — the launch path reads it synchronously). */
+  loadBotToken(): BotToken | undefined {
+    const raw = this.os.secrets.getSync(this.os.tenant, '*', BOT_TOKEN_KEY);
+    if (!raw) return undefined;
+    try {
+      const j = JSON.parse(raw) as BotToken;
+      return typeof j?.token === 'string' && typeof j?.expiresAt === 'number' ? j : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  botNeedsRefresh(blob: BotToken, nowMs: number = Date.now()): boolean {
+    return blob.expiresAt - BOT_REFRESH_SKEW_MS <= nowMs;
+  }
+
+  /**
+   * Return a live bot token, minting + caching one if missing/expiring. Resolves the installation id
+   * from `listInstallations` on first use (a single-org App has exactly one). Returns undefined when the
+   * bot isn't configured or a mint fails hard (a stale cached token is kept so callers can still try it).
+   * Async: the sync launch path fires-and-forgets this while injecting the current cached token.
+   */
+  async ensureBotToken(nowMs: number = Date.now(), by?: string): Promise<BotToken | undefined> {
+    if (!this.botConfigured()) return undefined;
+    const cached = this.loadBotToken();
+    if (cached && !this.botNeedsRefresh(cached, nowMs)) return cached;
+    const appId = this.appId();
+    const pem = this.privateKey();
+    let instId = this.os.settings.githubInstallationId();
+    if (!instId) {
+      const li = await listInstallations(appId, pem);
+      if ('error' in li) return cached;
+      if (!li.installations.length) return cached;
+      instId = String(li.installations[0].id);
+      this.os.settings.setGithubInstallationId(instId, by);
+    }
+    const minted = await mintInstallationToken(appId, pem, instId);
+    if ('error' in minted) {
+      // A stale installation id (App reinstalled) → re-resolve once and retry.
+      this.os.settings.setGithubInstallationId('', by);
+      const li = await listInstallations(appId, pem);
+      if ('error' in li || !li.installations.length) return cached;
+      const retryId = String(li.installations[0].id);
+      this.os.settings.setGithubInstallationId(retryId, by);
+      const retry = await mintInstallationToken(appId, pem, retryId);
+      if ('error' in retry) return cached;
+      return this.saveBotToken(retry, by);
+    }
+    return this.saveBotToken(minted, by);
+  }
+
+  private saveBotToken(minted: { token: string; expiresAt: number }, by?: string): BotToken {
+    const blob: BotToken = { token: minted.token, expiresAt: minted.expiresAt };
+    this.os.secrets.set(this.os.tenant, BOT_TOKEN_KEY, JSON.stringify(blob), { principal: '*', updatedBy: by });
+    return blob;
   }
   /** Both halves present — the minimum to run the OAuth flow. */
   configured(): boolean {

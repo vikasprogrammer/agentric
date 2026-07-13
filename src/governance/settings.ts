@@ -20,6 +20,8 @@ const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, us
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
 const GITHUB_CLIENT_ID_KEY = 'github_client_id'; // the company GitHub App / OAuth App client id (per-member OAuth)
 const GITHUB_APP_SLUG_KEY = 'github_app_slug'; // the created App's slug (from the manifest flow) → the Install-on-repos link
+const GITHUB_APP_ID_KEY = 'github_app_id'; // the GitHub App's numeric App ID (for the company-bot installation-token minter)
+const GITHUB_INSTALLATION_ID_KEY = 'github_installation_id'; // the App installation to mint bot tokens against (auto-resolved)
 const IMAGE_OPENROUTER_KEY = 'image_openrouter_key'; // OpenRouter Unified Image API key (default backend)
 const IMAGE_ATLAS_KEY = 'image_atlas_key'; // Atlas Cloud key (alt backend; covers video later)
 const IMAGE_MODEL_KEY = 'image_default_model'; // workspace default image model id (backend-specific); '' = adapter default
@@ -221,6 +223,20 @@ export class SettingsStore {
   }
   setGithubAppSlug(slug: string, by?: string): void {
     this.set(GITHUB_APP_SLUG_KEY, slug.trim(), by);
+  }
+  /** The GitHub App's numeric App ID — the App-level credential the company-bot minter signs a JWT as. */
+  githubAppId(): string {
+    return this.getRow(GITHUB_APP_ID_KEY)?.value?.trim() ?? '';
+  }
+  setGithubAppId(v: string, by?: string): void {
+    this.set(GITHUB_APP_ID_KEY, v.trim(), by);
+  }
+  /** The installation to mint bot tokens against (auto-resolved from listInstallations), or ''. */
+  githubInstallationId(): string {
+    return this.getRow(GITHUB_INSTALLATION_ID_KEY)?.value?.trim() ?? '';
+  }
+  setGithubInstallationId(v: string, by?: string): void {
+    this.set(GITHUB_INSTALLATION_ID_KEY, v.trim(), by);
   }
 
   // ── image generation ─────────────────────────────────────────────────────────────

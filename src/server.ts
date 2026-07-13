@@ -2936,6 +2936,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (!b.githubClientId.trim()) os.settings.setGithubAppSlug('', me.email);
     }
     if (typeof b.githubClientSecret === 'string') new GithubIdentity(os).setClientSecret(b.githubClientSecret, me.email);
+    // Company-bot (installation-token) credentials: App ID → setting, RSA private key → vault. When both
+    // are set, pre-warm + VALIDATE by minting a bot token now, so the admin gets immediate feedback and
+    // the first session doesn't have to wait on a cold mint. Audited github.bot_token.minted / .failed.
+    if (typeof b.githubAppId === 'string') new GithubIdentity(os).setAppId(b.githubAppId, me.email);
+    if (typeof b.githubPrivateKey === 'string') new GithubIdentity(os).setPrivateKey(b.githubPrivateKey, me.email);
+    if (typeof b.githubAppId === 'string' || typeof b.githubPrivateKey === 'string') {
+      const ghb = new GithubIdentity(os);
+      if (ghb.botConfigured()) {
+        const bot = await ghb.ensureBotToken(Date.now(), me.email).catch(() => undefined);
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: bot ? 'github.bot_token.minted' : 'github.bot_token.failed', data: { installationId: os.settings.githubInstallationId() || null } });
+      }
+    }
     // Image generation backend keys (OpenRouter default / Atlas alt) + optional default model.
     if (typeof b.openRouterKey === 'string') os.settings.setOpenRouterKey(b.openRouterKey, me.email);
     if (typeof b.atlasKey === 'string') os.settings.setAtlasKey(b.atlasKey, me.email);
@@ -4255,7 +4267,7 @@ function integrationsView(os: AgentOS): {
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
-  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string };
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean };
   chatRouter: boolean;
@@ -4274,7 +4286,7 @@ function integrationsView(os: AgentOS): {
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
-    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '' },
+    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken() },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     video: { fal: video.fal, atlas: video.atlas, backend: video.backend, defaultModel: video.defaultModel, configured: os.settings.videoGenConfigured() },
     chatRouter: os.settings.chatRouterEnabled(),

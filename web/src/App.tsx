@@ -9335,9 +9335,11 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
-  const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '' })
+  const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false })
   const [ghId, setGhId] = useState('')
   const [ghSecret, setGhSecret] = useState('')
+  const [ghAppId, setGhAppId] = useState('')
+  const [ghPem, setGhPem] = useState('')
   const [githubFlash, setGithubFlash] = useState<'created' | 'error' | null>(null)
   const [image, setImage] = useState<IntegrationsResp['image']>({ openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false })
   const [atKey, setAtKey] = useState('')
@@ -9362,7 +9364,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   // Defensive defaults so an older backend (one that predates a field) never white-screens the page.
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
   const DISCORD_DEFAULT = { botToken: false, configured: false }
-  const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '' }
+  const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const VIDEO_DEFAULT = { fal: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const apply = (r: IntegrationsResp) => {
@@ -9429,12 +9431,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
     }
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setAtKey(''); setFalKey('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setGhAppId(''); setGhPem(''); setAtKey(''); setFalKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
     // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
@@ -9717,6 +9719,55 @@ function IntegrationsSettings({ me }: { me: Member }) {
               </a>
             </div>
           )}
+
+          {/* Company-bot baseline: App ID + private key → a shared installation token every session can
+              push with, so per-agent PATs can be retired. Optional but recommended once the App is installed. */}
+          <details className="rounded-md border" open={github.configured && !github.botReady}>
+            <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium hover:bg-muted/40">
+              <span className="text-foreground">Company-bot token</span>{' '}
+              {github.botReady
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">active</Badge>
+                : <span className="text-[11px] text-muted-foreground">— optional, lets every session push without a per-agent token</span>}
+            </summary>
+            <div className="space-y-3 border-t p-3">
+              <p className="text-[11px] text-muted-foreground">
+                Add the App's <strong>App ID</strong> and a generated <strong>private key</strong> (App settings → <em>Private keys</em> → Generate) and the OS mints
+                a short-lived, org-scoped <strong>installation token</strong> as the App bot. Every session can then <code className="text-[11px]">git push</code> /
+                open PRs on the installed repos <strong>with no per-agent PAT</strong> — a connected member's own token still takes precedence for attribution.
+              </p>
+              <Field label="App ID">
+                <Input
+                  value={ghAppId}
+                  onChange={(e) => setGhAppId(e.target.value.trim())}
+                  placeholder={github.appId ? 'saved — type a new App ID to replace' : 'e.g. 4286232 (App settings → About)'}
+                  className="font-mono text-xs"
+                />
+              </Field>
+              <Field label="Private key (.pem)">
+                <Textarea
+                  value={ghPem}
+                  onChange={(e) => setGhPem(e.target.value)}
+                  placeholder={github.privateKey ? '•••• (saved) — paste a new key to replace' : '-----BEGIN RSA PRIVATE KEY-----\n…'}
+                  className="min-h-[80px] font-mono text-[11px]"
+                />
+              </Field>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => save({ ...(ghAppId.trim() ? { githubAppId: ghAppId.trim() } : {}), ...(ghPem.trim() ? { githubPrivateKey: ghPem.trim() } : {}) }, 'saved')}
+                  disabled={busy || (!ghAppId.trim() && !ghPem.trim())}
+                >
+                  Save bot credentials
+                </Button>
+                {(github.appId || github.privateKey) && (
+                  <Button variant="ghost" onClick={() => save({ githubAppId: '', githubPrivateKey: '' }, 'removed')} disabled={busy}>Remove</Button>
+                )}
+              </div>
+              {github.appId && github.privateKey && !github.botReady && (
+                <p className="text-[11px] text-destructive">⚠ Credentials saved but a bot token couldn't be minted — check the App ID matches the key and the App is installed on at least one account.</p>
+              )}
+            </div>
+          </details>
 
           {/* Manual / OAuth-App creds — the fallback. Collapsed once an App is configured. */}
           <details className="rounded-md border" open={!github.configured}>

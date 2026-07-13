@@ -32,6 +32,7 @@ const assert = (c, n, d) => (c ? ok(n) : bad(n, d));
 // ── Stub GitHub's HTTP surface. Everything else falls through to a 404 so an unrelated background
 //    fetch can't crash the run (there shouldn't be any during these routes). ──────────────────────
 let refreshCount = 0;
+let botMintCount = 0;
 let installState = 'installed'; // 'installed' | 'none' — toggles the /user/installations stub
 const realFetch = global.fetch.bind(global); // the test drives the local server over REAL http
 global.fetch = async (urlIn, opts = {}) => {
@@ -53,6 +54,12 @@ global.fetch = async (urlIn, opts = {}) => {
       : { installations: [{ id: 77, account: { login: 'Globex' }, app_slug: 'x' }] });
   }
   if (/\/user\/installations\/\d+\/repositories/.test(url)) return json({ total_count: 5, repositories: [] });
+  // Company-bot minter: list App installations, then mint an installation (bot) token.
+  if (url === 'https://api.github.com/app/installations') return json([{ id: 555, account: { login: 'Globex' }, repository_selection: 'all' }]);
+  if (/\/app\/installations\/\d+\/access_tokens$/.test(url)) {
+    botMintCount++;
+    return json({ token: 'ghs_bot_' + botMintCount, expires_at: new Date(Date.now() + 3600_000).toISOString() });
+  }
   if (/\/app-manifests\/[^/]+\/conversions$/.test(url)) {
     return json({ id: 42, slug: 'agent-os-northwind', client_id: 'Iv1.manifest', client_secret: 'manifest-secret', html_url: 'https://github.com/apps/agent-os-northwind', webhook_secret: 'whsec_x', pem: '-----BEGIN-----' });
   }
@@ -275,6 +282,43 @@ async function main() {
   const noTok = {};
   tm.configureGitCredentials(noTok);
   assert(noTok.GIT_CONFIG_COUNT === undefined, 'no GH_TOKEN → no git credential config (nothing to authenticate with)');
+
+  // ─── 8) Company-bot installation token (Model C) ────────────────────────────
+  console.log('\n\x1b[1m8) Company-bot installation token (the universal baseline)\x1b[0m');
+  const gid2 = new GithubIdentity(osx);
+  assert(gid2.botConfigured() === false, 'bot not configured until App ID + private key set');
+  // A real RSA key so appJwt can actually sign (the stub doesn't verify the signature).
+  const { generateKeyPairSync } = require('crypto');
+  const { privateKey: pem } = generateKeyPairSync('rsa', { modulusLength: 2048, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs1', format: 'pem' } });
+  gid2.setAppId('4286232', 'owner@test');
+  gid2.setPrivateKey(pem, 'owner@test');
+  assert(gid2.botConfigured() === true, 'botConfigured once App ID + private key present');
+  assert(gid2.privateKey().includes('BEGIN RSA'), 'private key stored in the vault');
+  botMintCount = 0;
+  const bot = await gid2.ensureBotToken();
+  assert(bot && bot.token.startsWith('ghs_bot_') && botMintCount === 1, 'ensureBotToken mints an installation token');
+  assert(osx.settings.githubInstallationId() === '555', 'installation id auto-resolved + stored from listInstallations');
+  assert(gid2.loadBotToken().token === bot.token, 'bot token cached in the vault (sync-readable at launch)');
+  const bot2 = await gid2.ensureBotToken();
+  assert(botMintCount === 1 && bot2.token === bot.token, 'a fresh cached token is reused (no re-mint)');
+
+  // Injection precedence: bot fills GH_TOKEN when unset; an explicit agent PAT wins; a member overrides.
+  const be1 = {};
+  tm.injectGithubBaseline(be1, 'coder', 'sessB1');
+  assert(be1.GH_TOKEN === bot.token && be1.GITHUB_TOKEN === bot.token, 'bot token injected as GH_TOKEN when no agent credential');
+  const be2 = { GH_TOKEN: 'gho_agentPAT' };
+  tm.injectGithubBaseline(be2, 'coder', 'sessB2');
+  assert(be2.GH_TOKEN === 'gho_agentPAT', 'explicit agent GH_TOKEN wins over the bot baseline');
+  // Member override still trumps the bot: baseline sets bot, then member token replaces it.
+  gid2.save(ownerId, { token: 'gho_member', login: 'octocat', connectedAt: Date.now() });
+  const be3 = {};
+  tm.injectGithubBaseline(be3, 'coder', 'sessB3');
+  tm.injectMemberGithub(be3, 'coder', ownerId, 'sessB3');
+  assert(be3.GH_TOKEN === 'gho_member', 'connected member token overrides the bot baseline (attribution)');
+  gid2.clear(ownerId);
+  // Removing the private key drops the cached bot token + resolved installation.
+  gid2.setPrivateKey('', 'owner@test');
+  assert(gid2.loadBotToken() === undefined && osx.settings.githubInstallationId() === '', 'clearing the private key drops the cached token + installation id');
 
   server.close();
   registry.forEach && registry.forEach((x) => { try { x.tm.shutdown && x.tm.shutdown(); } catch { /* */ } });

@@ -1072,8 +1072,12 @@ export class TerminalManager {
     // Secrets ASSIGNED to this agent from the Secrets page — the inverse view of `shellSecrets`,
     // granted centrally rather than declared in the manifest. Same env-var injection, additive.
     this.injectAssignedSecrets(env, o.agent, o.id);
+    // Company-bot git baseline: when the App is configured, fill GH_TOKEN with a short-lived, org-scoped
+    // installation token so EVERY session can push — no per-agent PAT needed. Only fills the gap: an
+    // explicit agent GH_TOKEN (shellSecret/assigned) still wins, and a connected member overrides below.
+    this.injectGithubBaseline(env, o.agent, o.id);
     // Per-member git: if THIS run's run-as human has linked their own GitHub account, their token
-    // OVERRIDES the agent bot's GH_TOKEN — so git push / gh pr are authored as the actual person.
+    // OVERRIDES the bot/agent GH_TOKEN — so git push / gh pr are authored as the actual person.
     this.injectMemberGithub(env, o.agent, o.actingMember, o.id);
     // Whatever set GH_TOKEN above (member token or agent bot), teach plain `git` to use it too — `gh`
     // reads GH_TOKEN natively but `git push` over HTTPS does not, so without this only half the toolchain
@@ -3211,6 +3215,34 @@ export class TerminalManager {
       }
       env[key] = value;
       this.audit(sessionId, agent, 'shell.secret.injected', { key, principal, via: 'assignment' });
+    }
+  }
+
+  /**
+   * Company-bot git baseline (Model C — docs/per-member-github-plan.md). When the GitHub App is
+   * configured with an App ID + private key, inject a short-lived, org-scoped **installation token** as
+   * `GH_TOKEN`/`GITHUB_TOKEN` so every session can `git push` / `gh pr` on the App's installed repos —
+   * the universal default that lets per-agent PATs be retired. Fills the gap ONLY: if an agent already
+   * set `GH_TOKEN` (a curated shellSecret/assigned PAT) we leave it, and a connected member's token
+   * overrides afterwards. Reads the vault-cached token synchronously (mint is a network call the sync
+   * launch path can't await); a near-expiry token is injected as-is while a fire-and-forget refresh
+   * rewrites the cache for the next launch. Audited.
+   */
+  private injectGithubBaseline(env: Record<string, string>, agent: string, sessionId: string): void {
+    if (env.GH_TOKEN) return; // an explicit agent credential wins over the bot baseline
+    const gh = new GithubIdentity(this.os);
+    const blob = gh.loadBotToken();
+    if (!blob) {
+      // No cached token yet but the bot IS configured → mint one for the NEXT launch (best-effort).
+      if (gh.botConfigured()) void gh.ensureBotToken().catch(() => { /* next launch retries */ });
+      return;
+    }
+    env.GH_TOKEN = blob.token;
+    env.GITHUB_TOKEN = blob.token;
+    this.audit(sessionId, agent, 'github.bot_token.injected', { expiresAt: blob.expiresAt });
+    if (gh.botNeedsRefresh(blob)) {
+      this.audit(sessionId, agent, 'github.bot_token.stale', { expiresAt: blob.expiresAt });
+      void gh.ensureBotToken().catch(() => { /* best-effort; next launch retries */ });
     }
   }
 

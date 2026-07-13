@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.153.0] — 2026-07-13
+### Added
+- **Company-bot GitHub token — every session can push, no per-agent PAT needed.** Add the GitHub App's
+  **App ID** + a generated **private key** (Connections → Creds → GitHub → *Company-bot token*) and the OS
+  mints short-lived, org-scoped **installation access tokens** (acting as the App bot) that `git push` /
+  open PRs on every installed repo. Injected as `GH_TOKEN` at launch for any session that doesn't already
+  have a credential — so the per-agent `GH_TOKEN` PATs (and shared fallback PATs) can be **retired**: remove
+  them and those agents fall through to the bot automatically. **Precedence:** a connected member's own
+  token > an explicit agent `GH_TOKEN` (shellSecret/assigned) > the bot baseline — so human attribution and
+  curated per-agent creds still win where they exist. The token is vault-cached (`github_bot_token`) so the
+  synchronous launch path reads it without a network call, auto-refreshed near expiry; saving the creds
+  mints once to validate + pre-warm (audited `github.bot_token.minted`/`.failed`), and the card shows a
+  **Company-bot token: active** badge. Reuses the existing minter (`appJwt`/`mintInstallationToken`/
+  `InstallationTokenCache`). (`src/connectors/github.ts`, `src/edge/github-identity.ts`, `src/terminal.ts`,
+  `src/governance/settings.ts`, `src/server.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`;
+  `scripts/github-per-member-test.cjs` now 70/70. See `docs/per-member-github-plan.md`.)
+
 ## [0.152.0] — 2026-07-13
 ### Added
 - **Fork a session.** A new **Fork** action (⑃) on the Sessions list branches any claude-code session with
