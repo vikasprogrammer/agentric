@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.155.0] — 2026-07-13
+### Changed
+- **Dreaming page — plain-language, outcomes-first redesign.** The page read like a settings screen
+  (it led with "reflect every N hours" + jargon: *reflect / gardener / episodes / Distil · Apply*). It
+  now leads with **what the OS learned and did**: a one-sentence explainer + a live status line (last
+  review, runs reviewed, success rate, next review, **Review now**), then **What it figured out** (the
+  lessons steering agents, with the on/off toggle), **Things to consider** (the config suggestions),
+  **Review history** (per-review from the cumulative state), the **Daily digest**, and finally
+  **Settings** (cadence) at the bottom. Internal vocabulary is gone from the UI (it stays in the docs).
+  New: `/api/dreaming` returns a compact `state` summary (passes/totals/recent) to power the header +
+  history; the raw episode/lesson activity feed and its jargon labels are removed from this page (that
+  granularity lives in Memory). No behaviour change to the engine. `web/src/App.tsx`, `src/server.ts`.
+
 ## [0.154.0] — 2026-07-13
 ### Added
 - **Clickable links to KB pages, the Library, and other console areas — everywhere a reference is

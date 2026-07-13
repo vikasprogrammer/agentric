@@ -2318,9 +2318,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const last = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
     const lastPosted = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'digest.posted'").get<{ t: number | null }>();
+    // The cumulative self-learning state powers the "reviewed N runs / X% success" header + the review
+    // history on the Dreaming page. Topics are omitted (large); pass the compact bits the UI renders.
+    const raw = os.settings.dreamingState() as { firstPass?: number; passes?: number; totals?: Record<string, number>; recent?: unknown[] } | null;
+    const state = raw ? { firstPass: raw.firstPass, passes: raw.passes, totals: raw.totals, recent: raw.recent } : undefined;
     return sendJson(res, 200, {
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
-      applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open,
+      applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, state,
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
   }
