@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink } from 'lucide-react'
-import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, type LucideIcon } from 'lucide-react'
+import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -682,6 +682,32 @@ function UpdateNotice() {
   )
 }
 
+/** The sidebar's secondary nav — every item here is pinnable to Main or lives under the Manage group.
+ *  Inbox + Agents are permanent anchors (the app's spine, always in Main) and are deliberately NOT in
+ *  this list; Sessions is the middle switcher; Feedback is an external link. `route` drives active
+ *  state; `adminOnly` hides the item entirely from members who can't view that page (so they can't pin
+ *  what they can't see). Order here is the canonical order items render in, whether in Main or Manage. */
+type NavKey = 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'skills' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
+interface NavMeta { key: NavKey; route: Route; label: string; icon: ReactNode; adminOnly?: boolean }
+const PINNABLE_NAV: NavMeta[] = [
+  { key: 'goals',       route: 'goals',       label: 'Goals',       icon: <Target className="h-4 w-4" /> },
+  { key: 'tasks',       route: 'tasks',       label: 'Tasks',       icon: <ListChecks className="h-4 w-4" /> },
+  { key: 'artifacts',   route: 'artifacts',   label: 'Library',     icon: <Package className="h-4 w-4" /> },
+  { key: 'automations', route: 'automations', label: 'Automations', icon: <Zap className="h-4 w-4" /> },
+  { key: 'kb',          route: 'kb',          label: 'Knowledge',   icon: <BookText className="h-4 w-4" /> },
+  { key: 'memory',      route: 'memory',      label: 'Memory',      icon: <Brain className="h-4 w-4" /> },
+  { key: 'skills',      route: 'skills',      label: 'Skills',      icon: <Sparkles className="h-4 w-4" />, adminOnly: true },
+  { key: 'connectors',  route: 'connectors',  label: 'Connections', icon: <Plug className="h-4 w-4" /> },
+  { key: 'team',        route: 'team',        label: 'Team',        icon: <Users className="h-4 w-4" /> },
+  { key: 'files',       route: 'files',       label: 'Files',       icon: <FolderTree className="h-4 w-4" />, adminOnly: true },
+  { key: 'audit',       route: 'audit',       label: 'Audit',       icon: <ScrollText className="h-4 w-4" />, adminOnly: true },
+  { key: 'settings',    route: 'settings',    label: 'Settings',    icon: <Building2 className="h-4 w-4" />, adminOnly: true },
+  { key: 'docs',        route: 'docs',        label: 'Docs',        icon: <BookOpen className="h-4 w-4" /> },
+]
+/** The default pin layout applied when a member has never customized (navPins === null): the three
+ *  workspace surfaces that used to be hardwired into Main. Everything else starts under Manage. */
+const DEFAULT_PINNED_NAV: NavKey[] = ['goals', 'tasks', 'artifacts']
+
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
@@ -723,10 +749,25 @@ function Console({ me }: { me: Member }) {
   // of falling back to a blank page.
   const editAgent = route === 'agent' ? detail : ''
 
+  // Per-member pinned nav: which secondary items sit up in Main vs. under Manage. Seeded from the
+  // navPins that rode in on /api/auth/me (null → the default layout), toggled optimistically and
+  // persisted through saveNavPins. Only items this role can see are pinnable, so a member can't pin a
+  // page they can't view.
+  const isAdmin = me.role === 'owner' || me.role === 'admin'
+  const visibleNav = PINNABLE_NAV.filter((n) => !n.adminOnly || isAdmin)
+  const [pinned, setPinned] = useState<Set<string>>(() => new Set(me.navPins ?? DEFAULT_PINNED_NAV))
+  const togglePin = (key: string) => {
+    const next = new Set(pinned)
+    next.has(key) ? next.delete(key) : next.add(key)
+    setPinned(next)
+    api.saveNavPins([...next]).catch(() => { /* keep the optimistic value */ })
+  }
+  const pinnedNav = visibleNav.filter((n) => pinned.has(n.key))
+  const manageNav = visibleNav.filter((n) => !pinned.has(n.key))
+
   // Secondary "Manage" nav is collapsed by default so the Agents list stays high; it auto-opens
-  // when you're on one of its pages.
-  const manageRoutes: Route[] = ['automations', 'memory', 'skills', 'connectors', 'team', 'files', 'settings', 'docs']
-  const onManage = manageRoutes.includes(route)
+  // when you're on one of its (unpinned) pages.
+  const onManage = manageNav.some((n) => n.route === route)
   const [manageOpen, setManageOpen] = useState(onManage)
   useEffect(() => { if (onManage) setManageOpen(true) }, [onManage])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('aos_sidebar_collapsed') === '1')
@@ -971,9 +1012,9 @@ function Console({ me }: { me: Member }) {
           <nav className="mt-2 flex flex-col items-center gap-1">
             <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
-            <Button render={<a href={navHref('goals')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'goals' ? 'text-primary' : 'text-muted-foreground'}`} title="Goals" onClick={onNavClick(() => nav('goals'))}><Target className="h-4 w-4" /></Button>
-            <Button render={<a href={navHref('tasks')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'tasks' ? 'text-primary' : 'text-muted-foreground'}`} title="Tasks" onClick={onNavClick(() => nav('tasks'))}><ListChecks className="h-4 w-4" /></Button>
-            <Button render={<a href={navHref('artifacts')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Library" onClick={onNavClick(() => nav('artifacts'))}><Package className="h-4 w-4" /></Button>
+            {pinnedNav.map((n) => (
+              <Button key={n.key} render={<a href={navHref(n.route)} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === n.route ? 'text-primary' : 'text-muted-foreground'}`} title={n.label} onClick={onNavClick(() => nav(n.route))}>{n.icon}</Button>
+            ))}
             <Button render={<a href={navHref('sessions')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={onNavClick(() => nav('sessions'))}><TerminalSquare className="h-4 w-4" /></Button>
           </nav>
         </aside>
@@ -996,9 +1037,9 @@ function Console({ me }: { me: Member }) {
           <nav className="space-y-1">
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
-            <NavItem icon={<Target className="h-4 w-4" />} label="Goals" active={route === 'goals'} href={navHref('goals')} onClick={() => nav('goals')} />
-            <NavItem icon={<ListChecks className="h-4 w-4" />} label="Tasks" active={route === 'tasks'} href={navHref('tasks')} onClick={() => nav('tasks')} />
-            <NavItem icon={<Package className="h-4 w-4" />} label="Library" active={route === 'artifacts'} href={navHref('artifacts')} onClick={() => nav('artifacts')} />
+            {pinnedNav.map((n) => (
+              <NavItem key={n.key} icon={n.icon} label={n.label} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned onTogglePin={() => togglePin(n.key)} />
+            ))}
           </nav>
         </div>
 
@@ -1052,24 +1093,9 @@ function Console({ me }: { me: Member }) {
           </button>
           {manageOpen && (
             <nav className="mb-1 space-y-1">
-              <NavItem icon={<Zap className="h-4 w-4" />} label="Automations" active={route === 'automations'} href={navHref('automations')} onClick={() => nav('automations')} />
-              <NavItem icon={<BookText className="h-4 w-4" />} label="Knowledge" active={route === 'kb'} href={navHref('kb')} onClick={() => nav('kb')} />
-              <NavItem icon={<Brain className="h-4 w-4" />} label="Memory" active={route === 'memory'} href={navHref('memory')} onClick={() => nav('memory')} />
-              {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<Sparkles className="h-4 w-4" />} label="Skills" active={route === 'skills'} href={navHref('skills')} onClick={() => nav('skills')} />
-              )}
-              <NavItem icon={<Plug className="h-4 w-4" />} label="Connections" active={route === 'connectors'} href={navHref('connectors')} onClick={() => nav('connectors')} />
-              <NavItem icon={<Users className="h-4 w-4" />} label="Team" active={route === 'team'} href={navHref('team')} onClick={() => nav('team')} />
-              {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<FolderTree className="h-4 w-4" />} label="Files" active={route === 'files'} href={navHref('files')} onClick={() => nav('files')} />
-              )}
-              {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<ScrollText className="h-4 w-4" />} label="Audit" active={route === 'audit'} href={navHref('audit')} onClick={() => nav('audit')} />
-              )}
-              {(me.role === 'owner' || me.role === 'admin') && (
-                <NavItem icon={<Building2 className="h-4 w-4" />} label="Settings" active={route === 'settings'} href={navHref('settings')} onClick={() => nav('settings')} />
-              )}
-              <NavItem icon={<BookOpen className="h-4 w-4" />} label="Docs" active={route === 'docs'} href={navHref('docs')} onClick={() => nav('docs')} />
+              {manageNav.map((n) => (
+                <NavItem key={n.key} icon={n.icon} label={n.label} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned={false} onTogglePin={() => togglePin(n.key)} />
+              ))}
               <a
                 href={FEEDBACK_URL}
                 target="_blank"
@@ -1357,17 +1383,33 @@ function NotificationsBell({ items, unread, prefs, onOpen, onMarkAllRead, onSave
   )
 }
 
-function NavItem({ icon, label, active, badge, href, onClick }: { icon: ReactNode; label: string; active: boolean; badge?: number; href: string; onClick: () => void }) {
+/** A sidebar nav row. When `onTogglePin` is provided the row grows a hover-only pin button on the
+ *  right — `pinned` items show "unpin" (send down to Manage), unpinned ones show "pin" (promote to
+ *  Main). The button lives above the anchor and swallows the click so toggling never navigates. */
+function NavItem({ icon, label, active, badge, href, onClick, pinned, onTogglePin }: { icon: ReactNode; label: string; active: boolean; badge?: number; href: string; onClick: () => void; pinned?: boolean; onTogglePin?: () => void }) {
   return (
-    <a
-      href={href}
-      onClick={onNavClick(onClick)}
-      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm no-underline hover:bg-muted ${active ? 'bg-muted font-medium text-primary' : 'text-foreground'}`}
-    >
-      {icon}
-      <span className="flex-1 text-left">{label}</span>
-      {badge ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{badge}</Badge> : null}
-    </a>
+    <div className="group relative">
+      <a
+        href={href}
+        onClick={onNavClick(onClick)}
+        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm no-underline hover:bg-muted ${active ? 'bg-muted font-medium text-primary' : 'text-foreground'}`}
+      >
+        {icon}
+        <span className="flex-1 text-left">{label}</span>
+        {badge ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{badge}</Badge> : null}
+      </a>
+      {onTogglePin && (
+        <button
+          type="button"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin() }}
+          className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+          title={pinned ? 'Unpin from Main (moves to Manage)' : 'Pin to Main'}
+          aria-label={pinned ? `Unpin ${label} from Main` : `Pin ${label} to Main`}
+        >
+          {pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+        </button>
+      )}
+    </div>
   )
 }
 

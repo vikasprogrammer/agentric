@@ -8,6 +8,10 @@ export interface Member {
   createdAt: number
   /** Profile picture as a `data:image/…;base64,…` URL; absent → show the member's initial. */
   avatar?: string
+  /** This member's pinned sidebar nav (secondary items promoted to Main). Client-only: delivered on
+   *  /api/auth/me for `me`, never populated for other members. `null`/absent → apply the default layout;
+   *  `[]` → the member explicitly pinned nothing. */
+  navPins?: string[] | null
 }
 export type IdentityProvider = 'slack' | 'discord' | 'email' | 'github'
 export const IDENTITY_PROVIDERS: IdentityProvider[] = ['slack', 'discord', 'email', 'github']
@@ -848,7 +852,10 @@ export const api = {
   me: async (): Promise<Member | null> => {
     const res = await fetch('/api/auth/me')
     if (res.status === 401) return null
-    return (await res.json()).member as Member
+    const body = await res.json()
+    // navPins ships beside `member` on this payload — fold it onto the member so the sidebar has the
+    // pinned layout at first paint without a second request.
+    return { ...(body.member as Member), navPins: body.navPins ?? null }
   },
   logout: () => call<{ ok: boolean }>('POST', '/api/auth/logout'),
   /** Self-service recovery: ask the server to send a fresh sign-in link. Always resolves ok (neutral
@@ -896,6 +903,8 @@ export const api = {
   /** This member's own notification preferences (bell/toast/sound/DM + which event kinds). */
   notificationPrefs: () => call<NotificationPrefs>('GET', '/api/me/prefs'),
   saveNotificationPrefs: (prefs: NotificationPrefs) => call<NotificationPrefs>('PUT', '/api/me/prefs', prefs),
+  /** Persist this member's pinned sidebar nav (the keys promoted to Main). Returns the resolved list. */
+  saveNavPins: (pinned: string[]) => call<{ pinned: string[] }>('PUT', '/api/me/nav', { pinned }),
 
   team: () => call<TeamResp>('GET', '/api/team'),
   audit: (f: { session?: string; type?: string; principal?: string; limit?: number } = {}) => {

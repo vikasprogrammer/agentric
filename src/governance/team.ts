@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'crypto';
 import { Db } from '../state/db';
-import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs } from '../types';
+import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs, sanitizeNavPins } from '../types';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // login cookie valid for 30 days
@@ -56,27 +56,54 @@ export class TeamStore {
     return this.db.prepare('SELECT COUNT(*) AS n FROM members').get<{ n: number }>()!.n;
   }
 
-  // ── per-member notification preferences ──────────────────────────────────────
-  /** This member's notification prefs, merged over the defaults (missing row → all defaults). */
-  notificationPrefs(memberId: string): NotificationPrefs {
+  // ── per-member preferences (member_prefs: one JSON blob per member) ───────────
+  /** The member's raw prefs blob — notification fields live flat at the top level, `navPins` alongside.
+   *  Every accessor reads/writes through this so one concern (e.g. saving notif prefs) never clobbers a
+   *  sibling (e.g. the pinned nav). Missing/corrupt row → empty object. */
+  private rawPrefs(memberId: string): Record<string, unknown> {
     const row = this.db.prepare('SELECT prefs FROM member_prefs WHERE member_id = ?').get<{ prefs: string }>(memberId);
-    if (!row) return sanitizeNotificationPrefs(undefined);
+    if (!row) return {};
     try {
-      return sanitizeNotificationPrefs(JSON.parse(row.prefs));
+      const o = JSON.parse(row.prefs);
+      return o && typeof o === 'object' ? (o as Record<string, unknown>) : {};
     } catch {
-      return sanitizeNotificationPrefs(undefined);
+      return {};
     }
   }
 
-  /** Persist a member's notification prefs (sanitized over the defaults) and return the resolved set. */
-  setNotificationPrefs(memberId: string, prefs: unknown): NotificationPrefs {
-    const clean = sanitizeNotificationPrefs(prefs);
+  private writeRawPrefs(memberId: string, blob: Record<string, unknown>): void {
     this.db
       .prepare(
         `INSERT INTO member_prefs (member_id, prefs, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(member_id) DO UPDATE SET prefs = excluded.prefs, updated_at = excluded.updated_at`,
       )
-      .run(memberId, JSON.stringify(clean), Date.now());
+      .run(memberId, JSON.stringify(blob), Date.now());
+  }
+
+  /** This member's notification prefs, merged over the defaults (missing row → all defaults). */
+  notificationPrefs(memberId: string): NotificationPrefs {
+    return sanitizeNotificationPrefs(this.rawPrefs(memberId));
+  }
+
+  /** Persist a member's notification prefs (sanitized over the defaults) and return the resolved set.
+   *  Spreads over the existing blob so a sibling key (navPins) survives. */
+  setNotificationPrefs(memberId: string, prefs: unknown): NotificationPrefs {
+    const clean = sanitizeNotificationPrefs(prefs);
+    this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), ...clean });
+    return clean;
+  }
+
+  /** The nav items this member has pinned to the sidebar's Main section, or `null` if never set
+   *  (the client then applies its default pin layout). See `sanitizeNavPins`. */
+  navPins(memberId: string): string[] | null {
+    return sanitizeNavPins(this.rawPrefs(memberId).navPins);
+  }
+
+  /** Persist the member's pinned nav (sanitized, deduped), preserving notification prefs in the same
+   *  blob. Returns the resolved list. */
+  setNavPins(memberId: string, pins: unknown): string[] {
+    const clean = sanitizeNavPins(pins) ?? [];
+    this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), navPins: clean });
     return clean;
   }
 

@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.124.0] — 2026-07-13
+### Added
+- **Pinnable sidebar nav — each member curates their own Main.** Every secondary nav item is now pinnable:
+  hover a row and click the pin to promote it into the top **Main** section, or unpin it back down to
+  **Manage**. Main = your pinned set, Manage = everything else, with **Inbox + Agents** as permanent anchors
+  (the app's spine — never unpinnable). Goals, Tasks, and Library join the pinnable set (they were hardwired
+  into Main before), so a tenant that doesn't use Goals can reclaim the slot; they stay pinned by default so
+  nothing changes until you customize.
+  - **Per member, not per workspace** — pins are stored in the member's `member_prefs` blob (alongside
+    notification prefs, without clobbering them) and ride in on `/api/auth/me` so the sidebar renders your
+    layout at first paint (no flash). Saved through `PUT /api/me/nav`.
+  - **Role-aware** — you can only pin pages you're allowed to see (Skills/Files/Audit/Settings stay
+    admin-only), and the collapsed icon rail reflects your pins too.
+
 ## [0.123.1] — 2026-07-13
 ### Changed
 - **`deliverToResident` now resolves and audits the target's turn state before typing a chat follow-up
