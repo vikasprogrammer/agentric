@@ -24,6 +24,7 @@ export interface DreamResult {
   kbPageId?: string;
   insightId?: string;
   guidance?: string;
+  busy?: boolean; // another pass for this tenant was already running (M1) — this call no-opped
 }
 
 interface Tally { sessions: number; episodes: number; success: number; failure: number; partial: number; stopped: number; unknown: number; rejected: number; budgetStops: number; errors: number }
@@ -62,8 +63,22 @@ const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'th
 export class DreamingEngine {
   constructor(private readonly os: AgentOS) {}
 
-  /** Run one reflection pass: fold activity since the last pass into the cumulative state, re-render. */
+  /** Serialize passes per tenant (M1). A manual "Review now" and the scheduler tick both call `dream()`,
+   *  which does read-modify-write on `dreaming_state` with an `await` in the middle — concurrently they'd
+   *  lose an update and double the `learning.dreamed` marker. One pass in flight per tenant; the loser
+   *  no-ops with `busy`. In-memory is enough: within one process both callers share this set. */
+  private static inFlight = new Set<string>();
   async dream(by = 'automation:dreamer'): Promise<DreamResult> {
+    if (DreamingEngine.inFlight.has(this.os.tenant)) {
+      return { skipped: true, busy: true, window: { since: 0, until: Date.now() }, passes: this.load()?.passes };
+    }
+    DreamingEngine.inFlight.add(this.os.tenant);
+    try { return await this.dreamInner(by); }
+    finally { DreamingEngine.inFlight.delete(this.os.tenant); }
+  }
+
+  /** Run one reflection pass: fold activity since the last pass into the cumulative state, re-render. */
+  private async dreamInner(by = 'automation:dreamer'): Promise<DreamResult> {
     const db = this.os.db;
     const until = Date.now();
     const prior = this.load();
@@ -81,7 +96,7 @@ export class DreamingEngine {
       .prepare("SELECT run_id, ts, type, data FROM audit_events WHERE ts > ? AND type IN ('session.reported','session.ended','session.stopped','run.completed') ORDER BY ts")
       .all<OutcomeRow>(since);
     const frictionRows = db
-      .prepare("SELECT ts, type, data FROM audit_events WHERE ts > ? AND type IN ('budget.exceeded','episode.error','approval.resolved')")
+      .prepare("SELECT ts, type, data FROM audit_events WHERE ts > ? AND type IN ('budget.exceeded','session.error','approval.resolved')")
       .all<FrictionRow>(since);
 
     if (!episodes.length && !outcomeRows.length) {
@@ -110,7 +125,7 @@ export class DreamingEngine {
     }
     for (const f of frictionRows) {
       if (f.type === 'budget.exceeded') win.budgetStops++;
-      else if (f.type === 'episode.error') win.errors++;
+      else if (f.type === 'session.error') win.errors++; // L3: real run errors, not memory-store (`episode.error`) failures
       else if (parse(f.data).approved === false) win.rejected++;
     }
     const winTopics = topicCounts(episodes);
@@ -174,8 +189,26 @@ export class DreamingEngine {
 
   private load(): DreamState | null {
     const raw = this.os.settings.dreamingState();
-    return raw ? (raw as unknown as DreamState) : null;
+    return raw ? normalizeState(raw as Record<string, unknown>) : null;
   }
+}
+
+/** L1: repair a partial / schema-drifted / corrupt `dreaming_state` into a well-formed shape, so the
+ *  fold's `state.totals[k] += win[k]` can never hit an `undefined` field and spew `NaN` into every
+ *  downstream number (rate, guidance, the page). Non-numeric fields fall back to safe defaults. */
+function normalizeState(raw: Record<string, unknown>): DreamState {
+  const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  const rt = (raw.totals ?? {}) as Record<string, unknown>;
+  const totals = zeroTally();
+  for (const k of Object.keys(totals) as (keyof Tally)[]) totals[k] = num(rt[k], 0);
+  const topics: DreamState['topics'] = {};
+  for (const [k, v] of Object.entries((raw.topics ?? {}) as Record<string, unknown>)) {
+    const o = (v ?? {}) as { count?: unknown; lastSeen?: unknown };
+    if (Number.isFinite(Number(o.count))) topics[k] = { count: num(o.count, 0), lastSeen: num(o.lastSeen, 0) };
+  }
+  const recent = Array.isArray(raw.recent) ? (raw.recent as RecentEntry[]) : [];
+  const watermark = Number.isFinite(Number(raw.watermark)) ? Number(raw.watermark) : undefined;
+  return { firstPass: num(raw.firstPass, Date.now()), passes: num(raw.passes, 0), totals, topics, recent, watermark };
 }
 
 function zeroTally(): Tally {

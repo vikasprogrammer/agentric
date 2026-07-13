@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.157.4] — 2026-07-13
+### Fixed
+- **Dreaming robustness batch** (third of the sequenced audit fixes, after timing v0.150.2 + staleness v0.157.1):
+  - **M1 — no lost-update race.** A manual "Review now" and the scheduler tick both call `dream()`, which
+    read-modify-writes `dreaming_state` with an `await` in the middle; concurrently they'd lose a pass's
+    counts and double the marker. Now serialized per tenant (one in-flight pass; the loser no-ops `busy`).
+  - **M3 — bounded digest retry.** `digest.posted` is written only on success, so a day-long Slack/Discord
+    outage re-attempted every hour (flooding audit + rewriting the KB page). Now caps at 3 attempts/day.
+  - **M4 — consolidation no longer drops a failed batch.** The watermark advanced at gardener *kickoff*, so
+    a crashed/killed run lost its episodes+lessons forever. The next run now re-includes a previous run's
+    window if it never reported, and skips if the previous run is still running (no stacking).
+  - **L1 — corrupt state can't spread NaN.** A partial/schema-drifted `dreaming_state` is now normalized on
+    load (numeric totals, object topics, array recent), so the fold's `+=` can't propagate `NaN`.
+  - **L3 — accurate error friction.** The friction "errors" signal now counts `session.error` (real run
+    errors) instead of `episode.error` (memory-store failures), so guidance reflects actual run outcomes.
+  `src/edge/dreaming.ts`, `src/edge/digest.ts`, `src/edge/consolidation.ts`.
+
 ## [0.157.3] — 2026-07-13
 ### Fixed
 - **Select triggers showed a raw id after picking an owner/assignee/goal.** On the Goals and Tasks

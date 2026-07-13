@@ -40,8 +40,23 @@ export class Consolidation {
   async run(by = 'automation:consolidation'): Promise<ConsolidateResult> {
     const db = this.os.db;
     const until = Date.now();
-    const last = db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.consolidated'").get<{ t: number | null }>();
-    const since = last?.t ?? until - WINDOW_FALLBACK_MS;
+    // The watermark advances at KICKOFF (below), so a gardener run that crashed / was killed / hit its
+    // budget would otherwise drop its batch forever (M4). Inspect the PREVIOUS run first: if it's still
+    // running, don't stack a second one; if it never reported (didn't finish), re-include its window
+    // instead of skipping past it — the fresh run then supersedes the failed marker.
+    const prevRow = db.prepare("SELECT ts, data FROM audit_events WHERE type = 'learning.consolidated' ORDER BY ts DESC LIMIT 1").get<{ ts: number; data: string }>();
+    let since = until - WINDOW_FALLBACK_MS;
+    if (prevRow) {
+      since = prevRow.ts;
+      let prev: { sessionId?: string; window?: { since?: number } } = {};
+      try { prev = JSON.parse(prevRow.data) as typeof prev; } catch { /* keep ts */ }
+      if (prev.sessionId) {
+        const st = db.prepare("SELECT status FROM term_sessions WHERE id = ?").get<{ status: string }>(prev.sessionId);
+        if (st?.status === 'running') return { spawned: false, reason: 'previous consolidation still running', window: { since, until } };
+        const reported = db.prepare("SELECT 1 FROM audit_events WHERE run_id = ? AND type = 'session.reported' LIMIT 1").get(prev.sessionId);
+        if (!reported && Number.isFinite(Number(prev.window?.since))) since = Number(prev.window!.since);
+      }
+    }
     const window = { since, until };
 
     // Raw material: episodes (what happened) + lessons (what an agent already chose to keep), fleet-wide,

@@ -24,6 +24,7 @@ import { postMessage as discordPost } from '../connectors/discord';
 const SECTION = 'operations';
 const SALIENCE = 0.5;          // episodes at/above this importance make the body; the rest count in the tally only
 const PER_AGENT = 6;           // cap body lines per agent (overflow → "+N more")
+const MAX_POST_ATTEMPTS = 3;   // scheduled EOD post retries per day before giving up (M3 — bound outage churn)
 
 export interface DigestModel {
   iso: string;                 // YYYY-MM-DD (server-local)
@@ -305,6 +306,11 @@ export class Digest {
     const { start, iso } = localDayBounds(now);
     const last = this.os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'digest.posted'").get<{ t: number | null }>();
     if (last?.t && last.t >= start) return null; // already posted today
+    // M3: cap retries on a platform outage. `digest.posted` is only written on success, so without this a
+    // day-long Slack/Discord outage would re-render + re-attempt every hour until midnight, flooding audit
+    // with `digest.error` rows and rewriting the KB page hourly. Give up after MAX_POST_ATTEMPTS today.
+    const fails = this.os.db.prepare("SELECT count(*) AS n FROM audit_events WHERE type = 'digest.error' AND ts >= ?").get<{ n: number }>(start);
+    if ((fails?.n ?? 0) >= MAX_POST_ATTEMPTS) return null;
     return this.postNow('scheduler', now).catch((e) => ({ posted: false, error: e instanceof Error ? e.message : String(e), total: 0, iso }));
   }
 }
