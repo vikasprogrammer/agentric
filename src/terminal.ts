@@ -22,7 +22,7 @@ import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
 import { claudeSupportsReloadSkills } from './edge/claude-cli';
-import { DEFAULT_IMAGE_COST_USD, resolveImageBackend } from './edge/image-gen';
+import { DEFAULT_IMAGE_COST_USD, resolveImageBackend, imageErrorInfo } from './edge/image-gen';
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
 import { understandMedia } from './edge/media-understand';
 
@@ -2502,7 +2502,7 @@ export class TerminalManager {
    *  3. each image lands as an `image` artifact + an owner-scoped inbox card, and the run is audited
    *     with the REAL cost when the backend reports it (OpenRouter `usage.cost`), else the estimate.
    */
-  async generateImage(sessionId: string, input: { prompt: string; model?: string; size?: string; n?: number }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string }> {
+  async generateImage(sessionId: string, input: { prompt: string; model?: string; size?: string; n?: number }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string; retryable?: boolean; vendor?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
@@ -2528,9 +2528,9 @@ export class TerminalManager {
     try {
       result = await backend.generate({ prompt, model: input.model, size: input.size, n });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.audit(sessionId, agent, 'image.failed', { model, n, error: msg });
-      return { ok: false, error: msg };
+      const info = imageErrorInfo(e);
+      this.audit(sessionId, agent, 'image.failed', { model, n, error: info.message, vendor: info.vendor, retryable: info.retryable });
+      return { ok: false, error: info.message, retryable: info.retryable, vendor: info.vendor };
     }
 
     const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
@@ -2575,7 +2575,7 @@ export class TerminalManager {
    * `operation` (a named preset — 'remove-background', a transparent-PNG cutout, no prompt) ⇒ that preset;
    * else `scale` (>1) upscales (prompt ignored); else `prompt` drives an image-to-image edit. Atlas-only.
    */
-  async editImage(sessionId: string, input: { image: string; prompt?: string; scale?: number; model?: string; operation?: 'remove-background' }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string }> {
+  async editImage(sessionId: string, input: { image: string; prompt?: string; scale?: number; model?: string; operation?: 'remove-background' }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string; retryable?: boolean; vendor?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
@@ -2606,9 +2606,9 @@ export class TerminalManager {
     try {
       result = await backend.editImage({ images: [resolved.url], prompt, model: input.model, scale: input.scale, operation: input.operation });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.audit(sessionId, agent, 'image.failed', { model, op, error: msg });
-      return { ok: false, error: msg };
+      const info = imageErrorInfo(e);
+      this.audit(sessionId, agent, 'image.failed', { model, op, error: info.message, vendor: info.vendor, retryable: info.retryable });
+      return { ok: false, error: info.message, retryable: info.retryable, vendor: info.vendor };
     }
 
     const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);

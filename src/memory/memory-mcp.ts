@@ -1149,12 +1149,23 @@ async function imageGenerate(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number; warning?: string };
-  if (!d.ok) return `Could not generate image: ${d.error ?? 'unknown error'}`;
+  const d = (await res.json()) as { ok?: boolean; error?: string; vendor?: string; retryable?: boolean; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number; warning?: string };
+  if (!d.ok) return `image_generate error: ${mediaErrorHint(d)}`;
   const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
   const warn = d.warning ? ` ⚠ ${d.warning}` : '';
   return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${list}.${warn}`;
+}
+
+/** A consistent failure suffix for a media call — names the vendor and says whether a plain retry is
+ *  worthwhile, so the agent acts on it (retry the transient ones, fix the input on the terminal ones)
+ *  instead of blindly re-calling. */
+function mediaErrorHint(d: { error?: string; vendor?: string; retryable?: boolean }): string {
+  const vendor = d.vendor ? ` [${d.vendor}]` : '';
+  const advice = d.retryable === true ? ' — transient, so you may retry once or twice'
+    : d.retryable === false ? ' — not transient; do NOT just retry, fix the input/model or surface it'
+    : '';
+  return `${d.error ?? 'unknown error'}${vendor}${advice}`;
 }
 
 async function imageEdit(args: Record<string, unknown>): Promise<string> {
@@ -1174,8 +1185,8 @@ async function imageEdit(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number; warning?: string };
-  if (!d.ok) return `Could not edit image: ${d.error ?? 'unknown error'}`;
+  const d = (await res.json()) as { ok?: boolean; error?: string; vendor?: string; retryable?: boolean; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number; warning?: string };
+  if (!d.ok) return `image_edit error: ${mediaErrorHint(d)}`;
   const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
   const what = operation === 'remove-background' ? 'Removed background' : scale && scale > 1 ? `Upscaled ${scale}×` : 'Edited';
@@ -2176,7 +2187,9 @@ async function handle(req: JsonRpc): Promise<void> {
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
     } catch (e) {
-      send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `memory error: ${e instanceof Error ? e.message : String(e)}` }], isError: true } });
+      // Name the tool that actually failed — not every tool is "memory" (an image/video generation network
+      // error was reporting itself as a memory failure, sending the agent to the wrong subsystem).
+      send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `${name ?? 'tool'} error: ${e instanceof Error ? e.message : String(e)}` }], isError: true } });
     }
     return;
   }
