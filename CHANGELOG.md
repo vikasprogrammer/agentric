@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.143.1] — 2026-07-13
+### Fixed
+- **A cron automation missed in its scheduled minute is no longer silently dropped for the whole day.** A
+  cron fires in exactly ONE minute (`cronMatches(now)`); if that minute was skipped — the box was over the
+  concurrency cap, or mid-restart/deploy — the scheduler deferred it but, unlike a `once`/`task`, by the next
+  tick `cronMatches` was false so the occurrence was lost until the next day. On a chronically over-cap box
+  this dropped a daily report every single day (observed: globex's "Daily Support Quality Review" hadn't
+  fired for 3 days — each 09:00 UTC minute the box sat at 9–10 alive sessions against a cap of 8). `tick()`
+  now fires the most-recent *owed* occurrence within a bounded catch-up window (`CRON_CATCHUP_MIN`, 2 h),
+  retrying each tick until headroom appears or the window closes — so a cap-deferral or a deploy over the
+  scheduled minute self-heals, while a long outage never replays a stale backlog (only the single latest
+  occurrence is owed, and it's abandoned once older than the window). New `recentCronOccurrence()` helper +
+  `scripts/cron-catchup-test.cjs` (15 assertions incl. the exact over-cap→catch-up path).
+
 ## [0.143.0] — 2026-07-13
 ### Added
 - **Whole-box concurrency cap is now ON by default (Phase 1 of `docs/concurrency-cap-plan.md`).** Every live

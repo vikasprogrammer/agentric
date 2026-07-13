@@ -99,6 +99,32 @@ export function nextCronRun(expr: string, from: Date = new Date()): number | nul
   return null;
 }
 
+/** How far back (minutes) a cron occurrence is still worth catching up. A cron fires in ONE scheduled
+ *  minute; if that minute is skipped — over the concurrency cap, or the box was mid-restart/deploy — the
+ *  old scheduler dropped it until the next day. The catch-up window lets `tick()` keep retrying that
+ *  occurrence until headroom appears, bounded so a long outage never fires an ancient/absurdly-stale run
+ *  (only the single most-recent occurrence is ever owed — no backlog replay). 2 h is generous enough to
+ *  cover a deploy window and many cap-relief ticks, tight enough that a daily 09:00 report never fires in
+ *  the afternoon. */
+export const CRON_CATCHUP_MIN = 120;
+
+/**
+ * The most recent minute (epoch ms) at or before `from` that `spec` matches, scanned back at most
+ * `windowMin` minutes; null if it didn't fire within the window. Minute-grained to match the tick. Used by
+ * the scheduler to detect a cron occurrence it still owes (missed its exact minute) vs one already run —
+ * combined with `lastFiredAt`, it fires at most once per occurrence.
+ */
+export function recentCronOccurrence(spec: CronSpec, from: Date, windowMin: number): number | null {
+  const d = new Date(from.getTime());
+  d.setSeconds(0, 0);
+  const start = d.getTime();
+  for (let i = 0; i <= windowMin; i++) {
+    const t = start - i * 60_000;
+    if (cronMatches(spec, new Date(t))) return t;
+  }
+  return null;
+}
+
 // ── the automation object ─────────────────────────────────────────────────────────
 
 /**
@@ -739,10 +765,10 @@ export class Automations {
     // Advance any in-flight async video renders (poll → ingest on completion). Fire-and-forget: it's
     // async, tick is sync, and a poll error must never break the scheduler loop.
     void this.tm.pollVideoJobs().catch(() => {});
-    const minute = Math.floor(now.getTime() / 60_000);
     // Whole-box concurrency cap (#137). Count sessions already alive and stop firing NEW scheduler spawns
-    // once we hit the ceiling — a deferred cron/one-shot isn't stamped `lastFiredAt` (and a `once` isn't
-    // disabled), so it simply RE-FIRES next tick. No queue needed. 0 = unlimited. The cap is now ON by
+    // once we hit the ceiling. A deferred spawn isn't stamped `lastFiredAt` (and a `once` isn't disabled),
+    // so it retries next tick: a `once`/`task` stays due indefinitely; a `cron` is retried only within its
+    // catch-up window (see the cron branch below). No queue needed. 0 = unlimited. The cap is now ON by
     // default (RAM-derived) rather than opt-in — resolved live so a Settings change needs no restart.
     const cap = this.concurrencyCap();
     let running = cap > 0 ? this.tm.aliveSessionCount() : 0;
@@ -770,9 +796,15 @@ export class Automations {
       } catch {
         continue; // validated at write time; never let one bad row kill the loop
       }
-      if (!cronMatches(spec, now)) continue;
-      if (a.lastFiredAt && Math.floor(a.lastFiredAt / 60_000) === minute) continue; // already fired this minute
-      if (overCap()) { deferred++; continue; } // over cap → not stamped, so it re-fires next tick
+      // Which scheduled occurrence (if any) is currently OWED — usually this very minute, but an OLDER one
+      // when a prior tick deferred it over the cap or the box was down through its minute. Without this a
+      // cron only ever fires in its exact minute: hit the cap or a restart there and it's silently dropped
+      // until the next day (the real cause of the "not firing for 3 days" report on a chronically over-cap
+      // box). The catch-up window bounds the retry so a long outage can't unleash stale/backlogged runs.
+      const due = recentCronOccurrence(spec, now, CRON_CATCHUP_MIN);
+      if (due == null) continue;                                                   // nothing due within the window
+      if (a.lastFiredAt && Math.floor(a.lastFiredAt / 60_000) >= Math.floor(due / 60_000)) continue; // that occurrence already ran
+      if (overCap()) { deferred++; continue; } // over cap → not stamped; retried next tick until the window closes
       const r = this.fire(a, { guard: true });
       if (r.ok) running++;
     }
