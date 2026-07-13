@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.143.0] — 2026-07-13
+### Added
+- **Whole-box concurrency cap is now ON by default (Phase 1 of `docs/concurrency-cap-plan.md`).** Every live
+  session holds a `claude` process (hundreds of MB), so an unbounded burst of scheduled work can OOM the box.
+  The scheduler cap — previously opt-in via `AOS_MAX_CONCURRENT_SESSIONS` and **0 (unlimited) by default** —
+  now defaults to a **RAM-derived** value: `max(3, floor(totalGB / 1.5))` (a 2 GB droplet → 3; a 32 GB Mac
+  Mini → ~21). Resolved live as **env override → operator Settings value → derived default** by the new
+  `Automations.concurrencyCap()` (single source of truth; the old static `maxConcurrent` field is gone), so a
+  change takes effect on the next scheduler tick with no restart.
+- **Settings → Runtime defaults → "Concurrency cap".** A new owner/admin panel shows the live running-session
+  count and the effective cap + where it came from (env / operator / box default), and lets you set it: blank
+  = the RAM-derived default, `0` = unlimited, `N` = cap at N. Env-pinned installs show the value read-only.
+  Backed by `GET/PUT /api/settings/concurrency` (audited `settings.concurrency.updated`).
+### Fixed
+- **The concurrency cap no longer silently disables itself when tmux liveness can't be polled.**
+  `aliveSessionCount()` used to fail-open to `0` when `aliveNames()` returned null (always on the Linux
+  `LauncherSessionBackend`; transient local hiccups) — turning the cap off under exactly the load it exists
+  for. It now falls back to a pure DB count of `running` rows (new `runningSessionCount()`); the crash sweep
+  keeps that set honest, so it's a safe proxy.
+
 ## [0.142.0] — 2026-07-13
 ### Added
 - **Settings → System → Host resources now breaks down RAM by agent session.** Alongside the host

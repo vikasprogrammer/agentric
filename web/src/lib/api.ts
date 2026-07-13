@@ -39,6 +39,19 @@ export interface RuntimeTuning {
   permissionMode?: PermissionMode
 }
 
+/** Whole-box concurrency cap state (Settings → Runtime). `value` = operator override (null = unset);
+ *  `resolved` = effective cap the scheduler enforces (0 = unlimited); `derived` = the RAM-based default;
+ *  `source` = which of the three won; `envLocked` = pinned by the AOS_MAX_CONCURRENT_SESSIONS env var;
+ *  `alive` = live running-session count right now. */
+export interface Concurrency {
+  value: number | null
+  resolved: number
+  derived: number
+  source: 'env' | 'setting' | 'derived'
+  envLocked: boolean
+  alive: number
+}
+
 export interface AgentInfo {
   id: string
   description: string
@@ -1046,6 +1059,8 @@ export const api = {
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
+  concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
+  saveConcurrency: (value: number | null) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number }>('PUT', '/api/settings/concurrency', { value }),
 
   governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
   saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),

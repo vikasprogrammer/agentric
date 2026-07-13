@@ -16,7 +16,7 @@ import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './state/session-activity';
-import { Automation, Automations, nextCronRun } from './edge/automations';
+import { Automation, Automations, nextCronRun, derivedConcurrencyCap } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
@@ -2670,6 +2670,32 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const saved = os.settings.setRuntimeDefaults(tuning, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.runtimeDefaults.updated', data: { ...tuning } });
     return sendJson(res, 200, { ok: true, ...saved });
+  }
+
+  // ── whole-box concurrency cap (docs/concurrency-cap-plan.md Phase 1) ──
+  // The effective cap resolves env → operator Settings → RAM-derived default (single source of truth =
+  // Automations.concurrencyCap). Reports the resolved value + its source + the live running count so the
+  // console can show "N / cap running" and whether an env var is pinning it.
+  if (method === 'GET' && p === '/api/settings/concurrency') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const env = process.env.AOS_MAX_CONCURRENT_SESSIONS;
+    const envLocked = env !== undefined && env.trim() !== '' && Number.isFinite(Number(env)) && Number(env) >= 0;
+    const value = os.settings.maxConcurrentSessions(); // operator override (null = unset)
+    const resolved = autos.concurrencyCap();           // effective cap the scheduler enforces (0 = unlimited)
+    const source = envLocked ? 'env' : value != null ? 'setting' : 'derived';
+    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount() });
+  }
+  if (method === 'PUT' && p === '/api/settings/concurrency') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { value?: unknown };
+    // `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Reject non-numeric junk.
+    const raw = b.value;
+    const clear = raw === null || raw === undefined || raw === '';
+    const n = clear ? null : Number(raw);
+    if (!clear && (!Number.isFinite(n as number) || (n as number) < 0)) return sendJson(res, 400, { error: 'value must be a non-negative integer, 0 (unlimited), or null (use default)' });
+    const saved = os.settings.setMaxConcurrentSessions(clear ? null : (n as number), me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.concurrency.updated', data: { value: saved } });
+    return sendJson(res, 200, { ok: true, value: saved, resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap() });
   }
 
   // ── UI branding (per-tenant accent colour + favicon badge) — owner/admin edits ──

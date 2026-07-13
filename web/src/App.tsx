@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -7966,7 +7966,7 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
       </div>
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
-          : tab === 'runtime' ? <RuntimeDefaultsSettings me={me} />
+          : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /></div>
           : tab === 'theme' ? <ThemeSettings me={me} state={state} />
           : tab === 'secrets' ? <SecretsSettings me={me} />
           : tab === 'memory' ? <MemorySettings me={me} />
@@ -8609,6 +8609,78 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save defaults' : 'Saved'}</Button>
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/** Settings → Runtime → Concurrency cap. The max number of agent sessions the scheduler will run at once
+ *  (each holds a claude process ≈ hundreds of MB). The cap is ON by default (RAM-derived); an operator can
+ *  raise/lower it or lift it entirely. Effective value resolves env → this setting → derived default. */
+function ConcurrencySettings({ me }: { me: Member }) {
+  const [data, setData] = useState<Concurrency | null>(null)
+  const [input, setInput] = useState('') // '' = use default; '0' = unlimited; N = cap
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const canEdit = me.role === 'owner' || me.role === 'admin'
+
+  const load = () => api.concurrency().then((r) => {
+    if (r.error) return
+    setData(r)
+    setInput(r.value == null ? '' : String(r.value)) // box reflects only an explicit operator override
+  }).catch(() => {})
+  useEffect(() => { load() }, [])
+
+  const dirty = data != null && input.trim() !== (data.value == null ? '' : String(data.value))
+  const save = async () => {
+    setBusy(true); setHint('')
+    const r = await api.saveConcurrency(input.trim() === '' ? null : Number(input))
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setHint('saved — applies on the next scheduler tick'); setTimeout(() => setHint(''), 2500)
+    load()
+  }
+  const capLabel = (n: number) => (n <= 0 ? 'unlimited' : String(n))
+
+  return (
+    <Card>
+      <CardContent className="space-y-4 p-4">
+        <div>
+          <h3 className="text-sm font-medium">Concurrency cap</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            The most agent sessions allowed to run at once. Each live session holds a{' '}
+            <span className="font-mono text-xs">claude</span> process (hundreds of MB), so this guards the box against an
+            OOM-inducing burst of scheduled work. Over the cap, the scheduler defers cron/task spawns and retries next tick —
+            interactive and chat sessions are never blocked.
+          </p>
+        </div>
+        {data && (
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs">
+            <span className="font-mono">{data.alive}</span> running now · effective cap{' '}
+            <span className="font-mono">{capLabel(data.resolved)}</span>{' '}
+            <span className="text-muted-foreground">
+              ({data.source === 'env' ? 'from AOS_MAX_CONCURRENT_SESSIONS' : data.source === 'setting' ? 'operator-set' : `default for this box (~${data.derived})`})
+            </span>
+          </div>
+        )}
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">Max concurrent sessions</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={data ? `default (${data.derived})` : 'default'}
+              disabled={!canEdit || !!data?.envLocked}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <Button onClick={save} disabled={!canEdit || busy || !dirty || !!data?.envLocked}>{dirty ? 'Save' : 'Saved'}</Button>
+            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Blank = the RAM-derived default{data ? ` (${data.derived})` : ''}. <span className="font-mono">0</span> = unlimited (no cap).
+            {data?.envLocked && <> Pinned by the <span className="font-mono">AOS_MAX_CONCURRENT_SESSIONS</span> env var — clear it to edit here.</>}
+          </p>
         </div>
       </CardContent>
     </Card>

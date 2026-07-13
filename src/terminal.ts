@@ -694,18 +694,28 @@ export class TerminalManager {
 
   /**
    * How many sessions have a `running` row AND a live tmux pane right now — the whole-box concurrency
-   * measure for the scheduler cap (`AOS_MAX_CONCURRENT_SESSIONS`). Counts every provenance (interactive,
-   * chat, automation, task) since they all consume memory, so the scheduler backs off when a human is
-   * already loading the box. FAIL-OPEN: if liveness can't be polled (launcher backend / transient tmux
-   * failure) it returns 0 so a hiccup never freezes the scheduler into deferring everything.
+   * measure for the scheduler cap. Counts every provenance (interactive, chat, automation, task) since
+   * they all consume memory, so the scheduler backs off when a human is already loading the box.
+   *
+   * When liveness CAN'T be polled (`aliveNames()===null` — always on the Linux LauncherSessionBackend,
+   * or a transient tmux hiccup) it falls back to a pure DB count of `running` rows rather than 0. The old
+   * fail-open-to-0 silently DISABLED the cap under exactly the load it's for (the launcher backend never
+   * polls) — a DB proxy keeps the cap engaged. The crash sweep reaps stale `running` rows, so the count
+   * is a safe upper-bound. (docs/concurrency-cap-plan.md Phase 1.)
    */
   aliveSessionCount(): number {
     const alive = this.backend.aliveNames();
-    if (!alive) return 0;
+    if (!alive) return this.runningSessionCount();
     const rows = this.db.prepare("SELECT tmux FROM term_sessions WHERE status = 'running'").all<{ tmux: string }>();
     let n = 0;
     for (const r of rows) if (alive.has(r.tmux)) n++;
     return n;
+  }
+
+  /** Pure DB count of `running` sessions — the cap's fallback when tmux liveness can't be polled. Cheap
+   *  (runs per tick + per admission check); the crash sweep keeps the `running` set honest. */
+  runningSessionCount(): number {
+    return this.db.prepare("SELECT COUNT(*) AS c FROM term_sessions WHERE status = 'running'").get<{ c: number }>()!.c;
   }
 
   /**

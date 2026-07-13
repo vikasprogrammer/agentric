@@ -258,13 +258,17 @@ export function buildTaskPrompt(t: { id: string; title: string; body: string; cr
 import { claudeSupportsGoal } from './claude-cli';
 export { claudeSupportsGoal };
 
+/** RAM-derived default concurrency cap: ~1 session per 1.5 GB of host memory, floored at 3. Adapts to the
+ *  box (2 GB droplet → 3; 32 GB Mac Mini → ~21) so the cap protects small boxes without throttling big ones.
+ *  Parameterized for testing. See docs/concurrency-cap-plan.md Phase 1. */
+export function derivedConcurrencyCap(totalBytes = os.totalmem()): number {
+  const gb = totalBytes / (1024 ** 3);
+  return Math.max(3, Math.floor(gb / 1.5));
+}
+
 export class Automations {
   private readonly db: Db;
   private timer?: NodeJS.Timeout;
-  // Whole-box concurrency cap: the scheduler stops firing NEW cron/task spawns once this many sessions
-  // are alive (defense-in-depth against an OOM-inducing burst — see #137). Interactive/chat spawns are
-  // never gated (a human is waiting; a chat spawn has no natural retry). 0 = unlimited (opt-in per box).
-  private readonly maxConcurrent = Number(process.env.AOS_MAX_CONCURRENT_SESSIONS) || 0;
 
   constructor(
     private readonly os: AgentOS,
@@ -712,16 +716,35 @@ export class Automations {
     this.timer = undefined;
   }
 
+  /**
+   * The effective whole-box concurrency cap, resolved LIVE each tick so an operator change takes effect
+   * without a restart. Order: `AOS_MAX_CONCURRENT_SESSIONS` env override → operator Settings value →
+   * RAM-derived default. Returns `0` for UNLIMITED (env or Settings explicitly set to 0). Single source
+   * of truth — the scheduler cap AND the Settings observability route both read this. Phase 2 will reuse
+   * it for the chat/webhook admission gate (`admit()`). See docs/concurrency-cap-plan.md.
+   */
+  concurrencyCap(): number {
+    const env = process.env.AOS_MAX_CONCURRENT_SESSIONS;
+    if (env !== undefined && env.trim() !== '') {
+      const n = Number(env);
+      if (Number.isFinite(n) && n >= 0) return Math.floor(n); // env wins; 0 = unlimited
+    }
+    const setting = this.os.settings.maxConcurrentSessions();
+    if (setting != null) return setting;                      // operator value; 0 = unlimited
+    return derivedConcurrencyCap();                           // RAM-based default
+  }
+
   /** One scheduler pass — public so tests (and a future "catch-up" boot pass) can drive it. */
   tick(now: Date): void {
     // Advance any in-flight async video renders (poll → ingest on completion). Fire-and-forget: it's
     // async, tick is sync, and a poll error must never break the scheduler loop.
     void this.tm.pollVideoJobs().catch(() => {});
     const minute = Math.floor(now.getTime() / 60_000);
-    // Whole-box concurrency cap (#137). When set, count sessions already alive and stop firing NEW
-    // scheduler spawns once we hit the ceiling — a deferred cron/one-shot isn't stamped `lastFiredAt`
-    // (and a `once` isn't disabled), so it simply RE-FIRES next tick. No queue needed. 0 = unlimited.
-    const cap = this.maxConcurrent;
+    // Whole-box concurrency cap (#137). Count sessions already alive and stop firing NEW scheduler spawns
+    // once we hit the ceiling — a deferred cron/one-shot isn't stamped `lastFiredAt` (and a `once` isn't
+    // disabled), so it simply RE-FIRES next tick. No queue needed. 0 = unlimited. The cap is now ON by
+    // default (RAM-derived) rather than opt-in — resolved live so a Settings change needs no restart.
+    const cap = this.concurrencyCap();
     let running = cap > 0 ? this.tm.aliveSessionCount() : 0;
     let deferred = 0;
     const overCap = (): boolean => cap > 0 && running >= cap;
@@ -772,7 +795,7 @@ export class Automations {
   private sweepStuckGoals(now: Date): void {
     if (!this.os.settings.autoPlanGoals()) return;
     try {
-      const cap = this.maxConcurrent;
+      const cap = this.concurrencyCap();
       let spawned = 0;
       for (const g of this.os.goals.stuck(this.os.tenant, GOAL_AUTOPLAN_GRACE_MS, now.getTime())) {
         if (spawned >= GOAL_AUTOPLAN_MAX_PER_TICK) break;

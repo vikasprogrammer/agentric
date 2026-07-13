@@ -56,6 +56,7 @@ export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd
 const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JSON string[]); email.send to these is green
 const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
+const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 const SUPPRESSED_BUILTINS_KEY = 'suppressed_builtins'; // built-in agent ids an admin deleted (JSON string[]); boot won't re-seed them
 
@@ -639,6 +640,33 @@ export class SettingsStore {
     const clamped = !Number.isFinite(n) || n < 0 ? 30 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 60);
     this.set(CHAT_IDLE_MIN_KEY, String(clamped), by);
     return this.chatIdleTimeoutMinutes();
+  }
+
+  // ── whole-box concurrency cap (docs/concurrency-cap-plan.md) ─────────────────────
+  // The max number of live sessions the scheduler will let run at once. Every live session holds a
+  // tmux pane + a `claude` process (hundreds of MB), so enough of them swap/OOM the box. This is the
+  // OPERATOR override; the effective cap is resolved live by `Automations.concurrencyCap()` as
+  // env → this setting → RAM-derived default, so a change here takes effect on the next tick with no
+  // restart. Distinct from the model/effort runtime defaults (those are per-agent tuning) but surfaced
+  // in the same Settings → Runtime panel.
+
+  /** The operator-set concurrency cap, or `null` when unset (→ the resolver uses the RAM-derived
+   *  default). An explicit `0` means UNLIMITED (opt out of the cap); `N>0` caps live sessions at N. */
+  maxConcurrentSessions(): number | null {
+    const raw = this.getRow(MAX_CONCURRENT_KEY)?.value;
+    if (raw == null || raw.trim() === '') return null; // unset → derived default
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return null;     // garbage → treat as unset
+    return Math.floor(n);                              // 0 = unlimited; N>0 = cap
+  }
+
+  /** Set (or clear, with `null`) the operator concurrency cap. `0` = unlimited; `N>0` = cap; `null`/
+   *  negative/garbage clears the override so the RAM-derived default applies again. */
+  setMaxConcurrentSessions(n: number | null, by?: string): number | null {
+    const v = Number(n);
+    if (n == null || !Number.isFinite(v) || v < 0) this.set(MAX_CONCURRENT_KEY, '', by); // clear → derived default
+    else this.set(MAX_CONCURRENT_KEY, String(Math.floor(v)), by);
+    return this.maxConcurrentSessions();
   }
 
   // ── kill switch (workspace emergency stop) ───────────────────────────────────────
