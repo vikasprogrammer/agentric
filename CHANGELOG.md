@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.166.1] — 2026-07-13
+### Changed
+- **Insights page uses a responsive 2-column (masonry) layout** so more of the intelligence fits above the
+  fold — the status hero stays full-width, then the cards (Is it working?, scorecard, friction, guidance,
+  recommendations, review history, digest, settings) flow into two columns on wide screens and a single
+  column on narrow ones. `break-inside-avoid` keeps each card whole; page widened `max-w-3xl` → `max-w-5xl`.
+
 ## [0.166.0] — 2026-07-13
 ### Added
 - **Proactive insight alerts — the intelligence layer comes to you.** Instead of waiting for someone to
