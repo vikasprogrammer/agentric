@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.176.0] — 2026-07-13
+### Changed
+- **Daily digest — links + cleaner formatting, and two accuracy fixes.**
+  - **Links.** The Slack/Discord post now links the header + each **agent name** to the console
+    (`/#/agents/<agent>`) and adds an **"Open the full report in Agent OS →"** footer — sourced from the
+    tenant's public URL (`consoleOrigin` for the scheduled post, the request origin for "Post now"). The KB
+    journal page links agents too. Blank line between agents for readability.
+  - **"N errors" no longer inflated by memory-store failures.** The header counted `episode.error` (a
+    flaky-memory-backend signal) as fleet errors — a tenant on an external backend showed e.g. "26 errors"
+    on a clean day. Now counts only `session.error` (real run errors).
+  - **"Frequently works on" topics de-noised.** The Dreaming topic extraction now filters procedural words
+    (slack, check, report, completed, summary, …) so guidance surfaces real work areas, not plumbing.
+  `src/edge/digest.ts`, `src/edge/dreaming.ts`, `src/server.ts`.
+
 ## [0.175.2] — 2026-07-13
 ### Changed
 - **Visuals/icons across the landing page** (`public/landing.html`). Added tasteful inline-SVG iconography

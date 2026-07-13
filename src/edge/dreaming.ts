@@ -58,7 +58,10 @@ const RECENT_PASSES = 7;                       // window for guidance/recommenda
 const TOPIC_HALFLIFE_MS = 21 * 24 * 3_600_000; // a topic's weight halves every 3 weeks since last seen (recency-favouring, so current work outranks an old burst)
 const TOPIC_MAX_AGE_MS = 90 * 24 * 3_600_000;  // drop a topic entirely if unseen this long
 const TOPIC_CAP = 300;                          // hard cap on stored topic keys (keep the top by recency-weight)
-const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none']);
+const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
+  // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
+  // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
+  'slack', 'discord', 'chat', 'check', 'checked', 'report', 'reported', 'completed', 'complete', 'summary', 'daily', 'sent', 'posted', 'update', 'updated', 'dashboard', 'message', 'notified', 'agent', 'agents', 'human', 'review', 'reviewed', 'ended', 'started', 'verified', 'read']);
 
 export class DreamingEngine {
   constructor(private readonly os: AgentOS) {}

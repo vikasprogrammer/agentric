@@ -304,7 +304,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     // Daily digest — the "what got done today" standup. Rides this same hourly tick but gates its own
     // Slack post (enabled + channel + past digestHour + not yet posted today); the dashboard/KB render
     // live on demand, so nothing here is needed to keep them fresh. No-op unless the tenant opted in.
-    void new Digest(os).maybePostEod().catch(() => { /* never let the digest crash the scheduler */ });
+    void new Digest(os).maybePostEod(new Date(), registry.consoleOrigin(os.tenant)).catch(() => { /* never let the digest crash the scheduler */ });
     // Proactive intelligence alerts — the OS comes to the owner. Detect notable conditions (struggling
     // agent, recurring rejections, success drop), push each NEW one (past its per-key cooldown) as an
     // admins' Inbox card + DM. No-op if disabled or nothing warrants attention.
@@ -2474,7 +2474,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'POST' && p === '/api/digest/post') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     try {
-      const r = await new Digest(os).postNow(me.email);
+      const r = await new Digest(os).postNow(me.email, new Date(), publicOrigin(req));
       return sendJson(res, 200, { ok: true, ...r });
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
