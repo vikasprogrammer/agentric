@@ -610,20 +610,25 @@ const TOOLS = [
   {
     name: 'schedule',
     description:
-      'Schedule a future task for yourself — a follow-up or "check back later". At the chosen time a fresh ' +
+      'Schedule a future task for yourself — a follow-up or "check back later". At the chosen time a ' +
       'session of THIS agent starts (unattended) with the task you give, acting as the same identity you run ' +
-      'as now. Give either `in_minutes` (relative) or `at` (an absolute ISO time). Use this instead of trying ' +
-      'to stay alive waiting: finish now, and let the scheduled run pick the work back up. One-shot (it fires ' +
-      'once); it appears in the operator\'s Automations page where it can be cancelled, and `unschedule` cancels ' +
-      'it by id. Bounds: 1 minute to 30 days out.',
+      'as now. By default the scheduled run RESUMES this conversation — it wakes up with your full current ' +
+      'context, then reads the task as its next instruction — so you can write the task as a short reminder ' +
+      '("check if the reply landed and continue") rather than re-explaining everything. Pass `resume: false` ' +
+      'for a clean-slate run instead (unrelated future work, or a far-off schedule where your current context ' +
+      'won\'t matter — then make the task fully self-contained). Give either `in_minutes` (relative) or `at` ' +
+      '(an absolute ISO time). Use this instead of trying to stay alive waiting: finish now, and let the ' +
+      'scheduled run pick the work back up. One-shot (it fires once); it appears in the operator\'s Automations ' +
+      'page where it can be cancelled, and `unschedule` cancels it by id. Bounds: 1 minute to 30 days out.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        task: { type: 'string', description: 'What the future session should do — written as a self-contained instruction.' },
+        task: { type: 'string', description: 'What the future session should do. With resume (the default) a short reminder is enough; with resume:false make it fully self-contained.' },
         in_minutes: { type: 'number', minimum: 1, description: 'Run this many minutes from now (use this OR `at`).' },
         at: { type: 'string', description: 'Absolute time, ISO-8601 e.g. "2026-07-01T14:00:00Z" (use this OR `in_minutes`).' },
         name: { type: 'string', description: 'Optional short label shown in the Automations page.' },
+        resume: { type: 'boolean', description: 'Resume THIS conversation when the run fires (default true). Set false for a fresh, context-free session.' },
       },
       required: ['task'],
     },
@@ -1493,12 +1498,14 @@ async function schedule(args: Record<string, unknown>): Promise<string> {
       inMinutes: typeof args.in_minutes === 'number' ? args.in_minutes : undefined,
       at: args.at !== undefined ? String(args.at) : undefined,
       name: args.name !== undefined ? String(args.name) : undefined,
+      resume: args.resume === undefined ? undefined : args.resume !== false,
     }),
   });
-  const d = (await res.json()) as { ok?: boolean; id?: string; runAt?: number; error?: string };
+  const d = (await res.json()) as { ok?: boolean; id?: string; runAt?: number; resume?: boolean; error?: string };
   if (!d.ok) return `Could not schedule: ${d.error ?? 'unknown error'}`;
   const when = d.runAt ? new Date(d.runAt).toISOString() : 'the scheduled time';
-  return `Scheduled (id ${d.id}) — a fresh session will run it at ${when}. Cancel with unschedule "${d.id}".`;
+  const how = d.resume ? 'resuming this conversation' : 'a fresh session';
+  return `Scheduled (id ${d.id}) — will run it at ${when} (${how}). Cancel with unschedule "${d.id}".`;
 }
 
 async function unschedule(args: Record<string, unknown>): Promise<string> {

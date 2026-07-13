@@ -125,6 +125,9 @@ export interface Automation {
   /** Member id the fired session should act as (`once` type) — carried so a deferred task runs as the
    *  same identity that scheduled it. */
   runAs?: string;
+  /** Claude session id the fired run should `--resume` (`once` type) — carried so a self-scheduled
+   *  follow-up wakes up with the scheduling session's full transcript instead of a fresh one. */
+  resumeClaudeId?: string;
   /** Shared key for POST /hooks/<id> (webhook type only). */
   secret?: string;
   /** Match filter. composio: the trigger slug (e.g. SLACK_DIRECT_MESSAGE_RECEIVED). slack: an event
@@ -156,6 +159,7 @@ interface AutomationRow {
   last_session_id: string | null;
   run_at: number | null;
   run_as: string | null;
+  resume_claude_id: string | null;
 }
 
 function toAutomation(r: AutomationRow): Automation {
@@ -176,6 +180,7 @@ function toAutomation(r: AutomationRow): Automation {
     lastSessionId: r.last_session_id ?? undefined,
     runAt: r.run_at ?? undefined,
     runAs: r.run_as ?? undefined,
+    resumeClaudeId: r.resume_claude_id ?? undefined,
   };
 }
 
@@ -337,8 +342,10 @@ export class Automations {
    * Schedule a one-shot deferred task: a single future run of `agentId`, at `runAt` (epoch ms), acting
    * as `runAs` (the identity that scheduled it). Stored as a `once` automation so it shows up in the
    * console, is auditable, and a human can cancel it. Bounded by SCHEDULE_* and the per-agent cap.
+   * When `resumeClaudeId` is given, the fired run `--resume`s that claude transcript instead of starting
+   * fresh — so an agent deferring its own follow-up wakes back up with its full prior context.
    */
-  schedule(input: { agentId: string; name: string; task: string; runAt: number; runAs?: string; createdBy?: string }): Automation {
+  schedule(input: { agentId: string; name: string; task: string; runAt: number; runAs?: string; resumeClaudeId?: string; createdBy?: string }): Automation {
     if (!this.os.agents.has(input.agentId)) throw new Error(`unknown agent: ${input.agentId}`);
     if (!input.task.trim()) throw new Error('a task is required');
     const now = Date.now();
@@ -357,13 +364,14 @@ export class Automations {
       task: input.task,
       runAt: input.runAt,
       runAs: input.runAs,
+      resumeClaudeId: input.resumeClaudeId,
       enabled: true,
       createdBy: input.createdBy,
       createdAt: now,
     };
     this.db
-      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_at, run_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(a.id, a.agentId, a.name, a.type, a.mode, null, null, null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAt!, a.runAs ?? null);
+      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_at, run_as, resume_claude_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(a.id, a.agentId, a.name, a.type, a.mode, null, null, null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAt!, a.runAs ?? null, a.resumeClaudeId ?? null);
     return a;
   }
 
@@ -412,7 +420,7 @@ export class Automations {
    * Spawn the automation's session. `guard: true` skips when the previous spawn is still alive —
    * the no-pile-ups rule for cron/webhook; "Run now" from the console passes guard: false.
    */
-  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string } } = { guard: true }): FireResult {
+  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
     if (opts.guard && a.lastSessionId && this.tm.isAlive(a.lastSessionId)) {
       return { ok: false, reason: 'previous session still running' };
     }
@@ -425,7 +433,9 @@ export class Automations {
     // (fire-and-forget) or interactive (watch/steer it live). Scheduled/trigger firings pass no mode
     // and keep the automation's own `a.mode`.
     const mode: ExecMode = opts.mode ?? a.mode;
-    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs);
+    // `resumeClaudeId` (a self-scheduled follow-up) makes the run `--resume` the scheduling session's
+    // transcript — the launcher's UNATTENDED lane restores it and injects `task` as the next turn.
+    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs, opts.resumeClaudeId);
     this.db.prepare('UPDATE automations SET last_fired_at = ?, last_session_id = ? WHERE id = ?').run(Date.now(), s.id, a.id);
     this.os.audit.append({
       ts: Date.now(),
@@ -722,7 +732,7 @@ export class Automations {
         if (!a.runAt || a.lastFiredAt || now.getTime() < a.runAt) continue;
         if (overCap()) { deferred++; continue; } // over cap → leave enabled; retry next tick
         try {
-          this.fire(a, { guard: false, runAs: a.runAs });
+          this.fire(a, { guard: false, runAs: a.runAs, resumeClaudeId: a.resumeClaudeId });
           running++;
         } catch {
           // a one-shot that errors on spawn shouldn't loop forever — fall through and disable it

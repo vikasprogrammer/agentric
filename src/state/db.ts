@@ -584,6 +584,7 @@ function migrate(db: Db): void {
   // One-shot scheduled tasks (type 'once'): when to fire, and the run-as identity to fire it under.
   addColumn(db, 'automations', 'run_at', 'INTEGER'); // fire time for a one-shot 'once' automation (epoch ms)
   addColumn(db, 'automations', 'run_as', 'TEXT');    // member id the fired session should act as (one-shot)
+  addColumn(db, 'automations', 'resume_claude_id', 'TEXT'); // claude session id a one-shot resumes (context continuity)
 
   // Remote-MCP transport for connectors (older DBs are all stdio: command/args/env).
   addColumn(db, 'connectors', 'transport', "TEXT NOT NULL DEFAULT 'stdio'");

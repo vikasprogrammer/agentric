@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.133.0] — 2026-07-13
+### Added
+- **`schedule` now resumes the scheduling conversation by default.** When an agent defers a follow-up
+  with the `schedule` MCP tool (the "check back later" one-shot), the fired run used to start a **fresh**
+  session with no memory of what it was waiting on — the agent had to cram all context into the task text.
+  It now carries the scheduling session's pinned claude id (`resume_claude_id` on the `once` automation)
+  through `tick → fire → createSession`, so the deferred run `--resume`s the SAME transcript: it wakes up
+  with full context and reads the task as its next turn. This makes the "waiting on a Gmail reply / an
+  external event" pattern actually work — finish now, and the future run picks up where you left off. Pass
+  `resume: false` for a clean-slate run (unrelated future work, or a far-off schedule where reloading a
+  stale transcript isn't worth it). Reuses the exact resume mechanism the Slack thread-continuity path
+  already relies on; the console Automations page still lists and can cancel the scheduled run.
+  (`Automations.schedule`/`fire`, `TerminalManager.sessionClaudeId`, `POST /api/agent/schedule`.)
+
 ## [0.132.0] — 2026-07-13
 ### Added
 - **Model dropdowns show pricing (Settings → Integrations → Media generation).** The live Atlas catalog

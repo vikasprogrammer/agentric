@@ -650,10 +650,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     else if (b.at !== undefined) runAt = typeof b.at === 'number' ? b.at : Date.parse(String(b.at));
     else return sendJson(res, 400, { error: 'provide inMinutes or at' });
     if (!Number.isFinite(runAt)) return sendJson(res, 400, { error: 'could not parse the schedule time' });
+    // By default the deferred run RESUMES this session's transcript, so the agent wakes back up with its
+    // full context. `resume: false` opts into a clean-slate run (unrelated future work, or a far-off
+    // schedule where re-loading a stale transcript isn't worth it).
+    const resume = b.resume !== false;
+    const resumeClaudeId = resume ? tm.sessionClaudeId(session) : undefined;
     try {
-      const a = autos.schedule({ agentId: agent, name: String(b.name || '').trim() || `Scheduled: ${task.slice(0, 40)}`, task, runAt, runAs: tm.sessionRunAs(session), createdBy: 'automation' });
-      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'automation.scheduled', data: { id: a.id, runAt, agent } });
-      return sendJson(res, 200, { ok: true, id: a.id, runAt });
+      const a = autos.schedule({ agentId: agent, name: String(b.name || '').trim() || `Scheduled: ${task.slice(0, 40)}`, task, runAt, runAs: tm.sessionRunAs(session), resumeClaudeId, createdBy: 'automation' });
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'automation.scheduled', data: { id: a.id, runAt, agent, resume: !!resumeClaudeId } });
+      return sendJson(res, 200, { ok: true, id: a.id, runAt, resume: !!resumeClaudeId });
     } catch (e) {
       return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
