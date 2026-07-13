@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.150.0] — 2026-07-13
+### Changed
+- **"Learnings" is now its own top-level nav.** The self-learning surface — reflect cadence, distilled
+  guidance + the Apply toggle, config recommendations, the **daily digest** (config + live preview), and
+  recent learning activity — was buried as a second tab inside **Memory**. It had outgrown that: Memory is
+  the *store*, Learnings is *what the OS does with it + how it reports*. Promoted to a top-level
+  admin-only nav item (`Lightbulb` icon, `/learnings`); Memory goes back to single-purpose (the
+  Self-learning tab is removed, not duplicated). `DreamingSettings` renders unchanged at the new route.
+
 ## [0.149.0] — 2026-07-13
 ### Added
 - **Daily digest now posts to Discord too (and Slack, and both).** The end-of-day digest was Slack-only,
