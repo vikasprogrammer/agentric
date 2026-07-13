@@ -296,7 +296,7 @@ export interface DigestModel {
   label: string
   total: number
   buckets: { success: number; partial: number; failure: number; stopped: number; running: number; other: number }
-  byAgent: { agent: string; lines: { title: string; outcome: string; importance: number }[]; more: number }[]
+  byAgent: { agent: string; lines: { title: string; outcome: string; importance: number; count?: number }[]; more: number }[]
   signals: { tasksCreated: number; tasksCompleted: number; approvals: number; rejected: number; errors: number; budgetStops: number }
   guidance: string[]
   recommendations: string[]

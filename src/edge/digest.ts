@@ -31,13 +31,14 @@ export interface DigestModel {
   label: string;               // e.g. "Wed Jul 13"
   total: number;
   buckets: { success: number; partial: number; failure: number; stopped: number; running: number; other: number };
-  byAgent: { agent: string; lines: { title: string; outcome: string; importance: number }[]; more: number }[];
+  byAgent: { agent: string; lines: { title: string; outcome: string; importance: number; count?: number }[]; more: number }[];
   signals: { tasksCreated: number; tasksCompleted: number; approvals: number; rejected: number; errors: number; budgetStops: number };
   guidance: string[];          // a few distilled Dreaming imperatives
   recommendations: string[];   // open recommendation titles
 }
 
-interface SessionRow { id: string; agent: string; status: string; title: string; importance: number | null; outcome: string | null }
+interface SessionRow { id: string; agent: string; status: string; title: string; spawned_by: string | null; report: string | null; importance: number | null; outcome: string | null }
+interface DigestLine { title: string; outcome: string; importance: number; count?: number }
 interface AuditRow { type: string; data: string }
 
 /** Server-local day bounds + labels for `now`. Time is the deploy box's tz (single-box deployment). */
@@ -56,10 +57,11 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
   const { start, end, iso, label } = localDayBounds(now);
   const db = os.db;
 
-  // Each session ⋈ its end-of-session episode (importance + outcome). One episode per session in
-  // practice; MAX/any is fine if a stray second one exists.
+  // Each session ⋈ its end-of-session episode (importance + outcome) + the agent's own `report` summary
+  // (the richest line source — vs the 72-char title). One episode per session in practice.
   const rows = db.prepare(
-    `SELECT s.id, s.agent, s.status, s.title,
+    `SELECT s.id, s.agent, s.status, s.title, s.spawned_by,
+            (SELECT body FROM messages WHERE session_id = s.id AND type = 'completed' ORDER BY created_at DESC LIMIT 1) AS report,
             MAX(m.importance) AS importance,
             MAX(json_extract(m.metadata,'$.outcome')) AS outcome
        FROM term_sessions s
@@ -70,31 +72,34 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
   ).all<SessionRow>(start, end);
 
   const buckets = { success: 0, partial: 0, failure: 0, stopped: 0, running: 0, other: 0 };
-  const perAgent = new Map<string, { title: string; outcome: string; importance: number }[]>();
+  const perAgent = new Map<string, DigestLine[]>();
   for (const r of rows) {
     const outcome = (r.outcome || (r.status === 'done' ? 'success' : r.status) || 'unknown').toLowerCase();
     if (outcome in buckets) (buckets as Record<string, number>)[outcome]++; else buckets.other++;
     const importance = r.importance ?? 0;
-    const title = (r.title || '').trim();
-    // A placeholder title carries no signal ("test", too-short) — never body-worthy.
-    const placeholder = title.length < 5 || /^(test|teste|untitled)$/i.test(title);
-    // Body inclusion: a salient episode (importance ≥ threshold) OR a session that simply COMPLETED with a
-    // real report title. The latter matters because a `done` interactive/member session may not carry an
-    // end-of-session episode (importance 0), yet "Shipped PR #333" is exactly what the digest is for. The
-    // noise we drop is low-importance `stopped`/`running` test runs and placeholder titles.
-    const salient = !placeholder && (importance >= SALIENCE || r.status === 'done');
-    if (salient) {
+    // Fix 1: the line is the first sentence(s) of the agent's REPORT (rich), not the clipped title.
+    const report = (r.report ?? '').trim();
+    const hasReport = !!report && report !== '(no summary)' && report !== 'Session ended.';
+    const line = digestLine(r.report, r.title);
+    // Fix 3: drop lines that describe the TASK rather than the result — a session with no report falls
+    // back to its incoming task ("Task: …"), and inter-agent `ask` sessions ("Ask ← foo") aren't work.
+    const askSession = (r.spawned_by ?? '').startsWith('ask:');
+    const taskish = /^(task:|ask ←|ask\b)/i.test(line);
+    const placeholder = line.length < 5 || /^(test|teste|untitled)$/i.test(line);
+    const include = !placeholder && !askSession && !taskish && (hasReport || importance >= SALIENCE || r.status === 'done');
+    if (include) {
       const list = perAgent.get(r.agent) ?? [];
-      // Rank a done-with-no-episode session just under the salience line so real episodes sort first.
-      list.push({ title, outcome, importance: importance || (r.status === 'done' ? SALIENCE - 0.01 : 0) });
+      // A real report ranks at/above the salience line; a done-with-no-report just under it.
+      list.push({ title: line, outcome, importance: importance || (hasReport ? SALIENCE : (r.status === 'done' ? SALIENCE - 0.01 : 0)) });
       perAgent.set(r.agent, list);
     }
   }
 
   const byAgent = [...perAgent.entries()]
     .map(([agent, all]) => {
-      const sorted = all.sort((a, b) => b.importance - a.importance);
-      return { agent, lines: sorted.slice(0, PER_AGENT), more: Math.max(0, sorted.length - PER_AGENT) };
+      // Fix 2: collapse near-identical routine runs (e.g. 3× "fleet sweep — all healthy") into one ×N line.
+      const deduped = dedupeLines(all).sort((a, b) => b.importance - a.importance);
+      return { agent, lines: deduped.slice(0, PER_AGENT), more: Math.max(0, deduped.length - PER_AGENT) };
     })
     .sort((a, b) => b.lines.length - a.lines.length || a.agent.localeCompare(b.agent));
 
@@ -121,6 +126,57 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
   const recommendations = os.settings.recommendations().open.map((r) => r.title).slice(0, 3);
 
   return { iso, label, total: rows.length, buckets, byAgent, signals, guidance, recommendations };
+}
+
+const LINE_MAX = 200; // digest lines can breathe — Slack/Discord/KB all handle it (vs the 72-char title)
+const DEDUP_STOP = new Set(['task', 'with', 'this', 'that', 'from', 'into', 'have', 'been', 'were', 'they', 'will', 'just', 'also', 'done', 'made', 'make', 'need', 'some', 'more', 'than', 'only', 'each', 'both', 'over', 'when', 'then', 'sent', 'added', 'set', 'the', 'and', 'for']);
+
+/** The digest line for a session — the first sentence(s) of the agent's REPORT (rich), else the title.
+ *  Clipped to a sentence/word boundary near LINE_MAX so we never chop mid-outcome the way the 72-char
+ *  title did ("…root cause was…"). */
+function digestLine(report: string | null, title: string): string {
+  const body = (report ?? '').trim();
+  const real = !!body && body !== '(no summary)' && body !== 'Session ended.';
+  const src = real ? body : (title || '');
+  const firstLine = src.split('\n').map((s) => s.trim()).find(Boolean) ?? '';
+  const collapsed = firstLine.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= LINE_MAX) return collapsed;
+  const cut = collapsed.slice(0, LINE_MAX);
+  const sentence = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+  if (sentence > LINE_MAX * 0.5) return cut.slice(0, sentence + 1).trim();
+  const space = cut.lastIndexOf(' ');
+  return `${(space > LINE_MAX * 0.5 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/** Significant-word set of a line (for similarity clustering). */
+function tokenSet(s: string): Set<string> {
+  // 3+ chars so short-but-meaningful acronyms count (gsc, ssh, api, ppu) — they anchor routine repeats.
+  return new Set((s.toLowerCase().match(/[a-z][a-z-]{2,}/g) ?? []).filter((w) => !DEDUP_STOP.has(w)));
+}
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+/** Collapse near-identical routine runs within one agent into a single line with a `count`. Two lines
+ *  cluster if they share a strong content overlap (Jaccard ≥ 0.55) OR the same leading 3 significant
+ *  words (catches "Daily GSC report …" repeats whose bodies differ). Keeps the highest-importance rep. */
+function dedupeLines(lines: DigestLine[]): DigestLine[] {
+  const clusters: { rep: DigestLine; tokens: Set<string>; prefix: string; count: number }[] = [];
+  for (const l of lines) {
+    const tokens = tokenSet(l.title);
+    const prefix = [...tokens].slice(0, 3).join(' ');
+    const hit = clusters.find((c) => (!!prefix && c.prefix === prefix) || jaccard(c.tokens, tokens) >= 0.55);
+    if (hit) {
+      hit.count++;
+      if (l.importance > hit.rep.importance) hit.rep = l; // keep the strongest exemplar
+    } else {
+      clusters.push({ rep: l, tokens, prefix, count: 1 });
+    }
+  }
+  return clusters.map((c) => (c.count > 1 ? { ...c.rep, count: c.count } : c.rep));
 }
 
 /** Compact tally line — "18 sessions · 7 ✓ · 1 partial · 1 ✗ · 9 stopped". */
@@ -158,7 +214,7 @@ export function renderSlack(os: AgentOS, m: DigestModel): string {
   if (!m.byAgent.length) out.push('_No notable sessions today._');
   for (const a of m.byAgent) {
     out.push(`*${a.agent}*`);
-    for (const l of a.lines) out.push(`• ${l.title} ${MARK[l.outcome] ?? ''}`.trimEnd());
+    for (const l of a.lines) out.push(`• ${l.title}${l.count ? ` (×${l.count})` : ''} ${MARK[l.outcome] ?? ''}`.trimEnd());
     if (a.more) out.push(`• _+${a.more} more_`);
   }
   if (m.guidance.length || m.recommendations.length) {
@@ -182,7 +238,7 @@ export function renderMarkdown(os: AgentOS, m: DigestModel): string {
   if (!m.byAgent.length) out.push(`- (no notable sessions today)`);
   for (const a of m.byAgent) {
     out.push(``, `### ${a.agent}`);
-    for (const l of a.lines) out.push(`- ${MARK[l.outcome] ?? ''} ${l.title}`.replace('  ', ' '));
+    for (const l of a.lines) out.push(`- ${MARK[l.outcome] ?? ''} ${l.title}${l.count ? ` (×${l.count})` : ''}`.replace('  ', ' '));
     if (a.more) out.push(`- _+${a.more} more_`);
   }
   if (m.guidance.length || m.recommendations.length) {
@@ -204,7 +260,7 @@ export function renderDiscord(os: AgentOS, m: DigestModel): string {
   if (!m.byAgent.length) out.push('_No notable sessions today._');
   for (const a of m.byAgent) {
     out.push(`**${a.agent}**`);
-    for (const l of a.lines) out.push(`• ${l.title} ${MARK[l.outcome] ?? ''}`.trimEnd());
+    for (const l of a.lines) out.push(`• ${l.title}${l.count ? ` (×${l.count})` : ''} ${MARK[l.outcome] ?? ''}`.trimEnd());
     if (a.more) out.push(`• _+${a.more} more_`);
   }
   if (m.guidance.length || m.recommendations.length) {

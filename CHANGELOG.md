@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.170.0] — 2026-07-13
+### Changed
+- **Daily digest — much higher signal per line.** Three fixes from real fleet output:
+  1. **Richer lines.** Each line was the 72-char session *title*, which kept chopping the outcome
+     (*"…Root cause was…"*). It now uses the first sentence(s) of the agent's actual `report`, clipped at a
+     sentence/word boundary near 200 chars — so the result survives.
+  2. **Routine repeats collapse.** Near-identical scheduled runs (e.g. 3× *"PPU fleet sweep — all healthy"*,
+     3× *"Daily GSC report"*) fold into one line with a **×N** count, via token-similarity + leading-word
+     clustering. Distinct work (six different PRs) stays separate.
+  3. **Outcome over task.** Sessions with no report fell back to their incoming task (*"Task: verify…"*),
+     and inter-agent `ask` sessions leaked in (*"Ask ← foo"*) — both are now dropped from the changelog
+     (still counted in the header). Validated against the reported globex digest. `src/edge/digest.ts`.
+
 ## [0.169.1] — 2026-07-13
 ### Changed
 - **Overview "Online now": people and agents now share one presence-row UI.** Agents render as the same
