@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -6302,27 +6302,6 @@ function MemoryStats() {
   )
 }
 
-/** A short human label + tone for a learning-activity audit event. */
-function learningLabel(type: string): ReactNode {
-  const map: Record<string, { text: string; cls: string }> = {
-    'episode.stored': { text: 'Episode', cls: 'text-violet-600' },
-    'lesson.stored': { text: 'Lesson', cls: 'text-emerald-600' },
-    'learning.dreamed': { text: 'Reflection', cls: 'text-sky-600' },
-    'learning.consolidated': { text: 'Consolidation', cls: 'text-amber-600' },
-  }
-  const m = map[type] ?? { text: type, cls: 'text-muted-foreground' }
-  return <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] font-normal ${m.cls}`}>{m.text}</Badge>
-}
-
-function learningDetail(e: { type: string; principal?: string; data: Record<string, unknown> }): string {
-  const d = e.data || {}
-  if (e.type === 'episode.stored') return `${e.principal ?? 'agent'} — outcome ${String(d.outcome ?? '?')} (via ${String(d.source ?? '?')})`
-  if (e.type === 'lesson.stored') return `${e.principal ?? 'agent'} kept a lesson (outcome ${String(d.outcome ?? '?')})`
-  if (e.type === 'learning.dreamed') return `reflected on ${Number(d.sessions ?? 0)} sessions / ${Number(d.episodes ?? 0)} episodes → pass ${Number(d.pass ?? 0)}`
-  if (e.type === 'learning.consolidated') return `gardener spawned over ${Number(d.items ?? 0)} episodes/lessons`
-  return ''
-}
-
 function MemoryBrowse({ agents, me }: { agents: AgentInfo[]; me: Member }) {
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
   const [query, setQuery] = useState('')
@@ -7772,12 +7751,30 @@ function SkillCard({ s, agents, onChanged }: { s: SkillSummary; agents: string[]
   )
 }
 
-// ── Settings (Company context + Policy) ────────────────────────────────────────────
+// ── Dreaming (the self-learning page) ───────────────────────────────────────────────
+/** Short "2h ago" / "3d ago" label for a past timestamp. */
+function agoLabel(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000))
+  if (s < 90) return 'just now'
+  const m = Math.round(s / 60); if (m < 90) return `${m}m ago`
+  const h = Math.round(m / 60); if (h < 36) return `${h}h ago`
+  return `${Math.round(h / 24)}d ago`
+}
+/** Short "in 5h" / "due" label for a future timestamp. */
+function untilLabel(ts: number): string {
+  const s = Math.round((ts - Date.now()) / 1000)
+  if (s <= 60) return 'due'
+  const m = Math.round(s / 60); if (m < 90) return `in ${m}m`
+  const h = Math.round(m / 60); if (h < 36) return `in ${h}h`
+  return `in ${Math.round(h / 24)}d`
+}
+
 /**
- * The **Dreaming** page (top-level nav). The OS periodically reflects on recent runs (episodes +
- * outcomes + friction) → distilled guidance + config recommendations + a living KB page
- * (operations/fleet-learnings), and posts the **daily digest** to chat. Set a cadence to automate it, or
- * run a pass now. (Was a tab under Memory until it grew into its own surface.)
+ * The **Dreaming** page (top-level nav) — plain-language, outcomes-first. The OS reviews what agents did
+ * and gets smarter; this page leads with what it figured out (guidance steering agents) + things to
+ * consider (config suggestions), then a review history, the daily digest, and how often it reviews.
+ * Data from /api/dreaming (+ the live digest preview). Admin-only. Deliberately free of internal jargon
+ * (reflect / gardener / episodes) — that vocabulary lives in the docs, not the user's face.
  */
 function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => void }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
@@ -7786,7 +7783,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [apply, setApply] = useState(true)
   const [guidance, setGuidance] = useState('')
   const [recs, setRecs] = useState<Recommendation[]>([])
-  const [activity, setActivity] = useState<{ ts: number; type: string; principal?: string; data: Record<string, unknown> }[]>([])
+  const [state, setState] = useState<DreamingState | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
@@ -7795,8 +7792,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); if (r.digest) setDigest(r.digest) }).catch(() => {})
-    api.memoryOverview().then((r) => { if (!r.error) setActivity(r.activity ?? []) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -7831,73 +7827,111 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     const r = await api.dreamingRun()
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    if (r.skipped) { setResult('No new activity since the last pass — nothing to learn.') }
+    if (r.skipped) { setResult('No new activity since the last review — nothing new to learn.') }
     else {
-      const c = r.consolidation
-      const grew = c?.spawned
-        ? ` Growing shared knowledge — memory-gardener spawned over ${c.items ?? 0} episodes/lessons (watch Sessions/Audit).`
-        : ` No new material worth an agent run to consolidate${c?.reason ? ` (${c.reason})` : ''}.`
-      setResult(`Reflected on ${r.sessions ?? 0} sessions / ${r.episodes ?? 0} episodes → refreshed guidance${r.insightId ? ' + a shared insight' : ''} + the KB page.${grew}`)
+      const deeper = r.consolidation?.spawned ? ' Also started a deeper review of the newest activity.' : ''
+      setResult(`Reviewed ${r.sessions ?? 0} run${r.sessions === 1 ? '' : 's'} → updated the lessons below.${deeper}`)
     }
     refresh(); onChanged?.()
   }
 
   if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
+  const totals = state?.totals
+  const runs = totals?.sessions ?? 0
+  const rate = totals && totals.sessions ? Math.round((totals.success / totals.sessions) * 100) : null
+  const everyN = Number(everyHours) || 0
+  const nextAt = last && everyN > 0 ? last + everyN * 3_600_000 : undefined
+  const lessons = guidance.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim())
   return (
     <div className="max-w-3xl space-y-4">
-      <p className="text-xs text-muted-foreground">
-        <strong>Dreaming</strong> is how the OS learns from itself: it periodically <strong>reflects</strong> on recent runs and gets
-        smarter — the <em>Distil</em> and <em>Apply</em> half of the memory loop (<a className="underline" href="#/memory">Capture · Recall</a> · Distil · Apply).
-        It turns raw session recaps into shared knowledge + a few durable lessons, injects distilled guidance into every agent, and posts the daily digest.
-      </p>
-      <Card>
-        <CardContent className="space-y-3 p-4">
-          <div>
-            <div className="text-sm font-medium">Reflect</div>
-            <p className="text-xs text-muted-foreground">Each pass: <strong>tally</strong> recent episodes/outcomes/friction into the guidance below (instant, free), then spawn the <strong>memory gardener</strong> to distil recent episodes + lessons into <strong>shared memories + <a className="underline" href="#/kb">Knowledge</a> pages</strong> — only when there's new material worth an agent run.</p>
-          </div>
-          <div className="flex items-end gap-3">
-            <Field label="Reflect automatically every (hours)" help="0 = off (manual only). Daily (24) is a sensible default.">
-              <Input value={everyHours} onChange={(e) => setEveryHours(e.target.value)} className="w-28 font-mono text-xs" placeholder="0" />
-            </Field>
-            <Button onClick={save} disabled={busy}>Save</Button>
-            <Button variant="outline" onClick={runNow} disabled={busy}><Sparkles className="mr-1 h-4 w-4" />Reflect now</Button>
-            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
-          </div>
-          <div className="text-[11px] text-muted-foreground">
-            {last ? `Last reflected: ${new Date(last).toLocaleString()}.` : 'No pass has run yet.'}
-            {Number(everyHours) > 0 ? ` Scheduled every ${Number(everyHours)}h.` : ' Automatic passes are off.'}
-          </div>
-          {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
-        </CardContent>
-      </Card>
+      {/* Hero — one plain sentence + a live status line, outcomes up top. */}
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">The OS automatically reviews what your agents did and gets smarter — spotting what works, what’s going wrong, and steering every agent accordingly. Nothing to set up.</p>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span>{last ? <>Last review <strong className="text-foreground">{agoLabel(last)}</strong></> : 'No review yet'}</span>
+          {runs > 0 && <span><strong className="text-foreground">{runs}</strong> runs reviewed</span>}
+          {rate != null && <span><strong className="text-foreground">{rate}%</strong> success</span>}
+          <span>{everyN > 0 ? <>next {nextAt ? untilLabel(nextAt) : `every ${everyN}h`}</> : 'auto-review off'}</span>
+          <Button size="sm" variant="outline" onClick={runNow} disabled={busy} className="ml-auto"><Sparkles className="mr-1 h-3.5 w-3.5" />Review now</Button>
+        </div>
+        {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
+      </div>
 
-      {/* The closed loop: inject distilled guidance into every agent's prompt. */}
+      {/* 1. What it figured out — the payoff, first. */}
       <Card>
         <CardContent className="space-y-3 p-4">
           <div>
-            <div className="text-sm font-medium">Apply learnings to agents <span className="text-[11px] font-normal text-muted-foreground">— closes the loop</span></div>
-            <p className="text-xs text-muted-foreground">When on, the distilled guidance below is injected into <strong>every</strong> claude-code agent's system prompt at launch — so the fleet's experience shapes future behavior. It's prompting (visible + reversible), not auto-rewriting policy or budgets.</p>
+            <div className="text-sm font-medium">What it figured out</div>
+            <p className="text-xs text-muted-foreground">Lessons the OS has drawn from your fleet’s recent work. With steering on, every agent gets these automatically before it starts — so the whole fleet benefits from what any one agent learned. Visible and reversible; it never rewrites your rules or budgets on its own.</p>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={apply} onChange={(e) => toggleApply(e.target.checked)} />
-            Inject learned guidance into agent prompts
+            Steer agents with these lessons
+            <span className="text-[11px] text-muted-foreground">{apply ? '(on — applied to every agent)' : '(off — saved, not applied)'}</span>
           </label>
-          <div>
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Current guidance {apply ? '(active)' : '(saved, not applied)'}</div>
-            {guidance.trim()
-              ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 text-[11px] leading-relaxed">{guidance}</pre>
-              : <div className="text-xs text-muted-foreground">No guidance yet — run a pass (above) once agents have done some work.</div>}
-          </div>
+          {lessons.length
+            ? <ul className="space-y-1.5 rounded-md border bg-muted/40 p-3 text-xs leading-relaxed">{lessons.map((l, i) => <li key={i} className="flex gap-2"><span className="text-muted-foreground">•</span><span>{l}</span></li>)}</ul>
+            : <div className="text-xs text-muted-foreground">Nothing yet — once your agents have done some work and a review runs, the lessons show here.</div>}
         </CardContent>
       </Card>
 
-      {/* The daily digest: a "what got done today" standup posted to Slack at end of day. */}
+      {/* 2. Things to consider — the human-gated suggestions. */}
       <Card>
         <CardContent className="space-y-3 p-4">
           <div>
-            <div className="text-sm font-medium">Daily digest <span className="text-[11px] font-normal text-muted-foreground">— the end-of-day standup</span></div>
-            <p className="text-xs text-muted-foreground">A tenant-wide <strong>“what got done today”</strong> summary — the per-session changelog (from session episodes) plus the learned guidance above — posted to Slack and/or Discord once a day. It rides the same reflect pass; the preview below renders live. Manual <em>Post now</em> and <em>Reflect now</em> never surprise the channel — only the scheduled end-of-day run posts.</p>
+            <div className="text-sm font-medium">Things to consider{recs.length ? ` (${recs.length})` : ''}</div>
+            <p className="text-xs text-muted-foreground">Changes the OS suggests from what it’s been seeing. Nothing happens until you decide — <strong>Apply</strong> makes the change (reversible), <strong>Dismiss</strong> hides it.</p>
+          </div>
+          {recs.length === 0
+            ? <div className="text-xs text-muted-foreground">Nothing to flag right now. If agents start hitting friction — rejected actions, budget limits, low success — suggestions appear here.</div>
+            : recs.map((r) => (
+                <div key={r.id} className="rounded-md border p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 text-sm font-medium"><Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{r.kind}</Badge>{r.title}</div>
+                      <p className="mt-1 text-xs text-muted-foreground">{r.rationale}</p>
+                    </div>
+                    <div className="flex shrink-0 gap-1.5">
+                      {r.apply
+                        ? <Button size="sm" onClick={() => applyRec(r.id)} disabled={busy}><Check className="mr-1 h-3.5 w-3.5" />Apply</Button>
+                        : r.link && <Button render={<a href={r.link.startsWith('#') ? r.link : '#' + r.link} />} size="sm" variant="outline">Review</Button>}
+                      <Button size="sm" variant="ghost" onClick={() => dismissRec(r.id)} disabled={busy}>Dismiss</Button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+        </CardContent>
+      </Card>
+
+      {/* 3. Review history — what happened, at the review level (from the cumulative state). */}
+      <Card>
+        <CardContent className="space-y-2 p-4">
+          <div className="text-sm font-medium">Review history</div>
+          {!state?.recent || state.recent.length === 0
+            ? <div className="text-xs text-muted-foreground">No reviews yet.</div>
+            : <div className="divide-y text-xs">
+                {state.recent.map((rv, i) => {
+                  const friction = [rv.rejected && `${rv.rejected} rejected`, rv.budgetStops && `${rv.budgetStops} over budget`, rv.errors && `${rv.errors} errored`].filter(Boolean).join(' · ')
+                  return (
+                    <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5">
+                      <span className="w-20 shrink-0 font-medium">{rv.day}</span>
+                      <span className="text-muted-foreground">{rv.sessions} run{rv.sessions === 1 ? '' : 's'} · {rv.success} ok{rv.failure ? ` · ${rv.failure} failed` : ''}{rv.stopped ? ` · ${rv.stopped} stopped` : ''}</span>
+                      {friction && <span className="text-amber-600">{friction}</span>}
+                      {rv.topics?.length ? <span className="text-muted-foreground">· {rv.topics.slice(0, 4).join(', ')}</span> : null}
+                    </div>
+                  )
+                })}
+              </div>}
+          <a className="inline-block text-[11px] text-muted-foreground underline" href="#/kb">Full learnings write-up in Knowledge →</a>
+        </CardContent>
+      </Card>
+
+      {/* 4. Daily digest — the end-of-day summary posted to chat. */}
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="text-sm font-medium">Daily digest <span className="text-[11px] font-normal text-muted-foreground">— the end-of-day summary</span></div>
+            <p className="text-xs text-muted-foreground">A once-a-day <strong>“what got done today”</strong> summary of what each agent accomplished, plus the lessons above — posted to Slack and/or Discord. The preview below is live; <em>Review now</em> and <em>Post now</em> never surprise the channel — only the scheduled end-of-day post does.</p>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={digest.enabled} onChange={(e) => saveDigest({ enabled: e.target.checked })} />
@@ -7942,55 +7976,20 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
         </CardContent>
       </Card>
 
-      {/* The config loop: human-gated tuning proposals derived from friction. */}
+      {/* Settings — pushed to the bottom; the page leads with outcomes, not knobs. */}
       <Card>
         <CardContent className="space-y-3 p-4">
-          <div>
-            <div className="text-sm font-medium">Recommendations <span className="text-[11px] font-normal text-muted-foreground">— config loop (you approve)</span></div>
-            <p className="text-xs text-muted-foreground">Config changes the OS proposes from observed friction. Nothing is applied automatically — Apply makes a concrete, reversible change (audited); Dismiss hides it for good.</p>
+          <div className="text-sm font-medium">Settings</div>
+          <div className="flex items-end gap-3">
+            <Field label="Review automatically every (hours)" help="0 = off (review only when you click “Review now”). 24 (daily) is a good default.">
+              <Input value={everyHours} onChange={(e) => setEveryHours(e.target.value)} className="w-28 font-mono text-xs" placeholder="0" />
+            </Field>
+            <Button onClick={save} disabled={busy}>Save</Button>
+            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           </div>
-          {recs.length === 0
-            ? <div className="text-xs text-muted-foreground">No recommendations right now. Run a pass — if agents are hitting friction (rejections, budget stops, low success), proposals appear here.</div>
-            : recs.map((r) => (
-                <div key={r.id} className="rounded-md border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 text-sm font-medium"><Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{r.kind}</Badge>{r.title}</div>
-                      <p className="mt-1 text-xs text-muted-foreground">{r.rationale}</p>
-                    </div>
-                    <div className="flex shrink-0 gap-1.5">
-                      {r.apply
-                        ? <Button size="sm" onClick={() => applyRec(r.id)} disabled={busy}><Check className="mr-1 h-3.5 w-3.5" />Apply</Button>
-                        : r.link && <Button render={<a href={r.link.startsWith('#') ? r.link : '#' + r.link} />} size="sm" variant="outline">Review</Button>}
-                      <Button size="sm" variant="ghost" onClick={() => dismissRec(r.id)} disabled={busy}>Dismiss</Button>
-                    </div>
-                  </div>
-                </div>
-              ))}
+          <p className="text-[11px] text-muted-foreground">{everyN > 0 ? `Automatic review every ${everyN}h.` : 'Automatic review is off — the OS only reviews when you click “Review now”.'} Each review is deterministic and free; a deeper write-up of shared knowledge runs only when there’s enough new activity to be worth it.</p>
         </CardContent>
       </Card>
-
-      {/* Recent learning activity — the loop, made legible (moved here from the old Overview tab). */}
-      <section>
-        <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Recent learning activity</div>
-        <Card>
-          <CardContent className="p-0">
-            {activity.length === 0 ? (
-              <div className="p-4 text-sm text-muted-foreground">Nothing yet. As agents finish sessions they leave episodes/lessons; reflect + consolidation events show here.</div>
-            ) : (
-              <div className="divide-y">
-                {activity.map((e, i) => (
-                  <div key={i} className="flex items-start gap-3 px-3 py-2 text-xs">
-                    <span className="w-32 shrink-0 text-muted-foreground">{new Date(e.ts).toLocaleString()}</span>
-                    <span className="shrink-0">{learningLabel(e.type)}</span>
-                    <span className="min-w-0 flex-1 text-muted-foreground">{learningDetail(e)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </section>
     </div>
   )
 }
