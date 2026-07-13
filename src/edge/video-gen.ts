@@ -100,9 +100,9 @@ function extFromUrl(url: string): string {
 }
 
 function errText(body: unknown, status: number): string {
-  const b = body as { error?: { message?: string } | string; detail?: string; message?: string } | undefined;
+  const b = body as { error?: { message?: string } | string; detail?: string; message?: string; msg?: string } | undefined;
   const e = b?.error;
-  const msg = (typeof e === 'string' ? e : e?.message) || b?.detail || b?.message;
+  const msg = (typeof e === 'string' ? e : e?.message) || b?.detail || b?.message || b?.msg; // Atlas uses `msg`
   return msg ? `video backend error (${status}): ${msg}` : `video backend error (${status})`;
 }
 
@@ -172,6 +172,14 @@ interface AtlasRef {
   base: string;
 }
 
+/** The Atlas prediction object — nested under `data` in the poll response. */
+interface AtlasPrediction {
+  id?: string;
+  status?: string; // rendering-ish | completed | succeeded | failed | error | cancelled
+  outputs?: unknown[] | null;
+  error?: string;
+}
+
 class AtlasVideoBackend implements VideoBackend {
   readonly name = 'atlas' as const;
   readonly defaultModel: string;
@@ -202,12 +210,19 @@ class AtlasVideoBackend implements VideoBackend {
   async poll(providerRef: string): Promise<VideoPollResult> {
     const ref = JSON.parse(providerRef) as AtlasRef;
     const res = await fetch(`${ref.base}/api/v1/model/prediction/${ref.predictionId}`, { headers: this.headers() });
-    const d = (await res.json().catch(() => ({}))) as { status?: string; data?: { outputs?: unknown[] } } & Record<string, unknown>;
-    if (!res.ok) return { status: 'failed', error: errText(d, res.status) };
+    const body = (await res.json().catch(() => ({}))) as { data?: AtlasPrediction } & AtlasPrediction & Record<string, unknown>;
+    if (!res.ok) return { status: 'failed', error: errText(body, res.status) };
+    // Atlas nests the prediction under `data` (status/error/outputs live there, NOT at the top level).
+    const d: AtlasPrediction = body.data ?? body;
     const st = (d.status || '').toLowerCase();
-    if (st === 'failed' || st === 'error') return { status: 'failed', error: `atlas status ${st}` };
+    if (st === 'failed' || st === 'error' || st === 'cancelled' || st === 'canceled') {
+      return { status: 'failed', error: d.error || (body as { message?: string }).message || `atlas status ${st || 'failed'}` };
+    }
     if (st !== 'completed' && st !== 'succeeded') return { status: 'rendering' };
-    const url = findVideoUrl(d);
+    // Atlas documents the result at data.outputs[0] — read it directly (a signed URL may lack a .mp4
+    // extension, so don't rely on extension-sniffing); fall back to a recursive search.
+    const direct = Array.isArray(d.outputs) ? d.outputs.find((o): o is string => typeof o === 'string' && /^https?:\/\//.test(o)) : undefined;
+    const url = direct ?? findVideoUrl(d);
     if (!url) return { status: 'failed', error: 'atlas completed but no video URL in the result' };
     return { status: 'done', video: { url, ext: extFromUrl(url) } };
   }

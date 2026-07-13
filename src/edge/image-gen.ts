@@ -54,13 +54,14 @@ export interface ImageBackendConfig {
   defaultModel?: string; // workspace override for the default model
 }
 
-/** Pick a backend from configured keys. OpenRouter wins when both are set (verified cost telemetry). */
+/** Pick a backend from configured keys. Atlas is PRIMARY when set (one Atlas interface covers image +
+ *  video); OpenRouter is the fallback. */
 export function resolveImageBackend(cfg: ImageBackendConfig): ImageBackend | undefined {
-  if (cfg.openRouterKey && cfg.openRouterKey.trim()) {
-    return new OpenRouterBackend(cfg.openRouterKey.trim(), cfg.defaultModel);
-  }
   if (cfg.atlasKey && cfg.atlasKey.trim()) {
     return new AtlasBackend(cfg.atlasKey.trim(), cfg.atlasBaseUrl, cfg.defaultModel);
+  }
+  if (cfg.openRouterKey && cfg.openRouterKey.trim()) {
+    return new OpenRouterBackend(cfg.openRouterKey.trim(), cfg.defaultModel);
   }
   return undefined;
 }
@@ -146,34 +147,67 @@ class OpenRouterBackend implements ImageBackend {
   }
 }
 
-// ── Atlas Cloud (OpenAI-compatible images endpoint) ──────────────────────────
+// ── Atlas Cloud ──────────────────────────────────────────────────────────────
+// Atlas is NOT OpenAI-compatible for media — it's a custom ASYNC API shared by image + video:
+// POST /api/v1/model/generateImage → a prediction id (data.id), then poll
+// GET /api/v1/model/prediction/{id} until data.status is completed/failed (image url at data.outputs[0]).
+// Image renders in seconds, so we submit + poll-to-completion INSIDE generate() to keep the sync
+// ImageBackend contract. (Video uses the same endpoints via its own async job model in video-gen.ts.)
+
+interface AtlasPrediction {
+  id?: string;
+  status?: string;
+  outputs?: unknown[] | null;
+  error?: string;
+}
 
 class AtlasBackend implements ImageBackend {
   readonly name = 'atlas' as const;
   readonly defaultModel: string;
   private readonly base: string;
   constructor(private readonly key: string, baseUrl?: string, defaultModel?: string) {
-    this.base = (baseUrl?.trim() || 'https://api.atlascloud.ai/v1').replace(/\/+$/, '');
-    this.defaultModel = defaultModel?.trim() || 'flux.2';
+    this.base = (baseUrl?.trim() || 'https://api.atlascloud.ai').replace(/\/+$/, '');
+    this.defaultModel = defaultModel?.trim() || 'google/nano-banana-2/text-to-image';
+  }
+
+  private headers(): Record<string, string> {
+    return { Authorization: `Bearer ${this.key}`, 'content-type': 'application/json' };
   }
 
   async generate(req: ImageGenRequest): Promise<ImageGenResult> {
     const model = req.model?.trim() || this.defaultModel;
-    const body: Record<string, unknown> = { model, prompt: req.prompt, n: req.n };
+    const body: Record<string, unknown> = { model, prompt: req.prompt };
     if (req.size) body.size = req.size;
-    const res = await fetch(`${this.base}/images/generations`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.key}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const d = (await res.json().catch(() => ({}))) as OpenRouterResponse;
-    if (!res.ok) throw new Error(errMsg(d, res.status));
-    const entries = d.data ?? d.images ?? [];
-    if (!entries.length) throw new Error('Atlas returned no images');
-    const images = await Promise.all(entries.map(toBytes));
-    // Atlas doesn't reliably report cost in-band; caller falls back to the per-image estimate.
-    return { images, model, costUsd: typeof d.usage?.cost === 'number' ? d.usage.cost : undefined };
+    // Submit
+    const sres = await fetch(`${this.base}/api/v1/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
+    const sbody = (await sres.json().catch(() => ({}))) as { data?: AtlasPrediction; message?: string } & AtlasPrediction;
+    if (!sres.ok) throw new Error(atlasErr(sbody, sres.status));
+    const id = sbody.data?.id ?? sbody.id;
+    if (!id) throw new Error('Atlas did not return a prediction id');
+    // Poll to completion (image is fast — bounded internal poll keeps the sync contract).
+    const deadline = Date.now() + 90_000;
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const pres = await fetch(`${this.base}/api/v1/model/prediction/${id}`, { headers: this.headers() });
+      const pbody = (await pres.json().catch(() => ({}))) as { data?: AtlasPrediction; message?: string } & AtlasPrediction;
+      if (!pres.ok) throw new Error(atlasErr(pbody, pres.status));
+      const d: AtlasPrediction = pbody.data ?? pbody;
+      const st = (d.status || '').toLowerCase();
+      if (st === 'failed' || st === 'error' || st === 'cancelled' || st === 'canceled') throw new Error(d.error || pbody.message || (pbody as { msg?: string }).msg || `Atlas image ${st || 'failed'}`);
+      if (st === 'completed' || st === 'succeeded') {
+        const urls = (d.outputs || []).filter((o): o is string => typeof o === 'string');
+        if (!urls.length) throw new Error('Atlas completed but returned no image URL');
+        const images = await Promise.all(urls.map((url) => toBytes({ url })));
+        return { images, model, costUsd: undefined }; // Atlas doesn't return cost in-band → caller estimates
+      }
+      if (Date.now() > deadline) throw new Error('Atlas image timed out');
+    }
   }
+}
+
+function atlasErr(body: { error?: string; message?: string; msg?: string }, status: number): string {
+  const msg = body.error || body.message || body.msg; // Atlas uses `msg` for errors
+  return msg ? `Atlas image error (${status}): ${msg}` : `Atlas image error (${status})`;
 }
 
 function errMsg(d: OpenRouterResponse, status: number): string {

@@ -211,10 +211,10 @@ export class SettingsStore {
   imageGenConfigured(): boolean {
     return !!this.openRouterKey() || !!this.atlasKey();
   }
-  /** Which backend a run would use (OpenRouter wins when both set) — for the console + status. */
+  /** Which backend a run would use (Atlas is primary when set; else OpenRouter) — for the console + status. */
   imageGenBackend(): 'openrouter' | 'atlas' | null {
-    if (this.openRouterKey()) return 'openrouter';
     if (this.atlasKey()) return 'atlas';
+    if (this.openRouterKey()) return 'openrouter';
     return null;
   }
   /** Whether each image key is set (never returns the secret) + the default model + last editor. */
