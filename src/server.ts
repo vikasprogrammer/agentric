@@ -2689,6 +2689,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, integrationsView(os));
   }
+  // Live Atlas catalog for the default-model pickers (dropdown + free text). Fetched with the stored
+  // key, filtered to text-to-image / text-to-video, cached briefly so the settings page stays snappy.
+  if (method === 'GET' && p === '/api/integrations/atlas/models') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const key = os.settings.atlasKey();
+    if (!key) return sendJson(res, 200, { configured: false, image: [], video: [] });
+    const cat = await fetchAtlasModels(key);
+    return sendJson(res, 200, { configured: true, ...cat });
+  }
   if (method === 'PUT' && p === '/api/settings/integrations') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const b = await readBody(req);
@@ -4128,6 +4137,44 @@ async function probeOllama(target: string): Promise<{ reachable: boolean; url: s
     return { reachable: true, url: base, installed, version: String((v as { version?: string }).version ?? ''), models };
   } catch {
     return { reachable: false, url: base, installed };
+  }
+}
+
+/**
+ * The Atlas catalog, split into the text-to-image and text-to-video model ids the default-model
+ * pickers offer (a `{ model, displayName, categories }[]` under `data`). Cached per key for a few
+ * minutes so opening Settings doesn't re-hit Atlas each render; a key change misses the cache (keyed
+ * by the key itself) and refetches. Best-effort: any failure returns empty lists (the field stays a
+ * plain free-text input).
+ */
+type AtlasModel = { id: string; label: string };
+const atlasModelCache = new Map<string, { at: number; image: AtlasModel[]; video: AtlasModel[] }>();
+const ATLAS_MODEL_TTL_MS = 5 * 60 * 1000;
+async function fetchAtlasModels(key: string): Promise<{ image: AtlasModel[]; video: AtlasModel[] }> {
+  const cached = atlasModelCache.get(key);
+  if (cached && Date.now() - cached.at < ATLAS_MODEL_TTL_MS) return { image: cached.image, video: cached.video };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch('https://api.atlascloud.ai/api/v1/models', {
+      headers: { authorization: `Bearer ${key}` },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return cached ? { image: cached.image, video: cached.video } : { image: [], video: [] };
+    const body = (await r.json()) as { data?: Array<{ model?: string; displayName?: string; categories?: string[] }> };
+    const rows = Array.isArray(body?.data) ? body.data : [];
+    const pick = (cat: string): AtlasModel[] =>
+      rows
+        .filter((m) => m.model && Array.isArray(m.categories) && m.categories.includes(cat))
+        .map((m) => ({ id: String(m.model), label: String(m.displayName || m.model) }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+    const out = { at: Date.now(), image: pick('TEXT-TO-IMAGE'), video: pick('TEXT-TO-VIDEO') };
+    atlasModelCache.set(key, out);
+    return { image: out.image, video: out.video };
+  } catch {
+    return cached ? { image: cached.image, video: cached.video } : { image: [], video: [] };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
