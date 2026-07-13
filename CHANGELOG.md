@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.146.0] — 2026-07-13
+### Added
+- **Assign a secret to agents from the Secrets page — no manifest edit, no re-entering the value.** Granting
+  an agent a stored credential used to mean two manual steps: store the value under that agent's principal
+  AND add the key to its manifest `shellSecrets`. Now each secret on **Settings → Secrets** has an
+  **"assign to agents"** control: toggle agents on/off and the OS injects that secret as a shell env var
+  (named after its key) into each assigned agent's session at launch — the inverse view of `shellSecrets`,
+  managed centrally. A single canonical value backs all assignees (new `secret_assignments (tenant, owner,
+  key, agent)` join table); assigning references the secret by its `(principal, key)` so one shared value can
+  fan out to many agents without duplication. **Injection only** — an assignment never widens who can
+  `secret_get` a value (unchanged, non-breaking). `injectAssignedSecrets` runs alongside the manifest path at
+  launch (audited `shell.secret.injected`/`unresolved` with `via:'assignment'`); assignments are cleaned up
+  when the secret is deleted. New route `PUT /api/secrets/agents` (owner/admin; unknown agent ids dropped),
+  and `GET /api/secrets` now returns each secret's assignment list. Audited `secret.assigned`.
+
 ## [0.145.0] — 2026-07-13
 ### Added
 - **Idle member sessions now auto-close (configurable, default 48 h).** A member's own attachable session

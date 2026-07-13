@@ -292,6 +292,21 @@ function migrate(db: Db): void {
       PRIMARY KEY (tenant, principal, key)
     );
 
+    -- Which agents a stored secret is INJECTED into (as a shell env var named after its key) at launch.
+    -- The inverse view of an agent's manifest shellSecrets, managed from the Secrets page: assigning
+    -- agent X to a secret makes the OS resolve the secret's value and export it into X's session shell,
+    -- so a plain CLI authenticates without X's manifest listing it. owner is the secret's principal
+    -- ((owner,key) -> which value to inject; '*' for a tenant-wide secret). No read-access change: this
+    -- drives injection only, never secret_get. Rows for a since-deleted agent are harmless (never
+    -- match a launch); cleaned up when the secret itself is deleted.
+    CREATE TABLE IF NOT EXISTS secret_assignments (
+      tenant TEXT NOT NULL,
+      owner  TEXT NOT NULL,                 -- the secret's principal (its canonical location), '*' = tenant-wide
+      key    TEXT NOT NULL,
+      agent  TEXT NOT NULL,                 -- the agent id the secret is injected into at launch
+      PRIMARY KEY (tenant, owner, key, agent)
+    );
+
     -- Persistent agent memory (the SQLite backend of the memory plane). One row per memory,
     -- namespaced by (tenant, agent_id) so an agent only ever recalls its own.
     CREATE TABLE IF NOT EXISTS memories (
