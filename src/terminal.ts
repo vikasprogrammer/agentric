@@ -23,6 +23,7 @@ import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
 import { claudeSupportsReloadSkills } from './edge/claude-cli';
 import { DEFAULT_IMAGE_COST_USD, resolveImageBackend, imageErrorInfo } from './edge/image-gen';
+import { VendorError, retryableStatus, timedFetch, withRetry, vendorErrorInfo } from './edge/vendor-fetch';
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
 import { understandMedia } from './edge/media-understand';
 
@@ -2736,7 +2737,7 @@ export class TerminalManager {
    * the money-cap rule applies. Cost is an estimate (video is per-second and rarely returned in-band).
    * An optional `image` seed (URL or artifact id) switches it to image-to-video via `backend.imageModel`.
    */
-  async generateVideo(sessionId: string, input: { prompt: string; model?: string; durationSec?: number; image?: string }): Promise<{ ok: boolean; status?: 'done' | 'rendering'; jobId?: string; artifact?: { id: string; filename: string; mime: string }; model?: string; costUsd?: number; error?: string }> {
+  async generateVideo(sessionId: string, input: { prompt: string; model?: string; durationSec?: number; image?: string }): Promise<{ ok: boolean; status?: 'done' | 'rendering'; jobId?: string; artifact?: { id: string; filename: string; mime: string }; model?: string; costUsd?: number; error?: string; retryable?: boolean; vendor?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
@@ -2768,9 +2769,9 @@ export class TerminalManager {
     try {
       submit = await backend.submit({ prompt, model, durationSec, imageUrl });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      this.audit(sessionId, agent, 'video.failed', { model, error: msg });
-      return { ok: false, error: msg };
+      const info = vendorErrorInfo(e);
+      this.audit(sessionId, agent, 'video.failed', { model, error: info.message, vendor: info.vendor, retryable: info.retryable });
+      return { ok: false, error: info.message, retryable: info.retryable, vendor: info.vendor };
     }
 
     const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
@@ -2819,12 +2820,21 @@ export class TerminalManager {
       this.postVideoCard(job, undefined, `Video failed — ${error}`);
       return { status: 'failed', error };
     }
-    // Done → download the mp4 and ingest it as an artifact.
+    // Done → download the mp4 (timeout + bounded retry; a stalled/interrupted download is transient) and
+    // ingest it as an artifact.
     let bytes: Buffer;
     try {
-      const res = await fetch(poll.video.url);
-      if (!res.ok) throw new Error(`downloading the finished video failed (${res.status})`);
-      bytes = Buffer.from(await res.arrayBuffer());
+      const url = poll.video.url;
+      bytes = await withRetry(async () => {
+        try {
+          const res = await timedFetch(url, {}, 60_000, 'video download');
+          if (!res.ok) throw new VendorError(`downloading the finished video failed (${res.status})`, retryableStatus(res.status), 'video download', res.status);
+          return Buffer.from(await res.arrayBuffer());
+        } catch (e) {
+          if (e instanceof VendorError) throw e;
+          throw new VendorError(`video download failed (${e instanceof Error ? e.message : String(e)})`, true, 'video download');
+        }
+      });
     } catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       this.os.videoJobs.markFailed(jobId, error);

@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.158.0] — 2026-07-13
+### Fixed
+- **Same timeout/retry resilience now applies to `video_generate`.** The video backend
+  (`src/edge/video-gen.ts`, fal + Atlas) previously had no timeouts and would mark a whole render
+  **failed** on a single transient poll blip. The image resilience helpers were extracted to a shared
+  `src/edge/vendor-fetch.ts` (`timedFetch` + `withRetry` + `VendorError`) and applied to video:
+  - **Timeouts** on every call — 30s submit, 15s per poll, 60s mp4 download.
+  - **Bounded retry** (3×, backoff + jitter) around the submit and the mp4 download on transient failures
+    (network/timeout, 429, 5xx).
+  - **Poll blips no longer kill the job.** A transient poll error now returns `rendering`, so the job
+    survives and the **next Automations tick re-polls** (bounded by `VIDEO_MAX_POLLS`/TTL) instead of a
+    one-off network hiccup marking a paid render `failed`. An explicit vendor `failed`/`cancelled` status
+    or a 4xx still fails as-is.
+  - **Error attribution**: a submit failure now carries the vendor + retryable flag out to
+    `video_generate error: …` (not `memory error: …`), telling the agent whether to retry.
+  Docs updated in `docs/agent-mcp-tools.md`. Verified live: normal submit, transient submit → retryable
+  error, transient poll → `rendering` (not `failed`), and the image path still passes through the shared
+  helpers with no regression.
+
 ## [0.157.4] — 2026-07-13
 ### Fixed
 - **Dreaming robustness batch** (third of the sequenced audit fixes, after timing v0.150.2 + staleness v0.157.1):

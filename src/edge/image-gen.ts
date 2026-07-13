@@ -18,6 +18,8 @@
  * gallery stores bytes and vendor URLs (e.g. FLUX's) can expire within minutes.
  */
 
+import { VendorError, retryableStatus, timedFetch, withRetry, vendorErrorInfo, sleep } from './vendor-fetch';
+
 /** A conservative default per-image cost, used ONLY for the pre-generation policy gate (the money-cap
  *  rule) when the backend can't be asked ahead of time. The AUDIT records the real cost when known. */
 export const DEFAULT_IMAGE_COST_USD = 0.05;
@@ -140,79 +142,13 @@ function extFromUrl(url: string): string | undefined {
   return e === 'jpeg' ? 'jpg' : e;
 }
 
-// ── network resilience: timeouts + bounded retry ─────────────────────────────
-// Every vendor call gets an explicit deadline (a hung socket must never hang the tool) and TRANSIENT
-// failures (network reset, timeout, 429, 5xx) are retried with exponential backoff + jitter. A 4xx
-// (bad request / content policy / rejected model) or an explicit vendor `failed` prediction status is a
-// REAL answer — surfaced on the first occurrence, never retried. `VendorError.retryable` is the single
-// source of truth both the retry loop and the surfaced message consult (so "worth retrying" is decided
-// in exactly one place, and the existing model-fallback path keys off the message the same way).
+// ── network resilience: timeouts + bounded retry (shared helpers in ./vendor-fetch) ──────────────────
 const SUBMIT_TIMEOUT_MS = 30_000; // POST generate / submit
 const POLL_TIMEOUT_MS = 15_000; // one prediction poll
 const DOWNLOAD_TIMEOUT_MS = 60_000; // pull the finished image bytes (can be large)
-const RETRY_ATTEMPTS = 3;
 
-/** A vendor-call error that knows its HTTP status, which vendor raised it, and whether retrying could
- *  plausibly help. Carried out to TerminalManager so the tool response can tell the agent what to do. */
-export class VendorError extends Error {
-  constructor(message: string, readonly retryable: boolean, readonly vendor: string, readonly status?: number) {
-    super(message);
-    this.name = 'VendorError';
-  }
-}
-
-/** 429 (rate limit) and 5xx (vendor-side) are transient; every other status is a definitive answer. */
-function retryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Exponential backoff with full jitter (~0.2–0.4s, ~0.4–0.8s, … capped at 4s) to avoid synchronized retries. */
-function backoffMs(attempt: number): number {
-  const base = Math.min(4000, 400 * 2 ** attempt);
-  return Math.round(base / 2 + Math.random() * (base / 2));
-}
-
-/** One fetch with an explicit timeout, normalizing a network error / timeout into a RETRYABLE VendorError. */
-async function timedFetch(url: string, init: RequestInit, timeoutMs: number, vendor: string): Promise<Response> {
-  try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  } catch (e) {
-    const timedOut = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError');
-    const detail = e instanceof Error ? e.message : String(e);
-    throw new VendorError(
-      timedOut ? `${vendor} request timed out after ${Math.round(timeoutMs / 1000)}s` : `${vendor} request failed (${detail})`,
-      true,
-      vendor,
-    );
-  }
-}
-
-/** Run a vendor call up to RETRY_ATTEMPTS times, retrying ONLY on a retryable VendorError (transient
- *  network/timeout/429/5xx). A terminal error (4xx, content policy, `failed` status, bad model) throws on
- *  its first occurrence so it surfaces as-is. */
-async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
-  let last: unknown;
-  for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
-    try {
-      return await fn();
-    } catch (e) {
-      last = e;
-      const retryable = e instanceof VendorError && e.retryable;
-      if (!retryable || attempt === RETRY_ATTEMPTS - 1) throw e;
-      await sleep(backoffMs(attempt));
-    }
-  }
-  throw last;
-}
-
-/** Normalize any thrown error into { message, retryable, vendor } for the caller (TerminalManager → the
- *  tool response), so the agent is told which subsystem failed and whether a plain retry is worthwhile. */
-export function imageErrorInfo(e: unknown): { message: string; retryable?: boolean; vendor?: string } {
-  if (e instanceof VendorError) return { message: e.message, retryable: e.retryable, vendor: e.vendor };
-  return { message: e instanceof Error ? e.message : String(e) };
-}
+/** Back-compat alias for `TerminalManager` (image path); identical to the shared `vendorErrorInfo`. */
+export const imageErrorInfo = vendorErrorInfo;
 
 // ── OpenRouter ──────────────────────────────────────────────────────────────
 

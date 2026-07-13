@@ -20,10 +20,17 @@
  * JSON, so `video_jobs` stays vendor-neutral.
  */
 
+import { VendorError, retryableStatus, timedFetch, withRetry } from './vendor-fetch';
+
 /** Conservative per-second + duration defaults for the pre-render policy gate (the money-cap rule). The
  *  audit records the actual cost when a backend reports it, else this estimate. */
 export const DEFAULT_VIDEO_COST_PER_SEC_USD = 0.1;
 export const DEFAULT_VIDEO_DURATION_SEC = 5;
+
+// Timeouts for the vendor calls (retry/backoff via ./vendor-fetch). Submit is a single POST; each poll is
+// one status check — a transient poll failure is NOT fatal (the background tick just re-polls next round).
+const SUBMIT_TIMEOUT_MS = 30_000;
+const POLL_TIMEOUT_MS = 15_000;
 
 export interface VideoGenRequest {
   prompt: string;
@@ -145,29 +152,45 @@ class FalVideoBackend implements VideoBackend {
     const body: Record<string, unknown> = { prompt: req.prompt };
     if (req.durationSec) body.duration = String(req.durationSec); // fal video models mostly take a string seconds
     if (req.imageUrl) body.image_url = req.imageUrl;
-    const res = await fetch(`https://queue.fal.run/${model}`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
-    const d = (await res.json().catch(() => ({}))) as FalSubmitResponse & Record<string, unknown>;
-    if (!res.ok) throw new Error(errText(d, res.status));
-    if (!d.status_url || !d.response_url) throw new Error('fal did not return status/response URLs');
-    const ref: FalRef = { model, statusUrl: d.status_url, responseUrl: d.response_url };
+    const d = await withRetry(async () => {
+      const res = await timedFetch(`https://queue.fal.run/${model}`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, SUBMIT_TIMEOUT_MS, 'fal');
+      const j = (await res.json().catch(() => ({}))) as FalSubmitResponse & Record<string, unknown>;
+      if (!res.ok) throw new VendorError(errText(j, res.status), retryableStatus(res.status), 'fal', res.status);
+      if (!j.status_url || !j.response_url) throw new VendorError('fal did not return status/response URLs', true, 'fal');
+      return j;
+    });
+    const ref: FalRef = { model, statusUrl: d.status_url!, responseUrl: d.response_url! };
     return { providerRef: JSON.stringify(ref) };
   }
 
   async poll(providerRef: string): Promise<VideoPollResult> {
     const ref = JSON.parse(providerRef) as FalRef;
-    const sres = await fetch(ref.statusUrl, { headers: this.headers() });
-    const s = (await sres.json().catch(() => ({}))) as FalStatusResponse;
-    if (!sres.ok) return { status: 'failed', error: errText(s, sres.status) };
-    const st = (s.status || '').toUpperCase();
-    if (st === 'IN_QUEUE' || st === 'IN_PROGRESS') return { status: 'rendering' };
-    if (st && st !== 'COMPLETED') return { status: 'failed', error: `fal status ${st}` };
-    // COMPLETED → fetch the result body and find the video URL
-    const rres = await fetch(ref.responseUrl, { headers: this.headers() });
-    const r = (await rres.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!rres.ok) return { status: 'failed', error: errText(r, rres.status) };
-    const url = findVideoUrl(r);
-    if (!url) return { status: 'failed', error: 'fal completed but no video URL in the result' };
-    return { status: 'done', video: { url, ext: extFromUrl(url) } };
+    try {
+      const sres = await timedFetch(ref.statusUrl, { headers: this.headers() }, POLL_TIMEOUT_MS, 'fal');
+      const s = (await sres.json().catch(() => ({}))) as FalStatusResponse;
+      if (!sres.ok) {
+        if (retryableStatus(sres.status)) return { status: 'rendering' }; // transient → let the next tick re-poll
+        return { status: 'failed', error: errText(s, sres.status) };
+      }
+      const st = (s.status || '').toUpperCase();
+      if (st === 'IN_QUEUE' || st === 'IN_PROGRESS') return { status: 'rendering' };
+      if (st && st !== 'COMPLETED') return { status: 'failed', error: `fal status ${st}` };
+      // COMPLETED → fetch the result body and find the video URL
+      const rres = await timedFetch(ref.responseUrl, { headers: this.headers() }, POLL_TIMEOUT_MS, 'fal');
+      const r = (await rres.json().catch(() => ({}))) as Record<string, unknown>;
+      if (!rres.ok) {
+        if (retryableStatus(rres.status)) return { status: 'rendering' };
+        return { status: 'failed', error: errText(r, rres.status) };
+      }
+      const url = findVideoUrl(r);
+      if (!url) return { status: 'failed', error: 'fal completed but no video URL in the result' };
+      return { status: 'done', video: { url, ext: extFromUrl(url) } };
+    } catch (e) {
+      // A single poll that hit a network error / timeout is not fatal — the job stays 'rendering' and the
+      // background tick re-polls (bounded by VIDEO_MAX_POLLS / TTL). Only a terminal status fails the job.
+      if (e instanceof VendorError && e.retryable) return { status: 'rendering' };
+      return { status: 'failed', error: e instanceof Error ? e.message : String(e) };
+    }
   }
 }
 
@@ -207,32 +230,45 @@ class AtlasVideoBackend implements VideoBackend {
     if (req.durationSec) body.duration = req.durationSec;
     // Atlas takes the seed frame as `image` (URL, Base64 data URL, or asset://<id>) — NOT `image_url`.
     if (req.imageUrl) body.image = req.imageUrl;
-    const res = await fetch(`${this.base}/api/v1/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
-    const d = (await res.json().catch(() => ({}))) as { id?: string; prediction_id?: string; data?: { id?: string } };
-    if (!res.ok) throw new Error(errText(d, res.status));
-    const id = d.id || d.prediction_id || d.data?.id;
-    if (!id) throw new Error('Atlas did not return a prediction id');
+    const d = await withRetry(async () => {
+      const res = await timedFetch(`${this.base}/api/v1/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, SUBMIT_TIMEOUT_MS, 'Atlas');
+      const j = (await res.json().catch(() => ({}))) as { id?: string; prediction_id?: string; data?: { id?: string } };
+      if (!res.ok) throw new VendorError(errText(j, res.status), retryableStatus(res.status), 'Atlas', res.status);
+      if (!(j.id || j.prediction_id || j.data?.id)) throw new VendorError('Atlas accepted the request but returned no prediction id', true, 'Atlas');
+      return j;
+    });
+    const id = d.id || d.prediction_id || d.data?.id!;
     const ref: AtlasRef = { predictionId: id, base: this.base };
     return { providerRef: JSON.stringify(ref) };
   }
 
   async poll(providerRef: string): Promise<VideoPollResult> {
     const ref = JSON.parse(providerRef) as AtlasRef;
-    const res = await fetch(`${ref.base}/api/v1/model/prediction/${ref.predictionId}`, { headers: this.headers() });
-    const body = (await res.json().catch(() => ({}))) as { data?: AtlasPrediction } & AtlasPrediction & Record<string, unknown>;
-    if (!res.ok) return { status: 'failed', error: errText(body, res.status) };
-    // Atlas nests the prediction under `data` (status/error/outputs live there, NOT at the top level).
-    const d: AtlasPrediction = body.data ?? body;
-    const st = (d.status || '').toLowerCase();
-    if (st === 'failed' || st === 'error' || st === 'cancelled' || st === 'canceled') {
-      return { status: 'failed', error: d.error || (body as { message?: string }).message || `atlas status ${st || 'failed'}` };
+    try {
+      const res = await timedFetch(`${ref.base}/api/v1/model/prediction/${ref.predictionId}`, { headers: this.headers() }, POLL_TIMEOUT_MS, 'Atlas');
+      const body = (await res.json().catch(() => ({}))) as { data?: AtlasPrediction } & AtlasPrediction & Record<string, unknown>;
+      if (!res.ok) {
+        if (retryableStatus(res.status)) return { status: 'rendering' }; // transient → let the next tick re-poll
+        return { status: 'failed', error: errText(body, res.status) };
+      }
+      // Atlas nests the prediction under `data` (status/error/outputs live there, NOT at the top level).
+      const d: AtlasPrediction = body.data ?? body;
+      const st = (d.status || '').toLowerCase();
+      if (st === 'failed' || st === 'error' || st === 'cancelled' || st === 'canceled') {
+        return { status: 'failed', error: d.error || (body as { message?: string }).message || `atlas status ${st || 'failed'}` };
+      }
+      if (st !== 'completed' && st !== 'succeeded') return { status: 'rendering' };
+      // Atlas documents the result at data.outputs[0] — read it directly (a signed URL may lack a .mp4
+      // extension, so don't rely on extension-sniffing); fall back to a recursive search.
+      const direct = Array.isArray(d.outputs) ? d.outputs.find((o): o is string => typeof o === 'string' && /^https?:\/\//.test(o)) : undefined;
+      const url = direct ?? findVideoUrl(d);
+      if (!url) return { status: 'failed', error: 'atlas completed but no video URL in the result' };
+      return { status: 'done', video: { url, ext: extFromUrl(url) } };
+    } catch (e) {
+      // A single poll that hit a network error / timeout is not fatal — stay 'rendering' and let the tick
+      // poller re-poll (bounded by VIDEO_MAX_POLLS / TTL). Only a terminal status/error fails the job.
+      if (e instanceof VendorError && e.retryable) return { status: 'rendering' };
+      return { status: 'failed', error: e instanceof Error ? e.message : String(e) };
     }
-    if (st !== 'completed' && st !== 'succeeded') return { status: 'rendering' };
-    // Atlas documents the result at data.outputs[0] — read it directly (a signed URL may lack a .mp4
-    // extension, so don't rely on extension-sniffing); fall back to a recursive search.
-    const direct = Array.isArray(d.outputs) ? d.outputs.find((o): o is string => typeof o === 'string' && /^https?:\/\//.test(o)) : undefined;
-    const url = direct ?? findVideoUrl(d);
-    if (!url) return { status: 'failed', error: 'atlas completed but no video URL in the result' };
-    return { status: 'done', video: { url, ext: extFromUrl(url) } };
   }
 }
