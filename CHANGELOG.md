@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.147.0] — 2026-07-13
+### Added
+- **Daily digest — an end-of-day "what got done today" standup, posted to Slack.** A tenant-wide summary
+  in two halves: **📋 Today** (the per-session changelog, grouped by agent) + **🧠 Learned** (Dreaming's
+  distilled guidance + open recommendations). The changelog needs no new capture — every session end
+  already writes a deterministic episode (`writeEpisode` → `composeEpisode`), so the digest is a pure
+  read + render (no LLM). The body thresholds on `episodeSalience` importance so a busy day of low-value
+  test runs doesn't drown the real work; a `done` session with a substantive report title is always
+  included (it may carry no episode yet still shipped a PR). Rides the **Dreaming pass**, not a new timer:
+  the dashboard/KB render live on demand, and only the Slack post is time-gated — once per server-local day
+  past `digestHour` (default 18), guarded by a `digest.posted` audit. Manual **Reflect now** / **Post now**
+  refresh the KB page but the channel is pinged solely by the scheduled end-of-day run. Each day lands a
+  dated, revisioned KB journal page (`operations/daily/<date>`). New config in **Settings → Learning**
+  (enable, channel, hour) with a live "today so far" preview; endpoints `GET /api/digest/today` +
+  `POST /api/digest/post`, and digest fields on `GET`/`PUT /api/dreaming`. See `docs/daily-digest-plan.md`.
+
 ## [0.146.0] — 2026-07-13
 ### Added
 - **Assign a secret to agents from the Secrets page — no manifest edit, no re-entering the value.** Granting
@@ -22,6 +38,19 @@ new version heading in the same commit.
   launch (audited `shell.secret.injected`/`unresolved` with `via:'assignment'`); assignments are cleaned up
   when the secret is deleted. New route `PUT /api/secrets/agents` (owner/admin; unknown agent ids dropped),
   and `GET /api/secrets` now returns each secret's assignment list. Audited `secret.assigned`.
+- **Daily digest — an end-of-day "what got done today" standup, posted to Slack.** A tenant-wide summary
+  in two halves: **📋 Today** (the per-session changelog, grouped by agent) + **🧠 Learned** (Dreaming's
+  distilled guidance + open recommendations). The changelog needs no new capture — every session end
+  already writes a deterministic episode (`writeEpisode` → `composeEpisode`), so the digest is a pure
+  read + render (no LLM). The body thresholds on `episodeSalience` importance so a busy day of low-value
+  test runs doesn't drown the real work; a `done` session with a substantive report title is always
+  included (it may carry no episode yet still shipped a PR). Rides the **Dreaming pass**, not a new timer:
+  the dashboard/KB render live on demand, and only the Slack post is time-gated — once per server-local day
+  past `digestHour` (default 18), guarded by a `digest.posted` audit. Manual **Reflect now** / **Post now**
+  refresh the KB page but the channel is pinged solely by the scheduled end-of-day run. Each day lands a
+  dated, revisioned KB journal page (`operations/daily/<date>`). New config in **Settings → Learning**
+  (enable, channel, hour) with a live "today so far" preview; endpoints `GET /api/digest/today` +
+  `POST /api/digest/post`, and digest fields on `GET`/`PUT /api/dreaming`. See `docs/daily-digest-plan.md`.
 
 ## [0.145.0] — 2026-07-13
 ### Added

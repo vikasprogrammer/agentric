@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -7643,10 +7643,27 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
+  const [digest, setDigest] = useState<DigestConfig>({ enabled: false, channel: '', hour: 18 })
+  const [digestHint, setDigestHint] = useState('')
+  const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.memoryOverview().then((r) => { if (!r.error) setActivity(r.activity ?? []) }).catch(() => {})
+    api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
+  }
+  const saveDigest = async (patch: Partial<DigestConfig>) => {
+    const next = { ...digest, ...patch }; setDigest(next); setDigestHint('')
+    const r = await api.setDigest({ enabled: next.enabled, channel: next.channel, hour: next.hour })
+    if (r.error) return setDigestHint('⚠ ' + r.error)
+    if (r.digest) setDigest((d) => ({ ...d, ...r.digest })); setDigestHint('saved'); setTimeout(() => setDigestHint(''), 1500)
+  }
+  const postDigest = async () => {
+    setBusy(true); setDigestHint('')
+    const r = await api.digestPost(); setBusy(false)
+    if (r.error) return setDigestHint('⚠ ' + r.error)
+    setDigestHint(r.posted ? `posted to ${r.channel} (${r.total} sessions)` : `not posted — ${r.reason ?? 'nothing to post'}`)
+    setTimeout(() => setDigestHint(''), 3000); refresh()
   }
   const applyRec = async (id: string) => { setBusy(true); const r = await api.applyRecommendation(id); setBusy(false); if (r.error) return setHint('⚠ ' + r.error); setHint('applied'); setTimeout(() => setHint(''), 1500); refresh() }
   const dismissRec = async (id: string) => { setBusy(true); await api.dismissRecommendation(id); setBusy(false); refresh() }
@@ -7718,6 +7735,49 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
               ? <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-3 text-[11px] leading-relaxed">{guidance}</pre>
               : <div className="text-xs text-muted-foreground">No guidance yet — run a pass (above) once agents have done some work.</div>}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* The daily digest: a "what got done today" standup posted to Slack at end of day. */}
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="text-sm font-medium">Daily digest <span className="text-[11px] font-normal text-muted-foreground">— the end-of-day standup</span></div>
+            <p className="text-xs text-muted-foreground">A tenant-wide <strong>“what got done today”</strong> summary — the per-session changelog (from session episodes) plus the learned guidance above — posted to Slack once a day. It rides the same reflect pass; the preview below renders live. Manual <em>Post now</em> and <em>Reflect now</em> never surprise the channel — only the scheduled end-of-day run posts.</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={digest.enabled} onChange={(e) => saveDigest({ enabled: e.target.checked })} />
+            Post the daily digest to Slack automatically
+          </label>
+          {!digest.slackConfigured && <div className="text-[11px] text-amber-600">Slack isn’t configured — set the bot token in <a className="underline" href="#/settings">Integrations</a> first.</div>}
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Slack channel" help="Channel id (C…) or name (#fleet). The bot auto-joins public channels.">
+              <Input value={digest.channel} onChange={(e) => setDigest({ ...digest, channel: e.target.value })} onBlur={() => saveDigest({ channel: digest.channel })} className="w-44 font-mono text-xs" placeholder="#fleet" />
+            </Field>
+            <Field label="Post at (hour, 0–23)" help="Server-local. Fires on the next hourly tick past this hour.">
+              <Input value={String(digest.hour)} onChange={(e) => setDigest({ ...digest, hour: Number(e.target.value) || 0 })} onBlur={() => saveDigest({ hour: digest.hour })} className="w-20 font-mono text-xs" placeholder="18" />
+            </Field>
+            <Button variant="outline" onClick={postDigest} disabled={busy}><Send className="mr-1 h-4 w-4" />Post now</Button>
+            {digestHint && <span className="font-mono text-xs text-muted-foreground">{digestHint}</span>}
+          </div>
+          <div className="text-[11px] text-muted-foreground">{digest.lastPostedAt ? `Last posted: ${new Date(digest.lastPostedAt).toLocaleString()}.` : 'Not posted yet.'}</div>
+          {preview && (
+            <div>
+              <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Today so far — preview</div>
+              <div className="rounded-md border bg-muted/40 p-3 text-xs">
+                <div className="font-medium">📋 {preview.label} · {preview.total} session{preview.total === 1 ? '' : 's'} · {preview.buckets.success} ✓{preview.buckets.failure ? ` · ${preview.buckets.failure} ✗` : ''}{preview.buckets.stopped ? ` · ${preview.buckets.stopped} stopped` : ''}</div>
+                {preview.byAgent.length === 0
+                  ? <div className="mt-1 text-muted-foreground">No notable sessions yet today.</div>
+                  : preview.byAgent.map((a) => (
+                      <div key={a.agent} className="mt-2">
+                        <div className="font-medium">{a.agent}</div>
+                        {a.lines.map((l, i) => <div key={i} className="truncate text-muted-foreground">• {l.title}</div>)}
+                        {a.more > 0 && <div className="text-muted-foreground">• +{a.more} more</div>}
+                      </div>
+                    ))}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

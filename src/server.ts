@@ -21,6 +21,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
+import { Digest } from './edge/digest';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -284,6 +285,10 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
         .then(() => new Consolidation(os, rt.tm).run('automation:consolidation'))
         .catch(() => { /* never let the scheduler crash the server */ });
     }
+    // Daily digest — the "what got done today" standup. Rides this same hourly tick but gates its own
+    // Slack post (enabled + channel + past digestHour + not yet posted today); the dashboard/KB render
+    // live on demand, so nothing here is needed to keep them fresh. No-op unless the tenant opted in.
+    void new Digest(os).maybePostEod().catch(() => { /* never let the digest crash the scheduler */ });
   }), 3_600_000);
   upkeep.unref?.();
 
@@ -2289,7 +2294,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/dreaming') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const last = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
-    return sendJson(res, 200, { everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined, applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open });
+    const lastPosted = os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'digest.posted'").get<{ t: number | null }>();
+    return sendJson(res, 200, {
+      everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
+      applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open,
+      digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
+    });
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);
@@ -2319,7 +2329,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     if (b.everyHours !== undefined) os.settings.setDreamingEveryHours(Number(b.everyHours) || 0, me.email);
     if (typeof b.applyLearnings === 'boolean') os.settings.setApplyLearnings(b.applyLearnings, me.email);
-    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings() });
+    if (b.digest && typeof b.digest === 'object') {
+      const d = b.digest as { enabled?: boolean; channel?: string; hour?: number };
+      if (typeof d.enabled === 'boolean') os.settings.setDigestEnabled(d.enabled, me.email);
+      if (d.channel !== undefined) os.settings.setDigestChannel(String(d.channel), me.email);
+      if (d.hour !== undefined) os.settings.setDigestHour(Number(d.hour), me.email);
+    }
+    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings(), digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), hour: os.settings.digestHour() } });
+  }
+  // The daily digest — today's model for the console dashboard (owner/admin), live from the DB.
+  if (method === 'GET' && p === '/api/digest/today') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, new Digest(os).today());
+  }
+  // Post today's digest to Slack now (manual "post now" button). Refreshes the KB page even on a quiet day.
+  if (method === 'POST' && p === '/api/digest/post') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    try {
+      const r = await new Digest(os).postNow(me.email);
+      return sendJson(res, 200, { ok: true, ...r });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
   }
   // One "reflect" action: the cheap deterministic pass, then the memory-gardener over new material
   // (spawns a headless agent that grows shared memories + KB; no-ops when there's too little).
@@ -2333,6 +2364,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       } catch (e) {
         consolidation = { spawned: false, reason: e instanceof Error ? e.message : String(e) };
       }
+      // Refresh today's digest KB page off the freshly-updated guidance — but never post to Slack from a
+      // manual reflect (the channel is pinged only by the scheduled EOD trigger).
+      try { new Digest(os).refresh(me.email); } catch { /* best-effort */ }
       return sendJson(res, 200, { ok: true, ...dream, consolidation });
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });

@@ -258,6 +258,23 @@ export interface Recommendation {
   link?: string
   createdAt: number
 }
+export interface DigestConfig {
+  enabled: boolean
+  channel: string
+  hour: number
+  slackConfigured?: boolean
+  lastPostedAt?: number
+}
+export interface DigestModel {
+  iso: string
+  label: string
+  total: number
+  buckets: { success: number; partial: number; failure: number; stopped: number; running: number; other: number }
+  byAgent: { agent: string; lines: { title: string; outcome: string; importance: number }[]; more: number }[]
+  signals: { tasksCreated: number; tasksCompleted: number; approvals: number; rejected: number; errors: number; budgetStops: number }
+  guidance: string[]
+  recommendations: string[]
+}
 export interface KbRevision {
   id: string
   pageId: string
@@ -1039,13 +1056,17 @@ export const api = {
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`),
-  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; error?: string }>('GET', '/api/dreaming'),
+  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),
   setDreaming: (everyHours: number) => call<{ ok: boolean; everyHours: number; error?: string }>('PUT', '/api/dreaming', { everyHours }),
   setApplyLearnings: (applyLearnings: boolean) => call<{ ok: boolean; applyLearnings: boolean; error?: string }>('PUT', '/api/dreaming', { applyLearnings }),
   // One "reflect" pass: cheap deterministic tally + the memory-gardener over new material (nested `consolidation`).
   dreamingRun: () => call<{ ok: boolean; skipped?: boolean; sessions?: number; episodes?: number; kbPageId?: string; insightId?: string; guidance?: string; consolidation?: { spawned?: boolean; reason?: string; sessionId?: string; items?: number }; error?: string }>('POST', '/api/dreaming/run'),
+  // Daily digest — the "what got done today" standup (rides the Dreaming pass; posts to Slack at EOD).
+  setDigest: (digest: { enabled?: boolean; channel?: string; hour?: number }) => call<{ ok: boolean; digest: DigestConfig; error?: string }>('PUT', '/api/dreaming', { digest }),
+  digestToday: () => call<DigestModel & { error?: string }>('GET', '/api/digest/today'),
+  digestPost: () => call<{ ok: boolean; posted: boolean; reason?: string; channel?: string; total: number; iso: string; error?: string }>('POST', '/api/digest/post'),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
