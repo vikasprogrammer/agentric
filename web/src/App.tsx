@@ -5160,6 +5160,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [fPriority, setFPriority] = useState('') // '' = all
   const [fGoal, setFGoal] = useState('') // '' = all
   const [fOverdue, setFOverdue] = useState(false)
+  const [fLive, setFLive] = useState(false) // show only tasks with a running session
   const [sort, setSort] = useState<'priority' | 'due' | 'updated'>('priority')
   // drag-and-drop
   const [dragId, setDragId] = useState<string | null>(null)
@@ -5262,6 +5263,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // Client-side filtering over the (≤500) board — cheap, and keeps the lens shareable via UI state.
   const labelsPresent = [...new Set((tasks ?? []).flatMap((t) => t.labels))].sort()
   const assigneesPresent = [...new Set((tasks ?? []).map((t) => t.assignee).filter(Boolean) as string[])]
+  // Live-session linkage: a task's `lastSessionId` resolved to a session that's actually alive now. This is
+  // what turns a "doing" card into a live one — the running infra is a property of the task, shown in place.
+  // Defined above `visible` so the "Live only" filter can use it.
+  const sessionById = new Map(sessions.map((s) => [s.id, s]))
+  const liveOf = (t: Task): Session | null => { const s = t.lastSessionId ? sessionById.get(t.lastSessionId) : undefined; return s && isLive(s) ? s : null }
+  const attach = (t: Task, s: Session) => onOpen(s.tmux || ('aos-' + s.id), 'Task · ' + t.title)
+
   const visible = (tasks ?? []).filter((t) => {
     if (mine && t.assignee !== me.id) return false
     if (fAssignee && t.assignee !== fAssignee) return false
@@ -5269,17 +5277,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     if (fPriority !== '' && t.priority !== Number(fPriority)) return false
     if (fGoal && t.goalId !== fGoal) return false
     if (fOverdue && !dueMeta(t.dueAt, t.status)?.overdue) return false
+    if (fLive && !liveOf(t)) return false
     return true
   })
   const goalsPresent = [...new Set((tasks ?? []).map((t) => t.goalId).filter(Boolean) as string[])]
-  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue
-  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false) }
+  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive
+  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false) }
 
-  // Live-session linkage: a task's `lastSessionId` resolved to a session that's actually alive now. This is
-  // what turns a "doing" card into a live one — the running infra is a property of the task, shown in place.
-  const sessionById = new Map(sessions.map((s) => [s.id, s]))
-  const liveOf = (t: Task): Session | null => { const s = t.lastSessionId ? sessionById.get(t.lastSessionId) : undefined; return s && isLive(s) ? s : null }
-  const attach = (t: Task, s: Session) => onOpen(s.tmux || ('aos-' + s.id), 'Task · ' + t.title)
   const liveTasks = visible.filter((t) => liveOf(t))
   const liveCount = liveTasks.length
   // A metric tile for the fleet strip.
@@ -5600,6 +5604,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <SelectContent><SelectItem value="all">Any goal</SelectItem>{goalsPresent.map((g) => <SelectItem key={g} value={g}>{goalTitle(g)}</SelectItem>)}</SelectContent>
           </Select>
         )}
+        <button onClick={() => setFLive((v) => !v)} title="Only tasks with a running session" className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 ${fLive ? 'border-sky-500 bg-sky-500/10 text-sky-600' : 'text-muted-foreground'}`}><span className={`h-1.5 w-1.5 rounded-full ${fLive || liveCount ? 'bg-sky-500 motion-safe:animate-pulse' : 'bg-muted-foreground/40'}`} />Live{liveCount > 0 && <span className="font-mono text-[10px] tabular-nums">{liveCount}</span>}</button>
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue</button>
         {view === 'list' && (
           <>
