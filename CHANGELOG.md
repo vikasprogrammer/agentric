@@ -8,7 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.160.0] — 2026-07-13
+## [0.161.0] — 2026-07-13
+### Added
+- **Dreaming as an owner-intelligence layer — per-agent scorecard + friction map.** Beyond the
+  agent-facing guidance, Dreaming now surfaces the two questions an owner asks first. New
+  `src/edge/insights.ts` computes deterministically over the audit log: a **fleet scorecard** (each
+  agent's runs, success rate, and what it actually works on, last 30 days — session outcomes joined to
+  the real agent, not the run-as principal) and a **friction map** (capabilities that keep getting
+  rejected at approval → deny or auto-allow; approvals waiting on a human). Rendered as two cards high on
+  the Dreaming page. Also exposed standalone at **`GET /api/insights`** (with the measurement bundle) so
+  an owner dashboard can consume the intelligence directly, decoupled from the page. On live data it
+  flags e.g. `stripe.refund` rejected 30× and each agent's win rate.
+
 ### Changed
 - **`docs/PILLARS.md`: added Pillar 17 — Media (generate · edit · understand).** The media capabilities had
   shipped but weren't reflected in the pillar map. Added the summary-table row + a full detail section
