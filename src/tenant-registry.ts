@@ -314,7 +314,8 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * `admins` audience so the question still reaches someone. Best-effort, off the ask hot path. Audited once.
  */
 export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: QuestionNotice): Promise<void> {
-  let targets = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId });
+  // A question `ask`ed to a SPECIFIC teammate DMs that member; otherwise the run's operator.
+  let targets = resolveRecipients(os, notice.to ? { kind: 'member', id: notice.to } : { kind: 'sessionOwner', id: notice.sessionId });
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
   const inbox = consolePage(consoleOrigin, 'inbox');

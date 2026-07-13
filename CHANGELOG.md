@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.144.0] — 2026-07-13
+### Added
+- **`ask` can now address a SPECIFIC teammate, not just the run's operator.** An agent could already `notify`
+  any member with fire-and-forget info; now `ask({ question, to })` routes a BLOCKING question — "ask for a
+  detail", "get a confirmation before a risky step" — to a named teammate (name/email) and waits for THEIR
+  answer. Omit `to` and it behaves exactly as before (asks the session operator). The question card + the
+  out-of-band DM target that member (`{ kind: 'member' }` audience via `notifyQuestionAsked`), and
+  `canViewQuestion` now grants the addressed member (plus owner/admin oversight) the right to answer it — so
+  a question sent to someone who is neither the run's owner nor an admin actually reaches a person who can
+  reply. New nullable `questions.audience_id` column records the addressee (NULL = the default operator
+  routing). Reuses the existing questions/inbox/DM machinery end-to-end.
+
 ## [0.143.1] — 2026-07-13
 ### Fixed
 - **A cron automation missed in its scheduled minute is no longer silently dropped for the whole day.** A
