@@ -38,7 +38,7 @@ Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`]
 | 11 | Company Settings | 🟡 | Company context (markdown) edited in console, appended to every claude-code agent's system prompt. Tenant branding not folded in yet |
 | 12 | Skills of agents | ✅ | Global skills library (native `.claude/skills`) edited in console, synced into claude-code agents at launch, with per-agent audience assignment. **Imported** from a bundled catalog or any public GitHub repo / the skills.sh directory. **Agent-driven, human-gated:** agents `skill_find` (own library + catalog + skills.sh) and `skill_request` a catalog/remote skill — an owner/admin installs it (agents never self-install); approval delivers **same-session** to a live interactive run (materialise + `/reload-skills`) or next launch. **Procedural memory (Lever 6):** the fleet drafts its OWN skills — `skill_propose` (+ the consolidation gardener) stages a `.aos-proposed` draft that `materialize()` skips until a human **Publishes** it (a `skill.proposed` inbox card notifies owner/admins). See [`procedural-skills-plan.md`](./procedural-skills-plan.md) |
 | 13 | Tools / Apps | ⬜ | Agent-built tools don't exist (closest: hand-written capability registry) |
-| 14 | Artifacts / Deliverables | ✅ | Agents `publish` finished files (PDF/Markdown/image) to a governed gallery; snapshotted, provenance-scoped, previewed in-console |
+| 14 | Library (Artifacts / Deliverables) | ✅ | Agents `publish` finished files (PDF/Markdown/image) to a governed gallery — surfaced as the **Library**; snapshotted, provenance-scoped, previewed in-console |
 | 15 | Knowledge Base | ✅ | Shared, tenant-wide living wiki: `KbStore` (markdown-on-disk + SQLite/FTS), revision chain + revert, `kb_search`/`kb_read`/`kb_write` MCP tools, and a console **Knowledge** page (browse/view/edit/history/revert). Agents + humans co-author; every edit versioned + auditable. No deep hierarchy / diff view yet |
 | 16 | Tasks / Work Queue | ✅ | Shared tenant-wide backlog humans + agents co-own: durable units of work (`todo→doing→blocked→done`, assignee, activity log) that **auto-dispatch a governed agent session** to work them, plus the agent MCP set (`task_create`/`task_list`/`task_get`/`task_claim`/`task_update`) + a console Kanban board. Task edits auto-apply + audit (KB-style); the dispatched run stays fully gated. The A2A delegation path (support→coding = a task assigned to `agent:<id>`). v1 cuts: pool auto-assignment, agent-triggered dispatch |
 
@@ -456,7 +456,12 @@ builds a tool in its folder → registers a manifest (command/port/UI) → appea
 
 ---
 
-## 14. Artifacts / Deliverables — ✅ Working
+## 14. Library (Artifacts / Deliverables) — ✅ Working
+
+> **Naming.** User-facing this pillar is the **Library** (the console nav label + page title). The code,
+> DB table, routes, MCP payloads, and inbox card type stay `artifact*` (`ArtifactStore`, the `artifacts`
+> table, `/api/artifacts`, `kind`, the `artifact` inbox card) — "Library" is the surface name, "artifact"
+> the internal noun for one published deliverable.
 
 **The idea.** A curated gallery of the *deliverables* agents produce — distinct from the raw **Files**
 browser (which exposes the whole data home, owner/admin-only, full of scratch). An agent **explicitly
@@ -470,7 +475,7 @@ junky leaks in.
 the agent's own folder (no `/etc/passwd`). Publishing posts an **inbox** `artifact` card and writes an
 `artifact.published` audit event. The `artifacts` table carries full provenance (session + agent +
 source), the same shape as `messages`, so the inbox's `canViewSpawn` rule scopes the gallery for free:
-members see only their own sessions' artifacts; owner/admin see all. The console **Artifacts** page
+members see only their own sessions' artifacts; owner/admin see all. The console **Library** page
 (`web/src/App.tsx`) renders Markdown (react-markdown), PDFs (iframe), and images (thumbnails), streamed
 by `GET /api/artifacts/:id/raw`.
 

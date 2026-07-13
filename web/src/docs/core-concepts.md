@@ -33,9 +33,9 @@ A standing rule that starts an agent without a human: a cron schedule, a webhook
 
 A durable item in the shared queue between "something should happen" and "a session ran". Tasks have a status (`todo → doing → blocked → done`), an assignee (human **or** agent), and an owner. Assigning a task to an agent with auto-dispatch is how agents delegate to each other — support files a task, coding picks it up, and the accountable human carries through the hand-off.
 
-## Artifact — a *deliverable*
+## Library — where *deliverables* live
 
-A file an agent published: report, PDF, image, doc. Snapshots, kept forever, listed under Artifacts.
+A file an agent published — report, PDF, image, doc — is a **deliverable**. Snapshots, kept forever, listed under **Library**.
 
 ## Memory vs. Knowledge
 
