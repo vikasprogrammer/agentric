@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.166.0] — 2026-07-13
+### Added
+- **Proactive insight alerts — the intelligence layer comes to you.** Instead of waiting for someone to
+  open Insights, the hourly tick now detects notable conditions and pushes each to the **admins' Inbox**
+  (+ a Slack/Discord DM): a **struggling agent** (≤25% success over ≥4 runs), a **capability that keeps
+  getting rejected** (≥5×), a **fleet success-rate drop** (≥15 points week-over-week), and **approvals
+  piling up** (≥3 pending, oldest ≥4h). New `src/edge/alerts.ts`; each alert has a stable key and a
+  **3-day per-key cooldown** (a persistent problem pings once, not every hour). On by default, toggle on
+  the Insights page (`insights_alerts`); a session-less `notification` card via `TerminalManager.postInsightAlert`;
+  DM via `notifyInsightAlert`; audited `insights.alert` / `insights.alert.notified`. Validated on live data
+  (flags agent-author at 13% and stripe.refund's repeated rejections; the cooldown suppresses a re-fire).
+
 ## [0.165.0] — 2026-07-13
 ### Added
 - **Root-cause diagnosis on the Insights scorecard.** The scorecard says *which* agent is struggling; a

@@ -8001,6 +8001,8 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [insights, setInsights] = useState<Insights | null>(null)
   const [dxBusy, setDxBusy] = useState('')
   const [dxHint, setDxHint] = useState('')
+  const [alertsOn, setAlertsOn] = useState(true)
+  const toggleAlerts = async (on: boolean) => { setAlertsOn(on); await api.setInsightAlerts(on) }
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
@@ -8009,7 +8011,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); if (r.digest) setDigest(r.digest) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -8185,6 +8187,14 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
             )}
           </CardContent>
         </Card>
+      )}
+
+      {/* Proactive alerts toggle — the OS pushes problems to the Inbox instead of waiting to be looked at. */}
+      {insights && (
+        <label className="flex items-start gap-2 px-1 text-xs text-muted-foreground">
+          <input type="checkbox" checked={alertsOn} onChange={(e) => toggleAlerts(e.target.checked)} className="mt-0.5" />
+          <span><strong className="text-foreground">Alert me in the Inbox</strong> when something needs attention — a struggling agent, a capability that keeps getting rejected, a drop in success rate. Throttled per issue (won’t re-nag), DM’d to admins too.</span>
+        </label>
       )}
 
       {/* 1. What it figured out — the payoff, first. */}

@@ -16,6 +16,7 @@ import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
 import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice } from './terminal';
 import { Automations } from './edge/automations';
+import { InsightAlert } from './edge/alerts';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { Member, Task } from './types';
@@ -399,6 +400,20 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
+}
+
+/**
+ * DM the admins about a proactive insight alert (the Inbox card is posted separately by the tick). The
+ * intelligence layer coming to the human — a struggling agent, a capability that keeps getting rejected.
+ */
+export async function notifyInsightAlert(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, alert: InsightAlert): Promise<void> {
+  const recipients = resolveRecipients(os, { kind: 'admins' });
+  if (!recipients.length) return;
+  const url = consolePage(consoleOrigin, 'insights');
+  const icon = alert.severity === 'high' ? '🚨' : '⚠️';
+  const text = (p: ChatPlatform) => `${icon} ${alert.title}\n${alert.body}\nOpen ${chatLink(p, url, 'Insights')}.`;
+  const dms = await deliverDM(slack, discord, os, recipients, text);
+  os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'insights.alert.notified', data: { key: alert.key, recipients: recipients.length, dms } });
 }
 
 /**

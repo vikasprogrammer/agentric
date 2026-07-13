@@ -2120,6 +2120,17 @@ export class TerminalManager {
     });
   }
 
+  /** Post a proactive **insight alert** to the admins' Inbox — a session-less `notification` card the
+   *  intelligence layer raises when something warrants attention (a struggling agent, recurring rejections).
+   *  Keyed by `insight:<key>` so it's a stable, de-dupable row. */
+  postInsightAlert(input: { key: string; title: string; body: string; severity: string }): void {
+    this.addMessage({
+      type: 'notification', sessionId: `insight:${input.key}`, agent: 'insights', title: input.title,
+      body: input.body, status: 'open', args: { key: input.key, severity: input.severity },
+      audienceKind: 'admins',
+    });
+  }
+
   /**
    * Post an inbox card for an agent's goal PROPOSAL (a draft goal an owner/admin must review + activate),
    * addressed to an explicit {@link Audience} (admins). Like {@link postTaskCard} it uses the `goal:<id>`
