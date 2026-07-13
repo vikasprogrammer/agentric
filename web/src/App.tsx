@@ -4741,6 +4741,41 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const depSatisfied = (blockerId: string) => { const b = taskById(blockerId); return !b || b.status === 'done' || b.status === 'cancelled' }
   const unmetCount = (t: Task) => (t.dependsOn ?? []).filter((id) => !depSatisfied(id)).length
 
+  // Blocker chips shown directly on a board card — each blocker resolved id → title (unmet ⏳ amber,
+  // satisfied ✓ muted), clickable to open that task. Caps at 3, overflow "+N" opens this task's drawer
+  // (its Dependencies section lists them all). Unmet blockers sort first so the live wait is visible.
+  const blockerChips = (t: Task) => {
+    const deps = [...(t.dependsOn ?? [])].sort((a, b) => Number(depSatisfied(a)) - Number(depSatisfied(b)))
+    if (!deps.length) return null
+    const MAX = 3
+    const shown = deps.slice(0, MAX)
+    const extra = deps.length - shown.length
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px]">
+        <span className="text-muted-foreground/70">blocked by</span>
+        {shown.map((id) => {
+          const b = taskById(id)
+          const unmet = !depSatisfied(id)
+          return (
+            <a
+              key={id}
+              href={navHref('tasks', id)}
+              onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(id))(e) }}
+              title={`${b ? b.title : id} — ${unmet ? 'not finished' : 'satisfied'}`}
+              className={`inline-flex max-w-[9rem] items-center gap-0.5 rounded px-1 no-underline hover:underline ${unmet ? 'bg-amber-500/15 text-amber-600' : 'bg-muted text-muted-foreground line-through'}`}
+            >
+              <span className="shrink-0">{unmet ? '⏳' : '✓'}</span>
+              <span className="truncate">{b ? b.title : id}</span>
+            </a>
+          )
+        })}
+        {extra > 0 && (
+          <button onClick={(e) => { e.stopPropagation(); openTask(t.id) }} className="rounded bg-muted px-1 text-muted-foreground hover:text-foreground" title="See all blockers">+{extra}</button>
+        )}
+      </div>
+    )
+  }
+
   const load = async () => {
     const r = await api.tasks(q)
     setTasks(r.tasks ?? [])
@@ -4834,12 +4869,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
           {t.assignee && <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
-          {unmetCount(t) > 0 && <span className="inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmetCount(t)}</span>}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
           {t.goalId && <Badge variant="outline" className="max-w-[10rem] gap-1 truncate px-1.5 py-0 text-[10px]"><Target className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{goalTitle(t.goalId)}</span></Badge>}
           {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
           <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
         </div>
+        {blockerChips(t)}
       </div>
     )
   }
