@@ -3589,7 +3589,9 @@ function composeEpisode(
 ): { content: string; outcome: string; source: 'report' | 'audit'; importance: number; signals: SalienceSignals } | null {
   const taskLine = task.trim() ? `Task: ${task.trim()}` : '';
   const body = (report?.body ?? '').trim();
-  const hasReport = !!body && body !== '(no summary)' && body !== 'Session ended.';
+  // A real agent summary vs the launcher's generic end card ("The session ended." / "…unexpectedly (the
+  // process died)." / "(no summary)") — the latter carries no signal, so fall through to the audit summary.
+  const hasReport = !!body && !/^\(no summary\)$/i.test(body) && !/^the session ended\b/i.test(body) && !/^session ended\.?$/i.test(body);
   if (hasReport) {
     // The agent's own summary wins — even if the session was later stopped, its report stands.
     const outcome = report?.outcome || 'unknown';
