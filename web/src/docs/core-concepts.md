@@ -37,6 +37,18 @@ A durable item in the shared queue between "something should happen" and "a sess
 
 A file an agent published — report, PDF, image, doc — is a **deliverable**. Snapshots, kept forever, listed under **Library**.
 
+## Company context — *standing instructions for the whole fleet*
+
+Set under **Settings → Company context**, this markdown is added to *every* agent's system prompt at launch — the fleet-wide "here's who we are and how we work" that rides along on every run. Use it for durable, universal context: your company's name and mission, tone, hard rules ("never email a customer without review"), and pointers to where the details live.
+
+**It's flat text, not a file loader.** The Company context can't `@import`, link to, or otherwise read other markdown files — whatever you paste in the box is exactly, and only, what agents see. So don't try to reference separate `.md` files from it. To give agents *reference documents* they can pull on demand:
+
+- **Reference docs, runbooks, policies →** put them in **Knowledge** (the shared wiki agents search with their own tools), then point at them by name from the Company context: *"For refund rules, search Knowledge for 'refund policy'."*
+- **Step-by-step procedures →** make a **Skill** (shared with the whole fleet at launch).
+- **Just one agent →** put it in that agent's own instructions (its `CLAUDE.md`), not the fleet-wide Company context.
+
+Keep Company context short and stable; let **Knowledge** carry the volume.
+
 ## Memory vs. Knowledge
 
 Both persist, but they're different organs — see **Memory, Knowledge & Tasks** for when each applies. Short version: **Memory** is what an *agent* remembers (its own notes); **Knowledge** is what the *company* knows (the shared wiki both humans and agents edit).
