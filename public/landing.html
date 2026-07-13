@@ -3,22 +3,25 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Agent OS — an operating system for your AI workforce</title>
-<meta name="description" content="Agent OS is where you run a fleet of autonomous agents that remember what they learn, share one knowledge base and task queue, turn a goal into the work that hits it, answer in Slack and Discord as the teammate who asked, and get better on their own — with every real action under your policy, budget, and audit trail." />
+<title>Agent OS — the operating system for your AI workforce</title>
+<meta name="description" content="Agent OS runs a fleet of autonomous agents that plan work from your goals, delegate to each other, remember what they learn, answer in Slack and Discord as the teammate who asked, and get better on their own — with every real action under one governed gate: your policy, your budget, your audit trail." />
 <meta name="color-scheme" content="light dark" />
 <style>
   :root {
     --ground:#FAF7F4;
     --surface:#FFFFFF;
+    --surface-2:#F6F1EC;
     --ink:#221F1C;
     --ink-soft:#655E57;
-    --ink-faint:#9C948B;
+    --ink-faint:#736A61;
     --line:#EDE7E0;
     --accent:#8A4F73;
     --accent-soft:#B77FA3;
     --glow-a:rgba(216,150,120,0.22);
     --glow-b:rgba(138,79,115,0.16);
     --warn:#C9922F;
+    --warn-ink:#8A6410;
+    --ok:#4B8A5A;
 
     --shadow-sm: 0 1px 2px rgba(34,31,28,0.04), 0 2px 8px rgba(34,31,28,0.05);
     --shadow-md: 0 4px 12px rgba(34,31,28,0.05), 0 18px 40px rgba(34,31,28,0.07);
@@ -34,15 +37,18 @@
     :root {
       --ground:#17131A;
       --surface:#201A24;
+      --surface-2:#261F2B;
       --ink:#F1ECEF;
       --ink-soft:#B4A9B2;
-      --ink-faint:#7A6F79;
+      --ink-faint:#9A8E9C;
       --line:#2C2431;
       --accent:#C98FB6;
       --accent-soft:#E0B6D3;
       --glow-a:rgba(201,143,182,0.20);
       --glow-b:rgba(230,150,110,0.14);
       --warn:#E0B45C;
+      --warn-ink:#E7C173;
+      --ok:#6FB77F;
 
       --shadow-sm: 0 1px 2px rgba(0,0,0,0.25), 0 2px 10px rgba(0,0,0,0.30);
       --shadow-md: 0 4px 14px rgba(0,0,0,0.30), 0 18px 44px rgba(0,0,0,0.40);
@@ -54,15 +60,18 @@
   :root[data-theme="dark"] {
     --ground:#17131A;
     --surface:#201A24;
+    --surface-2:#261F2B;
     --ink:#F1ECEF;
     --ink-soft:#B4A9B2;
-    --ink-faint:#7A6F79;
+    --ink-faint:#9A8E9C;
     --line:#2C2431;
     --accent:#C98FB6;
     --accent-soft:#E0B6D3;
     --glow-a:rgba(201,143,182,0.20);
     --glow-b:rgba(230,150,110,0.14);
     --warn:#E0B45C;
+    --warn-ink:#E7C173;
+    --ok:#6FB77F;
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.25), 0 2px 10px rgba(0,0,0,0.30);
     --shadow-md: 0 4px 14px rgba(0,0,0,0.30), 0 18px 44px rgba(0,0,0,0.40);
     --shadow-lg: 0 8px 26px rgba(0,0,0,0.35), 0 34px 80px rgba(0,0,0,0.50);
@@ -72,15 +81,18 @@
   :root[data-theme="light"] {
     --ground:#FAF7F4;
     --surface:#FFFFFF;
+    --surface-2:#F6F1EC;
     --ink:#221F1C;
     --ink-soft:#655E57;
-    --ink-faint:#9C948B;
+    --ink-faint:#736A61;
     --line:#EDE7E0;
     --accent:#8A4F73;
     --accent-soft:#B77FA3;
     --glow-a:rgba(216,150,120,0.22);
     --glow-b:rgba(138,79,115,0.16);
     --warn:#C9922F;
+    --warn-ink:#8A6410;
+    --ok:#4B8A5A;
     --shadow-sm: 0 1px 2px rgba(34,31,28,0.04), 0 2px 8px rgba(34,31,28,0.05);
     --shadow-md: 0 4px 12px rgba(34,31,28,0.05), 0 18px 40px rgba(34,31,28,0.07);
     --shadow-lg: 0 8px 24px rgba(34,31,28,0.06), 0 30px 70px rgba(34,31,28,0.10);
@@ -90,6 +102,7 @@
   * { box-sizing: border-box; }
 
   html, body { margin: 0; padding: 0; background: var(--ground); }
+  html { scroll-behavior: smooth; }
 
   #top {
     background: var(--ground);
@@ -110,6 +123,7 @@
     padding-left: clamp(1.25rem, 5vw, 4.5rem);
     padding-right: clamp(1.25rem, 5vw, 4.5rem);
   }
+  .wrap-wide { max-width: 1200px; }
 
   a { color: inherit; }
 
@@ -178,7 +192,7 @@
   .nav-links {
     display: flex;
     align-items: center;
-    gap: clamp(0.4rem, 2vw, 1.6rem);
+    gap: clamp(0.4rem, 2vw, 1.5rem);
   }
   .nav-links a {
     text-decoration: none;
@@ -211,9 +225,7 @@
   .theme-btn:active { transform: scale(0.97); }
   .theme-btn .glyph { font-size: 0.85rem; line-height: 1; }
 
-  @media (max-width: 620px) {
-    .nav-desk { display: none; }
-  }
+  @media (max-width: 860px) { .nav-desk { display: none; } }
 
   /* ---------- AMBIENT GLOW ---------- */
   .ambient {
@@ -240,27 +252,34 @@
   .hero {
     position: relative;
     z-index: 1;
-    padding-top: clamp(3.5rem, 8vw, 6.5rem);
-    padding-bottom: clamp(2.5rem, 6vw, 4rem);
+    padding-top: clamp(3.5rem, 8vw, 6rem);
+    padding-bottom: clamp(2rem, 5vw, 3.5rem);
   }
-  .hero-copy { max-width: 760px; }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: clamp(2rem, 5vw, 4rem);
+    align-items: center;
+  }
+  @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
+  .hero-copy { max-width: 640px; }
   .hero h1 {
-    font-size: clamp(2.4rem, 6.2vw, 4.15rem);
+    font-size: clamp(2.4rem, 5.6vw, 3.85rem);
     margin: 1.15rem 0 0;
   }
   .lede {
     color: var(--ink-soft);
-    font-size: clamp(1.05rem, 2vw, 1.24rem);
+    font-size: clamp(1.05rem, 2vw, 1.2rem);
     line-height: 1.55;
     margin: 1.5rem 0 0;
-    max-width: 680px;
+    max-width: 620px;
   }
   .cta-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 1rem;
-    margin-top: 2.2rem;
+    margin-top: 2.1rem;
   }
 
   .copy-btn {
@@ -289,13 +308,16 @@
     font-size: 0.7rem;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    background: rgba(255,255,255,0.22);
+    background: rgba(0,0,0,0.26);
     padding: 0.28rem 0.6rem;
     border-radius: 999px;
     min-width: 62px;
     text-align: center;
   }
-  :root[data-theme="dark"] .copy-btn .copylbl { background: rgba(23,19,26,0.18); }
+  :root[data-theme="dark"] .copy-btn .copylbl { background: rgba(255,255,255,0.34); }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .copy-btn .copylbl { background: rgba(255,255,255,0.34); }
+  }
 
   .ghost-link {
     font-size: 0.98rem;
@@ -315,7 +337,6 @@
   .ghost-link .arr { transition: transform .2s ease; }
   .ghost-link:hover .arr { transform: translateX(3px); }
 
-  /* ---------- FLEET CARD ---------- */
   .card {
     background: var(--surface);
     border: 1px solid var(--line);
@@ -323,26 +344,25 @@
     box-shadow: var(--shadow-md);
   }
 
+  /* ---------- FLEET CARD ---------- */
   .fleet {
     position: relative;
     z-index: 1;
-    margin-top: clamp(2.5rem, 5vw, 3.5rem);
-    padding: clamp(1.4rem, 3vw, 2rem);
-    max-width: 720px;
+    padding: clamp(1.4rem, 3vw, 1.85rem);
   }
   .fleet-head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 1rem;
-    padding-bottom: 1.15rem;
-    margin-bottom: 0.4rem;
+    padding-bottom: 1.1rem;
+    margin-bottom: 0.3rem;
     border-bottom: 1px solid var(--line);
   }
-  .fleet-head h3 { font-size: 1.2rem; }
+  .fleet-head h3 { font-size: 1.14rem; }
   .fleet-count {
     font-family: var(--mono);
-    font-size: 0.76rem;
+    font-size: 0.74rem;
     color: var(--ink-faint);
     letter-spacing: 0.02em;
     white-space: nowrap;
@@ -351,27 +371,27 @@
   .frow {
     display: flex;
     align-items: center;
-    gap: 1rem;
-    padding: 0.85rem 0.35rem;
+    gap: 0.9rem;
+    padding: 0.8rem 0.2rem;
     border-bottom: 1px solid var(--line);
   }
   .frow:last-child { border-bottom: none; }
   .fname {
     font-family: var(--mono);
-    font-size: 0.9rem;
+    font-size: 0.86rem;
     color: var(--ink);
     flex: 0 0 auto;
-    min-width: 148px;
+    min-width: 132px;
   }
-  .frole { color: var(--ink-soft); font-size: 0.92rem; flex: 1 1 auto; }
+  .frole { color: var(--ink-soft); font-size: 0.88rem; flex: 1 1 auto; }
   .pill {
     font-family: var(--mono);
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     letter-spacing: 0.04em;
     display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.34rem 0.75rem;
+    padding: 0.32rem 0.7rem;
     border-radius: 999px;
     white-space: nowrap;
     flex: 0 0 auto;
@@ -380,7 +400,7 @@
   .pill .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
   .pill-running { color: var(--accent); background: var(--accent-tint); border-color: color-mix(in srgb, var(--accent) 26%, transparent); }
   .pill-running .dot { background: var(--accent); animation: pulse 2.2s ease-in-out infinite; }
-  .pill-warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+  .pill-warn { color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 14%, transparent); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
   .pill-warn .dot { background: var(--warn); }
   .pill-idle { color: var(--ink-faint); background: color-mix(in srgb, var(--ink-faint) 12%, transparent); }
   .pill-idle .dot { background: var(--ink-faint); }
@@ -395,63 +415,248 @@
     .frole { flex-basis: 100%; order: 3; }
   }
 
+  /* ---------- STAT STRIP ---------- */
+  .stats {
+    position: relative; z-index: 1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: clamp(0.75rem, 2vw, 1.5rem);
+    margin-top: clamp(2.5rem, 5vw, 3.5rem);
+  }
+  @media (max-width: 720px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat {
+    text-align: left;
+    padding: 0.4rem 0.2rem;
+  }
+  .stat .num {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(1.7rem, 3.6vw, 2.4rem);
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    line-height: 1;
+  }
+  .stat .num .accent { color: var(--accent); }
+  .stat .lbl {
+    color: var(--ink-soft);
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+  }
+
   /* ---------- SECTIONS ---------- */
   section { position: relative; z-index: 1; }
-  .caps { padding-top: clamp(4rem, 9vw, 7rem); padding-bottom: clamp(2rem, 5vw, 3rem); }
-  .sec-head { max-width: 720px; margin-bottom: clamp(2rem, 4vw, 3rem); }
+  .band { padding-top: clamp(4rem, 9vw, 7rem); padding-bottom: clamp(1rem, 3vw, 2rem); }
+  .band-tint { background: var(--surface-2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .band-tint.band { padding-bottom: clamp(4rem, 9vw, 7rem); }
+  .sec-head { max-width: 760px; margin-bottom: clamp(2rem, 4vw, 3rem); }
+  .sec-head.center { margin-left: auto; margin-right: auto; text-align: center; }
   .sec-head h2 { font-size: clamp(1.9rem, 4.2vw, 2.9rem); margin-top: 1rem; }
   .sec-lede { color: var(--ink-soft); font-size: 1.08rem; margin-top: 1.1rem; }
 
+  /* ---------- LADDER ---------- */
+  .ladder {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    align-items: stretch;
+    gap: clamp(0.5rem, 1.5vw, 1rem);
+    margin-top: 1rem;
+  }
+  @media (max-width: 820px) {
+    .ladder { grid-template-columns: 1fr; }
+    .ladder .arrow { transform: rotate(90deg); justify-self: center; padding: 0.2rem 0; }
+  }
+  .rung {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    padding: clamp(1.3rem, 2.6vw, 1.7rem);
+    box-shadow: var(--shadow-sm);
+    display: flex;
+    flex-direction: column;
+  }
+  .rung .rk {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    font-size: 0.66rem;
+    color: var(--accent);
+  }
+  .rung h3 { font-size: 1.24rem; margin-top: 0.7rem; }
+  .rung p { color: var(--ink-soft); font-size: 0.95rem; margin: 0.6rem 0 0; line-height: 1.5; }
+  .rung .ex {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    color: var(--ink-soft);
+    background: var(--ground);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 0.55rem 0.7rem;
+    margin-top: 1rem;
+    line-height: 1.45;
+  }
+  .arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--accent-soft);
+    font-size: 1.5rem;
+  }
+  .arrow span { display: inline-block; }
+
+  /* ---------- CAP GRID ---------- */
+  .cluster { margin-top: clamp(2.5rem, 5vw, 3.5rem); }
+  .cluster:first-of-type { margin-top: clamp(1.5rem, 3vw, 2.5rem); }
+  .cluster-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.9rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.4rem;
+  }
+  .cluster-head h3 { font-size: clamp(1.4rem, 3vw, 1.85rem); }
+  .cluster-head .idx {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--ink-faint);
+    letter-spacing: 0.06em;
+  }
+
   .cap-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: clamp(1rem, 2vw, 1.5rem);
+    grid-template-columns: repeat(3, 1fr);
+    gap: clamp(0.9rem, 1.8vw, 1.3rem);
   }
-  @media (max-width: 760px) { .cap-grid { grid-template-columns: 1fr; } }
+  .cap-grid.two { grid-template-columns: repeat(2, 1fr); }
+  @media (max-width: 900px) { .cap-grid, .cap-grid.two { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 620px) { .cap-grid, .cap-grid.two { grid-template-columns: 1fr; } }
 
   .cap-card {
     background: var(--surface);
     border: 1px solid var(--line);
-    border-radius: 20px;
-    padding: clamp(1.5rem, 3vw, 2rem);
+    border-radius: 18px;
+    padding: clamp(1.3rem, 2.4vw, 1.7rem);
     box-shadow: var(--shadow-sm);
     transition: transform .3s ease, box-shadow .3s ease, border-color .3s ease;
   }
   .cap-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: color-mix(in srgb, var(--accent-soft) 40%, var(--line)); }
-  .cap-tag {
+  .cap-ico {
+    width: 38px; height: 38px;
+    border-radius: 11px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: var(--accent-tint);
+    color: var(--accent);
+    margin-bottom: 0.9rem;
+  }
+  .cap-ico svg { width: 20px; height: 20px; display: block; }
+  .cap-card h4 { font-family: var(--display); font-weight: 600; font-size: 1.14rem; margin: 0; letter-spacing: -0.01em; }
+  .cap-card p { color: var(--ink-soft); margin: 0.6rem 0 0; font-size: 0.94rem; line-height: 1.55; }
+  .cap-card .tagline {
+    display: inline-block;
     font-family: var(--mono);
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
     font-size: 0.68rem;
+    letter-spacing: 0.02em;
     color: var(--accent);
-    font-weight: 500;
+    background: var(--accent-tint);
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    margin-top: 0.9rem;
   }
-  .cap-card h3 { font-size: 1.28rem; margin-top: 0.85rem; }
-  .cap-card p { color: var(--ink-soft); margin: 0.75rem 0 0; font-size: 0.99rem; line-height: 1.58; }
-  .cap-inline {
-    color: var(--accent);
-    text-decoration: none;
-    font-weight: 500;
-    display: inline-flex;
+
+  /* ---------- GATE ---------- */
+  .gate-shell {
+    display: grid;
+    grid-template-columns: 0.9fr 1.1fr;
+    gap: clamp(1.5rem, 4vw, 3rem);
     align-items: center;
-    gap: 0.25rem;
   }
-  .cap-inline:hover { text-decoration: underline; }
-  .chip {
+  @media (max-width: 900px) { .gate-shell { grid-template-columns: 1fr; } }
+  .gate-viz {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    box-shadow: var(--shadow-md);
+    padding: clamp(1.3rem, 3vw, 1.9rem);
+  }
+  .gate-in, .gate-out {
     font-family: var(--mono);
-    font-size: 0.74rem;
-    line-height: 1.5;
+    font-size: 0.82rem;
+    border-radius: 12px;
+    padding: 0.7rem 0.85rem;
+    display: flex; align-items: center; gap: 0.6rem;
+  }
+  .gate-in { background: var(--ground); border: 1px solid var(--line); color: var(--ink-soft); }
+  .gate-in .lbl { color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.62rem; }
+  .gate-steps { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.55rem 0; }
+  .gstep {
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.6rem 0.7rem;
+    border-radius: 11px;
+    border: 1px solid var(--line);
+    background: color-mix(in srgb, var(--accent-tint) 55%, transparent);
+  }
+  .gstep .gn {
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    width: 22px; height: 22px;
+    flex: 0 0 auto;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  :root[data-theme="dark"] .gstep .gn { color: #17131A; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .gstep .gn { color:#17131A; } }
+  .gstep .gt { font-family: var(--display); font-weight: 600; font-size: 0.94rem; }
+  .gstep .gd { color: var(--ink-soft); font-size: 0.84rem; margin-left: auto; text-align: right; }
+  @media (max-width: 460px) { .gstep .gd { display: none; } }
+  .gate-out {
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 34%, transparent);
+    color: var(--warn-ink);
+    justify-content: center;
+    font-size: 0.8rem;
+  }
+  .gate-rail { display:flex; justify-content:center; color: var(--accent-soft); font-size: 1.1rem; padding: 0.15rem 0; }
+  .gate-copy h2 { font-size: clamp(1.9rem, 4.2vw, 2.9rem); margin-top: 1rem; }
+  .gate-copy p { color: var(--ink-soft); font-size: 1.05rem; margin-top: 1.1rem; }
+  .gate-facts { list-style: none; margin: 1.6rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.7rem; }
+  .gate-facts li { display: flex; gap: 0.65rem; align-items: flex-start; color: var(--ink-soft); font-size: 0.98rem; }
+  .gate-facts li::before {
+    content: "";
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    margin-top: 0.5rem; flex: 0 0 auto;
+  }
+  .gate-facts b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- INTEGRATIONS ---------- */
+  .integ-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: clamp(0.9rem, 1.8vw, 1.3rem);
+  }
+  @media (max-width: 760px) { .integ-grid { grid-template-columns: 1fr; } }
+  .integ-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: clamp(1.3rem, 2.4vw, 1.7rem);
+    box-shadow: var(--shadow-sm);
+  }
+  .integ-card h4 { font-family: var(--display); font-weight: 600; font-size: 1.1rem; margin: 0; }
+  .integ-card p { color: var(--ink-soft); font-size: 0.93rem; margin: 0.5rem 0 0; line-height: 1.5; }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
+  .tag {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--ink-soft);
     background: var(--ground);
     border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 0.6rem 0.8rem;
-    margin-top: 1.1rem;
-    color: var(--ink-soft);
-    display: block;
-    overflow-x: auto;
+    border-radius: 999px;
+    padding: 0.34rem 0.72rem;
     white-space: nowrap;
   }
-  .chip .warn { color: var(--warn); }
+  .tag.hot { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: var(--accent-tint); }
 
   /* ---------- CLOSING ---------- */
   .closing-wrap { padding-top: clamp(4rem, 9vw, 7rem); padding-bottom: clamp(3rem, 7vw, 5rem); }
@@ -508,8 +713,12 @@
   /* ---------- FADE-UP ---------- */
   .fade { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s cubic-bezier(.2,.7,.2,1); }
   .fade.in { opacity: 1; transform: none; }
+  .fade.d1 { transition-delay: .06s; }
+  .fade.d2 { transition-delay: .12s; }
+  .fade.d3 { transition-delay: .18s; }
 
   @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
     .ambient { animation: none; }
     .pill-running .dot { animation: none; }
     .fade { opacity: 1; transform: none; transition: none; }
@@ -522,11 +731,13 @@
   <div class="ambient" aria-hidden="true"></div>
 
   <nav class="nav" id="nav">
-    <div class="wrap nav-inner">
+    <div class="wrap wrap-wide nav-inner">
       <a class="wordmark" href="#top" aria-label="Agent OS home"><span class="dot"></span>Agent<span class="accent">&nbsp;OS</span></a>
       <div class="nav-links">
-        <a class="nav-desk" href="#top">What it is</a>
+        <a class="nav-desk" href="#how">How it works</a>
         <a class="nav-desk" href="#caps">Capabilities</a>
+        <a class="nav-desk" href="#gate">Governance</a>
+        <a class="nav-desk" href="#reach">Integrations</a>
         <a class="nav-desk" href="#start">Get started</a>
         <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle color theme">
           <span class="glyph" id="themeGlyph" aria-hidden="true">&#9789;</span>theme
@@ -535,124 +746,337 @@
     </div>
   </nav>
 
+  <!-- ===================== HERO ===================== -->
   <header class="hero">
-    <div class="wrap">
-      <div class="hero-copy">
-        <p class="eyebrow">An operating system for autonomous agents</p>
-        <h1>Give your company a workforce of AI agents — and keep <span class="accent">the keys</span>.</h1>
-        <p class="lede">Agent OS is where you run a fleet of autonomous agents that remember what they learn, share one knowledge base and task queue, turn a goal into the work that hits it, answer in Slack and Discord as the teammate who asked, and get better on their own — with every real action still under your policy, your budget, and your audit trail.</p>
-        <div class="cta-row">
-          <button class="copy-btn" id="copyHero" type="button" aria-label="Copy command: npm run demo">
-            <span class="cmd">npm run demo</span>
-            <span class="copylbl" id="copyHeroLbl">copy</span>
-          </button>
-          <a class="ghost-link" href="#caps">See what they do <span class="arr">&rarr;</span></a>
+    <div class="wrap wrap-wide">
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow">The operating system for your AI workforce</p>
+          <h1>Give your company a workforce of AI agents — and keep <span class="accent">the keys</span>.</h1>
+          <p class="lede">Agent OS runs a fleet of autonomous agents that plan work from your goals, hand tasks to each other, remember what they learn, and answer in Slack and Discord as the teammate who asked. Every real action they take passes through one governed gate — your policy, your budget, your audit trail.</p>
+          <div class="cta-row">
+            <button class="copy-btn" id="copyHero" type="button" aria-label="Copy command: npm run demo">
+              <span class="cmd">npm run demo</span>
+              <span class="copylbl" id="copyHeroLbl">copy</span>
+            </button>
+            <a class="ghost-link" href="#how">See how it works <span class="arr">&rarr;</span></a>
+          </div>
+        </div>
+
+        <div class="card fleet fade" id="fleetCard">
+          <div class="fleet-head">
+            <h3>Your fleet</h3>
+            <span class="fleet-count" id="fleetCount">6 agents &middot; 4 running</span>
+          </div>
+          <div class="fleet-rows">
+            <div class="frow">
+              <span class="fname">support-triage</span>
+              <span class="frole">Front-line support</span>
+              <span class="pill pill-running"><span class="dot"></span>running</span>
+            </div>
+            <div class="frow">
+              <span class="fname">ops-oncall</span>
+              <span class="frole">Infra &amp; incidents</span>
+              <span class="pill pill-running"><span class="dot"></span>running</span>
+            </div>
+            <div class="frow">
+              <span class="fname">collections</span>
+              <span class="frole">Billing &amp; dunning</span>
+              <span class="pill pill-warn"><span class="dot"></span>needs a human</span>
+            </div>
+            <div class="frow">
+              <span class="fname">growth-research</span>
+              <span class="frole">Market &amp; SEO</span>
+              <span class="pill pill-idle" id="growthPill"><span class="dot"></span><span id="growthState">idle</span></span>
+            </div>
+            <div class="frow">
+              <span class="fname">strategist</span>
+              <span class="frole">Turns goals into tasks</span>
+              <span class="pill pill-running"><span class="dot"></span>running</span>
+            </div>
+            <div class="frow">
+              <span class="fname">consolidator</span>
+              <span class="frole">Fleet memory</span>
+              <span class="pill pill-running"><span class="dot"></span>running</span>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="card fleet fade" id="fleetCard">
-        <div class="fleet-head">
-          <h3>Your fleet</h3>
-          <span class="fleet-count" id="fleetCount">5 agents &middot; 3 running</span>
-        </div>
-        <div class="fleet-rows">
-          <div class="frow">
-            <span class="fname">support-triage</span>
-            <span class="frole">Front-line support</span>
-            <span class="pill pill-running"><span class="dot"></span>running</span>
-          </div>
-          <div class="frow">
-            <span class="fname">ops-oncall</span>
-            <span class="frole">Infra &amp; incidents</span>
-            <span class="pill pill-running"><span class="dot"></span>running</span>
-          </div>
-          <div class="frow">
-            <span class="fname">collections</span>
-            <span class="frole">Billing &amp; dunning</span>
-            <span class="pill pill-warn"><span class="dot"></span>needs a human</span>
-          </div>
-          <div class="frow">
-            <span class="fname">growth-research</span>
-            <span class="frole">Market &amp; SEO</span>
-            <span class="pill pill-idle" id="growthPill"><span class="dot"></span><span id="growthState">idle</span></span>
-          </div>
-          <div class="frow">
-            <span class="fname">consolidator</span>
-            <span class="frole">Fleet memory</span>
-            <span class="pill pill-running"><span class="dot"></span>running</span>
-          </div>
-        </div>
+      <div class="stats">
+        <div class="stat fade"><div class="num"><span class="accent">1,000+</span></div><div class="lbl">app connectors via Composio — plus native Slack, Discord, GitHub</div></div>
+        <div class="stat fade d1"><div class="num">400+</div><div class="lbl">image &amp; video models agents can generate and edit with</div></div>
+        <div class="stat fade d2"><div class="num">1</div><div class="lbl">gate every real action passes through — policy, budget, audit</div></div>
+        <div class="stat fade d3"><div class="num">24/7</div><div class="lbl">unattended runs from cron, webhooks, and a @mention</div></div>
       </div>
     </div>
   </header>
 
-  <section class="caps" id="caps">
-    <div class="wrap">
+  <!-- ===================== HOW IT WORKS / LADDER ===================== -->
+  <section class="band" id="how">
+    <div class="wrap wrap-wide">
       <div class="sec-head fade">
-        <p class="eyebrow">What Agent OS gives you</p>
-        <h2>Not a chatbot. A place to actually run agents.</h2>
-        <p class="sec-lede">Eight things a team needs before autonomous agents can do real work — and one of them, not the whole story, is the gate that keeps them in bounds.</p>
+        <p class="eyebrow">From intent to done</p>
+        <h2>Put in what your company is trying to do. The fleet does the rest.</h2>
+        <p class="sec-lede">Agent OS turns strategy into execution through one clean ladder. Set a goal, and a strategist agent reads the gap to your target and files the tasks to close it. Each task dispatches a governed agent session that actually does the work — and reports back.</p>
       </div>
 
-      <div class="cap-grid">
-        <div class="cap-card fade">
-          <span class="cap-tag">Fleet</span>
-          <h3>Stand up agents, watch or walk away</h3>
-          <p>Spin up agents for support, ops, coding, research — headed when you want to look over their shoulder, headless when you don't. Each runs in its own session you can drop into live from the browser.</p>
+      <div class="ladder">
+        <div class="rung fade">
+          <span class="rk">Goal</span>
+          <h3>You set the outcome</h3>
+          <p>A strategic, human-owned objective the whole fleet ladders up to. Persistent and versioned — the "why" above all the work.</p>
+          <div class="ex">"Grow signups 20%<br>this quarter"</div>
         </div>
-
-        <div class="cap-card fade">
-          <span class="cap-tag">Memory</span>
-          <h3>They remember, and they compound</h3>
-          <p>Every agent keeps a persistent memory instead of starting cold each time. A recurring reflection pass turns what the fleet did — the wins and the friction — into lessons the whole team inherits.</p>
+        <div class="arrow fade" aria-hidden="true"><span>&rarr;</span></div>
+        <div class="rung fade d1">
+          <span class="rk">Tasks</span>
+          <h3>The fleet plans the work</h3>
+          <p>The strategist breaks the goal into concrete tasks on a shared board, each assigned to the right specialist. You review the plan instead of writing it.</p>
+          <div class="ex">audit funnel &middot; rewrite<br>onboarding &middot; A/B pricing</div>
         </div>
-
-        <div class="cap-card fade">
-          <span class="cap-tag">Knowledge</span>
-          <h3>One shared brain to draw from</h3>
-          <p>A living knowledge base and a shared task queue that people and agents write to together. Hand off a task; an agent picks it up, does the work, and closes the loop — all on one board.</p>
-        </div>
-
-        <div class="cap-card fade">
-          <span class="cap-tag">Goals</span>
-          <h3>Set the goal; the fleet plans the work</h3>
-          <p>Give the fleet an outcome to reach and it plans itself — a strategist agent reads the gap to your target and files the tasks to close it, each assigned to the right specialist. You review the plan instead of writing it.</p>
-        </div>
-
-        <div class="cap-card fade">
-          <span class="cap-tag">Chat</span>
-          <h3>Reachable where you already talk</h3>
-          <p>@mention an agent in Slack or Discord and it runs as you, in the thread, with your permissions — no public URL, no new app to learn. Follow-ups stay in the same conversation with full context.</p>
-        </div>
-
-        <div class="cap-card fade">
-          <span class="cap-tag">Awareness</span>
-          <h3>Know the moment one needs you</h3>
-          <p>A bell and live toasts surface the instant a session finishes, crashes, or is waiting on your call — and the events you choose ping you in Slack or Discord too. Walk away without wondering; you'll hear when it matters.</p>
-        </div>
-
-        <div class="cap-card fade">
-          <span class="cap-tag">Governance</span>
-          <h3>Every real action stays in bounds</h3>
-          <p>A send, a charge, a deploy — each one passes through a single gate: your policy classifies it, a human approves what's risky, budget debits, identity signs it, and audit records it. Autonomy you can put in production.</p>
-          <p style="margin-top:0.9rem;"><a class="cap-inline" href="#start">How the gate works &rarr;</a></p>
-          <code class="chip">ssh.exec host=prod-db-1 <span class="warn">&rarr; held for owner approval</span></code>
-        </div>
-
-        <div class="cap-card fade">
-          <span class="cap-tag">Evolution</span>
-          <h3>They build and improve themselves</h3>
-          <p>Agents draft new reusable skills, refine their own instructions, and delegate work to each other — every change reversible, every change on the record. The fleet you run next month is sharper than today's.</p>
+        <div class="arrow fade d1" aria-hidden="true"><span>&rarr;</span></div>
+        <div class="rung fade d2">
+          <span class="rk">Sessions</span>
+          <h3>Agents get it done</h3>
+          <p>Each task auto-dispatches a governed agent run that does the work and closes its own loop — every side effect still gated, audited, and run as an accountable human.</p>
+          <div class="ex">agent working &middot; report<br>filed &middot; goal advanced</div>
         </div>
       </div>
     </div>
   </section>
 
+  <!-- ===================== CAPABILITIES ===================== -->
+  <section class="band band-tint" id="caps">
+    <div class="wrap wrap-wide">
+      <div class="sec-head fade">
+        <p class="eyebrow">What Agent OS gives you</p>
+        <h2>Not a chatbot. A place to actually run a team of agents.</h2>
+        <p class="sec-lede">Everything a company needs before autonomous agents can do real work — stand them up, let them collaborate, help them compound what they learn, and reach into the tools you already use. Every one of them sits behind the same governance gate.</p>
+      </div>
+
+      <!-- Cluster 1 -->
+      <div class="cluster">
+        <div class="cluster-head fade">
+          <span class="idx">01</span>
+          <h3>Stand up a workforce</h3>
+        </div>
+        <div class="cap-grid">
+          <div class="cap-card fade">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3M8 9h.01M12 9h.01"/></svg></span>
+            <h4>A fleet in real sessions</h4>
+            <p>Spin up agents for support, ops, coding, research, collections — headed when you want to look over their shoulder, headless when you don't. Each runs in its own live session you can drop into from the browser mid-run, without stopping it.</p>
+            <span class="tagline">attach live &middot; take over lossless</span>
+          </div>
+          <div class="cap-card fade d1">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M3 12h3M18 12h3M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3.2"/></svg></span>
+            <h4>An agent that builds agents</h4>
+            <p>Describe the teammate you need and the agent author writes its instructions, tuning, and starter prompts, then registers it live. Growing the workforce is itself a governed agent task — no YAML, no redeploy.</p>
+            <span class="tagline">agent_create</span>
+          </div>
+          <div class="cap-card fade d2">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v4h4"/></svg></span>
+            <h4>They improve themselves</h4>
+            <p>An agent refines its own description, prompts, and system instructions as it learns what works — every edit snapshotted and one-click revertable. The fleet you run next month is sharper than today's, and nothing is a black box.</p>
+            <span class="tagline">self-edit &middot; fully reversible</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cluster 2 -->
+      <div class="cluster">
+        <div class="cluster-head fade">
+          <span class="idx">02</span>
+          <h3>They work as a team</h3>
+        </div>
+        <div class="cap-grid">
+          <div class="cap-card fade">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="7" r="3"/><circle cx="17" cy="17" r="3"/><path d="M10 7h4a3 3 0 0 1 3 3v4M14 10l3-3 3 3M10 14l-3 3-3-3"/></svg></span>
+            <h4>Agents delegate to each other</h4>
+            <p>Support hands a fix to coding by filing a task assigned to another agent — which spawns its own governed run. Delegation can be synchronous too: the caller waits for the delegate to finish and picks up the result, with the accountable human carried through the whole chain.</p>
+            <span class="tagline">agent-to-agent hand-off</span>
+          </div>
+          <div class="cap-card fade d1">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-4 4V5z"/><path d="M12 9v3M12 8.4h.01" transform="translate(0 -0.3)"/></svg></span>
+            <h4>They wait for a human</h4>
+            <p>When an agent hits a judgment call it can't make alone, it asks — and pauses, holding its place, until you answer in the inbox or over chat. No guessing, no barreling ahead. Work resumes the moment you weigh in.</p>
+            <span class="tagline">ask &amp; block until you reply</span>
+          </div>
+          <div class="cap-card fade d2">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="4.5" height="16" rx="1"/><rect x="9.7" y="4" width="4.5" height="11" rx="1"/><rect x="16.5" y="4" width="4.5" height="8" rx="1"/></svg></span>
+            <h4>One shared task board</h4>
+            <p>A tenant-wide Kanban that humans and agents co-own. Hand off a task and an agent claims it, does the work, and moves it to done — every status change and note on one durable, auditable log.</p>
+            <span class="tagline">todo &rarr; doing &rarr; done</span>
+          </div>
+          <div class="cap-card fade">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></svg></span>
+            <h4>A living knowledge base</h4>
+            <p>A shared wiki agents and humans write to together — the company's up-to-date knowledge, rewritten in place over time. Every edit is versioned and one-click revertable, so nobody has to gate-keep it.</p>
+            <span class="tagline">co-authored &middot; revisioned</span>
+          </div>
+          <div class="cap-card fade d1">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg></span>
+            <h4>You always know when you're needed</h4>
+            <p>A bell and live toasts fire the instant a session finishes, crashes, or is waiting on your call — and the events you pick ping you in Slack or Discord too. Walk away without wondering; you'll hear when it matters.</p>
+            <span class="tagline">inbox &middot; out-of-band DMs</span>
+          </div>
+          <div class="cap-card fade d2">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/></svg></span>
+            <h4>Deliverables in one gallery</h4>
+            <p>When an agent finishes a document, report, image, or clip, it publishes it to a curated Library — snapshotted, previewed in-console, and scoped to who's allowed to see it. The good stuff in one place, the scratch left out.</p>
+            <span class="tagline">publish &middot; provenance-scoped</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cluster 3 -->
+      <div class="cluster">
+        <div class="cluster-head fade">
+          <span class="idx">03</span>
+          <h3>They remember and compound</h3>
+        </div>
+        <div class="cap-grid">
+          <div class="cap-card fade">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a4 4 0 0 0-4 4 3.5 3.5 0 0 0-1 6.8V17a3 3 0 0 0 5 2 3 3 0 0 0 5-2v-3.2A3.5 3.5 0 0 0 16 7a4 4 0 0 0-4-4z"/><path d="M12 7v12"/></svg></span>
+            <h4>Persistent, shared memory</h4>
+            <p>Agents keep a real memory instead of starting cold each time — what they did, what worked, what to avoid. Facts can stay private to one agent or be shared across the whole fleet, ranked by relevance and reinforced the more they're used.</p>
+            <span class="tagline">episodic + semantic recall</span>
+          </div>
+          <div class="cap-card fade d1">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V9M10 19V5M16 19v-6M22 19V4"/><path d="M2 19h20" opacity=".5"/></svg></span>
+            <h4>Insights that make the fleet better</h4>
+            <p>A recurring reflection pass turns what the fleet did — the wins and the friction — into lessons the whole team inherits, and surfaces one-tap "what to improve" tiles across agents, skills, memory, goals and more. Recently launched, and getting smarter.</p>
+            <span class="tagline">self-learning &middot; new</span>
+          </div>
+          <div class="cap-card fade d2">
+            <span class="cap-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 12.5H11l-1 9.5 8.5-10.5H12z"/></svg></span>
+            <h4>Reusable skills, and they write their own</h4>
+            <p>Named playbooks — "our refund SOP", "how we cut a release" — that any agent can reach for. Import them from a catalog or any GitHub repo, and when the fleet finds a procedure that works, it proposes a new skill for you to approve.</p>
+            <span class="tagline">import &middot; agent-proposed &middot; gated</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== GOVERNANCE GATE ===================== -->
+  <section class="band" id="gate">
+    <div class="wrap wrap-wide">
+      <div class="gate-shell">
+        <div class="gate-viz card fade">
+          <div class="gate-in"><span class="lbl">Effect</span><span>charge&nbsp;$4,000 &middot; deploy&nbsp;prod &middot; email&nbsp;a&nbsp;customer</span></div>
+          <div class="gate-rail" aria-hidden="true">&darr;</div>
+          <div class="gate-steps">
+            <div class="gstep"><span class="gn">1</span><span class="gt">Policy</span><span class="gd">classifies the risk</span></div>
+            <div class="gstep"><span class="gn">2</span><span class="gt">Approvals</span><span class="gd">a human clears what's risky</span></div>
+            <div class="gstep"><span class="gn">3</span><span class="gt">Budget</span><span class="gd">debits the spend</span></div>
+            <div class="gstep"><span class="gn">4</span><span class="gt">Identity</span><span class="gd">signs it as a real person</span></div>
+            <div class="gstep"><span class="gn">5</span><span class="gt">Idempotency</span><span class="gd">never twice</span></div>
+            <div class="gstep"><span class="gn">6</span><span class="gt">Audit</span><span class="gd">records it forever</span></div>
+          </div>
+          <div class="gate-rail" aria-hidden="true">&darr;</div>
+          <div class="gate-out">held for owner approval &middot; nothing happens without your say-so</div>
+        </div>
+
+        <div class="gate-copy">
+          <p class="eyebrow fade">The one invariant</p>
+          <h2 class="fade">Every real action stays in bounds — by design, not by trust.</h2>
+          <p class="fade">A send, a charge, a deploy, a database write — each one passes through a single mediated gate before it can touch the world. Remove the gate and there is no way around it. That's what makes autonomy safe to put in production.</p>
+          <ul class="gate-facts">
+            <li class="fade"><span><b>Your policy decides</b> what's green, what needs a human, and what's never allowed — edited live, applied to running sessions instantly.</span></li>
+            <li class="fade d1"><span><b>Risky calls pause for a person</b> with a rich approval card; approve once with "Always" and it learns a rule, safely.</span></li>
+            <li class="fade d2"><span><b>Agents act as accountable humans</b> — a chat-triggered run is signed by the teammate who asked, not a faceless bot.</span></li>
+            <li class="fade d3"><span><b>Everything is on the record</b> — an append-only audit log you can filter by session, type, or person.</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== INTEGRATIONS / REACH ===================== -->
+  <section class="band band-tint" id="reach">
+    <div class="wrap wrap-wide">
+      <div class="sec-head fade">
+        <p class="eyebrow">Reach into your world</p>
+        <h2>Where you already work — and everything you already use.</h2>
+        <p class="sec-lede">Agents talk to your people in the tools your team lives in, run on their own around the clock, and act across a thousand outside apps. All of it flows through the same gate.</p>
+      </div>
+
+      <div class="integ-grid">
+        <div class="integ-card fade">
+          <h4>Slack &amp; Discord, natively</h4>
+          <p>@mention an agent by name in Slack or Discord and it runs <b>as you</b>, in the thread, with your permissions — no public URL, no new app to learn. Follow-ups stay in the same conversation with full context, and it replies right where you asked.</p>
+          <div class="chips">
+            <span class="tag hot">Slack</span>
+            <span class="tag hot">Discord</span>
+            <span class="tag">runs as the sender</span>
+            <span class="tag">threaded replies</span>
+            <span class="tag">no public URL</span>
+          </div>
+        </div>
+
+        <div class="integ-card fade d1">
+          <h4>Automations that run without you</h4>
+          <p>Fire an agent on a <b>cron schedule</b>, from an incoming <b>webhook</b>, or from a chat message — all unattended, all governed. The whole fleet is reachable by name with a single mention, so a per-agent trigger becomes optional, not required.</p>
+          <div class="chips">
+            <span class="tag">cron</span>
+            <span class="tag">webhooks</span>
+            <span class="tag">chat triggers</span>
+            <span class="tag">self-scheduled runs</span>
+          </div>
+        </div>
+
+        <div class="integ-card fade">
+          <h4>1,000+ apps, one connector</h4>
+          <p>Through <b>Composio</b>, agents act across a thousand-plus apps — CRMs, payments, calendars, docs, tickets — with OAuth handled for them. Plus direct connectors for GitHub, Google Drive, and any MCP server you point them at.</p>
+          <div class="chips">
+            <span class="tag hot">Composio &middot; 1,000+ apps</span>
+            <span class="tag">GitHub</span>
+            <span class="tag">Google Drive</span>
+            <span class="tag">any MCP server</span>
+          </div>
+        </div>
+
+        <div class="integ-card fade d1">
+          <h4>See, draw, and film</h4>
+          <p>Agents get the senses the model lacks — <b>generate</b> images and video from a prompt, <b>edit</b> and upscale them, and <b>watch</b> a clip to answer questions about it. 400+ models, every render cost-metered and dropped into the Library.</p>
+          <div class="chips">
+            <span class="tag">image gen &amp; edit</span>
+            <span class="tag">text &amp; image &rarr; video</span>
+            <span class="tag">video understanding</span>
+            <span class="tag">400+ models</span>
+          </div>
+        </div>
+
+        <div class="integ-card fade">
+          <h4>An encrypted secrets vault</h4>
+          <p>Store credentials once, sealed with AES-256-GCM at rest. Connectors and agent shells resolve them at launch, so a plain CLI authenticates and an agent gets <b>tools, never raw keys</b>. Grant a secret to specific agents from one panel.</p>
+          <div class="chips">
+            <span class="tag">AES-256-GCM</span>
+            <span class="tag">per-agent grants</span>
+            <span class="tag">keys never exposed</span>
+          </div>
+        </div>
+
+        <div class="integ-card fade d1">
+          <h4>Team, roles, and identity</h4>
+          <p>Owners, admins, and members with magic-link login and per-agent assignment. Link a teammate to their Slack, Discord, or GitHub so their <b>own</b> identity — and their approval authority — carries into every run they trigger.</p>
+          <div class="chips">
+            <span class="tag">owner / admin / member</span>
+            <span class="tag">magic-link login</span>
+            <span class="tag">identity map</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== CLOSING ===================== -->
   <section class="closing-wrap" id="start">
-    <div class="wrap">
+    <div class="wrap wrap-wide">
       <div class="closing fade">
         <h2>Your agents. Your rules. In production.</h2>
-        <p>Run the scripted demo to watch a governed fleet work end to end — the memory, the tasks, the chat, and the gate — with the full audit trail printed as it goes.</p>
+        <p>Run the scripted demo to watch a governed fleet work end to end — the goals, the tasks, the memory, the chat, and the gate — with the full audit trail printed as it goes.</p>
         <div class="cta-row">
           <button class="copy-btn" id="copyEnd" type="button" aria-label="Copy command: npm run demo">
             <span class="cmd">npm run demo</span>
@@ -665,9 +1089,9 @@
   </section>
 
   <footer>
-    <div class="wrap foot-inner">
+    <div class="wrap wrap-wide foot-inner">
       <span>Agent OS — the operating system for your AI workforce</span>
-      <span><a href="#caps">Capabilities</a> &middot; <a href="#start">Get started</a></span>
+      <span><a href="#how">How it works</a> &middot; <a href="#caps">Capabilities</a> &middot; <a href="#gate">Governance</a> &middot; <a href="#start">Get started</a></span>
     </div>
   </footer>
 </div>
@@ -767,12 +1191,12 @@
           pill.classList.remove("pill-idle");
           pill.classList.add("pill-running");
           state.textContent = "running";
-          count.innerHTML = "5 agents &middot; 4 running";
+          count.innerHTML = "6 agents &middot; 5 running";
         } else {
           pill.classList.remove("pill-running");
           pill.classList.add("pill-idle");
           state.textContent = "idle";
-          count.innerHTML = "5 agents &middot; 3 running";
+          count.innerHTML = "6 agents &middot; 4 running";
         }
       }, 4200);
     }

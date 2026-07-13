@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.175.0] — 2026-07-13
+### Changed
+- **Comprehensive rewrite of the marketing landing page** (`public/landing.html`, served off disk at
+  `/landing`). Expanded from eight capability cards into a full product story while staying a landing page,
+  not a spec sheet — and keeping the existing warm palette, light/dark theming, ambient glow, live fleet
+  card, and scroll fade-ins. New sections: a **Goal → Tasks → Sessions** "how it works" ladder (put in your
+  company's goals and the strategist plans and runs the work); a hero **stat strip** (1,000+ Composio
+  connectors · 400+ media models · one gate · 24/7 unattended); three themed **capability clusters**
+  (stand up a workforce · they work as a team · they remember and compound) covering the agent author,
+  agent-to-agent delegation, ask-a-human, tasks, knowledge base, awareness/inbox, Library, memory,
+  Insights self-learning, and skills; a dedicated **governance-gate** visual (Policy → Approvals → Budget →
+  Identity → Idempotency → Audit); and an **integrations** grid (native Slack & Discord, automations,
+  Composio, media generate/edit/understand, secrets vault, team/identity). Reviewed with the design-review
+  harness: no horizontal overflow at desktop/tablet/mobile and **zero axe-core accessibility violations**.
+
 ## [0.174.0] — 2026-07-13
 ### Fixed
 - **Success-rate metric no longer misjudges chat agents or conflates crashes with failures** (found via a
