@@ -22,7 +22,7 @@ import { Xterm } from './Xterm'
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs'
+type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
 const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs']
 type Selected = { tmux: string; title: string } | null
@@ -1119,7 +1119,7 @@ function Console({ me }: { me: Member }) {
 
           <Separator className="my-3" />
           <div className="flex items-center justify-between">
-            <a href={navHref('team')} className="flex min-w-0 items-center gap-2 text-left text-foreground no-underline hover:underline" onClick={onNavClick(() => nav('team'))} title="manage team">
+            <a href={navHref('profile')} className="flex min-w-0 items-center gap-2 text-left text-foreground no-underline hover:underline" onClick={onNavClick(() => nav('profile'))} title="your profile & settings">
               <MemberAvatar member={state?.me ?? me} className="h-7 w-7 text-xs" />
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 text-sm font-medium leading-tight">
@@ -1153,11 +1153,11 @@ function Console({ me }: { me: Member }) {
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
               </h1>
             </div>
           )}
-          <NotificationsBell items={notifyItems} unread={notifyUnread} prefs={prefs} onOpen={openNotification} onMarkAllRead={markAllNotificationsRead} onSavePrefs={savePrefs} />
+          <NotificationsBell items={notifyItems} unread={notifyUnread} onOpen={openNotification} onMarkAllRead={markAllNotificationsRead} onOpenSettings={() => nav('profile')} />
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
@@ -1167,6 +1167,7 @@ function Console({ me }: { me: Member }) {
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
+          {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
@@ -1289,24 +1290,21 @@ function ToastHost({ toasts, onOpen, onDismiss }: { toasts: ToastItem[]; onOpen:
 
 /** The header notification bell: a count badge + a dropdown of recent notifications, plus a per-member
  *  settings panel. Reuses the already-polled `messages` (via `items`), so it adds no new request cost. */
-function NotificationsBell({ items, unread, prefs, onOpen, onMarkAllRead, onSavePrefs }: {
+function NotificationsBell({ items, unread, onOpen, onMarkAllRead, onOpenSettings }: {
   items: NotifyItem[]
   unread: number
-  prefs: NotificationPrefs
   onOpen: (m: Msg) => void
   onMarkAllRead: () => void
-  onSavePrefs: (p: NotificationPrefs) => void
+  onOpenSettings: () => void
 }) {
   const [open, setOpen] = useState(false)
-  const [showPrefs, setShowPrefs] = useState(false)
   const recent = items.slice(0, 12)
-  const toggleEvent = (k: NotifyKind) => onSavePrefs({ ...prefs, events: { ...prefs.events, [k]: !prefs.events[k] } })
   return (
     <div className="relative">
       <button
         className="relative rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
         title="Notifications"
-        onClick={() => { setOpen((o) => !o); setShowPrefs(false) }}
+        onClick={() => setOpen((o) => !o)}
       >
         <Bell className="h-5 w-5" />
         {unread > 0 && (
@@ -1327,35 +1325,12 @@ function NotificationsBell({ items, unread, prefs, onOpen, onMarkAllRead, onSave
                     Mark all read
                   </button>
                 )}
-                <button className={`rounded p-1 hover:bg-muted ${showPrefs ? 'text-foreground' : 'text-muted-foreground'}`} title="Notification settings" onClick={() => setShowPrefs((s) => !s)}>
+                <button className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="Notification settings" onClick={() => { setOpen(false); onOpenSettings() }}>
                   <Cog className="h-3.5 w-3.5" />
                 </button>
               </div>
             </div>
-            {showPrefs ? (
-              <div className="space-y-2 p-3 text-sm">
-                <p className="text-xs font-medium text-muted-foreground">Notify me about</p>
-                {(Object.keys(NOTIFY_META) as NotifyKind[]).map((k) => (
-                  <label key={k} className="flex cursor-pointer items-center gap-2">
-                    <input type="checkbox" checked={prefs.events[k]} onChange={() => toggleEvent(k)} />
-                    <span>{NOTIFY_META[k].label}</span>
-                  </label>
-                ))}
-                <div className="my-1 border-t" />
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input type="checkbox" checked={prefs.toasts} onChange={() => onSavePrefs({ ...prefs, toasts: !prefs.toasts })} />
-                  <span>Show pop-in toasts</span>
-                </label>
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input type="checkbox" checked={prefs.sound} onChange={() => onSavePrefs({ ...prefs, sound: !prefs.sound })} />
-                  <span>Play a sound</span>
-                </label>
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input type="checkbox" checked={prefs.dm} onChange={() => onSavePrefs({ ...prefs, dm: !prefs.dm })} />
-                  <span>Also DM me on Slack/Discord</span>
-                </label>
-              </div>
-            ) : recent.length === 0 ? (
+            {recent.length === 0 ? (
               <div className="px-3 py-8 text-center text-sm text-muted-foreground">You're all caught up.</div>
             ) : (
               <ul className="max-h-96 overflow-y-auto">
@@ -3948,6 +3923,105 @@ function IdentityEditor({ member, identities, onChange }: { member: Member; iden
         When a Slack/Discord message triggers an automation, the OS runs it <strong>as the member whose handle matches the sender</strong>
         {' '}— their connectors + inbox. Slack also falls back to matching the sender's profile email.
       </p>
+    </div>
+  )
+}
+
+/** The logged-in member's own profile & personal settings — self-service, every role edits their own.
+ *  Their avatar/name, the free-text "context" injected into every session run as them, notification
+ *  preferences (moved off the bell), and their chat handles (run-as join keys). Managing OTHER people
+ *  (roles, invites, access) stays on the Team page. */
+function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
+  me: Member
+  prefs: NotificationPrefs
+  onSavePrefs: (p: NotificationPrefs) => void
+  onProfileChange: () => void
+}) {
+  const [context, setContext] = useState('')
+  const [savedContext, setSavedContext] = useState('') // last persisted value → drives the dirty check
+  const [savingCtx, setSavingCtx] = useState(false)
+  const [ctxSaved, setCtxSaved] = useState(false)
+  const [identities, setIdentities] = useState<MemberIdentity[]>([])
+
+  useEffect(() => { api.myContext().then((r) => { setContext(r.context || ''); setSavedContext(r.context || '') }).catch(() => {}) }, [])
+  const loadIdentities = () => api.team().then((d) => setIdentities(d.identities?.[me.id] ?? [])).catch(() => {})
+  useEffect(() => { loadIdentities() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveContext = async () => {
+    setSavingCtx(true); setCtxSaved(false)
+    try {
+      const r = await api.saveMyContext(context)
+      setContext(r.context); setSavedContext(r.context); setCtxSaved(true); setTimeout(() => setCtxSaved(false), 2000)
+    } finally { setSavingCtx(false) }
+  }
+  const toggleEvent = (k: NotifyKind) => onSavePrefs({ ...prefs, events: { ...prefs.events, [k]: !prefs.events[k] } })
+  const dirty = context !== savedContext
+
+  return (
+    <div className="max-w-3xl space-y-8">
+      {/* Identity */}
+      <section className="flex items-center gap-4">
+        <EditableAvatar member={me} canEdit sizeClass="h-16 w-16 text-xl" onChanged={onProfileChange} />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-lg font-semibold">
+            <span className="truncate">{me.name}</span>
+            <RoleBadge role={me.role} />
+          </div>
+          <div className="truncate text-sm text-muted-foreground">{me.email}</div>
+        </div>
+      </section>
+
+      {/* Personal context (the new feature) */}
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">My context</div>
+        <p className="text-sm text-muted-foreground">
+          Free text added to the system prompt of every session that runs <strong>as you</strong> — your
+          working style, standing preferences, or domain notes. Agents treat it as your instructions for
+          how to work on your behalf. Leave it blank to inject nothing.
+        </p>
+        <Textarea
+          value={context}
+          onChange={(e) => setContext(e.target.value)}
+          placeholder={"e.g. I prefer concise PRs with a short summary up top. Always run the typecheck before pushing. Ping me on Slack for anything customer-facing."}
+          className="min-h-[180px] font-mono text-xs"
+          maxLength={8000}
+        />
+        <div className="flex items-center gap-3">
+          <Button size="sm" onClick={saveContext} disabled={!dirty || savingCtx}>{savingCtx ? 'Saving…' : 'Save context'}</Button>
+          {ctxSaved && <span className="text-xs text-emerald-600">Saved</span>}
+          <span className="ml-auto text-[11px] text-muted-foreground">{context.length.toLocaleString()}/8,000</span>
+        </div>
+      </section>
+
+      {/* Notifications (moved off the bell) */}
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Notifications</div>
+        <p className="text-xs font-medium text-muted-foreground">Notify me about</p>
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          {(Object.keys(NOTIFY_META) as NotifyKind[]).map((k) => (
+            <label key={k} className="flex cursor-pointer items-center gap-2 text-sm">
+              <input type="checkbox" checked={prefs.events[k]} onChange={() => toggleEvent(k)} />
+              <span>{NOTIFY_META[k].label}</span>
+            </label>
+          ))}
+        </div>
+        <div className="my-1 border-t" />
+        <div className="grid gap-1.5 sm:grid-cols-2">
+          <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={prefs.toasts} onChange={() => onSavePrefs({ ...prefs, toasts: !prefs.toasts })} /><span>Show pop-in toasts</span></label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={prefs.sound} onChange={() => onSavePrefs({ ...prefs, sound: !prefs.sound })} /><span>Play a sound</span></label>
+          <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={prefs.dm} onChange={() => onSavePrefs({ ...prefs, dm: !prefs.dm })} /><span>Also DM me on Slack/Discord</span></label>
+        </div>
+      </section>
+
+      {/* Chat identities — own handles (self-service) */}
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">My chat identities</div>
+        <p className="text-sm text-muted-foreground">
+          Link your own Slack / Discord / email / GitHub handles so a chat message from you runs its agent
+          as <strong>you</strong> — with your connectors, inbox, and git identity.
+        </p>
+        <IdentityEditor member={me} identities={identities} onChange={loadIdentities} />
+      </section>
     </div>
   )
 }

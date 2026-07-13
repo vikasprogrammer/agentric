@@ -13,6 +13,7 @@ import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLe
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // login cookie valid for 30 days
+const MEMBER_CONTEXT_MAX = 8000; // cap a member's personal context so it can't dominate every prompt
 
 interface MemberRow {
   id: string;
@@ -104,6 +105,22 @@ export class TeamStore {
   setNavPins(memberId: string, pins: unknown): string[] {
     const clean = sanitizeNavPins(pins) ?? [];
     this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), navPins: clean });
+    return clean;
+  }
+
+  /** This member's personal context — free-text they want injected into every session that runs AS
+   *  them (their working style, standing preferences, domain notes). '' when never set. Read at launch
+   *  by `buildCompanyMd`. Self-service: every member owns their own, no role gate. */
+  memberContext(memberId: string): string {
+    const v = this.rawPrefs(memberId).context;
+    return typeof v === 'string' ? v : '';
+  }
+
+  /** Persist a member's personal context (trimmed + capped so it can't bloat every prompt), preserving
+   *  sibling prefs (notifications, navPins) in the same blob. Returns the stored value. */
+  setMemberContext(memberId: string, context: unknown): string {
+    const clean = String(context ?? '').trim().slice(0, MEMBER_CONTEXT_MAX);
+    this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), context: clean });
     return clean;
   }
 

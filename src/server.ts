@@ -1483,11 +1483,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { link: linkFor(req, issued.token) });
   }
   // Identity map: link/unlink the external accounts a member is known by (Slack/Discord/email/github),
-  // the join key chat triggers use for run-as. Owner/admin only. The id segment excludes the literal
+  // the join key chat triggers use for run-as. Admins manage anyone; a member may edit their OWN handles
+  // (the self-service Chat IDs on the Profile page). The id segment excludes the literal
   // "identities"-suffixed paths from the single-segment member routes below.
   const teamIdentSet = p.match(/^\/api\/team\/([\w-]+)\/identities$/);
   if (method === 'POST' && teamIdentSet) {
-    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!isAdmin(me) && me.id !== teamIdentSet[1]) return sendJson(res, 403, { error: 'not allowed' });
     const b = await readBody(req);
     const provider = String(b.provider || '') as IdentityProvider;
     if (!IDENTITY_PROVIDERS.includes(provider)) return sendJson(res, 400, { error: 'unknown provider' });
@@ -1505,7 +1506,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   const teamIdentDel = p.match(/^\/api\/team\/([\w-]+)\/identities\/([\w-]+)$/);
   if (method === 'DELETE' && teamIdentDel) {
-    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!isAdmin(me) && me.id !== teamIdentDel[1]) return sendJson(res, 403, { error: 'not allowed' });
     const provider = teamIdentDel[2] as IdentityProvider;
     if (!IDENTITY_PROVIDERS.includes(provider)) return sendJson(res, 400, { error: 'unknown provider' });
     os.team.clearIdentity(teamIdentDel[1], provider);
@@ -1792,6 +1793,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'PUT' && p === '/api/me/prefs') {
     const b = await readBody(req);
     return sendJson(res, 200, os.team.setNotificationPrefs(me.id, b));
+  }
+  // This member's personal context — free-text they inject into every session that runs AS them
+  // (buildCompanyMd reads it at launch). Per person, self-service, not admin-gated. Edited on Profile.
+  if (method === 'GET' && p === '/api/me/context') return sendJson(res, 200, { context: os.team.memberContext(me.id) });
+  if (method === 'PUT' && p === '/api/me/context') {
+    const b = await readBody(req);
+    const context = os.team.setMemberContext(me.id, (b as { context?: unknown }).context);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.context.set', data: { chars: context.length } });
+    return sendJson(res, 200, { context });
   }
   // This member's pinned sidebar nav (which secondary items sit up in Main). Per person, not admin-gated
   // — everyone customizes their own. The initial value ships on /api/auth/me; this saves changes.
