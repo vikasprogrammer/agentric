@@ -12,6 +12,8 @@
  */
 import type { AgentOS } from '../kernel';
 
+import { diagnosisSlug } from './diagnosis';
+
 type Db = AgentOS['db'];
 
 const DAY = 24 * 3_600_000;
@@ -19,7 +21,7 @@ const WINDOW_DAYS = 30;
 const RANK: Record<string, number> = { 'session.reported': 3, 'run.completed': 2, 'session.ended': 1, 'session.stopped': 0 };
 const STOP = new Set(['task', 'outcome', 'session', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none', 'then', 'call', 'test', 'once', 'stop', 'tool', 'tools', 'exactly', 'nothing', 'else']);
 
-export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; rate: number | null; focus: string[] }
+export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; rate: number | null; focus: string[]; diagnosis?: { at: number; slug: string } }
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
@@ -77,7 +79,10 @@ export function buildInsights(os: AgentOS, now = Date.now()): Insights {
   for (const e of eps) { const a = epByAgent.get(e.agent_id) ?? []; a.push(e.content); epByAgent.set(e.agent_id, a); }
 
   const agents: AgentScore[] = [...tally.entries()]
-    .map(([agent, t]) => ({ agent, runs: t.runs, success: t.success, failed: t.failed, stopped: t.stopped, rate: t.runs ? Math.round((t.success / t.runs) * 100) : null, focus: focusFor(epByAgent.get(agent) ?? []) }))
+    .map(([agent, t]) => {
+      const dx = os.kb.read(os.tenant, 'operations', diagnosisSlug(agent)); // existing root-cause diagnosis, if any
+      return { agent, runs: t.runs, success: t.success, failed: t.failed, stopped: t.stopped, rate: t.runs ? Math.round((t.success / t.runs) * 100) : null, focus: focusFor(epByAgent.get(agent) ?? []), diagnosis: dx ? { at: dx.updatedAt, slug: dx.slug } : undefined };
+    })
     .sort((a, b) => b.runs - a.runs)
     .slice(0, 12);
 

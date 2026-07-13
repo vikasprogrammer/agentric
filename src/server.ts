@@ -24,6 +24,7 @@ import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
+import { Diagnosis } from './edge/diagnosis';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -2379,6 +2380,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/insights') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, { insights: buildInsights(os), measurement: measureLearning(os) });
+  }
+  // Root-cause diagnosis: spawn the analyst to work out WHY a struggling agent keeps failing, into a KB page.
+  if (method === 'POST' && p === '/api/insights/diagnose') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const agent = String(b.agent || '').trim();
+    if (!agent) return sendJson(res, 400, { error: 'agent required' });
+    try {
+      const r = await new Diagnosis(os, tm).run(agent, me.email);
+      return sendJson(res, r.spawned ? 200 : 400, { ok: r.spawned, ...r });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);

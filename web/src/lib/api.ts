@@ -269,7 +269,7 @@ export interface DreamingState {
   totals?: { sessions: number; success: number; failure: number; partial: number; stopped: number; unknown: number; rejected: number; budgetStops: number; errors: number }
   recent?: DreamingReview[]
 }
-export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; rate: number | null; focus: string[] }
+export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; rate: number | null; focus: string[]; diagnosis?: { at: number; slug: string } }
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
@@ -1101,6 +1101,8 @@ export const api = {
   setDigest: (digest: { enabled?: boolean; channel?: string; discordChannel?: string; hour?: number }) => call<{ ok: boolean; digest: DigestConfig; error?: string }>('PUT', '/api/dreaming', { digest }),
   digestToday: () => call<DigestModel & { error?: string }>('GET', '/api/digest/today'),
   digestPost: () => call<{ ok: boolean; posted: boolean; reason?: string; total: number; iso: string; error?: string; platforms?: { platform: 'slack' | 'discord'; posted: boolean; channel: string; error?: string }[] }>('POST', '/api/digest/post'),
+  // Spawn the analyst to diagnose why a struggling agent keeps failing (writes a KB page).
+  diagnose: (agent: string) => call<{ ok: boolean; spawned: boolean; reason?: string; sessionId?: string; items?: number; slug?: string; error?: string }>('POST', '/api/insights/diagnose', { agent }),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),

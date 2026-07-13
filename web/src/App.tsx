@@ -7999,6 +7999,8 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [state, setState] = useState<DreamingState | null>(null)
   const [measure, setMeasure] = useState<Measurement | null>(null)
   const [insights, setInsights] = useState<Insights | null>(null)
+  const [dxBusy, setDxBusy] = useState('')
+  const [dxHint, setDxHint] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
@@ -8024,6 +8026,12 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     const failed = (r.platforms ?? []).filter((p) => !p.posted).map((p) => `${p.platform}: ${p.error}`).join('; ')
     setDigestHint(r.posted ? `posted to ${where} (${r.total} sessions)${failed ? ` — failed ${failed}` : ''}` : `not posted — ${failed || r.reason || r.error || 'nothing to post'}`)
     setTimeout(() => setDigestHint(''), 3000); refresh()
+  }
+  const diagnose = async (agent: string) => {
+    setDxBusy(agent); setDxHint('')
+    const r = await api.diagnose(agent); setDxBusy('')
+    setDxHint(r.error ? `⚠ ${r.error}` : r.spawned ? `Diagnosing ${agent}… the analyst will write it to Knowledge in a minute — refresh to see the link.` : (r.reason ?? 'nothing to diagnose'))
+    setTimeout(() => setDxHint(''), 6000)
   }
   const applyRec = async (id: string) => { setBusy(true); const r = await api.applyRecommendation(id); setBusy(false); if (r.error) return setHint('⚠ ' + r.error); setHint('applied'); setTimeout(() => setHint(''), 1500); refresh() }
   const dismissRec = async (id: string) => { setBusy(true); await api.dismissRecommendation(id); setBusy(false); refresh() }
@@ -8135,16 +8143,24 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
             <div className="space-y-1">
               {insights.agents.map((a) => {
                 const rateCls = a.rate == null ? 'text-muted-foreground' : a.rate >= 70 ? 'text-emerald-600' : a.rate >= 40 ? 'text-amber-600' : 'text-red-600'
+                const struggling = a.rate != null && a.rate < 50 && (a.failed + a.stopped) >= 2
                 return (
                   <div key={a.agent} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b py-1.5 text-xs last:border-0">
                     <a className="w-40 shrink-0 truncate font-medium underline-offset-2 hover:underline" href={`#/agents/${a.agent}`}>{a.agent}</a>
                     <span className={`w-10 shrink-0 tabular-nums font-medium ${rateCls}`}>{a.rate == null ? '—' : `${a.rate}%`}</span>
                     <span className="text-muted-foreground">{a.runs} run{a.runs === 1 ? '' : 's'}{a.failed ? ` · ${a.failed} failed` : ''}{a.stopped ? ` · ${a.stopped} stopped` : ''}</span>
                     {a.focus.length > 0 && <span className="text-muted-foreground">· {a.focus.join(', ')}</span>}
+                    <span className="ml-auto shrink-0">
+                      {a.diagnosis
+                        ? <a href="#/kb" className="text-emerald-600 underline underline-offset-2" title={`updated ${new Date(a.diagnosis.at).toLocaleString()}`}>diagnosis →</a>
+                        : struggling && <button onClick={() => diagnose(a.agent)} disabled={dxBusy === a.agent} className="text-primary underline underline-offset-2 disabled:opacity-50">{dxBusy === a.agent ? 'diagnosing…' : 'diagnose'}</button>}
+                    </span>
                   </div>
                 )
               })}
             </div>
+            {dxHint && <div className="text-[11px] text-muted-foreground">{dxHint}</div>}
+            <p className="text-[11px] text-muted-foreground">A <strong>diagnose</strong> spawns the analyst to read a struggling agent's failed runs and write a root-cause + fix to <a className="underline" href="#/kb">Knowledge</a>.</p>
           </CardContent>
         </Card>
       )}
