@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.162.0] — 2026-07-13
+### Added
+- **Owner Overview page** — a new owner-only Home (`#/overview`, top of the sidebar) that answers "what is
+  the fleet doing right now, and which agents are pulling their weight" at a glance:
+  - **Sessions summary** — Active / Idle / Blocked / Done-today tiles derived live from the sessions feed
+    (blocked = runs with a pending approval/question awaiting a human).
+  - **Working now** — every live session as a rich card: agent, one-line task, live/unattended/blocked
+    state, the accountable run-as human (`PrincipalTag`), origin chip (Discord/Cron/Task/Manual…), and how
+    long it's been running; click to attach.
+  - **Fleet-now donut** — active/idle/blocked agent split.
+  - **Best agents** — a trust leaderboard ranked by the real agent-stats `maturity` score (autonomy ×
+    (1 − denial) × volume), with run volume and 👍/👎 outcomes.
+  - Pure-props off the data the console already polls, so it live-updates on the 1.5s tick with no new
+    server route; visibility is gated to `owner` (nav anchor + route render).
+
 ## [0.161.0] — 2026-07-13
 ### Added
 - **Dreaming as an owner-intelligence layer — per-agent scorecard + friction map.** Beyond the
