@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.134.0] — 2026-07-13
+### Added
+- **The Library now renders published HTML files as a live page**, not as raw source. HTML deliverables
+  (dashboards, reports, one-off pages an agent builds) were already stored and served with the right
+  `text/html` Content-Type — but the console preview pane showed their escaped source in a `<pre>` because
+  `text/html` matched the generic text path. HTML artifacts now render in an `<iframe>` (same treatment as
+  PDF), with an "Open full page ↗" link to view them standalone. The frame is **sandboxed to a null origin**
+  (`allow-scripts allow-popups allow-forms`, deliberately *not* `allow-same-origin`): interactive HTML/JS
+  runs, but the page can't reach the parent DOM, the session cookie, or the same-origin API. HTML artifacts
+  also get a distinct code-file icon in the gallery. (`ArtifactBody`/`ArtifactIcon` in `web/src/App.tsx`.)
+
 ## [0.133.0] — 2026-07-13
 ### Added
 - **`schedule` now resumes the scheduling conversation by default.** When an agent defers a follow-up
