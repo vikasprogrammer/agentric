@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.149.0] — 2026-07-13
+### Added
+- **Daily digest now posts to Discord too (and Slack, and both).** The end-of-day digest was Slack-only,
+  but a tenant may run Discord instead — the live northwind tenant has a Discord bot and no Slack, so the
+  digest couldn't post at all there. `Digest.postNow` now fans out to **every configured chat platform**:
+  Slack (if a bot token + `digestChannel`) and/or Discord (if a bot token + `digestDiscordChannel`, a
+  channel id — Discord posts by id, no name lookup). New `renderDiscord` uses Discord markdown and honours
+  the 2000-char cap (trims to the daily KB page). The once-per-day `digest.posted` guard and EOD hour gate
+  are unchanged and cover both platforms; per-platform failures are audited (`digest.error`) without
+  blocking the other. Settings → Learning shows a channel field per configured platform. New setting
+  `digestDiscordChannel`; `discordChannel`/`discordConfigured` added to `GET`/`PUT /api/dreaming`.
+
 ## [0.148.0] — 2026-07-13
 ### Added
 - **Task blocker chips on the Kanban board cards.** A card now shows the tasks it's *blocked by* directly —
