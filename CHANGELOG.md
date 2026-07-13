@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.172.0] — 2026-07-13
+### Added
+- **"Clear & refresh today" for the daily digest.** A button on the Insights digest card (and
+  `POST /api/digest/refresh`) that regenerates today's digest from current data — re-renders the dated KB
+  journal page and **resets the once-per-day post guard** so the scheduled EOD post re-sends the fresh
+  version. Useful right after tuning the digest, or to rebuild a stale day. The reset is append-only: it
+  writes a `digest.cleared` marker, and the post/​retry guard now floors on the later of midnight and the
+  last clear (`Digest.clearAndRefresh` / `postFloor`). `src/edge/digest.ts`, `src/server.ts`.
+
 ## [0.171.0] — 2026-07-13
 ### Added
 - **Tasks: "Live" filter** — a toggle in the Tasks filter bar (beside Overdue) that narrows every view to
