@@ -318,6 +318,8 @@ export interface ApprovalNotice {
  *  channel (Slack/Discord DM) can ping the person the run acts for, the way approvals already ping
  *  approvers. Without it a blocking `ask` sits unseen in the console until it times out. */
 export interface QuestionNotice {
+  /** The pending question's id — the notifier binds it to the DM(s) it sends so a reply can answer it. */
+  questionId: string;
   sessionId: string;
   agent: string;
   prompt: string;
@@ -2159,7 +2161,7 @@ export class TerminalManager {
     // Out-of-band ping (like approvals): DM the person the run acts for — or the addressed teammate — so a
     // blocking `ask` doesn't sit unseen in the console. And if the run was triggered from chat, mirror the
     // question into that thread. Both best-effort, off the hot path.
-    try { this.questionNotifier?.({ sessionId, agent, prompt, to: target?.id }); } catch { /* notifications are advisory */ }
+    try { this.questionNotifier?.({ questionId: id, sessionId, agent, prompt, to: target?.id }); } catch { /* notifications are advisory */ }
     try { this.chatMirror?.(sessionId, (p) => `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the ${chatLink(p, consolePage(this.publicOrigin, 'inbox'), 'Agent OS Inbox')}.`); } catch { /* advisory */ }
     return { id, to: target?.email };
   }
@@ -2171,6 +2173,48 @@ export class TerminalManager {
     this.db.prepare('UPDATE questions SET status = ?, answer = ?, answered_by = ?, answered_at = ? WHERE id = ?').run('answered', answer, by, Date.now(), id);
     this.audit(q.run_id, by, 'question.answered', { questionId: id });
     return true;
+  }
+
+  /** Bind a pending question to a Slack/Discord DM recipient, so a reply in that DM can answer it (the
+   *  inbound-reply path). Called by the question notifier once per provider it DM'd. */
+  bindQuestionDm(questionId: string, provider: 'slack' | 'discord', externalId: string, memberId?: string): void {
+    if (!questionId || !externalId) return;
+    this.db
+      .prepare('INSERT OR REPLACE INTO question_dms (question_id, tenant, provider, external_id, member_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(questionId, this.os.tenant, provider, externalId, memberId ?? null, Date.now());
+  }
+
+  /**
+   * Answer a pending question from an inbound Slack/Discord DM reply. Matches the sender (`provider` +
+   * their `externalId`) to the newest still-pending question we DM'd them, verifies they may act on it,
+   * and records the answer (attributed to their member email — same as the web Inbox path). Returns the
+   * answered question's agent on success, or `null` when nothing pending is bound to this sender (so the
+   * caller falls through to the normal chat router — a DM that isn't answering a question is just a chat).
+   */
+  answerQuestionFromChat(provider: 'slack' | 'discord', externalId: string, answer: string): { agent: string } | null {
+    const body = (answer || '').trim();
+    if (!body || !externalId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT qd.question_id AS qid, q.agent AS agent
+           FROM question_dms qd JOIN questions q ON q.id = qd.question_id
+          WHERE qd.provider = ? AND qd.external_id = ? AND q.status = 'pending'
+          ORDER BY qd.created_at DESC LIMIT 1`,
+      )
+      .get<{ qid: string; agent: string }>(provider, externalId);
+    if (!row) return null;
+    // Defense in depth: the binding already implies this member was the addressee, but re-check they may
+    // act on it (mirrors the web route's canViewQuestion gate) before writing the answer.
+    const member = this.os.team.memberByExternalId(provider, externalId);
+    if (!member || !this.canViewQuestion(row.qid, member)) return null;
+    if (!this.answerQuestion(row.qid, body, member.email)) return null;
+    this.audit(this.questionRunId(row.qid) ?? row.qid, member.email, 'question.answered.viaDm', { questionId: row.qid, provider });
+    return { agent: row.agent };
+  }
+
+  /** The session id a question belongs to (for audit attribution on the DM-answer path). */
+  private questionRunId(questionId: string): string | undefined {
+    return this.db.prepare('SELECT run_id FROM questions WHERE id = ?').get<{ run_id: string }>(questionId)?.run_id;
   }
 
   /**

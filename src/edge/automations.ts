@@ -682,6 +682,16 @@ export class Automations {
     return { status: 'none' };
   }
 
+  /**
+   * Inbound DM that might be answering a pending `ask_human` question: if the sender (`provider` + their
+   * `externalId`) has a still-pending question we DM'd them, record the reply as its answer and return the
+   * asking agent. `null` → nothing pending is bound to them, so the caller falls through to the normal chat
+   * router (a DM that isn't answering a question is just a chat). The socket posts the ack.
+   */
+  answerQuestionFromChat(provider: 'slack' | 'discord', externalId: string, text: string): { agent: string } | null {
+    return this.tm.answerQuestionFromChat(provider, externalId, text);
+  }
+
   /** Strip a leading `/agent` router prefix (only when it names a known agent) and any `<@…>` mention
    *  tokens from a follow-up before it's typed into a live claude — so a re-mention doesn't land as a
    *  slash command. Returns the cleaned message (never undefined). */

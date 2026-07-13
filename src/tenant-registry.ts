@@ -195,7 +195,7 @@ export class TenantRegistry {
     tm.setApprovalNotifier((notice) => { void notifyApprovers(os, slack, discord, consoleOrigin, notice); });
     // Question notifications: when an agent asks the human a question, DM the person the run acts for so
     // a blocking `ask` doesn't sit unseen until it times out — the question-side twin of the above.
-    tm.setQuestionNotifier((notice) => { void notifyQuestionAsked(os, slack, discord, consoleOrigin, notice); });
+    tm.setQuestionNotifier((notice) => { void notifyQuestionAsked(os, tm, slack, discord, consoleOrigin, notice); });
     // Chat loop: mirror completions/questions/approvals back to the Slack/Discord thread a chat-triggered
     // run is bound to. `text` is a per-platform builder so an embedded deep-link uses each platform's
     // masked-link syntax. Both replies no-op when the session has no bound thread (non-chat runs).
@@ -313,15 +313,24 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * else a member who spawned it); if the run has no human owner (a pure automation), falls back to the
  * `admins` audience so the question still reaches someone. Best-effort, off the ask hot path. Audited once.
  */
-export async function notifyQuestionAsked(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: QuestionNotice): Promise<void> {
+export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager, 'bindQuestionDm'>, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: QuestionNotice): Promise<void> {
   // A question `ask`ed to a SPECIFIC teammate DMs that member; otherwise the run's operator.
   let targets = resolveRecipients(os, notice.to ? { kind: 'member', id: notice.to } : { kind: 'sessionOwner', id: notice.sessionId });
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
+  // Bind the question to each recipient's DM channel so they can answer by REPLYING to the DM (the reply
+  // is matched back to this question on inbound — see TerminalManager.answerQuestionFromChat).
+  for (const t of targets) {
+    const ids = os.team.externalIdsFor(t.id);
+    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
+    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
+    if (slackId) tm.bindQuestionDm(notice.questionId, 'slack', slackId, t.id);
+    if (discordId) tm.bindQuestionDm(notice.questionId, 'discord', discordId, t.id);
+  }
   const inbox = consolePage(consoleOrigin, 'inbox');
   const text = (p: ChatPlatform) =>
     `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
-    `\nOpen the ${chatLink(p, inbox, 'Agent OS Inbox')} to reply.`;
+    `\n\n*Reply to this message to answer*, or open the ${chatLink(p, inbox, 'Agent OS Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'question.notified', data: { agent: notice.agent, targets: targets.length, dms } });
 }
