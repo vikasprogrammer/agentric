@@ -8068,7 +8068,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const nextAt = last && everyN > 0 ? last + everyN * 3_600_000 : undefined
   const lessons = guidance.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim())
   return (
-    <div className="max-w-3xl space-y-4">
+    <div className="max-w-5xl space-y-4">
       {/* Hero — one plain sentence + a live status line, outcomes up top. */}
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">The OS automatically reviews what your agents did and gets smarter — spotting what works, what’s going wrong, and steering every agent accordingly. Nothing to set up.</p>
@@ -8081,6 +8081,10 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
         </div>
         {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
       </div>
+
+      {/* Cards in a responsive 2-column masonry so more intelligence fits above the fold (single column on
+          narrow screens). break-inside-avoid keeps each card whole; mb-4 spaces them within a column. */}
+      <div className="columns-1 lg:columns-2 lg:gap-4 [&>*]:mb-4 [&>*]:break-inside-avoid">
 
       {/* Is it working? — the measurement loop: success-rate trend + did each applied change help. */}
       {measure && (measure.recent.rate != null || measure.trend.some((b) => b.rate != null)) && (() => {
@@ -8330,6 +8334,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
           <p className="text-[11px] text-muted-foreground">{everyN > 0 ? `Automatic review every ${everyN}h.` : 'Automatic review is off — the OS only reviews when you click “Review now”.'} Each review is deterministic and free; a deeper write-up of shared knowledge runs only when there’s enough new activity to be worth it.</p>
         </CardContent>
       </Card>
+      </div>
     </div>
   )
 }
