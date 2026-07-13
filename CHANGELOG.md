@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.171.0] — 2026-07-13
+### Added
+- **Tasks: "Live" filter** — a toggle in the Tasks filter bar (beside Overdue) that narrows every view to
+  only the tasks with a **running session** (a task whose `lastSessionId` resolves to an alive session).
+  The pill carries the current live count and a pulsing dot; works across Board, List and Focus, and
+  clears with the other filters. Complements the board's Live column and the fleet strip — one click to
+  see just what's executing right now.
+
 ## [0.170.0] — 2026-07-13
 ### Changed
 - **Daily digest — much higher signal per line.** Three fixes from real fleet output:
