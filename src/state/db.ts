@@ -660,6 +660,10 @@ function migrate(db: Db): void {
   addColumn(db, 'hosts', 'proposed_by', 'TEXT');
   addColumn(db, 'hosts', 'proposed_reason', 'TEXT');
 
+  // Presence: last time a browser request rode this auth session (throttled to ≤1 write/min in
+  // TeamStore.resolveSession). A member is "online" when any of their sessions was seen recently.
+  addColumn(db, 'auth_sessions', 'last_seen_at', 'INTEGER');
+
   // Per-session bearer secret for the loopback agent endpoints (0d). Older rows have none → the
   // server fails open for them (they predate the secret), but every new session mints one.
   addColumn(db, 'term_sessions', 'secret', 'TEXT');

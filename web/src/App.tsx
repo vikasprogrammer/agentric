@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -4907,7 +4907,7 @@ const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00
 /** Owner-only home. What the fleet is doing right now (live sessions + who's accountable for each) and
  *  which agents are earning trust. Pure-props: it reads the sessions/messages the Console already polls
  *  and the fleet maturity map, so it live-updates on the 1.5s tick with no fetch of its own. */
-function OverviewPage({ me: _me, sessions, messages, members, agents, maturity, onOpen, nav }: {
+function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpen, nav }: {
   me: Member; sessions: Session[]; messages: Msg[]; members: Member[]; agents: AgentInfo[]
   maturity: Record<string, AgentStats>; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void
 }) {
@@ -4916,10 +4916,27 @@ function OverviewPage({ me: _me, sessions, messages, members, agents, maturity, 
   const live = useMemo(() => sessions.filter(isLive).sort((a, b) => a.createdAt - b.createdAt), [sessions])
   const t0 = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }, [])
   const doneToday = sessions.filter((s) => s.status === 'done' && s.updatedAt >= t0).length
-  const activeAgents = new Set(live.map((s) => s.agent)).size
+  // Agents "online" = at least one live session; count sessions per agent for the chip.
+  const liveByAgent = useMemo(() => { const m = new Map<string, number>(); for (const s of live) m.set(s.agent, (m.get(s.agent) ?? 0) + 1); return m }, [live])
+  const onlineAgents = useMemo(() => agents.filter((a) => liveByAgent.has(a.id)), [agents, liveByAgent])
+  const activeAgents = liveByAgent.size
   const idleAgents = Math.max(0, agents.length - activeAgents)
   const blockedCount = blockedRuns.size
   const board = useMemo(() => Object.values(maturity).filter((s) => s.confidence !== 'none' && s.runs.total > 0).sort((a, b) => b.maturity - a.maturity).slice(0, 6), [maturity])
+
+  // Human presence — polled on its own cadence (activity is stamped ≤1/min server-side, so 15s is plenty).
+  const [presence, setPresence] = useState<{ now: number; lastSeen: Record<string, number> }>({ now: 0, lastSeen: {} })
+  useEffect(() => {
+    let ok = true
+    const load = () => api.presence().then((r) => { if (ok) setPresence(r) }).catch(() => {})
+    load(); const t = setInterval(load, 15000)
+    return () => { ok = false; clearInterval(t) }
+  }, [])
+  const ONLINE_MS = 3 * 60 * 1000
+  const seenAt = (id: string) => presence.lastSeen[id]
+  const isOnline = (id: string) => { const ls = seenAt(id); return !!ls && presence.now - ls < ONLINE_MS }
+  const people = useMemo(() => [...members].sort((a, b) => (Number(isOnline(b.id)) - Number(isOnline(a.id))) || a.name.localeCompare(b.name)), [members, presence])
+  const peopleOnline = members.filter((m) => isOnline(m.id)).length
 
   const stateOf = (s: Session): 'live' | 'headless' | 'blocked' => blockedRuns.has(s.id) ? 'blocked' : s.headless ? 'headless' : 'live'
   const bandTone = (m: number) => (m >= 0.66 ? '#10b981' : m >= 0.33 ? '#f59e0b' : '#f43f5e')
@@ -4927,14 +4944,25 @@ function OverviewPage({ me: _me, sessions, messages, members, agents, maturity, 
     const map = { live: ['Live', 'text-emerald-600 dark:text-emerald-500 bg-emerald-500/10'], headless: ['Unattended', 'text-violet-600 dark:text-violet-400 bg-violet-500/10'], blocked: ['Blocked', 'text-amber-600 dark:text-amber-500 bg-amber-500/10'] } as const
     return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${map[st][1]}`}>{map[st][0]}</span>
   }
-  const tile = (n: number, label: string, sub: string, color: string) => (
-    <Card key={label}><CardContent className="flex items-center gap-3 p-4">
-      <span className="h-9 w-1 shrink-0 rounded" style={{ background: color }} />
-      <div className="min-w-0">
-        <div className="text-2xl font-semibold leading-none tabular-nums" style={{ color }}>{n}</div>
-        <div className="mt-1 text-[11px] font-medium">{label}<span className="block text-[10.5px] font-normal text-muted-foreground">{sub}</span></div>
+  // Polished KPI tile: a tinted icon badge + a big figure, tied together by one semantic hue.
+  const tile = (Icon: LucideIcon, n: number, label: string, sub: string, hue: string) => (
+    <Card key={label}><CardContent className="p-4">
+      <div className="flex items-center justify-between">
+        <span className="grid h-8 w-8 place-items-center rounded-lg" style={{ background: `${hue}1f`, color: hue }}><Icon className="h-4 w-4" /></span>
+        <span className="text-[26px] font-semibold leading-none tabular-nums" style={{ color: hue }}>{n}</span>
       </div>
+      <div className="mt-3 text-[12.5px] font-semibold">{label}</div>
+      <div className="text-[11px] text-muted-foreground">{sub}</div>
     </CardContent></Card>
+  )
+  // A member avatar with an online/offline presence dot.
+  const memberDot = (m: Member, size = 'h-8 w-8') => (
+    <span className="relative shrink-0">
+      {m.avatar
+        ? <img src={m.avatar} alt="" className={`${size} rounded-full object-cover`} />
+        : <span className={`${size} grid place-items-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground`}>{(m.name || m.email || '?').charAt(0).toUpperCase()}</span>}
+      <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background ${isOnline(m.id) ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
+    </span>
   )
 
   // Fleet-now donut (agent status): active / idle / blocked.
@@ -4943,16 +4971,80 @@ function OverviewPage({ me: _me, sessions, messages, members, agents, maturity, 
   const RAD = 34, CIRC = 2 * Math.PI * RAD
   let acc = 0
 
+  const hr = new Date().getHours()
+  const greeting = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening'
+  const firstName = (me.name || me.email || '').split(/[\s@]/)[0]
+
   return (
-    <div className="mx-auto max-w-6xl space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {tile(live.length, 'Active', 'sessions running', '#10b981')}
-        {tile(idleAgents, 'Idle', 'agents ready', 'var(--muted-foreground)')}
-        {tile(blockedCount, 'Blocked', 'need a human', '#f59e0b')}
-        {tile(doneToday, 'Done today', 'finished runs', 'var(--primary)')}
+    <div className="mx-auto max-w-6xl space-y-5">
+      {/* Greeting + one-line fleet status */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">{greeting}{firstName ? `, ${firstName}` : ''}</h2>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            {live.length === 0 ? 'No agents are running right now.' : <><span className="font-medium text-foreground">{live.length}</span> agent{live.length === 1 ? '' : 's'} working now</>}
+            {blockedCount > 0 && <> · <span className="font-medium text-amber-600 dark:text-amber-500">{blockedCount}</span> waiting on you</>}
+            {' · '}{doneToday} finished today
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-2 rounded-full border bg-card px-3 py-1.5 text-[12px] font-medium text-muted-foreground">
+          <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
+          Live
+        </span>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr]">
+      {/* KPI tiles */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {tile(Activity, live.length, 'Active', 'sessions running', '#10b981')}
+        {tile(Moon, idleAgents, 'Idle', 'agents ready', '#64748b')}
+        {tile(AlertTriangle, blockedCount, 'Blocked', 'need a human', '#f59e0b')}
+        {tile(CheckCircle2, doneToday, 'Done today', 'finished runs', '#6366f1')}
+      </div>
+
+      {/* Online now — people presence + agents with a live session */}
+      <Card><CardContent className="p-0">
+        <div className="flex items-center gap-2 border-b px-4 py-3">
+          <Users className="h-4 w-4 text-muted-foreground" />
+          <div><div className="text-[13.5px] font-semibold">Online now</div><div className="text-[11.5px] text-muted-foreground">{peopleOnline} of {members.length} {members.length === 1 ? 'person' : 'people'} · {onlineAgents.length} agent{onlineAgents.length === 1 ? '' : 's'} active</div></div>
+        </div>
+        <div className="grid divide-y sm:grid-cols-2 sm:divide-x sm:divide-y-0">
+          {/* People */}
+          <div className="space-y-2.5 p-4">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">People</div>
+            {people.length === 0 ? <div className="py-2 text-[12.5px] text-muted-foreground">No members yet.</div> : people.map((m) => {
+              const on = isOnline(m.id); const ls = seenAt(m.id)
+              return (
+                <div key={m.id} className="flex items-center gap-2.5">
+                  {memberDot(m, 'h-8 w-8')}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium">{m.name || m.email}</div>
+                    <div className="text-[11px] capitalize text-muted-foreground">{m.role}</div>
+                  </div>
+                  <span className={`shrink-0 text-[11px] tabular-nums ${on ? 'font-medium text-emerald-600 dark:text-emerald-500' : 'text-muted-foreground'}`}>{on ? 'Online' : ls ? `${timeAgo(ls)} ago` : 'Offline'}</span>
+                </div>
+              )
+            })}
+          </div>
+          {/* Agents */}
+          <div className="space-y-3 p-4">
+            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Agents</div>
+            {onlineAgents.length === 0 ? <div className="py-2 text-[12.5px] text-muted-foreground">No agents running right now.</div> : (
+              <div className="flex flex-wrap gap-2">
+                {onlineAgents.map((a) => (
+                  <button key={a.id} onClick={() => nav('agents', a.id)} className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-[12px] font-medium transition-colors hover:border-primary/50">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    <span className="max-w-[140px] truncate">{a.id}</span>
+                    {(liveByAgent.get(a.id) ?? 0) > 1 && <span className="text-muted-foreground tabular-nums">×{liveByAgent.get(a.id)}</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="text-[11px] text-muted-foreground">{idleAgents} of {agents.length} idle</div>
+          </div>
+        </div>
+      </CardContent></Card>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
         {/* Working now — live sessions as rich cards */}
         <Card><CardContent className="p-0">
           <div className="flex items-center gap-2 border-b px-4 py-3">
