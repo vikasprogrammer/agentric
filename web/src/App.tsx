@@ -22,9 +22,9 @@ import { Xterm } from './Xterm'
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'dreaming' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'overview' | 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'dreaming' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'dreaming', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['overview', 'inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'dreaming', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -733,6 +733,15 @@ function Console({ me }: { me: Member }) {
     setHiddenTabs(next)
   }
   const [messages, setMessages] = useState<Msg[]>([])
+  // Fleet-wide agent trust/maturity (keyed by agent id) for the owner-only Overview leaderboard. Fetched
+  // once for owners; stats move slowly so no need to poll it on the live tick.
+  const [maturity, setMaturity] = useState<Record<string, AgentStats>>({})
+  useEffect(() => {
+    if (me.role !== 'owner') return
+    let ok = true
+    api.agentStatsAll().then((r) => { if (ok) setMaturity(Object.fromEntries(r.stats.map((s) => [s.agentId, s]))) }).catch(() => {})
+    return () => { ok = false }
+  }, [me.role])
   // Latest messages reachable from imperative event handlers (the terminal's click listener) without
   // re-binding them every render / going stale on the captured `messages`.
   const messagesRef = useRef<Msg[]>([])
@@ -1029,6 +1038,7 @@ function Console({ me }: { me: Member }) {
           </Button>
           <div className="mt-1 text-base" title={state?.tenantName || state?.tenant || 'Agent OS'}>⚙️</div>
           <nav className="mt-2 flex flex-col items-center gap-1">
+            {me.role === 'owner' && <Button render={<a href={navHref('overview')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'overview' ? 'text-primary' : 'text-muted-foreground'}`} title="Overview" onClick={onNavClick(() => nav('overview'))}><LayoutGrid className="h-4 w-4" /></Button>}
             <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
             {pinnedNav.map((n) => (
@@ -1054,6 +1064,7 @@ function Console({ me }: { me: Member }) {
             </Button>
           </div>
           <nav className="space-y-1">
+            {me.role === 'owner' && <NavItem icon={<LayoutGrid className="h-4 w-4" />} label="Overview" active={route === 'overview'} href={navHref('overview')} onClick={() => nav('overview')} />}
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
             {pinnedNav.map((n) => (
@@ -1165,7 +1176,7 @@ function Console({ me }: { me: Member }) {
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'dreaming' ? 'Dreaming' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
+                {route === 'overview' ? 'Overview' : route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'dreaming' ? 'Dreaming' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
               </h1>
             </div>
           )}
@@ -1176,6 +1187,7 @@ function Console({ me }: { me: Member }) {
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} messages={messages} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
@@ -4795,6 +4807,132 @@ function dueMeta(dueAt: number | undefined, status: TaskStatus): { label: string
 const toDateInput = (ms?: number) => (ms ? new Date(ms - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10) : '')
 /** yyyy-mm-dd (local) → epoch ms at local midnight, or null when cleared. */
 const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00').getTime() : null)
+
+/** Owner-only home. What the fleet is doing right now (live sessions + who's accountable for each) and
+ *  which agents are earning trust. Pure-props: it reads the sessions/messages the Console already polls
+ *  and the fleet maturity map, so it live-updates on the 1.5s tick with no fetch of its own. */
+function OverviewPage({ me: _me, sessions, messages, members, agents, maturity, onOpen, nav }: {
+  me: Member; sessions: Session[]; messages: Msg[]; members: Member[]; agents: AgentInfo[]
+  maturity: Record<string, AgentStats>; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void
+}) {
+  // A run is "blocked" when it has a pending approval/question waiting on a human (keyed by session id).
+  const blockedRuns = useMemo(() => new Set(messages.filter(isActionRequired).map((m) => m.sessionId)), [messages])
+  const live = useMemo(() => sessions.filter(isLive).sort((a, b) => a.createdAt - b.createdAt), [sessions])
+  const t0 = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }, [])
+  const doneToday = sessions.filter((s) => s.status === 'done' && s.updatedAt >= t0).length
+  const activeAgents = new Set(live.map((s) => s.agent)).size
+  const idleAgents = Math.max(0, agents.length - activeAgents)
+  const blockedCount = blockedRuns.size
+  const board = useMemo(() => Object.values(maturity).filter((s) => s.confidence !== 'none' && s.runs.total > 0).sort((a, b) => b.maturity - a.maturity).slice(0, 6), [maturity])
+
+  const stateOf = (s: Session): 'live' | 'headless' | 'blocked' => blockedRuns.has(s.id) ? 'blocked' : s.headless ? 'headless' : 'live'
+  const bandTone = (m: number) => (m >= 0.66 ? '#10b981' : m >= 0.33 ? '#f59e0b' : '#f43f5e')
+  const pill = (st: 'live' | 'headless' | 'blocked') => {
+    const map = { live: ['Live', 'text-emerald-600 dark:text-emerald-500 bg-emerald-500/10'], headless: ['Unattended', 'text-violet-600 dark:text-violet-400 bg-violet-500/10'], blocked: ['Blocked', 'text-amber-600 dark:text-amber-500 bg-amber-500/10'] } as const
+    return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${map[st][1]}`}>{map[st][0]}</span>
+  }
+  const tile = (n: number, label: string, sub: string, color: string) => (
+    <Card key={label}><CardContent className="flex items-center gap-3 p-4">
+      <span className="h-9 w-1 shrink-0 rounded" style={{ background: color }} />
+      <div className="min-w-0">
+        <div className="text-2xl font-semibold leading-none tabular-nums" style={{ color }}>{n}</div>
+        <div className="mt-1 text-[11px] font-medium">{label}<span className="block text-[10.5px] font-normal text-muted-foreground">{sub}</span></div>
+      </div>
+    </CardContent></Card>
+  )
+
+  // Fleet-now donut (agent status): active / idle / blocked.
+  const segs = [{ v: activeAgents, c: '#10b981' }, { v: idleAgents, c: 'var(--muted-foreground)' }, { v: blockedCount, c: '#f59e0b' }].filter((s) => s.v > 0)
+  const donutTotal = Math.max(1, activeAgents + idleAgents + blockedCount)
+  const RAD = 34, CIRC = 2 * Math.PI * RAD
+  let acc = 0
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {tile(live.length, 'Active', 'sessions running', '#10b981')}
+        {tile(idleAgents, 'Idle', 'agents ready', 'var(--muted-foreground)')}
+        {tile(blockedCount, 'Blocked', 'need a human', '#f59e0b')}
+        {tile(doneToday, 'Done today', 'finished runs', 'var(--primary)')}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr]">
+        {/* Working now — live sessions as rich cards */}
+        <Card><CardContent className="p-0">
+          <div className="flex items-center gap-2 border-b px-4 py-3">
+            <TerminalSquare className="h-4 w-4 text-muted-foreground" />
+            <div><div className="text-[13.5px] font-semibold">Working now</div><div className="text-[11.5px] text-muted-foreground">{live.length} live session{live.length === 1 ? '' : 's'}</div></div>
+            <a href={navHref('sessions')} onClick={(e) => { e.preventDefault(); nav('sessions') }} className="ml-auto text-[11.5px] font-semibold text-primary no-underline">Sessions →</a>
+          </div>
+          {live.length === 0 ? (
+            <div className="px-4 py-10 text-center text-[13px] text-muted-foreground">No agents are running right now.</div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2">
+              {live.map((s) => {
+                const st = stateOf(s); const om = originMeta(s.sourceKind); const OI = om.icon
+                return (
+                  <button key={s.id} onClick={() => onOpen(s.tmux, s.title)} className="flex flex-col gap-2 rounded-lg border bg-card p-3 text-left transition-colors hover:border-primary/50">
+                    <div className="flex items-center gap-2">
+                      {st === 'live'
+                        ? <span className="relative flex h-2 w-2 shrink-0"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
+                        : <span className={`h-2 w-2 shrink-0 rounded-full ${st === 'blocked' ? 'bg-amber-500' : 'bg-violet-500'}`} />}
+                      <span className="truncate text-[13.5px] font-semibold">{s.agent}</span>
+                      <span className="ml-auto">{pill(st)}</span>
+                    </div>
+                    <div className="line-clamp-2 text-[12.5px] text-muted-foreground">{s.title || s.task || '—'}</div>
+                    <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-2 text-[11px] text-muted-foreground">
+                      {(s.runAs || s.runAsLabel) ? <PrincipalTag id={s.runAs} label={s.runAsLabel} members={members} /> : <span className="inline-flex items-center gap-1"><Cpu className="h-3 w-3" />System</span>}
+                      <span className="inline-flex items-center gap-1"><OI className="h-3 w-3" />{om.label}</span>
+                      <span className="ml-auto tabular-nums">{timeAgo(s.createdAt)}</span>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </CardContent></Card>
+
+        {/* Right rail: fleet-now donut + best-agents leaderboard */}
+        <div className="space-y-4">
+          <Card><CardContent className="p-4">
+            <div className="mb-2 text-[13.5px] font-semibold">Fleet now</div>
+            <div className="flex items-center gap-4">
+              <svg viewBox="0 0 88 88" width="92" height="92" className="shrink-0">
+                {segs.map((s, i) => { const len = (s.v / donutTotal) * CIRC; const off = -acc; acc += len; return <circle key={i} cx="44" cy="44" r={RAD} fill="none" stroke={s.c} strokeWidth="12" strokeDasharray={`${len} ${CIRC - len}`} strokeDashoffset={off} transform="rotate(-90 44 44)" /> })}
+                <text x="44" y="41" textAnchor="middle" className="fill-foreground" fontSize="19" fontWeight="700">{agents.length}</text>
+                <text x="44" y="55" textAnchor="middle" className="fill-muted-foreground" fontSize="8.5">agents</text>
+              </svg>
+              <div className="space-y-1.5 text-[12.5px]">
+                <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500" />{activeAgents} active</div>
+                <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-muted-foreground" />{idleAgents} idle</div>
+                <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-amber-500" />{blockedCount} blocked</div>
+              </div>
+            </div>
+          </CardContent></Card>
+
+          <Card><CardContent className="p-0">
+            <div className="flex items-center gap-2 border-b px-4 py-3">
+              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              <div><div className="text-[13.5px] font-semibold">Best agents</div><div className="text-[11.5px] text-muted-foreground">by trust &amp; maturity</div></div>
+              <a href={navHref('agents')} onClick={(e) => { e.preventDefault(); nav('agents') }} className="ml-auto text-[11.5px] font-semibold text-primary no-underline">Agents →</a>
+            </div>
+            {board.length === 0 ? (
+              <div className="px-4 py-8 text-center text-[12.5px] text-muted-foreground">No agents have enough runs yet.</div>
+            ) : board.map((s, i) => (
+              <div key={s.agentId} className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0">
+                <span className={`w-4 text-center text-[12px] font-bold tabular-nums ${i < 3 ? 'text-primary' : 'text-muted-foreground'}`}>{i + 1}</span>
+                <button onClick={() => nav('agents', s.agentId)} className="flex-1 truncate text-left text-[12.5px] font-semibold hover:text-primary">{s.agentId}</button>
+                <div className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full" style={{ width: `${Math.round(s.maturity * 100)}%`, background: bandTone(s.maturity) }} /></div>
+                <span className="w-7 shrink-0 text-right text-[13px] font-bold tabular-nums">{Math.round(s.maturity * 100)}</span>
+                <span className="w-14 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{'\u{1F44D}'}{s.rated.up} {'\u{1F44E}'}{s.rated.down}</span>
+              </div>
+            ))}
+          </CardContent></Card>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
