@@ -74,6 +74,17 @@ const takeOverAndOpen = (s: Session, onOpen: (tmux: string, title: string) => vo
   void api.goInteractive(s.id).finally(() => onOpen(s.tmux, s.agent + ' · ' + s.id))
 }
 
+/** A claude-code session with a persisted conversation can be FORKED — branched into a new independent
+ *  session that inherits the parent's full context. Offered regardless of live/done (forking reads the
+ *  transcript, not the live pane), so you can branch a finished run or an in-flight one alike. */
+const canFork = (s: Session): boolean => Boolean(s.forkable)
+
+/** Fork a session from the console: branch it server-side (parent untouched), THEN open the NEW session's
+ *  terminal so the user lands in the forked conversation ready to steer it down a different path. */
+const forkAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void): void => {
+  void api.forkSession(s.id).then((r) => { if (r.tmux) onOpen(r.tmux, s.agent + ' · fork') })
+}
+
 /** Coarse provenance category of a session, from its raw `spawnedBy` (`automation:`/`task:`/`chat:`
  *  prefixes, else a member started it directly). Drives the Source filter on the sessions list. */
 type SessionSource = 'member' | 'automation' | 'task' | 'chat'
@@ -2245,6 +2256,11 @@ function SessionsPage({
               <Terminal className="h-3 w-3" />
             </button>
           )}
+          {canFork(s) && (
+            <button className="rounded p-0.5 text-violet-400 hover:bg-neutral-600 hover:text-violet-300" onClick={() => forkAndOpen(s, onOpen)} title="fork — branch a new session that inherits this conversation (the original is left untouched)">
+              <GitBranch className="h-3 w-3" />
+            </button>
+          )}
           {isLive(s) && (
             <button className="rounded p-0.5 text-amber-400 hover:bg-neutral-600 hover:text-amber-300" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
               <Square className="h-3 w-3" />
@@ -2467,6 +2483,11 @@ function SessionsPage({
                     <Terminal className="h-3 w-3" /> Take over
                   </Button>
                 )}
+                {canFork(s) && (
+                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-violet-600" onClick={() => forkAndOpen(s, onOpen)} title="fork — branch a new session that inherits this conversation (the original is left untouched)">
+                    <GitBranch className="h-3 w-3" /> Fork
+                  </Button>
+                )}
                 {isLive(s) && (
                   <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-amber-600" onClick={() => onStop(s.id)} title="kill this session's shell">
                     <X className="h-3 w-3" /> Stop
@@ -2523,7 +2544,7 @@ function SessionsPage({
               <div className={`shrink-0 transition-opacity ${!isLive(s) ? (s.rating ? '' : 'opacity-40 group-hover:opacity-100') : 'invisible'}`}>
                 {!isLive(s) && <RunRating session={s} onRate={onRate} />}
               </div>
-              <div className="flex w-32 shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <div className="flex w-40 shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="resume — reopen and continue this session (claude --resume)">
                     <Play className="h-3.5 w-3.5" />
@@ -2532,6 +2553,11 @@ function SessionsPage({
                 {canGoInteractive(s) && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — attach to this live run and steer it; nothing is interrupted">
                     <Terminal className="h-3.5 w-3.5" />
+                  </Button>
+                )}
+                {canFork(s) && (
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-violet-600" onClick={() => forkAndOpen(s, onOpen)} title="fork — branch a new session that inherits this conversation (the original is left untouched)">
+                    <GitBranch className="h-3.5 w-3.5" />
                   </Button>
                 )}
                 {isLive(s) && (

@@ -277,10 +277,23 @@ if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
   # Reconnect to a stopped session: reopen the SAME conversation (no task re-seed — it's already
   # in the transcript). If resume fails (e.g. claude never persisted a turn before it was stopped),
   # fall back to a fresh session under the same id, seeded with the original task.
+  # RESUME is checked BEFORE FORK_FROM on purpose: a forked session persists FORK_FROM in its launch
+  # env, but a later reattach must resume THIS branch in place (RESUME=1), never re-fork the parent.
   notify_resumed
   dim "resuming claude session $CLAUDE_SESSION_ID …"
   echo
   claude --resume "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" \
+    || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "$TASK"
+elif [ -n "${FORK_FROM:-}" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+  # FORK (first launch only): branch a NEW conversation ($CLAUDE_SESSION_ID) off an existing one
+  # ($FORK_FROM). `--fork-session` copies the parent's history into OUR chosen new id and leaves the
+  # parent transcript untouched, so both diverge independently. Seeded with $TASK — the follow-up
+  # instruction that kicks off the branch (may be empty → just opens the forked conversation). A later
+  # reconnect sets RESUME=1 (handled above), so the fork happens exactly once. If the fork fails (e.g.
+  # the parent transcript is gone), fall back to a fresh session under the new id seeded with $TASK.
+  dim "forking claude session $FORK_FROM → $CLAUDE_SESSION_ID …"
+  echo
+  claude --resume "$FORK_FROM" --fork-session --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"} \
     || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "$TASK"
 elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
   claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "$TASK"

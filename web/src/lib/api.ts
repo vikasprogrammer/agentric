@@ -152,6 +152,10 @@ export interface Session {
   /** True when this session can be resurrected in place via `claude --resume` on re-open (interactive
    *  session with a persisted launch env). Headless runs are never resumable. */
   resumable?: boolean
+  /** True when this session can be FORKED — branched into a new independent session that inherits its
+   *  full conversation (`claude --resume <parent> --fork-session`). Requires a claude-code runtime and a
+   *  persisted conversation. Unlike `resumable`, a finished/headless run is forkable too. */
+  forkable?: boolean
   spawnedBy?: string
   spawnedByLabel?: string
   /** Normalized origin category — how this session was initiated. `manual` = a console member; the
@@ -953,6 +957,9 @@ export const api = {
   /** Take over a headless run: convert it to an attachable interactive session (claude --resume). Kills
    *  the in-flight `-p` turn if still streaming; then open the terminal to watch/steer. */
   goInteractive: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/interactive`),
+  /** Fork a session into a NEW branch that inherits its full conversation; returns the new session's
+   *  id/tmux so the caller can open its terminal. Optional `task` seeds the branch's first instruction. */
+  forkSession: (id: string, task?: string) => call<{ id?: string; tmux?: string; error?: string }>('POST', `/api/sessions/${id}/fork`, { task }),
   deleteSession: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/sessions/' + id),
   attach: (id: string) => call<{ url?: string; error?: string }>('GET', `/api/sessions/${id}/attach`),
   sessionTranscript: (id: string) => call<{ text?: string; error?: string }>('GET', `/api/sessions/${id}/transcript`),

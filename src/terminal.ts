@@ -158,6 +158,11 @@ export interface Session {
    * offers a Resume affordance once it's no longer live.
    */
   resumable?: boolean;
+  /** True when this session can be FORKED — branched into a new independent session that inherits its
+   *  full conversation (`claude --resume <parent> --fork-session`). Requires a claude-code runtime and a
+   *  persisted `claude_session_id` (a conversation to branch from). Unlike `resumable`, a headless run is
+   *  forkable too — forking reads the transcript, it doesn't need the parent's live launch env. */
+  forkable?: boolean;
   /** Raw provenance: member id, or `automation:<id>`/`task:<id>`/`chat:<name>` when a trigger spawned it. */
   spawnedBy?: string;
   /** Human-readable provenance for the console (member name/email, or the automation's name). */
@@ -247,6 +252,7 @@ interface SessionRow {
   status: SessionStatus;
   spawned_by: string | null;
   run_as: string | null;
+  claude_session_id: string | null;
   headless: number | null;
   claimed_by: string | null;
   claimed_at: number | null;
@@ -479,6 +485,7 @@ export class TerminalManager {
       ...toSession(r),
       alive: alive ? alive.has(r.tmux) : undefined,
       resumable: resumable.has(r.id),
+      forkable: !!r.claude_session_id && this.os.agents.get(r.agent)?.runtime === 'claude-code',
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
       sourceKind: this.sourceKind(r.spawned_by),
       runAsLabel: this.runAsLabel(r.run_as),
@@ -965,6 +972,49 @@ export class TerminalManager {
   }
 
   /**
+   * FORK a session: start a NEW, independent session that BRANCHES from an existing conversation. The
+   * fork inherits the parent's full context (`claude --resume <parent> --fork-session`) but gets its own
+   * session id, tmux pane, and a NEW claude session id — so it diverges from the branch point while the
+   * parent transcript is left completely untouched. Always an interactive, attachable run (a human is
+   * branching to explore/steer), optionally seeded with a `task` (the follow-up that kicks off the
+   * branch). Same agent + folder as the parent (the transcript is keyed to that folder); run-as identity
+   * is inherited from the parent (it's the same conversation continued), with the forking member as
+   * provenance. Returns the new session, or an error when the parent isn't a forkable claude-code run.
+   */
+  forkSession(sourceId: string, by: string, task?: string): { ok: boolean; session?: Session; error?: string } {
+    const src = this.db.prepare('SELECT agent, claude_session_id, run_as FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; claude_session_id: string | null; run_as: string | null }>(sourceId);
+    if (!src) return { ok: false, error: 'unknown session' };
+    const manifest = this.os.agents.get(src.agent);
+    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be forked' };
+    if (!src.claude_session_id) return { ok: false, error: 'this session has no conversation to fork yet' };
+
+    const id = randomUUID().slice(0, 8);
+    const tmux = `aos-${id}`;
+    // The fork's OWN new conversation id (distinct from the parent's) — `--fork-session --session-id`
+    // copies the parent history into it, leaving the parent's transcript intact.
+    const claudeSessionId = randomUUID();
+    // Inherit the branch identity (connectors/Composio/uid follow run_as); fall back to the forker when
+    // the parent had none. Provenance (`spawned_by`) is the forking member — this fork was console-driven.
+    const actingMember = src.run_as ?? (by || undefined);
+    const secret = randomBytes(24).toString('hex');
+    const seed = (task || '').trim();
+    const title = `fork of ${sourceId}${seed ? ' · ' + (seed.length > 48 ? seed.slice(0, 47) + '…' : seed) : ''}`;
+    const now = Date.now();
+    const session: Session = { id, agent: src.agent, title, task: seed, tmux, status: 'running', createdAt: now, updatedAt: now };
+    this.db
+      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, resident, last_activity, headless, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, src.agent, title, seed, tmux, 'running', by ?? null, actingMember ?? null, secret, claudeSessionId, 0, null, 0, now, now);
+    this.audit(id, src.agent, 'session.forked', { from: sourceId, fromClaudeId: src.claude_session_id, claudeSessionId, runAs: actingMember ?? null, by });
+    this.launchClaudeCode({
+      id, agent: src.agent, task: seed, secret, actingMember, spawnedBy: by,
+      hasSlack: false, hasDiscord: false, headless: false, resident: false, resume: false,
+      claudeSessionId, forkFrom: src.claude_session_id,
+    });
+    return { ok: true, session };
+  }
+
+  /**
    * Spawn the claude-code runtime for a session row (in its agent folder, governed by the gate hook).
    * Factored out of `createSession` so `reviveResident` can re-launch the SAME row (same id/tmux/secret/
    * claude id) after the warm session was reaped — with `resume: true` it continues the transcript.
@@ -975,6 +1025,10 @@ export class TerminalManager {
     id: string; agent: string; task: string; secret: string;
     actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean;
     headless: boolean; resident: boolean; resume: boolean; claudeSessionId: string;
+    // Fork: branch this NEW session (claudeSessionId) off an existing conversation (forkFrom). The
+    // launcher's FORK_FROM branch runs `claude --resume <forkFrom> --fork-session --session-id
+    // <claudeSessionId>` on first launch; a reattach (resume:true) resumes the fork's own branch.
+    forkFrom?: string;
   }): void {
     const manifest = this.os.agents.get(o.agent);
     if (!manifest?.dir) return;
@@ -1009,6 +1063,10 @@ export class TerminalManager {
     // follow-up or a console reconnect) instead of starting fresh.
     env.CLAUDE_SESSION_ID = o.claudeSessionId;
     if (o.resume) env.RESUME = '1';
+    // Fork: on FIRST launch, branch off the parent conversation. RESUME is never set alongside forkFrom
+    // (a fork's first run resumes nothing), and the launcher checks RESUME before FORK_FROM, so a later
+    // reattach — which sets RESUME=1 from the persisted env — resumes THIS branch instead of re-forking.
+    if (o.forkFrom) env.FORK_FROM = o.forkFrom;
     // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`).
     this.injectShellSecrets(env, o.agent, manifest, o.id);
     // Secrets ASSIGNED to this agent from the Secrets page — the inverse view of `shellSecrets`,

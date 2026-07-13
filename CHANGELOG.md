@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.152.0] — 2026-07-13
+### Added
+- **Fork a session.** A new **Fork** action (⑃) on the Sessions list branches any claude-code session with
+  a conversation into a NEW, independent session that inherits the parent's full context — like
+  `claude --resume` but into a separate branch rather than continuing in place, so the original transcript
+  is left completely untouched and the two diverge from the branch point. The fork gets its own session id,
+  tmux pane, and a new claude session id; it runs in the SAME agent folder (the transcript is keyed to it)
+  and inherits the parent's run-as identity, with the forking member as provenance. Works on a finished or
+  in-flight run alike (forking reads the transcript, not the live pane). Verified empirically that
+  `claude --resume <parent> --fork-session --session-id <new>` honors our chosen id and preserves context.
+  (`forkSession` + `forkable` flag in `src/terminal.ts`, the `FORK_FROM` launch path in
+  `terminal/claude-launch.sh` — checked AFTER `RESUME` so a reattach resumes the branch instead of
+  re-forking, `POST /api/sessions/:id/fork` in `src/server.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`.)
+
 ## [0.150.2] — 2026-07-13
 ### Fixed
 - **Dreaming timing — three correctness bugs in the reflect loop's windowing (audit-driven).**
