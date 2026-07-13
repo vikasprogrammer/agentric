@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.176.1] — 2026-07-13
+### Changed
+- **Digest drops agent self-maintenance lines.** A report about an agent editing its OWN prompt (e.g.
+  *"Rewrote my CLAUDE.md rev 5…"*) is self-maintenance, not fleet work, so it no longer clutters the "what
+  got done" changelog (still counted in the header tally). Detected on the reported **line** — `\b(my|its|
+  their|own) (claude.md|system prompt|starter prompts|instructions)\b` — not the `agent.config.updated`
+  audit event, because a session that did real work AND incidentally touched its config (e.g. a "QA PASS on
+  PR #2613" run) would otherwise be wrongly dropped. `src/edge/digest.ts`.
+
 ## [0.176.0] — 2026-07-13
 ### Changed
 - **Daily digest — links + cleaner formatting, and two accuracy fixes.**
