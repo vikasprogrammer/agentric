@@ -2573,25 +2573,30 @@ export class TerminalManager {
   }
 
   /**
-   * Console operator pasted/dropped a file (typically an image) onto a LIVE session. Save it under the
-   * agent's OWN working folder (`.inbox/`) — reachable by the agent's Read tool via a relative path —
-   * and type its relative path into the running claude (no auto-submit) so the operator can add a
-   * question and send. The agent's Read tool can then view the image. Authz is the caller's job
-   * (canViewSession). Returns the in-folder relative path.
+   * Console operator pasted/dropped/picked a file (ANY type — image, PDF, log, zip, …) onto a LIVE
+   * session. Save it under the agent's OWN working folder (`.inbox/`) — reachable by the agent's Read
+   * tool via a relative path — and type its relative path into the running claude (no auto-submit) so
+   * the operator can add a question and send. The agent's Read tool can then open the file. Authz is
+   * the caller's job (canViewSession). `origName` (the browser filename) is preserved when present so
+   * the agent sees a meaningful path (timestamp-prefixed to stay unique); otherwise we fall back to
+   * `pasted-<ts>.<ext>`. Returns the in-folder relative path.
    */
-  attachFile(sessionId: string, by: string, data: Buffer, ext: string): { ok: boolean; path?: string; error?: string } {
+  attachFile(sessionId: string, by: string, data: Buffer, ext: string, origName?: string): { ok: boolean; path?: string; error?: string } {
     const row = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?')
       .get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
     if (row.status !== 'running') return { ok: false, error: 'session is not live — attachments need a running session' };
     const manifest = this.os.agents.get(row.agent);
     if (!manifest?.dir) return { ok: false, error: 'agent has no working folder' };
-    const safeExt = (ext || 'png').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'bin';
+    const safeExt = (ext || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
+    // Prefer the real filename (basename only, sanitized) so a report.pdf stays report.pdf; a
+    // timestamp prefix keeps concurrent same-name uploads from clobbering each other.
+    const clean = (origName || '').split(/[\\/]/).pop()!.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 80);
     let rel: string;
     try {
       const dir = path.join(manifest.dir, '.inbox');
       fs.mkdirSync(dir, { recursive: true });
-      const name = `pasted-${Date.now()}.${safeExt}`;
+      const name = clean && /\.[A-Za-z0-9]+$/.test(clean) ? `${Date.now()}-${clean}` : `pasted-${Date.now()}.${safeExt}`;
       fs.writeFileSync(path.join(dir, name), data);
       rel = path.join('.inbox', name);
     } catch (e) {

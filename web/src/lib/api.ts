@@ -903,10 +903,11 @@ export const api = {
   sessionTranscript: (id: string) => call<{ text?: string; error?: string }>('GET', `/api/sessions/${id}/transcript`),
   /** The agent-os primitives this session used — a classified timeline + grouped counts. */
   sessionActivity: (id: string) => call<SessionActivityResp>('GET', `/api/sessions/${id}/activity`),
-  /** Upload a pasted/dropped image into a live session; the server saves it in the agent's folder and
-   *  types the path into the running claude. `dataB64` is base64 (no data: prefix); `ext` e.g. 'png'. */
-  attachFile: (id: string, dataB64: string, ext: string) =>
-    call<{ ok: boolean; path?: string; error?: string }>('POST', `/api/sessions/${id}/attach-file`, { dataB64, ext }),
+  /** Upload a pasted/dropped/picked file (ANY type) into a live session; the server saves it in the
+   *  agent's folder and types the path into the running claude. `dataB64` is base64 (no data: prefix);
+   *  `ext` e.g. 'pdf'; `name` is the original filename, preserved when given. */
+  attachFile: (id: string, dataB64: string, ext: string, name?: string) =>
+    call<{ ok: boolean; path?: string; error?: string }>('POST', `/api/sessions/${id}/attach-file`, { dataB64, ext, name }),
   resolve: (id: string, approved: boolean) => call<{ ok: boolean; error?: string }>('POST', '/api/approvals/' + id, { approved }),
   /** Approve this attempt AND add a persistent policy `allow` rule for its capability (owner-only). */
   alwaysApprove: (id: string) => call<{ ok: boolean; ruleAdded?: boolean; note?: string; error?: string }>('POST', `/api/approvals/${id}/always`),

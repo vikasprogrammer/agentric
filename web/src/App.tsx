@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -1748,7 +1748,7 @@ function TerminalHelpModal({ open, onClose }: { open: boolean; onClose: () => vo
     { keys: `${mod} + V  ·  right-click`, desc: 'Paste into the terminal.' },
     { keys: 'Mouse wheel', desc: 'Scroll back through output. Inside a full-screen app (claude) it scrolls that app.' },
     { keys: 'Click a link', desc: 'URLs in the output are clickable — opens in a new tab.' },
-    { keys: 'Paste / drop an image', desc: 'Sends the image to the agent (it can’t travel over the raw terminal).' },
+    { keys: 'Paste / drop a file', desc: 'Sends the file (any type) to the agent (it can’t travel over the raw terminal).' },
   ]
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
@@ -1855,11 +1855,11 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
 }
 
 /** Wraps the first-party terminal (<Xterm>) with the console chrome: the font stepper, the "how to use"
- *  help modal, and the paths to get an IMAGE into the remote session — which the pty can't carry. Three
- *  ways in: a 📎 button, drag-and-drop onto the pane, and Cmd/Ctrl+V (image paste). Each uploads the
- *  bytes; the server saves them in the agent's folder and types the path into the running claude. Now
- *  that the terminal is same-document (no iframe), drops/pastes over it bubble to our window handlers
- *  directly — no cross-document interception needed. */
+ *  help modal, and the paths to get a FILE (any type — image, PDF, log, zip, …) into the remote session,
+ *  which the pty can't carry. Three ways in: a 📎 button, drag-and-drop onto the pane, and Cmd/Ctrl+V
+ *  (file paste). Each uploads the bytes; the server saves them in the agent's folder and types the path
+ *  into the running claude. Now that the terminal is same-document (no iframe), drops/pastes over it
+ *  bubble to our window handlers directly — no cross-document interception needed. */
 function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }: {
   session?: Session; children: ReactNode; onActivity?: () => void
   fontSize: number; setFontSize: (f: number | ((s: number) => number)) => void
@@ -1877,29 +1877,31 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
   const upload = async (file: File) => {
     if (!session?.id) return
     if (!live) { setToast({ kind: 'err', text: 'session is not live — start it first' }); return }
-    if (!file.type.startsWith('image/')) { setToast({ kind: 'err', text: 'only images can be attached' }); return }
-    setToast({ kind: 'busy', text: `uploading ${file.name || 'image'}…` })
+    setToast({ kind: 'busy', text: `uploading ${file.name || 'file'}…` })
     try {
       const buf = await file.arrayBuffer()
       let bin = ''
       const bytes = new Uint8Array(buf)
       for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
       const dataB64 = btoa(bin)
-      const ext = (file.type.split('/')[1] || 'png').split('+')[0]
-      const r = await api.attachFile(session.id, dataB64, ext)
+      // Extension from the filename first (any file type), then the MIME subtype, else 'bin'.
+      const nameExt = file.name.includes('.') ? file.name.split('.').pop() || '' : ''
+      const ext = (nameExt || file.type.split('/')[1] || 'bin').split('+')[0]
+      const r = await api.attachFile(session.id, dataB64, ext, file.name || undefined)
       setToast(r.ok ? { kind: 'ok', text: `attached → ${r.path} (added to the prompt)` } : { kind: 'err', text: r.error || 'upload failed' })
     } catch (e) {
       setToast({ kind: 'err', text: e instanceof Error ? e.message : 'upload failed' })
     }
   }
 
-  // Image paste. Capture phase so it runs BEFORE xterm's own textarea paste handler when the terminal is
-  // focused (an image has no text, so xterm would do nothing with it anyway — but capturing lets us claim
-  // it cleanly). A text paste has no image item, so it falls through to xterm untouched.
+  // File paste. Capture phase so it runs BEFORE xterm's own textarea paste handler when the terminal is
+  // focused (a pasted file has no text, so xterm would do nothing with it anyway — but capturing lets us
+  // claim it cleanly). A text paste has only string items (kind !== 'file'), so it falls through to
+  // xterm untouched.
   useEffect(() => {
     if (!session?.id) return
     const onPaste = (e: ClipboardEvent) => {
-      const item = Array.from(e.clipboardData?.items || []).find((it) => it.kind === 'file' && it.type.startsWith('image/'))
+      const item = Array.from(e.clipboardData?.items || []).find((it) => it.kind === 'file')
       const file = item?.getAsFile()
       if (file) { e.preventDefault(); e.stopPropagation(); void upload(file) }
     }
@@ -1934,7 +1936,7 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
   uploadRef.current = upload
 
   // Font size flows to <Xterm> as a live prop (it reflows internally), so no imperative poking needed —
-  // and the terminal is same-document now, so image paste/drop bubble to the window handlers above.
+  // and the terminal is same-document now, so file paste/drop bubble to the window handlers above.
 
   // auto-dismiss the toast (keep errors a touch longer)
   useEffect(() => {
@@ -1968,7 +1970,7 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
         ><HelpCircle className="h-3.5 w-3.5" /> Help</button>
       </div>
       <TerminalHelpModal open={help} onClose={() => setHelp(false)} />
-      {/* top-right session toolbar: browse the agent's folder + attach an image */}
+      {/* top-right session toolbar: browse the agent's folder + attach a file */}
       <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5">
         {session?.agent && (
           <a
@@ -1979,13 +1981,13 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
             <FolderTree className="h-3.5 w-3.5" /> Files
           </a>
         )}
-        {/* 📎 attach button — opens a file picker; always works regardless of focus */}
+        {/* 📎 attach button — opens a file picker (any file type); always works regardless of focus */}
         <label
           className="flex cursor-pointer items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
-          title="attach an image to this session (or drag-drop / paste one onto the terminal)"
+          title="attach a file (any type) to this session (or drag-drop / paste one onto the terminal)"
         >
-          <ImageIcon className="h-3.5 w-3.5" /> Attach image
-          <input type="file" accept="image/*" className="hidden"
+          <Paperclip className="h-3.5 w-3.5" /> Attach file
+          <input type="file" className="hidden"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = '' }} />
         </label>
       </div>
@@ -1997,11 +1999,11 @@ function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }:
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
             e.preventDefault(); setDrag(false)
-            const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'))
+            const file = Array.from(e.dataTransfer.files)[0]
             if (file) void upload(file)
           }}
         >
-          Drop image to send it to the agent
+          Drop a file to send it to the agent
         </div>
       )}
       {/* result toast */}

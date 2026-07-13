@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.136.0] — 2026-07-13
+### Changed
+- **Attach ANY file to a live session, not just images.** The terminal's 📎 attach button, drag-and-drop,
+  and Cmd/Ctrl+V paste now accept a file of any type (PDF, log, CSV, zip, …) instead of rejecting
+  everything that isn't `image/*`. The file lands in the agent's `.inbox/` and its path is typed into the
+  running claude exactly as before — the agent's Read tool opens it. The **original filename is now
+  preserved** (basename sanitized, timestamp-prefixed to stay unique) so the agent sees `.inbox/<ts>-report.pdf`
+  rather than an opaque `pasted-<ts>.png`; a nameless paste still falls back to `pasted-<ts>.<ext>`. The
+  extension is derived from the filename first (then the MIME subtype). Backend storage was already
+  type-agnostic; this drops the frontend `image/*` gate and threads the filename through
+  (`api.attachFile`, `POST /api/sessions/:id/attach-file`, `TerminalManager.attachFile`). The ~12 MB size
+  cap is unchanged.
+
 ## [0.135.0] — 2026-07-13
 ### Added
 - **Image-to-video: agents can now animate an image, not just text→video.** The `video_generate` tool
