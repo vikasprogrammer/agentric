@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.128.1] — 2026-07-13
+### Changed
+- **Image integrations UI is Atlas-only now.** The Settings → Integrations image card no longer shows the
+  OpenRouter key field — a single Atlas Cloud key powers both image and video. The default-model field is
+  scoped to Atlas (placeholder shows real Atlas image ids; catalog at `GET /api/v1/models`), and the video
+  card drops the OpenRouter mention. OpenRouter remains supported in the backend (`resolveImageBackend`
+  falls back to it if a key is set) — it's just hidden from the console for now. (`web/src/App.tsx`)
+
 ## [0.128.0] — 2026-07-13
 ### Added
 - **Per-member GitHub — git that runs as the actual human (Phase 2 of `docs/github-integration-plan.md`).**

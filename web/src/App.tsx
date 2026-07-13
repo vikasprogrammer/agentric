@@ -8739,7 +8739,6 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [ghId, setGhId] = useState('')
   const [ghSecret, setGhSecret] = useState('')
   const [image, setImage] = useState<IntegrationsResp['image']>({ openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false })
-  const [orKey, setOrKey] = useState('')
   const [atKey, setAtKey] = useState('')
   const [imgModel, setImgModel] = useState('')
   const [video, setVideo] = useState<IntegrationsResp['video']>({ fal: false, atlas: false, backend: null, defaultModel: '', configured: false })
@@ -8818,7 +8817,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setOrKey(''); setAtKey(''); setFalKey('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setAtKey(''); setFalKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
     // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
@@ -9113,31 +9112,17 @@ function IntegrationsSettings({ me }: { me: Member }) {
             <div className="flex items-center gap-2 text-sm font-medium">
               Image generation
               {image.configured
-                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">on · {image.backend === 'openrouter' ? 'OpenRouter' : 'Atlas Cloud'}</Badge>
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">on · Atlas Cloud</Badge>
                 : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
               Gives every agent an <code className="text-[11px]">image_generate</code> tool (Claude can't draw natively).
-              Generated images land in the <strong>Artifacts</strong> gallery and the run is cost-metered + audited. Set
-              <strong> one</strong> backend key — <strong>OpenRouter</strong> (recommended: reports the exact per-image cost) or
-              <strong> Atlas Cloud</strong> (broadest catalog; also covers video later). If both are set, OpenRouter is used.
+              Generated images land in the <strong>Artifacts</strong> gallery and the run is cost-metered + audited.
+              Powered by <strong>Atlas Cloud</strong> — the same key also drives video below.
             </p>
           </div>
 
-          <Field label="OpenRouter API key" help="openrouter.ai → Keys. One Bearer key reaches 30+ image models; usage.cost is debited per request.">
-            <Input
-              type="password"
-              value={orKey}
-              onChange={(e) => setOrKey(e.target.value)}
-              placeholder={image.openRouter ? '•••• (saved) — type a new key to replace' : 'sk-or-…'}
-              className="font-mono text-xs"
-            />
-            {image.openRouter && (
-              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ openRouterKey: '' }, 'removed')} disabled={busy}>Remove key</button>
-            )}
-          </Field>
-
-          <Field label="Atlas Cloud API key" help="atlascloud.ai → API keys. OpenAI-compatible; covers image + video under one key.">
+          <Field label="Atlas Cloud API key" help="atlascloud.ai → API keys. Covers image + video under one key.">
             <Input
               type="password"
               value={atKey}
@@ -9150,20 +9135,20 @@ function IntegrationsSettings({ me }: { me: Member }) {
             )}
           </Field>
 
-          <Field label="Default model" help="Optional — a backend-specific model id used when an agent doesn't name one. Blank = the backend's built-in default.">
+          <Field label="Default model" help="Optional — an Atlas image model id used when an agent doesn't name one. Blank = Atlas's built-in default. Full catalog: GET /api/v1/models on Atlas.">
             <Input
               value={imgModel}
               onChange={(e) => setImgModel(e.target.value)}
               onBlur={() => { if (imgModel.trim() !== (image.defaultModel || '')) save({ imageDefaultModel: imgModel.trim() }, 'default model saved') }}
-              placeholder="e.g. google/gemini-3.1-flash-image-preview (OpenRouter) or flux.2 (Atlas)"
+              placeholder="e.g. google/nano-banana-2/text-to-image · openai/gpt-image-1.5/text-to-image · black-forest-labs/flux-2-pro/text-to-image"
               className="font-mono text-xs"
             />
           </Field>
 
           <div className="flex items-center gap-3">
             <Button
-              onClick={() => save({ ...(orKey.trim() ? { openRouterKey: orKey.trim() } : {}), ...(atKey.trim() ? { atlasKey: atKey.trim() } : {}) }, 'saved')}
-              disabled={busy || (!orKey.trim() && !atKey.trim())}
+              onClick={() => save({ ...(atKey.trim() ? { atlasKey: atKey.trim() } : {}) }, 'saved')}
+              disabled={busy || !atKey.trim()}
             >Save</Button>
           </div>
         </CardContent>
@@ -9181,9 +9166,9 @@ function IntegrationsSettings({ me }: { me: Member }) {
             <p className="text-xs text-muted-foreground">
               Gives every agent a <code className="text-[11px]">video_generate</code> tool. Video renders
               <strong> asynchronously</strong> (usually minutes) — the finished clip lands in the <strong>Artifacts</strong>
-              gallery with an inbox card, cost-metered + audited. Needs a <strong>fal.ai</strong> key (recommended — the
-              widest video catalog: Veo, Kling, Seedance…) or an <strong>Atlas Cloud</strong> key (the same one used for
-              images). <span className="text-foreground">OpenRouter does not do video</span>, so an image key alone won't enable this.
+              gallery with an inbox card, cost-metered + audited. Powered by your <strong>Atlas Cloud</strong> key (the same
+              one used for images). Optionally add a <strong>fal.ai</strong> key for the widest catalog (Veo, Kling, Seedance…) —
+              fal is used when set.
             </p>
           </div>
 
