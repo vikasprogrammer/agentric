@@ -94,6 +94,26 @@ export function sanitizeNotificationPrefs(input: unknown): NotificationPrefs {
 }
 
 /**
+ * Which secondary nav items a member has pinned to the sidebar's primary ("Main") section — a
+ * per-member preference stored alongside notification prefs in `member_prefs`. Values are opaque
+ * nav-item keys owned by the console (`goals`, `tasks`, `memory`, …); the server only validates
+ * shape (array of short, deduped strings). `null` means "never set" so the client falls back to its
+ * default pin layout; `[]` means the member explicitly pinned nothing. The Inbox + Agents anchors
+ * are not pinnable and never appear here.
+ */
+export function sanitizeNavPins(input: unknown): string[] | null {
+  if (!Array.isArray(input)) return null;
+  const out: string[] = [];
+  for (const v of input) {
+    if (typeof v !== 'string') continue;
+    const s = v.trim();
+    if (s && s.length <= 32 && !out.includes(s)) out.push(s);
+    if (out.length >= 40) break;
+  }
+  return out;
+}
+
+/**
  * The external accounts a member is known by on other platforms — the join key that lets a chat
  * trigger (Slack/Discord) run AS the right person. One external id maps to at most one member
  * (enforced by the table's `(provider, external_id)` primary key), so run-as is never ambiguous.

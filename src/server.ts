@@ -316,7 +316,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const headers: Record<string, string> = { 'content-type': 'application/json; charset=utf-8' };
     if (sid) headers['set-cookie'] = sessionCookie(sid);
     res.writeHead(200, headers);
-    res.end(JSON.stringify({ member: m }));
+    // navPins rides along on the auth payload (not a separate fetch) so the sidebar's pinned layout is
+    // known at first shell paint — no flash of the default nav before a follow-up request lands.
+    res.end(JSON.stringify({ member: m, navPins: os.team.navPins(m.id) }));
     return;
   }
   // Per-tenant console branding (accent colour + favicon badge). PUBLIC + display-only (no secrets):
@@ -1749,6 +1751,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'PUT' && p === '/api/me/prefs') {
     const b = await readBody(req);
     return sendJson(res, 200, os.team.setNotificationPrefs(me.id, b));
+  }
+  // This member's pinned sidebar nav (which secondary items sit up in Main). Per person, not admin-gated
+  // — everyone customizes their own. The initial value ships on /api/auth/me; this saves changes.
+  if (method === 'PUT' && p === '/api/me/nav') {
+    const b = await readBody(req);
+    return sendJson(res, 200, { pinned: os.team.setNavPins(me.id, (b as { pinned?: unknown }).pinned) });
   }
 
   // Dismiss the whole Activity feed at once (soft hide). Leaves action-required items (pending
