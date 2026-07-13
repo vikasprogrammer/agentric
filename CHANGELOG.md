@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.157.1] — 2026-07-13
+### Fixed
+- **Dreaming staleness — guidance and topics no longer nag or accumulate forever.**
+  - **Guidance + recommendations now derive from a RECENT window (H4).** They read the last ~7 per-pass
+    tallies instead of ever-growing lifetime totals, so a friction signal that has since subsided (a
+    budget stop or rejection months ago) stops riding in every agent's prompt and stops re-proposing.
+    Verified: a state with heavy lifetime friction but a clean recent window emits none of the friction
+    lines/recs; a recent window with friction emits them.
+  - **Topics decay by recency + are pruned (M6/L2).** "The fleet frequently works on …" ranked topics by
+    all-time count, so an old burst dominated forever and the map grew unbounded. Topics now rank by a
+    recency-decayed weight (3-week half-life) so current work wins, drop after 90 days unseen, and are
+    hard-capped at 300 keys. Verified on live data (topic map capped from a larger accumulated set).
+  Second of the sequenced Dreaming audit fixes (after timing, v0.150.2). `src/edge/dreaming.ts`.
+
 ## [0.157.0] — 2026-07-13
 ### Added
 - **Connect GitHub from your profile.** The per-member GitHub connection (the `GithubMineCard` — Connect/
