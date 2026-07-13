@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.136.1] — 2026-07-13
+### Added
+- **Docs: "Company context" concept in the console Docs → Core concepts page.** Explains what the
+  fleet-wide Company context is and, in answer to a recurring question, that it's **flat text** — it
+  can't `@import` or read other markdown files. Points reference docs to **Knowledge**, procedures to
+  **Skills**, and one-agent context to that agent's own `CLAUDE.md`.
+
 ## [0.136.0] — 2026-07-13
 ### Changed
 - **Attach ANY file to a live session, not just images.** The terminal's 📎 attach button, drag-and-drop,
