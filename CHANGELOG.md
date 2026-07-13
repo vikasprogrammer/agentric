@@ -25,7 +25,18 @@ new version heading in the same commit.
   error, transient poll → `rendering` (not `failed`), and the image path still passes through the shared
   helpers with no regression.
 
-## [0.158.0] — 2026-07-13
+## [0.159.0] — 2026-07-13
+### Added
+- **Dreaming "Is it working?" — the measurement loop (closes audit finding G1, the reason Pillar 10 was
+  🟡).** The self-learning loop ran, but nothing proved that injected guidance / applied recommendations
+  actually moved outcomes. New `src/edge/measurement.ts` computes, from real session outcomes: a
+  **success-rate trend** over the last 8 weeks (distinct-session counting, matching the reflect pass) and,
+  per **applied recommendation**, the success rate in the window **before vs after** it — with sample
+  sizes and a verdict (improved / declined / flat / too-early). Surfaced as an "Is it working?" card on
+  the Dreaming page (trend bars + "did your changes help?"). Honest about being correlational, not a
+  controlled A/B. On live data it shows the fleet's success rate climbing and the one applied
+  recommendation ("raise effort to high") correlating with +18 pts. `/api/dreaming` returns `measurement`.
+
 ### Added
 - **`ask_agent` — synchronous agent→agent Q&A.** An agent can now ask ANOTHER agent a question (or to
   solve something) and block inline on the answer, without filing a task. `ask_agent({ agent, question })`

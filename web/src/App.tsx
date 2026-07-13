@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -7794,6 +7794,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [guidance, setGuidance] = useState('')
   const [recs, setRecs] = useState<Recommendation[]>([])
   const [state, setState] = useState<DreamingState | null>(null)
+  const [measure, setMeasure] = useState<Measurement | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
@@ -7802,7 +7803,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); if (r.digest) setDigest(r.digest) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -7866,6 +7867,58 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
         </div>
         {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
       </div>
+
+      {/* Is it working? — the measurement loop: success-rate trend + did each applied change help. */}
+      {measure && (measure.recent.rate != null || measure.trend.some((b) => b.rate != null)) && (() => {
+        const maxRate = Math.max(1, ...measure.trend.map((b) => b.rate ?? 0))
+        const dv = measure.deltaPp
+        const V: Record<string, { label: string; cls: string }> = {
+          improved: { label: 'improved', cls: 'text-emerald-600' }, declined: { label: 'declined', cls: 'text-red-600' },
+          flat: { label: 'no change', cls: 'text-muted-foreground' }, insufficient: { label: 'too early to tell', cls: 'text-muted-foreground' },
+        }
+        return (
+          <Card>
+            <CardContent className="space-y-3 p-4">
+              <div>
+                <div className="text-sm font-medium">Is it working?</div>
+                <p className="text-xs text-muted-foreground">Whether the fleet is actually getting better, and whether each change you applied moved the needle. This is a correlation over real runs, not a controlled test — the run counts are shown so a thin signal reads as thin.</p>
+              </div>
+              {measure.recent.rate != null && (
+                <div className="text-sm">
+                  Success rate <strong>{measure.recent.rate}%</strong> <span className="text-xs text-muted-foreground">last 7 days ({measure.recent.n} runs)</span>
+                  {dv != null && <span className={`ml-1 text-xs ${dv > 0 ? 'text-emerald-600' : dv < 0 ? 'text-red-600' : 'text-muted-foreground'}`}>{dv > 0 ? '▲' : dv < 0 ? '▼' : '■'} {dv > 0 ? '+' : ''}{dv} pts vs the week before</span>}
+                </div>
+              )}
+              <div className="space-y-1">
+                {measure.trend.filter((b) => b.total > 0).map((b) => (
+                  <div key={b.start} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-12 shrink-0 text-muted-foreground">{b.label}</span>
+                    <div className="h-3 flex-1 overflow-hidden rounded bg-muted">
+                      <div className="h-full rounded bg-emerald-500/70" style={{ width: `${Math.round(((b.rate ?? 0) / maxRate) * 100)}%` }} />
+                    </div>
+                    <span className="w-16 shrink-0 tabular-nums text-muted-foreground">{b.rate ?? 0}% · {b.total}</span>
+                  </div>
+                ))}
+              </div>
+              {measure.interventions.length > 0 && (
+                <div className="space-y-1.5 border-t pt-2">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Did your changes help?</div>
+                  {measure.interventions.map((iv, i) => (
+                    <div key={i} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                      <span className="font-medium">{iv.title}</span>
+                      <span className="text-muted-foreground">{new Date(iv.at).toLocaleDateString()}</span>
+                      {iv.before.rate != null && iv.after.rate != null
+                        ? <span className="text-muted-foreground">{iv.before.rate}% → {iv.after.rate}%{iv.deltaPp != null && ` (${iv.deltaPp > 0 ? '+' : ''}${iv.deltaPp} pts)`} · {iv.before.n}/{iv.after.n} runs</span>
+                        : <span className="text-muted-foreground">not enough runs yet</span>}
+                      <span className={`font-medium ${V[iv.verdict].cls}`}>{V[iv.verdict].label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )
+      })()}
 
       {/* 1. What it figured out — the payoff, first. */}
       <Card>

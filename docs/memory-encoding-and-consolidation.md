@@ -143,8 +143,10 @@ server bounce.
 
 ## Not built / next
 
-- **Measurement** — nothing yet proves the injected guidance + consolidated knowledge actually move
-  success rate over time. The signals exist (episodes carry outcome; Dreaming tracks per-pass success);
-  a trend view / A-B of guidance-on vs -off is the natural next chapter.
+- **Measurement** — ✅ **shipped (v1)** as `src/edge/measurement.ts` → the Dreaming page's "Is it working?"
+  card: a real **success-rate trend** over recent weeks + each applied recommendation's **before/after**
+  effect (with sample sizes + a verdict). Correlational, not a controlled A/B — a guidance-on-vs-off
+  experiment (deliberately withholding guidance from a cohort) remains the next depth increment. But the
+  loop now closes with a human: an owner can see whether Dreaming is helping.
 - **Programmatic ranking defaults** — ranking is opt-in; a first-run sensible default (or a
   Dreaming *recommendation* to enable it) would activate levers 3/5 without a manual step.

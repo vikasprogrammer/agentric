@@ -269,6 +269,15 @@ export interface DreamingState {
   totals?: { sessions: number; success: number; failure: number; partial: number; stopped: number; unknown: number; rejected: number; budgetStops: number; errors: number }
   recent?: DreamingReview[]
 }
+export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
+export interface MeasureIntervention { id: string; title: string; at: number; before: { n: number; rate: number | null }; after: { n: number; rate: number | null }; deltaPp: number | null; verdict: 'improved' | 'declined' | 'flat' | 'insufficient' }
+export interface Measurement {
+  trend: MeasureTrendBucket[]
+  interventions: MeasureIntervention[]
+  recent: { n: number; rate: number | null }
+  prior: { n: number; rate: number | null }
+  deltaPp: number | null
+}
 export interface DigestConfig {
   enabled: boolean
   channel: string
@@ -1075,7 +1084,7 @@ export const api = {
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`),
-  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; state?: DreamingState; error?: string }>('GET', '/api/dreaming'),
+  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; state?: DreamingState; measurement?: Measurement; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),
   setDreaming: (everyHours: number) => call<{ ok: boolean; everyHours: number; error?: string }>('PUT', '/api/dreaming', { everyHours }),
