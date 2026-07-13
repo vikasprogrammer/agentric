@@ -1255,6 +1255,12 @@ export class TerminalManager {
     return this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(id)?.run_as ?? undefined;
   }
 
+  /** The pinned claude transcript id for a session — so a self-scheduled follow-up can `--resume` this
+   *  same conversation (context continuity) instead of starting fresh. */
+  sessionClaudeId(id: string): string | undefined {
+    return this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?').get<{ claude_session_id: string | null }>(id)?.claude_session_id ?? undefined;
+  }
+
   /** Resolve a tmux session name (`aos-xxxx`) to its session id — for the terminal-attach authz check. */
   sessionIdByTmux(tmux: string): string | undefined {
     return this.db.prepare('SELECT id FROM term_sessions WHERE tmux = ?').get<{ id: string }>(tmux)?.id;
