@@ -172,18 +172,21 @@ const IMAGE_GENERATE_TOOL = {
 const VIDEO_GENERATE_TOOL = {
   name: 'video_generate',
   description:
-    'Generate a video from a text prompt (optionally seeded by an image URL). Use this to CREATE a video — ' +
-    'you cannot produce one natively. Video renders ASYNCHRONOUSLY (usually a few minutes): this returns ' +
-    'quickly, and the finished video lands in the Library with an inbox card when ready. If it ' +
+    'Generate a video from a text prompt, OR animate an existing image (image-to-video). Use this to ' +
+    'CREATE a video — you cannot produce one natively. Video renders ASYNCHRONOUSLY (usually a few minutes): ' +
+    'this returns quickly, and the finished video lands in the Library with an inbox card when ready. If it ' +
     'finishes fast you get the artifact id inline; otherwise you get a job id and a "rendering" status — ' +
-    'do NOT block waiting, just tell the user it will appear in the Library shortly. Governed (cost-metered + audited).',
+    'do NOT block waiting, just tell the user it will appear in the Library shortly. To animate an image, pass ' +
+    '`image` and describe the motion in `prompt`. `image` accepts ANY of: a Library artifact id (e.g. from a ' +
+    'prior image_generate), a file path in your working folder (a file you wrote OR one uploaded into the ' +
+    'session), or an http(s) image URL. Governed (cost-metered + audited).',
   inputSchema: {
     type: 'object',
     properties: {
-      prompt: { type: 'string', description: 'What the video should show — subject, action, camera, style.' },
-      model: { type: 'string', description: 'Optional model id (backend-specific, e.g. a fal.ai model). Omit to use the workspace default.' },
+      prompt: { type: 'string', description: 'What the video should show — subject, action, camera, style. For image-to-video, describe the desired motion.' },
+      model: { type: 'string', description: 'Optional model id (backend-specific). Omit to use the workspace default (an image-to-video model is chosen automatically when `image` is set).' },
       durationSec: { type: 'number', description: 'Desired clip length in seconds (1–60; default 5). The model may clamp it.' },
-      imageUrl: { type: 'string', description: 'Optional image URL to animate (image-to-video seed).' },
+      image: { type: 'string', description: 'Optional image to animate (image-to-video). A Library artifact id, a file path in your working folder (written or uploaded), or an http(s) image URL.' },
     },
     required: ['prompt'],
   },
@@ -1094,7 +1097,7 @@ async function videoGenerate(args: Record<string, unknown>): Promise<string> {
   const body: Record<string, unknown> = { session: SESSION, prompt };
   if (typeof args.model === 'string' && args.model.trim()) body.model = args.model.trim();
   if (args.durationSec !== undefined) body.durationSec = Number(args.durationSec);
-  if (typeof args.imageUrl === 'string' && args.imageUrl.trim()) body.imageUrl = args.imageUrl.trim();
+  if (typeof args.image === 'string' && args.image.trim()) body.image = args.image.trim();
   const res = await fetch(AOS_URL + '/api/agent/video/generate', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),

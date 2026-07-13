@@ -884,7 +884,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       prompt: String(b.prompt || ''),
       model: b.model ? String(b.model) : undefined,
       durationSec: b.durationSec !== undefined ? Number(b.durationSec) : undefined,
-      imageUrl: b.imageUrl ? String(b.imageUrl) : undefined,
+      image: b.image ? String(b.image) : b.imageUrl ? String(b.imageUrl) : undefined,
     });
     return sendJson(res, out.ok ? 200 : 400, out);
   }

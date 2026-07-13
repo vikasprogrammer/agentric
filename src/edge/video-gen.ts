@@ -47,6 +47,8 @@ export interface VideoPollResult {
 export interface VideoBackend {
   readonly name: 'fal' | 'atlas';
   readonly defaultModel: string;
+  /** The model used when an image seed is supplied but no model is named (image-to-video variant). */
+  readonly imageModel: string;
   submit(req: VideoGenRequest): Promise<VideoSubmitResult>;
   poll(providerRef: string): Promise<VideoPollResult>;
 }
@@ -126,8 +128,12 @@ interface FalRef {
 class FalVideoBackend implements VideoBackend {
   readonly name = 'fal' as const;
   readonly defaultModel: string;
+  readonly imageModel: string;
   constructor(private readonly key: string, defaultModel?: string) {
     this.defaultModel = defaultModel?.trim() || 'fal-ai/veo3/fast';
+    // fal exposes image-to-video as a sub-endpoint of the same family; veo3/fast/image-to-video is the
+    // safe default when an image seed is given without an explicit model.
+    this.imageModel = 'fal-ai/veo3/fast/image-to-video';
   }
 
   private headers(): Record<string, string> {
@@ -135,7 +141,7 @@ class FalVideoBackend implements VideoBackend {
   }
 
   async submit(req: VideoGenRequest): Promise<VideoSubmitResult> {
-    const model = req.model?.trim() || this.defaultModel;
+    const model = req.model?.trim() || (req.imageUrl ? this.imageModel : this.defaultModel);
     const body: Record<string, unknown> = { prompt: req.prompt };
     if (req.durationSec) body.duration = String(req.durationSec); // fal video models mostly take a string seconds
     if (req.imageUrl) body.image_url = req.imageUrl;
@@ -183,10 +189,12 @@ interface AtlasPrediction {
 class AtlasVideoBackend implements VideoBackend {
   readonly name = 'atlas' as const;
   readonly defaultModel: string;
+  readonly imageModel: string;
   private readonly base: string;
   constructor(private readonly key: string, baseUrl?: string, defaultModel?: string) {
     this.base = (baseUrl?.trim() || 'https://api.atlascloud.ai').replace(/\/+$/, '');
     this.defaultModel = defaultModel?.trim() || 'bytedance/seedance-2.0/text-to-video';
+    this.imageModel = 'bytedance/seedance-2.0/image-to-video';
   }
 
   private headers(): Record<string, string> {
@@ -194,10 +202,11 @@ class AtlasVideoBackend implements VideoBackend {
   }
 
   async submit(req: VideoGenRequest): Promise<VideoSubmitResult> {
-    const model = req.model?.trim() || this.defaultModel;
+    const model = req.model?.trim() || (req.imageUrl ? this.imageModel : this.defaultModel);
     const body: Record<string, unknown> = { model, prompt: req.prompt };
     if (req.durationSec) body.duration = req.durationSec;
-    if (req.imageUrl) body.image_url = req.imageUrl;
+    // Atlas takes the seed frame as `image` (URL, Base64 data URL, or asset://<id>) — NOT `image_url`.
+    if (req.imageUrl) body.image = req.imageUrl;
     const res = await fetch(`${this.base}/api/v1/model/generateVideo`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     const d = (await res.json().catch(() => ({}))) as { id?: string; prediction_id?: string; data?: { id?: string } };
     if (!res.ok) throw new Error(errText(d, res.status));
