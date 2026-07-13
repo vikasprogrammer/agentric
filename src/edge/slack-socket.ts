@@ -190,6 +190,22 @@ export class SlackSocket {
     const isDm = ev.channelType === 'im' || ev.channelType === 'mpim';
     if (ev.eventType !== 'app_mention' && !isDm) return;
 
+    // Inline answer: a DM reply from someone with a pending `ask_human` question answers it directly (no
+    // trip to the web Inbox). Only for DMs — that's where the question was sent. If nothing pending is
+    // bound to this sender, fall through to the normal chat router (an ordinary DM is just a chat).
+    if (isDm) {
+      const answered = this.autos.answerQuestionFromChat('slack', ev.user, text);
+      if (answered) {
+        void this.dmUser(ev.user, `✅ Got it — your answer was sent to ${answered.agent}.`);
+        this.os.audit.append({
+          ts: Date.now(), runId: '-', tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'slack',
+          type: 'question.answered.viaDm', data: { agent: answered.agent, channel: ev.channel },
+        });
+        return;
+      }
+    }
+
     const result = this.autos.fireSlack(
       {
         eventType: ev.eventType,

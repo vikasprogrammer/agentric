@@ -232,6 +232,22 @@ function migrate(db: Db): void {
       created_at INTEGER NOT NULL
     );
 
+    -- Binds an ask_human question to the Slack/Discord DM we sent about it, so the human can answer by
+    -- REPLYING in that DM (not just via the web Inbox). Written when the question is DM'd (one row per
+    -- provider we notified); read on an inbound DM: the sender's external id → the newest still-pending
+    -- bound question, which we then answer. Keyed (question_id, provider); a question drops out of the
+    -- match once it's no longer pending (join on questions.status), so no cleanup is needed.
+    CREATE TABLE IF NOT EXISTS question_dms (
+      question_id TEXT NOT NULL,
+      tenant      TEXT NOT NULL,
+      provider    TEXT NOT NULL,          -- 'slack' | 'discord'
+      external_id TEXT NOT NULL,          -- the recipient's Slack/Discord user id (the DM sender on reply)
+      member_id   TEXT,                   -- the member we DM'd (for the answered-by attribution)
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (question_id, provider)
+    );
+    CREATE INDEX IF NOT EXISTS idx_question_dms_lookup ON question_dms (provider, external_id, created_at);
+
     -- The deliverables gallery: artifacts agents explicitly publish (a PDF/Markdown/image now;
     -- a multi-file site/app later). Each row is a snapshot copied into <home>/artifacts/<id>/.
     -- Carries full provenance (session + agent + source) — the SAME shape as the messages table, so

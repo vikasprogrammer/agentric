@@ -212,6 +212,22 @@ export class DiscordSocket {
     // (and the `/agent` router prefix) starts clean. `<@!id>` is the legacy nickname-mention form.
     const text = (ev.text || '').replace(new RegExp(`^\\s*<@!?${this.botUserId}>\\s*`), '').trim();
 
+    // Inline answer: a DM reply from someone with a pending `ask_human` question answers it directly (no
+    // trip to the web Inbox). Only for DMs — that's where the question was sent. If nothing pending is
+    // bound to this sender, fall through to the normal chat router (an ordinary DM is just a chat).
+    if (ev.eventType === 'direct_message') {
+      const answered = this.autos.answerQuestionFromChat('discord', ev.user, text);
+      if (answered) {
+        void this.dmUser(ev.user, `✅ Got it — your answer was sent to ${answered.agent}.`);
+        this.os.audit.append({
+          ts: Date.now(), runId: '-', tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'discord',
+          type: 'question.answered.viaDm', data: { agent: answered.agent, channel: ev.channel },
+        });
+        return;
+      }
+    }
+
     // Keep the whole exchange in ONE thread. For a guild @mention, branch a thread off the user's
     // message so the ack, the agent's replies, and everything after live together (not scattered as
     // channel replies). DMs have no threads → post back in the DM channel as before. If thread creation

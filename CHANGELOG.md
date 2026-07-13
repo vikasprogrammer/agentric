@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.164.0] — 2026-07-13
+### Added
+- **Answer an agent's question by replying to the Slack/Discord DM.** When an agent uses `ask_human`, the
+  out-of-band DM is now a real reply surface, not just a heads-up + link: the notifier binds the question
+  to each recipient's DM (`question_dms` table), and an inbound DM reply from that user is matched to their
+  newest still-pending bound question and recorded as the answer — attributed to their member email,
+  `canViewQuestion`-gated, audited `question.answered.viaDm`, then acked in-thread. The blocking agent
+  picks it up through the existing `ask` poll (no agent-side change). A DM that isn't answering a pending
+  question still falls through to the normal chat router. The DM copy now says "*Reply to this message to
+  answer*, or open the Inbox." `src/edge/slack-socket.ts`, `src/edge/discord-socket.ts`,
+  `src/edge/automations.ts`, `src/terminal.ts`, `src/tenant-registry.ts`, `src/state/db.ts`.
+
 ## [0.163.1] — 2026-07-13
 ### Changed
 - **The "Dreaming" nav is renamed "Insights"** (route `#/dreaming` → `#/insights`, 🌙 → 💡). The surface
