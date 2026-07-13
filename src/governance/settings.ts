@@ -26,6 +26,7 @@ const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active externa
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
+const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
 const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state (cumulative totals/topics/recent)
 const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives injected into every agent's prompt
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
@@ -383,6 +384,14 @@ export class SettingsStore {
   }
   setInjectGoals(on: boolean, by?: string): void {
     this.set(GOALS_INJECT_KEY, on ? 'on' : 'off', by);
+  }
+  /** Whether the scheduler auto-plans "stuck" active goals via the strategist. Default OFF (opt-in —
+   *  it spawns governed agent sessions, which cost money). */
+  autoPlanGoals(): boolean {
+    return this.getRow(GOALS_AUTOPLAN_KEY)?.value === 'on';
+  }
+  setAutoPlanGoals(on: boolean, by?: string): void {
+    this.set(GOALS_AUTOPLAN_KEY, on ? 'on' : 'off', by);
   }
 
   /** Open config recommendations + dismissed ids. The dreamer regenerates `open` each pass (minus the

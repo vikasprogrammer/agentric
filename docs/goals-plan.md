@@ -227,10 +227,13 @@ a *deterministic tally aggregator, dormant by default, with zero goal awareness*
 intelligent "this goal is stalled → plan it" sensor. So the strategist is **human-triggered and stands
 alone**. The only reusable asset borrowed from that subsystem is the spawn-a-governed-agent scaffolding.
 
-**Phase 2 (deferred):** a **deterministic goal-stall auto-trigger** — on the scheduler tick, an active
-goal that is overdue / flat-progress / idle spawns the strategist (guarded, reusing the `dispatchTask`
-mold). Net-new and cheap (the Goals plane already computes `progress()` + `dueAt`); explicitly NOT a
-dependency on Dreaming's stub intelligence.
+**Phase 2 (shipped, v0.121.0):** the **goal auto-planner**. On the scheduler tick, `Automations.sweepStuckGoals`
+finds active goals with **no open work** that have sat idle past a grace window (`GoalStore.stuck`) and runs
+the strategist to draft a plan — **file-only** (never dispatches), as the goal's owner, bounded by a per-tick
+cap + per-goal cooldown + the whole-box concurrency cap. **Opt-in** via the "Auto-plan stuck goals" toggle
+(Settings-backed `autoPlanGoals`, default OFF — it spawns sessions). A plain deterministic check on the goal's
+own data — NOT wired to Dreaming. Activity-based stall (open-but-stale tasks) is a documented future knob;
+this v1 triggers only on "no open work" (never-planned, or all tasks finished but goal not achieved).
 
 **Phase 3 (later, separate concern):** if/when Dreaming gains real LLM reasoning, fold stall-judgment into
 it — a Dreaming upgrade tracked against its 🟡 Partial grade, not a blocker for goals.
