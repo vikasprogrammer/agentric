@@ -885,6 +885,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       prompt: b.prompt ? String(b.prompt) : undefined,
       scale: b.scale !== undefined ? Number(b.scale) : undefined,
       model: b.model ? String(b.model) : undefined,
+      operation: b.operation === 'remove-background' ? 'remove-background' : undefined,
     });
     return sendJson(res, out.ok ? 200 : 400, out);
   }

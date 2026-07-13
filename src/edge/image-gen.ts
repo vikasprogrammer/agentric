@@ -41,15 +41,17 @@ export interface ImageGenRequest {
   n: number;
 }
 
-/** Edit or upscale an EXISTING image. `images` are already-resolved inputs the vendor accepts inline
- *  (data: URLs or http URLs). `scale` set (>1) ⇒ upscale mode (uses the upscaler model, `prompt` ignored);
- *  otherwise it's a prompt-guided edit (image-to-image). */
+/** Edit, upscale, or run a named preset on an EXISTING image. `images` are already-resolved inputs the
+ *  vendor accepts inline (data: URLs or http URLs). Mode precedence: `operation` (a named preset like
+ *  'remove-background') ⇒ that preset; else `scale` (>1) ⇒ upscale (uses the upscaler model, `prompt`
+ *  ignored); else a prompt-guided edit (image-to-image). */
 export interface ImageEditRequest {
   images: string[];
   prompt?: string;
   model?: string;
   size?: string;
   scale?: number;
+  operation?: 'remove-background';
 }
 
 export interface ImageBackend {
@@ -184,6 +186,7 @@ interface AtlasPrediction {
 const ATLAS_BUILTIN_IMAGE_MODEL = 'google/nano-banana-2/text-to-image';
 const ATLAS_BUILTIN_EDIT_MODEL = 'google/nano-banana-2/edit';
 const ATLAS_UPSCALE_MODEL = 'atlascloud/image-upscaler';
+const ATLAS_BG_REMOVE_MODEL = 'youchuan/v8.1/remove-background';
 
 /** Does this error look like "the model id is wrong" (vs a transient/other failure)? Only these are
  *  worth retrying with the built-in default — a real content/timeout error should surface as-is. */
@@ -215,12 +218,16 @@ class AtlasBackend implements ImageBackend {
 
   async editImage(req: ImageEditRequest): Promise<ImageGenResult> {
     if (!req.images.length) throw new Error('an input image is required');
-    const upscale = typeof req.scale === 'number' && req.scale > 1;
-    const model = req.model?.trim() || (upscale ? this.upscaleModel : this.editModel);
-    const fallback = upscale ? ATLAS_UPSCALE_MODEL : ATLAS_BUILTIN_EDIT_MODEL;
-    // Edit and upscale ride the SAME generateImage submit+poll — only the body shape differs: an upscaler
-    // takes a single `image` + `outscale`; an image-to-image edit takes `images[]` + a `prompt`.
-    const build = (m: string): Record<string, unknown> => upscale
+    const bgRemove = req.operation === 'remove-background';
+    const upscale = !bgRemove && typeof req.scale === 'number' && req.scale > 1;
+    const model = req.model?.trim() || (bgRemove ? ATLAS_BG_REMOVE_MODEL : upscale ? this.upscaleModel : this.editModel);
+    const fallback = bgRemove ? ATLAS_BG_REMOVE_MODEL : upscale ? ATLAS_UPSCALE_MODEL : ATLAS_BUILTIN_EDIT_MODEL;
+    // All three modes ride the SAME generateImage submit+poll — only the body shape differs: an upscaler
+    // and background-removal take a single `image` (bg-remove returns a transparent PNG, no prompt); an
+    // image-to-image edit takes `images[]` + a `prompt`.
+    const build = (m: string): Record<string, unknown> => bgRemove
+      ? { model: m, image: req.images[0] }
+      : upscale
       ? { model: m, image: req.images[0], outscale: req.scale, output_format: 'jpeg' }
       : { model: m, prompt: req.prompt ?? '', images: req.images, ...(req.size ? { size: req.size } : {}) };
     return this.withModelFallback(model, fallback, build);

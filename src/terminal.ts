@@ -2392,16 +2392,18 @@ export class TerminalManager {
    * `generateImage`: classified `image.edit` with an estimated `amountUsd` (money-cap applies), the
    * result is `ingest`ed as a NEW `image` artifact (the source is never mutated) + an owner-scoped inbox
    * card, audited `image.edited`. The source image is any ref `resolveImageRef` accepts — a Library
-   * artifact id, a working-folder file (written or terminal-uploaded), or a URL. `scale` (>1) upscales
-   * (prompt ignored); otherwise `prompt` drives an image-to-image edit. Atlas-only (OpenRouter throws).
+   * artifact id, a working-folder file (written or terminal-uploaded), or a URL. Mode precedence:
+   * `operation` (a named preset — 'remove-background', a transparent-PNG cutout, no prompt) ⇒ that preset;
+   * else `scale` (>1) upscales (prompt ignored); else `prompt` drives an image-to-image edit. Atlas-only.
    */
-  async editImage(sessionId: string, input: { image: string; prompt?: string; scale?: number; model?: string }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string }> {
+  async editImage(sessionId: string, input: { image: string; prompt?: string; scale?: number; model?: string; operation?: 'remove-background' }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
-    const upscale = typeof input.scale === 'number' && input.scale > 1;
+    const bgRemove = input.operation === 'remove-background';
+    const upscale = !bgRemove && typeof input.scale === 'number' && input.scale > 1;
     const prompt = (input.prompt || '').trim();
-    if (!upscale && !prompt) return { ok: false, error: 'describe the edit in `prompt` (or pass `scale` to upscale)' };
+    if (!bgRemove && !upscale && !prompt) return { ok: false, error: 'describe the edit in `prompt`, pass `scale` to upscale, or set `operation` (e.g. "remove-background")' };
     const imageRef = (input.image || '').trim();
     if (!imageRef) return { ok: false, error: 'an input `image` is required — a Library artifact id, a working-folder path, or an image URL' };
     const resolved = this.resolveImageRef(agent, imageRef);
@@ -2415,15 +2417,15 @@ export class TerminalManager {
     if (!backend) return { ok: false, error: 'image editing is not configured — set an Atlas Cloud key in Settings → Integrations' };
 
     const estimateUsd = DEFAULT_IMAGE_COST_USD;
-    const op = upscale ? 'upscale' : 'edit';
-    const model = input.model?.trim() || (upscale ? 'atlascloud/image-upscaler' : op);
-    const gate = this.gate(sessionId, agent, 'image.edit', { prompt, model, upscale, amountUsd: estimateUsd }, `${op} an image with ${model}`);
+    const op = bgRemove ? 'remove-background' : upscale ? 'upscale' : 'edit';
+    const model = input.model?.trim() || (bgRemove ? 'youchuan/v8.1/remove-background' : upscale ? 'atlascloud/image-upscaler' : op);
+    const gate = this.gate(sessionId, agent, 'image.edit', { prompt, model, op, amountUsd: estimateUsd }, `${op} an image with ${model}`);
     if (gate.decision === 'deny') return { ok: false, error: 'blocked by policy' };
     if (gate.decision === 'pending') return { ok: false, error: 'this edit needs human approval — an approval request was filed; retry once it is approved' };
 
     let result;
     try {
-      result = await backend.editImage({ images: [resolved.url], prompt, model: input.model, scale: input.scale });
+      result = await backend.editImage({ images: [resolved.url], prompt, model: input.model, scale: input.scale, operation: input.operation });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.audit(sessionId, agent, 'image.failed', { model, op, error: msg });
@@ -2432,7 +2434,8 @@ export class TerminalManager {
 
     const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
     const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
-    const title = upscale ? `Upscaled ${input.scale}×` : (prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt);
+    const title = bgRemove ? 'Background removed' : upscale ? `Upscaled ${input.scale}×` : (prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt);
+    const description = bgRemove ? `Background removed from ${imageRef}` : upscale ? `Upscaled ${input.scale}× from ${imageRef}` : prompt;
     const stamp = Date.now();
     const costUsd = result.costUsd ?? estimateUsd;
     const perImageUsd = +(costUsd / result.images.length).toFixed(6);
@@ -2440,7 +2443,7 @@ export class TerminalManager {
     result.images.forEach((img, i) => {
       const filename = `${op}-${stamp}${result.images.length > 1 ? `-${i + 1}` : ''}.${img.ext}`;
       const r = this.os.artifacts.ingest({
-        sessionId, agent, source, title, description: upscale ? `Upscaled ${input.scale}× from ${imageRef}` : prompt,
+        sessionId, agent, source, title, description,
         folder: 'edited-images', filename, bytes: img.bytes, kind: 'image', costUsd: perImageUsd,
       });
       if (!r.ok) return;
