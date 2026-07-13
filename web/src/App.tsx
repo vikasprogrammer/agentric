@@ -4977,6 +4977,14 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
       <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-emerald-500" />
     </span>
   )
+  // The agent-side twin of memberDot: the agent's icon in the same avatar circle + online dot, so people
+  // and agents read as one presence list.
+  const agentDot = (a: AgentInfo, size = 'h-7 w-7') => (
+    <span className="relative shrink-0">
+      <span className={`${size} grid place-items-center rounded-full bg-muted text-muted-foreground`}><AgentIcon icon={a.icon} className="h-3.5 w-3.5" /></span>
+      <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-emerald-500" />
+    </span>
+  )
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
   const iconOf = (id: string) => agentById.get(id)?.icon
   const onlinePeople = people.filter((m) => isOnline(m.id))
@@ -5055,34 +5063,41 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
               <Users className="h-4 w-4 text-muted-foreground" />
               <div><div className="text-[13.5px] font-semibold">Online now</div><div className="text-[11.5px] text-muted-foreground">{peopleOnline} {peopleOnline === 1 ? 'person' : 'people'} · {onlineAgents.length} agent{onlineAgents.length === 1 ? '' : 's'} active</div></div>
             </div>
-            <div className="space-y-3 p-4">
-              {onlinePeople.length === 0 ? (
-                <div className="text-[12.5px] text-muted-foreground">No one else is online.</div>
-              ) : onlinePeople.map((m) => (
-                <div key={m.id} className="flex items-center gap-2.5">
-                  {memberDot(m, 'h-7 w-7')}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[12.5px] font-medium">{m.name || m.email}</div>
-                    <div className="text-[10.5px] capitalize text-muted-foreground">{m.role}</div>
+            <div className="space-y-4 p-4">
+              {/* People — presence rows */}
+              <div className="space-y-2.5">
+                <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">People</div>
+                {onlinePeople.length === 0 ? (
+                  <div className="text-[12.5px] text-muted-foreground">No one else is online.</div>
+                ) : onlinePeople.map((m) => (
+                  <div key={m.id} className="flex items-center gap-2.5">
+                    {memberDot(m, 'h-7 w-7')}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12.5px] font-medium">{m.name || m.email}</div>
+                      <div className="text-[10.5px] capitalize text-muted-foreground">{m.role}</div>
+                    </div>
+                    <span className="shrink-0 text-[10.5px] font-medium text-emerald-600 dark:text-emerald-500">Online</span>
                   </div>
-                  <span className="shrink-0 text-[10.5px] font-medium text-emerald-600 dark:text-emerald-500">Online</span>
-                </div>
-              ))}
-              <div className="border-t pt-3">
-                <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Agents active</div>
+                ))}
+              </div>
+              {/* Agents — the same presence rows, agent-side */}
+              <div className="space-y-2.5 border-t pt-3">
+                <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Agents</div>
                 {onlineAgents.length === 0 ? (
-                  <div className="text-[12px] text-muted-foreground">None running right now.</div>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {onlineAgents.map((a) => (
-                      <button key={a.id} onClick={() => nav('agents', a.id)} className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-[12px] font-medium transition-colors hover:border-primary/50">
-                        <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-500" />
-                        <span className="max-w-[130px] truncate">{a.id}</span>
-                        {(liveByAgent.get(a.id) ?? 0) > 1 && <span className="text-muted-foreground tabular-nums">×{liveByAgent.get(a.id)}</span>}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                  <div className="text-[12.5px] text-muted-foreground">None running right now.</div>
+                ) : onlineAgents.map((a) => {
+                  const n = liveByAgent.get(a.id) ?? 0
+                  return (
+                    <button key={a.id} onClick={() => nav('agents', a.id)} className="flex w-full items-center gap-2.5 text-left">
+                      {agentDot(a, 'h-7 w-7')}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12.5px] font-medium hover:text-primary">{a.id}</div>
+                        <div className="text-[10.5px] text-muted-foreground">{n} live session{n === 1 ? '' : 's'}</div>
+                      </div>
+                      <span className="shrink-0 text-[10.5px] font-medium text-emerald-600 dark:text-emerald-500">Active</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           </CardContent></Card>

@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.169.1] — 2026-07-13
+### Changed
+- **Overview "Online now": people and agents now share one presence-row UI.** Agents render as the same
+  avatar-circle + online-dot + name + subline (`N live sessions`) + status row as people (each its own
+  labelled "People" / "Agents" group), instead of the pill chips — so the widget reads as one list.
+
 ## [0.169.0] — 2026-07-13
 ### Changed
 - **Tasks — List and Focus views redesigned** (completing the Board redesign from 0.167.0; the three now
