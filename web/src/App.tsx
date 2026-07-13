@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -8298,6 +8298,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [state, setState] = useState<DreamingState | null>(null)
   const [measure, setMeasure] = useState<Measurement | null>(null)
   const [insights, setInsights] = useState<Insights | null>(null)
+  const [improvements, setImprovements] = useState<ImprovementTile[]>([])
   const [dxBusy, setDxBusy] = useState('')
   const [dxHint, setDxHint] = useState('')
   const [alertsOn, setAlertsOn] = useState(true)
@@ -8310,7 +8311,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setImprovements(r.improvements ?? []); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -8387,6 +8388,26 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
         </div>
         {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
       </div>
+
+      {/* Improvement tiles — one per OS domain, opportunities first. Full width above the masonry. */}
+      {improvements.length > 0 && (
+        <div>
+          <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Improvements</div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            {[...improvements].sort((a, b) => b.count - a.count).map((t) => (
+              <a key={t.domain} href={t.href} className={`flex flex-col rounded-lg border p-3 transition-colors hover:bg-muted/50 ${t.count > 0 ? '' : 'opacity-60'}`}>
+                <div className="flex items-baseline justify-between">
+                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t.domain}</span>
+                  {t.count > 0 ? <span className="text-lg font-semibold tabular-nums">{t.count}</span> : <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+                </div>
+                <div className="mt-0.5 text-sm font-medium leading-tight">{t.title}</div>
+                <div className="mt-1 line-clamp-3 text-[11px] leading-snug text-muted-foreground">{t.detail}</div>
+                <div className="mt-2 text-[11px] font-medium text-primary">{t.actionLabel} →</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Cards in a responsive 2-column masonry so more intelligence fits above the fold (single column on
           narrow screens). break-inside-avoid keeps each card whole; mb-4 spaces them within a column. */}

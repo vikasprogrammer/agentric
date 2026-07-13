@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.173.0] — 2026-07-13
+### Added
+- **Improvement tiles on Insights — what to make better across the whole OS.** A grid of six deterministic
+  tiles (`src/edge/improvements.ts`), one per domain, each detecting the top opportunity + a one-tap action
+  into the surface where you fix it: **Agents** (underperformers → review CLAUDE.md / prompts), **KB**
+  (dead + long-stale pages), **Goals** (active goals with no progress in 7+ days), **Skills** (proposals
+  awaiting publish), **Memory** (never-recalled aged memories to prune), **Automations** (last run errored,
+  or enabled-but-idle cron). Opportunities sort first; a healthy domain shows a ✓. Bundled into
+  `GET /api/insights` so the owner dashboard gets them too. v1 is detect + navigate/reuse-existing-actions;
+  per-domain LLM "generate the fix" can layer on later. Validated on live data (flagged the 3 underperforming
+  agents; other domains clean). `src/server.ts`, `web/src/App.tsx`.
+
 ## [0.172.0] — 2026-07-13
 ### Added
 - **"Clear & refresh today" for the daily digest.** A button on the Insights digest card (and
