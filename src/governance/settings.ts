@@ -33,6 +33,7 @@ const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every a
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
 const DIGEST_ENABLED_KEY = 'digest_enabled'; // whether the end-of-day fleet digest posts to Slack ('on'|'off')
 const DIGEST_CHANNEL_KEY = 'digest_channel'; // Slack channel (id or name) the EOD digest posts to; '' = unset
+const DIGEST_DISCORD_CHANNEL_KEY = 'digest_discord_channel'; // Discord channel id the EOD digest posts to; '' = unset
 const DIGEST_HOUR_KEY = 'digest_hour'; // server-local hour (0–23) the EOD digest fires at; default 18
 const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state (cumulative totals/topics/recent)
 const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives injected into every agent's prompt
@@ -458,6 +459,13 @@ export class SettingsStore {
   setDigestChannel(channel: string, by?: string): void {
     this.set(DIGEST_CHANNEL_KEY, channel.trim(), by);
   }
+  /** The Discord channel id the digest posts to; '' when unset. (Discord has no name lookup — id only.) */
+  digestDiscordChannel(): string {
+    return this.getRow(DIGEST_DISCORD_CHANNEL_KEY)?.value?.trim() ?? '';
+  }
+  setDigestDiscordChannel(channel: string, by?: string): void {
+    this.set(DIGEST_DISCORD_CHANNEL_KEY, channel.trim(), by);
+  }
   /** Server-local hour (0–23) the EOD digest fires at; default 18 (6pm). */
   digestHour(): number {
     const n = Number(this.getRow(DIGEST_HOUR_KEY)?.value);
@@ -471,7 +479,7 @@ export class SettingsStore {
   }
   /** Who last touched the digest config (never a secret — the channel is not sensitive). */
   digestMeta(): { updatedAt?: number; updatedBy?: string } {
-    const rows = [this.getRow(DIGEST_ENABLED_KEY), this.getRow(DIGEST_CHANNEL_KEY), this.getRow(DIGEST_HOUR_KEY)].filter(Boolean) as SettingRow[];
+    const rows = [this.getRow(DIGEST_ENABLED_KEY), this.getRow(DIGEST_CHANNEL_KEY), this.getRow(DIGEST_DISCORD_CHANNEL_KEY), this.getRow(DIGEST_HOUR_KEY)].filter(Boolean) as SettingRow[];
     const newest = rows.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))[0];
     return { updatedAt: newest?.updated_at, updatedBy: newest?.updated_by ?? undefined };
   }

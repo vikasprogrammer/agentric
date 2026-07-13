@@ -7689,15 +7689,17 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
     const next = { ...digest, ...patch }; setDigest(next); setDigestHint('')
-    const r = await api.setDigest({ enabled: next.enabled, channel: next.channel, hour: next.hour })
+    const r = await api.setDigest({ enabled: next.enabled, channel: next.channel, discordChannel: next.discordChannel ?? '', hour: next.hour })
     if (r.error) return setDigestHint('⚠ ' + r.error)
     if (r.digest) setDigest((d) => ({ ...d, ...r.digest })); setDigestHint('saved'); setTimeout(() => setDigestHint(''), 1500)
   }
   const postDigest = async () => {
     setBusy(true); setDigestHint('')
     const r = await api.digestPost(); setBusy(false)
-    if (r.error) return setDigestHint('⚠ ' + r.error)
-    setDigestHint(r.posted ? `posted to ${r.channel} (${r.total} sessions)` : `not posted — ${r.reason ?? 'nothing to post'}`)
+    if (r.error && !r.platforms?.length) return setDigestHint('⚠ ' + r.error)
+    const where = (r.platforms ?? []).filter((p) => p.posted).map((p) => p.platform).join(' + ')
+    const failed = (r.platforms ?? []).filter((p) => !p.posted).map((p) => `${p.platform}: ${p.error}`).join('; ')
+    setDigestHint(r.posted ? `posted to ${where} (${r.total} sessions)${failed ? ` — failed ${failed}` : ''}` : `not posted — ${failed || r.reason || r.error || 'nothing to post'}`)
     setTimeout(() => setDigestHint(''), 3000); refresh()
   }
   const applyRec = async (id: string) => { setBusy(true); const r = await api.applyRecommendation(id); setBusy(false); if (r.error) return setHint('⚠ ' + r.error); setHint('applied'); setTimeout(() => setHint(''), 1500); refresh() }
@@ -7778,17 +7780,24 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
         <CardContent className="space-y-3 p-4">
           <div>
             <div className="text-sm font-medium">Daily digest <span className="text-[11px] font-normal text-muted-foreground">— the end-of-day standup</span></div>
-            <p className="text-xs text-muted-foreground">A tenant-wide <strong>“what got done today”</strong> summary — the per-session changelog (from session episodes) plus the learned guidance above — posted to Slack once a day. It rides the same reflect pass; the preview below renders live. Manual <em>Post now</em> and <em>Reflect now</em> never surprise the channel — only the scheduled end-of-day run posts.</p>
+            <p className="text-xs text-muted-foreground">A tenant-wide <strong>“what got done today”</strong> summary — the per-session changelog (from session episodes) plus the learned guidance above — posted to Slack and/or Discord once a day. It rides the same reflect pass; the preview below renders live. Manual <em>Post now</em> and <em>Reflect now</em> never surprise the channel — only the scheduled end-of-day run posts.</p>
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={digest.enabled} onChange={(e) => saveDigest({ enabled: e.target.checked })} />
-            Post the daily digest to Slack automatically
+            Post the daily digest to chat automatically
           </label>
-          {!digest.slackConfigured && <div className="text-[11px] text-amber-600">Slack isn’t configured — set the bot token in <a className="underline" href="#/settings">Integrations</a> first.</div>}
+          {!digest.slackConfigured && !digest.discordConfigured && <div className="text-[11px] text-amber-600">No chat platform is configured — set a Slack or Discord bot token in <a className="underline" href="#/settings">Integrations</a> first.</div>}
           <div className="flex flex-wrap items-end gap-3">
-            <Field label="Slack channel" help="Channel id (C…) or name (#fleet). The bot auto-joins public channels.">
-              <Input value={digest.channel} onChange={(e) => setDigest({ ...digest, channel: e.target.value })} onBlur={() => saveDigest({ channel: digest.channel })} className="w-44 font-mono text-xs" placeholder="#fleet" />
-            </Field>
+            {digest.slackConfigured && (
+              <Field label="Slack channel" help="Channel id (C…) or name (#fleet). The bot auto-joins public channels.">
+                <Input value={digest.channel} onChange={(e) => setDigest({ ...digest, channel: e.target.value })} onBlur={() => saveDigest({ channel: digest.channel })} className="w-44 font-mono text-xs" placeholder="#fleet" />
+              </Field>
+            )}
+            {digest.discordConfigured && (
+              <Field label="Discord channel id" help="The numeric channel id (Discord posts by id, not name).">
+                <Input value={digest.discordChannel ?? ''} onChange={(e) => setDigest({ ...digest, discordChannel: e.target.value })} onBlur={() => saveDigest({ discordChannel: digest.discordChannel ?? '' })} className="w-44 font-mono text-xs" placeholder="123456789012345678" />
+              </Field>
+            )}
             <Field label="Post at (hour, 0–23)" help="Server-local. Fires on the next hourly tick past this hour.">
               <Input value={String(digest.hour)} onChange={(e) => setDigest({ ...digest, hour: Number(e.target.value) || 0 })} onBlur={() => saveDigest({ hour: digest.hour })} className="w-20 font-mono text-xs" placeholder="18" />
             </Field>

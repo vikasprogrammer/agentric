@@ -2298,7 +2298,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, {
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
       applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open,
-      digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
+      digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
@@ -2330,12 +2330,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (b.everyHours !== undefined) os.settings.setDreamingEveryHours(Number(b.everyHours) || 0, me.email);
     if (typeof b.applyLearnings === 'boolean') os.settings.setApplyLearnings(b.applyLearnings, me.email);
     if (b.digest && typeof b.digest === 'object') {
-      const d = b.digest as { enabled?: boolean; channel?: string; hour?: number };
+      const d = b.digest as { enabled?: boolean; channel?: string; discordChannel?: string; hour?: number };
       if (typeof d.enabled === 'boolean') os.settings.setDigestEnabled(d.enabled, me.email);
       if (d.channel !== undefined) os.settings.setDigestChannel(String(d.channel), me.email);
+      if (d.discordChannel !== undefined) os.settings.setDigestDiscordChannel(String(d.discordChannel), me.email);
       if (d.hour !== undefined) os.settings.setDigestHour(Number(d.hour), me.email);
     }
-    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings(), digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), hour: os.settings.digestHour() } });
+    return sendJson(res, 200, { ok: true, everyHours: os.settings.dreamingEveryHours(), applyLearnings: os.settings.applyLearnings(), digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour() } });
   }
   // The daily digest — today's model for the console dashboard (owner/admin), live from the DB.
   if (method === 'GET' && p === '/api/digest/today') {

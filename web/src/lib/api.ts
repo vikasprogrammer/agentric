@@ -261,8 +261,10 @@ export interface Recommendation {
 export interface DigestConfig {
   enabled: boolean
   channel: string
+  discordChannel?: string
   hour: number
   slackConfigured?: boolean
+  discordConfigured?: boolean
   lastPostedAt?: number
 }
 export interface DigestModel {
@@ -1064,9 +1066,9 @@ export const api = {
   // One "reflect" pass: cheap deterministic tally + the memory-gardener over new material (nested `consolidation`).
   dreamingRun: () => call<{ ok: boolean; skipped?: boolean; sessions?: number; episodes?: number; kbPageId?: string; insightId?: string; guidance?: string; consolidation?: { spawned?: boolean; reason?: string; sessionId?: string; items?: number }; error?: string }>('POST', '/api/dreaming/run'),
   // Daily digest — the "what got done today" standup (rides the Dreaming pass; posts to Slack at EOD).
-  setDigest: (digest: { enabled?: boolean; channel?: string; hour?: number }) => call<{ ok: boolean; digest: DigestConfig; error?: string }>('PUT', '/api/dreaming', { digest }),
+  setDigest: (digest: { enabled?: boolean; channel?: string; discordChannel?: string; hour?: number }) => call<{ ok: boolean; digest: DigestConfig; error?: string }>('PUT', '/api/dreaming', { digest }),
   digestToday: () => call<DigestModel & { error?: string }>('GET', '/api/digest/today'),
-  digestPost: () => call<{ ok: boolean; posted: boolean; reason?: string; channel?: string; total: number; iso: string; error?: string }>('POST', '/api/digest/post'),
+  digestPost: () => call<{ ok: boolean; posted: boolean; reason?: string; total: number; iso: string; error?: string; platforms?: { platform: 'slack' | 'discord'; posted: boolean; channel: string; error?: string }[] }>('POST', '/api/digest/post'),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
