@@ -22,6 +22,15 @@ import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
 import { claudeSupportsReloadSkills } from './edge/claude-cli';
 import { DEFAULT_IMAGE_COST_USD, resolveImageBackend } from './edge/image-gen';
+import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
+
+// Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
+// the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
+const VIDEO_MAX_DURATION_SEC = 60;         // clamp the requested clip length
+const VIDEO_JOB_TTL_MS = 20 * 60_000;      // give up on a render after 20 minutes
+const VIDEO_MAX_POLLS = 200;               // poll-attempt ceiling (belt-and-suspenders with the TTL)
+const VIDEO_INCALL_POLLS = 3;              // brief in-call polls to catch a fast render before returning
+const VIDEO_INCALL_POLL_MS = 10_000;       // …10s apart (~30s max block, within tool tolerance)
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
@@ -1450,6 +1459,8 @@ export class TerminalManager {
         ...(this.os.settings.discordConfigured() ? { DISCORD_EGRESS: '1' } : {}),
         // IMAGE_GEN: '1' exposes `image_generate` when a backend key (OpenRouter/Atlas) is configured.
         ...(this.os.settings.imageGenConfigured() ? { IMAGE_GEN: '1' } : {}),
+        // VIDEO_GEN: '1' exposes `video_generate` when a video backend key (fal/Atlas) is configured.
+        ...(this.os.settings.videoGenConfigured() ? { VIDEO_GEN: '1' } : {}),
       },
     };
     return JSON.stringify(config, null, 2);
@@ -2311,6 +2322,147 @@ export class TerminalManager {
 
     this.audit(sessionId, agent, 'image.generated', { model: result.model, backend: backend.name, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id), prompt: shortPrompt });
     return { ok: true, artifacts: out, model: result.model, costUsd };
+  }
+
+  /**
+   * Generate a video from a prompt (the `video_generate` MCP path). Video is ASYNC — renders take
+   * minutes — so this SUBMITS the job, persists it to `video_jobs`, and briefly polls for the fast
+   * case; anything not finished by the short cap is completed later by `pollVideoJobs()` (driven by the
+   * Automations tick), surviving the cap AND a restart. On completion the mp4 is ingested as an
+   * `artifact` (kind='video') + an owner-scoped inbox card, audited `video.generated`. Governed exactly
+   * like images: classified `video.generate` with the estimated `amountUsd` (per-second × duration), so
+   * the money-cap rule applies. Cost is an estimate (video is per-second and rarely returned in-band).
+   */
+  async generateVideo(sessionId: string, input: { prompt: string; model?: string; durationSec?: number; imageUrl?: string }): Promise<{ ok: boolean; status?: 'done' | 'rendering'; jobId?: string; artifact?: { id: string; filename: string; mime: string }; model?: string; costUsd?: number; error?: string }> {
+    const agent = this.sessionAgent(sessionId);
+    if (!agent) return { ok: false, error: 'unknown session' };
+    if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
+    const prompt = (input.prompt || '').trim();
+    if (!prompt) return { ok: false, error: 'a prompt is required' };
+    const durationSec = Math.max(1, Math.min(VIDEO_MAX_DURATION_SEC, Math.floor(input.durationSec ?? DEFAULT_VIDEO_DURATION_SEC)));
+
+    const backend = resolveVideoBackend(this.videoBackendConfig());
+    if (!backend) return { ok: false, error: 'video generation is not configured — set a fal.ai (or Atlas Cloud) key in Settings → Integrations' };
+
+    const estimateUsd = +(durationSec * DEFAULT_VIDEO_COST_PER_SEC_USD).toFixed(4);
+    const model = input.model?.trim() || backend.defaultModel;
+    const gate = this.gate(sessionId, agent, 'video.generate', { prompt, model, durationSec, amountUsd: estimateUsd }, `generate a ${durationSec}s video with ${model}`);
+    if (gate.decision === 'deny') return { ok: false, error: 'blocked by policy' };
+    if (gate.decision === 'pending') return { ok: false, error: 'this generation needs human approval — an approval request was filed; retry once it is approved' };
+
+    let submit;
+    try {
+      submit = await backend.submit({ prompt, model: input.model, durationSec, imageUrl: input.imageUrl });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.audit(sessionId, agent, 'video.failed', { model, error: msg });
+      return { ok: false, error: msg };
+    }
+
+    const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
+    const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
+    const job = this.os.videoJobs.create({ sessionId, agent, source, backend: backend.name, model, prompt, providerRef: submit.providerRef, costUsd: estimateUsd, ttlMs: VIDEO_JOB_TTL_MS });
+    this.audit(sessionId, agent, 'video.submitted', { jobId: job.id, model, backend: backend.name, durationSec, estimateUsd });
+
+    // Brief in-call poll for the fast case; otherwise the tick poller finishes it.
+    for (let i = 0; i < VIDEO_INCALL_POLLS; i++) {
+      await new Promise((r) => setTimeout(r, VIDEO_INCALL_POLL_MS));
+      const done = await this.advanceVideoJob(job.id, backend).catch(() => undefined);
+      if (done?.status === 'done') return { ok: true, status: 'done', jobId: job.id, artifact: done.artifact, model, costUsd: done.costUsd ?? estimateUsd };
+      if (done?.status === 'failed') return { ok: false, error: done.error || 'render failed' };
+    }
+    return { ok: true, status: 'rendering', jobId: job.id, model, costUsd: estimateUsd };
+  }
+
+  /** The Settings-derived config for building a video backend (keys + default model). */
+  private videoBackendConfig() {
+    return {
+      falKey: this.os.settings.falKey(),
+      atlasKey: this.os.settings.atlasKey(),
+      defaultModel: this.os.settings.videoDefaultModel() || undefined,
+    };
+  }
+
+  /**
+   * Poll ONE rendering job and, if it finished, download + ingest the video. Shared by the in-call fast
+   * path and the background poller. Returns the terminal outcome, or `{status:'rendering'}` if not ready.
+   */
+  private async advanceVideoJob(jobId: string, backend: VideoBackend): Promise<{ status: 'done'; artifact: { id: string; filename: string; mime: string }; costUsd?: number } | { status: 'failed'; error: string } | { status: 'rendering' }> {
+    const job = this.os.videoJobs.get(jobId);
+    if (!job || job.status !== 'rendering') return { status: 'rendering' };
+    this.os.videoJobs.bumpAttempt(jobId);
+    let poll;
+    try {
+      poll = await backend.poll(job.providerRef);
+    } catch (e) {
+      return { status: 'rendering' }; // a transient poll error — try again next tick, don't fail the job
+    }
+    if (poll.status === 'rendering') return { status: 'rendering' };
+    if (poll.status === 'failed' || !poll.video) {
+      const error = poll.error || 'render failed';
+      this.os.videoJobs.markFailed(jobId, error);
+      this.audit(job.sessionId, job.agent, 'video.failed', { jobId, model: job.model, error });
+      this.postVideoCard(job, undefined, `Video failed — ${error}`);
+      return { status: 'failed', error };
+    }
+    // Done → download the mp4 and ingest it as an artifact.
+    let bytes: Buffer;
+    try {
+      const res = await fetch(poll.video.url);
+      if (!res.ok) throw new Error(`downloading the finished video failed (${res.status})`);
+      bytes = Buffer.from(await res.arrayBuffer());
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      this.os.videoJobs.markFailed(jobId, error);
+      this.audit(job.sessionId, job.agent, 'video.failed', { jobId, model: job.model, error });
+      return { status: 'failed', error };
+    }
+    const costUsd = poll.costUsd ?? job.costUsd;
+    const shortPrompt = job.prompt.length > 60 ? job.prompt.slice(0, 57) + '…' : job.prompt;
+    const r = this.os.artifacts.ingest({
+      sessionId: job.sessionId, agent: job.agent, source: job.source, title: shortPrompt, description: job.prompt,
+      folder: 'generated-videos', filename: `video-${Date.now()}.${poll.video.ext}`, bytes, kind: 'video', costUsd,
+    });
+    if (!r.ok) {
+      this.os.videoJobs.markFailed(jobId, r.error);
+      return { status: 'failed', error: r.error };
+    }
+    const a = r.artifact;
+    this.os.videoJobs.markDone(jobId, a.id, costUsd);
+    this.postVideoCard(job, a.id, a.title);
+    this.audit(job.sessionId, job.agent, 'video.generated', { jobId, model: job.model, backend: job.backend, costUsd, costSource: poll.costUsd != null ? 'actual' : 'estimate', artifactId: a.id, prompt: shortPrompt });
+    return { status: 'done', artifact: { id: a.id, filename: a.filename, mime: a.mime }, costUsd };
+  }
+
+  /** Owner-scoped inbox card for a finished/failed video (the async delivery — the requester has moved on). */
+  private postVideoCard(job: { sessionId: string; agent: string; source?: string }, artifactId: string | undefined, body: string): void {
+    this.addMessage({
+      type: 'artifact', sessionId: job.sessionId, agent: job.agent, title: `Video — ${job.agent}`, body, status: 'open',
+      source: job.source, args: artifactId ? { artifactId, kind: 'video' } : { kind: 'video', failed: true },
+      audienceKind: 'sessionOwner', audienceId: job.sessionId,
+    });
+  }
+
+  /**
+   * Background pass over in-flight video renders — advances each `rendering` job (poll → ingest on
+   * completion). Expired jobs (past their TTL) or ones that outran the poll ceiling are parked. Driven
+   * by the Automations tick so a paid render always lands even though the requesting call returned.
+   */
+  async pollVideoJobs(): Promise<void> {
+    const jobs = this.os.videoJobs.pending();
+    if (!jobs.length) return;
+    const cfg = this.videoBackendConfig();
+    for (const job of jobs) {
+      if (Date.now() > job.expiresAt || job.attempts > VIDEO_MAX_POLLS) {
+        this.os.videoJobs.markExpired(job.id);
+        this.audit(job.sessionId, job.agent, 'video.failed', { jobId: job.id, model: job.model, error: 'render timed out' });
+        this.postVideoCard(job, undefined, 'Video timed out while rendering');
+        continue;
+      }
+      const backend = videoBackend(job.backend as 'fal' | 'atlas', cfg);
+      if (!backend) continue; // key was removed — leave it pending until reconfigured (or it expires)
+      await this.advanceVideoJob(job.id, backend).catch(() => undefined);
+    }
   }
 
   /**

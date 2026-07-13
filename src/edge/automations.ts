@@ -704,6 +704,9 @@ export class Automations {
 
   /** One scheduler pass — public so tests (and a future "catch-up" boot pass) can drive it. */
   tick(now: Date): void {
+    // Advance any in-flight async video renders (poll → ingest on completion). Fire-and-forget: it's
+    // async, tick is sync, and a poll error must never break the scheduler loop.
+    void this.tm.pollVideoJobs().catch(() => {});
     const minute = Math.floor(now.getTime() / 60_000);
     // Whole-box concurrency cap (#137). When set, count sessions already alive and stop firing NEW
     // scheduler spawns once we hit the ceiling — a deferred cron/one-shot isn't stamped `lastFiredAt`

@@ -85,6 +85,8 @@ const SLACK_EGRESS = process.env.SLACK_EGRESS === '1';
 const DISCORD_EGRESS = process.env.DISCORD_EGRESS === '1';
 // IMAGE_GEN: '1' when a workspace image backend (OpenRouter/Atlas) is configured — exposes image_generate.
 const IMAGE_GEN = process.env.IMAGE_GEN === '1';
+// VIDEO_GEN: '1' when a video backend (fal/Atlas) is configured — exposes video_generate.
+const VIDEO_GEN = process.env.VIDEO_GEN === '1';
 
 const SLACK_SEND_TOOL = {
   name: 'slack_send',
@@ -162,6 +164,26 @@ const IMAGE_GENERATE_TOOL = {
       model: { type: 'string', description: 'Optional model id (backend-specific). Omit to use the workspace default.' },
       size: { type: 'string', description: 'Optional dimensions, e.g. "1024x1024". Omit for the model default.' },
       n: { type: 'number', description: 'How many images to generate (1–4, default 1).' },
+    },
+    required: ['prompt'],
+  },
+};
+
+const VIDEO_GENERATE_TOOL = {
+  name: 'video_generate',
+  description:
+    'Generate a video from a text prompt (optionally seeded by an image URL). Use this to CREATE a video — ' +
+    'you cannot produce one natively. Video renders ASYNCHRONOUSLY (usually a few minutes): this returns ' +
+    'quickly, and the finished video lands in the Artifacts gallery with an inbox card when ready. If it ' +
+    'finishes fast you get the artifact id inline; otherwise you get a job id and a "rendering" status — ' +
+    'do NOT block waiting, just tell the user it will appear in the gallery shortly. Governed (cost-metered + audited).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      prompt: { type: 'string', description: 'What the video should show — subject, action, camera, style.' },
+      model: { type: 'string', description: 'Optional model id (backend-specific, e.g. a fal.ai model). Omit to use the workspace default.' },
+      durationSec: { type: 'number', description: 'Desired clip length in seconds (1–60; default 5). The model may clamp it.' },
+      imageUrl: { type: 'string', description: 'Optional image URL to animate (image-to-video seed).' },
     },
     required: ['prompt'],
   },
@@ -1061,6 +1083,27 @@ async function imageGenerate(args: Record<string, unknown>): Promise<string> {
   return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${list}.`;
 }
 
+async function videoGenerate(args: Record<string, unknown>): Promise<string> {
+  const prompt = String(args.prompt ?? '').trim();
+  if (!prompt) return 'A prompt is required.';
+  const body: Record<string, unknown> = { session: SESSION, prompt };
+  if (typeof args.model === 'string' && args.model.trim()) body.model = args.model.trim();
+  if (args.durationSec !== undefined) body.durationSec = Number(args.durationSec);
+  if (typeof args.imageUrl === 'string' && args.imageUrl.trim()) body.imageUrl = args.imageUrl.trim();
+  const res = await fetch(AOS_URL + '/api/agent/video/generate', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string; status?: string; jobId?: string; artifact?: { id: string; filename: string }; model?: string; costUsd?: number };
+  if (!d.ok) return `Could not generate video: ${d.error ?? 'unknown error'}`;
+  const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
+  if (d.status === 'done' && d.artifact) {
+    return `Video ready with ${d.model ?? 'the default model'}${cost}. Saved to the Artifacts gallery: ${d.artifact.id} (${d.artifact.filename}).`;
+  }
+  return `Video is rendering with ${d.model ?? 'the default model'}${cost} (job ${d.jobId ?? '?'}). It'll appear in the Artifacts gallery and post an inbox card when done — no need to wait; let the user know it's on the way.`;
+}
+
 async function slackSend(args: Record<string, unknown>): Promise<string> {
   const channel = String(args.channel ?? '').trim();
   const text = String(args.text ?? '').trim();
@@ -1943,6 +1986,7 @@ async function handle(req: JsonRpc): Promise<void> {
       ...(SLACK_EGRESS ? [SLACK_SEND_TOOL, SLACK_DM_TOOL] : []),
       ...(DISCORD_EGRESS ? [DISCORD_SEND_TOOL, DISCORD_DM_TOOL] : []),
       ...(IMAGE_GEN ? [IMAGE_GENERATE_TOOL] : []),
+      ...(VIDEO_GEN ? [VIDEO_GENERATE_TOOL] : []),
     ] } });
     return;
   }
@@ -1977,6 +2021,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'discord_send' ? await discordSend(args)
         : name === 'discord_dm' ? await discordDm(args)
         : name === 'image_generate' ? await imageGenerate(args)
+        : name === 'video_generate' ? await videoGenerate(args)
         : name === 'list_capabilities' ? await listCapabilities()
         : name === 'policy_check' ? await policyCheck(args)
         : name === 'directory_lookup' ? await directoryLookup(args)

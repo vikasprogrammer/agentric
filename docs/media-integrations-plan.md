@@ -5,7 +5,22 @@
 > money-cap rule) → swappable `ImageBackend` (OpenRouter default / Atlas alt, `src/edge/image-gen.ts`) →
 > `ArtifactStore.ingest` (server-side bytes → gallery `kind:'image'`) → audited `image.generated` with
 > the real `usage.cost`. Keys live in Settings → Integrations (`imageGenConfigured` → `IMAGE_GEN=1`
-> exposes the tool). Video + Codex/Antigravity remain the roadmap below.
+> exposes the tool).
+>
+> **Status (2026-07-13): VIDEO v1 SHIPPED.** `video_generate` MCP tool → `/api/agent/video/generate` →
+> `TerminalManager.generateVideo`: gate `video.generate` (money-cap via `amountUsd` = per-second ×
+> duration) → **fal.ai** (default; verified queue contract `POST queue.fal.run/{model}` → `status_url`/
+> `response_url`) or **Atlas** backend (`src/edge/video-gen.ts`). Video is ASYNC, so it uses a **job
+> model**: the submit handle persists to a **`video_jobs`** table (`src/state/video-jobs.ts`); a brief
+> in-call poll catches fast renders and a **background poller on the Automations tick**
+> (`pollVideoJobs`) finishes the rest — surviving the poll cap AND a restart. On completion the mp4 is
+> downloaded + `ingest`ed (`kind:'video'`, folder `generated-videos`) + an owner inbox card, audited
+> `video.generated`. The gallery already previews video, so no new UI. Cost is an ESTIMATE (video is
+> per-second, rarely returned in-band). Keys in Settings → Integrations (`videoGenConfigured` →
+> `VIDEO_GEN=1`); **OpenRouter doesn't do video**, so a fal.ai (or Atlas) key is required. Chose **poll**,
+> not the webhook-callback variant, because it needs no public URL (parity with the outbound-only
+> posture) — `video_jobs` + the tick poller IS the durable job model the callback approach provided.
+> Codex/Antigravity remain the roadmap below.
 >
 > **Original planning notes (kept as design of record):** This doc captures the full design space for
 > giving Claude sessions capabilities Claude can't do natively: **image generation**, **video

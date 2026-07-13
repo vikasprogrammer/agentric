@@ -8739,6 +8739,9 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [orKey, setOrKey] = useState('')
   const [atKey, setAtKey] = useState('')
   const [imgModel, setImgModel] = useState('')
+  const [video, setVideo] = useState<IntegrationsResp['video']>({ fal: false, atlas: false, backend: null, defaultModel: '', configured: false })
+  const [falKey, setFalKey] = useState('')
+  const [vidModel, setVidModel] = useState('')
   const [chatRouter, setChatRouter] = useState(true)
   const [chatIdle, setChatIdle] = useState(30)
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
@@ -8755,6 +8758,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
   const DISCORD_DEFAULT = { botToken: false, configured: false }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
+  const VIDEO_DEFAULT = { fal: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const apply = (r: IntegrationsResp) => {
     if (r.composio) setComposio(r.composio)
     if (r.webhook) setWebhook(r.webhook)
@@ -8762,6 +8766,8 @@ function IntegrationsSettings({ me }: { me: Member }) {
     setDiscord(r.discord ?? DISCORD_DEFAULT)
     setImage(r.image ?? IMAGE_DEFAULT)
     if (r.image) setImgModel(r.image.defaultModel || '')
+    setVideo(r.video ?? VIDEO_DEFAULT)
+    if (r.video) setVidModel(r.video.defaultModel || '')
     if (typeof r.chatRouter === 'boolean') setChatRouter(r.chatRouter)
     if (typeof r.chatIdleTimeoutMin === 'number') setChatIdle(r.chatIdleTimeoutMin)
     setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
@@ -8802,12 +8808,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
     loadStatus()
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setOrKey(''); setAtKey('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setOrKey(''); setAtKey(''); setFalKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
     // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
@@ -9105,6 +9111,60 @@ function IntegrationsSettings({ me }: { me: Member }) {
             <Button
               onClick={() => save({ ...(orKey.trim() ? { openRouterKey: orKey.trim() } : {}), ...(atKey.trim() ? { atlasKey: atKey.trim() } : {}) }, 'saved')}
               disabled={busy || (!orKey.trim() && !atKey.trim())}
+            >Save</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              Video generation
+              {video.configured
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">on · {video.backend === 'fal' ? 'fal.ai' : 'Atlas Cloud'}</Badge>
+                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Gives every agent a <code className="text-[11px]">video_generate</code> tool. Video renders
+              <strong> asynchronously</strong> (usually minutes) — the finished clip lands in the <strong>Artifacts</strong>
+              gallery with an inbox card, cost-metered + audited. Needs a <strong>fal.ai</strong> key (recommended — the
+              widest video catalog: Veo, Kling, Seedance…) or an <strong>Atlas Cloud</strong> key (the same one used for
+              images). <span className="text-foreground">OpenRouter does not do video</span>, so an image key alone won't enable this.
+            </p>
+          </div>
+
+          <Field label="fal.ai API key" help="fal.ai → dashboard → Keys. Reaches the full video catalog via one key (queue API).">
+            <Input
+              type="password"
+              value={falKey}
+              onChange={(e) => setFalKey(e.target.value)}
+              placeholder={video.fal ? '•••• (saved) — type a new key to replace' : 'fal key (key_id:key_secret)'}
+              className="font-mono text-xs"
+            />
+            {video.fal && (
+              <button type="button" className="mt-1 text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ falKey: '' }, 'removed')} disabled={busy}>Remove key</button>
+            )}
+          </Field>
+
+          <p className="text-[11px] text-muted-foreground">
+            Atlas Cloud also does video — set its key in the Image section above and it covers both.
+          </p>
+
+          <Field label="Default video model" help="Optional — a backend-specific model id used when an agent doesn't name one. Blank = the backend's built-in default.">
+            <Input
+              value={vidModel}
+              onChange={(e) => setVidModel(e.target.value)}
+              onBlur={() => { if (vidModel.trim() !== (video.defaultModel || '')) save({ videoDefaultModel: vidModel.trim() }, 'default model saved') }}
+              placeholder="e.g. fal-ai/veo3/fast (fal) or bytedance/seedance-2.0/text-to-video (Atlas)"
+              className="font-mono text-xs"
+            />
+          </Field>
+
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={() => save({ ...(falKey.trim() ? { falKey: falKey.trim() } : {}) }, 'saved')}
+              disabled={busy || !falKey.trim()}
             >Save</Button>
           </div>
         </CardContent>

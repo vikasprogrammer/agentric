@@ -233,6 +233,31 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at);
 
+    -- In-flight video renders. Video generation is ASYNC (renders take minutes), so a request can't
+    -- always complete inside one call: we persist the vendor job here so a background poller (the
+    -- Automations tick) can finish it — surviving the initial poll cap AND a server restart. On
+    -- completion the bytes are ingested into artifacts (kind=video) and artifact_id is set.
+    -- provider_ref is an OPAQUE JSON handle (request id + poll url, etc.) so the row is vendor-neutral.
+    CREATE TABLE IF NOT EXISTS video_jobs (
+      id           TEXT PRIMARY KEY,        -- our job id
+      session_id   TEXT NOT NULL,           -- run that requested it
+      agent        TEXT NOT NULL,
+      source       TEXT,                    -- run_as | automation:<id> (gallery + inbox provenance)
+      backend      TEXT NOT NULL,           -- 'fal' | 'atlas' | 'replicate'
+      model        TEXT NOT NULL,
+      prompt       TEXT NOT NULL,
+      provider_ref TEXT NOT NULL,           -- opaque JSON handle the adapter uses to poll
+      status       TEXT NOT NULL,           -- 'rendering' | 'done' | 'failed' | 'expired'
+      cost_usd     REAL,                    -- estimate until known; actual on completion
+      artifact_id  TEXT,                    -- set once the finished video is ingested
+      error        TEXT,
+      attempts     INTEGER NOT NULL DEFAULT 0,  -- poll attempts (bounds the poller)
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      expires_at   INTEGER NOT NULL         -- give up (mark 'expired') after this hard cap
+    );
+    CREATE INDEX IF NOT EXISTS idx_video_jobs_status ON video_jobs(status);
+
     -- A queryable mirror of the audit event stream (JSONL remains the durable system of record).
     CREATE TABLE IF NOT EXISTS audit_events (
       id        INTEGER PRIMARY KEY AUTOINCREMENT,

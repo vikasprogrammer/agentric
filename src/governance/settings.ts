@@ -21,6 +21,8 @@ const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect +
 const IMAGE_OPENROUTER_KEY = 'image_openrouter_key'; // OpenRouter Unified Image API key (default backend)
 const IMAGE_ATLAS_KEY = 'image_atlas_key'; // Atlas Cloud key (alt backend; covers video later)
 const IMAGE_MODEL_KEY = 'image_default_model'; // workspace default image model id (backend-specific); '' = adapter default
+const VIDEO_FAL_KEY = 'video_fal_key'; // fal.ai key (default video backend; queue API)
+const VIDEO_MODEL_KEY = 'video_default_model'; // workspace default video model id (backend-specific); '' = adapter default
 const MEMORY_KEY = 'memory_config'; // the live memory backend (JSON MemoryConfig; overrides the file default)
 const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active external backend became active — the stable orphan horizon for migration
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
@@ -237,6 +239,50 @@ export class SettingsStore {
   }
   setImageDefaultModel(model: string, by?: string): void {
     this.set(IMAGE_MODEL_KEY, model.trim(), by);
+  }
+
+  // ── video generation ─────────────────────────────────────────────────────────────
+  // fal.ai is the default video backend (verified queue contract + catalog); Atlas (the shared image
+  // key) is the alternative. Either present ⇒ the `video_generate` tool is offered. OpenRouter does NOT
+  // do video, so image being configured doesn't imply video is.
+
+  /** fal.ai API key, or '' when unset. */
+  falKey(): string {
+    return this.getRow(VIDEO_FAL_KEY)?.value?.trim() ?? '';
+  }
+  /** Workspace default video model id (backend-specific), or '' to use the adapter's own default. */
+  videoDefaultModel(): string {
+    return this.getRow(VIDEO_MODEL_KEY)?.value?.trim() ?? '';
+  }
+  /** A video-capable backend key present (fal, or the shared Atlas key) → the tool is exposed. */
+  videoGenConfigured(): boolean {
+    return !!this.falKey() || !!this.atlasKey();
+  }
+  /** Which backend a video run would use (fal wins when both set). */
+  videoGenBackend(): 'fal' | 'atlas' | null {
+    if (this.falKey()) return 'fal';
+    if (this.atlasKey()) return 'atlas';
+    return null;
+  }
+  /** Whether each video key is set (never the secret) + the default model + last editor. */
+  videoGenMeta(): { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; updatedAt?: number; updatedBy?: string } {
+    const fal = this.getRow(VIDEO_FAL_KEY);
+    const at = this.getRow(IMAGE_ATLAS_KEY);
+    const newest = [fal, at].filter(Boolean).sort((a, b) => (b!.updated_at ?? 0) - (a!.updated_at ?? 0))[0];
+    return {
+      fal: !!fal?.value,
+      atlas: !!at?.value,
+      backend: this.videoGenBackend(),
+      defaultModel: this.videoDefaultModel(),
+      updatedAt: newest?.updated_at ?? undefined,
+      updatedBy: newest?.updated_by ?? undefined,
+    };
+  }
+  setFalKey(key: string, by?: string): void {
+    this.set(VIDEO_FAL_KEY, key.trim(), by);
+  }
+  setVideoDefaultModel(model: string, by?: string): void {
+    this.set(VIDEO_MODEL_KEY, model.trim(), by);
   }
 
   // ── memory backend ───────────────────────────────────────────────────────────────

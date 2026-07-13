@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.126.0] — 2026-07-13
+### Added
+- **Video generation — agents can now produce video.** New `video_generate` MCP tool: an agent gives a
+  prompt (optionally an image URL to animate), and the finished clip lands in the **Artifacts** gallery
+  (`kind:'video'`, folder `generated-videos`) with an owner inbox card — cost-metered + audited, exactly
+  like images. Because video renders **asynchronously** (minutes), it uses a durable **job model**: the
+  vendor job is persisted to a new `video_jobs` table, a brief in-call poll catches fast renders, and a
+  **background poller on the Automations tick** (`TerminalManager.pollVideoJobs`) finishes the rest —
+  surviving the poll cap AND a server restart. On completion the mp4 is downloaded and ingested. Governed
+  as capability `video.generate` with the estimated `amountUsd` (per-second × duration), so the money-cap
+  rule applies. Backend behind a swappable `VideoBackend` (`src/edge/video-gen.ts`): **fal.ai** (default —
+  the verified queue contract + the widest catalog: Veo, Kling, Seedance…) or **Atlas Cloud** (the shared
+  image key). **OpenRouter doesn't do video**, so a fal.ai/Atlas key is required (Settings → Integrations →
+  Video; `VIDEO_GEN=1` exposes the tool). The gallery already previews video, so no new UI there.
+  (`src/edge/video-gen.ts`, `src/state/video-jobs.ts`, `src/state/db.ts`, `src/kernel.ts`,
+  `src/terminal.ts`, `src/edge/automations.ts`, `src/server.ts`, `src/governance/settings.ts`,
+  `src/memory/memory-mcp.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`)
+
 ## [0.125.0] — 2026-07-13
 ### Added
 - **Agents can propose Host connections — the `host_propose` MCP tool.** When an agent finds it needs to
