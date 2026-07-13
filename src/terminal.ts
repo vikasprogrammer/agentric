@@ -1148,16 +1148,37 @@ export class TerminalManager {
       } catch { /* one bad row must not stop the sweep */ }
     }
 
-    // (2) unattended turn-end backstop. `last_activity IS NOT NULL` = a turn-end beacon has fired, so this
-    // never reaps a run still working its first turn (that row's last_activity is NULL until markTurnIdle).
-    const stragglers = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE headless = 1 AND resident = 0 AND claimed_by IS NULL AND status = 'running' AND last_activity IS NOT NULL AND last_activity < ?")
-      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff);
-    for (const r of stragglers) {
+    // (2) unattended backstop — the safety net for markTurnIdle. Two ways an unattended run leaks a live pane:
+    //   (a) DONE ORPHAN — it ended via `report`, which flips the row to 'done' before the Stop beacon lands, so
+    //       markTurnIdle used to bail. Its pane must die regardless of idle time; a done run should hold no TUI.
+    //       (markTurnIdle now reaps these directly; this sweep also clears any that predate the fix or whose
+    //       Stop beacon never landed.) Only detectable when we can poll liveness (see below).
+    //   (b) IDLE STRAGGLER — still 'running' with a turn-end beacon seen (`last_activity` set) and idle past the
+    //       timeout: the classic case where the Stop beacon was lost or a human attached then detached.
+    // `aliveNames()` returns the live tmux set, or NULL when the backend can't report liveness (the Linux
+    // LauncherSessionBackend always; a transient local poll failure). When we CAN poll, gate on true pane
+    // liveness so a cleanly-reaped row is never re-killed / re-audited on a later tick (a `done` row keeps its
+    // status forever once torn down) — this is what lets us sweep 'done' orphans safely. When we CAN'T, fall
+    // back to the classic time-based rule for RUNNING rows only (never blind-sweep a 'done' row, or we'd
+    // re-teardown it every tick with no way to know its pane already died).
+    const alive = this.backend.aliveNames();
+    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, last_activity FROM term_sessions WHERE headless = 1 AND resident = 0 AND claimed_by IS NULL AND status IN ('running','done')")
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; last_activity: number | null }>();
+    for (const r of unattended) {
       try {
+        if (alive) {
+          if (!alive.has(r.tmux)) continue;                          // pane already gone — nothing to reap
+          // a 'running' straggler is only idle-reaped once it has seen a turn-end beacon AND gone quiet past the
+          // cutoff; a 'done' orphan is reaped on sight — it should never still be holding an interactive pane.
+          if (r.status === 'running' && (r.last_activity == null || r.last_activity >= cutoff)) continue;
+        } else {
+          // no liveness signal: classic straggler rule, running-only, so we can't re-sweep a done row blind.
+          if (r.status !== 'running' || r.last_activity == null || r.last_activity >= cutoff) continue;
+        }
         const space = this.spaceFor(r.run_as ?? r.spawned_by);
         if (this.backend.hasClient(space, r.tmux) === true) continue; // a human is still watching — leave it
         if (this.hasPendingHumanBlock(r.id)) continue;               // blocked on an answer/approval — keep alive
-        this.teardownUnattended(r.id, space, r.tmux, 'idle-backstop');
+        this.teardownUnattended(r.id, space, r.tmux, r.status === 'done' ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }
   }
@@ -1168,18 +1189,28 @@ export class TerminalManager {
    * and it isn't blocked on a person, close it NOW — capture the transcript, mark it done, kill the pane so
    * the automations pile-up guard releases immediately (parity with the old `claude -p` exit). Otherwise
    * (claimed / attached / blocked) it stays a live TUI; we only stamp the turn-end time so the idle backstop
-   * has a clock. No-op for interactive/resident runs and for anything not running.
+   * has a clock. No-op for interactive/resident runs.
+   *
+   * We accept a status of BOTH 'running' AND 'done': an agent that ends by calling `report` (the fleet's
+   * automation prompts all do) flips its row to 'done' MID-turn, so by the time this turn-end beacon lands
+   * the status is already terminal — but the interactive TUI pane is still live and MUST be reaped, else it
+   * leaks a claude process forever (the row reads `done` while its pane keeps running). Before the fix this
+   * bailed on `status !== 'running'` and orphaned every report-ended unattended run. A truly torn-down run
+   * (pane already gone) is skipped via the liveness poll below, so a stray second beacon can't re-reap.
    */
   markTurnIdle(sessionId: string): void {
     const r = this.db.prepare('SELECT tmux, status, headless, resident, claimed_by, run_as, spawned_by FROM term_sessions WHERE id = ?')
       .get<{ tmux: string; status: string; headless: number; resident: number; claimed_by: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
-    if (!r || r.status !== 'running' || !r.headless || r.resident) return; // only unattended, still-running runs
+    if (!r || !r.headless || r.resident) return;                       // only unattended, non-resident runs
+    if (r.status !== 'running' && r.status !== 'done') return;         // stopped/crashed are already torn down
     // Record the turn-end time regardless of the decision below — it's the idle backstop's clock and the
     // signal that this run has completed at least one turn (so the backstop won't reap a mid-turn run).
     this.db.prepare('UPDATE term_sessions SET last_activity = ? WHERE id = ?').run(Date.now(), sessionId);
     if (r.claimed_by) return;                       // taken over → sticky, the human owns its lifecycle
     if (this.hasPendingHumanBlock(sessionId)) return; // waiting on an answer/approval → keep the pane alive
     const space = this.spaceFor(r.run_as ?? r.spawned_by);
+    const alive = this.backend.aliveNames();
+    if (alive && !alive.has(r.tmux)) return;         // pane already gone (already reaped) — nothing to do
     if (this.backend.hasClient(space, r.tmux) === true) return; // a human is watching live → don't close on them
     this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
   }

@@ -8,7 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.141.0] — 2026-07-13
+## [0.141.1] — 2026-07-13
+### Fixed
+- **Unattended (automation/cron/task) sessions no longer leak a live pane after they finish.** An agent that
+  ends by calling `report` flips its row to `done` mid-turn, so by the time the turn-end Stop beacon reached
+  `markTurnIdle` the status was already terminal and the teardown bailed on `status !== 'running'` — the
+  interactive TUI kept running forever (observed: dozens of orphaned tmux panes + claude processes, some 20h+
+  old, all belonging to `done` sessions; `session.reaped` had fired only once). `markTurnIdle` now reaps an
+  unattended run whose pane is still alive even when `report` already marked it `done` (still honoring
+  claimed / attached / blocked-on-human), skipping an already-dead pane via a liveness poll so a stray second
+  beacon can't re-reap. The idle backstop (`reapIdleSessions`) likewise sweeps `done` unattended rows that
+  still hold a live pane — cleaning up any that predate the fix or whose Stop beacon never landed. Net: a
+  finished background run stops for real, and the session list stops showing it as "live".
 ### Added
 - **Settings → System now shows live host resources.** A new "Host resources" panel reports memory
   used/free/total with a usage bar, CPU utilization (sampled server-side) + core count + model + load
