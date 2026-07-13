@@ -884,7 +884,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       prompt: String(b.prompt || ''),
       model: b.model ? String(b.model) : undefined,
       durationSec: b.durationSec !== undefined ? Number(b.durationSec) : undefined,
-      imageUrl: b.imageUrl ? String(b.imageUrl) : undefined,
+      image: b.image ? String(b.image) : b.imageUrl ? String(b.imageUrl) : undefined,
     });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
@@ -1714,9 +1714,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     tm.say(sayMatch[1], String(b.body || ''));
     return sendJson(res, 200, { ok: true });
   }
-  // Operator pasted/dropped a file (image) onto the open terminal: save it into the session's working
-  // folder and type its path into the running claude. Body: { dataB64, ext }. Capped to keep a stray
-  // huge paste from buffering unbounded (readBody has no limit of its own).
+  // Operator pasted/dropped/picked a file (ANY type) onto the open terminal: save it into the session's
+  // working folder and type its path into the running claude. Body: { dataB64, ext, name? }. Capped to
+  // keep a stray huge paste from buffering unbounded (readBody has no limit of its own).
   const attachFileMatch = p.match(/^\/api\/sessions\/([\w-]+)\/attach-file$/);
   if (method === 'POST' && attachFileMatch) {
     const id = attachFileMatch[1];
@@ -1728,7 +1728,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!dataB64) return sendJson(res, 400, { error: 'dataB64 is required' });
     const data = Buffer.from(dataB64, 'base64');
     if (!data.length) return sendJson(res, 400, { error: 'empty or invalid attachment' });
-    const r = tm.attachFile(id, me.email, data, String(b.ext || 'png'));
+    const r = tm.attachFile(id, me.email, data, String(b.ext || 'bin'), b.name ? String(b.name) : undefined);
     return sendJson(res, r.ok ? 200 : 400, r);
   }
   // Stop a running session (kill its tmux, keep the row). Per-member: only the session's owner, or

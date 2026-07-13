@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
+import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
 import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
@@ -2378,6 +2379,47 @@ export class TerminalManager {
   }
 
   /**
+   * Resolve an agent-supplied image reference for image-to-video into something a vendor accepts inline
+   * (a `data:` URL or a passthrough http URL). Supports every place a session's image can live:
+   *   1. an http(s) or data: URL           → passed straight through
+   *   2. a path in the agent's WORKING FOLDER → raw files AND terminal-uploaded files (resolved strictly
+   *      under `manifest.dir` via `containedPath`, the same containment `publish` uses — no escapes)
+   *   3. a LIBRARY artifact id              → a prior generation / published deliverable
+   * File-path is tried before artifact-id so a real file always wins; a bare id (no matching file) falls
+   * through to the Library. Non-image inputs and unresolvable refs are rejected. Inlining as base64 means
+   * the agent needs no public hosting step for something it just made or was handed.
+   */
+  private resolveImageRef(agent: string, ref: string): { url: string } | { error: string } {
+    if (/^https?:\/\//i.test(ref) || ref.startsWith('data:')) return { url: ref };
+    const toDataUrl = (absPath: string, mime: string): { url: string } | { error: string } => {
+      if (!/^image\//.test(mime)) return { error: `"${ref}" is ${mime}, not an image` };
+      try {
+        return { url: `data:${mime};base64,${fs.readFileSync(absPath).toString('base64')}` };
+      } catch (e) {
+        return { error: `could not read "${ref}": ${e instanceof Error ? e.message : String(e)}` };
+      }
+    };
+    // (2) a file in the agent's own working folder — covers files it wrote AND files uploaded via the
+    // terminal, both of which live under its cwd. containedPath returns null for a non-existent path.
+    const dir = this.os.agents.get(agent)?.dir;
+    if (dir) {
+      const abs = containedPath(dir, ref);
+      if (abs) {
+        try {
+          if (fs.statSync(abs).isFile()) return toDataUrl(abs, mimeOf(abs));
+        } catch { /* not a readable file → fall through to Library id */ }
+      }
+    }
+    // (3) a Library artifact id (a prior generation or published deliverable)
+    const a = this.os.artifacts.get(ref);
+    if (a) {
+      const rp = this.os.artifacts.readPath(ref);
+      if (rp) return toDataUrl(rp.absPath, a.mime || rp.mime);
+    }
+    return { error: `couldn't resolve image "${ref}" — pass an http(s) URL, a file path in your working folder, or a Library artifact id` };
+  }
+
+  /**
    * Generate a video from a prompt (the `video_generate` MCP path). Video is ASYNC — renders take
    * minutes — so this SUBMITS the job, persists it to `video_jobs`, and briefly polls for the fast
    * case; anything not finished by the short cap is completed later by `pollVideoJobs()` (driven by the
@@ -2385,8 +2427,9 @@ export class TerminalManager {
    * `artifact` (kind='video') + an owner-scoped inbox card, audited `video.generated`. Governed exactly
    * like images: classified `video.generate` with the estimated `amountUsd` (per-second × duration), so
    * the money-cap rule applies. Cost is an estimate (video is per-second and rarely returned in-band).
+   * An optional `image` seed (URL or artifact id) switches it to image-to-video via `backend.imageModel`.
    */
-  async generateVideo(sessionId: string, input: { prompt: string; model?: string; durationSec?: number; imageUrl?: string }): Promise<{ ok: boolean; status?: 'done' | 'rendering'; jobId?: string; artifact?: { id: string; filename: string; mime: string }; model?: string; costUsd?: number; error?: string }> {
+  async generateVideo(sessionId: string, input: { prompt: string; model?: string; durationSec?: number; image?: string }): Promise<{ ok: boolean; status?: 'done' | 'rendering'; jobId?: string; artifact?: { id: string; filename: string; mime: string }; model?: string; costUsd?: number; error?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
@@ -2397,15 +2440,26 @@ export class TerminalManager {
     const backend = resolveVideoBackend(this.videoBackendConfig());
     if (!backend) return { ok: false, error: 'video generation is not configured — set a fal.ai (or Atlas Cloud) key in Settings → Integrations' };
 
+    // An optional image seed turns this into image-to-video. The ref is either an http(s) URL (passed
+    // through) or a Library artifact id (a prior generation) — resolved to a base64 data URL the vendor
+    // accepts inline, so an agent can animate an image it just made without any public hosting.
+    let imageUrl: string | undefined;
+    const imageRef = (input.image || '').trim();
+    if (imageRef) {
+      const resolved = this.resolveImageRef(agent, imageRef);
+      if ('error' in resolved) return { ok: false, error: resolved.error };
+      imageUrl = resolved.url;
+    }
+
     const estimateUsd = +(durationSec * DEFAULT_VIDEO_COST_PER_SEC_USD).toFixed(4);
-    const model = input.model?.trim() || backend.defaultModel;
-    const gate = this.gate(sessionId, agent, 'video.generate', { prompt, model, durationSec, amountUsd: estimateUsd }, `generate a ${durationSec}s video with ${model}`);
+    const model = input.model?.trim() || (imageUrl ? backend.imageModel : backend.defaultModel);
+    const gate = this.gate(sessionId, agent, 'video.generate', { prompt, model, durationSec, imageToVideo: !!imageUrl, amountUsd: estimateUsd }, `generate a ${durationSec}s ${imageUrl ? 'image-to-video' : 'video'} with ${model}`);
     if (gate.decision === 'deny') return { ok: false, error: 'blocked by policy' };
     if (gate.decision === 'pending') return { ok: false, error: 'this generation needs human approval — an approval request was filed; retry once it is approved' };
 
     let submit;
     try {
-      submit = await backend.submit({ prompt, model: input.model, durationSec, imageUrl: input.imageUrl });
+      submit = await backend.submit({ prompt, model, durationSec, imageUrl });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       this.audit(sessionId, agent, 'video.failed', { model, error: msg });
@@ -2535,25 +2589,30 @@ export class TerminalManager {
   }
 
   /**
-   * Console operator pasted/dropped a file (typically an image) onto a LIVE session. Save it under the
-   * agent's OWN working folder (`.inbox/`) — reachable by the agent's Read tool via a relative path —
-   * and type its relative path into the running claude (no auto-submit) so the operator can add a
-   * question and send. The agent's Read tool can then view the image. Authz is the caller's job
-   * (canViewSession). Returns the in-folder relative path.
+   * Console operator pasted/dropped/picked a file (ANY type — image, PDF, log, zip, …) onto a LIVE
+   * session. Save it under the agent's OWN working folder (`.inbox/`) — reachable by the agent's Read
+   * tool via a relative path — and type its relative path into the running claude (no auto-submit) so
+   * the operator can add a question and send. The agent's Read tool can then open the file. Authz is
+   * the caller's job (canViewSession). `origName` (the browser filename) is preserved when present so
+   * the agent sees a meaningful path (timestamp-prefixed to stay unique); otherwise we fall back to
+   * `pasted-<ts>.<ext>`. Returns the in-folder relative path.
    */
-  attachFile(sessionId: string, by: string, data: Buffer, ext: string): { ok: boolean; path?: string; error?: string } {
+  attachFile(sessionId: string, by: string, data: Buffer, ext: string, origName?: string): { ok: boolean; path?: string; error?: string } {
     const row = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?')
       .get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
     if (row.status !== 'running') return { ok: false, error: 'session is not live — attachments need a running session' };
     const manifest = this.os.agents.get(row.agent);
     if (!manifest?.dir) return { ok: false, error: 'agent has no working folder' };
-    const safeExt = (ext || 'png').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'bin';
+    const safeExt = (ext || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
+    // Prefer the real filename (basename only, sanitized) so a report.pdf stays report.pdf; a
+    // timestamp prefix keeps concurrent same-name uploads from clobbering each other.
+    const clean = (origName || '').split(/[\\/]/).pop()!.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '').slice(0, 80);
     let rel: string;
     try {
       const dir = path.join(manifest.dir, '.inbox');
       fs.mkdirSync(dir, { recursive: true });
-      const name = `pasted-${Date.now()}.${safeExt}`;
+      const name = clean && /\.[A-Za-z0-9]+$/.test(clean) ? `${Date.now()}-${clean}` : `pasted-${Date.now()}.${safeExt}`;
       fs.writeFileSync(path.join(dir, name), data);
       rel = path.join('.inbox', name);
     } catch (e) {

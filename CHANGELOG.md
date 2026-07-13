@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.135.0] — 2026-07-13
+## [0.137.0] — 2026-07-13
 ### Added
 - **Per-member personal context + a self-service Profile page.** Each member can now add free-text
   **"My context"** that is injected into the system prompt of every session that runs **as them** (their
@@ -22,6 +22,32 @@ new version heading in the same commit.
   `/api/team/:id/identities` routes accept self as well as admin). The **Team** page stays focused on
   managing *other* people (roster, roles, invites, agent access). (`ProfilePage`/`NotificationsBell` in
   `web/src/App.tsx`; `TeamStore.memberContext`/`setMemberContext`; `buildCompanyMd` in `src/terminal.ts`.)
+
+## [0.136.0] — 2026-07-13
+### Changed
+- **Attach ANY file to a live session, not just images.** The terminal's 📎 attach button, drag-and-drop,
+  and Cmd/Ctrl+V paste now accept a file of any type (PDF, log, CSV, zip, …) instead of rejecting
+  everything that isn't `image/*`. The file lands in the agent's `.inbox/` and its path is typed into the
+  running claude exactly as before — the agent's Read tool opens it. The **original filename is now
+  preserved** (basename sanitized, timestamp-prefixed to stay unique) so the agent sees `.inbox/<ts>-report.pdf`
+  rather than an opaque `pasted-<ts>.png`; a nameless paste still falls back to `pasted-<ts>.<ext>`. The
+  extension is derived from the filename first (then the MIME subtype). Backend storage was already
+  type-agnostic; this drops the frontend `image/*` gate and threads the filename through
+  (`api.attachFile`, `POST /api/sessions/:id/attach-file`, `TerminalManager.attachFile`). The ~12 MB size
+  cap is unchanged.
+
+## [0.135.0] — 2026-07-13
+### Added
+- **Image-to-video: agents can now animate an image, not just text→video.** The `video_generate` tool
+  takes an optional **`image`** that accepts **any** place a session's image lives:
+  a **Library artifact id** (e.g. from a prior `image_generate`), a **file path in the agent's working
+  folder** (a file it wrote *or* one uploaded into the terminal session — resolved strictly under the
+  agent folder via the same containment `publish` uses), or an **http(s) URL** (passed through to the
+  vendor to fetch). Local files/artifacts are read and sent inline as a base64 data URL (no public hosting
+  needed); when an image is supplied without a named model, an **image-to-video model** is chosen
+  automatically (Atlas `bytedance/seedance-2.0/image-to-video`, fal `…/veo3/fast/image-to-video`). Fixes the
+  Atlas seed field (`image`, not `image_url`) so the seed actually applies. Same governance as text→video
+  (cost-metered, audited, async job → Library). Verified against the live Atlas API (base64 seed → prediction id).
 
 ## [0.134.0] — 2026-07-13
 ### Added
