@@ -1137,7 +1137,7 @@ export const api = {
   // Per-member GitHub (user-to-server OAuth): each member links their OWN account so run-as sessions
   // push / open PRs as the actual human. `connect` returns the authorize URL to navigate to.
   githubMe: () => call<GithubMe>('GET', '/api/github/me'),
-  githubConnect: () => call<{ redirectUrl?: string; error?: string }>('GET', '/api/github/connect'),
+  githubConnect: (returnTo?: string) => call<{ redirectUrl?: string; error?: string }>('GET', `/api/github/connect${returnTo ? `?return=${encodeURIComponent(returnTo)}` : ''}`),
   githubDisconnect: () => call<{ ok?: boolean; error?: string }>('POST', '/api/github/disconnect', {}),
   // One-click App setup: returns GitHub's form-POST target + the pre-filled manifest to submit to it.
   githubManifest: (org?: string) => call<{ postUrl?: string; manifest?: string; error?: string }>('GET', `/api/github/manifest${org ? `?org=${encodeURIComponent(org)}` : ''}`),

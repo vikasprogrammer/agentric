@@ -15,7 +15,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
-import { ConnectorsPage } from '@/connectors'
+import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { docPages } from '@/docs'
 import { Xterm } from './Xterm'
 
@@ -4130,6 +4130,16 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
           <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={prefs.sound} onChange={() => onSavePrefs({ ...prefs, sound: !prefs.sound })} /><span>Play a sound</span></label>
           <label className="flex cursor-pointer items-center gap-2 text-sm"><input type="checkbox" checked={prefs.dm} onChange={() => onSavePrefs({ ...prefs, dm: !prefs.dm })} /><span>Also DM me on Slack/Discord</span></label>
         </div>
+      </section>
+
+      {/* Git identity — connect your own GitHub (OAuth). Reuses the same card as Connections → Mine. */}
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">My git identity</div>
+        <p className="text-sm text-muted-foreground">
+          Connect your GitHub so agents running as <strong>you</strong> commit and open PRs under your name
+          (not a shared bot). One click — it also fills your GitHub handle below.
+        </p>
+        <GithubMineCard />
       </section>
 
       {/* Chat identities — own handles (self-service) */}

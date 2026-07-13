@@ -496,7 +496,7 @@ function ProposedHostRow({ h, me, busy, onPublish, onDismiss }: {
 
 /** The viewer's own GitHub link — Connect/Disconnect their personal git identity (per-member run-as).
  *  Self-contained: fetches its own state so the Mine section can drop it in without threading props. */
-function GithubMineCard() {
+export function GithubMineCard() {
   const [st, setSt] = useState<GithubMe | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -512,7 +512,9 @@ function GithubMineCard() {
   }, [])
   const connect = async () => {
     setBusy(true); setErr('')
-    const r = await api.githubConnect()
+    // Return to the page the member started on (profile or Connections) after the OAuth round-trip.
+    const returnTo = (window.location.hash || '#/connectors').split('?')[0]
+    const r = await api.githubConnect(returnTo)
     setBusy(false)
     if (r.error) return setErr(r.error)
     if (r.redirectUrl) window.location.href = r.redirectUrl

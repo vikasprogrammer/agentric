@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.157.0] — 2026-07-13
+### Added
+- **Connect GitHub from your profile.** The per-member GitHub connection (the `GithubMineCard` — Connect/
+  Disconnect + live install status) now also appears on the **Profile** page, in a **My git identity**
+  section right above **My chat identities** — the natural, discoverable home for "link my own account"
+  (it also auto-fills your `github` handle below on connect). Same component as Connections → Mine, so one
+  implementation. The OAuth round-trip now **returns you to the page you started on** (profile or
+  Connections) instead of always dumping you on Connections: `/api/github/connect` takes a `return` hash
+  that the callback restores, open-redirect-guarded to safe in-app routes. (`web/src/App.tsx`,
+  `web/src/connectors.tsx` — `GithubMineCard` exported, `src/server.ts` — return-path in the OAuth state;
+  `scripts/github-per-member-test.cjs` now 73/73.)
+
 ## [0.156.0] — 2026-07-13
 ### Fixed
 - **`image_generate`/`image_edit` no longer fail ~1-in-3 on a transient hiccup — and the error names the

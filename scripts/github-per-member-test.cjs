@@ -179,6 +179,17 @@ async function main() {
   // Good state → exchange (stubbed) → connected.
   r = await call('GET', `/api/github/callback?code=abc&state=${state}`);
   assert(r.status === 302 && (r.headers.get('location') || '').includes('github=connected'), 'valid callback redirects with github=connected');
+  assert((r.headers.get('location') || '') === '/#/connectors?github=connected', 'default connect returns to Connections');
+  // Return path: connecting from the profile page comes back to the profile (open-redirect-guarded).
+  r = await call('GET', '/api/github/connect?return=' + encodeURIComponent('#/profile'));
+  const st2 = new URL((await r.json()).redirectUrl).searchParams.get('state');
+  r = await call('GET', `/api/github/callback?code=abc&state=${st2}`);
+  assert((r.headers.get('location') || '') === '/#/profile?github=connected', 'connect with return=#/profile comes back to the profile');
+  // Open-redirect guard: a hostile return is ignored, falling back to Connections.
+  r = await call('GET', '/api/github/connect?return=' + encodeURIComponent('https://evil.example/x'));
+  const st3 = new URL((await r.json()).redirectUrl).searchParams.get('state');
+  r = await call('GET', `/api/github/callback?code=abc&state=${st3}`);
+  assert((r.headers.get('location') || '').startsWith('/#/connectors'), 'a non-local return path is rejected (no open redirect)');
   me = await (await call('GET', '/api/github/me')).json();
   assert(me.connected === true && me.login === 'octocat', '/me now reports connected as octocat');
   assert(!('token' in me), '/me never leaks the token');
