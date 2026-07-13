@@ -8,8 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.137.0] — 2026-07-13
+## [0.138.0] — 2026-07-13
 ### Added
+- **`image_edit`: agents can now edit or upscale an existing image, not just generate from scratch.** A new
+  governed MCP tool takes a source **`image`** (a Library artifact id, a working-folder file path — written
+  *or* terminal-uploaded — or an http(s) URL) and either a **`prompt`** (prompt-guided image-to-image edit,
+  e.g. "make it a watercolor", "remove the background") or a **`scale`** of 2/4 (upscale). The result is
+  saved as a **new** Library image (the source is never mutated) + an inbox card. Same governance as
+  `image_generate`: classified `image.edit` with a cost estimate (money-cap applies), audited `image.edited`.
+  Reuses the shared image-ref resolver (local files/artifacts sent inline as base64) and Atlas's
+  `generateImage` submit+poll. Defaults: edit → `google/nano-banana-2/edit`, upscale → `atlascloud/image-upscaler`
+  (override via `model`). Atlas-only (OpenRouter's image API is text-to-image). New route
+  `POST /api/agent/image/edit`. Verified against the live Atlas API (edit + upscale both return images).
 - **Per-member personal context + a self-service Profile page.** Each member can now add free-text
   **"My context"** that is injected into the system prompt of every session that runs **as them** (their
   working style, standing preferences, domain notes) — read at launch by `buildCompanyMd` and labelled as
