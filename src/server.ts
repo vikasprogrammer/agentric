@@ -25,6 +25,7 @@ import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
+import { buildImprovements } from './edge/improvements';
 import { Diagnosis } from './edge/diagnosis';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
@@ -2397,19 +2398,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const effort = os.settings.runtimeDefaults().effort;
     const openRecs = recsStored.open.filter((r) => !recommendationResolved(r, effort));
     if (openRecs.length !== recsStored.open.length) os.settings.setRecommendations({ open: openRecs, dismissed: recsStored.dismissed }, 'system');
+    const dreamInsights = buildInsights(os);
     return sendJson(res, 200, {
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
       applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: openRecs, state, alertsEnabled: os.settings.insightsAlertsEnabled(),
       measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
-      insights: buildInsights(os), // owner insights — per-agent scorecard + friction map
+      insights: dreamInsights, improvements: buildImprovements(os, dreamInsights), // scorecard + friction + improvement tiles
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
   }
-  // The OS intelligence layer, standalone — per-agent scorecard + friction map + the "is it working?"
-  // measurement, decoupled from the Dreaming page so an owner dashboard can consume it directly.
+  // The OS intelligence layer, standalone — per-agent scorecard + friction map + improvement tiles + the
+  // "is it working?" measurement, decoupled from the Dreaming page so an owner dashboard can consume it.
   if (method === 'GET' && p === '/api/insights') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    return sendJson(res, 200, { insights: buildInsights(os), measurement: measureLearning(os) });
+    const ins = buildInsights(os);
+    return sendJson(res, 200, { insights: ins, improvements: buildImprovements(os, ins), measurement: measureLearning(os) });
   }
   // Root-cause diagnosis: spawn the analyst to work out WHY a struggling agent keeps failing, into a KB page.
   if (method === 'POST' && p === '/api/insights/diagnose') {
