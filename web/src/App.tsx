@@ -8252,7 +8252,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const nextAt = last && everyN > 0 ? last + everyN * 3_600_000 : undefined
   const lessons = guidance.split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim())
   return (
-    <div className="max-w-5xl space-y-4">
+    <div className="space-y-4">
       {/* Hero — one plain sentence + a live status line, outcomes up top. */}
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">The OS automatically reviews what your agents did and gets smarter — spotting what works, what’s going wrong, and steering every agent accordingly. Nothing to set up.</p>
@@ -8268,7 +8268,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
 
       {/* Cards in a responsive 2-column masonry so more intelligence fits above the fold (single column on
           narrow screens). break-inside-avoid keeps each card whole; mb-4 spaces them within a column. */}
-      <div className="columns-1 lg:columns-2 lg:gap-4 [&>*]:mb-4 [&>*]:break-inside-avoid">
+      <div className="columns-1 md:columns-2 2xl:columns-3 gap-4 [&>*]:mb-4 [&>*]:break-inside-avoid">
 
       {/* Is it working? — the measurement loop: success-rate trend + did each applied change help. */}
       {measure && (measure.recent.rate != null || measure.trend.some((b) => b.rate != null)) && (() => {

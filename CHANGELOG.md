@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.168.2] — 2026-07-13
+### Fixed
+- **Insights page now uses the full content width.** It carried a `max-w-5xl` cap with no `mx-auto`, so it
+  sat left-aligned and left the right side empty — worse when the sidebar was collapsed. Removed the cap so
+  it fills the available width, and the card masonry now scales to a **third column on very wide screens**
+  (`columns-1 md:columns-2 2xl:columns-3`).
+
 ## [0.168.1] — 2026-07-13
 ### Changed
 - **Overview layout refinements.** The four KPI tiles are now compact single-row cards (icon · figure ·
