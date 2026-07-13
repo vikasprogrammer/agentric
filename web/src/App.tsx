@@ -3411,7 +3411,12 @@ const mdComponents = {
   ul: (p: any) => <ul className="my-2 list-disc space-y-1 pl-5" {...p} />,
   ol: (p: any) => <ol className="my-2 list-decimal space-y-1 pl-5" {...p} />,
   li: (p: any) => <li className="leading-relaxed" {...p} />,
-  a: (p: any) => <a className="text-primary underline" target="_blank" rel="noreferrer" {...p} />,
+  // In-app links (`#/route`, `#anchor`) navigate in the SAME tab via the hash router; only external
+  // URLs open a new tab. Mirrors InlineLinks so wiki-links behave the same in every surface.
+  a: ({ href, ...p }: any) => {
+    const internal = typeof href === 'string' && href.startsWith('#')
+    return <a href={href} className="text-primary underline" {...(internal ? {} : { target: '_blank', rel: 'noreferrer' })} {...p} />
+  },
   blockquote: (p: any) => <blockquote className="my-2 border-l-2 pl-3 text-muted-foreground" {...p} />,
   code: ({ inline, ...p }: any) => inline
     ? <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]" {...p} />

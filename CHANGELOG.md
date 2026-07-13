@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.157.2] — 2026-07-13
+### Fixed
+- **Internal links open in the same tab, not a new one.** The markdown renderer's `<a>` hardcoded
+  `target="_blank"` for every link, so a `[[wiki]]`/`#/route` link inside a KB page, task/goal body,
+  artifact, or doc spawned a new tab instead of navigating in place via the hash router. It now only
+  opens external `http(s)` URLs in a new tab; in-app `#…` links stay in the same tab — matching the
+  `InlineLinks` behaviour already used in inbox cards and memory notes. `web/src/App.tsx`.
+
 ## [0.157.1] — 2026-07-13
 ### Fixed
 - **Dreaming staleness — guidance and topics no longer nag or accumulate forever.**
