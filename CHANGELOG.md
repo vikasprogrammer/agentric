@@ -7,8 +7,6 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
-
-## [0.158.0] — 2026-07-13
 ### Fixed
 - **Same timeout/retry resilience now applies to `video_generate`.** The video backend
   (`src/edge/video-gen.ts`, fal + Atlas) previously had no timeouts and would mark a whole render
@@ -26,6 +24,23 @@ new version heading in the same commit.
   Docs updated in `docs/agent-mcp-tools.md`. Verified live: normal submit, transient submit → retryable
   error, transient poll → `rendering` (not `failed`), and the image path still passes through the shared
   helpers with no regression.
+
+## [0.158.0] — 2026-07-13
+### Added
+- **`ask_agent` — synchronous agent→agent Q&A.** An agent can now ask ANOTHER agent a question (or to
+  solve something) and block inline on the answer, without filing a task. `ask_agent({ agent, question })`
+  spawns the target agent as a one-off headless governed session (provenance `ask:<caller>`, run-as
+  passthrough, every effect still gated), primed with the question; the caller long-polls until the
+  delegate returns its result via the new delegate-only `answer` tool, then resumes with it. An ephemeral
+  request/response backed by the new `agent_asks` table — no task board / inbox surface. Self-heals: a
+  delegate that dies without answering (past a grace) fails the caller out instead of hanging. Same wait
+  envelope as `task_wait` (`AOS_TASK_WAIT_S`, max 6h). New routes `POST /api/ask-agent` + `GET
+  /api/ask-agent/:id` + `POST /api/agent/answer`; audited `agent.asked`/`agent.answered`.
+  `src/memory/memory-mcp.ts`, `src/terminal.ts`, `src/server.ts`, `src/state/db.ts`, `docs/agent-mcp-tools.md`.
+### Changed
+- **`ask` renamed to `ask_human`** to disambiguate it from `ask_agent` — it asks a *person* and DMs them
+  on Slack/Discord (the human answers from the web console Inbox; the DM is a heads-up + deep link). `ask`
+  is still accepted as a hidden alias so in-flight prompts don't break. `src/memory/memory-mcp.ts`.
 
 ## [0.157.4] — 2026-07-13
 ### Fixed

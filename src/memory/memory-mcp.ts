@@ -1,7 +1,7 @@
 /**
  * Agent OS memory — a tiny stdio MCP server the OS injects into every claude-code session.
  *
- * It exposes the OS-owned tools to the agent — `recall`/`remember` (memory), `ask`/`report` (operator),
+ * It exposes the OS-owned tools to the agent — `recall`/`remember` (memory), `ask_human`/`report` (operator),
  * and `list_capabilities`/`policy_check` (policy preview) — and implements them by calling back into
  * agent-os over loopback (the session-scoped /api/* routes), tagged with this session's id. So the
  * backend (sqlite / automem) stays swappable server-side,
@@ -81,6 +81,26 @@ const DISCORD_REPLY_TOOL = {
     type: 'object',
     properties: { text: { type: 'string', description: 'The message to post (Discord markdown supported).' } },
     required: ['text'],
+  },
+};
+
+// Answer tool — offered ONLY to an ask_agent delegate (ASK_ANSWER=1): a one-off session spawned because
+// another agent asked this one a question. Calling it returns the answer to that caller and ends the run.
+// The server resolves WHICH ask from this session, so the agent supplies only the answer.
+const ASK_ANSWER = process.env.ASK_ANSWER === '1';
+
+const ANSWER_TOOL = {
+  name: 'answer',
+  description:
+    'Return your answer to the agent that asked you (this session was spawned by another agent via ' +
+    'ask_agent, and it is BLOCKED waiting on you). Call this ONCE when you have the answer — it delivers ' +
+    'your reply to the caller and ends this run. Put everything the caller needs in `answer`: they receive ' +
+    'ONLY this text, not the rest of your work. If you cannot help, still call it with a short reason.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: { answer: { type: 'string', description: 'Your complete, self-contained answer to the calling agent.' } },
+    required: ['answer'],
   },
 };
 
@@ -410,14 +430,15 @@ const TOOLS = [
     },
   },
   {
-    name: 'ask',
+    name: 'ask_human',
     description:
-      "Ask a human a question and WAIT for their answer. Use when you're blocked on a decision only a person " +
+      "Ask a HUMAN a question and WAIT for their answer. Use when you're blocked on a decision only a person " +
       'can make (which option, a missing detail, a confirmation before a risky step). The question appears in ' +
-      'their Inbox (and DMs them); this call blocks until they reply, then returns their answer. Prefer this ' +
-      "over guessing. By default it goes to the operator you're working for. Set `to` (a teammate's name or " +
-      'email) to ask a SPECIFIC other person instead — e.g. confirm a detail with the account owner, or get ' +
-      'info only they have. Same blocking behaviour; their reply comes back to you.',
+      'their Inbox AND is DMd to them on Slack/Discord; this call blocks until they reply, then returns their ' +
+      "answer. Prefer this over guessing. By default it goes to the operator you're working for. Set `to` (a " +
+      "teammate's name or email) to ask a SPECIFIC other person instead — e.g. confirm a detail with the " +
+      'account owner, or get info only they have. Same blocking behaviour; their reply comes back to you. ' +
+      '(To ask another AGENT instead of a person, use ask_agent.)',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -454,7 +475,7 @@ const TOOLS = [
       'a milestone reached, or a heads-up they should see. Use it sparingly for SIGNAL on a longer task ' +
       '(not a play-by-play): "Scraped 40 pages, analysing now", "Found the bug, drafting the fix". This ' +
       'does NOT block — keep working after calling it. Set `important: true` for a key milestone or a ' +
-      'heads-up worth highlighting. For finishing the task use `report`; to ask a blocking question use `ask`.',
+      'heads-up worth highlighting. For finishing the task use `report`; to ask a blocking question use `ask_human`.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -639,17 +660,39 @@ const TOOLS = [
     description:
       'List the OTHER agents in this workspace you can hand work to — the fleet roster. Returns each ' +
       "agent's id, what it does, and its category, so you can pick the RIGHT specialist and delegate to " +
-      'it with task_create({ assignee: "agent:<id>", autoDispatch: true }). Use this before delegating ' +
-      'instead of guessing an id — a task assigned to a non-existent agent never runs. Read-only.',
+      'it. Use this before delegating instead of guessing an id — a delegation to a non-existent agent ' +
+      'never runs. To ask one a question and get the answer back inline, use ask_agent({ agent, question }); ' +
+      'to hand off durable, trackable work, file a task with task_create({ assignee: "agent:<id>" }). Read-only.',
     annotations: { readOnlyHint: true },
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'ask_agent',
+    description:
+      'Ask ANOTHER agent a question — or to solve something — and WAIT for its answer, which is returned ' +
+      "to you inline. Use this to consult a specialist mid-task (\"ask the data agent for last week's " +
+      'numbers", "have the researcher find X") when you need the result NOW to keep going. It spawns that ' +
+      'agent as a one-off run, primed with your question; this call blocks until it answers, then returns ' +
+      'the answer. Pick the right `agent` id with list_agents first. This is the lightweight synchronous ' +
+      'sibling of a task: use it for a question/answer you need back now; use task_create for durable, ' +
+      'trackable work you hand off. Long jobs may time out — you then get told it is still running.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        agent: { type: 'string', description: "The id of the agent to ask (from list_agents), e.g. \"researcher\"." },
+        question: { type: 'string', description: 'A specific, self-contained question or task — everything the other agent needs to answer without more context.' },
+        timeoutSeconds: { type: 'number', description: 'Optional. How long to block before parking (default ~15min interactive / ~15min unattended, max 6h). On timeout the other agent keeps working; ask again to keep waiting.' },
+      },
+      required: ['agent', 'question'],
+    },
   },
   {
     name: 'check_inbox',
     description:
       'Read your own inbox feed for this session WITHOUT blocking — answers the operator gave to questions ' +
       'you asked, the status of approvals you triggered, and notes/updates on your run. Use this to pick up ' +
-      'a human reply you were not actively waiting on (vs `ask`, which blocks until answered). Read-only.',
+      'a human reply you were not actively waiting on (vs `ask_human`, which blocks until answered). Read-only.',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object',
@@ -1111,6 +1154,54 @@ async function ask(args: Record<string, unknown>): Promise<string> {
       'run. They will follow up (e.g. by answering and re-running you).';
   }
   return `No answer yet (timed out waiting on ${who}). Proceed using your best judgement or ask again.`;
+}
+
+// Ask ANOTHER agent a question and block on its answer — the machine sibling of `ask_human`. Posts to
+// /api/ask-agent (which spawns the delegate), then polls /api/ask-agent/:id until answered/failed/timeout.
+async function askAgent(args: Record<string, unknown>): Promise<string> {
+  const agent = String(args.agent ?? '').trim();
+  if (!agent) return 'Which agent? (agent is required — pick an id from list_agents).';
+  const question = String(args.question ?? '').trim();
+  if (!question) return 'No question provided.';
+  const res = await fetch(AOS_URL + '/api/ask-agent', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, agent, question }),
+  });
+  const posted = (await res.json()) as { id?: string; error?: string };
+  if (posted.error) return `Could not ask ${agent}: ${posted.error}`;
+  const id = posted.id;
+  if (!id) return `Could not reach ${agent}.`;
+  // Same wait envelope as task_wait — asking an agent to solve something can take minutes. Interactive
+  // callers block longer (a human can steer); unattended runs park sooner. Explicit timeout wins; [10s, 6h].
+  const requested = typeof args.timeoutSeconds === 'number' ? args.timeoutSeconds : undefined;
+  const ceilingS = UNATTENDED ? TASK_WAIT_S : Math.max(TASK_WAIT_S, 3600);
+  const maxWaitS = Math.min(21600, Math.max(10, requested ?? ceilingS));
+  const deadline = Date.now() + maxWaitS * 1000;
+  while (Date.now() < deadline) {
+    await sleep(3000);
+    const r = await fetch(`${AOS_URL}/api/ask-agent/${id}`, { headers: H() });
+    const d = (await r.json()) as { status?: string; answer?: string };
+    if (d.status === 'answered') return `${agent} answered:\n\n${d.answer || '(no answer text)'}`;
+    if (d.status === 'failed') return `${agent} finished without returning an answer (it may have hit an error or ended early). Try re-asking, rephrasing, or a different agent — or proceed with your best judgement.`;
+  }
+  return `${agent} hasn't answered within ${maxWaitS}s — it's still working in the background. Call ask_agent again to keep waiting, or move on and proceed with your best judgement.`;
+}
+
+// An ask_agent delegate returns its answer to the caller (exposed only when ASK_ANSWER=1). The server
+// resolves WHICH ask from this session, so we send only the answer text.
+async function answer(args: Record<string, unknown>): Promise<string> {
+  const text = String(args.answer ?? '').trim();
+  if (!text) return 'Nothing to return (answer is required).';
+  const res = await fetch(AOS_URL + '/api/agent/answer', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, answer: text }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  return d.ok
+    ? 'Answer delivered to the agent that asked you. You can end this run now.'
+    : `Could not deliver the answer: ${d.error ?? 'unknown error'}`;
 }
 
 async function slackReply(args: Record<string, unknown>): Promise<string> {
@@ -2115,6 +2206,7 @@ async function handle(req: JsonRpc): Promise<void> {
       ...TOOLS,
       ...(SLACK_REPLY ? [SLACK_REPLY_TOOL] : []),
       ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : []),
+      ...(ASK_ANSWER ? [ANSWER_TOOL] : []),
       ...(SLACK_EGRESS ? [SLACK_SEND_TOOL, SLACK_DM_TOOL] : []),
       ...(DISCORD_EGRESS ? [DISCORD_SEND_TOOL, DISCORD_DM_TOOL] : []),
       ...(IMAGE_GEN ? [IMAGE_GENERATE_TOOL, IMAGE_EDIT_TOOL] : []),
@@ -2138,7 +2230,9 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'kb_write' ? await kbWrite(args)
         : name === 'kb_history' ? await kbHistory(args)
         : name === 'kb_revert' ? await kbRevert(args)
-        : name === 'ask' ? await ask(args)
+        : name === 'ask_human' || name === 'ask' ? await ask(args)
+        : name === 'ask_agent' ? await askAgent(args)
+        : name === 'answer' ? await answer(args)
         : name === 'report' ? await report(args)
         : name === 'update' ? await update(args)
         : name === 'notify' ? await notify(args)

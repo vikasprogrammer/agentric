@@ -160,6 +160,25 @@ function migrate(db: Db): void {
       answered_at INTEGER
     );
 
+    -- Agent-to-agent questions (the ask-agent channel): a live agent delegates a question/task to another
+    -- agent and blocks on the answer — the machine-facing sibling of the questions table. The delegate runs
+    -- as a one-off governed session (delegate_run_id) that answers via the answer tool; the caller polls this
+    -- row. No board/inbox surface — it's an ephemeral request/response, not a durable task.
+    CREATE TABLE IF NOT EXISTS agent_asks (
+      id              TEXT PRIMARY KEY,
+      tenant          TEXT NOT NULL,
+      caller_run_id   TEXT NOT NULL,          -- the asking agent's session id
+      caller_agent    TEXT NOT NULL,
+      target_agent    TEXT NOT NULL,          -- the agent asked
+      question        TEXT NOT NULL,
+      status          TEXT NOT NULL,          -- pending | answered | failed
+      answer          TEXT,
+      delegate_run_id TEXT,                   -- the spawned delegate session that answers
+      run_as          TEXT,                   -- accountable human (run-as passthrough), NULL = company
+      created_at      INTEGER NOT NULL,
+      answered_at     INTEGER
+    );
+
     -- Approval requests routed by policy and resolved by an owner/admin.
     CREATE TABLE IF NOT EXISTS approvals (
       id          TEXT PRIMARY KEY,
