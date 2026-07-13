@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.154.0] — 2026-07-13
+### Added
+- **Clickable links to KB pages, the Library, and other console areas — everywhere a reference is
+  written.** A single `[[section/slug]]` wiki-link convention (the syntax the KB editor already
+  advertised but never rendered) now resolves to a real link, and a bare `[[library]]` / `[[tasks]]`
+  etc. links to that nav area.
+  - **Markdown surfaces** (KB pages, task/goal bodies, artifacts, docs): a new `remarkWikiLinks` remark
+    plugin rewrites `[[…]]` → `#/kb/…` (or an area route) alongside remark-gfm's existing URL autolink;
+    code spans are left untouched. `web/src/App.tsx`.
+  - **Raw-text surfaces** (inbox cards — notification/approval/question bodies — and memory notes,
+    which render pre-formatted, not markdown): a new `InlineLinks` renderer linkifies markdown links,
+    `[[wiki]]` refs, bare URLs, and in-app `#/route` paths inline. Previously these were plain,
+    non-clickable text. `web/src/App.tsx`.
+  - **Terminal**: MCP tool responses now carry **absolute** console URLs — `kb_write`/`kb_read`/
+    `kb_search` return the page's `#/kb/…` link, `publish` returns the artifact link, `library_list`
+    a Library link — built from `AOS_URL`, so the browser terminal's WebLinks addon renders them
+    clickable with no terminal-side change. `src/memory/memory-mcp.ts`.
+  - **Dreaming** now emits its KB reference as `[[operations/fleet-learnings]]`, clickable in the
+    Memory card via `InlineLinks`. `src/edge/dreaming.ts`.
+  - Not covered (need a public base URL threaded into edge engines, which have none today): the daily
+    **digest** Slack/Discord overflow footer and the session-activity primitive inspector still show
+    plain `section/slug` text.
+
 ## [0.153.0] — 2026-07-13
 ### Added
 - **Company-bot GitHub token — every session can push, no per-agent PAT needed.** Add the GitHub App's
