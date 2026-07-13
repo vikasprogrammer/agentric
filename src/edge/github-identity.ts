@@ -41,6 +41,8 @@ interface GithubDeps {
   settings: {
     githubClientId(): string;
     setGithubClientId(v: string, by?: string): void;
+    githubAppSlug(): string;
+    setGithubAppSlug(v: string, by?: string): void;
   };
 }
 
@@ -58,6 +60,16 @@ export class GithubIdentity {
     const v = value.trim();
     if (v) this.os.secrets.set(this.os.tenant, CLIENT_SECRET_KEY, v, { principal: '*', updatedBy: by });
     else this.os.secrets.delete(this.os.tenant, CLIENT_SECRET_KEY, '*');
+  }
+  /** The created App's slug (manifest flow) → the "Install on your repos" link. */
+  appSlug(): string {
+    return this.os.settings.githubAppSlug();
+  }
+  /** Persist a freshly-created App's credentials in one shot (the manifest-conversion result). */
+  saveApp(app: { clientId: string; clientSecret: string; slug: string }, by?: string): void {
+    this.os.settings.setGithubClientId(app.clientId, by);
+    this.setClientSecret(app.clientSecret, by);
+    this.os.settings.setGithubAppSlug(app.slug, by);
   }
   /** Both halves present — the minimum to run the OAuth flow. */
   configured(): boolean {

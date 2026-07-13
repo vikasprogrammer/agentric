@@ -9,13 +9,32 @@ This is **Phase 2** of `docs/github-integration-plan.md`. Phase 1 (the App insta
 `src/connectors/github.ts`) covered the *company-bot* path. Phase 2 adds the *per-member* path and the
 launch wiring that makes run-as choose the right credential.
 
+## Setup: one-click App-manifest flow (v0.129.0)
+
+The admin doesn't hand-create the App or copy any credentials. **Connections → Creds → GitHub** shows a
+**Create GitHub App** button that uses GitHub's [App-manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest):
+
+1. `GET /api/github/manifest` returns a pre-filled manifest (name, our callback + manifest-redirect URLs,
+   least-privilege permissions — Contents + Pull requests write, Metadata read — webhook off, private) plus
+   GitHub's form-POST target (`/settings/apps/new`, or `/organizations/<org>/settings/apps/new` when an org
+   is given). The browser submits it as a form POST.
+2. GitHub shows a "Create this App?" confirmation; on confirm it redirects to
+   `GET /api/github/manifest-callback?code&state`, which exchanges the code
+   (`POST /app-manifests/:code/conversions`) for the App's **client id + secret + slug** and persists them
+   automatically (client id → setting, secret → vault, slug → the install link). Audited `github.app.created`.
+3. The card then surfaces **Install the App** (`https://github.com/apps/<slug>/installations/new`) — a
+   GitHub App can only touch repos it's installed on.
+
+A **manual** fallback (collapsible) still accepts a hand-entered client id + secret — for an OAuth App, or an
+existing App. Either way, the callback URL is `https://<host>/api/github/callback`.
+
 ## The shape: user-to-server OAuth
 
 GitHub's "act as this human" credential is a **user access token**, obtained via the browser OAuth
 web flow against the company's GitHub App (or a classic OAuth App — the flow is identical):
 
-1. An owner/admin registers the App once and records its **client id** (setting) + **client secret**
-   (vault) in **Connections → Creds → GitHub**. The App's **Authorization callback URL** must be
+1. The App's **client id** (setting) + **client secret** (vault) are set — via the one-click flow above
+   or the manual fallback in **Connections → Creds → GitHub**. The App's **Authorization callback URL** is
    `https://<host>/api/github/callback`.
 2. A member clicks **Connect GitHub** (Connections → Connected → *Mine*). We redirect the browser to
    GitHub's authorize URL with a signed, single-use `state`.

@@ -19,6 +19,7 @@ const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connect
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
 const GITHUB_CLIENT_ID_KEY = 'github_client_id'; // the company GitHub App / OAuth App client id (per-member OAuth)
+const GITHUB_APP_SLUG_KEY = 'github_app_slug'; // the created App's slug (from the manifest flow) → the Install-on-repos link
 const IMAGE_OPENROUTER_KEY = 'image_openrouter_key'; // OpenRouter Unified Image API key (default backend)
 const IMAGE_ATLAS_KEY = 'image_atlas_key'; // Atlas Cloud key (alt backend; covers video later)
 const IMAGE_MODEL_KEY = 'image_default_model'; // workspace default image model id (backend-specific); '' = adapter default
@@ -207,6 +208,13 @@ export class SettingsStore {
   githubMeta(): { clientId: boolean; updatedAt?: number; updatedBy?: string } {
     const row = this.getRow(GITHUB_CLIENT_ID_KEY);
     return { clientId: !!row?.value, updatedAt: row?.updated_at, updatedBy: row?.updated_by ?? undefined };
+  }
+  /** The created App's slug (manifest flow), or '' — drives the "Install on your repos" link. */
+  githubAppSlug(): string {
+    return this.getRow(GITHUB_APP_SLUG_KEY)?.value?.trim() ?? '';
+  }
+  setGithubAppSlug(slug: string, by?: string): void {
+    this.set(GITHUB_APP_SLUG_KEY, slug.trim(), by);
   }
 
   // ── image generation ─────────────────────────────────────────────────────────────

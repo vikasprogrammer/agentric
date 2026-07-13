@@ -746,8 +746,9 @@ export interface IntegrationsResp {
   slack: { appToken: boolean; botToken: boolean; configured: boolean }
   /** Native Discord (Gateway) — whether the bot token is set; never the token. */
   discord: { botToken: boolean; configured: boolean }
-  /** Per-member GitHub App OAuth — whether the client id / secret are set (never the secret itself). */
-  github: { clientId: boolean; clientSecret: boolean; configured: boolean }
+  /** Per-member GitHub App OAuth — whether the client id / secret are set (never the secret itself),
+   *  plus the created App's slug + the install-on-repos link (empty until an App is created). */
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string }
   /** Image generation backend — which keys are set (never the keys), the active backend, default model. */
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean }
   /** Video generation backend — which keys are set (never the keys), the active backend, default model. */
@@ -1057,6 +1058,8 @@ export const api = {
   githubMe: () => call<GithubMe>('GET', '/api/github/me'),
   githubConnect: () => call<{ redirectUrl?: string; error?: string }>('GET', '/api/github/connect'),
   githubDisconnect: () => call<{ ok?: boolean; error?: string }>('POST', '/api/github/disconnect', {}),
+  // One-click App setup: returns GitHub's form-POST target + the pre-filled manifest to submit to it.
+  githubManifest: (org?: string) => call<{ postUrl?: string; manifest?: string; error?: string }>('GET', `/api/github/manifest${org ? `?org=${encodeURIComponent(org)}` : ''}`),
   slackStatus: () => call<SlackStatus>('GET', '/api/settings/slack/status'),
   discordStatus: () => call<DiscordStatus>('GET', '/api/settings/discord/status'),
 

@@ -133,6 +133,48 @@ export async function refreshUserToken(
   }
 }
 
+/** What a GitHub App **manifest conversion** yields — GitHub creates the App and hands back its
+ *  credentials in one shot, so the user never copy-pastes a client id/secret. */
+export interface ConvertedApp {
+  appId: number;
+  slug: string;
+  clientId: string;
+  clientSecret: string;
+  htmlUrl: string;
+  /** Present because the manifest flow always generates them; unused by the per-member OAuth path. */
+  webhookSecret?: string;
+  pem?: string;
+}
+
+/**
+ * Exchange the temporary `code` from GitHub's App-manifest redirect for a fully-created App
+ * (`POST /app-manifests/:code/conversions`). This is the one-click setup path: our manifest pre-fills
+ * name/callback/permissions, GitHub creates the App, and this returns its client id + secret (which we
+ * persist) so the admin never handles them by hand. The `code` is single-use and expires in ~1 h.
+ */
+export async function convertAppManifest(code: string): Promise<ConvertedApp | { error: string }> {
+  try {
+    const res = await fetch(`${GH_API}/app-manifests/${encodeURIComponent(code)}/conversions`, {
+      method: 'POST',
+      headers: { ...BASE_HEADERS },
+    });
+    if (!res.ok) return { error: `POST app-manifests/conversions → ${res.status} ${await res.text().catch(() => '')}`.trim() };
+    const j = (await res.json().catch(() => ({}))) as any;
+    if (typeof j?.client_id !== 'string') return { error: 'manifest conversion response had no client_id' };
+    return {
+      appId: Number(j.id),
+      slug: String(j.slug ?? ''),
+      clientId: j.client_id,
+      clientSecret: String(j.client_secret ?? ''),
+      htmlUrl: String(j.html_url ?? ''),
+      webhookSecret: typeof j.webhook_secret === 'string' ? j.webhook_secret : undefined,
+      pem: typeof j.pem === 'string' ? j.pem : undefined,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'manifest conversion failed' };
+  }
+}
+
 /** Look up the authenticated user's `login` + numeric `id` (`GET /user`) for the connected token. */
 export async function githubUser(token: string): Promise<{ login: string; id: number } | { error: string }> {
   try {

@@ -45,6 +45,9 @@ global.fetch = async (urlIn, opts = {}) => {
     return json({ access_token: 'gho_access_1', refresh_token: 'ghr_1', expires_in: 28800, token_type: 'bearer', scope: 'repo' });
   }
   if (url === 'https://api.github.com/user') return json({ login: 'octocat', id: 583231 });
+  if (/\/app-manifests\/[^/]+\/conversions$/.test(url)) {
+    return json({ id: 42, slug: 'agent-os-northwind', client_id: 'Iv1.manifest', client_secret: 'manifest-secret', html_url: 'https://github.com/apps/agent-os-northwind', webhook_secret: 'whsec_x', pem: '-----BEGIN-----' });
+  }
   // Everything else (the test's own calls to the local server) → the real network stack.
   return realFetch(urlIn, opts);
 };
@@ -183,6 +186,42 @@ async function main() {
   assert(me.connected === false, '/me reports disconnected');
   assert(osx.secrets.getSync('testco', ownerId, 'github_user') === undefined, 'token blob removed from the vault');
   assert(!osx.team.externalIdsFor(ownerId).some((i) => i.provider === 'github'), 'github identity cleared');
+
+  // ─── 5) One-click App-manifest setup ────────────────────────────────────────
+  console.log('\n\x1b[1m5) App-manifest one-click setup\x1b[0m');
+  // Clear any creds so we can prove the manifest flow sets them.
+  gid.setClientSecret('', 'owner@test'); osx.settings.setGithubClientId('', 'owner@test'); osx.settings.setGithubAppSlug('', 'owner@test');
+  r = await call('GET', '/api/github/manifest');
+  const man = await r.json();
+  assert(r.status === 200 && man.postUrl && man.postUrl.startsWith('https://github.com/settings/apps/new?state='), 'manifest returns GitHub form-POST url + state (personal)');
+  const manifestObj = JSON.parse(man.manifest);
+  assert(Array.isArray(manifestObj.callback_urls) && manifestObj.callback_urls[0].endsWith('/api/github/callback'), 'manifest carries our OAuth callback URL');
+  assert(manifestObj.redirect_url.endsWith('/api/github/manifest-callback'), 'manifest carries the manifest-callback URL');
+  assert(manifestObj.default_permissions.contents === 'write' && manifestObj.default_permissions.pull_requests === 'write', 'manifest requests least-privilege Contents + PR write');
+  assert(manifestObj.hook_attributes.active === false && manifestObj.public === false, 'manifest disables webhook + keeps the App private');
+  const mState = new URL(man.postUrl).searchParams.get('state');
+
+  const rOrg = await call('GET', '/api/github/manifest?org=acme-inc');
+  const manOrg = await rOrg.json();
+  assert((manOrg.postUrl || '').startsWith('https://github.com/organizations/acme-inc/settings/apps/new?state='), 'org param targets the org App-create URL');
+
+  // Bad state → rejected.
+  r = await call('GET', '/api/github/manifest-callback?code=c&state=WRONG');
+  assert((r.headers.get('location') || '').includes('github=error'), 'manifest-callback with a bad state is rejected');
+
+  // Good state → conversion (stubbed) → creds saved + slug/install link surfaced.
+  r = await call('GET', `/api/github/manifest-callback?code=goodcode&state=${mState}`);
+  assert(r.status === 302 && (r.headers.get('location') || '').includes('github=created'), 'valid manifest-callback redirects with github=created');
+  const iv = await (await call('GET', '/api/settings/integrations')).json();
+  assert(iv.github.configured === true && iv.github.slug === 'agent-os-northwind', 'App creds + slug persisted from the conversion');
+  assert(iv.github.installUrl === 'https://github.com/apps/agent-os-northwind/installations/new', 'install-on-repos link derived from the slug');
+  assert(osx.settings.githubClientId() === 'Iv1.manifest' && gid.clientSecret() === 'manifest-secret', 'client id (setting) + secret (vault) stored');
+
+  // A non-admin cannot create an App.
+  const minv = osx.team.invite({ email: 'member@test', role: 'member' });
+  const macc = osx.team.acceptToken(minv.token);
+  r = await fetch(base + '/api/github/manifest', { headers: { cookie: `aos_sid=${macc.sid}` } });
+  assert(r.status === 403, 'non-admin is forbidden from the manifest setup');
 
   server.close();
   registry.forEach && registry.forEach((x) => { try { x.tm.shutdown && x.tm.shutdown(); } catch { /* */ } });

@@ -3807,6 +3807,77 @@ function DiscordSetupGuide() {
   )
 }
 
+// GitHub's analogue of the Slack/Discord setup guides — but built around GitHub's **App-manifest**
+// one-click flow: we POST a pre-filled manifest to GitHub, the admin confirms, GitHub creates the App
+// and hands its client id + secret straight back to the server. So there's no manual copy-paste and no
+// way to mis-type the callback URL or permissions. Self-contained (fetches the manifest itself).
+function GithubSetupGuide() {
+  const [open, setOpen] = useState(true)
+  const [org, setOrg] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const create = async () => {
+    setBusy(true); setErr('')
+    const r = await api.githubManifest(org.trim() || undefined)
+    if (r.error || !r.postUrl || !r.manifest) { setBusy(false); return setErr(r.error || 'Could not prepare the manifest.') }
+    // Hand GitHub the manifest via a real form POST (it's too large for a query string); this navigates
+    // to GitHub's "Create this GitHub App?" confirmation, after which it redirects back with the creds.
+    const form = document.createElement('form')
+    form.method = 'POST'
+    form.action = r.postUrl
+    form.style.display = 'none'
+    const input = document.createElement('input')
+    input.type = 'hidden'; input.name = 'manifest'; input.value = r.manifest
+    form.appendChild(input)
+    document.body.appendChild(form)
+    form.submit()
+  }
+  return (
+    <div className="rounded-md border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-muted/40"
+      >
+        {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+        Set up GitHub in one click (~1 min)
+      </button>
+      {open && (
+        <div className="space-y-3 border-t px-4 py-3 text-xs text-muted-foreground">
+          <p>
+            Click <strong className="text-foreground">Create GitHub App</strong> — GitHub opens a confirmation with everything
+            pre-filled (name, this server's callback URL, and least-privilege permissions: <strong>Contents</strong> and
+            <strong> Pull requests</strong> read/write, no webhook). Confirm it there, and GitHub creates the App and sends its
+            credentials straight back here — <strong>nothing to copy or paste</strong>.
+          </p>
+          <div className="rounded-md border bg-muted/20 p-3">
+            <Field label="GitHub organization (optional)" help="Leave blank to create the App under your personal account. Enter an org login (e.g. acme-inc) to have the org own it — you'll need to be an org owner.">
+              <Input value={org} onChange={(e) => setOrg(e.target.value.trim())} placeholder="your-org (optional)" className="font-mono text-xs" />
+            </Field>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={create} disabled={busy}>
+                <Plus className="mr-1 h-3.5 w-3.5" />{busy ? 'Opening GitHub…' : 'Create GitHub App'}
+              </Button>
+              <span className="text-[11px]">You must be signed in to GitHub in this browser.</span>
+            </div>
+            {err && <p className="mt-2 text-[11px] text-destructive">⚠ {err}</p>}
+          </div>
+          <p className="border-t pt-2">
+            <strong className="text-foreground">After it's created,</strong> click <strong>Install the App</strong> (appears below) to
+            grant it your repositories — a GitHub App can only touch repos it's installed on. Then each teammate links their own
+            account from <strong>Connections → Connected → Mine → Connect GitHub</strong>, and sessions running as them commit under
+            their name.
+          </p>
+          <p className="border-t pt-2 text-[11px]">
+            Prefer to do it by hand, or already have an OAuth App? Paste its <strong>Client ID</strong> + <strong>Client secret</strong> in
+            the fields below instead — set the app's callback URL to this server's <code className="text-[11px]">/api/github/callback</code>.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const PROVIDER_META: Record<IdentityProvider, { label: string; placeholder: string }> = {
   slack: { label: 'Slack user ID', placeholder: 'U0123ABCD' },
   discord: { label: 'Discord user ID', placeholder: '123456789012345678' },
@@ -8744,9 +8815,10 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
-  const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false })
+  const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '' })
   const [ghId, setGhId] = useState('')
   const [ghSecret, setGhSecret] = useState('')
+  const [githubFlash, setGithubFlash] = useState<'created' | 'error' | null>(null)
   const [image, setImage] = useState<IntegrationsResp['image']>({ openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false })
   const [atKey, setAtKey] = useState('')
   const [imgModel, setImgModel] = useState('')
@@ -8768,7 +8840,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   // Defensive defaults so an older backend (one that predates a field) never white-screens the page.
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
   const DISCORD_DEFAULT = { botToken: false, configured: false }
-  const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false }
+  const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '' }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const VIDEO_DEFAULT = { fal: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const apply = (r: IntegrationsResp) => {
@@ -8819,6 +8891,15 @@ function IntegrationsSettings({ me }: { me: Member }) {
       apply(r)
     }).catch(() => {})
     loadStatus()
+    // The GitHub App-manifest flow redirects back here with ?github=created|error — surface a banner
+    // and re-read integrations (a just-created App now shows configured + the install link), then
+    // scrub the flag from the URL so a refresh doesn't re-show it.
+    const gm = window.location.hash.match(/[?&]github=(created|error)/)
+    if (gm) {
+      setGithubFlash(gm[1] as 'created' | 'error')
+      window.history.replaceState(null, '', window.location.hash.replace(/([?&])github=(created|error)/, ''))
+      if (gm[1] === 'created') api.integrations().then((r) => { if (!r.error) apply(r) }).catch(() => {})
+    }
   }, [])
 
   const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
@@ -9077,41 +9158,77 @@ function IntegrationsSettings({ me }: { me: Member }) {
                 : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
-              Register one company <strong>GitHub App</strong> (or OAuth App), then paste its <strong>client id</strong> + <strong>client secret</strong> here.
-              Each member can then <strong>Connect GitHub</strong> from Connections → Connected → <em>Mine</em>, so a session running as
-              that person pushes / opens PRs <strong>as the actual human</strong> (not a shared bot). Set the App's
-              <strong> Authorization callback URL</strong> to <code className="text-[11px]">{`<this-host>`}/api/github/callback</code>.
+              Let each teammate link their <strong>own</strong> GitHub account, so a session running as them pushes and opens PRs
+              <strong> as the actual human</strong> — not a shared bot. Set it up once with a company <strong>GitHub App</strong>.
             </p>
           </div>
-          <Field label="Client ID">
-            <Input
-              value={ghId}
-              onChange={(e) => setGhId(e.target.value.trim())}
-              placeholder={github.clientId ? 'saved — type a new id to replace' : 'Iv1.… / a GitHub App or OAuth App client id'}
-              className="font-mono text-xs"
-            />
-          </Field>
-          <Field label="Client secret">
-            <Input
-              type="password"
-              value={ghSecret}
-              onChange={(e) => setGhSecret(e.target.value)}
-              placeholder={github.clientSecret ? '•••• (saved) — type a new secret to replace' : 'the App client secret'}
-              className="font-mono text-xs"
-            />
-          </Field>
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => save({ ...(ghId.trim() ? { githubClientId: ghId.trim() } : {}), ...(ghSecret.trim() ? { githubClientSecret: ghSecret.trim() } : {}) }, 'saved')}
-              disabled={busy || (!ghId.trim() && !ghSecret.trim())}
-            >
-              Save GitHub App
-            </Button>
-            {(github.clientId || github.clientSecret) && (
-              <Button variant="ghost" onClick={() => save({ githubClientId: '', githubClientSecret: '' }, 'removed')} disabled={busy}>Remove</Button>
-            )}
-          </div>
+
+          {githubFlash === 'created' && (
+            <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-700 dark:text-emerald-400">
+              <strong>GitHub App created.</strong> Credentials were saved automatically — now install it on your repositories below,
+              then have each teammate connect from Connections → Mine.
+            </div>
+          )}
+          {githubFlash === 'error' && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+              <strong>GitHub App setup didn't complete.</strong> No changes were saved — please try again.
+            </div>
+          )}
+
+          {/* One-click create is the primary path when nothing's configured yet. */}
+          {!github.configured && <GithubSetupGuide />}
+
+          {/* After creation: the App must be installed on the repos it may touch. */}
+          {github.installUrl && (
+            <div className="rounded-md border bg-muted/20 p-3">
+              <div className="text-xs font-medium text-foreground">Install the App on your repositories</div>
+              <p className="mt-0.5 text-[11px] text-muted-foreground">A GitHub App can only act on repos it's installed on. Grant it your org or specific repos.</p>
+              <a href={github.installUrl} target="_blank" rel="noreferrer" className={`mt-2 inline-flex ${buttonVariants({ size: 'sm' })}`}>
+                Install the App ↗
+              </a>
+            </div>
+          )}
+
+          {/* Manual / OAuth-App creds — the fallback. Collapsed once an App is configured. */}
+          <details className="rounded-md border" open={!github.configured}>
+            <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
+              {github.configured ? 'Replace credentials manually' : 'Or paste credentials manually (GitHub App or OAuth App)'}
+            </summary>
+            <div className="space-y-3 border-t p-3">
+              <p className="text-[11px] text-muted-foreground">
+                Set the app's <strong>Authorization callback URL</strong> to this server's <code className="text-[11px]">/api/github/callback</code>.
+              </p>
+              <Field label="Client ID">
+                <Input
+                  value={ghId}
+                  onChange={(e) => setGhId(e.target.value.trim())}
+                  placeholder={github.clientId ? 'saved — type a new id to replace' : 'Iv1.… / a GitHub App or OAuth App client id'}
+                  className="font-mono text-xs"
+                />
+              </Field>
+              <Field label="Client secret">
+                <Input
+                  type="password"
+                  value={ghSecret}
+                  onChange={(e) => setGhSecret(e.target.value)}
+                  placeholder={github.clientSecret ? '•••• (saved) — type a new secret to replace' : 'the App client secret'}
+                  className="font-mono text-xs"
+                />
+              </Field>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => save({ ...(ghId.trim() ? { githubClientId: ghId.trim() } : {}), ...(ghSecret.trim() ? { githubClientSecret: ghSecret.trim() } : {}) }, 'saved')}
+                  disabled={busy || (!ghId.trim() && !ghSecret.trim())}
+                >
+                  Save GitHub App
+                </Button>
+                {(github.clientId || github.clientSecret) && (
+                  <Button variant="ghost" onClick={() => save({ githubClientId: '', githubClientSecret: '' }, 'removed')} disabled={busy}>Remove</Button>
+                )}
+              </div>
+            </div>
+          </details>
         </CardContent>
       </Card>
 

@@ -25,6 +25,7 @@ import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './e
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
+import { convertAppManifest } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
@@ -2720,7 +2721,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
     if (discordTouched && discord) void discord.restart();
     // Per-member GitHub App OAuth credentials: client id → setting, client secret → vault. '' clears.
-    if (typeof b.githubClientId === 'string') os.settings.setGithubClientId(b.githubClientId, me.email);
+    if (typeof b.githubClientId === 'string') {
+      os.settings.setGithubClientId(b.githubClientId, me.email);
+      // Clearing the client id detaches the App entirely — drop the stale install-link slug too.
+      if (!b.githubClientId.trim()) os.settings.setGithubAppSlug('', me.email);
+    }
     if (typeof b.githubClientSecret === 'string') new GithubIdentity(os).setClientSecret(b.githubClientSecret, me.email);
     // Image generation backend keys (OpenRouter default / Atlas alt) + optional default model.
     if (typeof b.openRouterKey === 'string') os.settings.setOpenRouterKey(b.openRouterKey, me.email);
@@ -2788,6 +2793,35 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.team.clearIdentity(me.id, 'github');
     if (removed) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.user.disconnected', data: {} });
     return sendJson(res, 200, { ok: true });
+  }
+  // ── one-click App setup via GitHub's App-manifest flow (owner/admin) ────────────────────────────
+  // Returns the pre-filled manifest + the GitHub form-POST target; the browser posts it, GitHub creates
+  // the App and redirects to /manifest-callback with a code we convert into the App's credentials — so
+  // the admin never hand-copies a client id/secret or mis-types the callback URL.
+  if (method === 'GET' && p === '/api/github/manifest') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const org = (url.searchParams.get('org') || '').trim();
+    const state = newGithubState(os.tenant, me.id);
+    const postUrl = (org
+      ? `https://github.com/organizations/${encodeURIComponent(org)}/settings/apps/new`
+      : 'https://github.com/settings/apps/new') + `?state=${encodeURIComponent(state)}`;
+    return sendJson(res, 200, { postUrl, manifest: JSON.stringify(githubAppManifest(req, os)) });
+  }
+  // GitHub redirects here after the admin confirms App creation. Convert the temporary code into the
+  // App's credentials and persist them (client id → setting, secret → vault, slug → the install link).
+  if (method === 'GET' && p === '/api/github/manifest-callback') {
+    if (!isAdmin(me)) return redirect(res, '/#/connectors/creds?github=error');
+    const code = url.searchParams.get('code') || '';
+    const state = url.searchParams.get('state') || '';
+    if (!code || !takeGithubState(state, os.tenant, me.id)) return redirect(res, '/#/connectors/creds?github=error');
+    const conv = await convertAppManifest(code);
+    if ('error' in conv) {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.app.create_failed', data: { error: conv.error } });
+      return redirect(res, '/#/connectors/creds?github=error');
+    }
+    new GithubIdentity(os).saveApp({ clientId: conv.clientId, clientSecret: conv.clientSecret, slug: conv.slug }, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.app.created', data: { slug: conv.slug, appId: conv.appId } });
+    return redirect(res, '/#/connectors/creds?github=created');
   }
 
   // ── memory backend (sqlite / libsql / automem) — owner/admin, applied live without a restart ──
@@ -3862,11 +3896,37 @@ function takeGithubState(state: string, tenant: string, memberId: string): boole
   githubOauthStates.delete(state);
   return hit.exp >= Date.now() && hit.tenant === tenant && hit.memberId === memberId;
 }
-/** The absolute OAuth callback URL, honouring an nginx X-Forwarded-Proto/Host in front of us. */
-function githubRedirectUri(req: http.IncomingMessage): string {
+/** This server's public origin (`proto://host`), honouring an nginx/Tailscale X-Forwarded-Proto/Host. */
+function publicOrigin(req: http.IncomingMessage): string {
   const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   const host = String(req.headers['x-forwarded-host'] || req.headers.host || '127.0.0.1').split(',')[0];
-  return `${proto}://${host}/api/github/callback`;
+  return `${proto}://${host}`;
+}
+/** The absolute OAuth callback URL, honouring an nginx X-Forwarded-Proto/Host in front of us. */
+function githubRedirectUri(req: http.IncomingMessage): string {
+  return `${publicOrigin(req)}/api/github/callback`;
+}
+/**
+ * The GitHub App **manifest** we hand to the one-click create flow — pre-fills everything the
+ * per-member OAuth path needs so the admin can't misconfigure it: our callback + manifest-redirect URLs,
+ * least-privilege repo permissions (Contents + Pull requests write, Metadata read), no webhook, and no
+ * OAuth-on-install (we run the per-member OAuth separately). Private app, installable org-wide.
+ * See docs/per-member-github-plan.md.
+ */
+function githubAppManifest(req: http.IncomingMessage, os: AgentOS): Record<string, unknown> {
+  const origin = publicOrigin(req);
+  return {
+    name: `Agent OS — ${os.tenantName}`,
+    url: origin,
+    hook_attributes: { active: false },
+    redirect_url: `${origin}/api/github/manifest-callback`,
+    callback_urls: [`${origin}/api/github/callback`],
+    setup_on_update: false,
+    request_oauth_on_install: false,
+    public: false,
+    default_permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
+    default_events: [],
+  };
 }
 
 // ── per-member terminal reverse proxy (Phase A, flag on) ───────────────────────
@@ -3960,7 +4020,7 @@ function integrationsView(os: AgentOS): {
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
-  github: { clientId: boolean; clientSecret: boolean; configured: boolean };
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean };
   chatRouter: boolean;
@@ -3979,7 +4039,7 @@ function integrationsView(os: AgentOS): {
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
-    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured() },
+    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '' },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     video: { fal: video.fal, atlas: video.atlas, backend: video.backend, defaultModel: video.defaultModel, configured: os.settings.videoGenConfigured() },
     chatRouter: os.settings.chatRouterEnabled(),

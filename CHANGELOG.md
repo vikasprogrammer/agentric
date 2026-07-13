@@ -9,6 +9,20 @@ new version heading in the same commit.
 ## [Unreleased]
 
 ## [0.129.0] — 2026-07-13
+### Added
+- **One-click GitHub App setup — no more manual walkthrough.** The **Connections → Creds → GitHub** card
+  now creates the company GitHub App for you via GitHub's **App-manifest flow**: click **Create GitHub App**
+  (optionally naming an org), GitHub opens a pre-filled confirmation (name, this server's callback URL,
+  least-privilege Contents + Pull-requests write, webhook off, private), and on confirm it creates the App
+  and hands its **client id + secret straight back** — persisted automatically (client id → setting, secret
+  → vault), so nobody copies a credential or mis-types the callback URL. The card then surfaces an
+  **Install the App** button (`github.com/apps/<slug>/installations/new`) for the one remaining step, plus a
+  clear "what's next" guide and a **success banner** on return. A collapsible **manual** path still accepts a
+  hand-entered client id + secret (for an OAuth App or an existing App). New routes
+  `GET /api/github/manifest` + `GET /api/github/manifest-callback` (owner/admin, CSRF-stated), audited
+  `github.app.created`. (`src/connectors/github.ts` `convertAppManifest`, `src/edge/github-identity.ts`,
+  `src/governance/settings.ts`, `src/server.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`;
+  `scripts/github-per-member-test.cjs` now 48/48.)
 ### Changed
 - **Background (headless) runs no longer auto-open a terminal tab.** A headless session runs to
   completion unattended — it isn't something you sit and watch — so it no longer auto-pops into the
