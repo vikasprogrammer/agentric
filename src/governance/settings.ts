@@ -34,6 +34,7 @@ const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
 const DIGEST_ENABLED_KEY = 'digest_enabled'; // whether the end-of-day fleet digest posts to Slack ('on'|'off')
+const INSIGHTS_ALERTS_KEY = 'insights_alerts'; // proactive intelligence alerts → admins' Inbox ('on'|'off', default on)
 const DIGEST_CHANNEL_KEY = 'digest_channel'; // Slack channel (id or name) the EOD digest posts to; '' = unset
 const DIGEST_DISCORD_CHANNEL_KEY = 'digest_discord_channel'; // Discord channel id the EOD digest posts to; '' = unset
 const DIGEST_HOUR_KEY = 'digest_hour'; // server-local hour (0–23) the EOD digest fires at; default 18
@@ -467,6 +468,15 @@ export class SettingsStore {
   setDigestEnabled(on: boolean, by?: string): boolean {
     this.set(DIGEST_ENABLED_KEY, on ? 'on' : 'off', by);
     return this.digestEnabled();
+  }
+  /** Whether the intelligence layer pushes proactive alerts (struggling agent, recurring rejections, …) to
+   *  the admins' Inbox. Default ON (it's the point — the OS comes to you), throttled per-key server-side. */
+  insightsAlertsEnabled(): boolean {
+    return this.getRow(INSIGHTS_ALERTS_KEY)?.value !== 'off';
+  }
+  setInsightsAlertsEnabled(on: boolean, by?: string): boolean {
+    this.set(INSIGHTS_ALERTS_KEY, on ? 'on' : 'off', by);
+    return this.insightsAlertsEnabled();
   }
   /** The Slack channel (id like `C123…` or a name like `#fleet`) the digest posts to; '' when unset. */
   digestChannel(): string {

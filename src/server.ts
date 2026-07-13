@@ -11,7 +11,8 @@ import * as crypto from 'crypto';
 import * as nodeOs from 'node:os';
 import { AgentOS, loadAgentOS } from './kernel';
 import { VERSION } from './version';
-import { TenantRegistry, TenantRuntime, notifyLoginLink } from './tenant-registry';
+import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } from './tenant-registry';
+import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
@@ -303,6 +304,19 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     // Slack post (enabled + channel + past digestHour + not yet posted today); the dashboard/KB render
     // live on demand, so nothing here is needed to keep them fresh. No-op unless the tenant opted in.
     void new Digest(os).maybePostEod().catch(() => { /* never let the digest crash the scheduler */ });
+    // Proactive intelligence alerts — the OS comes to the owner. Detect notable conditions (struggling
+    // agent, recurring rejections, success drop), push each NEW one (past its per-key cooldown) as an
+    // admins' Inbox card + DM. No-op if disabled or nothing warrants attention.
+    if (os.settings.insightsAlertsEnabled()) {
+      try {
+        const origin = registry.consoleOrigin(os.tenant);
+        for (const alert of pendingAlerts(os)) {
+          rt.tm.postInsightAlert(alert);
+          os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'insights.alert', data: { key: alert.key, severity: alert.severity } });
+          void notifyInsightAlert(os, rt.slack, rt.discord, origin, alert).catch(() => { /* DM is best-effort */ });
+        }
+      } catch { /* never let alerting crash the scheduler */ }
+    }
   }), 3_600_000);
   upkeep.unref?.();
 
@@ -2369,7 +2383,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const state = raw ? { firstPass: raw.firstPass, passes: raw.passes, totals: raw.totals, recent: raw.recent } : undefined;
     return sendJson(res, 200, {
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
-      applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, state,
+      applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, state, alertsEnabled: os.settings.insightsAlertsEnabled(),
       measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
       insights: buildInsights(os), // owner insights — per-agent scorecard + friction map
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
@@ -2422,6 +2436,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     if (b.everyHours !== undefined) os.settings.setDreamingEveryHours(Number(b.everyHours) || 0, me.email);
     if (typeof b.applyLearnings === 'boolean') os.settings.setApplyLearnings(b.applyLearnings, me.email);
+    if (typeof b.alertsEnabled === 'boolean') os.settings.setInsightsAlertsEnabled(b.alertsEnabled, me.email);
     if (b.digest && typeof b.digest === 'object') {
       const d = b.digest as { enabled?: boolean; channel?: string; discordChannel?: string; hour?: number };
       if (typeof d.enabled === 'boolean') os.settings.setDigestEnabled(d.enabled, me.email);
