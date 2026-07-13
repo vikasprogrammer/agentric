@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -22,9 +22,9 @@ import { Xterm } from './Xterm'
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'learnings' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'learnings', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -687,7 +687,7 @@ function UpdateNotice() {
  *  this list; Sessions is the middle switcher; Feedback is an external link. `route` drives active
  *  state; `adminOnly` hides the item entirely from members who can't view that page (so they can't pin
  *  what they can't see). Order here is the canonical order items render in, whether in Main or Manage. */
-type NavKey = 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'skills' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
+type NavKey = 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'learnings' | 'skills' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
 interface NavMeta { key: NavKey; route: Route; label: string; icon: ReactNode; adminOnly?: boolean }
 const PINNABLE_NAV: NavMeta[] = [
   { key: 'goals',       route: 'goals',       label: 'Goals',       icon: <Target className="h-4 w-4" /> },
@@ -696,6 +696,7 @@ const PINNABLE_NAV: NavMeta[] = [
   { key: 'automations', route: 'automations', label: 'Automations', icon: <Zap className="h-4 w-4" /> },
   { key: 'kb',          route: 'kb',          label: 'Knowledge',   icon: <BookText className="h-4 w-4" /> },
   { key: 'memory',      route: 'memory',      label: 'Memory',      icon: <Brain className="h-4 w-4" /> },
+  { key: 'learnings',   route: 'learnings',   label: 'Learnings',   icon: <Lightbulb className="h-4 w-4" />, adminOnly: true },
   { key: 'skills',      route: 'skills',      label: 'Skills',      icon: <Sparkles className="h-4 w-4" />, adminOnly: true },
   { key: 'connectors',  route: 'connectors',  label: 'Connections', icon: <Plug className="h-4 w-4" /> },
   { key: 'team',        route: 'team',        label: 'Team',        icon: <Users className="h-4 w-4" /> },
@@ -1153,7 +1154,7 @@ function Console({ me }: { me: Member }) {
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
+                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'learnings' ? 'Learnings' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
               </h1>
             </div>
           )}
@@ -1172,6 +1173,7 @@ function Console({ me }: { me: Member }) {
           {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
+          {route === 'learnings' && <DreamingSettings me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} permalink={detail} nav={nav} />}
           {route === 'skills' && <SkillsPage />}
           {route === 'files' && <FilesPage initialDir={detail} />}
@@ -6148,19 +6150,15 @@ function KnowledgeBasePage({ me, permalink, nav }: { me: Member; permalink: stri
   )
 }
 
-/** The Memory hub. Two tabs: **Memories** (the store — Capture + Recall) and **Self-learning** (the
- *  reflect loop — Distil + Apply). A slim stats strip headlines both for admins. See docs/memory-model.md. */
+/** The Memory hub — the store (Capture + Recall), with a slim stats strip for admins. The self-learning
+ *  reflect loop (Distil + Apply) + the daily digest now live in their own top-level **Learnings** nav
+ *  (`DreamingSettings`), not a tab here. See docs/memory-model.md. */
 function MemoryPage({ agents, me }: { agents: AgentInfo[]; me: Member }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
-  const [tab, setTab] = useState<'browse' | 'learning'>('browse')
   return (
     <div className="space-y-4">
       {isAdmin && <MemoryStats />}
-      <div className="flex gap-1 rounded-lg border bg-background p-1 w-fit">
-        <TabButton on={tab === 'browse'} onClick={() => setTab('browse')}>Memories</TabButton>
-        {isAdmin && <TabButton on={tab === 'learning'} onClick={() => setTab('learning')}>Self-learning</TabButton>}
-      </div>
-      {tab === 'learning' && isAdmin ? <DreamingSettings me={me} /> : <MemoryBrowse agents={agents} me={me} />}
+      <MemoryBrowse agents={agents} me={me} />
     </div>
   )
 }
@@ -7663,9 +7661,10 @@ function SkillCard({ s, agents, onChanged }: { s: SkillSummary; agents: string[]
 
 // ── Settings (Company context + Policy) ────────────────────────────────────────────
 /**
- * Settings → Self-learning. The OS periodically reflects on recent runs (episodes + outcomes + friction)
- * and writes a shared memory Insight + a living KB page (operations/fleet-learnings). Set a cadence to
- * automate it, or run a pass now.
+ * The **Learnings** page (top-level nav). The OS periodically reflects on recent runs (episodes +
+ * outcomes + friction) → distilled guidance + config recommendations + a living KB page
+ * (operations/fleet-learnings), and posts the **daily digest** to chat. Set a cadence to automate it, or
+ * run a pass now. (Was a tab under Memory until it grew into its own surface.)
  */
 function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => void }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
