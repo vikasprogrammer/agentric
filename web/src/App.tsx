@@ -4821,11 +4821,13 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
 }
 
 // ── Tasks ──────────────────────────────────────────────────────────────────────
-const TASK_COLUMNS: { status: TaskStatus; label: string }[] = [
-  { status: 'todo', label: 'Todo' },
-  { status: 'doing', label: 'Doing' },
-  { status: 'blocked', label: 'Blocked' },
-  { status: 'done', label: 'Done' },
+// Board columns follow the machine's lifecycle, not the raw status names: `doing` reads as "Live" because
+// an in-progress task is one an agent is (or was) actively running a session on. `rail`/`head` tint the header.
+const TASK_COLUMNS: { status: TaskStatus; label: string; rail: string; head: string }[] = [
+  { status: 'todo', label: 'Queued', rail: 'bg-muted-foreground/40', head: 'text-muted-foreground' },
+  { status: 'doing', label: 'Live', rail: 'bg-sky-500', head: 'text-sky-600' },
+  { status: 'blocked', label: 'Blocked', rail: 'bg-rose-500', head: 'text-rose-600' },
+  { status: 'done', label: 'Done', rail: 'bg-emerald-500', head: 'text-emerald-600' },
 ]
 const PRIORITY_LABEL = ['Urgent', 'High', 'Normal', 'Low']
 // Base UI's Select.Value shows the raw value unless the root gets an items map (value → label).
@@ -4841,6 +4843,35 @@ const taskStatusTone = (s: TaskStatus): string => ({
   done: 'bg-emerald-500/15 text-emerald-600',
   cancelled: 'bg-muted text-muted-foreground',
 }[s])
+
+// Priority as three pips (urgent → all three lit, low → all dim) so it reads without a text label taking a row.
+function PriorityPips({ p }: { p: number }) {
+  const on = 3 - p // 0 (urgent) → 3 lit, 3 (low) → 0 lit
+  const tone = ['bg-red-500', 'bg-amber-500', 'bg-slate-400', 'bg-slate-400'][p] ?? 'bg-slate-400'
+  return (
+    <span className="inline-flex shrink-0 items-center gap-[2px]" title={PRIORITY_LABEL[p]} aria-label={`Priority: ${PRIORITY_LABEL[p]}`}>
+      {[0, 1, 2].map((i) => <span key={i} className={`h-2.5 w-[3px] rounded-[1px] ${i < on ? tone : 'bg-muted-foreground/25'}`} />)}
+    </span>
+  )
+}
+
+// A tiny animated equalizer marking a session that's actually streaming inside a card. motion-safe so it
+// stills for reduced-motion users; purely decorative (aria-hidden).
+function LiveBars() {
+  return (
+    <span className="inline-flex h-3 items-end gap-[2px]" aria-hidden>
+      {[6, 11, 8, 12].map((h, i) => <span key={i} className="w-[2px] rounded-[1px] bg-sky-500 motion-safe:animate-pulse" style={{ height: h, animationDelay: `${i * 140}ms` }} />)}
+    </span>
+  )
+}
+
+/** Compact elapsed clock for a live session — m:ss under an hour, h:mm:ss past it. */
+function fmtElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${pad(m)}:${pad(ss)}` : `${m}:${pad(ss)}`
+}
 
 /** Friendly name for a task principal: agent id, member name, or a system/automation actor. */
 function principalLabel(id: string | undefined, members: Member[]): string {
@@ -5009,6 +5040,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const goalTitle = (id?: string) => (id ? goals.find((g) => g.id === id)?.title || id : '')
   const [tasks, setTasks] = useState<Task[] | null>(null)
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
+  // Live sessions, cross-referenced against a task's lastSessionId to know which cards are running right now.
+  const [sessions, setSessions] = useState<Session[]>([])
+  // Ticking clock driving the live-session elapsed labels; 1s cadence, negligible cost.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => { const id = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(id) }, [])
   const [q, setQ] = useState('')
   // Selection is URL-driven (#/tasks/<id>) so a task detail is a shareable permalink — pasting it opens
   // the modal automatically. Opening a card just navigates; closing clears the detail segment.
@@ -5105,9 +5141,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   }
 
   const load = async () => {
-    const r = await api.tasks(q)
+    const [r, ss] = await Promise.all([api.tasks(q), api.sessions().catch(() => [] as Session[])])
     setTasks(r.tasks ?? [])
     if (r.counts) setCounts(r.counts)
+    setSessions(ss)
   }
   useEffect(() => { load() }, [q])
   // Live refresh so an agent closing its own loop moves the card without a manual reload. Pause while a
@@ -5139,6 +5176,22 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const goalsPresent = [...new Set((tasks ?? []).map((t) => t.goalId).filter(Boolean) as string[])]
   const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue
   const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false) }
+
+  // Live-session linkage: a task's `lastSessionId` resolved to a session that's actually alive now. This is
+  // what turns a "doing" card into a live one — the running infra is a property of the task, shown in place.
+  const sessionById = new Map(sessions.map((s) => [s.id, s]))
+  const liveOf = (t: Task): Session | null => { const s = t.lastSessionId ? sessionById.get(t.lastSessionId) : undefined; return s && isLive(s) ? s : null }
+  const attach = (t: Task, s: Session) => onOpen(s.tmux || ('aos-' + s.id), 'Task · ' + t.title)
+  const liveTasks = visible.filter((t) => liveOf(t))
+  const liveCount = liveTasks.length
+  // A metric tile for the fleet strip.
+  const metric = (n: number, label: string, tone = '', pulse = false) => (
+    <div className="flex items-baseline gap-1.5">
+      {pulse && n > 0 && <span className="h-1.5 w-1.5 self-center rounded-full bg-sky-500 motion-safe:animate-pulse" />}
+      <span className={`font-mono text-lg font-semibold tabular-nums ${tone || 'text-foreground'}`}>{n}</span>
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+    </div>
+  )
 
   const create = async () => {
     setHint('')
@@ -5181,6 +5234,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
   const card = (t: Task) => {
     const dm = dueMeta(t.dueAt, t.status)
+    const live = liveOf(t)
+    const doing = t.status === 'doing'
+    const agentAssigned = t.assignee?.startsWith('agent:')
     return (
       <div
         key={t.id}
@@ -5188,14 +5244,16 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragId(t.id) }}
         onDragEnd={() => { setDragId(null); setDragOverCol(null) }}
         onClick={() => openTask(t.id)}
-        className={`w-full cursor-pointer rounded-md border border-l-[3px] p-2.5 text-left hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'ring-1 ring-primary' : ''} ${dragId === t.id ? 'opacity-50' : ''}`}
+        className={`w-full cursor-pointer rounded-md border border-l-[3px] bg-muted/20 p-2.5 text-left shadow-sm transition hover:bg-muted/50 ${priorityBorder(t.priority)} ${live ? 'border-sky-500/40' : ''} ${selId === t.id ? 'ring-1 ring-primary' : ''} ${dragId === t.id ? 'opacity-50' : ''}`}
       >
         <div className="flex items-start justify-between gap-2">
           <a href={navHref('tasks', t.id)} draggable={false} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-sm font-medium text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
-          <span className={`shrink-0 text-[10px] font-medium ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</span>
+          <PriorityPips p={t.priority} />
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-          {t.assignee && <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>}
+        <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+          {t.assignee
+            ? <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>
+            : <span className="font-mono text-[10px] text-muted-foreground/60">unassigned</span>}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
           {t.goalId && <Badge variant="outline" className="max-w-[10rem] gap-1 truncate px-1.5 py-0 text-[10px]"><Target className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{goalTitle(t.goalId)}</span></Badge>}
@@ -5203,6 +5261,31 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
         </div>
         {blockerChips(t)}
+        {/* The session, running inside the task — live tape with elapsed clock + attach, or an ended-run note. */}
+        {doing && live && (
+          <div
+            onClick={(e) => { e.stopPropagation(); attach(t, live) }}
+            className="mt-2 cursor-pointer rounded-md border border-sky-500/30 bg-sky-500/5 px-2 py-1.5 hover:border-sky-500/60"
+            title="Attach to the live session"
+          >
+            <div className="flex items-center gap-1.5 font-mono text-[10px]">
+              <LiveBars />
+              <span className="uppercase tracking-wide text-sky-600">live session</span>
+              <span className="ml-auto tabular-nums text-muted-foreground">{fmtElapsed(now - live.createdAt)}</span>
+            </div>
+            {t.criteria && <div className="mt-1 truncate text-[10px] text-muted-foreground" title={t.criteria}>target: {t.criteria}</div>}
+            <div className="mt-1 flex items-center justify-between font-mono text-[10px]">
+              <span className="text-muted-foreground/70">try {t.attempts}{t.owner ? ` · as ${nameOf(t.owner)}` : ''}</span>
+              <span className="inline-flex items-center gap-0.5 text-sky-600">attach<ExternalLink className="h-2.5 w-2.5" /></span>
+            </div>
+          </div>
+        )}
+        {doing && !live && t.lastSessionId && (
+          <div className="mt-2 flex items-center justify-between rounded-md border border-dashed px-2 py-1 font-mono text-[10px] text-muted-foreground">
+            <span>session ended · try {t.attempts}</span>
+            {agentAssigned && <button onClick={(e) => { e.stopPropagation(); dispatch(t) }} disabled={busy} className="text-foreground hover:underline disabled:opacity-50">re-dispatch</button>}
+          </div>
+        )}
       </div>
     )
   }
@@ -5349,27 +5432,58 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
       <div className="flex gap-4">
         {view === 'board' ? (
-          <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {TASK_COLUMNS.map((col) => {
-              const inCol = visible.filter((t) => t.status === col.status || (col.status === 'done' && t.status === 'cancelled'))
-              return (
-                <div
-                  key={col.status}
-                  onDragOver={(e) => { e.preventDefault(); if (dragOverCol !== col.status) setDragOverCol(col.status) }}
-                  onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCol((c) => (c === col.status ? null : c)) }}
-                  onDrop={() => onDropTo(col.status)}
-                  className={`min-w-0 rounded-md ${dragOverCol === col.status ? 'bg-primary/5 ring-1 ring-primary/40' : ''}`}
-                >
-                  <div className="mb-2 flex items-center justify-between px-1 text-[11px] uppercase tracking-wider text-muted-foreground">
-                    <span>{col.label}</span><span>{counts[col.status] + (col.status === 'done' ? counts.cancelled : 0)}</span>
+          <div className="min-w-0 flex-1 space-y-3">
+            {/* Fleet strip — the board header as an operations readout: how many agents are working, what's stuck. */}
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border bg-muted/20 px-4 py-2.5">
+              {metric(liveCount, 'live now', 'text-sky-600', true)}
+              {metric(counts.todo, 'queued')}
+              {metric(counts.blocked, 'blocked', counts.blocked ? 'text-rose-600' : '')}
+              {metric(counts.done, 'done', 'text-emerald-600')}
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {TASK_COLUMNS.map((col) => {
+                const inCol = visible.filter((t) => t.status === col.status || (col.status === 'done' && t.status === 'cancelled'))
+                return (
+                  <div
+                    key={col.status}
+                    onDragOver={(e) => { e.preventDefault(); if (dragOverCol !== col.status) setDragOverCol(col.status) }}
+                    onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverCol((c) => (c === col.status ? null : c)) }}
+                    onDrop={() => onDropTo(col.status)}
+                    className={`min-w-0 rounded-md ${dragOverCol === col.status ? 'bg-primary/5 ring-1 ring-primary/40' : ''}`}
+                  >
+                    <div className="mb-2 flex items-center gap-2 px-1 text-[11px] uppercase tracking-wider">
+                      <span className={`h-[3px] w-5 rounded-full ${col.rail}`} />
+                      <span className={`font-medium ${col.head}`}>{col.label}</span>
+                      <span className="ml-auto font-mono text-muted-foreground">{counts[col.status] + (col.status === 'done' ? counts.cancelled : 0)}</span>
+                    </div>
+                    <div className="space-y-2 px-1 pb-2">
+                      {inCol.length === 0 && <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">{dragOverCol === col.status ? 'Drop here' : '—'}</div>}
+                      {inCol.map(card)}
+                    </div>
                   </div>
-                  <div className="space-y-2 px-1 pb-2">
-                    {inCol.length === 0 && <div className="rounded-md border border-dashed p-3 text-center text-xs text-muted-foreground">{dragOverCol === col.status ? 'Drop here' : '—'}</div>}
-                    {inCol.map(card)}
-                  </div>
+                )
+              })}
+            </div>
+
+            {/* Live dock — a transport bar for the fleet: every running session, named with the task it lives in. */}
+            {liveTasks.length > 0 && (
+              <div className="flex items-center gap-3 overflow-x-auto rounded-md border border-sky-500/25 bg-sky-500/5 px-3 py-2">
+                <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-sky-600">
+                  <span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />{liveTasks.length} running
+                </span>
+                <div className="flex gap-2">
+                  {liveTasks.map((t) => { const s = liveOf(t); if (!s) return null; return (
+                    <button key={t.id} onClick={() => attach(t, s)} className="flex shrink-0 items-center gap-2 rounded-md border bg-background px-2.5 py-1 text-[11px] hover:border-sky-500/50" title="Attach to the live session">
+                      {assigneeIcon(t.assignee, 'h-3 w-3')}
+                      <span className="max-w-[12rem] truncate text-muted-foreground">in <span className="text-foreground">{t.title}</span></span>
+                      <span className="font-mono tabular-nums text-muted-foreground">{fmtElapsed(now - s.createdAt)}</span>
+                      <ExternalLink className="h-3 w-3 shrink-0 text-sky-600" />
+                    </button>
+                  ) })}
                 </div>
-              )
-            })}
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex-1 overflow-x-auto rounded-md border">

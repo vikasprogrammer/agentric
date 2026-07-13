@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.167.0] — 2026-07-13
+### Changed
+- **Tasks Board, redesigned around live sessions.** The Kanban is reframed as a dispatch board — columns
+  read **Queued / Live / Blocked / Done** (the machine's lifecycle, not the raw status names) with tinted
+  rails. A **fleet strip** heads the board as an operations readout (live now / queued / blocked / done).
+  The headline change: the **running session is shown inside the task**. A `doing` card whose
+  `lastSessionId` resolves to an alive session (`api.sessions()` × `isLive`) grows a **live tape** — an
+  animated equalizer, a ticking elapsed clock, the acceptance `criteria` as the target, attempt count +
+  run-as owner, and a one-click **attach** to the tmux pane; a `doing` card whose session has ended shows
+  a re-dispatch affordance instead. A **live dock** along the bottom is a transport bar for the fleet —
+  every running session named with the task it lives in, one click to attach. Priority now reads as
+  **pips** (urgent → all lit) rather than a text label. Cards, drag-to-status, filters, blocker chips,
+  the create form, the List view and the detail drawer are unchanged. `web/src/App.tsx` only; motion is
+  `motion-safe` (stills for reduced-motion).
+
 ## [0.166.1] — 2026-07-13
 ### Changed
 - **Insights page uses a responsive 2-column (masonry) layout** so more of the intelligence fits above the
