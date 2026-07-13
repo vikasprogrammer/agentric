@@ -4832,7 +4832,6 @@ const TASK_COLUMNS: { status: TaskStatus; label: string; rail: string; head: str
 const PRIORITY_LABEL = ['Urgent', 'High', 'Normal', 'Low']
 // Base UI's Select.Value shows the raw value unless the root gets an items map (value → label).
 const PRIORITY_ITEMS: Record<string, string> = Object.fromEntries(PRIORITY_LABEL.map((l, i) => [String(i), l]))
-const priorityTone = (p: number) => ['text-red-600', 'text-amber-600', 'text-muted-foreground', 'text-muted-foreground/70'][p] ?? 'text-muted-foreground'
 // A colored left edge so priority reads at a glance on a dense board (urgent red → low none).
 const priorityBorder = (p: number) => ['border-l-red-500', 'border-l-amber-500', 'border-l-transparent', 'border-l-transparent'][p] ?? 'border-l-transparent'
 // Tinted pill for a task status — used on the goal's linked-tasks list.
@@ -4864,6 +4863,18 @@ function LiveBars() {
     </span>
   )
 }
+
+// A small state dot for dense rows: hollow ring = queued, filled = live/blocked/done, faded = cancelled.
+function StatusDot({ status }: { status: TaskStatus }) {
+  const cls = status === 'doing' ? 'bg-sky-500' : status === 'blocked' ? 'bg-rose-500' : status === 'done' ? 'bg-emerald-500' : status === 'cancelled' ? 'bg-muted-foreground/40' : 'border-[1.5px] border-muted-foreground/50'
+  return <span className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${cls}`} title={status} />
+}
+
+// Timeline dot colour per event kind — the append-only trail typed by what happened.
+const eventTone = (kind: TaskEvent['kind']): string => ({
+  dispatch: 'bg-amber-500', claim: 'bg-sky-500', status: 'bg-sky-500',
+  assign: 'bg-violet-500', comment: 'bg-slate-400', link: 'bg-slate-400', attach: 'bg-slate-400',
+}[kind] ?? 'bg-slate-400')
 
 /** Compact elapsed clock for a live session — m:ss under an hour, h:mm:ss past it. */
 function fmtElapsed(ms: number): string {
@@ -5125,7 +5136,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // view + filters
-  const [view, setView] = useState<'board' | 'list'>('board')
+  const [view, setView] = useState<'board' | 'list' | 'focus'>(() => { const v = localStorage.getItem('aos_tasks_view'); return v === 'list' || v === 'focus' ? v : 'board' })
+  useEffect(() => { localStorage.setItem('aos_tasks_view', view) }, [view])
+  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'none'>('priority')
   const [mine, setMine] = useState(false)
   const [fAssignee, setFAssignee] = useState('') // '' = all
   const [fLabel, setFLabel] = useState('')
@@ -5360,6 +5373,173 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     )
   }
 
+  // The task detail — shared verbatim by the modal drawer (Board/List) and the inline Focus panel, so a
+  // task edits identically in both. Guards on `detail` being loaded.
+  const detailBody = () => {
+    if (!detail) return null
+    const live = liveOf(detail.task)
+    return editing ? (
+      <div className="space-y-3">
+        <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
+        <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={10} className="font-mono text-xs" /></Field>
+        <div className="flex items-center gap-2">
+          <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
+          <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+        </div>
+      </div>
+    ) : (
+      <div className="space-y-3.5">
+        <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
+        {detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
+
+        {live && (
+          <button onClick={() => attach(detail.task, live)} className="flex w-full items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-left hover:border-sky-500/60">
+            <LiveBars />
+            <span className="text-xs font-medium text-sky-600">Live session</span>
+            <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{fmtElapsed(now - live.createdAt)}</span>
+            <span className="ml-auto inline-flex items-center gap-0.5 font-mono text-[11px] text-sky-600">attach<ExternalLink className="h-3 w-3" /></span>
+          </button>
+        )}
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <Field label="Status">
+            <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
+              <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+              <SelectContent>{(['todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label="Priority">
+            <Select items={PRIORITY_ITEMS} value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
+              <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+              <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <Field label="Assignee">
+            <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
+              <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? 'Unassigned' : nameOf(v as string)}</SelectValue></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Unassigned</SelectItem>
+                {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
+                {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Due date">
+            <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
+          </Field>
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <Field label="Goal">
+            <Select value={detail.task.goalId || 'none'} onValueChange={(v) => patch(detail.task.id, { goalId: !v || v === 'none' ? null : v })}>
+              <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? '— none —' : goalTitle(v as string)}</SelectValue></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">— none —</SelectItem>
+                {goals.filter((g) => g.status === 'active' || g.id === detail.task.goalId).map((g) => <SelectItem key={g.id} value={g.id}><span className="flex items-center gap-1.5"><Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{g.title}</span></SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="Criteria">
+            <Input
+              value={detail.task.criteria ?? ''}
+              placeholder="e.g. all tests green on main"
+              className="h-8"
+              onChange={(e) => setDetail((d) => d ? { ...d, task: { ...d.task, criteria: e.target.value } } : d)}
+              onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.task.criteria ?? '')) patch(detail.task.id, { criteria: v || null }) }}
+            />
+          </Field>
+        </div>
+        {detail.task.criteria && <div className="text-xs text-muted-foreground">◎ converges when: <span className="text-foreground">{detail.task.criteria}</span></div>}
+
+        <TaskDependencies
+          task={detail.task}
+          dependents={detail.dependents}
+          tasks={tasks}
+          canEdit={!busy}
+          onOpen={openTask}
+          onSave={async (deps) => { await patch(detail.task.id, { dependsOn: deps }); await refreshDetail(detail.task.id) }}
+        />
+
+        {(detail.task.assignee || '').startsWith('agent:') && (
+          <Field label="Run mode">
+            <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
+              <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="headless">Headless — runs to completion, then exits</SelectItem>
+                <SelectItem value="interactive">Interactive — attachable TUI you drive</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
+
+        {(detail.task.assignee || '').startsWith('agent:') && (detail.task.status === 'todo' || detail.task.status === 'blocked') && (
+          <Button size="sm" className="w-full" disabled={busy} onClick={() => dispatch(detail.task)}>
+            <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
+          </Button>
+        )}
+        {detail.task.lastSessionId && !live && (
+          <Button size="sm" variant="outline" className="w-full" onClick={() => onOpen('aos-' + detail.task.lastSessionId, 'Task · ' + detail.task.title)}>
+            <TerminalSquare className="mr-1 h-3.5 w-3.5" />View session
+          </Button>
+        )}
+        {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
+
+        <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await refreshDetail(detail.task.id) }} />
+
+        <TaskAttachments
+          taskId={detail.task.id}
+          attachments={detail.attachments}
+          nameOf={nameOf}
+          onChange={() => refreshDetail(detail.task.id)}
+        />
+
+        <div>
+          <div className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Activity
+            {live && <span className="inline-flex items-center gap-1 normal-case text-sky-600"><span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />live · {fmtElapsed(now - live.createdAt)}</span>}
+          </div>
+          {detail.events.length === 0
+            ? <div className="text-xs text-muted-foreground">No activity yet.</div>
+            : (
+              <ol className="relative ml-1 max-h-72 space-y-3.5 overflow-y-auto border-l border-border pl-4 pr-1">
+                {detail.events.slice().reverse().map((e) => (
+                  <li key={e.id} className="relative">
+                    <span className={`absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full ring-2 ring-background ${eventTone(e.kind)}`} />
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">{e.kind}</span>
+                      <span className="truncate font-mono text-[10px] text-foreground/80">{nameOf(e.author)}</span>
+                      <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+                    </div>
+                    {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
+                  </li>
+                ))}
+              </ol>
+            )}
+        </div>
+
+        {isAdmin && (
+          confirmDel
+            ? <div className="flex items-center gap-2">
+                <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.task.id)}>Confirm delete</Button>
+                <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
+              </div>
+            : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
+                <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
+              </Button>
+        )}
+      </div>
+    )
+  }
+
+  // Header row for the detail (title + edit affordance) — reused by the modal and the Focus panel.
+  const detailHeader = () => detail && (editing ? <span>Edit task</span> : (
+    <>
+      <span className="min-w-0 flex-1 truncate">{detail.task.title}</span>
+      <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>
+    </>
+  ))
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -5370,6 +5550,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <div className="inline-flex overflow-hidden rounded-md border">
           <button onClick={() => setView('board')} className={`flex items-center gap-1 px-2.5 py-1.5 text-xs ${view === 'board' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><LayoutGrid className="h-3.5 w-3.5" />Board</button>
           <button onClick={() => setView('list')} className={`flex items-center gap-1 border-l px-2.5 py-1.5 text-xs ${view === 'list' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><List className="h-3.5 w-3.5" />List</button>
+          <button onClick={() => setView('focus')} className={`flex items-center gap-1 border-l px-2.5 py-1.5 text-xs ${view === 'focus' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><PanelLeftOpen className="h-3.5 w-3.5" />Focus</button>
         </div>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -5406,10 +5587,16 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         )}
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue</button>
         {view === 'list' && (
-          <Select items={{ priority: 'Sort: Priority', due: 'Sort: Due date', updated: 'Sort: Updated' }} value={sort} onValueChange={(v) => v && setSort(v as typeof sort)}>
-            <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
-            <SelectContent><SelectItem value="priority">Sort: Priority</SelectItem><SelectItem value="due">Sort: Due date</SelectItem><SelectItem value="updated">Sort: Updated</SelectItem></SelectContent>
-          </Select>
+          <>
+            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
+              <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
+            </Select>
+            <Select items={{ priority: 'Sort: Priority', due: 'Sort: Due date', updated: 'Sort: Updated' }} value={sort} onValueChange={(v) => v && setSort(v as typeof sort)}>
+              <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="priority">Sort: Priority</SelectItem><SelectItem value="due">Sort: Due date</SelectItem><SelectItem value="updated">Sort: Updated</SelectItem></SelectContent>
+            </Select>
+          </>
         )}
         {filterActive && <button onClick={clearFilters} className="text-muted-foreground underline-offset-2 hover:underline">Clear</button>}
         <span className="ml-auto text-muted-foreground">{visible.length} shown</span>
@@ -5555,195 +5742,103 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
               </div>
             )}
           </div>
+        ) : view === 'list' ? (
+          <div className="min-w-0 flex-1 overflow-hidden rounded-md border">
+            {(() => {
+              const within = (arr: Task[]) => [...arr].sort((a, b) => sort === 'priority' ? a.priority - b.priority || b.updatedAt - a.updatedAt : sort === 'due' ? (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) : b.updatedAt - a.updatedAt)
+              let groups: { key: string; label: ReactNode; items: Task[] }[]
+              if (listGroup === 'priority') groups = [0, 1, 2, 3].map((p) => ({ key: String(p), label: <span className="flex items-center gap-2"><PriorityPips p={p} />{PRIORITY_LABEL[p]}</span>, items: within(visible.filter((t) => t.priority === p)) })).filter((g) => g.items.length)
+              else if (listGroup === 'status') groups = (['doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
+              else if (listGroup === 'assignee') groups = [...new Set(visible.map((t) => t.assignee || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unassigned'}</span>, items: within(visible.filter((t) => (t.assignee || '') === k)) })).filter((g) => g.items.length)
+              else groups = [{ key: 'all', label: <span>All tasks</span>, items: within(visible) }]
+              if (!visible.length) return <div className="px-3 py-8 text-center text-sm text-muted-foreground">No tasks match.</div>
+              return groups.map((g) => (
+                <div key={g.key}>
+                  <div className="flex items-center gap-2 border-b border-t bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground first:border-t-0">
+                    {g.label}<span className="ml-auto font-mono normal-case">{g.items.length}</span>
+                  </div>
+                  {g.items.map((t) => {
+                    const dm = dueMeta(t.dueAt, t.status)
+                    const live = liveOf(t)
+                    const agentAssigned = (t.assignee || '').startsWith('agent:')
+                    return (
+                      <div key={t.id} onClick={() => openTask(t.id)} className={`group flex cursor-pointer items-center gap-3 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50 ${selId === t.id ? 'bg-muted' : ''}`}>
+                        <StatusDot status={t.status} />
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                          <a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-[13px] text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
+                          {t.goalId && <Badge variant="outline" className="hidden shrink-0 gap-1 px-1 py-0 text-[10px] sm:inline-flex"><Target className="h-2.5 w-2.5" />{goalTitle(t.goalId)}</Badge>}
+                          {unmetCount(t) > 0 && <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blockers">⏳ {unmetCount(t)}</span>}
+                          {live && <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] text-sky-600"><span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />live · {fmtElapsed(now - live.createdAt)}</span>}
+                          {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
+                        </div>
+                        <div className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</div>
+                        <div className="hidden w-16 shrink-0 text-xs sm:block">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</div>
+                        <PriorityPips p={t.priority} />
+                        <div className="w-20 shrink-0 text-right">
+                          {live
+                            ? <button onClick={(e) => { e.stopPropagation(); attach(t, live) }} className="font-mono text-[10px] text-sky-600 hover:underline">attach ▸</button>
+                            : agentAssigned && (t.status === 'todo' || t.status === 'blocked')
+                              ? <button onClick={(e) => { e.stopPropagation(); dispatch(t) }} disabled={busy} className="font-mono text-[10px] text-muted-foreground opacity-0 hover:underline group-hover:opacity-100 disabled:opacity-50">↻ dispatch</button>
+                              : <span className="font-mono text-[10px] text-muted-foreground/50">{t.id}</span>}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))
+            })()}
+          </div>
         ) : (
-          <div className="flex-1 overflow-x-auto rounded-md border">
-            <table className="w-full text-sm">
-              <thead className="border-b bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Task</th>
-                  <th className="px-3 py-2 text-left font-medium">Status</th>
-                  <th className="px-3 py-2 text-left font-medium">Assignee</th>
-                  <th className="px-3 py-2 text-left font-medium">Priority</th>
-                  <th className="px-3 py-2 text-left font-medium">Due</th>
-                  <th className="px-3 py-2 text-left font-medium">Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[...visible].sort((a, b) => sort === 'priority' ? a.priority - b.priority || b.updatedAt - a.updatedAt
-                  : sort === 'due' ? (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity)
-                  : b.updatedAt - a.updatedAt).map((t) => {
-                  const dm = dueMeta(t.dueAt, t.status)
+          <div className="flex min-w-0 flex-1 flex-col gap-4 lg:flex-row">
+            <div className="shrink-0 self-start overflow-hidden rounded-md border lg:w-72">
+              <div className="flex items-center justify-between border-b bg-muted/40 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                <span>Queue</span><span className="font-mono">{visible.length}</span>
+              </div>
+              <div className="max-h-[72vh] divide-y overflow-y-auto">
+                {visible.length === 0 && <div className="px-3 py-6 text-center text-xs text-muted-foreground">No tasks match.</div>}
+                {[...visible].sort((a, b) => a.priority - b.priority || b.updatedAt - a.updatedAt).map((t) => {
+                  const live = liveOf(t)
                   return (
-                    <tr key={t.id} onClick={() => openTask(t.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${priorityBorder(t.priority)} ${selId === t.id ? 'bg-muted' : ''}`}>
-                      <td className="px-3 py-2"><a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a> {t.goalId && <Badge variant="outline" className="ml-1 gap-1 px-1 py-0 text-[10px]"><Target className="h-2.5 w-2.5" />{goalTitle(t.goalId)}</Badge>} {unmetCount(t) > 0 && <span className="ml-1 inline-flex items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmetCount(t)}</span>} {t.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
-                      <td className="px-3 py-2 capitalize text-muted-foreground">{t.status}</td>
-                      <td className="px-3 py-2 text-muted-foreground">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</td>
-                      <td className={`px-3 py-2 text-xs ${priorityTone(t.priority)}`}>{PRIORITY_LABEL[t.priority]}</td>
-                      <td className="px-3 py-2 text-xs">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(t.updatedAt).toLocaleDateString()}</td>
-                    </tr>
+                    <button key={t.id} onClick={() => openTask(t.id)} className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left hover:bg-muted/50 ${selId === t.id ? 'bg-muted' : ''}`}>
+                      <StatusDot status={t.status} />
+                      <div className="min-w-0 flex-1">
+                        <div className={`truncate text-xs font-medium ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</div>
+                        <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                          {t.assignee ? <span className="inline-flex min-w-0 items-center gap-1 truncate">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</span> : <span>unassigned</span>}
+                          {live && <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sky-600"><span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />{fmtElapsed(now - live.createdAt)}</span>}
+                        </div>
+                      </div>
+                      <PriorityPips p={t.priority} />
+                    </button>
                   )
                 })}
-                {visible.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-muted-foreground">No tasks match.</td></tr>}
-              </tbody>
-            </table>
+              </div>
+            </div>
+            <div className="min-w-0 flex-1 rounded-md border p-4">
+              {detail ? (
+                <div className="space-y-3.5">
+                  <div className="flex items-center gap-2 border-b pb-3 text-base font-semibold">{detailHeader()}</div>
+                  {detailBody()}
+                </div>
+              ) : (
+                <div className="flex min-h-[300px] flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+                  <PanelLeftOpen className="h-6 w-6 opacity-40" />
+                  Select a task from the queue to work it here.
+                </div>
+              )}
+            </div>
           </div>
         )}
 
       </div>
 
-      {detail && (
+      {detail && view !== 'focus' && (
         <Dialog open onOpenChange={(o) => { if (!o) closeTask() }}>
           <DialogContent className="max-h-[88vh] w-full max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl lg:max-w-3xl">
             <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 pr-8">
-                {editing ? 'Edit task' : (
-                  <>
-                    <span className="min-w-0 flex-1 truncate">{detail.task.title}</span>
-                    <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>
-                  </>
-                )}
-              </DialogTitle>
+              <DialogTitle className="flex items-center gap-2 pr-8">{detailHeader()}</DialogTitle>
             </DialogHeader>
-
-            {editing ? (
-              <div className="space-y-3">
-                <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
-                <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={10} className="font-mono text-xs" /></Field>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3.5">
-                <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
-                {detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
-
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <Field label="Status">
-                    <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
-                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                      <SelectContent>{(['todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Priority">
-                    <Select items={PRIORITY_ITEMS} value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
-                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                      <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </Field>
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <Field label="Assignee">
-                    <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
-                      <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? 'Unassigned' : nameOf(v as string)}</SelectValue></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Unassigned</SelectItem>
-                        {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
-                        {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Due date">
-                    <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
-                  </Field>
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <Field label="Goal">
-                    <Select value={detail.task.goalId || 'none'} onValueChange={(v) => patch(detail.task.id, { goalId: !v || v === 'none' ? null : v })}>
-                      <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? '— none —' : goalTitle(v as string)}</SelectValue></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">— none —</SelectItem>
-                        {/* Include the currently-linked goal even if it isn't active, so the label stays correct. */}
-                        {goals.filter((g) => g.status === 'active' || g.id === detail.task.goalId).map((g) => <SelectItem key={g.id} value={g.id}><span className="flex items-center gap-1.5"><Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{g.title}</span></SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Criteria">
-                    <Input
-                      value={detail.task.criteria ?? ''}
-                      placeholder="e.g. all tests green on main"
-                      className="h-8"
-                      onChange={(e) => setDetail((d) => d ? { ...d, task: { ...d.task, criteria: e.target.value } } : d)}
-                      onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.task.criteria ?? '')) patch(detail.task.id, { criteria: v || null }) }}
-                    />
-                  </Field>
-                </div>
-                {detail.task.criteria && <div className="text-xs text-muted-foreground">◎ converges when: <span className="text-foreground">{detail.task.criteria}</span></div>}
-
-                <TaskDependencies
-                  task={detail.task}
-                  dependents={detail.dependents}
-                  tasks={tasks}
-                  canEdit={!busy}
-                  onOpen={openTask}
-                  onSave={async (deps) => { await patch(detail.task.id, { dependsOn: deps }); await refreshDetail(detail.task.id) }}
-                />
-
-                {(detail.task.assignee || '').startsWith('agent:') && (
-                  <Field label="Run mode">
-                    <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
-                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="headless">Headless — runs to completion, then exits</SelectItem>
-                        <SelectItem value="interactive">Interactive — attachable TUI you drive</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                )}
-
-                {(detail.task.assignee || '').startsWith('agent:') && (detail.task.status === 'todo' || detail.task.status === 'blocked') && (
-                  <Button size="sm" className="w-full" disabled={busy} onClick={() => dispatch(detail.task)}>
-                    <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
-                  </Button>
-                )}
-                {detail.task.lastSessionId && (
-                  <Button size="sm" variant="outline" className="w-full" onClick={() => onOpen('aos-' + detail.task.lastSessionId, 'Task · ' + detail.task.title)}>
-                    <TerminalSquare className="mr-1 h-3.5 w-3.5" />View session
-                  </Button>
-                )}
-                {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
-
-                <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await refreshDetail(detail.task.id) }} />
-
-                <TaskAttachments
-                  taskId={detail.task.id}
-                  attachments={detail.attachments}
-                  nameOf={nameOf}
-                  onChange={() => refreshDetail(detail.task.id)}
-                />
-
-
-                <div>
-                  <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity</div>
-                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-                    {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
-                    {detail.events.slice().reverse().map((e) => (
-                      <div key={e.id} className="rounded-md border bg-muted/20 p-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
-                          <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
-                        </div>
-                        {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
-                        <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {isAdmin && (
-                  confirmDel
-                    ? <div className="flex items-center gap-2">
-                        <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.task.id)}>Confirm delete</Button>
-                        <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
-                      </div>
-                    : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
-                        <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
-                      </Button>
-                )}
-              </div>
-            )}
+            {detailBody()}
           </DialogContent>
         </Dialog>
       )}
