@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.138.3] — 2026-07-13
+### Added
+- **Docs: three new end-user Docs pages covering recently shipped surfaces.** The console **Docs**
+  section lagged the last ~20 releases — whole feature areas (media generation, Goals, per-member
+  GitHub/identity) had zero coverage. Added:
+  - **Goals** — set the outcome, the fleet plans the work: goal vs. task, **Plan this goal** (the
+    strategist drafts linked tasks), the opt-in **Auto-plan stuck goals** toggle, sub-goals/roll-up,
+    and detach-on-delete.
+  - **Media & the Library** — the Library as the deliverables gallery (live HTML rendering, PDF,
+    per-artifact cost), `image_generate`/`video_generate`/image-to-video/image edit, and that
+    generation is budget-metered + audited.
+  - **Your identity, chat & GitHub** — **My context** (per-member prompt injection), **Chat IDs**
+    (run-as via Slack/Discord), and **Connect GitHub** (commits/PRs authored as you) with the
+    owner-once GitHub-App setup step.
+  Wired into `web/src/docs/index.ts` between Automations→Shared-planes→Governance. Docs-only web copy;
+  no API or schema change.
+
 ## [0.138.2] — 2026-07-13
 ### Fixed
 - **Taking over an unattended session no longer breaks file attach with "session is not live."** Take-over

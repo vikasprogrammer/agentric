@@ -6,8 +6,11 @@ import gettingStarted from './getting-started.md?raw'
 import coreConcepts from './core-concepts.md?raw'
 import workingWithAgents from './working-with-agents.md?raw'
 import automations from './automations.md?raw'
-import governance from './governance.md?raw'
+import goals from './goals.md?raw'
 import sharedPlanes from './shared-planes.md?raw'
+import mediaAndLibrary from './media-and-library.md?raw'
+import governance from './governance.md?raw'
+import identityAndGithub from './identity-and-github.md?raw'
 import importIntoAos from './import-into-aos.md?raw'
 
 export type DocPage = { slug: string; title: string; body: string }
@@ -18,7 +21,10 @@ export const docPages: DocPage[] = [
   { slug: 'core-concepts', title: 'Core concepts', body: coreConcepts },
   { slug: 'working-with-agents', title: 'Working with agents', body: workingWithAgents },
   { slug: 'automations', title: 'Automations', body: automations },
-  { slug: 'governance', title: 'Governance & approvals', body: governance },
+  { slug: 'goals', title: 'Goals', body: goals },
   { slug: 'shared-planes', title: 'Memory, Knowledge & Tasks', body: sharedPlanes },
+  { slug: 'media-and-library', title: 'Media & the Library', body: mediaAndLibrary },
+  { slug: 'governance', title: 'Governance & approvals', body: governance },
+  { slug: 'identity-and-github', title: 'Your identity & GitHub', body: identityAndGithub },
   { slug: 'import-into-aos', title: 'Import into AOS', body: importIntoAos },
 ]
