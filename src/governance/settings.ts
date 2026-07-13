@@ -31,6 +31,9 @@ const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
+const DIGEST_ENABLED_KEY = 'digest_enabled'; // whether the end-of-day fleet digest posts to Slack ('on'|'off')
+const DIGEST_CHANNEL_KEY = 'digest_channel'; // Slack channel (id or name) the EOD digest posts to; '' = unset
+const DIGEST_HOUR_KEY = 'digest_hour'; // server-local hour (0–23) the EOD digest fires at; default 18
 const DREAMING_STATE_KEY = 'dreaming_state'; // compounding self-learning state (cumulative totals/topics/recent)
 const LEARNED_GUIDANCE_KEY = 'learned_guidance'; // distilled imperatives injected into every agent's prompt
 const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (default on once guidance exists)
@@ -431,6 +434,46 @@ export class SettingsStore {
   }
   setDreamingState(state: Record<string, unknown>, by?: string): void {
     this.set(DREAMING_STATE_KEY, JSON.stringify(state), by);
+  }
+
+  // ── daily digest (the "what got done today" standup) ─────────────────────────────
+  // A tenant-wide end-of-day summary — the per-session changelog (from episodes) + Dreaming's learned
+  // guidance — posted once a day to a Slack channel. It rides the same hourly upkeep tick as Dreaming;
+  // the dashboard/KB render live on demand, only the Slack post is time-gated (digestHour + a once-per-
+  // day `digest.posted` audit guard). Time is server-local (the deploy box's tz); a per-tenant tz can
+  // layer on later. Enabled only takes effect once a channel is set.
+
+  /** Whether the EOD digest posts to Slack. Off by default (opt-in — it posts to a channel). */
+  digestEnabled(): boolean {
+    return this.getRow(DIGEST_ENABLED_KEY)?.value === 'on';
+  }
+  setDigestEnabled(on: boolean, by?: string): boolean {
+    this.set(DIGEST_ENABLED_KEY, on ? 'on' : 'off', by);
+    return this.digestEnabled();
+  }
+  /** The Slack channel (id like `C123…` or a name like `#fleet`) the digest posts to; '' when unset. */
+  digestChannel(): string {
+    return this.getRow(DIGEST_CHANNEL_KEY)?.value?.trim() ?? '';
+  }
+  setDigestChannel(channel: string, by?: string): void {
+    this.set(DIGEST_CHANNEL_KEY, channel.trim(), by);
+  }
+  /** Server-local hour (0–23) the EOD digest fires at; default 18 (6pm). */
+  digestHour(): number {
+    const n = Number(this.getRow(DIGEST_HOUR_KEY)?.value);
+    return Number.isInteger(n) && n >= 0 && n <= 23 ? n : 18;
+  }
+  setDigestHour(hour: number, by?: string): number {
+    const n = Number(hour);
+    const clamped = Number.isFinite(n) ? Math.min(Math.max(Math.floor(n), 0), 23) : 18;
+    this.set(DIGEST_HOUR_KEY, String(clamped), by);
+    return this.digestHour();
+  }
+  /** Who last touched the digest config (never a secret — the channel is not sensitive). */
+  digestMeta(): { updatedAt?: number; updatedBy?: string } {
+    const rows = [this.getRow(DIGEST_ENABLED_KEY), this.getRow(DIGEST_CHANNEL_KEY), this.getRow(DIGEST_HOUR_KEY)].filter(Boolean) as SettingRow[];
+    const newest = rows.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0))[0];
+    return { updatedAt: newest?.updated_at, updatedBy: newest?.updated_by ?? undefined };
   }
 
   // ── learned guidance (the closed loop) ───────────────────────────────────────────
