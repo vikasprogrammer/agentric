@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.165.0] — 2026-07-13
+### Added
+- **Root-cause diagnosis on the Insights scorecard.** The scorecard says *which* agent is struggling; a
+  **Diagnose** button (on any agent below 50% with ≥2 failed/stopped runs) now answers *why*. New
+  `src/edge/diagnosis.ts` spawns a governed headless **analyst** agent that reads that agent's recent
+  FAILED / STOPPED / PARTIAL runs, finds the recurring failure pattern, hypothesizes the root cause, and
+  writes a short **Pattern · Likely cause · Suggested fix · Evidence** page to the Knowledge Base
+  (`operations/diagnosis/<agent>`) + reports — same governed pattern as the consolidation gardener, on
+  demand (it costs a run). The scorecard then shows a **diagnosis →** link for any agent that has one.
+  `POST /api/insights/diagnose`; audited `insights.diagnose`. Gardener-powered half of the intelligence
+  layer, on top of the deterministic scorecard/friction/measurement.
+
 ## [0.164.0] — 2026-07-13
 ### Added
 - **Answer an agent's question by replying to the Slack/Discord DM.** When an agent uses `ask_human`, the
