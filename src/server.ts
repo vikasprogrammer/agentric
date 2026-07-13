@@ -23,6 +23,7 @@ import { DreamingEngine } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
+import { buildInsights } from './edge/insights';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -2358,8 +2359,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
       applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, state,
       measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
+      insights: buildInsights(os), // owner insights — per-agent scorecard + friction map
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
+  }
+  // The OS intelligence layer, standalone — per-agent scorecard + friction map + the "is it working?"
+  // measurement, decoupled from the Dreaming page so an owner dashboard can consume it directly.
+  if (method === 'GET' && p === '/api/insights') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { insights: buildInsights(os), measurement: measureLearning(os) });
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);

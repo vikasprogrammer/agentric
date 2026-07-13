@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -7795,6 +7795,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [recs, setRecs] = useState<Recommendation[]>([])
   const [state, setState] = useState<DreamingState | null>(null)
   const [measure, setMeasure] = useState<Measurement | null>(null)
+  const [insights, setInsights] = useState<Insights | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [result, setResult] = useState<string>('')
@@ -7803,7 +7804,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); if (r.digest) setDigest(r.digest) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -7919,6 +7920,53 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
           </Card>
         )
       })()}
+
+      {/* Fleet scorecard — per-agent performance (owner intelligence). */}
+      {insights && insights.agents.length > 0 && (
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <div>
+              <div className="text-sm font-medium">Fleet scorecard <span className="text-[11px] font-normal text-muted-foreground">— per agent, last {insights.windowDays} days</span></div>
+              <p className="text-xs text-muted-foreground">Who’s carrying the load, who’s struggling, and what each agent actually spends its runs on.</p>
+            </div>
+            <div className="space-y-1">
+              {insights.agents.map((a) => {
+                const rateCls = a.rate == null ? 'text-muted-foreground' : a.rate >= 70 ? 'text-emerald-600' : a.rate >= 40 ? 'text-amber-600' : 'text-red-600'
+                return (
+                  <div key={a.agent} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b py-1.5 text-xs last:border-0">
+                    <a className="w-40 shrink-0 truncate font-medium underline-offset-2 hover:underline" href={`#/agents/${a.agent}`}>{a.agent}</a>
+                    <span className={`w-10 shrink-0 tabular-nums font-medium ${rateCls}`}>{a.rate == null ? '—' : `${a.rate}%`}</span>
+                    <span className="text-muted-foreground">{a.runs} run{a.runs === 1 ? '' : 's'}{a.failed ? ` · ${a.failed} failed` : ''}{a.stopped ? ` · ${a.stopped} stopped` : ''}</span>
+                    {a.focus.length > 0 && <span className="text-muted-foreground">· {a.focus.join(', ')}</span>}
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Friction — what keeps getting rejected / waiting on a human (owner intelligence). */}
+      {insights && (insights.friction.rejections.length > 0 || insights.friction.pendingApprovals > 0) && (
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <div>
+              <div className="text-sm font-medium">Friction <span className="text-[11px] font-normal text-muted-foreground">— where the fleet keeps getting blocked</span></div>
+              <p className="text-xs text-muted-foreground">Capabilities that keep getting rejected at approval (decide once — deny outright, or auto-allow in <a className="underline" href="#/settings">Policy</a>), and approvals waiting on a person.</p>
+            </div>
+            {insights.friction.rejections.map((r) => (
+              <div key={r.capability} className="flex items-baseline gap-2 text-xs">
+                <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-red-600">rejected {r.count}×</Badge>
+                <span className="font-mono">{r.capability}</span>
+                <span className="text-muted-foreground">— always rejected; deny it or auto-allow so agents stop trying</span>
+              </div>
+            ))}
+            {insights.friction.pendingApprovals > 0 && (
+              <div className="text-xs text-amber-600">{insights.friction.pendingApprovals} approval{insights.friction.pendingApprovals === 1 ? '' : 's'} waiting on a human{insights.friction.oldestPendingAgeMs ? ` (oldest ${Math.round(insights.friction.oldestPendingAgeMs / 3_600_000)}h)` : ''} — see the <a className="underline" href="#/inbox">Inbox</a>.</div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* 1. What it figured out — the payoff, first. */}
       <Card>
