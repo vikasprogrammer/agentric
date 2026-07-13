@@ -5315,7 +5315,8 @@ function CommentBox({ onSubmit }: { onSubmit: (text: string) => Promise<void> })
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  if (n < 1024 ** 3) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / 1024 ** 3).toFixed(1)} GB`
 }
 
 /** Attachments section of the task drawer: upload (button/drop), list with download, delete. */
@@ -8089,6 +8090,33 @@ function HostResourcesPanel() {
               <p className="truncate text-xs text-muted-foreground" title={m.cpu.model}>
                 {m.cpu.model}{m.cpu.loadAvg.some((n) => n > 0) ? ` · load ${m.cpu.loadAvg.map((n) => n.toFixed(2)).join(' ')}` : ''}
               </p>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between text-sm">
+                <span className="font-medium">Agent sessions</span>
+                {m.sessions.available
+                  ? <span className="font-mono text-xs text-muted-foreground">{fmtBytes(m.sessions.totalRss)} · {m.sessions.sessions.length} live</span>
+                  : <span className="text-xs text-muted-foreground">not measurable here</span>}
+              </div>
+              {m.sessions.available && (
+                m.sessions.sessions.length === 0
+                  ? <p className="text-xs text-muted-foreground">No running sessions.</p>
+                  : <dl className="divide-y rounded-md border">
+                      {m.sessions.sessions.slice(0, 8).map((s) => (
+                        <div key={s.id} className="flex items-baseline gap-3 px-3 py-1.5">
+                          <dt className="min-w-0 flex-1 truncate text-xs" title={`${s.agent} · ${s.title}`}>
+                            <span className="font-medium">{s.agent}</span>
+                            <span className="text-muted-foreground"> · {s.title}</span>
+                          </dt>
+                          <dd className="shrink-0 font-mono text-xs text-muted-foreground">{fmtBytes(s.rss)}</dd>
+                        </div>
+                      ))}
+                      {m.sessions.sessions.length > 8 && (
+                        <div className="px-3 py-1.5 text-xs text-muted-foreground">+{m.sessions.sessions.length - 8} more</div>
+                      )}
+                    </dl>
+              )}
+              <p className="text-xs text-muted-foreground">Resident memory per session (shell + claude + MCP). Approximate — shared pages counted per process.</p>
             </div>
             <dl className="divide-y rounded-md border">
               {([

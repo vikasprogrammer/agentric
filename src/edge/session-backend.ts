@@ -40,6 +40,11 @@ export interface SessionBackend {
   injectText(space: string, tmuxName: string, text: string, submit: boolean): boolean;
   /** Live tmux session names, or null when liveness can't be polled (→ rely on end signals). */
   aliveNames(): Set<string> | null;
+  /** Per-session resident memory: tmux session name → summed RSS **in KiB** of that session's pane
+   *  process tree (the shell + `claude`/node + its MCP subprocesses). Approximate — RSS counts shared
+   *  pages (libraries) once per process, so a sum over the tree slightly over-reports. `null` when it
+   *  can't be measured (launcher backend: uid-private sockets the app can't inspect). */
+  sessionRss(): Map<string, number> | null;
   /** Is a browser terminal currently ATTACHED to `tmuxName` (tmux has ≥1 client on the session)?
    *  Distinguishes "a human is watching this live pane" from "running but unobserved" — the signal the
    *  turn-end/idle reapers use to leave a taken-over run alone. `null` when it can't be determined
@@ -144,6 +149,52 @@ export class LocalSessionBackend implements SessionBackend {
     return new Set((r.stdout || '').split('\n').filter(Boolean));
   }
 
+  sessionRss(): Map<string, number> | null {
+    // One tmux call maps every live pane to its root PID; one `ps` snapshot gives the whole process
+    // table. We then sum RSS over each pane's subtree (the shell → node/claude → MCP children).
+    // `-Ao pid=,ppid=,rss=` is portable across BSD (macOS) and GNU (Linux) ps; RSS is KiB on both.
+    const panes = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-panes', '-a', '-F', '#{session_name} #{pane_pid}'], { encoding: 'utf8' });
+    if (panes.error) return null;                 // couldn't poll tmux → unknown
+    if (panes.status !== 0) return new Map();      // no server / no sessions → nothing to measure
+    const ps = spawnSync('ps', ['-Ao', 'pid=,ppid=,rss='], { encoding: 'utf8' });
+    if (ps.error || ps.status !== 0) return null;
+
+    // Build pid → rss (KiB) and ppid → [children].
+    const rssOf = new Map<number, number>();
+    const kids = new Map<number, number[]>();
+    for (const line of (ps.stdout || '').split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)$/);
+      if (!m) continue;
+      const pid = +m[1], ppid = +m[2], rss = +m[3];
+      rssOf.set(pid, rss);
+      (kids.get(ppid) ?? kids.set(ppid, []).get(ppid)!).push(pid);
+    }
+    const subtreeRss = (root: number): number => {
+      let total = 0;
+      const stack = [root];
+      const seen = new Set<number>();
+      while (stack.length) {
+        const pid = stack.pop()!;
+        if (seen.has(pid)) continue;               // cycle guard (ppid reuse after a wrap is possible)
+        seen.add(pid);
+        total += rssOf.get(pid) ?? 0;
+        for (const c of kids.get(pid) ?? []) stack.push(c);
+      }
+      return total;
+    };
+
+    const out = new Map<string, number>();
+    for (const line of (panes.stdout || '').split('\n')) {
+      const sp = line.lastIndexOf(' ');
+      if (sp < 0) continue;
+      const name = line.slice(0, sp);
+      const pid = +line.slice(sp + 1);
+      if (!name || !Number.isFinite(pid)) continue;
+      out.set(name, (out.get(name) ?? 0) + subtreeRss(pid)); // a session may (rarely) have >1 pane
+    }
+    return out;
+  }
+
   hasClient(_space: string, tmuxName: string): boolean | null {
     // `list-clients -t <session>` prints one line per attached ttyd/xterm client; empty → nobody watching.
     const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-clients', '-t', tmuxName, '-F', '#{client_name}'], { encoding: 'utf8' });
@@ -221,6 +272,10 @@ export class LauncherSessionBackend implements SessionBackend {
     // flip to idle via the explicit /api/ended + /api/report signals; precise launcher-side liveness
     // (a `list_sessions` verb) is a later refinement.
     return null;
+  }
+
+  sessionRss(): Map<string, number> | null {
+    return null; // uid-private sockets — the app can't inspect member process trees (a launcher verb later).
   }
 
   hasClient(_space: string, _tmuxName: string): boolean | null {

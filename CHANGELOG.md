@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.142.0] — 2026-07-13
+### Added
+- **Settings → System → Host resources now breaks down RAM by agent session.** Alongside the host
+  totals, the panel lists each live session's resident memory — its process tree (shell → `claude`/node →
+  MCP subprocesses) — plus a fleet total (e.g. "4.6 GB · 8 live"), sorted heaviest-first. So you can see
+  exactly how much of the box's RAM the running agents are holding, and which session is the hog. Backed
+  by a new `SessionBackend.sessionRss()` (one `tmux list-panes` + one `ps -Ao pid,ppid,rss` snapshot,
+  summed over each pane's process subtree — portable across macOS/Linux), surfaced via `sessionMemory()`
+  on `TerminalManager` and the existing `GET /api/system`. RSS is approximate (shared library pages are
+  counted per process, so the sum slightly over-reports). Not measurable under the Linux uid-isolation
+  launcher backend (uid-private sockets) → shown as "not measurable here."
+
 ## [0.141.2] — 2026-07-13
 ### Fixed
 - **Slack: a plain message in a channel the bot sits in no longer gets the `/agent` help list.** The app
@@ -30,6 +42,8 @@ new version heading in the same commit.
   beacon can't re-reap. The idle backstop (`reapIdleSessions`) likewise sweeps `done` unattended rows that
   still hold a live pane — cleaning up any that predate the fix or whose Stop beacon never landed. Net: a
   finished background run stops for real, and the session list stops showing it as "live".
+
+## [0.141.0] — 2026-07-13
 ### Added
 - **Settings → System now shows live host resources.** A new "Host resources" panel reports memory
   used/free/total with a usage bar, CPU utilization (sampled server-side) + core count + model + load

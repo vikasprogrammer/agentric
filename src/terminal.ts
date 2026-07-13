@@ -708,6 +708,25 @@ export class TerminalManager {
     return n;
   }
 
+  /**
+   * Per-session resident memory for the live running set — what each agent session's process tree
+   * (shell → claude/node → MCP subprocesses) currently occupies. Joins the running rows against the
+   * backend's `sessionRss` map (keyed by tmux name). `available:false` when the backend can't measure
+   * it (launcher/uid-isolation backend, or a transient tmux/ps failure). RSS is approximate (shared
+   * library pages are counted per process). Bytes out (KiB×1024) so the API speaks one unit.
+   */
+  sessionMemory(): { available: boolean; totalRss: number; sessions: { id: string; agent: string; title: string; rss: number }[] } {
+    const rss = this.backend.sessionRss();
+    if (!rss) return { available: false, totalRss: 0, sessions: [] };
+    const rows = this.db.prepare("SELECT id, agent, title, tmux FROM term_sessions WHERE status = 'running'")
+      .all<{ id: string; agent: string; title: string; tmux: string }>();
+    const sessions = rows
+      .map((r) => ({ id: r.id, agent: r.agent, title: r.title, rss: (rss.get(r.tmux) ?? 0) * 1024 }))
+      .filter((s) => s.rss > 0)                         // drop rows whose pane already went away
+      .sort((a, b) => b.rss - a.rss);
+    return { available: true, totalRss: sessions.reduce((n, s) => n + s.rss, 0), sessions };
+  }
+
   /** Is this session's tmux shell still alive? (The automations guard against pile-ups.) */
   isAlive(sessionId: string): boolean {
     const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);

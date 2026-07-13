@@ -76,6 +76,7 @@ async function systemMetrics(tm: TerminalManager): Promise<Record<string, unknow
       uptime: nodeOs.uptime(),
     },
     runningSessions: tm.aliveSessionCount(),
+    sessions: tm.sessionMemory(),
   };
 }
 

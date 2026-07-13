@@ -119,6 +119,9 @@ export interface SystemMetrics {
   process: { rss: number; heapUsed: number; heapTotal: number; uptime: number }
   host: { platform: string; arch: string; release: string; hostname: string; uptime: number }
   runningSessions: number
+  /** Per-session resident memory (bytes). `available:false` under uid-isolation (unmeasurable). RSS is
+   *  approximate — shared library pages are counted once per process, so the sum slightly over-reports. */
+  sessions: { available: boolean; totalRss: number; sessions: { id: string; agent: string; title: string; rss: number }[] }
   error?: string
 }
 export interface Session {
