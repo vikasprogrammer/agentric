@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.150.2] — 2026-07-13
+### Fixed
+- **A goal's Target field couldn't be edited** from the goal-detail dialog. The inline `<Input>`'s
+  `onChange` optimistically wrote each keystroke into `detail.goal.target` — the same value its `onBlur`
+  save-guard (`v !== detail.goal.target`) compared against — so the guard was always false and the PATCH
+  never fired. Made the input uncontrolled (`defaultValue` keyed to the goal id, dropping the
+  self-defeating `onChange`) so blur compares the typed value against the unchanged server value and saves.
+
 ## [0.150.1] — 2026-07-13
 ### Changed
 - **The "Learnings" nav is renamed "Dreaming"**, matching the established vocabulary (Pillar 10 is

@@ -4525,7 +4525,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Target">
                     {isAdmin
-                      ? <Input value={detail.goal.target ?? ''} placeholder="e.g. < 10 min by Q3" className="h-8" onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.goal.target ?? '')) patch(detail.goal.id, { target: v || null }) }} onChange={(e) => setDetail((d) => d ? { ...d, goal: { ...d.goal, target: e.target.value } } : d)} />
+                      ? <Input key={detail.goal.id} defaultValue={detail.goal.target ?? ''} placeholder="e.g. < 10 min by Q3" className="h-8" onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.goal.target ?? '')) patch(detail.goal.id, { target: v || null }) }} />
                       : <div className="h-8 text-sm text-muted-foreground">{detail.goal.target || '—'}</div>}
                   </Field>
                   <Field label="Due date">
