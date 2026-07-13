@@ -104,11 +104,22 @@ async function toBytes(entry: { url?: string; b64_json?: string; b64?: string })
     return { bytes, ext: sniffExt(bytes, 'png') };
   }
   if (entry.url) {
-    const res = await fetch(entry.url);
-    if (!res.ok) throw new Error(`fetching generated image failed (${res.status})`);
-    const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    const buf = Buffer.from(await res.arrayBuffer());
-    return { bytes: buf, ext: sniffExt(buf, EXT_BY_MIME[ct] || extFromUrl(entry.url) || 'png') };
+    const url = entry.url;
+    // Download with a timeout + bounded retry: a hung/interrupted body read is transient. The whole read
+    // lives inside the retried fn so a stalled arrayBuffer() (aborted by the signal) also retries.
+    const { buf, ct } = await withRetry(async () => {
+      try {
+        const res = await timedFetch(url, {}, DOWNLOAD_TIMEOUT_MS, 'image download');
+        if (!res.ok) throw new VendorError(`fetching generated image failed (${res.status})`, retryableStatus(res.status), 'image download', res.status);
+        const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        const buf = Buffer.from(await res.arrayBuffer());
+        return { buf, ct };
+      } catch (e) {
+        if (e instanceof VendorError) throw e;
+        throw new VendorError(`image download failed (${e instanceof Error ? e.message : String(e)})`, true, 'image download');
+      }
+    });
+    return { bytes: buf, ext: sniffExt(buf, EXT_BY_MIME[ct] || extFromUrl(url) || 'png') };
   }
   throw new Error('vendor returned an image with neither a url nor base64 data');
 }
@@ -127,6 +138,80 @@ function extFromUrl(url: string): string | undefined {
   if (!m) return undefined;
   const e = m[1].toLowerCase();
   return e === 'jpeg' ? 'jpg' : e;
+}
+
+// ── network resilience: timeouts + bounded retry ─────────────────────────────
+// Every vendor call gets an explicit deadline (a hung socket must never hang the tool) and TRANSIENT
+// failures (network reset, timeout, 429, 5xx) are retried with exponential backoff + jitter. A 4xx
+// (bad request / content policy / rejected model) or an explicit vendor `failed` prediction status is a
+// REAL answer — surfaced on the first occurrence, never retried. `VendorError.retryable` is the single
+// source of truth both the retry loop and the surfaced message consult (so "worth retrying" is decided
+// in exactly one place, and the existing model-fallback path keys off the message the same way).
+const SUBMIT_TIMEOUT_MS = 30_000; // POST generate / submit
+const POLL_TIMEOUT_MS = 15_000; // one prediction poll
+const DOWNLOAD_TIMEOUT_MS = 60_000; // pull the finished image bytes (can be large)
+const RETRY_ATTEMPTS = 3;
+
+/** A vendor-call error that knows its HTTP status, which vendor raised it, and whether retrying could
+ *  plausibly help. Carried out to TerminalManager so the tool response can tell the agent what to do. */
+export class VendorError extends Error {
+  constructor(message: string, readonly retryable: boolean, readonly vendor: string, readonly status?: number) {
+    super(message);
+    this.name = 'VendorError';
+  }
+}
+
+/** 429 (rate limit) and 5xx (vendor-side) are transient; every other status is a definitive answer. */
+function retryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Exponential backoff with full jitter (~0.2–0.4s, ~0.4–0.8s, … capped at 4s) to avoid synchronized retries. */
+function backoffMs(attempt: number): number {
+  const base = Math.min(4000, 400 * 2 ** attempt);
+  return Math.round(base / 2 + Math.random() * (base / 2));
+}
+
+/** One fetch with an explicit timeout, normalizing a network error / timeout into a RETRYABLE VendorError. */
+async function timedFetch(url: string, init: RequestInit, timeoutMs: number, vendor: string): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    const timedOut = e instanceof Error && (e.name === 'TimeoutError' || e.name === 'AbortError');
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new VendorError(
+      timedOut ? `${vendor} request timed out after ${Math.round(timeoutMs / 1000)}s` : `${vendor} request failed (${detail})`,
+      true,
+      vendor,
+    );
+  }
+}
+
+/** Run a vendor call up to RETRY_ATTEMPTS times, retrying ONLY on a retryable VendorError (transient
+ *  network/timeout/429/5xx). A terminal error (4xx, content policy, `failed` status, bad model) throws on
+ *  its first occurrence so it surfaces as-is. */
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let last: unknown;
+  for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      last = e;
+      const retryable = e instanceof VendorError && e.retryable;
+      if (!retryable || attempt === RETRY_ATTEMPTS - 1) throw e;
+      await sleep(backoffMs(attempt));
+    }
+  }
+  throw last;
+}
+
+/** Normalize any thrown error into { message, retryable, vendor } for the caller (TerminalManager → the
+ *  tool response), so the agent is told which subsystem failed and whether a plain retry is worthwhile. */
+export function imageErrorInfo(e: unknown): { message: string; retryable?: boolean; vendor?: string } {
+  if (e instanceof VendorError) return { message: e.message, retryable: e.retryable, vendor: e.vendor };
+  return { message: e instanceof Error ? e.message : String(e) };
 }
 
 // ── OpenRouter ──────────────────────────────────────────────────────────────
@@ -149,15 +234,19 @@ class OpenRouterBackend implements ImageBackend {
     const model = req.model?.trim() || this.defaultModel;
     const body: Record<string, unknown> = { model, prompt: req.prompt, n: req.n };
     if (req.size) body.size = req.size;
-    const res = await fetch('https://openrouter.ai/api/v1/images', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.key}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+    const d = await withRetry(async () => {
+      const res = await timedFetch('https://openrouter.ai/api/v1/images', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.key}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }, SUBMIT_TIMEOUT_MS, 'OpenRouter');
+      const j = (await res.json().catch(() => ({}))) as OpenRouterResponse;
+      if (!res.ok) throw new VendorError(errMsg(j, res.status), retryableStatus(res.status), 'OpenRouter', res.status);
+      const entries = j.data ?? j.images ?? [];
+      if (!entries.length) throw new VendorError('OpenRouter returned no images', true, 'OpenRouter');
+      return j;
     });
-    const d = (await res.json().catch(() => ({}))) as OpenRouterResponse;
-    if (!res.ok) throw new Error(errMsg(d, res.status));
     const entries = d.data ?? d.images ?? [];
-    if (!entries.length) throw new Error('OpenRouter returned no images');
     const images = await Promise.all(entries.map(toBytes));
     return { images, model, costUsd: typeof d.usage?.cost === 'number' ? d.usage.cost : undefined };
   }
@@ -250,27 +339,50 @@ class AtlasBackend implements ImageBackend {
   /** Submit a generateImage body then poll the prediction to completion (image renders in seconds, so a
    *  bounded internal poll keeps the sync ImageBackend contract). Shared by generate + editImage. */
   private async submitAndPoll(body: Record<string, unknown>, model: string): Promise<ImageGenResult> {
-    const sres = await fetch(`${this.base}/api/v1/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
-    const sbody = (await sres.json().catch(() => ({}))) as { data?: AtlasPrediction; message?: string } & AtlasPrediction;
-    if (!sres.ok) throw new Error(atlasErr(sbody, sres.status));
-    const id = sbody.data?.id ?? sbody.id;
-    if (!id) throw new Error('Atlas did not return a prediction id');
-    const deadline = Date.now() + 90_000;
+    // Submit with a timeout + bounded retry (transient network/429/5xx). A 4xx (incl. a rejected model,
+    // which the model-fallback path then handles by message) throws on the first try and surfaces as-is.
+    const sbody = await withRetry(async () => {
+      const res = await timedFetch(`${this.base}/api/v1/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) }, SUBMIT_TIMEOUT_MS, 'Atlas');
+      const b = (await res.json().catch(() => ({}))) as { data?: AtlasPrediction; message?: string } & AtlasPrediction;
+      if (!res.ok) throw new VendorError(atlasErr(b, res.status), retryableStatus(res.status), 'Atlas', res.status);
+      if (!(b.data?.id ?? b.id)) throw new VendorError('Atlas accepted the request but returned no prediction id', true, 'Atlas');
+      return b;
+    });
+    const id = sbody.data?.id ?? sbody.id!;
+
+    const start = Date.now();
+    const deadline = start + 90_000;
     for (;;) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const pres = await fetch(`${this.base}/api/v1/model/prediction/${id}`, { headers: this.headers() });
-      const pbody = (await pres.json().catch(() => ({}))) as { data?: AtlasPrediction; message?: string } & AtlasPrediction;
-      if (!pres.ok) throw new Error(atlasErr(pbody, pres.status));
+      await sleep(2000);
+      let pbody: { data?: AtlasPrediction; message?: string; msg?: string } & AtlasPrediction;
+      try {
+        const pres = await timedFetch(`${this.base}/api/v1/model/prediction/${id}`, { headers: this.headers() }, POLL_TIMEOUT_MS, 'Atlas');
+        pbody = (await pres.json().catch(() => ({}))) as typeof pbody;
+        if (!pres.ok) {
+          if (retryableStatus(pres.status) && Date.now() < deadline) continue; // transient 5xx/429 → keep polling
+          throw new VendorError(atlasErr(pbody, pres.status), false, 'Atlas', pres.status); // terminal
+        }
+      } catch (e) {
+        // A single poll that hit a network error / timeout is not fatal — keep polling until the deadline;
+        // only a terminal (retryable=false) error or the clock running out gives up.
+        if (e instanceof VendorError && e.retryable && Date.now() < deadline) continue;
+        throw e;
+      }
       const d: AtlasPrediction = pbody.data ?? pbody;
       const st = (d.status || '').toLowerCase();
-      if (st === 'failed' || st === 'error' || st === 'cancelled' || st === 'canceled') throw new Error(d.error || pbody.message || (pbody as { msg?: string }).msg || `Atlas image ${st || 'failed'}`);
+      if (st === 'failed' || st === 'error' || st === 'cancelled' || st === 'canceled') {
+        throw new VendorError(d.error || pbody.message || pbody.msg || `Atlas image ${st || 'failed'}`, false, 'Atlas'); // a real answer — never retry
+      }
       if (st === 'completed' || st === 'succeeded') {
         const urls = (d.outputs || []).filter((o): o is string => typeof o === 'string');
-        if (!urls.length) throw new Error('Atlas completed but returned no image URL');
+        if (!urls.length) throw new VendorError('Atlas completed but returned no image URL', true, 'Atlas');
         const images = await Promise.all(urls.map((url) => toBytes({ url })));
         return { images, model, costUsd: undefined }; // Atlas doesn't return cost in-band → caller estimates
       }
-      if (Date.now() > deadline) throw new Error('Atlas image timed out');
+      if (Date.now() > deadline) {
+        const waited = Math.round((Date.now() - start) / 1000);
+        throw new VendorError(`Atlas image timed out after ${waited}s waiting for the render — the prediction (${id}) may still be in flight; try again shortly or check the Library before regenerating.`, true, 'Atlas');
+      }
     }
   }
 }

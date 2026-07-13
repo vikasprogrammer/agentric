@@ -66,6 +66,29 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 carries `destructiveHint`. All schemas set `additionalProperties:false`; enum fields (`type`,
 `outcome`) and numeric bounds (`importance`, `limit`) are constrained in-schema.
 
+### Media tool resilience — timeouts + retries (`image_generate` / `image_edit`)
+
+The image backend (`src/edge/image-gen.ts`) treats every vendor call as fallible:
+
+- **Timeouts (`AbortSignal.timeout`).** No call can hang a tool: 30s on submit/`generateImage`, 15s per
+  prediction poll, 60s on the image download. A hung socket aborts and becomes a retryable error.
+- **Bounded retry with backoff + jitter (3 attempts).** The submit and the download are retried on
+  **transient** failures only — a network error/timeout, a **429**, or a **5xx**. Backoff is exponential
+  with full jitter (~0.2s → ~4s cap). A single prediction poll that hits a transient error is *tolerated*
+  (the loop keeps polling until the 90s render deadline) rather than aborting the whole call.
+- **What is NOT retried (a real answer, surfaced as-is).** Any **4xx** (bad request / content-policy
+  rejection), an explicit vendor **`failed`/`error`/`cancelled`** prediction status, or a **rejected model
+  id**. Retryability is decided in one place — `VendorError.retryable` — and the existing model-fallback
+  path (`withModelFallback`) keys off the same error, so a bad default model still falls back to the
+  built-in rather than being retried blindly.
+- **Actionable timeout.** When the 90s render deadline is hit, the error says how long it waited and that
+  the prediction (by id) *may still be in flight* — "check the Library before regenerating" — not a bare
+  "timed out".
+- **Error attribution.** A failure carries the **vendor** and a **retryable** flag out through
+  `TerminalManager.generateImage`/`editImage` to the tool response, which prefixes the **actual tool**
+  name (`image_generate error: …`, not `memory error: …`) and appends whether a plain retry is worthwhile.
+  So the agent retries the transient ones and fixes the input on the terminal ones instead of guessing.
+
 ### `notify` — deliberately looping in one teammate (inbox scoping)
 
 Every session's inbox cards — an agent's `update`/`report`, its `ask` question, a `notification`
