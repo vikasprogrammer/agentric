@@ -1217,6 +1217,35 @@ export class TerminalManager {
         this.teardownUnattended(r.id, space, r.tmux, r.status === 'done' ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }
+
+    // (3) idle INTERACTIVE (member) sessions. A member's own attachable session holds a `claude` process
+    // too, but — unlike a resident chat (sweep 1) or an unattended run (turn-end / sweep 2) — nothing ever
+    // reaps it. A forgotten, detached one lingers for DAYS, wasting RAM and (now that the cap is on)
+    // permanently hogging a concurrency-cap slot so scheduled work starves. Reap one idle past the
+    // configurable timeout (Settings, default 48 h) with NO client attached and no pending human block; it
+    // stays Resumable (a deliberate console re-open clears `blockResume`), so this is a janitor, not a
+    // guillotine. Skip claimed take-overs — a human owns that lifecycle. `0` disables. Uses
+    // COALESCE(last_activity, created_at): a member session rarely stamps last_activity, so age is the
+    // fallback clock. Runs regardless of `aliveNames()` (kill is harmless on an already-dead pane).
+    const idleHours = this.os.settings.interactiveIdleTimeoutHours();
+    if (idleHours > 0) {
+      const idleCutoff = Date.now() - idleHours * 3600_000;
+      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE headless = 0 AND resident = 0 AND claimed_by IS NULL AND status = 'running' AND COALESCE(last_activity, created_at) < ?")
+        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(idleCutoff);
+      for (const r of stale) {
+        try {
+          const space = this.spaceFor(r.run_as ?? r.spawned_by);
+          if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
+          if (this.hasPendingHumanBlock(r.id)) continue;               // blocked on a person — leave it
+          this.backend.kill(space, r.tmux);
+          this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+          this.cancelPendingQuestions(r.id, 'system');
+          this.cancelPendingApprovals(r.id, 'system');
+          this.blockResume(r.id); // stay stopped against a ttyd auto-reconnect; a deliberate Resume clears it
+          this.audit(r.id, r.agent, 'session.reaped', { reason: 'idle-interactive', idleHours });
+        } catch { /* one bad row must not stop the sweep */ }
+      }
+    }
   }
 
   /**

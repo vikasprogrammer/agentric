@@ -50,6 +50,8 @@ export interface Concurrency {
   source: 'env' | 'setting' | 'derived'
   envLocked: boolean
   alive: number
+  /** Auto-close a detached member session idle past this many hours (0 = off; default 48). */
+  idleHours: number
 }
 
 export interface AgentInfo {
@@ -1060,7 +1062,7 @@ export const api = {
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
-  saveConcurrency: (value: number | null) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number }>('PUT', '/api/settings/concurrency', { value }),
+  saveConcurrency: (body: { value?: number | null; idleHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number }>('PUT', '/api/settings/concurrency', body),
 
   governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
   saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),

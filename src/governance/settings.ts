@@ -57,6 +57,7 @@ const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JS
 const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
 const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
+const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 const SUPPRESSED_BUILTINS_KEY = 'suppressed_builtins'; // built-in agent ids an admin deleted (JSON string[]); boot won't re-seed them
 
@@ -667,6 +668,26 @@ export class SettingsStore {
     if (n == null || !Number.isFinite(v) || v < 0) this.set(MAX_CONCURRENT_KEY, '', by); // clear → derived default
     else this.set(MAX_CONCURRENT_KEY, String(Math.floor(v)), by);
     return this.maxConcurrentSessions();
+  }
+
+  /** How long a detached member (interactive) session may sit idle before the reaper closes it. Unlike a
+   *  resident chat session (minutes) or an unattended run (turn-end), a member's own attachable session has
+   *  no auto-teardown — a forgotten one holds a `claude` process for days, hogging RAM and a concurrency-cap
+   *  slot. Default **48 h**; clamped 1 h–30 days. `0` disables the reaper. The session is only closed when
+   *  nobody's attached and it isn't blocked on a person, and it stays Resumable, so this is a janitor, not a
+   *  guillotine. */
+  interactiveIdleTimeoutHours(): number {
+    const n = Number(this.getRow(INTERACTIVE_IDLE_HOURS_KEY)?.value);
+    if (!Number.isFinite(n)) return 48; // unset → default
+    if (n <= 0) return 0;               // explicit 0 → disabled
+    return Math.min(Math.max(Math.round(n), 1), 24 * 30);
+  }
+
+  setInteractiveIdleTimeoutHours(hours: number, by?: string): number {
+    const n = Number(hours);
+    const clamped = !Number.isFinite(n) || n < 0 ? 48 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
+    this.set(INTERACTIVE_IDLE_HOURS_KEY, String(clamped), by);
+    return this.interactiveIdleTimeoutHours();
   }
 
   // ── kill switch (workspace emergency stop) ───────────────────────────────────────

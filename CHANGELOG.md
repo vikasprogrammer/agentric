@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.145.0] — 2026-07-13
+### Added
+- **Idle member sessions now auto-close (configurable, default 48 h).** A member's own attachable session
+  holds a `claude` process like any other, but — unlike a resident chat (idle-reaped in minutes) or an
+  unattended automation run (torn down at turn-end) — nothing ever reaped it. A forgotten, detached one
+  lingered for days, wasting RAM and (now that the concurrency cap is on) permanently occupying a cap slot,
+  so scheduled work starved. `reapIdleSessions` gains a third sweep: a member (`headless=0`, non-resident,
+  unclaimed) session idle past the timeout — nobody attached, not blocked on a person — is closed
+  (`status=stopped`), and it stays **Resumable** (a deliberate console re-open clears the block), so it's a
+  janitor, not a guillotine. Tunable at **Settings → Runtime defaults → "Auto-close idle sessions after
+  (hours)"** (`interactiveIdleTimeoutHours`, default 48, `0` = off; clamped 1 h–30 days) via the extended
+  `GET/PUT /api/settings/concurrency` (audited `settings.interactiveIdle.updated`). New
+  `scripts/idle-reaper-test.cjs` (12 assertions: reaps a stale detached session; leaves recent / attached /
+  claimed / unattended / recently-active / disabled cases alone).
+
 ## [0.144.0] — 2026-07-13
 ### Added
 - **`ask` can now address a SPECIFIC teammate, not just the run's operator.** An agent could already `notify`

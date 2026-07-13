@@ -8620,7 +8620,8 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
  *  raise/lower it or lift it entirely. Effective value resolves env → this setting → derived default. */
 function ConcurrencySettings({ me }: { me: Member }) {
   const [data, setData] = useState<Concurrency | null>(null)
-  const [input, setInput] = useState('') // '' = use default; '0' = unlimited; N = cap
+  const [input, setInput] = useState('')   // '' = use default; '0' = unlimited; N = cap
+  const [idle, setIdle] = useState('')      // hours; '0' = off
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -8629,13 +8630,19 @@ function ConcurrencySettings({ me }: { me: Member }) {
     if (r.error) return
     setData(r)
     setInput(r.value == null ? '' : String(r.value)) // box reflects only an explicit operator override
+    setIdle(String(r.idleHours))
   }).catch(() => {})
   useEffect(() => { load() }, [])
 
-  const dirty = data != null && input.trim() !== (data.value == null ? '' : String(data.value))
+  const capDirty = data != null && input.trim() !== (data.value == null ? '' : String(data.value))
+  const idleDirty = data != null && idle.trim() !== String(data.idleHours)
+  const dirty = capDirty || idleDirty
   const save = async () => {
     setBusy(true); setHint('')
-    const r = await api.saveConcurrency(input.trim() === '' ? null : Number(input))
+    const body: { value?: number | null; idleHours?: number } = {}
+    if (capDirty) body.value = input.trim() === '' ? null : Number(input)
+    if (idleDirty) body.idleHours = Number(idle)
+    const r = await api.saveConcurrency(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     setHint('saved — applies on the next scheduler tick'); setTimeout(() => setHint(''), 2500)
@@ -8674,13 +8681,32 @@ function ConcurrencySettings({ me }: { me: Member }) {
               disabled={!canEdit || !!data?.envLocked}
               className="h-8 w-40 font-mono text-xs"
             />
-            <Button onClick={save} disabled={!canEdit || busy || !dirty || !!data?.envLocked}>{dirty ? 'Save' : 'Saved'}</Button>
-            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            <span className="text-[11px] text-muted-foreground">
+              blank = default{data ? ` (${data.derived})` : ''}, 0 = unlimited
+              {data?.envLocked && <> · pinned by <span className="font-mono">AOS_MAX_CONCURRENT_SESSIONS</span></>}
+            </span>
+          </div>
+        </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Auto-close idle sessions after (hours)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={idle}
+              onChange={(e) => setIdle(e.target.value)}
+              placeholder="48"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">detached member sessions only; 0 = never · they stay Resumable</span>
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Blank = the RAM-derived default{data ? ` (${data.derived})` : ''}. <span className="font-mono">0</span> = unlimited (no cap).
-            {data?.envLocked && <> Pinned by the <span className="font-mono">AOS_MAX_CONCURRENT_SESSIONS</span> env var — clear it to edit here.</>}
+            A forgotten interactive session holds a <span className="font-mono">claude</span> process and a cap slot for days. This closes one
+            left idle this long (nobody attached) so it stops starving scheduled work.
           </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save' : 'Saved'}</Button>
+          {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
         </div>
       </CardContent>
     </Card>

@@ -2686,19 +2686,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const value = os.settings.maxConcurrentSessions(); // operator override (null = unset)
     const resolved = autos.concurrencyCap();           // effective cap the scheduler enforces (0 = unlimited)
     const source = envLocked ? 'env' : value != null ? 'setting' : 'derived';
-    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount() });
+    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours() });
   }
   if (method === 'PUT' && p === '/api/settings/concurrency') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    const b = await readBody(req) as { value?: unknown };
-    // `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Reject non-numeric junk.
-    const raw = b.value;
-    const clear = raw === null || raw === undefined || raw === '';
-    const n = clear ? null : Number(raw);
-    if (!clear && (!Number.isFinite(n as number) || (n as number) < 0)) return sendJson(res, 400, { error: 'value must be a non-negative integer, 0 (unlimited), or null (use default)' });
-    const saved = os.settings.setMaxConcurrentSessions(clear ? null : (n as number), me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.concurrency.updated', data: { value: saved } });
-    return sendJson(res, 200, { ok: true, value: saved, resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap() });
+    const b = await readBody(req) as { value?: unknown; idleHours?: unknown };
+    // Cap: `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Only touched when the
+    // key is present, so a PUT that only sets idleHours leaves the cap alone.
+    if ('value' in b) {
+      const raw = b.value;
+      const clear = raw === null || raw === '';
+      const n = clear ? null : Number(raw);
+      if (!clear && (!Number.isFinite(n as number) || (n as number) < 0)) return sendJson(res, 400, { error: 'value must be a non-negative integer, 0 (unlimited), or null (use default)' });
+      const saved = os.settings.setMaxConcurrentSessions(clear ? null : (n as number), me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.concurrency.updated', data: { value: saved } });
+    }
+    // Idle-interactive reaper timeout (hours): 0 = off; else clamped 1h–30d. Present-only, same as above.
+    if ('idleHours' in b) {
+      const h = Number(b.idleHours);
+      if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'idleHours must be a non-negative number (0 = off)' });
+      const savedH = os.settings.setInteractiveIdleTimeoutHours(h, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.interactiveIdle.updated', data: { idleHours: savedH } });
+    }
+    return sendJson(res, 200, { ok: true, value: os.settings.maxConcurrentSessions(), resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap(), idleHours: os.settings.interactiveIdleTimeoutHours() });
   }
 
   // ── UI branding (per-tenant accent colour + favicon badge) — owner/admin edits ──
