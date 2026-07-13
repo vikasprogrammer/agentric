@@ -265,7 +265,7 @@ function normFolder(s?: string): string {
 
 /** Resolve `rel` under `root`, rejecting escapes lexically AND after symlink resolution. The
  *  target must already exist (you publish/serve real files). Mirrors server.ts `safeResolve`. */
-function containedPath(root: string, rel: string): string | null {
+export function containedPath(root: string, rel: string): string | null {
   let realRoot: string;
   try {
     realRoot = fs.realpathSync(root);
@@ -287,7 +287,7 @@ function containedPath(root: string, rel: string): string | null {
 
 /** Content-type by extension — self-contained so the store has no server dependency. Covers the
  *  deliverable formats (Markdown/PDF/images/video/text) the gallery previews; default = octet-stream. */
-function mimeOf(file: string): string {
+export function mimeOf(file: string): string {
   const e = path.extname(file).toLowerCase();
   const map: Record<string, string> = {
     '.md': 'text/markdown; charset=utf-8',

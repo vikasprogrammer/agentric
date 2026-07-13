@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.135.0] — 2026-07-13
+### Added
+- **Image-to-video: agents can now animate an image, not just text→video.** The `video_generate` tool
+  takes an optional **`image`** that accepts **any** place a session's image lives:
+  a **Library artifact id** (e.g. from a prior `image_generate`), a **file path in the agent's working
+  folder** (a file it wrote *or* one uploaded into the terminal session — resolved strictly under the
+  agent folder via the same containment `publish` uses), or an **http(s) URL** (passed through to the
+  vendor to fetch). Local files/artifacts are read and sent inline as a base64 data URL (no public hosting
+  needed); when an image is supplied without a named model, an **image-to-video model** is chosen
+  automatically (Atlas `bytedance/seedance-2.0/image-to-video`, fal `…/veo3/fast/image-to-video`). Fixes the
+  Atlas seed field (`image`, not `image_url`) so the seed actually applies. Same governance as text→video
+  (cost-metered, audited, async job → Library). Verified against the live Atlas API (base64 seed → prediction id).
+
 ## [0.134.0] — 2026-07-13
 ### Added
 - **The Library now renders published HTML files as a live page**, not as raw source. HTML deliverables
