@@ -4944,15 +4944,17 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
     const map = { live: ['Live', 'text-emerald-600 dark:text-emerald-500 bg-emerald-500/10'], headless: ['Unattended', 'text-violet-600 dark:text-violet-400 bg-violet-500/10'], blocked: ['Blocked', 'text-amber-600 dark:text-amber-500 bg-amber-500/10'] } as const
     return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${map[st][1]}`}>{map[st][0]}</span>
   }
-  // Polished KPI tile: a tinted icon badge + a big figure, tied together by one semantic hue.
+  // Compact KPI tile: a tinted icon badge + figure + label on a single row.
   const tile = (Icon: LucideIcon, n: number, label: string, sub: string, hue: string) => (
-    <Card key={label}><CardContent className="p-4">
-      <div className="flex items-center justify-between">
-        <span className="grid h-8 w-8 place-items-center rounded-lg" style={{ background: `${hue}1f`, color: hue }}><Icon className="h-4 w-4" /></span>
-        <span className="text-[26px] font-semibold leading-none tabular-nums" style={{ color: hue }}>{n}</span>
+    <Card key={label}><CardContent className="flex items-center gap-3 p-3">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg" style={{ background: `${hue}1f`, color: hue }}><Icon className="h-[18px] w-[18px]" /></span>
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-[20px] font-semibold leading-none tabular-nums" style={{ color: hue }}>{n}</span>
+          <span className="text-[12.5px] font-semibold">{label}</span>
+        </div>
+        <div className="truncate text-[10.5px] text-muted-foreground">{sub}</div>
       </div>
-      <div className="mt-3 text-[12.5px] font-semibold">{label}</div>
-      <div className="text-[11px] text-muted-foreground">{sub}</div>
     </CardContent></Card>
   )
   // A member avatar with an online/offline presence dot.
@@ -4961,22 +4963,19 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
       {m.avatar
         ? <img src={m.avatar} alt="" className={`${size} rounded-full object-cover`} />
         : <span className={`${size} grid place-items-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground`}>{(m.name || m.email || '?').charAt(0).toUpperCase()}</span>}
-      <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background ${isOnline(m.id) ? 'bg-emerald-500' : 'bg-muted-foreground/40'}`} />
+      <span className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-background bg-emerald-500" />
     </span>
   )
-
-  // Fleet-now donut (agent status): active / idle / blocked.
-  const segs = [{ v: activeAgents, c: '#10b981' }, { v: idleAgents, c: 'var(--muted-foreground)' }, { v: blockedCount, c: '#f59e0b' }].filter((s) => s.v > 0)
-  const donutTotal = Math.max(1, activeAgents + idleAgents + blockedCount)
-  const RAD = 34, CIRC = 2 * Math.PI * RAD
-  let acc = 0
+  const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
+  const iconOf = (id: string) => agentById.get(id)?.icon
+  const onlinePeople = people.filter((m) => isOnline(m.id))
 
   const hr = new Date().getHours()
   const greeting = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening'
   const firstName = (me.name || me.email || '').split(/[\s@]/)[0]
 
   return (
-    <div className="mx-auto max-w-6xl space-y-5">
+    <div className="mx-auto max-w-6xl space-y-4">
       {/* Greeting + one-line fleet status */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -5001,49 +5000,6 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
         {tile(CheckCircle2, doneToday, 'Done today', 'finished runs', '#6366f1')}
       </div>
 
-      {/* Online now — people presence + agents with a live session */}
-      <Card><CardContent className="p-0">
-        <div className="flex items-center gap-2 border-b px-4 py-3">
-          <Users className="h-4 w-4 text-muted-foreground" />
-          <div><div className="text-[13.5px] font-semibold">Online now</div><div className="text-[11.5px] text-muted-foreground">{peopleOnline} of {members.length} {members.length === 1 ? 'person' : 'people'} · {onlineAgents.length} agent{onlineAgents.length === 1 ? '' : 's'} active</div></div>
-        </div>
-        <div className="grid divide-y sm:grid-cols-2 sm:divide-x sm:divide-y-0">
-          {/* People */}
-          <div className="space-y-2.5 p-4">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">People</div>
-            {people.length === 0 ? <div className="py-2 text-[12.5px] text-muted-foreground">No members yet.</div> : people.map((m) => {
-              const on = isOnline(m.id); const ls = seenAt(m.id)
-              return (
-                <div key={m.id} className="flex items-center gap-2.5">
-                  {memberDot(m, 'h-8 w-8')}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium">{m.name || m.email}</div>
-                    <div className="text-[11px] capitalize text-muted-foreground">{m.role}</div>
-                  </div>
-                  <span className={`shrink-0 text-[11px] tabular-nums ${on ? 'font-medium text-emerald-600 dark:text-emerald-500' : 'text-muted-foreground'}`}>{on ? 'Online' : ls ? `${timeAgo(ls)} ago` : 'Offline'}</span>
-                </div>
-              )
-            })}
-          </div>
-          {/* Agents */}
-          <div className="space-y-3 p-4">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Agents</div>
-            {onlineAgents.length === 0 ? <div className="py-2 text-[12.5px] text-muted-foreground">No agents running right now.</div> : (
-              <div className="flex flex-wrap gap-2">
-                {onlineAgents.map((a) => (
-                  <button key={a.id} onClick={() => nav('agents', a.id)} className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-[12px] font-medium transition-colors hover:border-primary/50">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    <span className="max-w-[140px] truncate">{a.id}</span>
-                    {(liveByAgent.get(a.id) ?? 0) > 1 && <span className="text-muted-foreground tabular-nums">×{liveByAgent.get(a.id)}</span>}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="text-[11px] text-muted-foreground">{idleAgents} of {agents.length} idle</div>
-          </div>
-        </div>
-      </CardContent></Card>
-
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
         {/* Working now — live sessions as rich cards */}
         <Card><CardContent className="p-0">
@@ -5064,6 +5020,7 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
                       {st === 'live'
                         ? <span className="relative flex h-2 w-2 shrink-0"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
                         : <span className={`h-2 w-2 shrink-0 rounded-full ${st === 'blocked' ? 'bg-amber-500' : 'bg-violet-500'}`} />}
+                      <AgentIcon icon={iconOf(s.agent)} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span className="truncate text-[13.5px] font-semibold">{s.agent}</span>
                       <span className="ml-auto">{pill(st)}</span>
                     </div>
@@ -5080,20 +5037,41 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
           )}
         </CardContent></Card>
 
-        {/* Right rail: fleet-now donut + best-agents leaderboard */}
+        {/* Right rail: who's online + best-agents leaderboard */}
         <div className="space-y-4">
-          <Card><CardContent className="p-4">
-            <div className="mb-2 text-[13.5px] font-semibold">Fleet now</div>
-            <div className="flex items-center gap-4">
-              <svg viewBox="0 0 88 88" width="92" height="92" className="shrink-0">
-                {segs.map((s, i) => { const len = (s.v / donutTotal) * CIRC; const off = -acc; acc += len; return <circle key={i} cx="44" cy="44" r={RAD} fill="none" stroke={s.c} strokeWidth="12" strokeDasharray={`${len} ${CIRC - len}`} strokeDashoffset={off} transform="rotate(-90 44 44)" /> })}
-                <text x="44" y="41" textAnchor="middle" className="fill-foreground" fontSize="19" fontWeight="700">{agents.length}</text>
-                <text x="44" y="55" textAnchor="middle" className="fill-muted-foreground" fontSize="8.5">agents</text>
-              </svg>
-              <div className="space-y-1.5 text-[12.5px]">
-                <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-emerald-500" />{activeAgents} active</div>
-                <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-muted-foreground" />{idleAgents} idle</div>
-                <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-amber-500" />{blockedCount} blocked</div>
+          <Card><CardContent className="p-0">
+            <div className="flex items-center gap-2 border-b px-4 py-3">
+              <Users className="h-4 w-4 text-muted-foreground" />
+              <div><div className="text-[13.5px] font-semibold">Online now</div><div className="text-[11.5px] text-muted-foreground">{peopleOnline} {peopleOnline === 1 ? 'person' : 'people'} · {onlineAgents.length} agent{onlineAgents.length === 1 ? '' : 's'} active</div></div>
+            </div>
+            <div className="space-y-3 p-4">
+              {onlinePeople.length === 0 ? (
+                <div className="text-[12.5px] text-muted-foreground">No one else is online.</div>
+              ) : onlinePeople.map((m) => (
+                <div key={m.id} className="flex items-center gap-2.5">
+                  {memberDot(m, 'h-7 w-7')}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12.5px] font-medium">{m.name || m.email}</div>
+                    <div className="text-[10.5px] capitalize text-muted-foreground">{m.role}</div>
+                  </div>
+                  <span className="shrink-0 text-[10.5px] font-medium text-emerald-600 dark:text-emerald-500">Online</span>
+                </div>
+              ))}
+              <div className="border-t pt-3">
+                <div className="mb-2 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">Agents active</div>
+                {onlineAgents.length === 0 ? (
+                  <div className="text-[12px] text-muted-foreground">None running right now.</div>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {onlineAgents.map((a) => (
+                      <button key={a.id} onClick={() => nav('agents', a.id)} className="inline-flex items-center gap-1.5 rounded-full border bg-card px-2.5 py-1 text-[12px] font-medium transition-colors hover:border-primary/50">
+                        <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-500" />
+                        <span className="max-w-[130px] truncate">{a.id}</span>
+                        {(liveByAgent.get(a.id) ?? 0) > 1 && <span className="text-muted-foreground tabular-nums">×{liveByAgent.get(a.id)}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </CardContent></Card>
@@ -5107,12 +5085,12 @@ function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpe
             {board.length === 0 ? (
               <div className="px-4 py-8 text-center text-[12.5px] text-muted-foreground">No agents have enough runs yet.</div>
             ) : board.map((s, i) => (
-              <div key={s.agentId} className="flex items-center gap-3 border-t px-4 py-2.5 first:border-t-0">
-                <span className={`w-4 text-center text-[12px] font-bold tabular-nums ${i < 3 ? 'text-primary' : 'text-muted-foreground'}`}>{i + 1}</span>
+              <div key={s.agentId} className="flex items-center gap-2.5 border-t px-4 py-2.5 first:border-t-0">
+                <span className={`w-4 shrink-0 text-center text-[12px] font-bold tabular-nums ${i < 3 ? 'text-primary' : 'text-muted-foreground'}`}>{i + 1}</span>
+                <AgentIcon icon={iconOf(s.agentId)} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <button onClick={() => nav('agents', s.agentId)} className="flex-1 truncate text-left text-[12.5px] font-semibold hover:text-primary">{s.agentId}</button>
-                <div className="h-1.5 w-16 shrink-0 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full" style={{ width: `${Math.round(s.maturity * 100)}%`, background: bandTone(s.maturity) }} /></div>
+                <div className="h-1.5 w-14 shrink-0 overflow-hidden rounded-full bg-muted"><span className="block h-full rounded-full" style={{ width: `${Math.round(s.maturity * 100)}%`, background: bandTone(s.maturity) }} /></div>
                 <span className="w-7 shrink-0 text-right text-[13px] font-bold tabular-nums">{Math.round(s.maturity * 100)}</span>
-                <span className="w-14 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{'\u{1F44D}'}{s.rated.up} {'\u{1F44E}'}{s.rated.down}</span>
               </div>
             ))}
           </CardContent></Card>

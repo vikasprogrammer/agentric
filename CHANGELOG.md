@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.168.1] — 2026-07-13
+### Changed
+- **Overview layout refinements.** The four KPI tiles are now compact single-row cards (icon · figure ·
+  label). The "Online now" widget moves into the right rail (replacing the Fleet-now donut) and lists
+  **only online people** (no offline members). Agent names now render with their agent icon everywhere
+  they appear — working-now cards, the online-agents chips, and the best-agents leaderboard.
+
 ## [0.168.0] — 2026-07-13
 ### Added
 - **Overview: "Online now" panel + human/agent presence.** The owner Overview now shows who's around at a
