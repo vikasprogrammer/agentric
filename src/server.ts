@@ -1902,6 +1902,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (rating !== 'up' && rating !== 'down' && rating !== null) return sendJson(res, 400, { error: "rating must be 'up', 'down', or null" });
     return sendJson(res, 200, tm.rateSession(id, me, rating));
   }
+  // Rename a session — give it a human-chosen display title. Same per-member gate as rate/stop: you can
+  // rename any run you're allowed to see.
+  const renameMatch = p.match(/^\/api\/sessions\/([\w-]+)\/rename$/);
+  if (method === 'POST' && renameMatch) {
+    const id = renameMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const b = await readBody(req);
+    const r = tm.renameSession(id, me, String((b as { title?: unknown }).title ?? ''));
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   // Deliberately resume a stopped session: lift the stop-block so the ttyd attach wrapper resurrects it
   // (`claude --resume`) on the next reconnect. The actual relaunch happens in attach.sh when the terminal
   // (re)connects; this just clears the "stay stopped" sentinel. Same per-member gate as stop.

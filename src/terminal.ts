@@ -3155,6 +3155,19 @@ export class TerminalManager {
     return { ok: true };
   }
 
+  /** Give a session a human-chosen display title (the console header + tab strip label). Overrides the
+   *  auto-generated/AI-renamed title. Trimmed and capped; an empty title is rejected. Same per-member
+   *  gate as rate/stop is applied by the caller. */
+  renameSession(sessionId: string, by: Member, title: string): { ok: boolean; error?: string; title?: string } {
+    const r = this.db.prepare('SELECT id, agent FROM term_sessions WHERE id = ?').get<{ id: string; agent: string }>(sessionId);
+    if (!r) return { ok: false, error: 'unknown session' };
+    const clean = title.trim().replace(/\s+/g, ' ').slice(0, 200);
+    if (!clean) return { ok: false, error: 'title cannot be empty' };
+    this.db.prepare('UPDATE term_sessions SET title = ?, updated_at = ? WHERE id = ?').run(clean, Date.now(), sessionId);
+    this.audit(sessionId, by.email, 'session.renamed', { title: clean, agent: r.agent });
+    return { ok: true, title: clean };
+  }
+
   /** Path of a session's "do not auto-resurrect" sentinel (see stopSession / attach.sh). */
   private stopMarkerPath(sessionId: string): string | null {
     return this.os.paths ? path.join(this.os.paths.connectors, `session-${sessionId}.stopped`) : null;

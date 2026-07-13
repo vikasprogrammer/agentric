@@ -928,6 +928,15 @@ function Console({ me }: { me: Member }) {
     await api.rateSession(id, rating)
     setSessions(await api.sessions())
   }
+  // Give a session a human-chosen title (from the header pencil or a double-click on its tab). Optimistic
+  // so the header/tab relabel instantly; the poll reconciles with the server's cleaned value.
+  const renameSession = async (id: string, title: string) => {
+    const t = title.trim()
+    if (!t) return
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title: t } : s)))
+    const r = await api.renameSession(id, t)
+    if (r.title) setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title: r.title! } : s)))
+  }
   const deleteSession = async (id: string, tmux: string) => {
     if (!confirm('Delete this session? Its inbox messages and transcript files are removed; the audit log is kept.')) return
     await api.deleteSession(id)
@@ -1166,7 +1175,10 @@ function Console({ me }: { me: Member }) {
                than crowding the terminal tab strip or the header's right edge. */
             <div className="flex min-w-0 flex-col gap-1">
               <div className="flex items-center gap-3">
-                <h1 className="max-w-[60vw] truncate text-sm font-semibold">{selected.title}</h1>
+                <EditableSessionTitle
+                  title={selected.title}
+                  onRename={(t) => { const id = sessions.find((s) => s.tmux === selected.tmux)?.id; if (id) renameSession(id, t) }}
+                />
                 <Button render={<a href={navHref('sessions')} />} size="sm" variant="outline" className="h-6 gap-1 px-2 text-xs" onClick={onNavClick(() => nav('sessions'))} title="back to the full sessions list">
                   <ArrowLeft className="h-3.5 w-3.5" /> All sessions
                 </Button>
@@ -1186,7 +1198,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} messages={messages} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
@@ -2049,8 +2061,40 @@ function edgeFadeMask(fade: { left: boolean; right: boolean }): string | undefin
   return `linear-gradient(to right, transparent 0, black ${l}, black calc(100% - ${r}), transparent 100%)`
 }
 
+// The open session's title in the terminal-view header — click the pencil (or double-click the title)
+// to rename it to whatever you like. Enter commits, Escape cancels. Mirrors the double-click-a-tab
+// shortcut in the switcher strip.
+function EditableSessionTitle({ title, onRename }: { title: string; onRename: (t: string) => void }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(title)
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { if (editing) { setDraft(title); requestAnimationFrame(() => inputRef.current?.select()) } }, [editing, title])
+  const commit = () => { const t = draft.trim(); if (t && t !== title) onRename(t); setEditing(false) }
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit(); else if (e.key === 'Escape') setEditing(false) }}
+        onBlur={commit}
+        maxLength={200}
+        className="w-[40vw] max-w-[60vw] rounded border bg-background px-1.5 py-0.5 text-sm font-semibold outline-none focus:ring-1 focus:ring-ring"
+      />
+    )
+  }
+  return (
+    <div className="group/title flex min-w-0 items-center gap-1.5">
+      <h1 className="max-w-[60vw] cursor-text truncate text-sm font-semibold" onDoubleClick={() => setEditing(true)} title="double-click to rename">{title}</h1>
+      <button type="button" className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-muted group-hover/title:opacity-100" onClick={() => setEditing(true)} title="rename session">
+        <Pencil className="h-3 w-3" />
+      </button>
+    </div>
+  )
+}
+
 function SessionsPage({
-  me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   me: Member
   members: Member[]
@@ -2067,6 +2111,7 @@ function SessionsPage({
   onStop: (id: string) => void
   onDelete: (id: string, tmux: string) => void
   onRate: (id: string, rating: 'up' | 'down' | null) => void
+  onRename: (id: string, title: string) => void
   onBulkStop: (ids: string[]) => void
   onBulkDelete: (ids: string[]) => void
   /** Current hash-query string — the persisted filter state, read once to seed the filters. */
@@ -2079,6 +2124,11 @@ function SessionsPage({
   // Terminal switcher bar: live tabs stay pinned; ended (stopped/done/crashed) ones collapse behind a
   // toggle so the bar doesn't accrete every past run. The open session always shows even if it ended.
   const [showEnded, setShowEnded] = useState(false)
+  // Which tab (session id) is being inline-renamed — set by double-clicking a tab's label.
+  const [renamingTab, setRenamingTab] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const beginRename = (s: Session) => { setRenameDraft(s.title); setRenamingTab(s.id) }
+  const commitRename = (s: Session) => { const t = renameDraft.trim(); if (t && t !== s.title) onRename(s.id, t); setRenamingTab(null) }
 
   // Tab strip overflow hint: instead of a chunky native scrollbar (`.no-scrollbar` hides it), we fade
   // whichever edge has more tabs off-screen. `fade` mirrors the scroll position; recomputed on scroll,
@@ -2251,11 +2301,26 @@ function SessionsPage({
           selected.tmux === s.tmux ? 'bg-neutral-700 text-white' : 'hover:bg-neutral-800'
         } ${draggable ? 'active:cursor-grabbing' : ''} ${dragTmux === s.tmux ? 'opacity-50' : ''}`}
       >
-        <a draggable={false} href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined} className="flex items-center gap-1.5 text-inherit no-underline">
-          <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
-          <span className="max-w-[180px] truncate">{s.title}</span>
-          {waiting.has(s.id) && <WaitingBell className="h-3 w-3" tone="text-indigo-300" />}
-        </a>
+        {renamingTab === s.id ? (
+          <span className="flex items-center gap-1.5">
+            <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+            <input
+              autoFocus
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') commitRename(s); else if (e.key === 'Escape') setRenamingTab(null) }}
+              onBlur={() => commitRename(s)}
+              maxLength={200}
+              className="w-40 rounded bg-neutral-800 px-1 py-0 text-xs text-white outline-none ring-1 ring-neutral-500"
+            />
+          </span>
+        ) : (
+          <a draggable={false} href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} onDoubleClick={(e) => { e.preventDefault(); beginRename(s) }} title={`double-click to rename${s.spawnedByLabel ? ` · started by ${s.spawnedByLabel}` : ''}`} className="flex items-center gap-1.5 text-inherit no-underline">
+            <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+            <span className="max-w-[180px] truncate">{s.title}</span>
+            {waiting.has(s.id) && <WaitingBell className="h-3 w-3" tone="text-indigo-300" />}
+          </a>
+        )}
         {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
         <span className={`flex items-center gap-1 ${selected.tmux === s.tmux ? '' : 'opacity-0 group-hover/tab:opacity-100'}`}>
           {canResume(s) && (

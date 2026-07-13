@@ -972,6 +972,8 @@ export const api = {
   /** Host resource snapshot for Settings → System (RAM / CPU / uptime). */
   system: () => call<SystemMetrics>('GET', '/api/system'),
   rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
+  /** Give a session a human-chosen display title (overrides the auto/AI-generated one). */
+  renameSession: (id: string, title: string) => call<{ ok: boolean; error?: string; title?: string }>('POST', `/api/sessions/${id}/rename`, { title }),
   /** Lift the stop-block so a stopped session resurrects (claude --resume) on the next terminal open. */
   resumeSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/resume`),
   /** Take over a headless run: convert it to an attachable interactive session (claude --resume). Kills
