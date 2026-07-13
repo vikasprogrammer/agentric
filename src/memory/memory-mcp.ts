@@ -406,13 +406,19 @@ const TOOLS = [
   {
     name: 'ask',
     description:
-      "Ask the human operator a question and WAIT for their answer. Use when you're blocked on a decision " +
-      'only they can make (which option, missing detail, risky judgement call). The question appears in their ' +
-      'Inbox; this call blocks until they reply, then returns their answer. Prefer this over guessing.',
+      "Ask a human a question and WAIT for their answer. Use when you're blocked on a decision only a person " +
+      'can make (which option, a missing detail, a confirmation before a risky step). The question appears in ' +
+      'their Inbox (and DMs them); this call blocks until they reply, then returns their answer. Prefer this ' +
+      "over guessing. By default it goes to the operator you're working for. Set `to` (a teammate's name or " +
+      'email) to ask a SPECIFIC other person instead — e.g. confirm a detail with the account owner, or get ' +
+      'info only they have. Same blocking behaviour; their reply comes back to you.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      properties: { question: { type: 'string', description: 'A specific, self-contained question.' } },
+      properties: {
+        question: { type: 'string', description: 'A specific, self-contained question.' },
+        to: { type: 'string', description: 'Optional. A teammate to ask instead of the operator — their name or email (e.g. "Alex Rivera" or "alex@acme.com"). Omit to ask the human who owns this run.' },
+      },
       required: ['question'],
     },
   },
@@ -1064,13 +1070,18 @@ async function recall(args: Record<string, unknown>): Promise<string> {
 async function ask(args: Record<string, unknown>): Promise<string> {
   const question = String(args.question ?? '').trim();
   if (!question) return 'No question provided.';
+  const to = args.to ? String(args.to).trim() : undefined;
   const res = await fetch(AOS_URL + '/api/ask', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, agent: AGENT, question }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, question, to: to || undefined }),
   });
-  const { id } = (await res.json()) as { id?: string };
+  const posted = (await res.json()) as { id?: string; error?: string; to?: string };
+  if (posted.error) return `Could not ask: ${posted.error}`;
+  const id = posted.id;
   if (!id) return 'Could not post the question.';
+  // Who we're waiting on, for the parking copy — the named teammate when `to` was given, else the operator.
+  const who = posted.to || to || 'the operator';
   // Poll the inbox for the human's answer. An INTERACTIVE run waits ~1h (a human is at the terminal and
   // may take a while). An UNATTENDED run (automation/cron/task) has nobody attached, so an hour-long block
   // just strands the session and holds its memory — the question is already in the operator's Inbox +
@@ -1083,17 +1094,17 @@ async function ask(args: Record<string, unknown>): Promise<string> {
     await sleep(2000);
     const r = await fetch(`${AOS_URL}/api/ask/${id}`);
     const d = (await r.json()) as { status?: string; answer?: string };
-    if (d.status === 'answered') return d.answer || '(the operator gave no answer)';
-    if (d.status === 'cancelled') return 'The operator dismissed this question without answering. Proceed using your best judgement, or ask again if you are still blocked.';
+    if (d.status === 'answered') return d.answer || `(${who} gave no answer)`;
+    if (d.status === 'cancelled') return `${who} dismissed this question without answering. Proceed using your best judgement, or ask again if you are still blocked.`;
   }
   if (UNATTENDED) {
-    return 'No operator is available on this unattended run (automation/cron/task), and none answered in ' +
-      `the ${UNATTENDED_ASK_WAIT_S}s window. Your question is recorded in the operator's Inbox and they have been ` +
+    return `Nobody answered in the ${UNATTENDED_ASK_WAIT_S}s window on this unattended run (automation/cron/task). ` +
+      `Your question is recorded in ${who === 'the operator' ? "the operator's" : `${who}'s`} Inbox and they have been ` +
       'notified, so it is NOT lost. Do NOT proceed with any risky or irreversible action on a guess. Wrap up ' +
       'now: call `report` to summarise what you did and note that you are blocked on this question, then end the ' +
-      'run. The operator will follow up (e.g. by answering and re-running you).';
+      'run. They will follow up (e.g. by answering and re-running you).';
   }
-  return 'No answer yet (timed out waiting on the operator). Proceed using your best judgement or ask again.';
+  return `No answer yet (timed out waiting on ${who}). Proceed using your best judgement or ask again.`;
 }
 
 async function slackReply(args: Record<string, unknown>): Promise<string> {

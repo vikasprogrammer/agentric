@@ -578,6 +578,10 @@ function migrate(db: Db): void {
   addColumn(db, 'messages', 'audience_kind', 'TEXT');  // Audience.kind | NULL = fall back to session visibility
   addColumn(db, 'messages', 'audience_id', 'TEXT');    // the audience's member id / approval level (kind-dependent)
 
+  // Who a question is addressed to: a member id when the agent `ask`ed a SPECIFIC teammate (not the run's
+  // operator). NULL = the default sessionOwner routing. Lets `canViewQuestion` grant that member the answer.
+  addColumn(db, 'questions', 'audience_id', 'TEXT');
+
   // Execution mode for automations (older DBs predate it — default preserves their interactive behavior).
   addColumn(db, 'automations', 'mode', "TEXT NOT NULL DEFAULT 'interactive'");
   addColumn(db, 'automations', 'filter', 'TEXT'); // composio: trigger slug / slack: event type|channel to match ('' = any)

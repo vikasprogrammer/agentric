@@ -18,7 +18,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `kb_write` | `POST /api/kb/write` | `KbStore.write` | W | versioned; author `agent:<id>`; `section` may nest with `/` (`engineering/backend`) → folder tree |
 | `kb_history` | `GET /api/kb/history` | `KbStore.history` | R | newest-first revisions |
 | `kb_revert` | `POST /api/kb/revert` | `KbStore.revert` | W | itself a new revision; audited `kb.reverted` |
-| `ask` | `POST /api/ask` + poll | questions | W (blocking) | blocks ~1h polling for the human answer; DMs the run-as human out-of-band (`question.notified`) + mirrors to the chat thread so it isn't missed |
+| `ask` | `POST /api/ask` + poll | questions | W (blocking) | blocks ~1h polling for the human answer; DMs the addressee out-of-band (`question.notified`) + mirrors to the chat thread so it isn't missed. Default addressee = the run's operator (`sessionOwner`); optional `to` (name/email) routes the question to a SPECIFIC other member instead (card + DM target them, and `canViewQuestion` grants them the answer) — the "ask a teammate for info / a confirmation" channel |
 | `check_inbox` | `GET /api/inbox` | `TerminalManager.sessionInbox` | R | non-blocking pull of this session's feed |
 | `report` | `POST /api/report` | messages | W | `outcome` enum |
 | `update` | `POST /api/update` | messages | W | non-blocking progress note (session-owner scoped) |

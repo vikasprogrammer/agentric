@@ -310,6 +310,9 @@ export interface QuestionNotice {
   sessionId: string;
   agent: string;
   prompt: string;
+  /** Resolved member id when the agent `ask`ed a SPECIFIC teammate (not the run's operator); the
+   *  registry DMs them instead of the sessionOwner. Undefined = the default sessionOwner routing. */
+  to?: string;
 }
 
 /** What the member-notifier sink receives when an agent deliberately notifies a specific teammate via
@@ -611,10 +614,14 @@ export class TerminalManager {
     return this.canViewRow(r ? r.spawned_by : null, r ? r.run_as : null, viewer);
   }
 
-  /** Whether `viewer` may act on a pending question (resolves its session, then the inbox rule). */
+  /** Whether `viewer` may act on a pending question. A question `ask`ed to a SPECIFIC teammate
+   *  (`audience_id` set) is answerable by that member (its `member` audience) OR by owner/admin oversight;
+   *  otherwise it resolves through its session's provenance/run-as like the rest of the inbox. */
   canViewQuestion(questionId: string, viewer: Member): boolean {
-    const q = this.db.prepare('SELECT run_id FROM questions WHERE id = ?').get<{ run_id: string }>(questionId);
-    return !!q && this.canViewSession(q.run_id, viewer);
+    const q = this.db.prepare('SELECT run_id, audience_id FROM questions WHERE id = ?').get<{ run_id: string; audience_id: string | null }>(questionId);
+    if (!q) return false;
+    if (q.audience_id && this.canViewAudience('member', q.audience_id, viewer)) return true;
+    return this.canViewSession(q.run_id, viewer);
   }
 
   /**
@@ -2020,19 +2027,34 @@ export class TerminalManager {
 
   // ── session lifecycle → inbox ────────────────────────────────────────────────
   /** Agent asks the human a question (the ask-human channel). Returns the question id to poll. */
-  askQuestion(sessionId: string, agent: string, prompt: string): { id: string } {
+  /**
+   * The agent posts a blocking question (→ inbox card + out-of-band DM) and polls {@link questionStatus}
+   * until answered. By default it's addressed to the session OPERATOR (the `sessionOwner` audience). Pass
+   * `to` (a teammate name / email / member id) to route it to a SPECIFIC other member instead — the
+   * "ask a teammate for info / a confirmation" channel — and both the inbox card and the DM target them,
+   * and {@link canViewQuestion} grants them the answer. Returns `{ error }` when `to` matches no member.
+   */
+  askQuestion(sessionId: string, agent: string, prompt: string, to?: string): { id?: string; error?: string; to?: string } {
+    let target: Member | undefined;
+    if (to && to.trim()) {
+      target = this.resolveMember(to);
+      if (!target) return { error: `no teammate matches "${to}"` };
+    }
     const id = randomUUID().slice(0, 8);
     this.db
-      .prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, sessionId, this.os.tenant, agent, prompt, 'pending', Date.now());
-    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id, audienceKind: 'sessionOwner', audienceId: sessionId });
-    this.audit(sessionId, agent, 'question.asked', { questionId: id, prompt });
-    // Out-of-band ping (like approvals): DM the person the run acts for so a blocking `ask` doesn't sit
-    // unseen in the console. And if the run was triggered from chat, mirror the question into that
-    // thread. Both best-effort, off the hot path.
-    try { this.questionNotifier?.({ sessionId, agent, prompt }); } catch { /* notifications are advisory */ }
+      .prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, audience_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, sessionId, this.os.tenant, agent, prompt, 'pending', target?.id ?? null, Date.now());
+    // Card audience: the addressed teammate when `to` is set, else the session operator.
+    const audienceKind = target ? 'member' : 'sessionOwner';
+    const audienceId = target ? target.id : sessionId;
+    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id, audienceKind, audienceId });
+    this.audit(sessionId, agent, 'question.asked', { questionId: id, prompt, ...(target ? { to: target.id } : {}) });
+    // Out-of-band ping (like approvals): DM the person the run acts for — or the addressed teammate — so a
+    // blocking `ask` doesn't sit unseen in the console. And if the run was triggered from chat, mirror the
+    // question into that thread. Both best-effort, off the hot path.
+    try { this.questionNotifier?.({ sessionId, agent, prompt, to: target?.id }); } catch { /* notifications are advisory */ }
     try { this.chatMirror?.(sessionId, (p) => `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the ${chatLink(p, consolePage(this.publicOrigin, 'inbox'), 'Agent OS Inbox')}.`); } catch { /* advisory */ }
-    return { id };
+    return { id, to: target?.email };
   }
 
   /** A human answers a pending question (from the inbox). */

@@ -736,7 +736,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { ok: true });
   }
 
-  // ask-human: the agent posts a question (→ inbox) and polls until a human answers it.
+  // ask-human: the agent posts a question (→ inbox) and polls until a human answers it. Optional `to`
+  // addresses it to a SPECIFIC teammate (name/email/id) instead of the run's operator.
   if (method === 'POST' && p === '/api/ask') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -745,7 +746,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const question = String(b.question || '').trim();
     if (!question) return sendJson(res, 400, { error: 'question is required' });
-    return sendJson(res, 200, tm.askQuestion(session, agent, question));
+    const to = b.to ? String(b.to).trim() : undefined;
+    const out = tm.askQuestion(session, agent, question, to);
+    return sendJson(res, out.error ? 400 : 200, out);
   }
   const askMatch = p.match(/^\/api\/ask\/([\w-]+)$/);
   if (method === 'GET' && askMatch) return sendJson(res, 200, tm.questionStatus(askMatch[1]));
