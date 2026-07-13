@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.157.3] — 2026-07-13
+### Fixed
+- **Select triggers showed a raw id after picking an owner/assignee/goal.** On the Goals and Tasks
+  pages the owner/assignee/goal dropdowns rendered options with a friendly name but, once selected,
+  the trigger fell back to base-ui's raw value and displayed the internal id (e.g. `m_9178…`). Each
+  now passes a render-function `SelectValue` (matching the sessions owner-filter pattern) that maps the
+  id back to a display name — Goals **Owner** (create + detail), Tasks **Assignee**/**Goal** (create +
+  detail). `web/src/App.tsx`.
+
 ## [0.157.2] — 2026-07-13
 ### Fixed
 - **Internal links open in the same tab, not a new one.** The markdown renderer's `<a>` hardcoded

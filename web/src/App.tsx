@@ -3411,12 +3411,7 @@ const mdComponents = {
   ul: (p: any) => <ul className="my-2 list-disc space-y-1 pl-5" {...p} />,
   ol: (p: any) => <ol className="my-2 list-decimal space-y-1 pl-5" {...p} />,
   li: (p: any) => <li className="leading-relaxed" {...p} />,
-  // In-app links (`#/route`, `#anchor`) navigate in the SAME tab via the hash router; only external
-  // URLs open a new tab. Mirrors InlineLinks so wiki-links behave the same in every surface.
-  a: ({ href, ...p }: any) => {
-    const internal = typeof href === 'string' && href.startsWith('#')
-    return <a href={href} className="text-primary underline" {...(internal ? {} : { target: '_blank', rel: 'noreferrer' })} {...p} />
-  },
+  a: (p: any) => <a className="text-primary underline" target="_blank" rel="noreferrer" {...p} />,
   blockquote: (p: any) => <blockquote className="my-2 border-l-2 pl-3 text-muted-foreground" {...p} />,
   code: ({ inline, ...p }: any) => inline
     ? <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]" {...p} />
@@ -4564,7 +4559,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
               <Field label="Target"><Input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="e.g. < 10 min by Q3" /></Field>
               <Field label="Owner">
                 <Select value={owner || 'none'} onValueChange={(v) => setOwner(!v || v === 'none' ? '' : v)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger><SelectValue>{(v) => nameOf(!v || v === 'none' ? undefined : (v as string))}</SelectValue></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Unassigned</SelectItem>
                     {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
@@ -4641,7 +4636,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                   <Field label="Owner">
                     {isAdmin ? (
                       <Select value={detail.goal.owner || 'none'} onValueChange={(v) => patch(detail.goal.id, { owner: !v || v === 'none' ? null : v })}>
-                        <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="h-8"><SelectValue>{(v) => nameOf(!v || v === 'none' ? undefined : (v as string))}</SelectValue></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="none">Unassigned</SelectItem>
                           {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
@@ -5072,7 +5067,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Field label="Assign to">
                 <Select value={assignee || 'none'} onValueChange={(v) => setAssignee(!v || v === 'none' ? '' : v)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger><SelectValue>{(v) => !v || v === 'none' ? 'Unassigned' : nameOf(v as string)}</SelectValue></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">Unassigned</SelectItem>
                     {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
@@ -5097,7 +5092,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="Goal">
                 <Select value={goalId || 'none'} onValueChange={(v) => setGoalId(!v || v === 'none' ? '' : v)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger><SelectValue>{(v) => !v || v === 'none' ? '— none —' : goalTitle(v as string)}</SelectValue></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="none">— none —</SelectItem>
                     {goals.filter((g) => g.status === 'active').map((g) => <SelectItem key={g.id} value={g.id}><span className="flex items-center gap-1.5"><Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{g.title}</span></SelectItem>)}
@@ -5255,7 +5250,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Assignee">
                     <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
-                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? 'Unassigned' : nameOf(v as string)}</SelectValue></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none">Unassigned</SelectItem>
                         {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
@@ -5270,7 +5265,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Goal">
                     <Select value={detail.task.goalId || 'none'} onValueChange={(v) => patch(detail.task.id, { goalId: !v || v === 'none' ? null : v })}>
-                      <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? '— none —' : goalTitle(v as string)}</SelectValue></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="none">— none —</SelectItem>
                         {/* Include the currently-linked goal even if it isn't active, so the label stays correct. */}
