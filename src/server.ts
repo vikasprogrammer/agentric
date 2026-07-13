@@ -769,6 +769,37 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const askMatch = p.match(/^\/api\/ask\/([\w-]+)$/);
   if (method === 'GET' && askMatch) return sendJson(res, 200, tm.questionStatus(askMatch[1]));
 
+  // ask-agent: a live agent delegates a question/task to ANOTHER agent and polls until it answers. The
+  // server spawns a one-off headless delegate (run-as passthrough, still gated); the delegate closes the
+  // loop with the `answer` tool. Machine-facing sibling of /api/ask — no task row, no board/inbox surface.
+  if (method === 'POST' && p === '/api/ask-agent') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const target = String(b.agent || '').trim();
+    const question = String(b.question || '').trim();
+    if (!question) return sendJson(res, 400, { error: 'question is required' });
+    const out = tm.askAgent(session, agent, target, question);
+    return sendJson(res, out.error ? 400 : 200, out);
+  }
+  const askAgentMatch = p.match(/^\/api\/ask-agent\/([\w-]+)$/);
+  if (method === 'GET' && askAgentMatch) return sendJson(res, 200, tm.agentAskStatus(askAgentMatch[1]));
+
+  // The delegate returns its answer (its `answer` tool) — resolved to the ask bound to THIS session.
+  if (method === 'POST' && p === '/api/agent/answer') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const answer = String(b.answer || '').trim();
+    if (!answer) return sendJson(res, 400, { error: 'answer is required' });
+    const out = tm.answerAgentAsk(session, agent, answer);
+    return sendJson(res, out.error ? 400 : 200, out);
+  }
+
   // agent self-reports completion (→ inbox card with outcome + summary).
   if (method === 'POST' && p === '/api/report') {
     const b = await readBody(req);

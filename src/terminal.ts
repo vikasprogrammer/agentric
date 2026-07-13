@@ -34,6 +34,10 @@ const VIDEO_JOB_TTL_MS = 20 * 60_000;      // give up on a render after 20 minut
 const VIDEO_MAX_POLLS = 200;               // poll-attempt ceiling (belt-and-suspenders with the TTL)
 const VIDEO_INCALL_POLLS = 3;              // brief in-call polls to catch a fast render before returning
 const VIDEO_INCALL_POLL_MS = 10_000;       // …10s apart (~30s max block, within tool tolerance)
+// ask_agent: how long after spawn before a not-alive delegate is judged to have died WITHOUT answering
+// (so `agentAskStatus` fails the caller out). A grace so a just-spawned run — whose tmux may not yet
+// register — isn't misjudged; the caller polls every 3s and real answers take far longer than this.
+const ASK_AGENT_GRACE_MS = 20_000;
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { GithubIdentity } from './edge/github-identity';
@@ -671,6 +675,8 @@ export class TerminalManager {
     if (spawnedBy.startsWith('chat:')) return `Chat · ${spawnedBy.slice('chat:'.length)}${asSuffix}`;
     // Auto-dispatched from the Tasks board (`task:<id>`) — a durable unit of work spawned a session.
     if (spawnedBy.startsWith('task:')) return `Task · ${spawnedBy.slice('task:'.length)}${asSuffix}`;
+    // One-off ask_agent delegate (`ask:<caller>`) — another agent asked this one a question and is waiting.
+    if (spawnedBy.startsWith('ask:')) return `Ask · ${spawnedBy.slice('ask:'.length)}${asSuffix}`;
     const m = this.os.team.getMember(spawnedBy);
     return m ? m.name || m.email : spawnedBy;
   }
@@ -1036,7 +1042,10 @@ export class TerminalManager {
     const tmux = `aos-${o.id}`;
     const env = this.sessionEnv(o.id, o.agent, o.task, o.secret);
     // Build the per-session connector + company payloads once (Composio is minted here).
-    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord);
+    // An ask_agent delegate (provenance `ask:<caller>`) gets the `answer` tool to close the loop back to
+    // its caller — keyed on provenance so no other session is cluttered by it.
+    const askAnswer = (o.spawnedBy ?? '').startsWith('ask:');
+    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer);
     const companyMd = this.buildCompanyMd(o.agent, o.actingMember);
     this.materializeSkills(o.id, o.agent, manifest.dir);
     // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
@@ -1628,7 +1637,7 @@ export class TerminalManager {
    * session can read it: the app's connectors dir (local), or the member's home (launcher). The
    * memory server is ALWAYS included and scoped to this session+agent. '' when there's no data home.
    */
-  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false): string {
+  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false, askAnswer = false): string {
     if (!this.os.paths) return '';
     // `actingMember` is the identity the session runs AS (runAs ?? the spawning member). Undefined for a
     // pure automation/system spawn → org + shared connectors only, never a person's private credentials.
@@ -1678,6 +1687,9 @@ export class TerminalManager {
         AOS_URL: this.baseUrl, AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret,
         ...(slackReply ? { SLACK_REPLY: '1' } : {}),
         ...(discordReply ? { DISCORD_REPLY: '1' } : {}),
+        // ASK_ANSWER: '1' exposes the `answer` tool — only on an ask_agent delegate, so it can return its
+        // result to the agent that asked. Other sessions never see it.
+        ...(askAnswer ? { ASK_ANSWER: '1' } : {}),
         ...(this.os.settings.slackConfigured() ? { SLACK_EGRESS: '1' } : {}),
         ...(this.os.settings.discordConfigured() ? { DISCORD_EGRESS: '1' } : {}),
         // IMAGE_GEN: '1' exposes `image_generate` when a backend key (OpenRouter/Atlas) is configured.
@@ -2210,6 +2222,67 @@ export class TerminalManager {
     if (!q) return { status: 'pending' };
     if (q.status === 'answered') return { status: 'answered', answer: q.answer ?? undefined };
     if (q.status === 'cancelled') return { status: 'cancelled' };
+    return { status: 'pending' };
+  }
+
+  /**
+   * Ask another AGENT a question / to solve something and block on the answer — the machine-facing
+   * sibling of {@link askQuestion}. Spawns a one-off HEADLESS governed session of `targetAgent` (run-as
+   * passthrough, provenance `ask:<caller>`, every effect still gated) primed with the question; the
+   * delegate answers via the `answer` tool (→ {@link answerAgentAsk}) and the caller polls
+   * {@link agentAskStatus}. An ephemeral request/response — no task row, no board/inbox surface.
+   * Returns `{ error }` for an unknown/ineligible target.
+   */
+  askAgent(callerSession: string, callerAgent: string, targetAgent: string, question: string): { id?: string; error?: string } {
+    const target = (targetAgent || '').trim();
+    if (!target) return { error: 'which agent? (agent is required)' };
+    if (target === callerAgent) return { error: 'an agent cannot ask itself — pick a different teammate' };
+    const manifest = this.os.agents.get(target);
+    if (!manifest) return { error: `unknown agent: ${target}` };
+    if (manifest.runtime !== 'claude-code') return { error: `${target} is not an interactive agent that can answer` };
+    // Run-as passthrough: the delegate acts AS the caller's accountable human, so budget/approvals/identity
+    // ladder to the same person the caller already answers to (mirrors task-owner passthrough).
+    const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(callerSession)?.run_as ?? undefined;
+    const id = randomUUID().slice(0, 8);
+    this.db
+      .prepare('INSERT INTO agent_asks (id, tenant, caller_run_id, caller_agent, target_agent, question, status, run_as, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, this.os.tenant, callerSession, callerAgent, target, question, 'pending', runAs ?? null, Date.now());
+    // Provenance `ask:<caller>` makes the delegate an ask-answerer at launch (→ ASK_ANSWER exposes the
+    // `answer` tool); run-as passes the accountable human through. Headless one-off — reaped at turn end.
+    const s = this.createSession(target, `Ask ← ${callerAgent}`, buildAskAgentPrompt(id, callerAgent, question), `ask:${callerAgent}`, true, undefined, undefined, runAs);
+    this.db.prepare('UPDATE agent_asks SET delegate_run_id = ? WHERE id = ?').run(s.id, id);
+    this.audit(callerSession, callerAgent, 'agent.asked', { askId: id, target, delegate: s.id, runAs: runAs ?? null });
+    return { id };
+  }
+
+  /** The delegate answers a pending ask (its `answer` tool). Resolves the ask bound to THIS delegate
+   *  session — so the delegate can't spoof which ask it answers. Errors if none is pending for it. */
+  answerAgentAsk(delegateSession: string, agent: string, answer: string): { ok?: boolean; error?: string } {
+    const a = this.db
+      .prepare("SELECT id, caller_agent FROM agent_asks WHERE delegate_run_id = ? AND status = 'pending'")
+      .get<{ id: string; caller_agent: string }>(delegateSession);
+    if (!a) return { error: 'no pending ask is bound to this session' };
+    this.db.prepare("UPDATE agent_asks SET status = 'answered', answer = ?, answered_at = ? WHERE id = ?").run(answer, Date.now(), a.id);
+    this.audit(delegateSession, agent, 'agent.answered', { askId: a.id, caller: a.caller_agent });
+    return { ok: true };
+  }
+
+  /**
+   * Poll an ask's state (the caller's `ask_agent` loop). Self-heals: if the delegate session ended or
+   * died WITHOUT answering (past {@link ASK_AGENT_GRACE_MS} so a just-spawned run isn't misjudged), the
+   * ask flips to `failed` — so the caller unblocks instead of waiting out its timeout on a dead delegate.
+   */
+  agentAskStatus(id: string): { status: 'pending' | 'answered' | 'failed'; answer?: string } {
+    const a = this.db
+      .prepare('SELECT status, answer, delegate_run_id, created_at FROM agent_asks WHERE id = ?')
+      .get<{ status: string; answer: string | null; delegate_run_id: string | null; created_at: number }>(id);
+    if (!a) return { status: 'failed' };
+    if (a.status === 'answered') return { status: 'answered', answer: a.answer ?? undefined };
+    if (a.status === 'failed') return { status: 'failed' };
+    if (a.delegate_run_id && Date.now() - a.created_at > ASK_AGENT_GRACE_MS && !this.isAlive(a.delegate_run_id)) {
+      this.db.prepare("UPDATE agent_asks SET status = 'failed' WHERE id = ? AND status = 'pending'").run(id);
+      return { status: 'failed' };
+    }
     return { status: 'pending' };
   }
 
@@ -3474,6 +3547,19 @@ function titleFromSummary(summary: string): string {
   const firstLine = (summary || '').split('\n').map((s) => s.trim()).find(Boolean) ?? '';
   const collapsed = firstLine.replace(/\s+/g, ' ').trim();
   return collapsed.length > 72 ? `${collapsed.slice(0, 71).trimEnd()}…` : collapsed;
+}
+
+/** The prompt handed to an ask_agent delegate: answer the caller's question, then close the loop with
+ *  the `answer` tool. Everything the caller receives is the `answer` text — so it must be self-contained. */
+function buildAskAgentPrompt(id: string, callerAgent: string, question: string): string {
+  return (
+    `Another agent (${callerAgent}) needs your help and is WAITING on your answer.\n\n` +
+    `Their question / request:\n${question}\n\n` +
+    `Do whatever it takes to answer it — investigate, run tools, reason it through. When you have the ` +
+    `answer, call answer({ answer: "<your complete answer>" }). That returns it to ${callerAgent} and ends ` +
+    `this run. Put EVERYTHING they need in that one call — they receive only the \`answer\` text, not the ` +
+    `rest of your output. If you genuinely cannot help, still call answer with a short explanation of why.`
+  );
 }
 
 function toSession(r: SessionRow): Session {
