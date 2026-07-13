@@ -8,6 +8,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as nodeOs from 'node:os';
 import { AgentOS, loadAgentOS } from './kernel';
 import { VERSION } from './version';
 import { TenantRegistry, TenantRuntime, notifyLoginLink } from './tenant-registry';
@@ -35,6 +36,48 @@ import { parseBundle } from './governance/bundle-import';
 import { AgentManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus, GoalStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
+
+/** Sum busy + idle CPU tick counters across all cores (for a sampled utilization %). */
+function cpuTicks(): { idle: number; total: number } {
+  let idle = 0, total = 0;
+  for (const c of nodeOs.cpus()) {
+    for (const t of Object.values(c.times)) total += t;
+    idle += c.times.idle;
+  }
+  return { idle, total };
+}
+
+/** Host resource snapshot for Settings → System. Samples CPU over ~120ms to get a real busy %. */
+async function systemMetrics(tm: TerminalManager): Promise<Record<string, unknown>> {
+  const a = cpuTicks();
+  await new Promise((r) => setTimeout(r, 120));
+  const b = cpuTicks();
+  const idleDelta = b.idle - a.idle;
+  const totalDelta = b.total - a.total;
+  const cpuUsage = totalDelta > 0 ? Math.max(0, Math.min(1, 1 - idleDelta / totalDelta)) : 0;
+  const cpus = nodeOs.cpus();
+  const total = nodeOs.totalmem();
+  const free = nodeOs.freemem();
+  const mem = process.memoryUsage();
+  return {
+    mem: { total, free, used: total - free, usedPct: total > 0 ? (total - free) / total : 0 },
+    cpu: {
+      count: cpus.length,
+      model: cpus[0]?.model?.trim() || 'unknown',
+      usagePct: cpuUsage,
+      loadAvg: nodeOs.loadavg(), // [1, 5, 15] min — always 0 on Windows
+    },
+    process: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, uptime: process.uptime() },
+    host: {
+      platform: nodeOs.platform(),
+      arch: nodeOs.arch(),
+      release: nodeOs.release(),
+      hostname: nodeOs.hostname(),
+      uptime: nodeOs.uptime(),
+    },
+    runningSessions: tm.aliveSessionCount(),
+  };
+}
 
 /** Settings → Memory view: stored backend config with secrets redacted to `…Set` booleans. */
 interface EmbeddingsView { provider: 'openai' | 'ollama'; url: string; model: string; dimensions?: number; apiKeySet: boolean }
@@ -2716,6 +2759,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (engaged && b.haltSessions !== false) halted = tm.stopAllRunning(me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: engaged ? 'killswitch.engaged' : 'killswitch.released', data: { reason: state.reason, halted } });
     return sendJson(res, 200, { ok: true, ...state, halted });
+  }
+
+  // ── host resource metrics (Settings → System: RAM / CPU / uptime) ──
+  if (method === 'GET' && p === '/api/system') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, await systemMetrics(tm));
+  }
+  // ── stop every running session (softer sibling of the kill switch; leaves the gate open) ──
+  if (method === 'POST' && p === '/api/sessions/stop-all') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const halted = tm.stopAllRunning(me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'sessions.stop_all', data: { halted } });
+    return sendJson(res, 200, { ok: true, halted });
   }
 
   // ── company settings (workspace-wide context injected into every claude-code agent) ──

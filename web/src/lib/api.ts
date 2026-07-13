@@ -112,6 +112,15 @@ export interface TeamResp {
   identities: Record<string, MemberIdentity[]>
   agents: AgentInfo[]
 }
+/** Host resource snapshot (GET /api/system). Bytes for memory; fractions 0–1 for percentages. */
+export interface SystemMetrics {
+  mem: { total: number; free: number; used: number; usedPct: number }
+  cpu: { count: number; model: string; usagePct: number; loadAvg: number[] }
+  process: { rss: number; heapUsed: number; heapTotal: number; uptime: number }
+  host: { platform: string; arch: string; release: string; hostname: string; uptime: number }
+  runningSessions: number
+  error?: string
+}
 export interface Session {
   id: string
   agent: string
@@ -892,6 +901,10 @@ export const api = {
   messages: (scope: 'mine' | 'all' = 'mine') => call<Msg[]>('GET', `/api/messages${scope === 'all' ? '?scope=all' : ''}`),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
+  /** Halt every running session tenant-wide (owner/admin). Softer sibling of the kill switch. */
+  stopAllSessions: () => call<{ ok: boolean; halted?: number; error?: string }>('POST', '/api/sessions/stop-all'),
+  /** Host resource snapshot for Settings → System (RAM / CPU / uptime). */
+  system: () => call<SystemMetrics>('GET', '/api/system'),
   rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
   /** Lift the stop-block so a stopped session resurrects (claude --resume) on the next terminal open. */
   resumeSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/resume`),

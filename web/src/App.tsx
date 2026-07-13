@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage } from '@/connectors'
@@ -7989,6 +7989,8 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
   return (
     <div className="space-y-4">
       <SoftwarePanel me={me} />
+      <HostResourcesPanel />
+      <StopAllPanel />
       <Card>
         <CardContent className="space-y-4 p-4">
           <p className="text-sm text-muted-foreground">
@@ -8022,6 +8024,123 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+/** Format a byte count as GB with one decimal (e.g. 12.4 GB). */
+function fmtGB(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(1) + ' GB'
+}
+/** Format a seconds duration compactly (e.g. 3d 4h, 5h 12m, 8m). */
+function fmtUptime(sec: number): string {
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
+}
+
+/** A labelled usage bar: fraction 0–1, tinted amber ≥75% and red ≥90%. */
+function UsageBar({ pct }: { pct: number }) {
+  const clamped = Math.max(0, Math.min(1, pct))
+  const tone = clamped >= 0.9 ? 'bg-red-500' : clamped >= 0.75 ? 'bg-amber-500' : 'bg-emerald-500'
+  return (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+      <div className={`h-full rounded-full transition-all ${tone}`} style={{ width: `${clamped * 100}%` }} />
+    </div>
+  )
+}
+
+/**
+ * Settings → System → Host resources — live RAM / CPU / uptime for the box this instance runs on.
+ * Polls `/api/system` every 4s (CPU % is a short server-side sample). Owner/admin only (route-gated).
+ */
+function HostResourcesPanel() {
+  const [m, setM] = useState<SystemMetrics | null>(null)
+  const [err, setErr] = useState('')
+  useEffect(() => {
+    let live = true
+    const load = () => api.system().then((v) => { if (!live) return; if (v.error) setErr(v.error); else { setErr(''); setM(v) } }).catch(() => live && setErr('Could not read system metrics.'))
+    load()
+    const t = setInterval(load, 4000)
+    return () => { live = false; clearInterval(t) }
+  }, [])
+  return (
+    <Card>
+      <CardContent className="space-y-4 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold"><Cpu className="h-4 w-4" /> Host resources</div>
+        {err ? <p className="text-sm text-muted-foreground">{err}</p>
+          : !m ? <p className="text-sm text-muted-foreground">Reading…</p>
+          : (
+          <>
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between text-sm">
+                <span className="font-medium">Memory</span>
+                <span className="font-mono text-xs text-muted-foreground">{fmtGB(m.mem.used)} / {fmtGB(m.mem.total)} · {Math.round(m.mem.usedPct * 100)}%</span>
+              </div>
+              <UsageBar pct={m.mem.usedPct} />
+              <p className="text-xs text-muted-foreground">{fmtGB(m.mem.free)} free</p>
+            </div>
+            <div className="space-y-1.5">
+              <div className="flex items-baseline justify-between text-sm">
+                <span className="font-medium">CPU</span>
+                <span className="font-mono text-xs text-muted-foreground">{Math.round(m.cpu.usagePct * 100)}% · {m.cpu.count} cores</span>
+              </div>
+              <UsageBar pct={m.cpu.usagePct} />
+              <p className="truncate text-xs text-muted-foreground" title={m.cpu.model}>
+                {m.cpu.model}{m.cpu.loadAvg.some((n) => n > 0) ? ` · load ${m.cpu.loadAvg.map((n) => n.toFixed(2)).join(' ')}` : ''}
+              </p>
+            </div>
+            <dl className="divide-y rounded-md border">
+              {([
+                ['Node RSS', `${fmtGB(m.process.rss)} (heap ${fmtGB(m.process.heapUsed)} / ${fmtGB(m.process.heapTotal)})`],
+                ['Process up', fmtUptime(m.process.uptime)],
+                ['Host up', fmtUptime(m.host.uptime)],
+                ['Running sessions', String(m.runningSessions)],
+                ['Host', `${m.host.hostname} · ${m.host.platform}/${m.host.arch}`],
+              ] as [string, string][]).map(([label, value]) => (
+                <div key={label} className="flex items-baseline gap-4 px-3 py-2">
+                  <dt className="w-32 shrink-0 text-xs font-medium text-muted-foreground">{label}</dt>
+                  <dd className="min-w-0 break-all font-mono text-xs">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * Settings → System → Stop all sessions — halt every running agent session tenant-wide in one click.
+ * Softer sibling of the kill switch (Governance tab): it stops the fleet but leaves the gate open, so
+ * new runs can still be launched. Owner/admin only (route-gated).
+ */
+function StopAllPanel() {
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const stopAll = async () => {
+    if (!confirm('Stop ALL running agent sessions now? Each is halted mid-task (its inbox + audit reflect it). New runs can still be launched afterward.')) return
+    setBusy(true); setHint('')
+    const r = await api.stopAllSessions()
+    setBusy(false)
+    setHint(r.error ? '⚠ ' + r.error : r.halted ? `Stopped ${r.halted} session${r.halted === 1 ? '' : 's'}.` : 'No running sessions to stop.')
+  }
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold"><Square className="h-4 w-4" /> Stop all sessions</div>
+            <p className="mt-1 text-sm text-muted-foreground">Halt every running agent session at once. The gate stays open — you can launch new runs after.</p>
+          </div>
+          <Button size="sm" variant="destructive" className="shrink-0 gap-1.5" disabled={busy} onClick={stopAll}>
+            <Square className="h-3.5 w-3.5" /> {busy ? 'Stopping…' : 'Stop all'}
+          </Button>
+        </div>
+        {hint && <p className="text-sm text-muted-foreground">{hint}</p>}
+      </CardContent>
+    </Card>
   )
 }
 

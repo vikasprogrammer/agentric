@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.141.0] — 2026-07-13
+### Added
+- **Settings → System now shows live host resources.** A new "Host resources" panel reports memory
+  used/free/total with a usage bar, CPU utilization (sampled server-side) + core count + model + load
+  average, Node process RSS/heap, process & host uptime, running-session count, and host platform/arch —
+  polled every 4s. Backed by a new owner/admin-gated `GET /api/system` (Node `os` + `process.memoryUsage`).
+- **"Stop all sessions" button in Settings → System.** One click halts every running agent session
+  tenant-wide via `POST /api/sessions/stop-all` (owner/admin, audited `sessions.stop_all`) — a softer
+  sibling of the Governance kill switch: it stops the fleet but leaves the gate open, so new runs can still
+  be launched. Reuses the existing `TerminalManager.stopAllRunning`, so each session's inbox/audit reflect
+  the halt.
+
 ## [0.140.0] — 2026-07-13
 ### Added
 - **`video_understand`: agents can now "watch" a video (video → text).** Claude can't see video natively;
