@@ -298,6 +298,22 @@ export class Digest {
     return m;
   }
 
+  /** The "posted today" floor: the later of midnight and the last **clear** for today. A clear resets the
+   *  once-per-day post guard + the retry counter, so a "Clear & refresh" lets the scheduled post re-fire. */
+  private postFloor(now = new Date()): number {
+    const { start } = localDayBounds(now);
+    const cleared = this.os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'digest.cleared' AND ts >= ?").get<{ t: number | null }>(start);
+    return Math.max(start, cleared?.t ?? 0);
+  }
+
+  /** Manually **clear & refresh** today's digest: mark it cleared (append-only — resets the post guard so
+   *  the EOD post re-fires) and re-render the dated KB page from the current data. Returns the fresh model
+   *  (for the console preview). Useful after tuning the digest, or to regenerate a stale day. */
+  clearAndRefresh(by = 'system', now = new Date()): DigestModel {
+    this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: by, type: 'digest.cleared', data: { iso: localDayBounds(now).iso } });
+    return this.refresh(by, now);
+  }
+
   /** Whether at least one chat platform is set up to receive the digest (a bot token + a channel). */
   hasTarget(): boolean {
     const s = this.os.settings;
@@ -359,13 +375,16 @@ export class Digest {
     const s = this.os.settings;
     if (!s.digestEnabled() || !this.hasTarget()) return null;
     if (now.getHours() < s.digestHour()) return null;
-    const { start, iso } = localDayBounds(now);
+    const { iso } = localDayBounds(now);
+    // The "today" floor is the later of midnight and the last **clear** — so a "Clear & refresh today"
+    // resets the once-per-day guard AND the retry counter, letting the EOD post re-fire cleanly.
+    const floor = this.postFloor(now);
     const last = this.os.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'digest.posted'").get<{ t: number | null }>();
-    if (last?.t && last.t >= start) return null; // already posted today
+    if (last?.t && last.t >= floor) return null; // already posted since the floor
     // M3: cap retries on a platform outage. `digest.posted` is only written on success, so without this a
     // day-long Slack/Discord outage would re-render + re-attempt every hour until midnight, flooding audit
     // with `digest.error` rows and rewriting the KB page hourly. Give up after MAX_POST_ATTEMPTS today.
-    const fails = this.os.db.prepare("SELECT count(*) AS n FROM audit_events WHERE type = 'digest.error' AND ts >= ?").get<{ n: number }>(start);
+    const fails = this.os.db.prepare("SELECT count(*) AS n FROM audit_events WHERE type = 'digest.error' AND ts >= ?").get<{ n: number }>(floor);
     if ((fails?.n ?? 0) >= MAX_POST_ATTEMPTS) return null;
     return this.postNow('scheduler', now).catch((e) => ({ posted: false, error: e instanceof Error ? e.message : String(e), total: 0, iso }));
   }

@@ -2477,6 +2477,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
   }
+  // Clear & refresh today's digest: re-render the KB page from current data + reset the once-per-day post
+  // guard (so the scheduled EOD post re-fires). Returns the fresh model for the console preview.
+  if (method === 'POST' && p === '/api/digest/refresh') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { ok: true, ...new Digest(os).clearAndRefresh(me.email) });
+  }
   // One "reflect" action: the cheap deterministic pass, then the memory-gardener over new material
   // (spawns a headless agent that grows shared memories + KB; no-ops when there's too little).
   if (method === 'POST' && p === '/api/dreaming/run') {

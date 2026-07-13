@@ -8328,6 +8328,13 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     setDigestHint(r.posted ? `posted to ${where} (${r.total} sessions)${failed ? ` — failed ${failed}` : ''}` : `not posted — ${failed || r.reason || r.error || 'nothing to post'}`)
     setTimeout(() => setDigestHint(''), 3000); refresh()
   }
+  const refreshDigest = async () => {
+    setBusy(true); setDigestHint('')
+    const r = await api.digestRefresh(); setBusy(false)
+    if (r.error) return setDigestHint('⚠ ' + r.error)
+    setPreview(r); setDigestHint(`refreshed (${r.total} sessions) — regenerated from current data; the scheduled post will re-send`)
+    setTimeout(() => setDigestHint(''), 4000); refresh()
+  }
   const diagnose = async (agent: string) => {
     setDxBusy(agent); setDxHint('')
     const r = await api.diagnose(agent); setDxBusy('')
@@ -8595,6 +8602,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
             <Field label="Post at (hour, 0–23)" help="Server-local. Fires on the next hourly tick past this hour.">
               <Input value={String(digest.hour)} onChange={(e) => setDigest({ ...digest, hour: Number(e.target.value) || 0 })} onBlur={() => saveDigest({ hour: digest.hour })} className="w-20 font-mono text-xs" placeholder="18" />
             </Field>
+            <Button variant="outline" onClick={refreshDigest} disabled={busy}><RefreshCw className="mr-1 h-4 w-4" />Clear &amp; refresh today</Button>
             <Button variant="outline" onClick={postDigest} disabled={busy}><Send className="mr-1 h-4 w-4" />Post now</Button>
             {digestHint && <span className="font-mono text-xs text-muted-foreground">{digestHint}</span>}
           </div>

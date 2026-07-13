@@ -1102,6 +1102,8 @@ export const api = {
   setDigest: (digest: { enabled?: boolean; channel?: string; discordChannel?: string; hour?: number }) => call<{ ok: boolean; digest: DigestConfig; error?: string }>('PUT', '/api/dreaming', { digest }),
   digestToday: () => call<DigestModel & { error?: string }>('GET', '/api/digest/today'),
   digestPost: () => call<{ ok: boolean; posted: boolean; reason?: string; total: number; iso: string; error?: string; platforms?: { platform: 'slack' | 'discord'; posted: boolean; channel: string; error?: string }[] }>('POST', '/api/digest/post'),
+  // Clear & refresh today's digest — re-render the KB page + reset the once-per-day post guard.
+  digestRefresh: () => call<DigestModel & { ok: boolean; error?: string }>('POST', '/api/digest/refresh'),
   // Spawn the analyst to diagnose why a struggling agent keeps failing (writes a KB page).
   diagnose: (agent: string) => call<{ ok: boolean; spawned: boolean; reason?: string; sessionId?: string; items?: number; slug?: string; error?: string }>('POST', '/api/insights/diagnose', { agent }),
 
