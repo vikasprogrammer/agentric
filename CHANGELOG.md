@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.150.2] — 2026-07-13
+### Fixed
+- **Dreaming timing — three correctness bugs in the reflect loop's windowing (audit-driven).**
+  1. **Cadence survives restarts (H1).** The scheduler's `lastDream` clock was in-memory, so every
+     restart (frequent — each build/deploy) reset it and the next tick fired a pass immediately,
+     turning "reflect every 24 h" into "reflect on every restart" — and each pass spawns a **billed**
+     consolidator agent. The clock now seeds from the durable `learning.dreamed` audit ts (mirroring the
+     digest's `digest.posted` guard). `src/server.ts`.
+  2. **No more skipped episodes at the window edge (H2).** The pass windowed on the run clock, but
+     episodes are stored asynchronously, so one landing just after a pass could fall into the gap and be
+     counted by neither pass. The window now advances a separate **data high-water mark** (newest ts
+     actually consumed), kept distinct from the cadence clock. Migration-safe (falls back to the old
+     marker). `src/edge/dreaming.ts`.
+  3. **Accurate session count (H3).** A single session emits several terminal audit rows
+     (`session.reported` + `session.ended` + crash sweeps); the pass counted rows, inflating the session
+     total — on live data **106 rows → 70 real sessions** (+51%), which skewed the success rate that
+     drives guidance + the "raise effort" recommendation. Now collapses to one canonical row per session
+     (prefers the agent's reported outcome). `src/edge/dreaming.ts`.
+  Validated against a copy of live data. First of a sequenced set of Dreaming audit fixes.
+
 ## [0.151.0] — 2026-07-13
 ### Fixed
 - **Per-member GitHub: "Connect" no longer shows a false green when the App isn't installed.** Authorizing
