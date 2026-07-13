@@ -985,6 +985,15 @@ export class TerminalManager {
    * Deliver a thread follow-up to a LIVE resident chat session by typing it into the running claude
    * (tmux send-keys) — the warm, fast path (no cold reload). Bumps the idle clock. Returns false when
    * the session isn't a live resident or the keystrokes couldn't be delivered (caller then revives).
+   *
+   * Turn-state check: typing into a claude TUI is always safe — an idle claude runs the message now, a
+   * BUSY (mid-turn) claude QUEUES it and drains it at the next turn boundary (verified against the live
+   * TUI: mid-turn keystrokes land as "queued messages", they never interrupt). We deliver in every case
+   * because that queueing is exactly the hand-off we want; but we now resolve WHICH state we delivered
+   * into and record it, so the reliance on claude's queue is intentional and auditable — not incidental.
+   * The one authoritative state is `blocked` (a pending ask/approval whose turn can't end until a human
+   * responds, so the follow-up necessarily queues behind it); idle-vs-generating is a best-effort pane
+   * read that only labels the audit and never gates delivery.
    */
   deliverToResident(sessionId: string, text: string): boolean {
     const row = this.db.prepare('SELECT tmux, status, resident, run_as, spawned_by FROM term_sessions WHERE id = ?')
@@ -993,13 +1002,35 @@ export class TerminalManager {
     if (!this.isAlive(sessionId)) return false;
     const body = (text || '').replace(/\r?\n+/g, ' ').trim(); // one-line: a stray newline would submit early
     if (!body) return false;
-    const ok = this.backend.injectText(this.spaceFor(row.run_as ?? row.spawned_by), row.tmux, body, true);
+    const space = this.spaceFor(row.run_as ?? row.spawned_by);
+    const turn: 'idle' | 'busy' | 'blocked' | 'unknown' =
+      this.hasPendingHumanBlock(sessionId) ? 'blocked' : this.residentTurnState(space, row.tmux);
+    const ok = this.backend.injectText(space, row.tmux, body, true);
     if (ok) {
       this.db.prepare('UPDATE term_sessions SET last_activity = ?, updated_at = ? WHERE id = ?').run(Date.now(), Date.now(), sessionId);
       const agent = this.sessionAgent(sessionId) ?? '';
-      this.audit(sessionId, agent, 'chat.delivered', { chars: body.length });
+      // `queued` = the message will wait for claude to finish the current turn before it's read.
+      this.audit(sessionId, agent, 'chat.delivered', { chars: body.length, turn, queued: turn === 'busy' || turn === 'blocked' });
     }
     return ok;
+  }
+
+  /**
+   * Best-effort read of a live resident's turn state from its pane: 'busy' while a turn is generating
+   * (claude renders a live token/elapsed counter, an "esc to interrupt" hint, or shows follow-ups already
+   * queued behind the running turn), else 'idle', and 'unknown' when the pane can't be read (the launcher
+   * backend / an unreachable socket → capturePane returns null). This is a HEURISTIC on claude's TUI
+   * chrome, so it only LABELS the audit in `deliverToResident` — no behaviour depends on it (a follow-up
+   * is safe to type in any state; claude runs it when idle and queues it when busy).
+   */
+  private residentTurnState(space: string, tmux: string): 'idle' | 'busy' | 'unknown' {
+    const pane = this.backend.capturePane(space, tmux);
+    if (pane == null) return 'unknown';
+    // Any one of: the "esc to interrupt" hint, the live "↓ N tokens" counter, an elapsed "(12s …)" timer
+    // beside the spinner, or follow-ups already "queued messages" behind the running turn. A finished
+    // turn's summary line (e.g. "Cooked for 13s", no parens) is deliberately NOT matched.
+    if (/esc to interrupt|·\s*↓\s*[\d.]+\s*tokens?|queued messages?|\(\d+\s*s(\s|·|\))/i.test(pane)) return 'busy';
+    return 'idle';
   }
 
   /**

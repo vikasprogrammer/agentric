@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.123.1] — 2026-07-13
+### Changed
+- **`deliverToResident` now resolves and audits the target's turn state before typing a chat follow-up
+  into it — the reliance on claude's message queue is intentional, not incidental.** Typing into a live
+  resident TUI is always safe (an idle claude runs the message now; a mid-turn claude *queues* it and
+  drains it at the next turn boundary — verified against the live TUI: injected keystrokes land as "queued
+  messages" and never interrupt), so delivery is unchanged. What's new is that we now classify the state
+  and record it on the `chat.delivered` audit event as `{ turn, queued }`:
+  - **`blocked`** — authoritative from the DB: a pending `ask`/approval whose turn can't end until a human
+    responds, so the follow-up necessarily queues behind it (`hasPendingHumanBlock`). This wins over any
+    pane reading, so a session that merely *looks* idle while parked on a human is never mislabeled.
+  - **`busy` / `idle`** — a best-effort read of the live pane (`residentTurnState`) that keys on claude's
+    working chrome (the "esc to interrupt" hint, the live `↓ N tokens` / `(12s …)` counter, or follow-ups
+    already queued). It only *labels* the audit — no delivery behaviour depends on it.
+  - **`unknown`** — the pane couldn't be read (launcher backend / unreachable socket); delivers as before.
+
 ## [0.123.0] — 2026-07-13
 ### Changed
 - **"Artifacts" → "Library" (agent-facing rename).** Claude Code ships its own native `Artifact` tool, so
