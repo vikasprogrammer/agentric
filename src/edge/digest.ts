@@ -86,7 +86,11 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
     const taskish = /^(task:|ask ←|ask\b)/i.test(line);
     // Drop generic end-card text and stubs — a no-report session whose title is also generic must not leak.
     const placeholder = line.length < 5 || /^(test|teste|untitled)$/i.test(line) || !isRealReport(line);
-    const include = !placeholder && !askSession && !taskish && (hasReport || importance >= SALIENCE || r.status === 'done');
+    // Drop agent SELF-MAINTENANCE — a report about editing its OWN prompt ("Rewrote my CLAUDE.md rev 5")
+    // isn't fleet work. Detected on the reported LINE (not the audit event, which also fires when a session
+    // did real work AND incidentally touched its config — dropping those would lose the real work).
+    const selfMaint = /\b(my|its|their|own)\s+(claude\.?md|system prompt|starter prompts?|instructions?)\b/i.test(line);
+    const include = !placeholder && !askSession && !taskish && !selfMaint && (hasReport || importance >= SALIENCE || r.status === 'done');
     if (include) {
       const list = perAgent.get(r.agent) ?? [];
       // A real report ranks at/above the salience line; a done-with-no-report just under it.
