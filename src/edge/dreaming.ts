@@ -49,6 +49,14 @@ const DREAM_SECTION = 'operations';
 const DREAM_SLUG = 'fleet-learnings';
 const MAX_RECENT = 12;
 const TOP_TOPICS = 15;
+// Staleness controls (H4/M6/L2). Behavioral guidance + recommendations derive from a RECENT window (the
+// last N per-pass tallies), NOT lifetime `totals` — so a friction signal that has since subsided stops
+// nagging every agent's prompt. Topics decay by recency and are pruned so the stored map can't grow
+// without bound and stale topics can't dominate "the fleet frequently works on …".
+const RECENT_PASSES = 7;                       // window for guidance/recommendation signals
+const TOPIC_HALFLIFE_MS = 21 * 24 * 3_600_000; // a topic's weight halves every 3 weeks since last seen (recency-favouring, so current work outranks an old burst)
+const TOPIC_MAX_AGE_MS = 90 * 24 * 3_600_000;  // drop a topic entirely if unseen this long
+const TOPIC_CAP = 300;                          // hard cap on stored topic keys (keep the top by recency-weight)
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none']);
 
 export class DreamingEngine {
@@ -123,6 +131,7 @@ export class DreamingEngine {
       const cur = state.topics[topic] ?? { count: 0, lastSeen: 0 };
       state.topics[topic] = { count: cur.count + n, lastSeen: until };
     }
+    state.topics = pruneTopics(state.topics, until); // M6: bound the map + drop long-unseen topics
     const day = new Date(until).toISOString().slice(0, 10);
     state.recent.unshift({ day, ts: until, sessions: win.sessions, success: win.success, failure: win.failure, stopped: win.stopped, rejected: win.rejected, budgetStops: win.budgetStops, errors: win.errors, topics: [...winTopics].slice(0, 6).map(([t]) => t) });
     state.recent = state.recent.slice(0, MAX_RECENT);
@@ -192,8 +201,42 @@ function topicCounts(episodes: EpisodeRow[]): [string, number][] {
   return [...counts].sort((a, b) => b[1] - a[1]);
 }
 
-function topTopicList(topics: Record<string, { count: number; lastSeen: number }>, n: number): [string, { count: number; lastSeen: number }][] {
-  return Object.entries(topics).sort((a, b) => b[1].count - a[1].count).slice(0, n);
+/** A recency-decayed weight for a topic — `count` halved for every `TOPIC_HALFLIFE_MS` since last seen,
+ *  so a topic the fleet worked hard on months ago sinks below one it's touching now (L2/L1). */
+function topicWeight(v: { count: number; lastSeen: number }, now: number): number {
+  return v.count * Math.pow(0.5, Math.max(0, now - (v.lastSeen || 0)) / TOPIC_HALFLIFE_MS);
+}
+
+function topTopicList(topics: Record<string, { count: number; lastSeen: number }>, n: number, now = Date.now()): [string, { count: number; lastSeen: number }][] {
+  return Object.entries(topics)
+    .sort((a, b) => topicWeight(b[1], now) - topicWeight(a[1], now))
+    .slice(0, n);
+}
+
+/** Drop long-unseen topics, then cap the map to the top `TOPIC_CAP` by recency weight — so "compounding"
+ *  sharpens and forgets instead of accumulating forever (M6). Pure. */
+function pruneTopics(topics: Record<string, { count: number; lastSeen: number }>, now: number): Record<string, { count: number; lastSeen: number }> {
+  const kept = Object.entries(topics)
+    .filter(([, v]) => now - (v.lastSeen || 0) <= TOPIC_MAX_AGE_MS)
+    .sort((a, b) => topicWeight(b[1], now) - topicWeight(a[1], now))
+    .slice(0, TOPIC_CAP);
+  const out: Record<string, { count: number; lastSeen: number }> = {};
+  for (const [k, v] of kept) out[k] = v;
+  return out;
+}
+
+/** Sum the RECENT window (last `RECENT_PASSES` per-pass tallies) — the honest "recent" signal for
+ *  guidance + recommendations, vs. the ever-growing lifetime `totals` (H4). */
+function recentTally(s: DreamState): { sessions: number; success: number; rejected: number; budgetStops: number; errors: number } {
+  const r = { sessions: 0, success: 0, rejected: 0, budgetStops: 0, errors: 0 };
+  for (const e of (s.recent ?? []).slice(0, RECENT_PASSES)) {
+    r.sessions += e.sessions || 0;
+    r.success += e.success || 0;
+    r.rejected += e.rejected || 0;
+    r.budgetStops += e.budgetStops || 0;
+    r.errors += e.errors || 0;
+  }
+  return r;
 }
 
 /**
@@ -202,7 +245,7 @@ function topTopicList(topics: Record<string, { count: number; lastSeen: number }
  * only when there's genuinely nothing to say (there's always the baseline recall/KB nudge once we've run).
  */
 export function deriveGuidance(s: DreamState): string {
-  const t = s.totals;
+  const t = recentTally(s); // H4: recent window, not lifetime totals — so subsided friction stops nagging
   const lines: string[] = [];
   lines.push('Before non-trivial work, `recall` your memory and `kb_search` the knowledge base — the fleet may have already solved this; build on it rather than redoing it.');
   const topics = topTopicList(s.topics, 5).map(([k]) => k);
@@ -226,7 +269,7 @@ export function deriveGuidance(s: DreamState): string {
  * `apply` present → directly applyable (a reversible runtime-defaults change); otherwise advisory.
  */
 export function deriveRecommendations(s: DreamState, currentEffort: string | undefined, now: number): Recommendation[] {
-  const t = s.totals;
+  const t = recentTally(s); // H4: propose from RECENT friction, not lifetime — a subsided problem stops re-proposing
   const recs: Recommendation[] = [];
   const rate = t.sessions ? t.success / t.sessions : 1;
   const effortAlreadyHigh = currentEffort === 'high' || currentEffort === 'xhigh' || currentEffort === 'max';
