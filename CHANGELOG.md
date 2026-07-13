@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.150.1] — 2026-07-13
+### Changed
+- **The "Learnings" nav is renamed "Dreaming"**, matching the established vocabulary (Pillar 10 is
+  "Dreaming / Self-learning"; the engine is the *Dreamer*, the action is *Reflect*). "Learnings" was a
+  one-off coinage. Route `#/learnings` → `#/dreaming` (safe — it only shipped in 0.150.0), icon 💡→🌙
+  (`Moon`), and the page gains a one-line intro framing it as the *Distil · Apply* half of the four-verb
+  memory loop (`memory-model.md`). Docs realigned to the new top-level location: `PILLARS.md` §9/§10 +
+  the Self-learning toggle note, `self-learning-plan.md`, `daily-digest-plan.md`, `procedural-skills-plan.md`
+  no longer point at the old "Memory hub → Self-learning tab" / "Settings → Self-learning".
+
 ## [0.150.0] — 2026-07-13
 ### Changed
 - **"Learnings" is now its own top-level nav.** The self-learning surface — reflect cadence, distilled
