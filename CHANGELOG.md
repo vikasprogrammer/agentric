@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.138.1] — 2026-07-13
+### Fixed
+- **The Profile page now loads instead of bouncing to the Inbox.** `profile` was added to the `Route`
+  type but not to the runtime `ROUTES` allow-list the hash router validates against, so navigating to
+  `#/profile` fell through to the unknown-route fallback (`inbox`). Added `profile` to `ROUTES`. (`web/src/App.tsx`.)
+
 ## [0.138.0] — 2026-07-13
 ### Added
 - **`image_edit`: agents can now edit or upscale an existing image, not just generate from scratch.** A new

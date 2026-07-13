@@ -24,7 +24,7 @@ const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
 type Route = 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs']
+const ROUTES: Route[] = ['inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
