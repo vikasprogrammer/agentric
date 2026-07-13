@@ -9117,7 +9117,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
             </div>
             <p className="text-xs text-muted-foreground">
               Gives every agent an <code className="text-[11px]">image_generate</code> tool (Claude can't draw natively).
-              Generated images land in the <strong>Artifacts</strong> gallery and the run is cost-metered + audited.
+              Generated images land in the <strong>Library</strong> and the run is cost-metered + audited.
               Powered by <strong>Atlas Cloud</strong> — the same key also drives video below.
             </p>
           </div>
@@ -9165,8 +9165,8 @@ function IntegrationsSettings({ me }: { me: Member }) {
             </div>
             <p className="text-xs text-muted-foreground">
               Gives every agent a <code className="text-[11px]">video_generate</code> tool. Video renders
-              <strong> asynchronously</strong> (usually minutes) — the finished clip lands in the <strong>Artifacts</strong>
-              gallery with an inbox card, cost-metered + audited. Powered by your <strong>Atlas Cloud</strong> key (the same
+              <strong> asynchronously</strong> (usually minutes) — the finished clip lands in the <strong>Library</strong>
+              with an inbox card, cost-metered + audited. Powered by your <strong>Atlas Cloud</strong> key (the same
               one used for images). Optionally add a <strong>fal.ai</strong> key for the widest catalog (Veo, Kling, Seedance…) —
               fal is used when set.
             </p>

@@ -75,7 +75,7 @@ Your terminal output may not be read. The operator lives in the Inbox:
 - \`report\` exactly once when you finish, with the outcome and a one-line summary, so the result is
   visible without anyone reading the terminal. If the task taught you something durable, pass it in
   \`lessons\` — it's saved to your memory as a note to your future self.
-- \`publish\` real deliverables (a document, PDF, image, chart) to the Artifacts gallery — not scratch
+- \`publish\` real deliverables (a document, PDF, image, chart) to the Library — not scratch
   files.
 
 ## You are one agent in a fleet — don't work alone

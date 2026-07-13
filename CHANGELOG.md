@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.128.2] — 2026-07-13
+### Changed
+- **Media copy says "Library" (not "Artifacts").** Aligned the video generation strings that lagged the
+  Artifacts→Library rename: the `video_generate` tool description + its return messages, the Settings →
+  Integrations image/video card copy, and the `publish` operating note now all say **Library**. Internal
+  identifiers (`ArtifactStore`, the `artifacts` route) are unchanged — display copy only.
+  (`src/memory/memory-mcp.ts`, `src/terminal.ts`, `web/src/App.tsx`)
+
 ## [0.128.1] — 2026-07-13
 ### Changed
 - **Image integrations UI is Atlas-only now.** The Settings → Integrations image card no longer shows the

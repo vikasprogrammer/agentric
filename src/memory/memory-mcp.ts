@@ -174,9 +174,9 @@ const VIDEO_GENERATE_TOOL = {
   description:
     'Generate a video from a text prompt (optionally seeded by an image URL). Use this to CREATE a video — ' +
     'you cannot produce one natively. Video renders ASYNCHRONOUSLY (usually a few minutes): this returns ' +
-    'quickly, and the finished video lands in the Artifacts gallery with an inbox card when ready. If it ' +
+    'quickly, and the finished video lands in the Library with an inbox card when ready. If it ' +
     'finishes fast you get the artifact id inline; otherwise you get a job id and a "rendering" status — ' +
-    'do NOT block waiting, just tell the user it will appear in the gallery shortly. Governed (cost-metered + audited).',
+    'do NOT block waiting, just tell the user it will appear in the Library shortly. Governed (cost-metered + audited).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1099,9 +1099,9 @@ async function videoGenerate(args: Record<string, unknown>): Promise<string> {
   if (!d.ok) return `Could not generate video: ${d.error ?? 'unknown error'}`;
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
   if (d.status === 'done' && d.artifact) {
-    return `Video ready with ${d.model ?? 'the default model'}${cost}. Saved to the Artifacts gallery: ${d.artifact.id} (${d.artifact.filename}).`;
+    return `Video ready with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${d.artifact.id} (${d.artifact.filename}).`;
   }
-  return `Video is rendering with ${d.model ?? 'the default model'}${cost} (job ${d.jobId ?? '?'}). It'll appear in the Artifacts gallery and post an inbox card when done — no need to wait; let the user know it's on the way.`;
+  return `Video is rendering with ${d.model ?? 'the default model'}${cost} (job ${d.jobId ?? '?'}). It'll appear in the Library and post an inbox card when done — no need to wait; let the user know it's on the way.`;
 }
 
 async function slackSend(args: Record<string, unknown>): Promise<string> {
