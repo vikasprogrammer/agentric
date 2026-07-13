@@ -2993,6 +2993,9 @@ function Field({ label, help, children }: { label: string; help?: string; childr
 const fmtSize = (n: number): string =>
   n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`
 
+/** Generated-media cost in USD — sub-cent amounts keep 4 decimals so a $0.0336 image doesn't read $0.03. */
+const fmtCost = (usd: number): string => (usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`)
+
 /** Browse + edit files in the instance's data home. The server confines every path to the
  *  home root; navigation (folders/breadcrumb) + a text editor, plus upload (button or drag-drop),
  *  download, new-folder and delete. */
@@ -3440,7 +3443,7 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                       <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">{a.agent}</Badge>
                       <span className="truncate font-mono">{a.filename}</span>
                     </div>
-                    <div className="mt-0.5 text-[11px] text-muted-foreground">{fmtSize(a.bytes)} · {new Date(a.createdAt).toLocaleString()}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">{fmtSize(a.bytes)}{a.costUsd != null ? ` · ${fmtCost(a.costUsd)}` : ''} · {new Date(a.createdAt).toLocaleString()}</div>
                   </div>
                 </div>
               </a>
@@ -3462,6 +3465,7 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                       <span className="font-mono">{selected.filename}</span>
                       {selected.folder && <span className="inline-flex items-center gap-0.5"><Folder className="h-3 w-3" /><span className="font-mono">{selected.folder}/</span></span>}
                       <span>· {fmtSize(selected.bytes)}</span>
+                      {selected.costUsd != null && <span>· <span title="Generation cost">{fmtCost(selected.costUsd)}</span></span>}
                       <span>· session <span className="font-mono">{selected.sessionId}</span></span>
                     </div>
                   </div>

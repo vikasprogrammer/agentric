@@ -29,6 +29,8 @@ export interface Artifact {
   relPath: string;
   mime: string;
   bytes: number;
+  /** USD this artifact cost to generate (image/video); undefined for published (non-generated) files. */
+  costUsd?: number;
   createdAt: number;
 }
 
@@ -45,6 +47,7 @@ interface ArtifactRow {
   rel_path: string;
   mime: string;
   bytes: number;
+  cost_usd: number | null;
   created_at: number;
 }
 
@@ -104,18 +107,24 @@ export class ArtifactStore {
       rel_path: path.join(id, filename),
       mime: mimeOf(filename),
       bytes: st.size,
+      cost_usd: null, // published files aren't generated → no cost
       created_at: Date.now(),
     };
+    this.insertRow(row);
+    return { ok: true, artifact: toArtifact(row) };
+  }
+
+  /** Single INSERT both publish + ingest share, so the column list lives in one place. */
+  private insertRow(row: ArtifactRow): void {
     this.db
       .prepare(
-        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, cost_usd, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id, row.session_id, row.agent, row.source, row.kind, row.title, row.description,
-        row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.created_at,
+        row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.cost_usd, row.created_at,
       );
-    return { ok: true, artifact: toArtifact(row) };
   }
 
   /**
@@ -134,6 +143,7 @@ export class ArtifactStore {
     filename: string;
     bytes: Buffer;
     kind?: string;
+    costUsd?: number; // USD this artifact cost to generate (surfaced in the gallery)
   }): PublishResult {
     if (!this.dir) return { ok: false, error: 'no data home configured (artifacts disabled)' };
     const filename = path.basename(input.filename) || 'image.png';
@@ -155,17 +165,10 @@ export class ArtifactStore {
       rel_path: path.join(id, filename),
       mime: mimeOf(filename),
       bytes: input.bytes.length,
+      cost_usd: typeof input.costUsd === 'number' ? input.costUsd : null,
       created_at: Date.now(),
     };
-    this.db
-      .prepare(
-        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        row.id, row.session_id, row.agent, row.source, row.kind, row.title, row.description,
-        row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.created_at,
-      );
+    this.insertRow(row);
     return { ok: true, artifact: toArtifact(row) };
   }
 
@@ -242,6 +245,7 @@ function toArtifact(r: ArtifactRow): Artifact {
     relPath: r.rel_path,
     mime: r.mime,
     bytes: r.bytes,
+    costUsd: r.cost_usd ?? undefined,
     createdAt: r.created_at,
   };
 }

@@ -74,23 +74,35 @@ const EXT_BY_MIME: Record<string, string> = {
   'image/gif': 'gif',
 };
 
-/** Turn one vendor image entry (a URL or inline base64) into raw bytes + a file extension. */
+/** Turn one vendor image entry (a URL or inline base64) into raw bytes + a file extension. The ext is
+ *  sniffed from the actual bytes (magic numbers) first — vendors mislabel format (e.g. return JPEG on a
+ *  model we'd otherwise assume is PNG), and the ext drives both the filename and the stored mime, so
+ *  trusting a content-type/URL hint would persist a wrong `.png`/`image/png` over real JPEG. */
 async function toBytes(entry: { url?: string; b64_json?: string; b64?: string }): Promise<GeneratedImage> {
   const b64 = entry.b64_json ?? entry.b64;
   if (b64) {
     const comma = b64.indexOf(','); // tolerate a data: URI prefix
     const raw = comma >= 0 && b64.slice(0, comma).includes('base64') ? b64.slice(comma + 1) : b64;
-    return { bytes: Buffer.from(raw, 'base64'), ext: 'png' };
+    const bytes = Buffer.from(raw, 'base64');
+    return { bytes, ext: sniffExt(bytes, 'png') };
   }
   if (entry.url) {
     const res = await fetch(entry.url);
     if (!res.ok) throw new Error(`fetching generated image failed (${res.status})`);
     const ct = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
     const buf = Buffer.from(await res.arrayBuffer());
-    const ext = EXT_BY_MIME[ct] || extFromUrl(entry.url) || 'png';
-    return { bytes: buf, ext };
+    return { bytes: buf, ext: sniffExt(buf, EXT_BY_MIME[ct] || extFromUrl(entry.url) || 'png') };
   }
   throw new Error('vendor returned an image with neither a url nor base64 data');
+}
+
+/** Detect the real image format from the leading magic bytes, falling back to a hint when unknown. */
+function sniffExt(buf: Buffer, fallback: string): string {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpg';
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  if (buf.length >= 4 && buf.toString('latin1', 0, 4) === 'GIF8') return 'gif';
+  return fallback;
 }
 
 function extFromUrl(url: string): string | undefined {

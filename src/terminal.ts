@@ -2227,12 +2227,16 @@ export class TerminalManager {
     const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
     const shortPrompt = prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt;
     const stamp = Date.now();
+    const costUsd = result.costUsd ?? estimateUsd;
+    // Cost is per-REQUEST; split it evenly across the images so each artifact carries its share and the
+    // gallery total sums back to what the request spent.
+    const perImageUsd = +(costUsd / result.images.length).toFixed(6);
     const out: { id: string; filename: string; mime: string }[] = [];
     result.images.forEach((img, i) => {
       const filename = `image-${stamp}${result.images.length > 1 ? `-${i + 1}` : ''}.${img.ext}`;
       const r = this.os.artifacts.ingest({
         sessionId, agent, source, title: shortPrompt, description: prompt,
-        folder: 'generated-images', filename, bytes: img.bytes, kind: 'image',
+        folder: 'generated-images', filename, bytes: img.bytes, kind: 'image', costUsd: perImageUsd,
       });
       if (!r.ok) return;
       const a = r.artifact;
@@ -2245,7 +2249,6 @@ export class TerminalManager {
     });
     if (!out.length) return { ok: false, error: 'generation succeeded but no image could be stored' };
 
-    const costUsd = result.costUsd ?? estimateUsd;
     this.audit(sessionId, agent, 'image.generated', { model: result.model, backend: backend.name, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id), prompt: shortPrompt });
     return { ok: true, artifacts: out, model: result.model, costUsd };
   }

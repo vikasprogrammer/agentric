@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.122.0] — 2026-07-13
+### Added
+- **Generation cost shows on each artifact in the gallery.** A generated image (and, later, video) now
+  records the USD it cost to produce (`artifacts.cost_usd`, new nullable column) — the per-request cost
+  the backend reports, split evenly across the images in the request so the gallery total sums back to
+  what was spent. The **Artifacts** page shows it inline on each card and the detail pane (`$0.0336` for
+  sub-cent amounts, `$0.42` otherwise). Published (non-generated) files carry no cost.
+  (`src/state/db.ts`, `src/state/artifacts.ts`, `src/terminal.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`)
+### Fixed
+- **Generated images are saved with their true format.** The base64 return path hardcoded `.png`/`image/png`,
+  so a model that returned JPEG (e.g. OpenRouter's Gemini image models) was persisted as a mislabeled
+  `.png`. `image-gen` now sniffs the real format from the bytes' magic numbers (JPEG/PNG/WebP/GIF) and
+  names the file + mime from that, falling back to the content-type/URL hint only when the bytes are
+  unrecognized. (`src/edge/image-gen.ts`)
+
 ## [0.121.0] — 2026-07-13
 ### Added
 - **Goals Phase 2 — the goal auto-planner ("set the goal, the fleet keeps it moving").** When opted in, the

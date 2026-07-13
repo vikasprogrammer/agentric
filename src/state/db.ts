@@ -669,6 +669,10 @@ function migrate(db: Db): void {
   // browsable tree. Pure organizing metadata — the on-disk <id>/<filename> layout is unchanged.
   // Existing artifacts default to '' (root).
   addColumn(db, 'artifacts', 'folder', "TEXT NOT NULL DEFAULT ''");
+
+  // Generated-media cost: the USD a generated artifact (image/video) cost to produce, so the gallery
+  // can show what each deliverable spent. NULL for published (non-generated) artifacts. Nullable REAL.
+  addColumn(db, 'artifacts', 'cost_usd', 'REAL');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

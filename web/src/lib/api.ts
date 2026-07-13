@@ -197,6 +197,8 @@ export interface Artifact {
   relPath: string
   mime: string
   bytes: number
+  /** USD this artifact cost to generate (image/video); absent for published (non-generated) files. */
+  costUsd?: number
   createdAt: number
 }
 
