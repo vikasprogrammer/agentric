@@ -9396,7 +9396,13 @@ function IntegrationsSettings({ me }: { me: Member }) {
               <datalist id="atlas-image-models">
                 {atlasModels.image.map((m) => <option key={m.id} value={m.id}>{m.priceUsd != null ? `${m.label} — $${+m.priceUsd.toFixed(3)}/image` : m.label}</option>)}
               </datalist>
-              {(() => { const m = atlasModels.image.find((x) => x.id === imgModel.trim()); return m && m.priceUsd != null ? <p className="mt-1 text-[11px] text-muted-foreground">{m.label} · <strong>${+m.priceUsd.toFixed(3)}</strong> per image</p> : null })()}
+              {(() => {
+                const v = imgModel.trim();
+                const m = atlasModels.image.find((x) => x.id === v);
+                if (m) return <p className="mt-1 text-[11px] text-muted-foreground">{m.label}{m.priceUsd != null ? <> · <strong>${+m.priceUsd.toFixed(3)}</strong> per image</> : null}</p>;
+                if (v && atlasModels.image.length) return <p className="mt-1 text-[11px] text-amber-600">⚠ "{v}" isn't a known Atlas image model — pick one from the list, or leave blank for the default. An invalid id fails at generation (we fall back to the built-in default).</p>;
+                return null;
+              })()}
             </Field>
           </div>
 
@@ -9414,7 +9420,14 @@ function IntegrationsSettings({ me }: { me: Member }) {
               <datalist id="atlas-video-models">
                 {atlasModels.video.map((m) => <option key={m.id} value={m.id}>{m.priceUsd != null ? `${m.label} — $${+m.priceUsd.toFixed(3)}/sec` : m.label}</option>)}
               </datalist>
-              {(() => { const m = atlasModels.video.find((x) => x.id === vidModel.trim()); return m && m.priceUsd != null ? <p className="mt-1 text-[11px] text-muted-foreground">{m.label} · <strong>${+m.priceUsd.toFixed(3)}</strong> per second of video</p> : null })()}
+              {(() => {
+                const v = vidModel.trim();
+                const m = atlasModels.video.find((x) => x.id === v);
+                if (m) return <p className="mt-1 text-[11px] text-muted-foreground">{m.label}{m.priceUsd != null ? <> · <strong>${+m.priceUsd.toFixed(3)}</strong> per second of video</> : null}</p>;
+                // fal ids won't be in the Atlas catalog, so only warn for Atlas-looking ids (a "/" path) when fal isn't the backend.
+                if (v && atlasModels.video.length && video.backend !== 'fal') return <p className="mt-1 text-[11px] text-amber-600">⚠ "{v}" isn't a known Atlas video model — pick one from the list, or leave blank for the default.</p>;
+                return null;
+              })()}
             </Field>
             <Field label="fal.ai API key (optional)" help="fal.ai → dashboard → Keys. Widest video catalog (Veo, Kling, Seedance…) via one key. When set, fal handles video instead of Atlas.">
               <Input

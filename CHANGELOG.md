@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.138.4] — 2026-07-13
+### Fixed
+- **An invalid/partial default image model no longer silently breaks generation.** A half-typed default
+  (e.g. `google/` left in the Settings field) used to fail every `image_generate`/`image_edit` with a
+  cryptic Atlas "not found". Now guarded two ways: (1) **console warning** — the default-model fields flag
+  a value that isn't a known Atlas catalog id ("⚠ isn't a known Atlas model…"), for both image and video;
+  (2) **graceful fallback** — if Atlas rejects a model id as not-found/invalid, the image backend retries
+  once with the built-in default (`google/nano-banana-2/text-to-image` for generate, `…/edit` for edit,
+  the upscaler for upscale) and the tool response + audit note which bad model was replaced (`fallbackFrom`),
+  so the run succeeds and the operator sees a clear "fix the default" message instead of a dead end.
+  (`AtlasBackend.withModelFallback` in `src/edge/image-gen.ts`; verified live — bad `google/` → auto-retry
+  → success.)
+
 ## [0.138.3] — 2026-07-13
 ### Added
 - **Docs: three new end-user Docs pages covering recently shipped surfaces.** The console **Docs**

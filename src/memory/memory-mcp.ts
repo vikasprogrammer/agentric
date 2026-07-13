@@ -1106,11 +1106,12 @@ async function imageGenerate(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number };
+  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number; warning?: string };
   if (!d.ok) return `Could not generate image: ${d.error ?? 'unknown error'}`;
   const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
-  return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${list}.`;
+  const warn = d.warning ? ` ⚠ ${d.warning}` : '';
+  return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${list}.${warn}`;
 }
 
 async function imageEdit(args: Record<string, unknown>): Promise<string> {
@@ -1128,12 +1129,13 @@ async function imageEdit(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number };
+  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number; warning?: string };
   if (!d.ok) return `Could not edit image: ${d.error ?? 'unknown error'}`;
   const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
   const what = scale && scale > 1 ? `Upscaled ${scale}×` : 'Edited';
-  return `${what} with ${d.model ?? 'the default model'}${cost}. New image saved to the Library: ${list}.`;
+  const warn = d.warning ? ` ⚠ ${d.warning}` : '';
+  return `${what} with ${d.model ?? 'the default model'}${cost}. New image saved to the Library: ${list}.${warn}`;
 }
 
 async function videoGenerate(args: Record<string, unknown>): Promise<string> {

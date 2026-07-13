@@ -2323,7 +2323,7 @@ export class TerminalManager {
    *  3. each image lands as an `image` artifact + an owner-scoped inbox card, and the run is audited
    *     with the REAL cost when the backend reports it (OpenRouter `usage.cost`), else the estimate.
    */
-  async generateImage(sessionId: string, input: { prompt: string; model?: string; size?: string; n?: number }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; error?: string }> {
+  async generateImage(sessionId: string, input: { prompt: string; model?: string; size?: string; n?: number }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
@@ -2380,8 +2380,11 @@ export class TerminalManager {
     });
     if (!out.length) return { ok: false, error: 'generation succeeded but no image could be stored' };
 
-    this.audit(sessionId, agent, 'image.generated', { model: result.model, backend: backend.name, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id), prompt: shortPrompt });
-    return { ok: true, artifacts: out, model: result.model, costUsd };
+    const warning = result.fallbackFrom
+      ? `Model "${result.fallbackFrom}" was rejected by Atlas — used "${result.model}" instead. Fix the default in Settings → Integrations (or name a valid model).`
+      : undefined;
+    this.audit(sessionId, agent, 'image.generated', { model: result.model, backend: backend.name, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id), prompt: shortPrompt, ...(result.fallbackFrom ? { fallbackFrom: result.fallbackFrom } : {}) });
+    return { ok: true, artifacts: out, model: result.model, costUsd, ...(warning ? { warning } : {}) };
   }
 
   /**
@@ -2392,7 +2395,7 @@ export class TerminalManager {
    * artifact id, a working-folder file (written or terminal-uploaded), or a URL. `scale` (>1) upscales
    * (prompt ignored); otherwise `prompt` drives an image-to-image edit. Atlas-only (OpenRouter throws).
    */
-  async editImage(sessionId: string, input: { image: string; prompt?: string; scale?: number; model?: string }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; error?: string }> {
+  async editImage(sessionId: string, input: { image: string; prompt?: string; scale?: number; model?: string }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; warning?: string; error?: string }> {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
@@ -2451,8 +2454,11 @@ export class TerminalManager {
     });
     if (!out.length) return { ok: false, error: 'edit succeeded but no image could be stored' };
 
-    this.audit(sessionId, agent, 'image.edited', { model: result.model, backend: backend.name, op, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id) });
-    return { ok: true, artifacts: out, model: result.model, costUsd };
+    const warning = result.fallbackFrom
+      ? `Model "${result.fallbackFrom}" was rejected by Atlas — used "${result.model}" instead. Name a valid model or omit it.`
+      : undefined;
+    this.audit(sessionId, agent, 'image.edited', { model: result.model, backend: backend.name, op, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id), ...(result.fallbackFrom ? { fallbackFrom: result.fallbackFrom } : {}) });
+    return { ok: true, artifacts: out, model: result.model, costUsd, ...(warning ? { warning } : {}) };
   }
 
   /**

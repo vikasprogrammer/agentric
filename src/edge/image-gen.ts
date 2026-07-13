@@ -31,6 +31,7 @@ export interface ImageGenResult {
   images: GeneratedImage[];
   model: string; // the model actually used (as reported/requested)
   costUsd?: number; // real USD cost when the vendor reports it (OpenRouter usage.cost); else undefined
+  fallbackFrom?: string; // set when the requested model was rejected and we retried with a built-in default
 }
 
 export interface ImageGenRequest {
@@ -178,16 +179,28 @@ interface AtlasPrediction {
   error?: string;
 }
 
+// A built-in, known-good default per operation — the anchor we fall back to when a configured/passed
+// model id is rejected by Atlas (e.g. a half-typed "google/" default silently breaking every run).
+const ATLAS_BUILTIN_IMAGE_MODEL = 'google/nano-banana-2/text-to-image';
+const ATLAS_BUILTIN_EDIT_MODEL = 'google/nano-banana-2/edit';
+const ATLAS_UPSCALE_MODEL = 'atlascloud/image-upscaler';
+
+/** Does this error look like "the model id is wrong" (vs a transient/other failure)? Only these are
+ *  worth retrying with the built-in default — a real content/timeout error should surface as-is. */
+function isModelRejected(err: unknown): boolean {
+  const m = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /not found|no such model|unknown model|invalid model|model.*(not found|invalid|unsupported)|does not exist/.test(m);
+}
+
 class AtlasBackend implements ImageBackend {
   readonly name = 'atlas' as const;
   readonly defaultModel: string;
-  readonly editModel: string; // image-to-image default when an edit names no model
-  readonly upscaleModel = 'atlascloud/image-upscaler';
+  readonly editModel = ATLAS_BUILTIN_EDIT_MODEL; // image-to-image default when an edit names no model
+  readonly upscaleModel = ATLAS_UPSCALE_MODEL;
   private readonly base: string;
   constructor(private readonly key: string, baseUrl?: string, defaultModel?: string) {
     this.base = (baseUrl?.trim() || 'https://api.atlascloud.ai').replace(/\/+$/, '');
-    this.defaultModel = defaultModel?.trim() || 'google/nano-banana-2/text-to-image';
-    this.editModel = 'google/nano-banana-2/edit';
+    this.defaultModel = defaultModel?.trim() || ATLAS_BUILTIN_IMAGE_MODEL;
   }
 
   private headers(): Record<string, string> {
@@ -196,22 +209,35 @@ class AtlasBackend implements ImageBackend {
 
   async generate(req: ImageGenRequest): Promise<ImageGenResult> {
     const model = req.model?.trim() || this.defaultModel;
-    const body: Record<string, unknown> = { model, prompt: req.prompt };
-    if (req.size) body.size = req.size;
-    return this.submitAndPoll(body, model);
+    const build = (m: string): Record<string, unknown> => ({ model: m, prompt: req.prompt, ...(req.size ? { size: req.size } : {}) });
+    return this.withModelFallback(model, ATLAS_BUILTIN_IMAGE_MODEL, build);
   }
 
   async editImage(req: ImageEditRequest): Promise<ImageGenResult> {
     if (!req.images.length) throw new Error('an input image is required');
     const upscale = typeof req.scale === 'number' && req.scale > 1;
     const model = req.model?.trim() || (upscale ? this.upscaleModel : this.editModel);
+    const fallback = upscale ? ATLAS_UPSCALE_MODEL : ATLAS_BUILTIN_EDIT_MODEL;
     // Edit and upscale ride the SAME generateImage submit+poll — only the body shape differs: an upscaler
     // takes a single `image` + `outscale`; an image-to-image edit takes `images[]` + a `prompt`.
-    const body: Record<string, unknown> = upscale
-      ? { model, image: req.images[0], outscale: req.scale, output_format: 'jpeg' }
-      : { model, prompt: req.prompt ?? '', images: req.images };
-    if (!upscale && req.size) body.size = req.size;
-    return this.submitAndPoll(body, model);
+    const build = (m: string): Record<string, unknown> => upscale
+      ? { model: m, image: req.images[0], outscale: req.scale, output_format: 'jpeg' }
+      : { model: m, prompt: req.prompt ?? '', images: req.images, ...(req.size ? { size: req.size } : {}) };
+    return this.withModelFallback(model, fallback, build);
+  }
+
+  /** Run `build(model)` through submit+poll; if the model id is REJECTED and differs from the known-good
+   *  `fallback`, retry once with the fallback and tag the result so the caller can warn the operator. */
+  private async withModelFallback(model: string, fallback: string, build: (m: string) => Record<string, unknown>): Promise<ImageGenResult> {
+    try {
+      return await this.submitAndPoll(build(model), model);
+    } catch (e) {
+      if (isModelRejected(e) && model !== fallback) {
+        const res = await this.submitAndPoll(build(fallback), fallback);
+        return { ...res, fallbackFrom: model };
+      }
+      throw e;
+    }
   }
 
   /** Submit a generateImage body then poll the prediction to completion (image renders in seconds, so a
