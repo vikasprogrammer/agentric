@@ -12,6 +12,12 @@
  * transport), and uses the global `fetch`. Spawned by claude with AOS_URL/SESSION/AGENT in env.
  */
 const AOS_URL = (process.env.AOS_URL || 'http://127.0.0.1:3010').replace(/\/$/, '');
+// Absolute console deep-links agents can hand to a human. Being absolute (AOS_URL is the deployment's
+// real public origin) they're clickable in the browser terminal (xterm WebLinks) and autolink in the
+// console's markdown/inbox renderers. Mirrors the web app's hash routes (#/kb/<section>/<slug>, etc.).
+const consoleLink = (route: string, detail?: string): string =>
+  `${AOS_URL}/#/${route}${detail ? '/' + detail.split('/').map(encodeURIComponent).join('/') : ''}`;
+const kbLink = (section: string, slug: string): string => consoleLink('kb', `${section}/${slug}`);
 const SESSION = process.env.SESSION || '';
 const AGENT = process.env.AGENT || '';
 // Per-session bearer (0d): the server requires this on the session-scoped loopback routes, so this
@@ -1414,7 +1420,7 @@ async function publish(args: Record<string, unknown>): Promise<string> {
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
   const where = args.folder ? ` under "${String(args.folder)}"` : '';
   return d.ok
-    ? `Published "${filePath}" to the Library${where} (id ${d.id}). The operator has been notified.`
+    ? `Published "${filePath}" to the Library${where} (id ${d.id}). The operator has been notified.\nView it: ${consoleLink('artifacts', d.id)}`
     : `Could not publish: ${d.error ?? 'unknown error'}`;
 }
 
@@ -1492,7 +1498,7 @@ async function kbSearch(args: Record<string, unknown>): Promise<string> {
   const folders = data.sections?.length ? `\n\nExisting folders (reuse one when filing a new page): ${data.sections.join(', ')}` : '';
   if (!pages.length) return `No knowledge-base pages found.${folders}`;
   return pages
-    .map((p) => `- ${p.section}/${p.slug} — ${p.title}${p.tags?.length ? ` [${p.tags.join(', ')}]` : ''}`)
+    .map((p) => `- ${p.section}/${p.slug} — ${p.title}${p.tags?.length ? ` [${p.tags.join(', ')}]` : ''}  ${kbLink(p.section, p.slug)}`)
     .join('\n') + '\n(Use kb_read with a section + slug to open a page.)' + folders;
 }
 
@@ -1506,7 +1512,7 @@ async function kbRead(args: Record<string, unknown>): Promise<string> {
   const data = (await res.json()) as { page?: KbPageLite };
   const p = data.page;
   if (!p) return 'Page not found.';
-  return `# ${p.title}  (${p.section}/${p.slug}, rev ${p.rev})\n${p.tags?.length ? `tags: ${p.tags.join(', ')}\n` : ''}\n${p.body ?? ''}`;
+  return `# ${p.title}  (${p.section}/${p.slug}, rev ${p.rev})\n${kbLink(p.section, p.slug)}\n${p.tags?.length ? `tags: ${p.tags.join(', ')}\n` : ''}\n${p.body ?? ''}`;
 }
 
 async function kbWrite(args: Record<string, unknown>): Promise<string> {
@@ -1523,7 +1529,7 @@ async function kbWrite(args: Record<string, unknown>): Promise<string> {
   });
   const data = (await res.json()) as { ok?: boolean; section?: string; slug?: string; rev?: number; error?: string };
   if (!data.ok) return `Could not write the page: ${data.error ?? 'unknown error'}`;
-  return `Saved ${data.section}/${data.slug} (rev ${data.rev}). The change is versioned — any edit is revertable.`;
+  return `Saved ${data.section}/${data.slug} (rev ${data.rev}). The change is versioned — any edit is revertable.\nOpen it: ${kbLink(data.section!, data.slug!)}`;
 }
 
 interface KbRevLite { rev: number; author: string; summary?: string; title: string; createdAt: number }
@@ -1586,10 +1592,11 @@ async function artifactsList(args: Record<string, unknown>): Promise<string> {
   // The Library's existing folders (all agents) so a `publish` files into the established tree rather
   // than inventing a new folder. Shown even when you personally have nothing published yet.
   const folders = data.folders?.length ? `\n\nLibrary folders (pass one as \`folder\` to publish): ${data.folders.join(', ')}` : '';
-  if (!arts.length) return `You have not published any deliverables yet.${folders}`;
+  const browse = `\n\nBrowse the Library: ${consoleLink('artifacts')}`;
+  if (!arts.length) return `You have not published any deliverables yet.${folders}${browse}`;
   return arts
     .map((a) => `- ${a.title}${a.description ? ` — ${a.description}` : ''} (${a.kind}, ${a.filename}${a.folder ? `, in ${a.folder}/` : ''})`)
-    .join('\n') + folders;
+    .join('\n') + folders + browse;
 }
 
 async function schedule(args: Record<string, unknown>): Promise<string> {

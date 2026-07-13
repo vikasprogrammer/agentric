@@ -2809,7 +2809,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
         <Bell className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
         <div className="min-w-0 flex-1">
           <MsgHeading m={m}><span className="shrink-0 text-indigo-600">· waiting for you</span></MsgHeading>
-          <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground">{m.body}</div>
+          <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground"><InlineLinks text={m.body} /></div>
         </div>
         {time}
         <div className="flex shrink-0 gap-1">
@@ -2846,7 +2846,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
             </MsgHeading>
             <div className="mt-1 break-words text-sm font-medium">{m.title}</div>
             {m.policyReason && <div className="mt-0.5 break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {m.policyReason}</div>}
-            {m.body && <div className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground">{m.body}</div>}
+            {m.body && <div className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground"><InlineLinks text={m.body} /></div>}
             <div className="mt-1 break-all font-mono text-[10px] text-muted-foreground/80">{JSON.stringify(m.args ?? {})}</div>
           </div>
           {time}
@@ -2878,7 +2878,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
         <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
         <div className="min-w-0 flex-1">
           <MsgHeading m={m}><span className="shrink-0 text-sky-600">· asks</span></MsgHeading>
-          <div className="mt-1 whitespace-pre-line break-words text-sm">{m.body}</div>
+          <div className="mt-1 whitespace-pre-line break-words text-sm"><InlineLinks text={m.body} /></div>
         </div>
         <a href={navHref('sessions', 'aos-' + m.sessionId)} className="shrink-0 pt-0.5 text-[11px] text-muted-foreground underline hover:text-foreground" onClick={onNavClick(open)}>open</a>
         {time}
@@ -3315,6 +3315,93 @@ const isMarkdownArt = (a: Artifact) => a.mime.startsWith('text/markdown') || /\.
 const isHtmlArt = (a: Artifact) => a.mime.startsWith('text/html') || /\.html?$/i.test(a.filename)
 const isTextMime = (m: string) => m.startsWith('text/') || m === 'application/json'
 
+// ── Internal links ─────────────────────────────────────────────────────────────────────────────
+// A single convention makes references to KB pages, the Library, and other console areas clickable
+// wherever agents or humans write them. `[[section/slug]]` (the syntax the KB editor advertises) →
+// the KB page; a bare `[[area]]` (library, tasks, …) → that nav route. Two renderers share the same
+// target resolver: `remarkWikiLinks` for full-markdown surfaces (KB/task/goal/artifact/docs) and
+// `InlineLinks` for raw-text surfaces (inbox cards, memory notes) that must stay pre-formatted.
+
+/** Known single-word wiki targets that map to a top-level route rather than a KB page. */
+const WIKI_AREA: Record<string, string> = {
+  library: '#/artifacts', artifacts: '#/artifacts', knowledge: '#/kb', kb: '#/kb',
+  tasks: '#/tasks', goals: '#/goals', memory: '#/memory', skills: '#/skills',
+  agents: '#/agents', inbox: '#/inbox', audit: '#/audit', settings: '#/settings',
+}
+/** Resolve a `[[…]]` wiki target to an in-app hash route. `section/slug` (possibly nested) → a KB
+ *  page; a bare known area word → its route; anything else falls back to a KB path. Per-segment
+ *  encoding mirrors {@link encodeDetail} so real slashes stay readable. */
+function wikiHref(target: string): string {
+  const inner = target.trim().replace(/^\/+|\/+$/g, '')
+  const area = WIKI_AREA[inner.toLowerCase()]
+  if (area) return area
+  return '#/kb/' + inner.split('/').map(encodeURIComponent).join('/')
+}
+
+const WIKI_RE = /\[\[([^\]]+?)\]\]/g
+
+/** remark plugin: rewrite `[[section/slug]]` / `[[section/slug|label]]` into real links, skipping code
+ *  spans and existing links. Runs alongside remark-gfm (which already autolinks bare URLs). */
+function remarkWikiLinks() {
+  return (tree: any) => {
+    const walk = (node: any) => {
+      if (!node || !Array.isArray(node.children)) return
+      const out: any[] = []
+      for (const child of node.children) {
+        if (child.type === 'code' || child.type === 'inlineCode' || child.type === 'link') { out.push(child); continue }
+        if (child.type === 'text' && child.value.includes('[[')) { out.push(...splitWikiNodes(child.value)); continue }
+        walk(child); out.push(child)
+      }
+      node.children = out
+    }
+    walk(tree)
+  }
+}
+function splitWikiNodes(value: string): any[] {
+  const nodes: any[] = []
+  let last = 0
+  WIKI_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = WIKI_RE.exec(value))) {
+    if (m.index > last) nodes.push({ type: 'text', value: value.slice(last, m.index) })
+    const [target, label] = m[1].split('|')
+    nodes.push({ type: 'link', url: wikiHref(target), children: [{ type: 'text', value: (label ?? target).trim() }] })
+    last = m.index + m[0].length
+  }
+  if (last < value.length) nodes.push({ type: 'text', value: value.slice(last) })
+  return nodes.length ? nodes : [{ type: 'text', value }]
+}
+
+// Markdown link · `[[wiki]]` · bare http(s) URL · in-app `#/route`, in priority order.
+const INLINE_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+|#\/[^\s)]+)\)|\[\[([^\]]+?)\]\]|(https?:\/\/[^\s<>()]+)|(#\/[A-Za-z0-9/_%-]+)/g
+
+/** Render a plain string with clickable links (markdown links, `[[wiki]]` refs, bare URLs, in-app
+ *  `#/route` paths) for surfaces that show raw text rather than full markdown — inbox cards, memory
+ *  notes. Click propagation is stopped so a link inside a clickable card doesn't also open the card. */
+function InlineLinks({ text }: { text?: string | null }): ReactNode {
+  if (!text) return text ?? null
+  const parts: ReactNode[] = []
+  let last = 0, key = 0
+  INLINE_LINK_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = INLINE_LINK_RE.exec(text))) {
+    if (m.index > last) parts.push(text.slice(last, m.index))
+    let href = m[0], label = m[0]
+    if (m[1] !== undefined) { label = m[1]; href = m[2] }                                   // [txt](url)
+    else if (m[3] !== undefined) { const [t, l] = m[3].split('|'); href = wikiHref(t); label = (l ?? t).trim() }  // [[wiki]]
+    else if (m[4] !== undefined) { href = label = m[4] }                                    // bare URL
+    else if (m[5] !== undefined) { href = label = m[5] }                                    // #/route
+    const external = /^https?:/.test(href)
+    parts.push(
+      <a key={`il${key++}`} href={href} className="text-primary underline" onClick={(e) => e.stopPropagation()}
+        {...(external ? { target: '_blank', rel: 'noreferrer' } : {})}>{label}</a>,
+    )
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push(text.slice(last))
+  return <>{parts}</>
+}
+
 /** Tailwind has no typography plugin here, so map Markdown elements to readable styled ones. */
 const mdComponents = {
   h1: (p: any) => <h1 className="mb-3 mt-4 text-xl font-semibold" {...p} />,
@@ -3439,7 +3526,7 @@ function ArtifactBody({ a }: { a: Artifact }) {
   )
   if (wantsText) {
     if (text === null) return <div className="text-sm text-muted-foreground">Loading…</div>
-    if (isMarkdownArt(a)) return <div className="max-w-3xl text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{text}</ReactMarkdown></div>
+    if (isMarkdownArt(a)) return <div className="max-w-3xl text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{text}</ReactMarkdown></div>
     return <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-relaxed">{text}</pre>
   }
   return (
@@ -4525,7 +4612,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
             ) : (
               <div className="space-y-3.5">
                 <div className="font-mono text-xs text-muted-foreground">{detail.goal.id}{detail.goal.createdBy ? ` · by ${nameOf(detail.goal.createdBy)}` : ''}</div>
-                {detail.goal.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.goal.body}</ReactMarkdown></div>}
+                {detail.goal.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.goal.body}</ReactMarkdown></div>}
 
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Status">
@@ -5134,7 +5221,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             ) : (
               <div className="space-y-3.5">
                 <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
-                {detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
+                {detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
 
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Field label="Status">
@@ -6009,7 +6096,7 @@ function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: s
         </div>
       </div>
       <div className="min-w-0 max-w-3xl flex-1">
-        <Card><CardContent className="p-6 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{sel.body}</ReactMarkdown></CardContent></Card>
+        <Card><CardContent className="p-6 text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{sel.body}</ReactMarkdown></CardContent></Card>
       </div>
     </div>
   )
@@ -6149,7 +6236,7 @@ function KnowledgeBasePage({ me, permalink, nav }: { me: Member; permalink: stri
                     <span className="flex gap-2"><button className="underline" onClick={() => revert(viewRev.rev)}>Revert to this</button><button className="underline" onClick={() => setViewRev(null)}>Back to current</button></span>
                   </div>
                 )}
-                <Card><CardContent className="p-4"><div className="text-sm"><ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>{viewRev ? viewRev.body : sel.body}</ReactMarkdown></div></CardContent></Card>
+                <Card><CardContent className="p-4"><div className="text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{viewRev ? viewRev.body : sel.body}</ReactMarkdown></div></CardContent></Card>
                 {showHist && (
                   <Card><CardContent className="space-y-1 p-3">
                     <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Revisions</div>
@@ -6482,7 +6569,7 @@ function MemoryCard({ m, agentId, me, onChanged }: { m: MemoryRecord; agentId: s
           )}
         </div>
         {/* Content — whitespace-pre-wrap so multi-line episodes (Task / Outcome / summary) stay readable. */}
-        <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{m.content}</div>
+        <div className="whitespace-pre-wrap break-words text-sm leading-relaxed"><InlineLinks text={m.content} /></div>
         {/* Footer: tags · importance · source · match · timestamp. */}
         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
           {tagsShown.map((t) => (

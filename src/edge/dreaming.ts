@@ -154,7 +154,7 @@ export class DreamingEngine {
       const t = state.totals;
       const rate = t.sessions ? Math.round((t.success / t.sessions) * 100) : 0;
       const topTopics = topTopicList(state.topics, 6).map(([k]) => k).join(', ') || '—';
-      const summary = `Fleet self-learning (pass ${state.passes}, since ${new Date(state.firstPass).toISOString().slice(0, 10)}): ${t.sessions} sessions, ${rate}% success. Recurring topics: ${topTopics}. Friction so far: ${t.rejected} approvals rejected, ${t.budgetStops} budget stops, ${t.errors} errors. Details: KB ${DREAM_SECTION}/${DREAM_SLUG}.`;
+      const summary = `Fleet self-learning (pass ${state.passes}, since ${new Date(state.firstPass).toISOString().slice(0, 10)}): ${t.sessions} sessions, ${rate}% success. Recurring topics: ${topTopics}. Friction so far: ${t.rejected} approvals rejected, ${t.budgetStops} budget stops, ${t.errors} errors. Details: [[${DREAM_SECTION}/${DREAM_SLUG}]].`;
       const rec = await this.os.memory.store({ tenant: this.os.tenant, agentId: 'dreamer', content: summary, tags: ['dreaming', 'learned'], type: 'Insight', importance: 0.6, scope: 'tenant', metadata: { passes: state.passes, window, sessions: win.sessions } });
       insightId = rec.id;
     } catch { /* best-effort */ }
