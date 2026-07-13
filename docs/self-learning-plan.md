@@ -64,7 +64,7 @@ stored in `settings: learned_guidance`:
 
 **Injection:** `TerminalManager.buildCompanyMd()` appends this block to every claude-code agent's
 `--append-system-prompt-file` payload (after Company context + OS operating notes). Gated by
-`SettingsStore.applyLearnings()` (default on; toggle in the **Dreaming** page). It's **prompting,
+`SettingsStore.applyLearnings()` (default on; toggle in the **Insights** page). It's **prompting,
 not auto-rewriting** — visible, reversible, and toggleable. So the fleet's experience shapes each new
 session → new outcomes → next pass refines the guidance.
 
@@ -91,7 +91,7 @@ Routes: `POST /api/dreaming/recommendation/:id/apply` (applyable → reversible 
 - `GET /api/dreaming` returns `{ everyHours, lastDreamedAt, applyLearnings, guidance, recommendations }`;
   `PUT /api/dreaming` sets `everyHours` and/or `applyLearnings`.
 
-## 7. Console (`web/src` — the **Dreaming** page)
+## 7. Console (`web/src` — the **Insights** page)
 
 Cadence + **Run now** (shows what it learned); an **Apply learnings to agents** toggle with a live
 read-only preview of the injected guidance; and a **Recommendations** list (Apply / Review-link /

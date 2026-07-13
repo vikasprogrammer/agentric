@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.163.1] — 2026-07-13
+### Changed
+- **The "Dreaming" nav is renamed "Insights"** (route `#/dreaming` → `#/insights`, 🌙 → 💡). The surface
+  evolved this release from a self-learning loop into the OS's **owner-intelligence layer** (fleet
+  scorecard, friction map, "is it working?" measurement, plus the guidance/recommendations) — so the nav,
+  the page content, and the new `GET /api/insights` endpoint now all say the same thing. The internal
+  engine vocabulary is unchanged (Dreamer / reflect / `dreaming_state` / the reflect pass); only the
+  user-facing surface renamed. Docs' console-location refs updated to the Insights page.
+
 ## [0.162.0] — 2026-07-13
 ### Added
 - **Owner Overview page** — a new owner-only Home (`#/overview`, top of the sidebar) that answers "what is

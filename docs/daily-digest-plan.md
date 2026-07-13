@@ -140,7 +140,7 @@ is unset → skip the Slack post, still render dashboard + KB page (fail-soft, n
   real `done` sessions ("Shipped PR #333") carried no end-of-session episode (importance 0) yet are
   exactly what the digest is for; a pure importance threshold dropped them.
 - **Timezone = server-local** (the deploy box's tz). A per-tenant tz can layer on later.
-- **UI:** digest config + a live "today so far" preview live in the top-level **Dreaming** page
+- **UI:** digest config + a live "today so far" preview live in the top-level **Insights** page
   (Dreaming) tab — no new nav tab. A standalone **"Today" dashboard** page is deferred (the KB
   `operations/daily/<date>` page already gives a browsable daily record, and the preview covers the
   at-a-glance need).
