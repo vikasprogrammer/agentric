@@ -7,6 +7,16 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.160.0] — 2026-07-13
+### Changed
+- **`docs/PILLARS.md`: added Pillar 17 — Media (generate · edit · understand).** The media capabilities had
+  shipped but weren't reflected in the pillar map. Added the summary-table row + a full detail section
+  covering `image_generate` (text→image), `image_edit` (prompt edit · upscale · `remove-background`),
+  `video_generate` (text→video **and** image→video, async job model), and `video_understand` (video→text),
+  the Atlas-primary backend model, the shared timeout/retry resilience (`src/edge/vendor-fetch.ts`), and a
+  cross-reference from Pillar 14 (Library) noting generated media is `ingest`ed there. Docs only.
+
 ### Fixed
 - **Same timeout/retry resilience now applies to `video_generate`.** The video backend
   (`src/edge/video-gen.ts`, fal + Atlas) previously had no timeouts and would mark a whole render

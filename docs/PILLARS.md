@@ -12,7 +12,12 @@ catalog + any GitHub repo / skills.sh + `.zip`), the **agent-driven, human-gated
 (`skill_find`/`skill_request` → owner/admin install, never self-install), procedural `skill_propose`, and
 **same-session delivery** (`/reload-skills` into a live interactive run) on BOTH gating paths — approve
 *and* publish (`refreshAgentSkills` targets `headless = 0` sessions; the earlier `resident`-only filter
-was a bug). All other grades + narratives still hold. Live v1 milestone tracker: `docs/v1-mvp-scope.md`.
+was a bug). **Added 2026-07-13:** **§17 Media** — a new pillar (graded ✅) covering the modalities Claude
+lacks natively: image/video **generation** (`image_generate`, `video_generate` incl. image→video),
+**editing** (`image_edit` — prompt edit · upscale · `remove-background`), and **understanding**
+(`video_understand`, video→text), backed by Atlas Cloud and flowing into the Library (§14); all governed,
+cost-metered, and hardened with timeouts + retry (`src/edge/vendor-fetch.ts`). All other grades +
+narratives still hold. Live v1 milestone tracker: `docs/v1-mvp-scope.md`.
 
 **Cross-cutting:** how agents are *granted* reach — the relationship between §3 Connectors, §5 Policy,
 and §8 Secrets — is mapped in [`access-model.md`](./access-model.md) (`Creds → Connections →
@@ -41,6 +46,7 @@ Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`]
 | 14 | Library (Artifacts / Deliverables) | ✅ | Agents `publish` finished files (PDF/Markdown/image) to a governed gallery — surfaced as the **Library**; snapshotted, provenance-scoped, previewed in-console |
 | 15 | Knowledge Base | ✅ | Shared, tenant-wide living wiki: `KbStore` (markdown-on-disk + SQLite/FTS), revision chain + revert, `kb_search`/`kb_read`/`kb_write` MCP tools, and a console **Knowledge** page (browse/view/edit/history/revert). Agents + humans co-author; every edit versioned + auditable. No deep hierarchy / diff view yet |
 | 16 | Tasks / Work Queue | ✅ | Shared tenant-wide backlog humans + agents co-own: durable units of work (`todo→doing→blocked→done`, assignee, activity log) that **auto-dispatch a governed agent session** to work them, plus the agent MCP set (`task_create`/`task_list`/`task_get`/`task_claim`/`task_update`) + a console Kanban board. Task edits auto-apply + audit (KB-style); the dispatched run stays fully gated. The A2A delegation path (support→coding = a task assigned to `agent:<id>`). v1 cuts: pool auto-assignment, agent-triggered dispatch |
+| 17 | Media (generate · edit · understand) | ✅ | Gives agents the senses Claude lacks natively, all through the gateway: **`image_generate`** (text→image), **`image_edit`** (prompt edit · upscale · `remove-background` preset), **`video_generate`** (text→video **and** image→video, async job model), and **`video_understand`** (video→text — an agent "watches" a clip). Backed by **Atlas Cloud** (one key, 400+ models; OpenRouter is the image fallback); outputs land in the **Library** (Pillar 14), cost-metered + audited. Model pickers show the live Atlas catalog + pricing; timeouts + bounded retry on every vendor call. See [`media-integrations-plan.md`](./media-integrations-plan.md) |
 
 ---
 
@@ -485,8 +491,14 @@ the agent's own folder (no `/etc/passwd`). Publishing posts an **inbox** `artifa
 `artifact.published` audit event. The `artifacts` table carries full provenance (session + agent +
 source), the same shape as `messages`, so the inbox's `canViewSpawn` rule scopes the gallery for free:
 members see only their own sessions' artifacts; owner/admin see all. The console **Library** page
-(`web/src/App.tsx`) renders Markdown (react-markdown), PDFs (iframe), and images (thumbnails), streamed
-by `GET /api/artifacts/:id/raw`.
+(`web/src/App.tsx`) renders Markdown (react-markdown), PDFs (iframe), images (thumbnails), and video
+(inline player), streamed by `GET /api/artifacts/:id/raw`.
+
+**Generated media lands here too.** Image/video from **Pillar 17** (`image_generate`/`image_edit`/
+`video_generate`) doesn't go through `publish` — it's `ingest`ed **server-side from bytes** into the same
+`artifacts` table (`kind:'image'`/`'video'`, folders `generated-images`/`edited-images`/`generated-videos`,
+carrying `cost_usd`), so the gallery previews and cost-meters generated deliverables alongside published
+files with identical provenance/visibility rules.
 
 **Not yet.** Multi-file/interactive artifacts (a generated `kind:'site'`/`app` served into an iframe) —
 the per-`<id>` dir, the `kind` column, and the `?file=` raw seam are in place for it, but `publish` only
@@ -551,6 +563,57 @@ paths: assigned `auto_dispatch` tasks spawned by the scheduler tick, and a long-
 agent-triggered `task_dispatch` tool — both are the **agent-spawns-agent frontier** Automations also parks
 (needs a concurrency budget + fairness story). Also future: an optional policy brake on dispatch,
 `blocked_by` dependencies, and an Inbox card when a task goes `blocked`.
+
+---
+
+## 17. Media (generate · edit · understand) — ✅ Working
+
+**Plan: [`media-integrations-plan.md`](./media-integrations-plan.md).**
+
+**The idea.** Give agents the modalities Claude can't do natively — draw, film, and *watch* — as
+first-class **governed** capabilities, not a side-channel. Every media call is an effect through the same
+gateway as everything else: policy-classified with a dollar estimate (the money-cap `never` rule applies),
+audited, run-as a real human, and its output stored in the **Library** (Pillar 14).
+
+**The tools (all OS-owned MCP → session-secret loopback `/api/agent/*` → `TerminalManager`).**
+
+- **`image_generate`** — text→image. Each image is `ingest`ed into the Library (`kind:'image'`, folder
+  `generated-images`), audited `image.generated` with the **real** cost when the vendor reports it
+  (OpenRouter `usage.cost`), else the estimate.
+- **`image_edit`** — transform an existing image (source never mutated → a NEW Library image). Three modes,
+  precedence `operation` → `scale` → `prompt`: a prompt-guided **edit** (image-to-image), **upscale**
+  (`scale` 2/4), or the **`remove-background`** preset (→ a transparent PNG). Audited `image.edited`.
+- **`video_generate`** — text→video **and** image→video. Video is **async**: submit → persist an opaque
+  handle to `video_jobs` → a brief in-call poll catches the fast case, else the **Automations-tick poller**
+  (`pollVideoJobs`) finishes it — downloads the mp4, `ingest`s it (`kind:'video'`, `generated-videos`),
+  posts an inbox card, audits `video.generated`. Survives the poll cap and a restart. An optional `image`
+  seed (Library id / working-folder file / URL) switches it to image-to-video.
+- **`video_understand`** — video→text. Claude can't see video, so this delegates to an Atlas **multimodal
+  LLM** (chat endpoint, a `video_url` content part) and returns the text answer directly (no artifact).
+  Audited `video.understood`.
+
+The `image`/`video` source for edit/understand/seed is any of a **Library artifact id**, a **working-folder
+file** (a file the agent wrote *or* one uploaded into the terminal session, resolved strictly under the
+agent folder), or an **http(s) URL** — local inputs are inlined as base64 so nothing needs public hosting.
+
+**Backends.** A swappable `ImageBackend` / `VideoBackend` interface picked by whichever key is set
+(`resolveImageBackend`/`resolveVideoBackend`). **Atlas Cloud** is primary — one key covers image + video +
+understanding across 400+ models; **OpenRouter** is the image fallback, **fal.ai** the widest video catalog.
+Settings → Integrations has one **Media generation** card: the Atlas key drives all of it, with the live
+Atlas catalog + per-model pricing shown in the default-model pickers. A **bad/half-typed default model**
+falls back to a built-in and warns, rather than silently breaking every run.
+
+**Resilience.** Every vendor call goes through `src/edge/vendor-fetch.ts` — explicit `AbortSignal.timeout`
+(30s submit, 15s poll, 60s download) + bounded retry (3×, backoff+jitter) on transient failures
+(network/timeout, 429, 5xx). A 4xx / content-policy rejection / explicit vendor `failed` status is a real
+answer, surfaced as-is; a transient poll blip keeps the job rendering (image: until the render deadline;
+video: the next tick re-polls) instead of failing a paid render. Failures name the actual tool + vendor +
+whether a retry is worthwhile. See [`agent-mcp-tools.md`](./agent-mcp-tools.md) → "Media tool resilience".
+
+**Not yet.** Proprietary-suite features some vertical products layer on top of raw model calls — persistent
+character consistency, virality scoring, viral-clip auto-cutting. Atlas also exposes categories we don't
+surface yet (`TEXT-TO-SPEECH`, `IMAGE-TO-3D`, `VIDEO-TO-VIDEO`). Cost for token-priced calls
+(`video_understand`) is a gate estimate unless the vendor returns usage.
 
 ---
 
