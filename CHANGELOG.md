@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.141.2] — 2026-07-13
+### Fixed
+- **Slack: a plain message in a channel the bot sits in no longer gets the `/agent` help list.** The app
+  subscribes to `message.channels` so plain in-thread follow-ups reach thread-continuity — but that also
+  delivers a `message` event for *every* channel post, and a non-continuation one fell through to
+  `fireSlack` → the `/agent` router, which replied "👋 Address an agent…" to ordinary channel chatter. The
+  socket now only starts a fresh run on an explicit **@mention** (`app_mention`) or a **DM** (`im`/`mpim`);
+  a plain channel message matters only as a thread continuation, otherwise it's dropped silently. Brings
+  Slack to parity with Discord, whose parser already ignores non-mention guild messages.
+
 ## [0.141.1] — 2026-07-13
 ### Fixed
 - **Unattended (automation/cron/task) sessions no longer leak a live pane after they finish.** An agent that

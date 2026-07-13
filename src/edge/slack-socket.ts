@@ -182,6 +182,14 @@ export class SlackSocket {
       return;
     }
 
+    // Not a thread continuation. A plain channel `message` (no @mention) only reached us because the app
+    // subscribes to `message.channels` FOR that continuity — it's just chatter in a channel the bot
+    // happens to sit in, never a fresh trigger. Only an explicit @mention (`app_mention`) or a DM
+    // (`im`/`mpim`) starts a new run; otherwise drop it silently so we don't spam the `/agent` router's
+    // help list into the channel. (Mirrors Discord, whose parser already drops non-mention guild messages.)
+    const isDm = ev.channelType === 'im' || ev.channelType === 'mpim';
+    if (ev.eventType !== 'app_mention' && !isDm) return;
+
     const result = this.autos.fireSlack(
       {
         eventType: ev.eventType,
