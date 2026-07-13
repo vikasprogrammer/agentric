@@ -765,6 +765,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = tm.proposeSkill(session, agent, { name, description, body, rationale: b.rationale ? String(b.rationale) : undefined });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
+  // An agent proposes a Host connection (`host_propose`) — a credential-less, inactive org host that an
+  // owner/admin reviews + publishes. Session-secret gated (agent resolved from the session row, never trusted).
+  if (method === 'POST' && p === '/api/hosts/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const name = String(b.name || '').trim();
+    const match = String(b.match || '').trim();
+    if (!name || !match) return sendJson(res, 400, { error: 'name and match are required' });
+    const out = tm.proposeHost(session, agent, {
+      name, match,
+      protocol: b.protocol ? String(b.protocol) : undefined,
+      posture: b.posture ? String(b.posture) : undefined,
+      rationale: b.rationale ? String(b.rationale) : undefined,
+    });
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
   // agent discovers what's installable (`skill_find`) — its own library (with an `active` flag) + the
   // bundled catalog, and (when `q` is given) matching skills from the skills.sh directory (remote repos).
   // Read-only; the counterpart to `skill_request`. Pre-auth loopback, session-secret gated.
@@ -3498,6 +3517,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
+  }
+  // Publish a proposed host (owner/admin) → active (enabled, no longer proposed). Reject = DELETE.
+  const hostPublish = p.match(/^\/api\/hosts\/([\w-]+)\/publish$/);
+  if (method === 'POST' && hostPublish) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const id = hostPublish[1];
+    const before = os.hosts.get(id);
+    if (!before?.proposed) return sendJson(res, 404, { error: 'no such proposed host' });
+    const published = os.hosts.publish(id);
+    if (published) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'host.published', data: { host: id, match: published.match, protocol: published.protocol, proposedBy: before.proposedBy } });
+    return sendJson(res, published ? 200 : 404, published ? redactHost(published) : { error: 'not found' });
   }
   const hostMatch = p.match(/^\/api\/hosts\/([\w-]+)$/);
   if (hostMatch) {

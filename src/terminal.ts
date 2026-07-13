@@ -185,7 +185,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'host.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -2039,6 +2039,35 @@ export class TerminalManager {
       });
       this.audit(sessionId, agent, 'skill.proposed', { name: s.name, description: s.description, rationale: input.rationale });
       return { ok: true, skill: s.name };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  /** An agent proposes a Host connection (`host_propose`). Drafts an inactive, credential-less org host
+   *  (excluded from every grant set until published), posts a `host.proposed` review card to the
+   *  owner/admin inbox, and audits `host.proposed`. Publishing (owner/admin) activates it. */
+  proposeHost(sessionId: string, agent: string, input: { name: string; match: string; protocol?: string; posture?: string; rationale?: string }): { ok: boolean; host?: string; error?: string } {
+    try {
+      const h = this.os.hosts.propose({
+        name: input.name,
+        match: input.match,
+        protocol: input.protocol as never,
+        posture: input.posture as never,
+        agent: `agent:${agent}`,
+        rationale: input.rationale,
+      });
+      this.addMessage({
+        type: 'host.proposed', sessionId, agent,
+        title: `Host proposed — ${h.name}`,
+        body: `${agent} proposes reaching ${h.match} (${h.protocol}). ${input.rationale ? 'Why: ' + input.rationale : ''}`.trim(),
+        status: 'open',
+        args: { host: h.id, match: h.match, protocol: h.protocol, ...(input.rationale ? { rationale: input.rationale } : {}) },
+        // Publishing a host is an owner/admin act — address the review card to the admin tier.
+        audienceKind: 'admins',
+      });
+      this.audit(sessionId, agent, 'host.proposed', { host: h.id, match: h.match, protocol: h.protocol, rationale: input.rationale });
+      return { ok: true, host: h.id };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }

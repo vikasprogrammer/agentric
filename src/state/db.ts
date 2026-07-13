@@ -110,6 +110,9 @@ function migrate(db: Db): void {
       scope       TEXT NOT NULL DEFAULT 'org',   -- org (company-wide) | personal (one member's own)
       owner_member_id TEXT,                      -- the owning member (personal scope only; NULL for org)
       shared      INTEGER NOT NULL DEFAULT 0,    -- a personal host shared with the whole team
+      proposed    INTEGER NOT NULL DEFAULT 0,    -- proposed by an agent (host_propose), inactive until an owner/admin publishes
+      proposed_by TEXT,                          -- the proposing agent (agent:<id>)
+      proposed_reason TEXT,                      -- the agent's stated reason (shown on the review card)
       created_at  INTEGER NOT NULL
     );
 
@@ -571,6 +574,11 @@ function migrate(db: Db): void {
   // sessions (acting as the owner, since the stored creds are theirs), not just the owner's own.
   // Default 0 = private (today's behavior). Only meaningful for scope='personal'.
   addColumn(db, 'connectors', 'shared', 'INTEGER NOT NULL DEFAULT 0');
+
+  // Host proposals (host_propose): an agent-drafted host, inactive until an owner/admin publishes.
+  addColumn(db, 'hosts', 'proposed', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'hosts', 'proposed_by', 'TEXT');
+  addColumn(db, 'hosts', 'proposed_reason', 'TEXT');
 
   // Per-session bearer secret for the loopback agent endpoints (0d). Older rows have none → the
   // server fails open for them (they predate the secret), but every new session mints one.

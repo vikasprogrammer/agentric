@@ -32,6 +32,12 @@ export interface Host {
   ownerMemberId?: string;
   shared: boolean;
   createdAt: number;
+  /** Proposed by an agent (`host_propose`), awaiting an owner/admin publish. A proposed host is
+   *  inactive (`enabled=0`) and is EXCLUDED from every grant set until published — the safety line. */
+  proposed: boolean;
+  /** The agent that proposed it (`agent:<id>`) and their stated reason — shown on the review card. */
+  proposedBy?: string;
+  proposedReason?: string;
 }
 
 export interface AddHostInput {
@@ -56,6 +62,9 @@ interface HostRow {
   owner_member_id: string | null;
   shared: number | null;
   created_at: number;
+  proposed: number | null;
+  proposed_by: string | null;
+  proposed_reason: string | null;
 }
 
 const PROTOCOLS: HostProtocol[] = ['ssh', 'http', 'postgres', 'any'];
@@ -76,6 +85,9 @@ function toHost(r: HostRow): Host {
     ownerMemberId: r.owner_member_id ?? undefined,
     shared: !!r.shared,
     createdAt: r.created_at,
+    proposed: !!r.proposed,
+    proposedBy: r.proposed_by ?? undefined,
+    proposedReason: r.proposed_reason ?? undefined,
   };
 }
 
@@ -130,11 +142,42 @@ export class HostStore {
       ownerMemberId,
       shared: false,
       createdAt: Date.now(),
+      proposed: false,
     };
     this.db
       .prepare('INSERT INTO hosts (id, name, pattern, protocol, credential, posture, enabled, scope, owner_member_id, shared, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(host.id, host.name, host.match, host.protocol, host.credential, host.posture, 1, host.scope, host.ownerMemberId ?? null, 0, host.createdAt);
     return host;
+  }
+
+  /**
+   * An agent PROPOSES an org host connection (`host_propose`). Created INACTIVE (`enabled=0`,
+   * `proposed=1`) with NO credential — a secret ref is the admin's to attach at/after publish, never the
+   * agent's to set. Excluded from every grant set until an owner/admin publishes it. Mirrors
+   * SkillStore.propose (a draft awaiting review). Stamps the proposing agent + reason for the card.
+   */
+  propose(input: { name: string; match: string; protocol?: HostProtocol; posture?: HostPosture; agent: string; rationale?: string }): Host {
+    const name = (input.name || '').trim();
+    const match = (input.match || '').trim();
+    if (!name) throw new Error('a name is required');
+    if (!match) throw new Error('a host match (hostname, CIDR, or host:port) is required');
+    const existing = new Set(this.db.prepare('SELECT id FROM hosts').all<{ id: string }>().map((r) => r.id));
+    const base = slug(name);
+    let id = base;
+    for (let n = 2; existing.has(id); n++) id = `${base}-${n}`;
+    this.db
+      .prepare('INSERT INTO hosts (id, name, pattern, protocol, credential, posture, enabled, scope, owner_member_id, shared, created_at, proposed, proposed_by, proposed_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, name, match, asProtocol(input.protocol), '', asPosture(input.posture), 0, 'org', null, 0, Date.now(), 1, input.agent, (input.rationale || '').trim() || null);
+    return this.get(id)!;
+  }
+
+  /** Publish a proposed host → active (`enabled=1`, `proposed=0`), clearing the proposal provenance.
+   *  Returns undefined if the id isn't a proposed host. The owner/admin gate is enforced at the route. */
+  publish(id: string): Host | undefined {
+    const h = this.get(id);
+    if (!h || !h.proposed) return undefined;
+    this.db.prepare('UPDATE hosts SET proposed = 0, proposed_by = NULL, proposed_reason = NULL, enabled = 1 WHERE id = ?').run(id);
+    return this.get(id);
   }
 
   /** Edit the mutable fields of a host in place (name/match/protocol/credential/posture). Scope and
@@ -194,7 +237,7 @@ export class HostStore {
    */
   grantsFor(memberId?: string): { match: string; protocol: HostProtocol; posture: HostPosture }[] {
     return this.list()
-      .filter((h) => h.enabled)
+      .filter((h) => h.enabled && !h.proposed)
       .filter((h) => h.scope !== 'personal' || h.shared || (!!memberId && h.ownerMemberId === memberId))
       .map((h) => ({ match: h.match, protocol: h.protocol, posture: h.posture }));
   }
@@ -207,7 +250,7 @@ export class HostStore {
    */
   sshCredsFor(memberId?: string): { id: string; name: string; match: string; credential: string }[] {
     return this.list()
-      .filter((h) => h.enabled && h.credential && (h.protocol === 'ssh' || h.protocol === 'any'))
+      .filter((h) => h.enabled && !h.proposed && h.credential && (h.protocol === 'ssh' || h.protocol === 'any'))
       .filter((h) => h.scope !== 'personal' || h.shared || (!!memberId && h.ownerMemberId === memberId))
       .map((h) => ({ id: h.id, name: h.name, match: h.match, credential: h.credential }));
   }

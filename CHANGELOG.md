@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.125.0] — 2026-07-13
+### Added
+- **Agents can propose Host connections — the `host_propose` MCP tool.** When an agent finds it needs to
+  reach a host that isn't granted yet, it can propose one (name + match + optional protocol/posture +
+  rationale). The proposal lands as an **inactive, credential-less org host** (`proposed=1, enabled=0`,
+  **excluded from every grant set until published** — the safety line) plus a **`host.proposed` inbox card**
+  to the owner/admins. An owner/admin reviews it on the **Connections** page (a violet "Proposed by agents"
+  section) and **Publishes** it (`POST /api/hosts/:id/publish` → active) or **Dismisses** it (delete). The
+  agent **cannot attach a credential** — a secret is the admin's to add at/after publish. Mirrors
+  `skill_propose`. Audited `host.proposed` / `host.published`. (Deferred item from `docs/host-connections-plan.md`.)
+
 ## [0.124.1] — 2026-07-13
 ### Fixed
 - **Closing a terminal tab now removes the session from the left sidebar too.** Closing a tab detaches it

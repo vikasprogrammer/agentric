@@ -2931,6 +2931,10 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     Icon = Sparkles; iconCls = 'text-violet-600'; highlight = true
     verb = 'proposed a skill'; detail = m.body
     badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
+  } else if (m.type === 'host.proposed') {
+    Icon = Server; iconCls = 'text-violet-600'; highlight = true
+    verb = 'proposed a host'; detail = m.body
+    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Connections</Badge>
   } else if (m.type === 'goal.proposed') {
     Icon = Target; iconCls = 'text-indigo-600'; highlight = true
     verb = 'proposed a goal'; detail = m.body

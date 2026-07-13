@@ -387,7 +387,7 @@ export interface AddGoalReq {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'host.proposed'
   sessionId: string
   agent: string
   title: string
@@ -543,6 +543,9 @@ export interface Host {
   ownerMemberId?: string
   shared: boolean
   createdAt: number
+  proposed: boolean             // proposed by an agent (host_propose), inactive until published
+  proposedBy?: string           // the proposing agent (agent:<id>)
+  proposedReason?: string
 }
 export interface HostsResp { hosts: Host[] }
 export interface AddHostReq {
@@ -1129,4 +1132,5 @@ export const api = {
   toggleHost: (id: string, enabled: boolean) => call<Host>('PATCH', '/api/hosts/' + id, { enabled }),
   shareHost: (id: string, shared: boolean) => call<Host>('PATCH', '/api/hosts/' + id, { shared }),
   deleteHost: (id: string) => call<{ ok: boolean }>('DELETE', '/api/hosts/' + id),
+  publishHost: (id: string) => call<Host | { error: string }>('POST', '/api/hosts/' + id + '/publish'),
 }

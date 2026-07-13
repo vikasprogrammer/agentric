@@ -458,7 +458,43 @@ function HostRow({ h, me, busy, onToggle, onRemove, onShare, onEdit }: {
   )
 }
 
-function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost }: {
+/** A host an agent PROPOSED (`host_propose`) — inactive until an owner/admin publishes it. Shows the
+ *  proposing agent + reason, with Publish / Dismiss (admin-only). No credential (the admin adds one). */
+function ProposedHostRow({ h, me, busy, onPublish, onDismiss }: {
+  h: Host; me: Member | null; busy: string
+  onPublish: (id: string) => void
+  onDismiss: (id: string) => void
+}) {
+  const isAdmin = isAdminRole(me)
+  const proto = h.protocol === 'any' ? 'any' : h.protocol
+  const who = (h.proposedBy || '').replace(/^agent:/, '')
+  return (
+    <div className="rounded-lg border border-violet-300/60 bg-violet-50/40 p-3 dark:border-violet-800/50 dark:bg-violet-950/20">
+      <div className="flex items-center gap-3">
+        <BrandIcon name={h.protocol === 'any' ? 'host' : h.protocol} box={36} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium capitalize">{h.name}</span>
+            {statusBadge('proposed', 'warn')}
+            {statusBadge(h.posture, h.posture === 'never' ? 'warn' : h.posture === 'allow' ? 'ok' : 'muted')}
+          </div>
+          <div className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{proto} · {h.match}</div>
+          {(who || h.proposedReason) && (
+            <div className="mt-1 text-[11px] text-muted-foreground">{who && <>proposed by <b>{who}</b></>}{h.proposedReason ? <> — {h.proposedReason}</> : null}</div>
+          )}
+        </div>
+        {isAdmin && (
+          <div className="flex shrink-0 items-center gap-2">
+            <Button size="sm" disabled={busy === h.id} onClick={() => onPublish(h.id)}>Publish</Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy === h.id} onClick={() => onDismiss(h.id)} title="dismiss"><Trash2 className="h-4 w-4" /></Button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
   me: Member | null
   connectors: Connector[]
   hosts: Host[]
@@ -473,6 +509,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
   onRemoveHost: (id: string) => void
   onShareHost: (id: string, shared: boolean) => void
   onEditHost: (h: Host) => void
+  onPublishHost: (id: string) => void
 }) {
   const isAdmin = isAdminRole(me)
   const [filter, setFilter] = useState<'all' | 'company' | 'mine'>('all')
@@ -481,11 +518,13 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
   // apps come from /api/connections (carries each connection's distinguishing name), not the overview.
   const orgConnectors = connectors.filter((c) => c.scope === 'org' || (c.scope === 'personal' && c.shared))
   const companyApps = conns?.company ?? []
-  const orgHosts = hosts.filter((h) => h.scope === 'org' || (h.scope === 'personal' && h.shared))
+  const orgHosts = hosts.filter((h) => !h.proposed && (h.scope === 'org' || (h.scope === 'personal' && h.shared)))
   // Mine = the viewer's own personal connectors + their own Composio apps + their own hosts.
   const myConnectors = connectors.filter((c) => c.scope === 'personal' && c.ownerMemberId === me?.id)
   const myApps = conns?.mine ?? []
-  const myHosts = hosts.filter((h) => h.scope === 'personal' && h.ownerMemberId === me?.id)
+  const myHosts = hosts.filter((h) => !h.proposed && h.scope === 'personal' && h.ownerMemberId === me?.id)
+  // Agent-proposed hosts awaiting review (admin-only action).
+  const proposedHosts = isAdmin ? hosts.filter((h) => h.proposed) : []
 
   const companyCount = orgConnectors.length + companyApps.length + orgHosts.length + 2 // +2 for the native bot rows
   const mineCount = myConnectors.length + myApps.length + myHosts.length
@@ -509,6 +548,15 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
           ]}
         />
       </div>
+
+      {proposedHosts.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-violet-600 dark:text-violet-400">
+            <Server className="h-3.5 w-3.5" /> Proposed by agents — review + publish to grant access
+          </div>
+          {proposedHosts.map((h) => <ProposedHostRow key={h.id} h={h} me={me} busy={busy} onPublish={onPublishHost} onDismiss={onRemoveHost} />)}
+        </div>
+      )}
 
       {showCompany && (
         <div className="space-y-2">
@@ -818,6 +866,7 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
     if (!window.confirm('Remove this host connection?')) return
     withHostBusy(id, () => api.deleteHost(id))
   }
+  const publishHost = (id: string) => withHostBusy(id, () => api.publishHost(id))
 
   const disconnectComposio = async (id: string, scope: 'company' | 'personal', label: string) => {
     const who = scope === 'company' ? 'the whole company' : 'yourself'
@@ -870,6 +919,7 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
         onDisconnectComposio={disconnectComposio}
         onToggleHost={toggleHost}
         onRemoveHost={removeHost}
+        onPublishHost={publishHost}
         onShareHost={shareHost}
         onEditHost={(h) => setHostForm({ host: h, scope: h.scope })}
       />

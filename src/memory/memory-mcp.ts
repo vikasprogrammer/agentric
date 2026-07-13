@@ -444,6 +444,30 @@ const TOOLS = [
     },
   },
   {
+    name: 'host_propose',
+    description:
+      'Propose a HOST connection for the workspace — a reachable destination (an SSH box, an internal ' +
+      'service, a database) your agents should be governed to reach. Use this when you discover you NEED ' +
+      "to reach a host that isn't granted yet (an ssh/curl/psql target that would otherwise pause for " +
+      'approval every time). Your proposal is a DRAFT: it is INACTIVE and grants no access until an ' +
+      'owner/admin reviews and publishes it — an inbox card notifies them. You CANNOT attach a credential ' +
+      "(a secret is the admin's to add). Pass a short `name`, the `match` (a hostname like db.internal, a " +
+      'wildcard *.internal, a CIDR 10.0.0.0/8, or host:port), optionally the `protocol` and default `posture`, ' +
+      'and a `rationale` for the reviewer.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'A short human label for the host (e.g. "Prod database").' },
+        match: { type: 'string', description: 'The destination matcher: a hostname (db.internal), a wildcard (*.internal.example.com), a CIDR (10.0.0.0/8), or host:port.' },
+        protocol: { type: 'string', enum: ['ssh', 'http', 'postgres', 'any'], description: 'Optional. The protocol this host speaks. Default: any.' },
+        posture: { type: 'string', enum: ['allow', 'ask', 'never'], description: 'Optional. Suggested default tier once granted: allow / ask / never. The admin can change it. Default: ask.' },
+        rationale: { type: 'string', description: 'Why you need this host — shown to the reviewer.' },
+      },
+      required: ['name', 'match'],
+    },
+  },
+  {
     name: 'skill_find',
     description:
       'Discover installable SKILLS — the reusable playbooks packaged for this workspace. Returns your ' +
@@ -1117,6 +1141,26 @@ async function skillPropose(args: Record<string, unknown>): Promise<string> {
   return d.ok
     ? `Proposed skill "${d.skill ?? name}" — it's a draft in the inbox for an owner/admin to review and publish. It won't be active until then.`
     : `Could not propose skill: ${d.error ?? 'unknown error'}`;
+}
+
+async function hostPropose(args: Record<string, unknown>): Promise<string> {
+  const name = String(args.name ?? '').trim();
+  const match = String(args.match ?? '').trim();
+  if (!name || !match) return 'host_propose needs a name and a match (hostname, CIDR, or host:port).';
+  const res = await fetch(AOS_URL + '/api/hosts/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, agent: AGENT, name, match,
+      protocol: args.protocol ? String(args.protocol) : undefined,
+      posture: args.posture ? String(args.posture) : undefined,
+      rationale: args.rationale ? String(args.rationale) : undefined,
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; host?: string; error?: string };
+  return d.ok
+    ? `Proposed host "${name}" (${match}) — it's a draft in the inbox for an owner/admin to review and publish. It grants no access until then.`
+    : `Could not propose host: ${d.error ?? 'unknown error'}`;
 }
 
 async function skillFind(args: Record<string, unknown>): Promise<string> {
@@ -1923,6 +1967,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'notify' ? await notify(args)
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
+        : name === 'host_propose' ? await hostPropose(args)
         : name === 'skill_find' ? await skillFind(args)
         : name === 'skill_request' ? await skillRequest(args)
         : name === 'slack_reply' ? await slackReply(args)
