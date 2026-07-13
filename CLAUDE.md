@@ -118,9 +118,15 @@ Key modules:
   only — headless keeps `--dangerously-skip-permissions`; unset → `auto`, which only tunes the fallback for
   tools the gate hook doesn't govern, never the gate itself). It also resolves the agent's opt-in
   **`shellSecrets`** (manifest list of vault keys, e.g. `["GH_TOKEN"]`) via `injectShellSecrets` and
-  exports each as a shell env var — the ONLY path a vault secret reaches the interactive shell (so a
-  plain CLI like `gh` authenticates); connectors still get theirs via the MCP bag. Agent-scoped
-  principal (widening to `*`), audited `shell.secret.injected`/`unresolved`, opt-in per agent. Then
+  exports each as a shell env var (so a plain CLI like `gh` authenticates); connectors still get theirs
+  via the MCP bag. Agent-scoped principal (widening to `*`), audited `shell.secret.injected`/`unresolved`.
+  A **second, admin-driven path** exports the same way: `injectAssignedSecrets` reads the
+  **`secret_assignments`** table — the inverse view of `shellSecrets`, managed from **Settings → Secrets**
+  (assign a stored secret to agents rather than declaring keys in each manifest). An assignment names the
+  secret by its `(owner-principal, key)`, so one canonical value fans out to many agents without a
+  per-agent copy; injection resolves that owner's value and exports it (audited
+  `shell.secret.injected`/`unresolved` with `via:'assignment'`). Both paths are **injection only** — an
+  assignment never widens who can `secret_get` a value. Then
   **`injectMemberGithub`** runs right after: if the run's **run-as member** linked their own GitHub
   account (per-member OAuth — `src/edge/github-identity.ts`, `docs/per-member-github-plan.md`), THEIR
   vault-stored user token OVERRIDES the agent bot's `GH_TOKEN`/`GITHUB_TOKEN`, so git/PRs are authored as
@@ -231,7 +237,10 @@ Key modules:
   also dispatches an `autoDispatch` hand-off immediately (parity with the console) instead of waiting for the tick. Secrets
   (shared credential handoff): `secret_put`/`secret_get`/`secret_list` — an agent stores a password/key
   tenant-wide under a KEY (approval-gated `secret.put`; value kept out of audit/approval-card/policy args,
-  encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. Agents
+  encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. (Complementary,
+  admin-side: **Settings → Secrets** can *assign* a stored secret to agents — `PUT /api/secrets/agents`,
+  the `secret_assignments` table — so it's injected into each assigned agent's shell at launch, the
+  central-grant inverse of manifest `shellSecrets`. Injection only, not a `secret_get` grant.) Agents
   (build + self-improve): `agent_create` (spin up a new governed teammate) and the **self-only**
   `agent_update`/`agent_history`/`agent_revert` — an agent refines its OWN listing (description, starter
   prompts, tuning) + CLAUDE.md system prompt and can roll back a bad self-edit; every change snapshots a

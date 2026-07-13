@@ -34,7 +34,7 @@ GitHub API" is confronted with five mechanisms that overlap on some axes and div
 | **Connectors** | MCP server specs (`stdio`/`http`) + creds, materialised into `.mcp.json` at launch | org **or** personal (shareable) | connector row `env`/`headers`, resolved from vault via `secret:KEY` refs | **Yes** — `mcp__*` calls hit `gate-hook.sh` → `/api/gate` |
 | **Built-in MCP** (`agentos`) | The OS's *own* tools (memory/kb/tasks/ask/secret…) over loopback | every session | session bearer | **No** by design (hook exits 0) — the OS itself, scoped + audited server-side |
 | **Agent-specific MCPs** | *Not a real manifest field today.* A per-agent tool = a **personal connector** | member | vault | (would be, via connectors) |
-| **Bespoke** (`shellSecrets` + vault + raw bash/ssh/curl) | Vault key → shell env var so a CLI (`gh`, `ssh`) authenticates | agent (widening to `*`) | vault | **Partially** — the *injection* is ungated; the *bash command* is gated only as `shell.exec` text |
+| **Bespoke** (`shellSecrets` + vault + raw bash/ssh/curl) | Vault key → shell env var so a CLI (`gh`, `ssh`) authenticates — configured per agent via manifest `shellSecrets` **or** per-secret **agent assignment** (Settings → Secrets, `secret_assignments`) | agent (widening to `*`) | vault | **Partially** — the *injection* is ungated; the *bash command* is gated only as `shell.exec` text |
 
 Three structural observations fall out of that table:
 

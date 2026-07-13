@@ -32,7 +32,7 @@ Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`]
 | 5 | Policy | ✅ | JSON rule engine + console editor (owner-edit, live hot-reload, persisted). **Learnable from the Inbox** — an approval's owner-only "Always" adds an `allow` rule (safely, after all `never` rules). Single ruleset per workspace; no dry-run simulator |
 | 6 | Audit Logs | ✅ | JSONL system-of-record + SQLite mirror + console **Audit** viewer (filter by session/type/principal) |
 | 7 | Automations | ✅ | Cron + webhook + native **Slack & Discord** triggers spawn governed sessions, run-as the sending member; a **generic `/agent` chat router** reaches any agent by name with no per-agent automation (replies threaded); **agent-scheduled one-shots** (`schedule`/`unschedule` MCP tools → `type:'once'`, bounded + human-cancellable) let an agent defer a future run of itself; email inbound still out |
-| 8 | Secrets | 🟡 | Encrypted-at-rest vault (AES-256-GCM) + console UI; connectors resolve `secret:` refs at launch; no key rotation yet |
+| 8 | Secrets | 🟡 | Encrypted-at-rest vault (AES-256-GCM) + console UI; connectors resolve `secret:` refs at launch; agents get shell env vars via manifest `shellSecrets` or per-secret agent assignment; no key rotation yet |
 | 9 | Memory layer | 🟡 | Per-agent + **shared workspace-wide** `remember`/`recall` (+ agent self-correction via `revise`/`forget`, recall returns ids) MCP server + console **Memory hub** (Overview / Memories / Self-learning tabs) live; three backends — sqlite (keyword, or hybrid keyword+vector with embeddings), libsql (native vectors), automem — switchable live in Settings → Memory backend. **Episodic↔semantic encoding loop** ships: graded auto session-end **episodes** (salience-weighted by effort+friction+outcome), deliberate **lessons** (the `report` `lessons` field), **retrieval reinforcement** (rank ↑ frequently-recalled, recency from last-use, prune the never-recalled), prune+dedupe maintenance, and tenant-scoped sharing; ANN still pending. See [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) |
 | 10 | Dreaming / Self-learning | 🟡 | A periodic Dreamer reflects on recent episodes + outcomes + friction, **compounds** them into persisted cumulative state (growing KB page + shared memory Insight), and closes the loop two ways: (a) distilled **guidance injected into every agent's prompt** at launch, and (b) **approval-gated config recommendations** a human Applies/Dismisses. Plus the **consolidation gardener** (a governed headless `consolidator` agent that abstracts recent episodes+lessons into shared memories + KB pages) — now the second half of one **"reflect"** pass (deterministic tally then gardener), surfaced as a single **Reflect now** button in the Memory hub → Self-learning. The whole system is framed by four verbs (Capture · Recall · Distil · Apply) in [`memory-model.md`](./memory-model.md); mechanism in [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) |
 | 11 | Company Settings | 🟡 | Company context (markdown) edited in console, appended to every claude-code agent's system prompt. Tenant branding not folded in yet |
@@ -284,6 +284,15 @@ console panel (set/replace/delete; values are write-only, never shown back).
 lives solely in the connector subprocess's env for the session's life. Principal defaults to the acting member
 (widening to `*`); an unresolved reference is blanked + audited (`connector.secret.unresolved`), never leaking
 the `secret:…` marker. So agents still get *tools*, never raw keys — the cred is decrypted inside the boundary.
+
+**Secrets into an agent's shell.** Distinct from connector refs (which reach a subprocess), a claude-code
+agent's *own* shell can get vault values as env vars at launch — so a plain CLI (`gh`, `psql`) authenticates —
+via two injection paths, both audited `shell.secret.injected`/`unresolved` and **injection only** (never a
+`secret_get` read grant): (1) the agent's manifest **`shellSecrets`** list (`injectShellSecrets`, self-declared
+per agent); and (2) **agent assignment** (`injectAssignedSecrets` over the `secret_assignments` table) — the
+inverse view, where an owner/admin assigns a stored secret to agents from **Settings → Secrets** (`PUT
+/api/secrets/agents`) instead of editing each manifest. An assignment names the secret by its `(owner-principal,
+key)`, so one canonical value fans out to many agents without a per-agent copy.
 
 **Gaps.** Master-key **rotation + re-encryption** (rotating today invalidates sealed values). A one-click
 "migrate this connector's raw creds into the vault" console action (today the admin sets the secret + edits
