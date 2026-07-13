@@ -873,6 +873,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
+  // OS-owned image EDIT/upscale (`image_edit` MCP tool): edit or upscale an existing image → a new
+  // artifact. Same loopback/gate posture as image/generate; TerminalManager.editImage owns the path.
+  if (method === 'POST' && p === '/api/agent/image/edit') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const out = await tm.editImage(session, {
+      image: String(b.image || ''),
+      prompt: b.prompt ? String(b.prompt) : undefined,
+      scale: b.scale !== undefined ? Number(b.scale) : undefined,
+      model: b.model ? String(b.model) : undefined,
+    });
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
   // OS-owned VIDEO generation (`video_generate` MCP tool). Async: submits + persists a job, briefly
   // polls, then the tick poller finishes it. Pre-auth loopback, session-secret gated like the others.
   if (method === 'POST' && p === '/api/agent/video/generate') {

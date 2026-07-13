@@ -40,10 +40,23 @@ export interface ImageGenRequest {
   n: number;
 }
 
+/** Edit or upscale an EXISTING image. `images` are already-resolved inputs the vendor accepts inline
+ *  (data: URLs or http URLs). `scale` set (>1) ⇒ upscale mode (uses the upscaler model, `prompt` ignored);
+ *  otherwise it's a prompt-guided edit (image-to-image). */
+export interface ImageEditRequest {
+  images: string[];
+  prompt?: string;
+  model?: string;
+  size?: string;
+  scale?: number;
+}
+
 export interface ImageBackend {
   readonly name: 'openrouter' | 'atlas';
   readonly defaultModel: string;
   generate(req: ImageGenRequest): Promise<ImageGenResult>;
+  /** Edit/upscale an existing image (image-to-image). Not every backend supports it — those throw. */
+  editImage(req: ImageEditRequest): Promise<ImageGenResult>;
 }
 
 /** What the factory needs from Settings — passed in (not the whole store) to keep this testable. */
@@ -145,6 +158,10 @@ class OpenRouterBackend implements ImageBackend {
     const images = await Promise.all(entries.map(toBytes));
     return { images, model, costUsd: typeof d.usage?.cost === 'number' ? d.usage.cost : undefined };
   }
+
+  async editImage(_req: ImageEditRequest): Promise<ImageGenResult> {
+    throw new Error('image editing requires an Atlas Cloud key (the OpenRouter image API is text-to-image only)');
+  }
 }
 
 // ── Atlas Cloud ──────────────────────────────────────────────────────────────
@@ -164,10 +181,13 @@ interface AtlasPrediction {
 class AtlasBackend implements ImageBackend {
   readonly name = 'atlas' as const;
   readonly defaultModel: string;
+  readonly editModel: string; // image-to-image default when an edit names no model
+  readonly upscaleModel = 'atlascloud/image-upscaler';
   private readonly base: string;
   constructor(private readonly key: string, baseUrl?: string, defaultModel?: string) {
     this.base = (baseUrl?.trim() || 'https://api.atlascloud.ai').replace(/\/+$/, '');
     this.defaultModel = defaultModel?.trim() || 'google/nano-banana-2/text-to-image';
+    this.editModel = 'google/nano-banana-2/edit';
   }
 
   private headers(): Record<string, string> {
@@ -178,13 +198,30 @@ class AtlasBackend implements ImageBackend {
     const model = req.model?.trim() || this.defaultModel;
     const body: Record<string, unknown> = { model, prompt: req.prompt };
     if (req.size) body.size = req.size;
-    // Submit
+    return this.submitAndPoll(body, model);
+  }
+
+  async editImage(req: ImageEditRequest): Promise<ImageGenResult> {
+    if (!req.images.length) throw new Error('an input image is required');
+    const upscale = typeof req.scale === 'number' && req.scale > 1;
+    const model = req.model?.trim() || (upscale ? this.upscaleModel : this.editModel);
+    // Edit and upscale ride the SAME generateImage submit+poll — only the body shape differs: an upscaler
+    // takes a single `image` + `outscale`; an image-to-image edit takes `images[]` + a `prompt`.
+    const body: Record<string, unknown> = upscale
+      ? { model, image: req.images[0], outscale: req.scale, output_format: 'jpeg' }
+      : { model, prompt: req.prompt ?? '', images: req.images };
+    if (!upscale && req.size) body.size = req.size;
+    return this.submitAndPoll(body, model);
+  }
+
+  /** Submit a generateImage body then poll the prediction to completion (image renders in seconds, so a
+   *  bounded internal poll keeps the sync ImageBackend contract). Shared by generate + editImage. */
+  private async submitAndPoll(body: Record<string, unknown>, model: string): Promise<ImageGenResult> {
     const sres = await fetch(`${this.base}/api/v1/model/generateImage`, { method: 'POST', headers: this.headers(), body: JSON.stringify(body) });
     const sbody = (await sres.json().catch(() => ({}))) as { data?: AtlasPrediction; message?: string } & AtlasPrediction;
     if (!sres.ok) throw new Error(atlasErr(sbody, sres.status));
     const id = sbody.data?.id ?? sbody.id;
     if (!id) throw new Error('Atlas did not return a prediction id');
-    // Poll to completion (image is fast — bounded internal poll keeps the sync contract).
     const deadline = Date.now() + 90_000;
     for (;;) {
       await new Promise((r) => setTimeout(r, 2000));

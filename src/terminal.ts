@@ -2379,6 +2379,77 @@ export class TerminalManager {
   }
 
   /**
+   * Edit or upscale an EXISTING image (the `image_edit` MCP path). Same governance + storage as
+   * `generateImage`: classified `image.edit` with an estimated `amountUsd` (money-cap applies), the
+   * result is `ingest`ed as a NEW `image` artifact (the source is never mutated) + an owner-scoped inbox
+   * card, audited `image.edited`. The source image is any ref `resolveImageRef` accepts — a Library
+   * artifact id, a working-folder file (written or terminal-uploaded), or a URL. `scale` (>1) upscales
+   * (prompt ignored); otherwise `prompt` drives an image-to-image edit. Atlas-only (OpenRouter throws).
+   */
+  async editImage(sessionId: string, input: { image: string; prompt?: string; scale?: number; model?: string }): Promise<{ ok: boolean; artifacts?: { id: string; filename: string; mime: string }[]; model?: string; costUsd?: number; error?: string }> {
+    const agent = this.sessionAgent(sessionId);
+    if (!agent) return { ok: false, error: 'unknown session' };
+    if (!this.os.artifacts.enabled) return { ok: false, error: 'artifacts store is disabled (no data home)' };
+    const upscale = typeof input.scale === 'number' && input.scale > 1;
+    const prompt = (input.prompt || '').trim();
+    if (!upscale && !prompt) return { ok: false, error: 'describe the edit in `prompt` (or pass `scale` to upscale)' };
+    const imageRef = (input.image || '').trim();
+    if (!imageRef) return { ok: false, error: 'an input `image` is required — a Library artifact id, a working-folder path, or an image URL' };
+    const resolved = this.resolveImageRef(agent, imageRef);
+    if ('error' in resolved) return { ok: false, error: resolved.error };
+
+    const backend = resolveImageBackend({
+      openRouterKey: this.os.settings.openRouterKey(),
+      atlasKey: this.os.settings.atlasKey(),
+      defaultModel: this.os.settings.imageDefaultModel() || undefined,
+    });
+    if (!backend) return { ok: false, error: 'image editing is not configured — set an Atlas Cloud key in Settings → Integrations' };
+
+    const estimateUsd = DEFAULT_IMAGE_COST_USD;
+    const op = upscale ? 'upscale' : 'edit';
+    const model = input.model?.trim() || (upscale ? 'atlascloud/image-upscaler' : op);
+    const gate = this.gate(sessionId, agent, 'image.edit', { prompt, model, upscale, amountUsd: estimateUsd }, `${op} an image with ${model}`);
+    if (gate.decision === 'deny') return { ok: false, error: 'blocked by policy' };
+    if (gate.decision === 'pending') return { ok: false, error: 'this edit needs human approval — an approval request was filed; retry once it is approved' };
+
+    let result;
+    try {
+      result = await backend.editImage({ images: [resolved.url], prompt, model: input.model, scale: input.scale });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      this.audit(sessionId, agent, 'image.failed', { model, op, error: msg });
+      return { ok: false, error: msg };
+    }
+
+    const srow = this.db.prepare('SELECT spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null; run_as: string | null }>(sessionId);
+    const source = srow?.run_as ?? srow?.spawned_by ?? undefined;
+    const title = upscale ? `Upscaled ${input.scale}×` : (prompt.length > 60 ? prompt.slice(0, 57) + '…' : prompt);
+    const stamp = Date.now();
+    const costUsd = result.costUsd ?? estimateUsd;
+    const perImageUsd = +(costUsd / result.images.length).toFixed(6);
+    const out: { id: string; filename: string; mime: string }[] = [];
+    result.images.forEach((img, i) => {
+      const filename = `${op}-${stamp}${result.images.length > 1 ? `-${i + 1}` : ''}.${img.ext}`;
+      const r = this.os.artifacts.ingest({
+        sessionId, agent, source, title, description: upscale ? `Upscaled ${input.scale}× from ${imageRef}` : prompt,
+        folder: 'edited-images', filename, bytes: img.bytes, kind: 'image', costUsd: perImageUsd,
+      });
+      if (!r.ok) return;
+      const a = r.artifact;
+      out.push({ id: a.id, filename: a.filename, mime: a.mime });
+      this.addMessage({
+        type: 'artifact', sessionId, agent, title: `Image — ${agent}`, body: a.title, status: 'open',
+        source, args: { artifactId: a.id, filename: a.filename, mime: a.mime, kind: a.kind },
+        audienceKind: 'sessionOwner', audienceId: sessionId,
+      });
+    });
+    if (!out.length) return { ok: false, error: 'edit succeeded but no image could be stored' };
+
+    this.audit(sessionId, agent, 'image.edited', { model: result.model, backend: backend.name, op, count: out.length, costUsd, costSource: result.costUsd != null ? 'actual' : 'estimate', artifactIds: out.map((o) => o.id) });
+    return { ok: true, artifacts: out, model: result.model, costUsd };
+  }
+
+  /**
    * Resolve an agent-supplied image reference for image-to-video into something a vendor accepts inline
    * (a `data:` URL or a passthrough http URL). Supports every place a session's image can live:
    *   1. an http(s) or data: URL           → passed straight through

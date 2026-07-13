@@ -169,6 +169,28 @@ const IMAGE_GENERATE_TOOL = {
   },
 };
 
+const IMAGE_EDIT_TOOL = {
+  name: 'image_edit',
+  description:
+    'Edit or upscale an EXISTING image (image-to-image). Use this to transform an image you already have — ' +
+    'change its style/content ("make the sky purple", "add a hat"), or upscale it — WITHOUT redrawing from ' +
+    'scratch. The source `image` can be a Library artifact id (e.g. from a prior image_generate), a file path ' +
+    'in your working folder (a file you wrote OR one uploaded into the session), or an http(s) image URL. ' +
+    'The result is saved as a NEW image in the Library (the source is never changed) and the tool returns the ' +
+    'new artifact id. Pass `prompt` to describe the edit, OR `scale` (2 or 4) to upscale. Governed ' +
+    '(cost-metered + audited). Requires an Atlas Cloud key.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      image: { type: 'string', description: 'The image to edit: a Library artifact id, a file path in your working folder (written or uploaded), or an http(s) image URL.' },
+      prompt: { type: 'string', description: 'How to change the image (e.g. "turn it into a watercolor painting", "remove the background"). Required unless upscaling.' },
+      scale: { type: 'number', description: 'Upscale factor (2 or 4). When set, upscales the image and `prompt` is ignored.' },
+      model: { type: 'string', description: 'Optional model id override (an Atlas image-to-image / upscaler model). Omit for the default.' },
+    },
+    required: ['image'],
+  },
+};
+
 const VIDEO_GENERATE_TOOL = {
   name: 'video_generate',
   description:
@@ -1091,6 +1113,29 @@ async function imageGenerate(args: Record<string, unknown>): Promise<string> {
   return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${list}.`;
 }
 
+async function imageEdit(args: Record<string, unknown>): Promise<string> {
+  const image = String(args.image ?? '').trim();
+  if (!image) return 'An input `image` is required (a Library artifact id, a working-folder file path, or an image URL).';
+  const scale = args.scale !== undefined ? Number(args.scale) : undefined;
+  const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+  if (!(scale && scale > 1) && !prompt) return 'Describe the edit in `prompt`, or pass `scale` (2 or 4) to upscale.';
+  const body: Record<string, unknown> = { session: SESSION, image };
+  if (prompt) body.prompt = prompt;
+  if (scale !== undefined) body.scale = scale;
+  if (typeof args.model === 'string' && args.model.trim()) body.model = args.model.trim();
+  const res = await fetch(AOS_URL + '/api/agent/image/edit', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string; artifacts?: { id: string; filename: string }[]; model?: string; costUsd?: number };
+  if (!d.ok) return `Could not edit image: ${d.error ?? 'unknown error'}`;
+  const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
+  const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
+  const what = scale && scale > 1 ? `Upscaled ${scale}×` : 'Edited';
+  return `${what} with ${d.model ?? 'the default model'}${cost}. New image saved to the Library: ${list}.`;
+}
+
 async function videoGenerate(args: Record<string, unknown>): Promise<string> {
   const prompt = String(args.prompt ?? '').trim();
   if (!prompt) return 'A prompt is required.';
@@ -1995,7 +2040,7 @@ async function handle(req: JsonRpc): Promise<void> {
       ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : []),
       ...(SLACK_EGRESS ? [SLACK_SEND_TOOL, SLACK_DM_TOOL] : []),
       ...(DISCORD_EGRESS ? [DISCORD_SEND_TOOL, DISCORD_DM_TOOL] : []),
-      ...(IMAGE_GEN ? [IMAGE_GENERATE_TOOL] : []),
+      ...(IMAGE_GEN ? [IMAGE_GENERATE_TOOL, IMAGE_EDIT_TOOL] : []),
       ...(VIDEO_GEN ? [VIDEO_GENERATE_TOOL] : []),
     ] } });
     return;
@@ -2031,6 +2076,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'discord_send' ? await discordSend(args)
         : name === 'discord_dm' ? await discordDm(args)
         : name === 'image_generate' ? await imageGenerate(args)
+        : name === 'image_edit' ? await imageEdit(args)
         : name === 'video_generate' ? await videoGenerate(args)
         : name === 'list_capabilities' ? await listCapabilities()
         : name === 'policy_check' ? await policyCheck(args)
