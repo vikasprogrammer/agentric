@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.148.0] — 2026-07-13
+### Added
+- **Task blocker chips on the Kanban board cards.** A card now shows the tasks it's *blocked by* directly —
+  each blocker as a small chip resolved to its title, amber `⏳` when the blocker isn't finished yet and a
+  struck-through muted `✓` once it's `done`/`cancelled`, unmet ones sorted first. Clicking a chip opens that
+  blocker; a card with more than three blockers shows a `+N` that opens the task's Dependencies drawer. This
+  replaces the bare `⏳ waiting on N` count that used to sit in the card's meta row, so the dependency chain
+  is legible at a glance without opening each task (the drawer's full "Depends on" / "Blocks" editor is
+  unchanged). No API change — chips resolve titles from the board data already loaded.
+
 ## [0.147.0] — 2026-07-13
 ### Added
 - **Daily digest — an end-of-day "what got done today" standup, posted to Slack.** A tenant-wide summary
