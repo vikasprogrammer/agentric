@@ -126,6 +126,22 @@ export class GoalStore {
   }
 
   /**
+   * The auto-planner's trigger set: active goals that need (re)planning — they have **no OPEN**
+   * (non-terminal) linked task (never planned, or all their work finished but the goal isn't achieved) and
+   * haven't been edited within `graceMs` (so a goal you're still writing isn't grabbed). Oldest-idle first.
+   */
+  stuck(tenant: string, graceMs: number, now: number): Goal[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM goals g WHERE g.tenant = ? AND g.status = 'active' AND g.updated_at < ?
+           AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status NOT IN ('done','cancelled'))
+         ORDER BY g.updated_at ASC`,
+      )
+      .all<GoalRow>(tenant, now - graceMs)
+      .map(toGoal);
+  }
+
+  /**
    * The one mutating path for edits. Apply changed fields, bump updated_*, and append one goal_event per
    * meaningful change: a `status` event on transition, a `comment` for a note, an `edit` otherwise.
    */

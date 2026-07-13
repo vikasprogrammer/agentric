@@ -11,6 +11,7 @@
 import { randomBytes, randomUUID } from 'crypto';
 import * as os from 'os';
 import * as path from 'path';
+import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
@@ -215,6 +216,13 @@ export const SCHEDULE_MAX_PENDING = 25;           // per agent: pending (enabled
 // A task that fails to complete N times stops being auto-dispatched and is parked `blocked` for a human,
 // so a broken task can't spin the scheduler forever (the Tasks analog of the automation pile-up guard).
 export const TASK_MAX_ATTEMPTS = 3;
+
+// Goal auto-planner (Phase 2) bounds. A "stuck" active goal (no open work) is auto-planned by the
+// strategist — but only after it's sat idle past the grace window (so a just-created goal you're still
+// editing isn't grabbed), no more than a few per tick, and not again within the cooldown.
+const GOAL_AUTOPLAN_GRACE_MS = Number(process.env.AOS_GOAL_AUTOPLAN_GRACE_MS) || 5 * 60_000; // 5 min
+const GOAL_REPLAN_COOLDOWN_MS = Number(process.env.AOS_GOAL_REPLAN_COOLDOWN_MS) || 6 * 3_600_000; // 6 h
+const GOAL_AUTOPLAN_MAX_PER_TICK = Number(process.env.AOS_GOAL_AUTOPLAN_MAX_PER_TICK) || 2;
 
 /**
  * The prompt a dispatched session runs: the task, plus the tools to close its own loop. Mirrors how the
@@ -738,6 +746,41 @@ export class Automations {
       this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'scheduler', type: 'scheduler.deferred', data: { deferred, cap, running } });
     }
     this.sweepOverdue(now);
+    this.sweepStuckGoals(now);
+  }
+
+  /**
+   * Phase 2 — the goal auto-planner. When opted in (Settings), find active goals with no open work that
+   * have sat idle past the grace window and run the strategist to draft/refresh a plan (file-only — it
+   * never dispatches). Bounded by a per-tick cap, a per-goal cooldown (the last `goal.planned` audit),
+   * and the whole-box concurrency cap, so it can't spam or burst sessions. Wrapped so a bad row never
+   * kills the scheduler; a no-op unless the toggle is on. Decoupled from Dreaming — a plain data check.
+   */
+  private sweepStuckGoals(now: Date): void {
+    if (!this.os.settings.autoPlanGoals()) return;
+    try {
+      const cap = this.maxConcurrent;
+      let spawned = 0;
+      for (const g of this.os.goals.stuck(this.os.tenant, GOAL_AUTOPLAN_GRACE_MS, now.getTime())) {
+        if (spawned >= GOAL_AUTOPLAN_MAX_PER_TICK) break;
+        if (cap > 0 && this.tm.aliveSessionCount() >= cap) break; // respect the whole-box concurrency cap
+        const last = this.db
+          .prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'goal.planned' AND data LIKE ?")
+          .get<{ t: number | null }>(`%"goalId":"${g.id}"%`);
+        if (last?.t && now.getTime() - last.t < GOAL_REPLAN_COOLDOWN_MS) continue; // recently planned — cool down
+        spawned++; // count optimistically to bound the per-tick burst
+        void new Strategist(this.os, this.tm)
+          .plan(g.id, 'automation:goal-planner', g.owner)
+          .then((r) => {
+            if (r.spawned) {
+              this.os.audit.append({ ts: Date.now(), runId: r.sessionId ?? '-', tenant: this.os.tenant, principal: 'automation:goal-planner', type: 'goal.autoplanned', data: { goalId: g.id, title: g.title } });
+            }
+          })
+          .catch(() => { /* a failed auto-plan must never take down the scheduler */ });
+      }
+    } catch {
+      // never let the goal sweep take down the automation scheduler
+    }
   }
 
   /**

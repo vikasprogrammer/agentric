@@ -4048,6 +4048,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const [progress, setProgress] = useState<Record<string, GoalProgress>>({})
   const [q, setQ] = useState('')
   const [fStatus, setFStatus] = useState<GoalStatus | ''>('') // '' = all
+  const [autoPlan, setAutoPlan] = useState(false) // scheduler auto-plans stuck goals (owner/admin toggle)
   // Selection is URL-driven (#/goals/<id>) so a goal detail is a shareable permalink.
   const selId = goalId || null
   const openGoal = (id: string) => nav('goals', id)
@@ -4082,6 +4083,14 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     setGoals(r.goals ?? [])
     if (r.counts) setCounts(r.counts)
     setProgress(r.progress ?? {})
+    if (typeof r.autoPlan === 'boolean') setAutoPlan(r.autoPlan)
+  }
+  // Owner/admin toggle: let the scheduler auto-draft plans for stuck goals. Optimistic — revert on error.
+  const toggleAutoPlan = async (next: boolean) => {
+    setHint(''); setAutoPlan(next)
+    const r = await api.setAutoPlanGoals(next)
+    if (r.error) { setAutoPlan(!next); return setHint('⚠ ' + r.error) }
+    if (typeof r.autoPlan === 'boolean') setAutoPlan(r.autoPlan)
   }
   useEffect(() => { load() }, [q, fStatus])
   // Live refresh so an agent moving a goal reflects without a manual reload. Pause while a
@@ -4156,6 +4165,15 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
           The top of the strategy→task ladder. Frame the outcomes the fleet is working toward; agents propose
           goals for you to review, and each one grounds the tasks beneath it.
         </p>
+        {isAdmin && (
+          <label
+            className="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-muted-foreground"
+            title="Auto-draft a plan for stuck goals (active goals with no open work). File-only — you still review & dispatch. Off by default."
+          >
+            <input type="checkbox" checked={autoPlan} onChange={(e) => toggleAutoPlan(e.target.checked)} />
+            Auto-plan
+          </label>
+        )}
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search goals…" className="h-8 w-48 pl-7" />

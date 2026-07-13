@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.121.0] — 2026-07-13
+### Added
+- **Goals Phase 2 — the goal auto-planner ("set the goal, the fleet keeps it moving").** When opted in, the
+  scheduler now notices a **stuck** active goal and runs the strategist to draft a plan on its own — no more
+  clicking "Plan this goal" for every goal. See `docs/goals-plan.md` §Slice 3 / Phase 2.
+  - **Detects** an active goal with **no open work** (no non-terminal linked task — never planned, or all its
+    tasks finished but it isn't achieved) that has sat idle past a grace window (so a goal you're still
+    editing isn't grabbed) — `GoalStore.stuck()`.
+  - **Acts** via `Automations.sweepStuckGoals()` on the scheduler tick: runs the strategist **file-only**
+    (drafts tasks for review; never auto-dispatches), **as the goal's owner** (human passthrough). Bounded by
+    a per-tick cap (`GOAL_AUTOPLAN_MAX_PER_TICK`), a per-goal cooldown (`GOAL_REPLAN_COOLDOWN_MS`, keyed on
+    the last `goal.planned` audit), and the whole-box concurrency cap — so it can't spam or burst sessions.
+    Audited `goal.autoplanned`.
+  - **Opt-in**: an **"Auto-plan stuck goals"** toggle on the Goals page (owner/admin), **default OFF**
+    (`settings.autoPlanGoals`) since it spawns agent sessions. Decoupled from Dreaming — a plain deterministic
+    check on the goal's own data, not AI "sensing". Activity-based stall (open-but-stale tasks) is a
+    documented future knob.
+
 ## [0.120.0] — 2026-07-11
 ### Added
 - **Image generation — agents can now draw.** Claude can't create images natively, so `image_generate`

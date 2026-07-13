@@ -2075,7 +2075,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const goals = os.goals.list({ tenant: os.tenant, status: (url.searchParams.get('status') as GoalStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
     // Derived progress per goal (from its linked tasks) for the page's progress bars — keyed by id.
     const progress = Object.fromEntries(goals.map((g) => [g.id, os.goals.progress(g.id)]));
-    return sendJson(res, 200, { goals, counts: os.goals.counts(os.tenant), progress });
+    return sendJson(res, 200, { goals, counts: os.goals.counts(os.tenant), progress, autoPlan: os.settings.autoPlanGoals() });
+  }
+  // Toggle the goal auto-planner (Phase 2) — opt-in, owner/admin. When on, the scheduler drafts a plan for
+  // any stuck active goal (file-only). Placed before the /:id routes so "autoplan" isn't read as a goal id.
+  if (method === 'POST' && p === '/api/goals/autoplan') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const on = b.on === true || b.on === 'true';
+    os.settings.setAutoPlanGoals(on, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goals.autoplan.set', data: { on } });
+    return sendJson(res, 200, { ok: true, autoPlan: on });
   }
   if (goalComment && method === 'POST') {
     const b = await readBody(req);
