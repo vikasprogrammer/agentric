@@ -973,7 +973,7 @@ function Console({ me }: { me: Member }) {
             <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('goals')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'goals' ? 'text-primary' : 'text-muted-foreground'}`} title="Goals" onClick={onNavClick(() => nav('goals'))}><Target className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('tasks')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'tasks' ? 'text-primary' : 'text-muted-foreground'}`} title="Tasks" onClick={onNavClick(() => nav('tasks'))}><ListChecks className="h-4 w-4" /></Button>
-            <Button render={<a href={navHref('artifacts')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Artifacts" onClick={onNavClick(() => nav('artifacts'))}><Package className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('artifacts')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'artifacts' ? 'text-primary' : 'text-muted-foreground'}`} title="Library" onClick={onNavClick(() => nav('artifacts'))}><Package className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('sessions')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={onNavClick(() => nav('sessions'))}><TerminalSquare className="h-4 w-4" /></Button>
           </nav>
         </aside>
@@ -998,7 +998,7 @@ function Console({ me }: { me: Member }) {
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
             <NavItem icon={<Target className="h-4 w-4" />} label="Goals" active={route === 'goals'} href={navHref('goals')} onClick={() => nav('goals')} />
             <NavItem icon={<ListChecks className="h-4 w-4" />} label="Tasks" active={route === 'tasks'} href={navHref('tasks')} onClick={() => nav('tasks')} />
-            <NavItem icon={<Package className="h-4 w-4" />} label="Artifacts" active={route === 'artifacts'} href={navHref('artifacts')} onClick={() => nav('artifacts')} />
+            <NavItem icon={<Package className="h-4 w-4" />} label="Library" active={route === 'artifacts'} href={navHref('artifacts')} onClick={() => nav('artifacts')} />
           </nav>
         </div>
 
@@ -1120,7 +1120,7 @@ function Console({ me }: { me: Member }) {
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Artifacts' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
+                {route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : 'Agents'}
               </h1>
             </div>
           )}
@@ -3385,7 +3385,7 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
   const selected = artifacts.find((a) => a.id === sel)
 
   const remove = async (id: string) => {
-    if (!confirm('Delete this artifact? Its snapshotted file is permanently removed (the audit log is kept).')) return
+    if (!confirm('Delete this deliverable? Its snapshotted file is permanently removed (the audit log is kept).')) return
     const r = await api.deleteArtifact(id)
     if (r.error) { setHint('⚠ ' + r.error); return }
     if (sel === id) nav('artifacts')
@@ -3404,7 +3404,7 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
     <div className="space-y-3">
       <p className="max-w-3xl text-sm text-muted-foreground">
         Deliverables your agents have published — PDFs, Markdown, images. Each is a snapshot taken at
-        publish time. {me.role === 'member' ? 'You see artifacts from sessions you started.' : 'Owners and admins see every artifact.'}
+        publish time. {me.role === 'member' ? 'You see deliverables from sessions you started.' : 'Owners and admins see every deliverable.'}
         {!enabled && <span className="text-amber-600"> (no data home configured — publishing is disabled)</span>}
       </p>
 

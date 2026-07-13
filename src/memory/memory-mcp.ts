@@ -152,7 +152,7 @@ const IMAGE_GENERATE_TOOL = {
   name: 'image_generate',
   description:
     'Generate image(s) from a text prompt. Use this whenever you need to CREATE an image — you cannot ' +
-    'draw natively. Each image is saved to the Artifacts gallery (and an inbox card) and the tool ' +
+    'draw natively. Each image is saved to the Library (and an inbox card) and the tool ' +
     'returns the artifact id(s); reference those rather than expecting the raw bytes. The generation is ' +
     'governed (cost-metered + audited).',
   inputSchema: {
@@ -403,7 +403,7 @@ const TOOLS = [
   {
     name: 'publish',
     description:
-      'Publish a finished deliverable to the Artifacts gallery so the operator can view and download ' +
+      'Publish a finished deliverable to the Library so the operator can view and download ' +
       "it — a PDF, a Markdown document, an image, a chart. Pass `path` (relative to your working " +
       'folder, e.g. "report.pdf"), a short `title`, and an optional one-line `description`. The file is ' +
       'snapshotted on publish, so you can keep editing your working copy freely. An inbox notification ' +
@@ -415,7 +415,7 @@ const TOOLS = [
         path: { type: 'string', description: 'Path to the file in your working folder (relative, e.g. "report.pdf").' },
         title: { type: 'string', description: 'A short human-readable title for the deliverable.' },
         description: { type: 'string', description: 'Optional one-line description / context.' },
-        folder: { type: 'string', description: 'Optional folder path to file it under, e.g. "reports/2024" (nest sub-folders with "/"). Reuse an existing gallery folder (artifacts_list shows them) rather than inventing a new one. Omit for the gallery root.' },
+        folder: { type: 'string', description: 'Optional folder path to file it under, e.g. "reports/2024" (nest sub-folders with "/"). Reuse an existing Library folder (library_list shows them) rather than inventing a new one. Omit for the Library root.' },
       },
       required: ['path', 'title'],
     },
@@ -549,9 +549,9 @@ const TOOLS = [
     },
   },
   {
-    name: 'artifacts_list',
+    name: 'library_list',
     description:
-      'List the deliverables you have already published to the Artifacts gallery (your own past outputs). ' +
+      'List the deliverables you have already published to the Library (your own past outputs). ' +
       'Check this before publishing to avoid duplicating work, or to build on a report/file you produced ' +
       'in an earlier run. Returns titles + descriptions, not file contents. Read-only.',
     annotations: { readOnlyHint: true },
@@ -1034,7 +1034,7 @@ async function imageGenerate(args: Record<string, unknown>): Promise<string> {
   if (!d.ok) return `Could not generate image: ${d.error ?? 'unknown error'}`;
   const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
-  return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Artifacts gallery: ${list}.`;
+  return `Generated ${d.artifacts?.length ?? 0} image(s) with ${d.model ?? 'the default model'}${cost}. Saved to the Library: ${list}.`;
 }
 
 async function slackSend(args: Record<string, unknown>): Promise<string> {
@@ -1215,7 +1215,7 @@ async function publish(args: Record<string, unknown>): Promise<string> {
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
   const where = args.folder ? ` under "${String(args.folder)}"` : '';
   return d.ok
-    ? `Published "${filePath}" to the Artifacts gallery${where} (id ${d.id}). The operator has been notified.`
+    ? `Published "${filePath}" to the Library${where} (id ${d.id}). The operator has been notified.`
     : `Could not publish: ${d.error ?? 'unknown error'}`;
 }
 
@@ -1382,11 +1382,11 @@ async function artifactsList(args: Record<string, unknown>): Promise<string> {
   u.searchParams.set('limit', String(typeof args.limit === 'number' ? args.limit : 20));
   const res = await fetch(u, { headers: H() });
   const data = (await res.json()) as { artifacts?: ArtifactLite[]; folders?: string[]; enabled?: boolean };
-  if (data.enabled === false) return 'The Artifacts gallery is disabled in this workspace.';
+  if (data.enabled === false) return 'The Library is disabled in this workspace.';
   const arts = data.artifacts ?? [];
-  // The gallery's existing folders (all agents) so a `publish` files into the established tree rather
+  // The Library's existing folders (all agents) so a `publish` files into the established tree rather
   // than inventing a new folder. Shown even when you personally have nothing published yet.
-  const folders = data.folders?.length ? `\n\nGallery folders (pass one as \`folder\` to publish): ${data.folders.join(', ')}` : '';
+  const folders = data.folders?.length ? `\n\nLibrary folders (pass one as \`folder\` to publish): ${data.folders.join(', ')}` : '';
   if (!arts.length) return `You have not published any deliverables yet.${folders}`;
   return arts
     .map((a) => `- ${a.title}${a.description ? ` — ${a.description}` : ''} (${a.kind}, ${a.filename}${a.folder ? `, in ${a.folder}/` : ''})`)
@@ -1937,7 +1937,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'directory_lookup' ? await directoryLookup(args)
         : name === 'list_agents' ? await listAgents()
         : name === 'check_inbox' ? await checkInbox(args)
-        : name === 'artifacts_list' ? await artifactsList(args)
+        : name === 'library_list' ? await artifactsList(args)
         : name === 'schedule' ? await schedule(args)
         : name === 'unschedule' ? await unschedule(args)
         : name === 'stop' ? await stop(args)

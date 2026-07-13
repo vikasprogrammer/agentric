@@ -40,7 +40,7 @@ running such a script, or you will pollute live data.
   `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at `~/agent-os-data/northwind/server.log`;
   load/unload with `launchctl load -w|unload <plist>`.)
 - **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`revise`/`forget`, the
-  `kb_*` tools, `ask`/`check_inbox`/`report`/`update`/`publish`/`artifacts_list`, `schedule`/`unschedule`,
+  `kb_*` tools, `ask`/`check_inbox`/`report`/`update`/`publish`/`library_list`, `schedule`/`unschedule`,
   …; full list in `docs/agent-mcp-tools.md`):** changing a tool's SCHEMA needs `npm run build` **+ relaunch
   the session** (claude spawns the MCP server fresh per session, so a live session keeps the old tool list
   until respawned). Changing a tool's server-side `/api/*` HANDLER also needs the **server restart** above.
@@ -197,7 +197,7 @@ Key modules:
   **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 44 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
-  `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`artifacts_list` (session cards are
+  `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`library_list` (session cards are
   **owner-scoped** — addressed to the run's `run_as`/spawner via the `sessionOwner` audience — so the
   Inbox default `mine` view isn't flooded; `notify({to,message})` is the escape hatch to loop in ONE
   named teammate, and owner/admin flip to `?scope=all` for oversight). Skills: `skill_propose` (draft a

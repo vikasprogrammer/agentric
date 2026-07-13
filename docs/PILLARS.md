@@ -104,7 +104,7 @@ governance events.
 
 The OS-owned MCP server (`agentos`) carries 22 always-on tools (memory `recall`/`remember`/`revise`/
 `forget`; KB `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`; operator/inbox `ask`/`check_inbox`/
-`report`/`update`/`publish`/`artifacts_list`; `schedule`/`unschedule`; `directory_lookup`; `list_capabilities`/
+`report`/`update`/`publish`/`library_list`; `schedule`/`unschedule`; `directory_lookup`; `list_capabilities`/
 `policy_check`) + chat-only `slack_reply`/`discord_reply`, materialised into every claude-code session.
 Canonical matrix: `docs/agent-mcp-tools.md`. Read/unread **and** dismiss are **per-member, server-backed**
 (a `message_state(message_id, member_id, read_at, dismissed_at)` join keyed to the viewer) — one admin

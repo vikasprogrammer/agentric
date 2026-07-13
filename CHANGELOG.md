@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.123.0] — 2026-07-13
+### Changed
+- **"Artifacts" → "Library" (agent-facing rename).** Claude Code ships its own native `Artifact` tool, so
+  the fleet saw two "artifact" surfaces inside a running session and couldn't tell them apart. Our governed,
+  operator-visible deliverables gallery is now **the Library** everywhere the model and operator read it:
+  the MCP tool `artifacts_list` → **`library_list`**, all "Artifacts gallery" prose → "the Library", and the
+  console nav/page label → **Library**. Native Artifacts stay usable and are now unambiguous.
+  - **No migration.** Internals are untouched — the `artifacts` table, the `#/artifacts` route, the
+    `/api/agent/artifacts` API, and the `publish` tool keep their names. Only agent-facing strings + the one
+    read-only tool name changed (rebuild + session relaunch picks up the new tool; existing tenants need
+    nothing). `publish` is unchanged — it reads fine as "publish to the Library".
+
 ## [0.122.0] — 2026-07-13
 ### Added
 - **Generation cost shows on each artifact in the gallery.** A generated image (and, later, video) now
