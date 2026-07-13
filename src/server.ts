@@ -22,6 +22,7 @@ import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
+import { measureLearning } from './edge/measurement';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -2356,6 +2357,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, {
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
       applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: os.settings.recommendations().open, state,
+      measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
   }
