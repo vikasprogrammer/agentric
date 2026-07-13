@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.167.1] — 2026-07-13
+### Fixed
+- **Resolved recommendations no longer linger on Insights.** Recommendations regenerate only when a full
+  reflect pass runs, so a card could persist after a human already acted between passes — e.g. "Raise
+  default effort to high" kept showing after effort was set to `high` in Settings (no pass had run since
+  it was proposed). `/api/dreaming` now drops any open recommendation whose condition is already resolved
+  (`recommendationResolved` — currently the effort rec when effort is already high/xhigh/max) and persists
+  the cleanup, so a stale card can't nag between passes. `src/edge/dreaming.ts`, `src/server.ts`.
+
 ## [0.167.0] — 2026-07-13
 ### Changed
 - **Tasks Board, redesigned around live sessions.** The Kanban is reframed as a dispatch board — columns
