@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.151.0] — 2026-07-13
+### Fixed
+- **Per-member GitHub: "Connect" no longer shows a false green when the App isn't installed.** Authorizing
+  a GitHub App (the OAuth step our Connect flow runs) and *installing* it on repos are two separate acts —
+  so a member could connect, see "connected as @them," and have a token that can't touch a single repo
+  because the App was never installed. `GET /api/github/me` now reports the token's **real installation
+  status** (`GET /user/installations`): the *Mine* card shows "the App can act on N repos (accounts…)"
+  when installed, or an amber **"authorized, but the App isn't installed on any repositories yet — pushes
+  will fail; an owner needs to install it"** when not. Best-effort (a GitHub hiccup leaves status unknown
+  rather than false-alarming). Turns a confusing silent failure into an actionable prompt.
+  (`userInstallationStatus` in `src/connectors/github.ts`, `src/server.ts`, `web/src/connectors.tsx`,
+  `web/src/lib/api.ts`; `scripts/github-per-member-test.cjs` now 59/59.)
+
 ## [0.150.2] — 2026-07-13
 ### Fixed
 - **A goal's Target field couldn't be edited** from the goal-detail dialog. The inline `<Input>`'s
@@ -25,6 +38,7 @@ new version heading in the same commit.
   memory loop (`memory-model.md`). Docs realigned to the new top-level location: `PILLARS.md` §9/§10 +
   the Self-learning toggle note, `self-learning-plan.md`, `daily-digest-plan.md`, `procedural-skills-plan.md`
   no longer point at the old "Memory hub → Self-learning tab" / "Settings → Self-learning".
+
 
 ## [0.150.0] — 2026-07-13
 ### Changed

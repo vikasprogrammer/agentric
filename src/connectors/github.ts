@@ -188,6 +188,43 @@ export async function githubUser(token: string): Promise<{ login: string; id: nu
   }
 }
 
+/**
+ * Whether a connected user token can actually *act* — i.e. the App is installed somewhere the token
+ * reaches, not merely OAuth-authorized. This is the distinction that bit us in practice: a member can
+ * "Connect" (authorize) and get a token with **zero installations**, which looks connected but can't
+ * touch a single repo. `GET /user/installations` is the authoritative source. Best-effort: returns
+ * `{ error }` on any failure so the caller can fall back to "connected, install status unknown".
+ */
+export interface InstallationStatus {
+  installed: boolean;
+  /** How many App installations the user's token can act through. */
+  count: number;
+  /** The account logins the App is installed on (org/user), e.g. ["Globex"]. */
+  accounts: string[];
+  /** Total repositories reachable across those installations. */
+  repos: number;
+}
+
+export async function userInstallationStatus(token: string): Promise<InstallationStatus | { error: string }> {
+  const gh = (p: string) => fetch(`${GH_API}${p}`, { headers: { ...BASE_HEADERS, authorization: `token ${token}` } });
+  try {
+    const res = await gh('/user/installations?per_page=100');
+    if (!res.ok) return { error: `GET /user/installations → ${res.status}` };
+    const j = (await res.json().catch(() => ({}))) as any;
+    const insts: any[] = Array.isArray(j?.installations) ? j.installations : [];
+    const accounts = insts.map((i) => String(i?.account?.login ?? '?')).filter((a) => a && a !== '?');
+    let repos = 0;
+    for (const i of insts) {
+      // per_page=1 still returns the accurate `total_count`, so this is one cheap call per installation.
+      const rr = await gh(`/user/installations/${i.id}/repositories?per_page=1`);
+      if (rr.ok) repos += Number((await rr.json().catch(() => ({})) as any)?.total_count ?? 0);
+    }
+    return { installed: insts.length > 0, count: insts.length, accounts, repos };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'GET /user/installations failed' };
+  }
+}
+
 /** A GitHub App installation — one org/user the App is installed on. `account` is the org/user login. */
 export interface GithubInstallation {
   id: number;

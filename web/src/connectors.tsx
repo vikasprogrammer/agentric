@@ -533,7 +533,9 @@ function GithubMineCard() {
             <div className="text-sm font-medium">GitHub — my git identity</div>
             <div className="text-[11px] text-muted-foreground">
               {st?.connected
-                ? <>Connected as <code className="rounded bg-muted px-1 py-0.5">@{st.login}</code> — sessions you run push &amp; open PRs as you.</>
+                ? st.install?.installed
+                  ? <>Connected as <code className="rounded bg-muted px-1 py-0.5">@{st.login}</code> — the App can act on {st.install.repos} repo{st.install.repos === 1 ? '' : 's'}{st.install.accounts.length ? ` (${st.install.accounts.join(', ')})` : ''}. Sessions you run push &amp; open PRs as you.</>
+                  : <>Connected as <code className="rounded bg-muted px-1 py-0.5">@{st.login}</code>.</>
                 : 'Link your GitHub so agents acting as you commit under your name (not a shared bot).'}
             </div>
           </div>
@@ -542,6 +544,12 @@ function GithubMineCard() {
           ? <Button size="sm" variant="ghost" onClick={disconnect} disabled={busy}>Disconnect</Button>
           : <Button size="sm" onClick={connect} disabled={busy || !st?.configured}>Connect GitHub</Button>}
       </div>
+      {/* Authorized but NOT installed — the trap: looks connected, but the App can't touch any repo. */}
+      {st?.connected && st.install && !st.install.installed && (
+        <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-400">
+          ⚠ You’re authorized, but the App isn’t <strong>installed</strong> on any repositories yet — so pushes will still fail. Authorizing and installing are separate steps: an owner needs to <strong>install the App</strong> on your org’s repos (Connections → Creds → Install the App). Until then, agents fall back to any configured token.
+        </p>
+      )}
       {!st?.configured && !st?.connected && (
         <p className="mt-2 text-[11px] text-muted-foreground">GitHub isn’t set up for this workspace yet — an owner/admin adds the App credentials in Connections → Creds.</p>
       )}

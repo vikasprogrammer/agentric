@@ -32,6 +32,7 @@ const assert = (c, n, d) => (c ? ok(n) : bad(n, d));
 // ── Stub GitHub's HTTP surface. Everything else falls through to a 404 so an unrelated background
 //    fetch can't crash the run (there shouldn't be any during these routes). ──────────────────────
 let refreshCount = 0;
+let installState = 'installed'; // 'installed' | 'none' — toggles the /user/installations stub
 const realFetch = global.fetch.bind(global); // the test drives the local server over REAL http
 global.fetch = async (urlIn, opts = {}) => {
   const url = String(urlIn);
@@ -45,6 +46,13 @@ global.fetch = async (urlIn, opts = {}) => {
     return json({ access_token: 'gho_access_1', refresh_token: 'ghr_1', expires_in: 28800, token_type: 'bearer', scope: 'repo' });
   }
   if (url === 'https://api.github.com/user') return json({ login: 'octocat', id: 583231 });
+  // App-installation status — `installState` lets a test toggle installed vs authorized-but-not-installed.
+  if (/\/user\/installations\?/.test(url)) {
+    return json(installState === 'none'
+      ? { installations: [] }
+      : { installations: [{ id: 77, account: { login: 'Globex' }, app_slug: 'x' }] });
+  }
+  if (/\/user\/installations\/\d+\/repositories/.test(url)) return json({ total_count: 5, repositories: [] });
   if (/\/app-manifests\/[^/]+\/conversions$/.test(url)) {
     return json({ id: 42, slug: 'agent-os-northwind', client_id: 'Iv1.manifest', client_secret: 'manifest-secret', html_url: 'https://github.com/apps/agent-os-northwind', webhook_secret: 'whsec_x', pem: '-----BEGIN-----' });
   }
@@ -167,6 +175,15 @@ async function main() {
   me = await (await call('GET', '/api/github/me')).json();
   assert(me.connected === true && me.login === 'octocat', '/me now reports connected as octocat');
   assert(!('token' in me), '/me never leaks the token');
+  // Installed case: /me reports the real installation status (installed + repo count + accounts).
+  assert(me.install && me.install.installed === true && me.install.repos === 5 && me.install.accounts.includes('Globex'),
+    '/me surfaces App-installation status (installed, repos, accounts)');
+  // Authorized-but-not-installed: the trap. Same connected token, but no installation → installed:false.
+  installState = 'none';
+  const meNI = await (await call('GET', '/api/github/me')).json();
+  assert(meNI.connected === true && meNI.install && meNI.install.installed === false && meNI.install.repos === 0,
+    'authorized-but-not-installed → connected:true but install.installed:false (no false green)');
+  installState = 'installed';
 
   // State is single-use: replaying it fails.
   r = await call('GET', `/api/github/callback?code=abc&state=${state}`);

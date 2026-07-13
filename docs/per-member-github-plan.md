@@ -92,6 +92,17 @@ non-github.com/SSH remotes.
 `state` is a random token held in a short-lived in-process map keyed to `{ tenant, memberId, exp }`;
 the callback additionally requires `state.memberId === me.id` (defence-in-depth against a leaked state).
 
+## Authorize vs install — surfacing installation status (v0.151.0)
+
+A GitHub App has **two** separate acts: the member **authorizes** it (the OAuth flow our Connect runs →
+a user token) and someone **installs** it on repos (an org/account admin action). Our flow only does the
+first, so a member could "Connect" and get a token with **zero installations** — connected-looking but
+unable to touch any repo (the real-world trap that cost a long debugging detour). `GET /api/github/me`
+now also returns `install` from `userInstallationStatus` (`GET /user/installations`): the *Mine* card
+shows repo/account coverage when installed, or an amber "authorized but not installed — an owner must
+install it" when not. Best-effort, so a GitHub error leaves status unknown rather than false-alarming.
+Covered by `scripts/github-per-member-test.cjs` (installed + not-installed cases).
+
 ## Nudging an unconnected member (v0.130.0)
 
 The feature is otherwise passive — an unconnected member's session just falls back to the bot token. To

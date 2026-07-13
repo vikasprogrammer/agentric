@@ -27,7 +27,7 @@ import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './e
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
-import { convertAppManifest } from './connectors/github';
+import { convertAppManifest, userInstallationStatus } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
@@ -2944,7 +2944,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const gh = new GithubIdentity(os);
     // Opening the panel is a good moment to refresh a soon-to-expire token so the next launch is fresh.
     const blob = await gh.ensureFresh(me.id).catch(() => gh.load(me.id));
-    return sendJson(res, 200, { configured: gh.configured(), connected: !!blob, login: blob?.login, expiresAt: blob?.expiresAt });
+    // Authorizing (OAuth) and installing the App are TWO separate steps — a token with zero installations
+    // is "connected" but can't touch a single repo. Surface the real installation status so the UI can
+    // warn instead of showing a false green. Best-effort: on any GitHub hiccup, `install` stays undefined
+    // (= "connected, status unknown") rather than a false alarm.
+    let install: { installed: boolean; count: number; accounts: string[]; repos: number } | undefined;
+    if (blob) {
+      const st = await userInstallationStatus(blob.token).catch(() => null);
+      if (st && !('error' in st)) install = st;
+    }
+    return sendJson(res, 200, { configured: gh.configured(), connected: !!blob, login: blob?.login, expiresAt: blob?.expiresAt, install });
   }
   if (method === 'GET' && p === '/api/github/connect') {
     const gh = new GithubIdentity(os);

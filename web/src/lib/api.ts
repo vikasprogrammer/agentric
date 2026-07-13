@@ -816,6 +816,9 @@ export interface GithubMe {
   connected: boolean
   login?: string
   expiresAt?: number
+  /** Real App-installation status for the connected token — undefined when not connected or the check
+   *  couldn't run. `installed:false` means authorized-but-not-installed (connected yet can't touch a repo). */
+  install?: { installed: boolean; count: number; accounts: string[]; repos: number }
   error?: string
 }
 
