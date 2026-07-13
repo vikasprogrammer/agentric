@@ -33,6 +33,7 @@ const VIDEO_INCALL_POLLS = 3;              // brief in-call polls to catch a fas
 const VIDEO_INCALL_POLL_MS = 10_000;       // …10s apart (~30s max block, within tool tolerance)
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
+import { GithubIdentity } from './edge/github-identity';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
 
 /** OS-owned operating notes appended to every claude system prompt (after the user's Company context).
@@ -972,6 +973,9 @@ export class TerminalManager {
     if (o.resume) env.RESUME = '1';
     // The agent's opt-in shell secrets (vault keys → shell env vars, e.g. GH_TOKEN for `gh`).
     this.injectShellSecrets(env, o.agent, manifest, o.id);
+    // Per-member git: if THIS run's run-as human has linked their own GitHub account, their token
+    // OVERRIDES the agent bot's GH_TOKEN — so git push / gh pr are authored as the actual person.
+    this.injectMemberGithub(env, o.agent, o.actingMember, o.id);
     // Phase 2c: granted Host connections' SSH keys → a session ssh_config + ssh/scp PATH shim, so the
     // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
     this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
@@ -2777,6 +2781,29 @@ export class TerminalManager {
       }
       env[key] = value;
       this.audit(sessionId, agent, 'shell.secret.injected', { key, principal: agent });
+    }
+  }
+
+  /**
+   * Per-member GitHub (Phase 2 — docs/per-member-github-plan.md). If the session's run-as member has
+   * linked their own GitHub account, export their user token as `GH_TOKEN` + `GITHUB_TOKEN`, OVERRIDING
+   * any agent-scoped bot token set by `injectShellSecrets` — so git/PRs are authored as the actual human
+   * (the company bot remains the fallback when the human hasn't connected). Reads the stored token
+   * synchronously (the launch path is sync); if it's within the refresh skew of expiry AND has a refresh
+   * token, kick a fire-and-forget refresh that rewrites the vault blob for the NEXT launch (this run
+   * still gets the currently-valid token). Audited per injection.
+   */
+  private injectMemberGithub(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): void {
+    if (!actingMember) return;
+    const gh = new GithubIdentity(this.os);
+    const blob = gh.load(actingMember);
+    if (!blob) return;
+    env.GH_TOKEN = blob.token;
+    env.GITHUB_TOKEN = blob.token;
+    this.audit(sessionId, agent, 'github.token.injected', { login: blob.login, principal: actingMember });
+    if (gh.needsRefresh(blob) && blob.refreshToken) {
+      this.audit(sessionId, agent, 'github.token.stale', { login: blob.login, principal: actingMember });
+      void gh.ensureFresh(actingMember).catch(() => { /* best-effort; next launch retries */ });
     }
   }
 

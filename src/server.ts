@@ -24,6 +24,7 @@ import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
+import { GithubIdentity } from './edge/github-identity';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
 import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
@@ -2718,6 +2719,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
     }
     if (discordTouched && discord) void discord.restart();
+    // Per-member GitHub App OAuth credentials: client id → setting, client secret → vault. '' clears.
+    if (typeof b.githubClientId === 'string') os.settings.setGithubClientId(b.githubClientId, me.email);
+    if (typeof b.githubClientSecret === 'string') new GithubIdentity(os).setClientSecret(b.githubClientSecret, me.email);
     // Image generation backend keys (OpenRouter default / Atlas alt) + optional default model.
     if (typeof b.openRouterKey === 'string') os.settings.setOpenRouterKey(b.openRouterKey, me.email);
     if (typeof b.atlasKey === 'string') os.settings.setAtlasKey(b.atlasKey, me.email);
@@ -2740,6 +2744,50 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/settings/discord/status') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, discord ? discord.status() : { configured: os.settings.discordConfigured(), connected: false, botUserId: '' });
+  }
+
+  // ── per-member GitHub (user-to-server OAuth) — any member links their OWN account ──────────────
+  // See docs/per-member-github-plan.md. Once linked, a run-as session injects THIS member's token as
+  // GH_TOKEN so git/PRs are authored as the actual human (not the company bot).
+  if (method === 'GET' && p === '/api/github/me') {
+    const gh = new GithubIdentity(os);
+    // Opening the panel is a good moment to refresh a soon-to-expire token so the next launch is fresh.
+    const blob = await gh.ensureFresh(me.id).catch(() => gh.load(me.id));
+    return sendJson(res, 200, { configured: gh.configured(), connected: !!blob, login: blob?.login, expiresAt: blob?.expiresAt });
+  }
+  if (method === 'GET' && p === '/api/github/connect') {
+    const gh = new GithubIdentity(os);
+    if (!gh.configured()) return sendJson(res, 400, { error: 'GitHub is not set up — an owner/admin must add the App client id + secret in Connections → Creds' });
+    const state = newGithubState(os.tenant, me.id);
+    const redirectUrl = gh.authorizeUrl(githubRedirectUri(req), state);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.connect.initiated', data: {} });
+    return sendJson(res, 200, { redirectUrl });
+  }
+  // GitHub redirects the browser here after the member authorizes. The aos_sid cookie rides along
+  // (SameSite=Lax allows top-level GET navigation), so `me` is the same member who initiated.
+  if (method === 'GET' && p === '/api/github/callback') {
+    const code = url.searchParams.get('code') || '';
+    const state = url.searchParams.get('state') || '';
+    if (url.searchParams.get('error')) return redirect(res, '/#/connectors?github=denied');
+    if (!code || !takeGithubState(state, os.tenant, me.id)) return redirect(res, '/#/connectors?github=error');
+    const gh = new GithubIdentity(os);
+    const r = await gh.completeConnect(me.id, code, githubRedirectUri(req), me.email);
+    if ('error' in r) {
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.user.connect_failed', data: { error: r.error } });
+      return redirect(res, '/#/connectors?github=error');
+    }
+    // Record the login as this member's `github` identity — the queryable, non-secret handle for
+    // attribution + the Team page's Chat-IDs row.
+    os.team.setIdentity(me.id, 'github', r.login, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.user.connected', data: { login: r.login } });
+    return redirect(res, '/#/connectors?github=connected');
+  }
+  if (method === 'POST' && p === '/api/github/disconnect') {
+    const gh = new GithubIdentity(os);
+    const removed = gh.clear(me.id);
+    os.team.clearIdentity(me.id, 'github');
+    if (removed) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'github.user.disconnected', data: {} });
+    return sendJson(res, 200, { ok: true });
   }
 
   // ── memory backend (sqlite / libsql / automem) — owner/admin, applied live without a restart ──
@@ -3793,6 +3841,34 @@ function allowLinkRequest(email: string, req: http.IncomingMessage): boolean {
   return ok;
 }
 
+// ── per-member GitHub OAuth state (Phase 2 — docs/per-member-github-plan.md) ───
+// The single-use CSRF `state` for the browser round-trip. Held in-process (the OAuth hop is seconds;
+// a restart mid-flow just makes the member retry). Keyed by the random state string, so it's safe
+// across tenants; we still bind {tenant, memberId} and re-check them at the callback.
+const GH_STATE_TTL_MS = 10 * 60 * 1000;
+const githubOauthStates = new Map<string, { tenant: string; memberId: string; exp: number }>();
+function newGithubState(tenant: string, memberId: string): string {
+  const state = crypto.randomBytes(24).toString('hex');
+  const now = Date.now();
+  // Opportunistically evict expired entries so the map can't grow unbounded.
+  for (const [k, v] of githubOauthStates) if (v.exp < now) githubOauthStates.delete(k);
+  githubOauthStates.set(state, { tenant, memberId, exp: now + GH_STATE_TTL_MS });
+  return state;
+}
+/** Consume a state (single-use): valid only if present, unexpired, and bound to this tenant + member. */
+function takeGithubState(state: string, tenant: string, memberId: string): boolean {
+  const hit = githubOauthStates.get(state);
+  if (!hit) return false;
+  githubOauthStates.delete(state);
+  return hit.exp >= Date.now() && hit.tenant === tenant && hit.memberId === memberId;
+}
+/** The absolute OAuth callback URL, honouring an nginx X-Forwarded-Proto/Host in front of us. */
+function githubRedirectUri(req: http.IncomingMessage): string {
+  const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0];
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '127.0.0.1').split(',')[0];
+  return `${proto}://${host}/api/github/callback`;
+}
+
 // ── per-member terminal reverse proxy (Phase A, flag on) ───────────────────────
 /** Extract `<space>` from `/terminal/<space>/…` (query stripped). null if it doesn't match. */
 function terminalSpace(rawUrl: string | undefined): string | null {
@@ -3884,6 +3960,7 @@ function integrationsView(os: AgentOS): {
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean };
   chatRouter: boolean;
@@ -3894,6 +3971,7 @@ function integrationsView(os: AgentOS): {
   const meta = os.settings.composioMeta();
   const slack = os.settings.slackMeta();
   const discord = os.settings.discordMeta();
+  const gh = new GithubIdentity(os);
   const image = os.settings.imageGenMeta();
   const video = os.settings.videoGenMeta();
   return {
@@ -3901,6 +3979,7 @@ function integrationsView(os: AgentOS): {
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
+    github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured() },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     video: { fal: video.fal, atlas: video.atlas, backend: video.backend, defaultModel: video.defaultModel, configured: os.settings.videoGenConfigured() },
     chatRouter: os.settings.chatRouterEnabled(),

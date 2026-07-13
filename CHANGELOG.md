@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.128.0] — 2026-07-13
+### Added
+- **Per-member GitHub — git that runs as the actual human (Phase 2 of `docs/github-integration-plan.md`).**
+  A member links their **own** GitHub account once in the browser, and thereafter any session that runs
+  **as that member** (run-as) gets *their* credential injected as `GH_TOKEN`/`GITHUB_TOKEN` — so
+  `git push` / `gh pr create` are authored as the real person, not a shared bot. The one-for-one mirror of
+  Slack/Discord run-as, on the git egress lane. **Setup:** an owner/admin registers one company **GitHub
+  App** (or OAuth App) and pastes its **client id + secret** in **Connections → Creds → GitHub** (callback
+  URL `<host>/api/github/callback`); each member then clicks **Connect GitHub** under Connections →
+  Connected → *Mine* (user-to-server OAuth). The user token is stored **encrypted in the vault under the
+  member's principal** (never in the shared `*` scope, so no agent can read another member's token) and its
+  GitHub login is recorded as the member's `github` identity. At launch, `injectMemberGithub` runs after the
+  agent-scoped `injectShellSecrets`, so the **member's token overrides** the company-bot `GH_TOKEN` (bot
+  stays the fallback when the human hasn't connected); expiring tokens are refreshed on demand. New routes
+  `GET /api/github/{connect,callback,me}` + `POST /api/github/disconnect`, audited
+  `github.user.connected` / `github.token.injected`. Offline+HTTP test: `scripts/github-per-member-test.cjs`.
+
 ## [0.127.0] — 2026-07-13
 ### Changed
 - **Atlas Cloud is now the primary media backend — one interface for image AND video.** When an Atlas

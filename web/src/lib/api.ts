@@ -746,6 +746,8 @@ export interface IntegrationsResp {
   slack: { appToken: boolean; botToken: boolean; configured: boolean }
   /** Native Discord (Gateway) — whether the bot token is set; never the token. */
   discord: { botToken: boolean; configured: boolean }
+  /** Per-member GitHub App OAuth — whether the client id / secret are set (never the secret itself). */
+  github: { clientId: boolean; clientSecret: boolean; configured: boolean }
   /** Image generation backend — which keys are set (never the keys), the active backend, default model. */
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean }
   /** Video generation backend — which keys are set (never the keys), the active backend, default model. */
@@ -756,6 +758,15 @@ export interface IntegrationsResp {
   chatIdleTimeoutMin: number
   updatedAt?: number
   updatedBy?: string
+  error?: string
+}
+
+/** The viewer's own GitHub link state — whether the company App is configured + their connected login. */
+export interface GithubMe {
+  configured: boolean
+  connected: boolean
+  login?: string
+  expiresAt?: number
   error?: string
 }
 
@@ -1040,7 +1051,12 @@ export const api = {
   disconnectApp: (body: { id: string; scope: 'company' | 'personal' }) =>
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  // Per-member GitHub (user-to-server OAuth): each member links their OWN account so run-as sessions
+  // push / open PRs as the actual human. `connect` returns the authorize URL to navigate to.
+  githubMe: () => call<GithubMe>('GET', '/api/github/me'),
+  githubConnect: () => call<{ redirectUrl?: string; error?: string }>('GET', '/api/github/connect'),
+  githubDisconnect: () => call<{ ok?: boolean; error?: string }>('POST', '/api/github/disconnect', {}),
   slackStatus: () => call<SlackStatus>('GET', '/api/settings/slack/status'),
   discordStatus: () => call<DiscordStatus>('GET', '/api/settings/discord/status'),
 

@@ -120,7 +120,12 @@ Key modules:
   **`shellSecrets`** (manifest list of vault keys, e.g. `["GH_TOKEN"]`) via `injectShellSecrets` and
   exports each as a shell env var — the ONLY path a vault secret reaches the interactive shell (so a
   plain CLI like `gh` authenticates); connectors still get theirs via the MCP bag. Agent-scoped
-  principal (widening to `*`), audited `shell.secret.injected`/`unresolved`, opt-in per agent.
+  principal (widening to `*`), audited `shell.secret.injected`/`unresolved`, opt-in per agent. Then
+  **`injectMemberGithub`** runs right after: if the run's **run-as member** linked their own GitHub
+  account (per-member OAuth — `src/edge/github-identity.ts`, `docs/per-member-github-plan.md`), THEIR
+  vault-stored user token OVERRIDES the agent bot's `GH_TOKEN`/`GITHUB_TOKEN`, so git/PRs are authored as
+  the actual human (bot = fallback). Token stored under the member principal (never shared `*`), refreshed
+  on demand; audited `github.token.injected`.
 - `src/governance/` — `policy.ts` (JSON rule engine; first-match, glob capability + `when` arg predicates.
   `withAlwaysAllow`/`hasHardDeny` back the Inbox **"Always approve"** — an owner appending a durable `allow`
   rule from an approval card, inserted AFTER every `never` so deny guardrails survive; `POST

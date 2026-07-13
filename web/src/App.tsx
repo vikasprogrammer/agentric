@@ -8735,6 +8735,9 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
+  const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false })
+  const [ghId, setGhId] = useState('')
+  const [ghSecret, setGhSecret] = useState('')
   const [image, setImage] = useState<IntegrationsResp['image']>({ openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false })
   const [orKey, setOrKey] = useState('')
   const [atKey, setAtKey] = useState('')
@@ -8757,6 +8760,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   // Defensive defaults so an older backend (one that predates a field) never white-screens the page.
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
   const DISCORD_DEFAULT = { botToken: false, configured: false }
+  const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const VIDEO_DEFAULT = { fal: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const apply = (r: IntegrationsResp) => {
@@ -8764,6 +8768,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     if (r.webhook) setWebhook(r.webhook)
     setSlack(r.slack ?? SLACK_DEFAULT)
     setDiscord(r.discord ?? DISCORD_DEFAULT)
+    setGithub(r.github ?? GITHUB_DEFAULT)
     setImage(r.image ?? IMAGE_DEFAULT)
     if (r.image) setImgModel(r.image.defaultModel || '')
     setVideo(r.video ?? VIDEO_DEFAULT)
@@ -8808,12 +8813,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
     loadStatus()
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setOrKey(''); setAtKey(''); setFalKey('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setOrKey(''); setAtKey(''); setFalKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
     // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
@@ -9051,6 +9056,54 @@ function IntegrationsSettings({ me }: { me: Member }) {
               </div>
             )
           })()}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              GitHub (per-member git)
+              {github.configured
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">configured</Badge>
+                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Register one company <strong>GitHub App</strong> (or OAuth App), then paste its <strong>client id</strong> + <strong>client secret</strong> here.
+              Each member can then <strong>Connect GitHub</strong> from Connections → Connected → <em>Mine</em>, so a session running as
+              that person pushes / opens PRs <strong>as the actual human</strong> (not a shared bot). Set the App's
+              <strong> Authorization callback URL</strong> to <code className="text-[11px]">{`<this-host>`}/api/github/callback</code>.
+            </p>
+          </div>
+          <Field label="Client ID">
+            <Input
+              value={ghId}
+              onChange={(e) => setGhId(e.target.value.trim())}
+              placeholder={github.clientId ? 'saved — type a new id to replace' : 'Iv1.… / a GitHub App or OAuth App client id'}
+              className="font-mono text-xs"
+            />
+          </Field>
+          <Field label="Client secret">
+            <Input
+              type="password"
+              value={ghSecret}
+              onChange={(e) => setGhSecret(e.target.value)}
+              placeholder={github.clientSecret ? '•••• (saved) — type a new secret to replace' : 'the App client secret'}
+              className="font-mono text-xs"
+            />
+          </Field>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => save({ ...(ghId.trim() ? { githubClientId: ghId.trim() } : {}), ...(ghSecret.trim() ? { githubClientSecret: ghSecret.trim() } : {}) }, 'saved')}
+              disabled={busy || (!ghId.trim() && !ghSecret.trim())}
+            >
+              Save GitHub App
+            </Button>
+            {(github.clientId || github.clientSecret) && (
+              <Button variant="ghost" onClick={() => save({ githubClientId: '', githubClientSecret: '' }, 'removed')} disabled={busy}>Remove</Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 

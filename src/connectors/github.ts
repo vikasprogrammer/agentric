@@ -45,6 +45,107 @@ export function appJwt(appId: string | number, privateKeyPem: string, nowMs: num
   return `${signingInput}.${b64url(signature)}`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-member user-to-server OAuth (Phase 2 — docs/per-member-github-plan.md)
+//
+// The company App's client_id/secret drive the browser OAuth web flow that yields a **user access
+// token** — the credential that authors git/PRs AS the actual human (run-as), not the bot. Same three
+// primitives for a classic OAuth App or a GitHub App; the only difference is a GitHub App can issue an
+// EXPIRING user token (+ refresh token), which `refreshUserToken` renews.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const GH_OAUTH_AUTHORIZE = 'https://github.com/login/oauth/authorize';
+const GH_OAUTH_TOKEN = 'https://github.com/login/oauth/access_token';
+
+/**
+ * Build the GitHub authorize URL the member's browser is redirected to. `scope` defaults to `repo`
+ * (push + PRs on an OAuth App); a GitHub App ignores it and governs access via its own per-repo
+ * permissions, so it's harmless either way. `state` is our single-use CSRF token.
+ */
+export function authorizeUrl(o: { clientId: string; redirectUri: string; state: string; scope?: string }): string {
+  const q = new URLSearchParams({
+    client_id: o.clientId,
+    redirect_uri: o.redirectUri,
+    state: o.state,
+    scope: o.scope ?? 'repo',
+    allow_signup: 'false',
+  });
+  return `${GH_OAUTH_AUTHORIZE}?${q.toString()}`;
+}
+
+/** A user access token from the OAuth exchange/refresh. Expiry fields are present only for expiring tokens. */
+export interface UserToken {
+  token: string;
+  refreshToken?: string;
+  /** Epoch ms the access token expires, or undefined for a non-expiring token. */
+  expiresAt?: number;
+  /** Epoch ms the refresh token expires (GitHub App expiring-token mode), or undefined. */
+  refreshExpiresAt?: number;
+  /** The scopes granted (OAuth App); '' for a GitHub App (permissions govern instead). */
+  scope?: string;
+}
+
+/** Shared parser for the token endpoint's JSON response (used by both exchange + refresh). */
+function parseTokenResponse(j: any, nowMs: number): UserToken | { error: string } {
+  if (j?.error) return { error: `${j.error}${j.error_description ? `: ${j.error_description}` : ''}` };
+  if (typeof j?.access_token !== 'string') return { error: 'token response had no access_token' };
+  const out: UserToken = { token: j.access_token };
+  if (typeof j.refresh_token === 'string') out.refreshToken = j.refresh_token;
+  if (Number.isFinite(Number(j.expires_in))) out.expiresAt = nowMs + Number(j.expires_in) * 1000;
+  if (Number.isFinite(Number(j.refresh_token_expires_in))) out.refreshExpiresAt = nowMs + Number(j.refresh_token_expires_in) * 1000;
+  if (typeof j.scope === 'string') out.scope = j.scope;
+  return out;
+}
+
+/** Exchange an OAuth `code` (from the callback) for a user access token. Returns `{ error }` on failure. */
+export async function exchangeUserCode(
+  o: { clientId: string; clientSecret: string; code: string; redirectUri: string },
+  nowMs: number = Date.now(),
+): Promise<UserToken | { error: string }> {
+  try {
+    const res = await fetch(GH_OAUTH_TOKEN, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': UA },
+      body: JSON.stringify({ client_id: o.clientId, client_secret: o.clientSecret, code: o.code, redirect_uri: o.redirectUri }),
+    });
+    if (!res.ok) return { error: `POST oauth/access_token → ${res.status} ${await res.text().catch(() => '')}`.trim() };
+    return parseTokenResponse(await res.json().catch(() => ({})), nowMs);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'OAuth code exchange failed' };
+  }
+}
+
+/** Renew an expiring user token with its refresh token (GitHub App expiring-token mode). */
+export async function refreshUserToken(
+  o: { clientId: string; clientSecret: string; refreshToken: string },
+  nowMs: number = Date.now(),
+): Promise<UserToken | { error: string }> {
+  try {
+    const res = await fetch(GH_OAUTH_TOKEN, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': UA },
+      body: JSON.stringify({ client_id: o.clientId, client_secret: o.clientSecret, grant_type: 'refresh_token', refresh_token: o.refreshToken }),
+    });
+    if (!res.ok) return { error: `POST oauth/refresh → ${res.status} ${await res.text().catch(() => '')}`.trim() };
+    return parseTokenResponse(await res.json().catch(() => ({})), nowMs);
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'OAuth token refresh failed' };
+  }
+}
+
+/** Look up the authenticated user's `login` + numeric `id` (`GET /user`) for the connected token. */
+export async function githubUser(token: string): Promise<{ login: string; id: number } | { error: string }> {
+  try {
+    const res = await fetch(`${GH_API}/user`, { headers: { ...BASE_HEADERS, authorization: `Bearer ${token}` } });
+    if (!res.ok) return { error: `GET /user → ${res.status}` };
+    const j = (await res.json().catch(() => ({}))) as any;
+    if (typeof j?.login !== 'string') return { error: 'GET /user had no login' };
+    return { login: j.login, id: Number(j.id) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'GET /user failed' };
+  }
+}
+
 /** A GitHub App installation — one org/user the App is installed on. `account` is the org/user login. */
 export interface GithubInstallation {
   id: number;

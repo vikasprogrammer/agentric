@@ -18,6 +18,7 @@ const COMPOSIO_WEBHOOK_KEY = 'composio_webhook_secret';
 const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connections:write)
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
+const GITHUB_CLIENT_ID_KEY = 'github_client_id'; // the company GitHub App / OAuth App client id (per-member OAuth)
 const IMAGE_OPENROUTER_KEY = 'image_openrouter_key'; // OpenRouter Unified Image API key (default backend)
 const IMAGE_ATLAS_KEY = 'image_atlas_key'; // Atlas Cloud key (alt backend; covers video later)
 const IMAGE_MODEL_KEY = 'image_default_model'; // workspace default image model id (backend-specific); '' = adapter default
@@ -188,6 +189,24 @@ export class SettingsStore {
   }
   setDiscordBotToken(token: string, by?: string): void {
     this.set(DISCORD_BOT_TOKEN_KEY, token.trim(), by);
+  }
+
+  // ── per-member GitHub (user-to-server OAuth) ─────────────────────────────────
+  // The company GitHub App's client id (a plain setting); the matching client secret + each member's
+  // user token live in the encrypted vault (see edge/github-identity.ts). Together they let a member
+  // link their own GitHub account so a run-as session pushes/opens PRs AS that human, not a shared bot.
+
+  /** The GitHub App / OAuth App client id, or '' when unset. */
+  githubClientId(): string {
+    return this.getRow(GITHUB_CLIENT_ID_KEY)?.value?.trim() ?? '';
+  }
+  setGithubClientId(value: string, by?: string): void {
+    this.set(GITHUB_CLIENT_ID_KEY, value.trim(), by);
+  }
+  /** Whether the client id is set + who last touched it (never returns any secret). */
+  githubMeta(): { clientId: boolean; updatedAt?: number; updatedBy?: string } {
+    const row = this.getRow(GITHUB_CLIENT_ID_KEY);
+    return { clientId: !!row?.value, updatedAt: row?.updated_at, updatedBy: row?.updated_by ?? undefined };
   }
 
   // ── image generation ─────────────────────────────────────────────────────────────

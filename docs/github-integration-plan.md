@@ -37,9 +37,11 @@ One credential drives both halves.
 
 - **v1 — company identity.** The App (bot, `agent-os[bot]`) acts on repos; PRs authored by the bot.
   Simplest, org-scoped, matches company-scope agents.
-- **Phase 2 — per-member.** `github` is **already** a provider in `member_identities`, so a member can
-  link their GitHub account; a user-to-server OAuth "Connect GitHub" gives a user token and the run-as
-  path authors PRs as the actual human — a one-for-one mirror of Slack's run-as.
+- **Phase 2 — per-member.** ✅ **Shipped** (v0.126.0) — see `docs/per-member-github-plan.md`. A member
+  links their own GitHub account (user-to-server OAuth "Connect GitHub"); the user token is vault-stored
+  per member and injected as `GH_TOKEN` for run-as sessions, so the agent authors PRs as the actual human,
+  overriding the company bot. `github` was already a provider in `member_identities`, so the login is
+  recorded there too.
 
 ## Phases (each its own PR)
 

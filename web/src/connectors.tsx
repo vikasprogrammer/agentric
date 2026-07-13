@@ -27,7 +27,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import {
   api, type Member, type CatalogEntry, type Connector, type ConnectorScope, type AddConnectorReq,
-  type IntegrationsOverview, type ConnectionsResp,
+  type IntegrationsOverview, type ConnectionsResp, type GithubMe,
   type Host, type HostProtocol, type HostPosture, type AddHostReq,
 } from '@/lib/api'
 
@@ -494,6 +494,62 @@ function ProposedHostRow({ h, me, busy, onPublish, onDismiss }: {
   )
 }
 
+/** The viewer's own GitHub link — Connect/Disconnect their personal git identity (per-member run-as).
+ *  Self-contained: fetches its own state so the Mine section can drop it in without threading props. */
+function GithubMineCard() {
+  const [st, setSt] = useState<GithubMe | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const load = () => api.githubMe().then((r) => { if (!r.error) setSt(r) }).catch(() => {})
+  useEffect(() => { load() }, [])
+  // Reflect the callback's ?github= flag (set after the OAuth round-trip) then clean the URL.
+  useEffect(() => {
+    const m = window.location.hash.match(/[?&]github=(\w+)/)
+    if (!m) return
+    if (m[1] === 'connected') load()
+    else setErr(m[1] === 'denied' ? 'GitHub authorization was cancelled.' : 'Could not connect GitHub — please try again.')
+    window.history.replaceState(null, '', window.location.hash.replace(/[?&]github=\w+/, ''))
+  }, [])
+  const connect = async () => {
+    setBusy(true); setErr('')
+    const r = await api.githubConnect()
+    setBusy(false)
+    if (r.error) return setErr(r.error)
+    if (r.redirectUrl) window.location.href = r.redirectUrl
+  }
+  const disconnect = async () => {
+    setBusy(true); setErr('')
+    await api.githubDisconnect()
+    setBusy(false)
+    load()
+  }
+  const Icon = BRAND.github.Icon
+  return (
+    <div className="rounded-lg border p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <Icon size={18} style={{ color: BRAND.github.color }} />
+          <div>
+            <div className="text-sm font-medium">GitHub — my git identity</div>
+            <div className="text-[11px] text-muted-foreground">
+              {st?.connected
+                ? <>Connected as <code className="rounded bg-muted px-1 py-0.5">@{st.login}</code> — sessions you run push &amp; open PRs as you.</>
+                : 'Link your GitHub so agents acting as you commit under your name (not a shared bot).'}
+            </div>
+          </div>
+        </div>
+        {st?.connected
+          ? <Button size="sm" variant="ghost" onClick={disconnect} disabled={busy}>Disconnect</Button>
+          : <Button size="sm" onClick={connect} disabled={busy || !st?.configured}>Connect GitHub</Button>}
+      </div>
+      {!st?.configured && !st?.connected && (
+        <p className="mt-2 text-[11px] text-muted-foreground">GitHub isn’t set up for this workspace yet — an owner/admin adds the App credentials in Connections → Creds.</p>
+      )}
+      {err && <p className="mt-2 text-[11px] text-destructive">{err}</p>}
+    </div>
+  )
+}
+
 function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
   me: Member | null
   connectors: Connector[]
@@ -579,6 +635,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
             <UserIcon className="h-3.5 w-3.5" /> Mine — only load in sessions you start
             {conns?.me && <code className="rounded bg-muted px-1.5 py-0.5 text-[10px]" title="your Composio user_id">{conns.me}</code>}
           </div>
+          <GithubMineCard />
           {!conns?.keySet && myConnectors.length === 0 && (
             <p className="text-xs text-muted-foreground">Connecting your own apps needs a company Composio key (an admin sets it in Connections → Creds).</p>
           )}
