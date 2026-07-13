@@ -32,7 +32,7 @@ Two things make it more than a to-do list:
 | A fact the whole team/fleet should know | **Knowledge** |
 | A preference or context for one agent | Tell that agent (→ its **Memory**) |
 | Work someone (or some agent) should do | **Tasks** |
-| A deliverable an agent produced | It's already in **Artifacts** |
+| A deliverable an agent produced | It's already in **Library** |
 
 ## And these docs?
 

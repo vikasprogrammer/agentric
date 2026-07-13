@@ -68,5 +68,5 @@ a requirement. (No name, or one that doesn't exist? The bot replies with the age
 ## Where to look when one fires
 
 Everything an automated run does lands in the same places as a console run: live under **Sessions**,
-progress and reports in your **Inbox**, deliverables under **Artifacts**, and every governed action in
+progress and reports in your **Inbox**, deliverables under **Library**, and every governed action in
 the **Audit** log. An automation is never a black box.

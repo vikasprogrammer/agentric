@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.128.3] — 2026-07-13
+### Changed
+- **Docs say "Library" (not "Artifacts").** Finishes the Artifacts→Library rename (v0.122.0, v0.128.2) by
+  updating the prose that lagged: the in-console **Docs** pages (core-concepts, getting-started,
+  shared-planes, working-with-agents, automations) now call the deliverables surface the **Library**, and
+  the engineering docs (`docs/PILLARS.md` §14 + `docs/agent-mcp-tools.md`) note that "Library" is the
+  user-facing name while `artifact*` (the `ArtifactStore`, `artifacts` table, `/api/artifacts` route, and
+  `artifact` inbox card) stays the internal identifier. Copy only — no code or schema change.
+
 ## [0.128.2] — 2026-07-13
 ### Changed
 - **Media copy says "Library" (not "Artifacts").** Aligned the video generation strings that lagged the

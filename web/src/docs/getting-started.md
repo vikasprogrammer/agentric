@@ -9,7 +9,7 @@ You're reading this, so you've already accepted your invite link and you're logg
 3. **Check your Inbox.** This is the home page for a reason. Agents post here when they:
    - **ask you a question** mid-run (answer inline and they continue),
    - **need an approval** for a risky action (approve/deny — see *Governance* for who can approve what),
-   - **report** what they did, or **publish an artifact** (a PDF, doc, image…).
+   - **report** what they did, or **publish a deliverable** (a PDF, doc, image…) to the **Library**.
 4. **Look at Sessions.** Every run — yours, your teammates', and automation-triggered ones you're allowed to see — with a green dot when it's live. Click to attach to the terminal.
 
 ## Talking to agents from Slack or Discord
@@ -24,10 +24,10 @@ Address any agent by name with a leading `/agent-name`. The bot acks in a thread
 
 ## Where things live
 
-- **Inbox** — questions, approvals, reports, published artifacts. Start here every morning.
+- **Inbox** — questions, approvals, reports, published deliverables. Start here every morning.
 - **Agents / Sessions** — start work, watch work.
 - **Tasks** — the shared to-do queue. File a task instead of pinging a person; an agent may pick it up.
-- **Artifacts** — every deliverable agents have published, in one place.
+- **Library** — every deliverable agents have published, in one place.
 - **Knowledge** — the team wiki agents read *and write*. Correct it when it's wrong; agents will read your correction.
 
 ## What you can't do (by design)
