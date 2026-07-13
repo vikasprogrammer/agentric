@@ -106,8 +106,10 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
   // Governance / throughput signals from the audit stream.
   const signals = { tasksCreated: 0, tasksCompleted: 0, approvals: 0, rejected: 0, errors: 0, budgetStops: 0 };
   const audit = db.prepare(
+    // `session.error` = a real run error; `episode.error` (a memory-STORE failure) is deliberately excluded
+    // so a flaky memory backend doesn't inflate the header with "N errors" that aren't the fleet's doing.
     `SELECT type, data FROM audit_events WHERE ts >= ? AND ts < ?
-       AND type IN ('task.created','task.completed','approval.auto_approved','approval.resolved','budget.exceeded','episode.error','session.error')`,
+       AND type IN ('task.created','task.completed','approval.auto_approved','approval.resolved','budget.exceeded','session.error')`,
   ).all<AuditRow>(start, end);
   for (const a of audit) {
     switch (a.type) {
@@ -116,7 +118,7 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
       case 'approval.auto_approved': signals.approvals++; break;
       case 'approval.resolved': { let approved = true; try { approved = (JSON.parse(a.data) as { approved?: boolean }).approved !== false; } catch { /* keep default */ } approved ? signals.approvals++ : signals.rejected++; break; }
       case 'budget.exceeded': signals.budgetStops++; break;
-      case 'episode.error': case 'session.error': signals.errors++; break;
+      case 'session.error': signals.errors++; break;
     }
   }
 
@@ -210,24 +212,30 @@ function signalLine(m: DigestModel): string {
   return parts.join(' · ');
 }
 
-/** Slack mrkdwn (`*bold*`, `_italic_`). One combined message: 📋 Today + 🧠 Learned. */
-export function renderSlack(os: AgentOS, m: DigestModel): string {
+/** Slack mrkdwn (`*bold*`, `_italic_`, `<url|text>` links). One combined message: 📋 Today + 🧠 Learned.
+ *  `origin` (the tenant's public console URL) turns agent names into links + adds a footer to the full
+ *  report; omitted → plain text (still valid). */
+export function renderSlack(os: AgentOS, m: DigestModel, origin?: string): string {
   const name = os.tenant.charAt(0).toUpperCase() + os.tenant.slice(1);
-  const out: string[] = [`*📋 ${name} — ${m.label}*`, `_${tally(m)}_`];
+  const link = (path: string, text: string) => (origin ? `<${origin}/#/${path}|${text}>` : text);
+  const out: string[] = [`*📋 ${link('insights', `${name} — ${m.label}`)}*`, `_${tally(m)}_`];
   const sig = signalLine(m);
   if (sig) out.push(`_${sig}_`);
   out.push('');
   if (!m.byAgent.length) out.push('_No notable sessions today._');
   for (const a of m.byAgent) {
-    out.push(`*${a.agent}*`);
+    out.push(`*${link(`agents/${a.agent}`, a.agent)}*`);
     for (const l of a.lines) out.push(`• ${l.title}${l.count ? ` (×${l.count})` : ''} ${MARK[l.outcome] ?? ''}`.trimEnd());
     if (a.more) out.push(`• _+${a.more} more_`);
+    out.push(''); // breathing room between agents
   }
   if (m.guidance.length || m.recommendations.length) {
-    out.push('', '*🧠 Learned*');
+    out.push('*🧠 Learned*');
     for (const g of m.guidance) out.push(`• ${g}`);
     for (const r of m.recommendations) out.push(`⚠️ _Recommend:_ ${r}`);
+    out.push('');
   }
+  out.push(`_${link('insights', 'Open the full report in Agent OS →')}_`);
   return out.join('\n');
 }
 
@@ -243,7 +251,7 @@ export function renderMarkdown(os: AgentOS, m: DigestModel): string {
   out.push(``, `## What got done`);
   if (!m.byAgent.length) out.push(`- (no notable sessions today)`);
   for (const a of m.byAgent) {
-    out.push(``, `### ${a.agent}`);
+    out.push(``, `### [${a.agent}](#/agents/${a.agent})`);
     for (const l of a.lines) out.push(`- ${MARK[l.outcome] ?? ''} ${l.title}${l.count ? ` (×${l.count})` : ''}`.replace('  ', ' '));
     if (a.more) out.push(`- _+${a.more} more_`);
   }
@@ -257,26 +265,30 @@ export function renderMarkdown(os: AgentOS, m: DigestModel): string {
 
 /** Discord message content — standard markdown (`**bold**`), same two sections as Slack. Discord hard-
  *  caps a message at 2000 chars, so the body is trimmed with a "…more in the daily page" tail if long. */
-export function renderDiscord(os: AgentOS, m: DigestModel): string {
+export function renderDiscord(os: AgentOS, m: DigestModel, origin?: string): string {
   const name = os.tenant.charAt(0).toUpperCase() + os.tenant.slice(1);
+  const link = (path: string, text: string) => (origin ? `[${text}](${origin}/#/${path})` : text);
   const out: string[] = [`**📋 ${name} — ${m.label}**`, tally(m)];
   const sig = signalLine(m);
   if (sig) out.push(sig);
   out.push('');
   if (!m.byAgent.length) out.push('_No notable sessions today._');
   for (const a of m.byAgent) {
-    out.push(`**${a.agent}**`);
+    out.push(`**${link(`agents/${a.agent}`, a.agent)}**`);
     for (const l of a.lines) out.push(`• ${l.title}${l.count ? ` (×${l.count})` : ''} ${MARK[l.outcome] ?? ''}`.trimEnd());
     if (a.more) out.push(`• _+${a.more} more_`);
+    out.push('');
   }
   if (m.guidance.length || m.recommendations.length) {
-    out.push('', '**🧠 Learned**');
+    out.push('**🧠 Learned**');
     for (const g of m.guidance) out.push(`• ${g}`);
     for (const r of m.recommendations) out.push(`⚠️ **Recommend:** ${r}`);
+    out.push('');
   }
+  out.push(link('insights', 'Open the full report in Agent OS →'));
   const text = out.join('\n');
   if (text.length <= 2000) return text;
-  return text.slice(0, 1900).replace(/\n[^\n]*$/, '') + '\n… _full digest in the daily Knowledge page_';
+  return text.slice(0, 1900).replace(/\n[^\n]*$/, '') + `\n… ${link('kb', 'full digest in Knowledge')}`;
 }
 
 export interface PostResult { posted: boolean; reason?: string; error?: string; channel?: string; total: number; iso: string; platforms?: PlatformPost[] }
@@ -330,7 +342,7 @@ export class Digest {
    *  (Slack and/or Discord — whichever has a bot token + a channel). Ignores the hour/once-per-day gate
    *  (that's `maybePostEod`'s job) — this is the manual "post now" path too. Empty day → refresh the KB
    *  page but skip the posts (no channel noise on a quiet day). */
-  async postNow(by = 'scheduler', now = new Date()): Promise<PostResult> {
+  async postNow(by = 'scheduler', now = new Date(), origin?: string): Promise<PostResult> {
     const m = this.refresh(by, now);
     const base = { total: m.total, iso: m.iso };
     if (m.total === 0) return { ...base, posted: false, reason: 'no sessions today' };
@@ -338,8 +350,8 @@ export class Digest {
 
     const platforms: PlatformPost[] = [];
     const s = this.os.settings;
-    if (s.slackBotToken() && s.digestChannel()) platforms.push(await this.postSlack(m));
-    if (s.discordBotToken() && s.digestDiscordChannel()) platforms.push(await this.postDiscord(m));
+    if (s.slackBotToken() && s.digestChannel()) platforms.push(await this.postSlack(m, origin));
+    if (s.discordBotToken() && s.digestDiscordChannel()) platforms.push(await this.postDiscord(m, origin));
 
     const posted = platforms.some((p) => p.posted);
     for (const p of platforms.filter((p) => !p.posted)) {
@@ -352,7 +364,7 @@ export class Digest {
   }
 
   /** Post to Slack: resolve the channel (id or name), best-effort join, send the mrkdwn render. */
-  private async postSlack(m: DigestModel): Promise<PlatformPost> {
+  private async postSlack(m: DigestModel, origin?: string): Promise<PlatformPost> {
     const token = this.os.settings.slackBotToken();
     const ref = this.os.settings.digestChannel();
     let channelId = ref;
@@ -362,22 +374,22 @@ export class Digest {
       channelId = found.channel;
     }
     await joinChannel(token, channelId).catch(() => undefined); // best-effort (public channels)
-    const r = await slackPost(token, channelId, renderSlack(this.os, m));
+    const r = await slackPost(token, channelId, renderSlack(this.os, m, origin));
     return 'error' in r ? { platform: 'slack', posted: false, channel: ref, error: r.error } : { platform: 'slack', posted: true, channel: ref };
   }
 
   /** Post to Discord: send the markdown render to the configured channel id (Discord has no name lookup). */
-  private async postDiscord(m: DigestModel): Promise<PlatformPost> {
+  private async postDiscord(m: DigestModel, origin?: string): Promise<PlatformPost> {
     const token = this.os.settings.discordBotToken();
     const channel = this.os.settings.digestDiscordChannel();
-    const r = await discordPost(token, channel, renderDiscord(this.os, m));
+    const r = await discordPost(token, channel, renderDiscord(this.os, m, origin));
     return 'error' in r ? { platform: 'discord', posted: false, channel, error: r.error } : { platform: 'discord', posted: true, channel };
   }
 
   /** The scheduled EOD hook (called from the hourly upkeep tick). Posts once per server-local day, only
    *  when enabled, at least one chat platform is configured, the hour has arrived, and today hasn't been
    *  posted yet. */
-  async maybePostEod(now = new Date()): Promise<PostResult | null> {
+  async maybePostEod(now = new Date(), origin?: string): Promise<PostResult | null> {
     const s = this.os.settings;
     if (!s.digestEnabled() || !this.hasTarget()) return null;
     if (now.getHours() < s.digestHour()) return null;
@@ -392,6 +404,6 @@ export class Digest {
     // with `digest.error` rows and rewriting the KB page hourly. Give up after MAX_POST_ATTEMPTS today.
     const fails = this.os.db.prepare("SELECT count(*) AS n FROM audit_events WHERE type = 'digest.error' AND ts >= ?").get<{ n: number }>(floor);
     if ((fails?.n ?? 0) >= MAX_POST_ATTEMPTS) return null;
-    return this.postNow('scheduler', now).catch((e) => ({ posted: false, error: e instanceof Error ? e.message : String(e), total: 0, iso }));
+    return this.postNow('scheduler', now, origin).catch((e) => ({ posted: false, error: e instanceof Error ? e.message : String(e), total: 0, iso }));
   }
 }
