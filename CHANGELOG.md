@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.175.2] — 2026-07-13
+### Changed
+- **Visuals/icons across the landing page** (`public/landing.html`). Added tasteful inline-SVG iconography
+  to the previously text-only sections, matching the existing line-icon style: an accent-tinted icon on each
+  **hero stat** (connector link · generation sparkles · governance shield · 24/7 clock); an icon on every
+  **ladder rung** (Goal target · Tasks board · Sessions terminal); a per-step icon on each **governance-gate**
+  row (scales · check · database · fingerprint · loop · audit-doc, alongside the sequence number); and a
+  header icon on every **integration card** plus recognizable monochrome **brand marks** in the key chips
+  (Slack, Discord, GitHub, Google Drive). All icons inherit the accent color so they adapt in dark mode.
+  Re-reviewed with the design-review harness: no overflow at desktop/tablet/mobile and **zero axe-core
+  accessibility violations**, in both light and dark themes.
+
 ## [0.175.1] — 2026-07-13
 ### Fixed
 - **Generic end-cards no longer leak into the digest (or episodes).** The no-report detection matched only
