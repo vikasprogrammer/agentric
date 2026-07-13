@@ -293,18 +293,35 @@ export class TeamStore {
     if (!sid) return undefined;
     const now = Date.now();
     const row = this.db
-      .prepare('SELECT member_id, expires_at FROM auth_sessions WHERE sid = ? AND expires_at > ?')
-      .get<{ member_id: string; expires_at: number }>(sid, now);
+      .prepare('SELECT member_id, expires_at, last_seen_at FROM auth_sessions WHERE sid = ? AND expires_at > ?')
+      .get<{ member_id: string; expires_at: number; last_seen_at: number | null }>(sid, now);
     if (!row) return undefined;
     // Sliding window: bump the 30-day expiry on activity so a daily-active user never hits the hard
     // cutoff and gets locked out. Throttled to ≤1 write/day/session (only slide once the row is >1 day
     // short of a fresh full TTL), so this stays off the per-request hot path. The BROWSER cookie is
     // re-stamped separately on GET /api/auth/me (see server.ts) — the DB slide alone can't, since the
     // cookie's Max-Age is fixed at mint time.
-    if (now + SESSION_TTL_MS - row.expires_at > 24 * 60 * 60 * 1000) {
-      this.db.prepare('UPDATE auth_sessions SET expires_at = ? WHERE sid = ?').run(now + SESSION_TTL_MS, sid);
+    // We also stamp `last_seen_at` for presence ("who's online now"), throttled to ≤1 write/min so the
+    // 1.5s console poll doesn't hammer the DB. Both fold into a single UPDATE when either fires.
+    const slide = now + SESSION_TTL_MS - row.expires_at > 24 * 60 * 60 * 1000;
+    const touch = !row.last_seen_at || now - row.last_seen_at > 60 * 1000;
+    if (slide || touch) {
+      this.db
+        .prepare('UPDATE auth_sessions SET expires_at = ?, last_seen_at = ? WHERE sid = ?')
+        .run(slide ? now + SESSION_TTL_MS : row.expires_at, now, sid);
     }
     return this.getMember(row.member_id);
+  }
+
+  /** Presence: the most-recent `last_seen_at` per member across their live auth sessions. The caller
+   *  decides the online threshold (a member is "online" when this is within the last few minutes).
+   *  Only members with at least one seen session appear. */
+  presence(): { memberId: string; lastSeenAt: number }[] {
+    return this.db
+      .prepare(
+        'SELECT member_id AS memberId, MAX(last_seen_at) AS lastSeenAt FROM auth_sessions WHERE last_seen_at IS NOT NULL AND expires_at > ? GROUP BY member_id',
+      )
+      .all<{ memberId: string; lastSeenAt: number }>(Date.now());
   }
   destroySession(sid: string): void {
     this.db.prepare('DELETE FROM auth_sessions WHERE sid = ?').run(sid);

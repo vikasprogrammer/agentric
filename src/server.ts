@@ -1547,6 +1547,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { stats: computeAgentStat(os.db, id) });
   }
 
+  // ── presence ─────────────────────────────────────────────────────────────────
+  // Who's online now: the most-recent activity per member (stamped ≤1/min in resolveSession). The
+  // client decides the "online" threshold from `now` vs each `lastSeen`. Any member may read it.
+  if (method === 'GET' && p === '/api/presence') {
+    const lastSeen: Record<string, number> = {};
+    for (const r of os.team.presence()) lastSeen[r.memberId] = r.lastSeenAt;
+    return sendJson(res, 200, { now: Date.now(), lastSeen });
+  }
+
   // ── self-update ────────────────────────────────────────────────────────────────
   // The deploy is a git checkout; "update available?" = "is the checkout behind origin?". Any member
   // can SEE the notification (cached fetch), only the owner can APPLY it (pull + rebuild + restart).

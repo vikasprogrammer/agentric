@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.168.0] — 2026-07-13
+### Added
+- **Overview: "Online now" panel + human/agent presence.** The owner Overview now shows who's around at a
+  glance — human members with a live/offline presence dot ("Online" / "3m ago"), and the agents that are
+  online (≥1 active session) as click-through chips with a live-session count. Backed by lightweight
+  presence: a new `last_seen_at` on `auth_sessions` stamped ≤1×/min in `TeamStore.resolveSession` (folded
+  into the existing sliding-expiry write, so no new hot-path cost), a `TeamStore.presence()` roll-up, and
+  a new any-member `GET /api/presence` (`{ now, lastSeen }`) polled every 15s; "online" = seen in the last
+  3 minutes, computed client-side against the server clock.
+### Changed
+- **Overview visual polish.** A greeting header with a one-line fleet status, KPI tiles reworked with
+  tinted semantic icon badges (Active/Idle/Blocked/Done), and tightened spacing/hierarchy throughout.
+
 ## [0.167.1] — 2026-07-13
 ### Fixed
 - **Resolved recommendations no longer linger on Insights.** Recommendations regenerate only when a full

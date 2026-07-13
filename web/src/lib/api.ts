@@ -1113,6 +1113,7 @@ export const api = {
   rescanAgents: () => call<{ ok: boolean; added: string[]; updated: string[]; removed: string[]; errors: { folder: string; error: string }[]; error?: string }>('POST', '/api/agents/rescan'),
   agentStats: (id: string) => call<{ stats: AgentStats }>('GET', `/api/agents/${encodeURIComponent(id)}/stats`),
   agentStatsAll: () => call<{ stats: AgentStats[] }>('GET', '/api/agents/stats'),
+  presence: () => call<{ now: number; lastSeen: Record<string, number> }>('GET', '/api/presence'),
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
   agentConfig: (id: string) => call<{ agent: string; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
