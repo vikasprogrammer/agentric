@@ -8826,7 +8826,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [falKey, setFalKey] = useState('')
   const [vidModel, setVidModel] = useState('')
   // Live Atlas catalog for the default-model comboboxes (dropdown suggestions; the fields stay free text).
-  const [atlasModels, setAtlasModels] = useState<{ image: { id: string; label: string }[]; video: { id: string; label: string }[] }>({ image: [], video: [] })
+  const [atlasModels, setAtlasModels] = useState<{ image: { id: string; label: string; priceUsd: number | null }[]; video: { id: string; label: string; priceUsd: number | null }[] }>({ image: [], video: [] })
   const [chatRouter, setChatRouter] = useState(true)
   const [chatIdle, setChatIdle] = useState(30)
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
@@ -9285,7 +9285,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
 
           <div className="space-y-3 border-t pt-3">
             <div className="text-xs font-medium text-muted-foreground">Images</div>
-            <Field label="Default image model" help={atlasModels.image.length ? `Optional — choose from Atlas's ${atlasModels.image.length} text-to-image models, or type any id. Blank = Atlas's built-in default; agents can still override per call.` : "Optional — an Atlas image model id used when an agent doesn't name one. Blank = Atlas's built-in default. Add a key to load the catalog."}>
+            <Field label="Default image model" help={atlasModels.image.length ? `Optional — choose from Atlas's ${atlasModels.image.length} text-to-image models (price shown per image), or type any id. Blank = Atlas's built-in default; agents can still override per call.` : "Optional — an Atlas image model id used when an agent doesn't name one. Blank = Atlas's built-in default. Add a key to load the catalog."}>
               <Input
                 list="atlas-image-models"
                 value={imgModel}
@@ -9295,14 +9295,15 @@ function IntegrationsSettings({ me }: { me: Member }) {
                 className="font-mono text-xs"
               />
               <datalist id="atlas-image-models">
-                {atlasModels.image.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                {atlasModels.image.map((m) => <option key={m.id} value={m.id}>{m.priceUsd != null ? `${m.label} — $${+m.priceUsd.toFixed(3)}/image` : m.label}</option>)}
               </datalist>
+              {(() => { const m = atlasModels.image.find((x) => x.id === imgModel.trim()); return m && m.priceUsd != null ? <p className="mt-1 text-[11px] text-muted-foreground">{m.label} · <strong>${+m.priceUsd.toFixed(3)}</strong> per image</p> : null })()}
             </Field>
           </div>
 
           <div className="space-y-3 border-t pt-3">
             <div className="text-xs font-medium text-muted-foreground">Video</div>
-            <Field label="Default video model" help={atlasModels.video.length ? `Optional — choose from Atlas's ${atlasModels.video.length} text-to-video models, or type any id (e.g. a fal-ai/… id when fal is the backend). Blank = the active backend's built-in default.` : 'Optional — a backend-specific model id used when an agent doesn\'t name one. Blank = the active backend\'s built-in default.'}>
+            <Field label="Default video model" help={atlasModels.video.length ? `Optional — choose from Atlas's ${atlasModels.video.length} text-to-video models (price shown per second of video), or type any id (e.g. a fal-ai/… id when fal is the backend). Blank = the active backend's built-in default.` : 'Optional — a backend-specific model id used when an agent doesn\'t name one. Blank = the active backend\'s built-in default.'}>
               <Input
                 list="atlas-video-models"
                 value={vidModel}
@@ -9312,8 +9313,9 @@ function IntegrationsSettings({ me }: { me: Member }) {
                 className="font-mono text-xs"
               />
               <datalist id="atlas-video-models">
-                {atlasModels.video.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+                {atlasModels.video.map((m) => <option key={m.id} value={m.id}>{m.priceUsd != null ? `${m.label} — $${+m.priceUsd.toFixed(3)}/sec` : m.label}</option>)}
               </datalist>
+              {(() => { const m = atlasModels.video.find((x) => x.id === vidModel.trim()); return m && m.priceUsd != null ? <p className="mt-1 text-[11px] text-muted-foreground">{m.label} · <strong>${+m.priceUsd.toFixed(3)}</strong> per second of video</p> : null })()}
             </Field>
             <Field label="fal.ai API key (optional)" help="fal.ai → dashboard → Keys. Widest video catalog (Veo, Kling, Seedance…) via one key. When set, fal handles video instead of Atlas.">
               <Input

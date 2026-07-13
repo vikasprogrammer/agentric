@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.132.0] — 2026-07-13
+### Added
+- **Model dropdowns show pricing (Settings → Integrations → Media generation).** The live Atlas catalog
+  route (`GET /api/integrations/atlas/models`) now returns each model's effective (post-discount) base
+  price — **per image** for text-to-image, **per second** for text-to-video — parsed from Atlas's
+  `price.actual.base_price`. The console appends it to each dropdown option (e.g. `Nano Banana 2 — $0.04/image`,
+  `Seedance 2.0 — $0.045/sec`) and shows a hint line under the field when the current value matches a
+  catalog model. Free text + per-call override unchanged; console/route only, no schema change.
+
 ## [0.131.0] — 2026-07-13
 ### Added
 - **Plain `git` now authenticates with the injected token, not just `gh`.** The GitHub token is exported

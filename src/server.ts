@@ -4147,9 +4147,17 @@ async function probeOllama(target: string): Promise<{ reachable: boolean; url: s
  * by the key itself) and refetches. Best-effort: any failure returns empty lists (the field stays a
  * plain free-text input).
  */
-type AtlasModel = { id: string; label: string };
+// `priceUsd` is Atlas's effective (post-discount) base price — per image for TEXT-TO-IMAGE, per second
+// for TEXT-TO-VIDEO — so the console can show a cost hint next to each model. null when Atlas omits it.
+type AtlasModel = { id: string; label: string; priceUsd: number | null };
 const atlasModelCache = new Map<string, { at: number; image: AtlasModel[]; video: AtlasModel[] }>();
 const ATLAS_MODEL_TTL_MS = 5 * 60 * 1000;
+type AtlasPrice = { actual?: { base_price?: string | number }; origin?: { base_price?: string | number } };
+function atlasPriceUsd(price?: AtlasPrice): number | null {
+  const raw = price?.actual?.base_price ?? price?.origin?.base_price;
+  const n = raw != null ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
 async function fetchAtlasModels(key: string): Promise<{ image: AtlasModel[]; video: AtlasModel[] }> {
   const cached = atlasModelCache.get(key);
   if (cached && Date.now() - cached.at < ATLAS_MODEL_TTL_MS) return { image: cached.image, video: cached.video };
@@ -4161,12 +4169,12 @@ async function fetchAtlasModels(key: string): Promise<{ image: AtlasModel[]; vid
       signal: ctrl.signal,
     });
     if (!r.ok) return cached ? { image: cached.image, video: cached.video } : { image: [], video: [] };
-    const body = (await r.json()) as { data?: Array<{ model?: string; displayName?: string; categories?: string[] }> };
+    const body = (await r.json()) as { data?: Array<{ model?: string; displayName?: string; categories?: string[]; price?: AtlasPrice }> };
     const rows = Array.isArray(body?.data) ? body.data : [];
     const pick = (cat: string): AtlasModel[] =>
       rows
         .filter((m) => m.model && Array.isArray(m.categories) && m.categories.includes(cat))
-        .map((m) => ({ id: String(m.model), label: String(m.displayName || m.model) }))
+        .map((m) => ({ id: String(m.model), label: String(m.displayName || m.model), priceUsd: atlasPriceUsd(m.price) }))
         .sort((a, b) => a.label.localeCompare(b.label));
     const out = { at: Date.now(), image: pick('TEXT-TO-IMAGE'), video: pick('TEXT-TO-VIDEO') };
     atlasModelCache.set(key, out);
