@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.175.1] — 2026-07-13
+### Fixed
+- **Generic end-cards no longer leak into the digest (or episodes).** The no-report detection matched only
+  the literal `'Session ended.'`, but the launcher actually writes **"The session ended."** and **"The
+  session ended unexpectedly (the process died)."** — so those (and their `×N` dedupes) were showing up as
+  digest lines for agents that didn't `report`. Detection is now a robust `isRealReport` check applied in
+  the digest AND in `composeEpisode` (the same bug polluted episode memories). No-report sessions fall back
+  to their title (then get task/placeholder-filtered) instead of surfacing "The session ended."
+  `src/edge/digest.ts`, `src/terminal.ts`.
+
 ## [0.175.0] — 2026-07-13
 ### Changed
 - **Comprehensive rewrite of the marketing landing page** (`public/landing.html`, served off disk at

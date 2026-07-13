@@ -78,14 +78,14 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
     if (outcome in buckets) (buckets as Record<string, number>)[outcome]++; else buckets.other++;
     const importance = r.importance ?? 0;
     // Fix 1: the line is the first sentence(s) of the agent's REPORT (rich), not the clipped title.
-    const report = (r.report ?? '').trim();
-    const hasReport = !!report && report !== '(no summary)' && report !== 'Session ended.';
+    const hasReport = isRealReport(r.report);
     const line = digestLine(r.report, r.title);
     // Fix 3: drop lines that describe the TASK rather than the result — a session with no report falls
     // back to its incoming task ("Task: …"), and inter-agent `ask` sessions ("Ask ← foo") aren't work.
     const askSession = (r.spawned_by ?? '').startsWith('ask:');
     const taskish = /^(task:|ask ←|ask\b)/i.test(line);
-    const placeholder = line.length < 5 || /^(test|teste|untitled)$/i.test(line);
+    // Drop generic end-card text and stubs — a no-report session whose title is also generic must not leak.
+    const placeholder = line.length < 5 || /^(test|teste|untitled)$/i.test(line) || !isRealReport(line);
     const include = !placeholder && !askSession && !taskish && (hasReport || importance >= SALIENCE || r.status === 'done');
     if (include) {
       const list = perAgent.get(r.agent) ?? [];
@@ -131,13 +131,19 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
 const LINE_MAX = 200; // digest lines can breathe — Slack/Discord/KB all handle it (vs the 72-char title)
 const DEDUP_STOP = new Set(['task', 'with', 'this', 'that', 'from', 'into', 'have', 'been', 'were', 'they', 'will', 'just', 'also', 'done', 'made', 'make', 'need', 'some', 'more', 'than', 'only', 'each', 'both', 'over', 'when', 'then', 'sent', 'added', 'set', 'the', 'and', 'for']);
 
+/** Whether a `completed`-card body is the agent's own summary vs a GENERIC end card — the launcher writes
+ *  "The session ended.", "The session ended unexpectedly (the process died).", or "(no summary)" when the
+ *  agent never `report`ed. Those carry no signal and must NOT become a digest line / count as a report. */
+export function isRealReport(body: string | null | undefined): boolean {
+  const b = (body ?? '').trim();
+  return !!b && !/^\(no summary\)$/i.test(b) && !/^the session ended\b/i.test(b) && !/^session ended\.?$/i.test(b);
+}
+
 /** The digest line for a session — the first sentence(s) of the agent's REPORT (rich), else the title.
  *  Clipped to a sentence/word boundary near LINE_MAX so we never chop mid-outcome the way the 72-char
  *  title did ("…root cause was…"). */
 function digestLine(report: string | null, title: string): string {
-  const body = (report ?? '').trim();
-  const real = !!body && body !== '(no summary)' && body !== 'Session ended.';
-  const src = real ? body : (title || '');
+  const src = isRealReport(report) ? (report as string).trim() : (title || '');
   const firstLine = src.split('\n').map((s) => s.trim()).find(Boolean) ?? '';
   const collapsed = firstLine.replace(/\s+/g, ' ').trim();
   if (collapsed.length <= LINE_MAX) return collapsed;
