@@ -80,7 +80,7 @@ library, flagged not-yet-published** — reusing the entire existing read/edit/s
 
 This beats a settings-blob "recommendation card" (the Dreaming pattern) because a `SKILL.md` is a
 first-class file that wants the real editor, not a one-shot Apply button. *(Alternative if we want the
-proposal to sit next to config recommendations on the Self-learning tab: a `skill_proposals` settings
+proposal to sit next to config recommendations on the **Dreaming** page: a `skill_proposals` settings
 blob holding `{name, description, body, source, createdAt}`, Apply = `create()`. Rejected as the default
 — it duplicates the skill editor and can't hold supporting files. Kept as a fallback.)*
 
@@ -128,7 +128,7 @@ scripts/templates) — the store's `installFiles` path stays reserved for the re
 **Console (`web/src`)**
 - Skills page: a **"Proposed by self-learning"** section — each card → **Review** (opens the existing
   editor prefilled, editable) → **Publish** or **Dismiss**; an `auto` badge + source-session link.
-- Self-learning tab: a small **"N skills proposed"** count linking to that section (keeps the learning
+- **Dreaming** page: a small **"N skills proposed"** count linking to that section (keeps the learning
   loop's outputs — guidance, config recs, *and now skills* — visible in one place).
 
 **Docs / release**
@@ -149,7 +149,7 @@ scripts/templates) — the store's `installFiles` path stays reserved for the re
 1. **Who may propose** — whole fleet (any agent post-task, recommended) vs gardener-only. Fleet-wide is
    safe because of the gate and matches Hermes; gardener-only is narrower/quieter.
 2. **Staging** — draft-in-library via `.aos-proposed` (recommended, reuses the editor) vs a settings-blob
-   card on the Self-learning tab.
+   card on the **Dreaming** page.
 3. **Auto-publish** — gated-only for v1 (recommended) vs ship the opt-in `skills_autopublish` now.
 
 Defaults in this spec: **fleet-wide propose · draft-in-library · gated-only v1.**
