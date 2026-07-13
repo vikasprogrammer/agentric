@@ -172,19 +172,21 @@ const IMAGE_GENERATE_TOOL = {
 const IMAGE_EDIT_TOOL = {
   name: 'image_edit',
   description:
-    'Edit or upscale an EXISTING image (image-to-image). Use this to transform an image you already have — ' +
-    'change its style/content ("make the sky purple", "add a hat"), or upscale it — WITHOUT redrawing from ' +
-    'scratch. The source `image` can be a Library artifact id (e.g. from a prior image_generate), a file path ' +
-    'in your working folder (a file you wrote OR one uploaded into the session), or an http(s) image URL. ' +
-    'The result is saved as a NEW image in the Library (the source is never changed) and the tool returns the ' +
-    'new artifact id. Pass `prompt` to describe the edit, OR `scale` (2 or 4) to upscale. Governed ' +
+    'Edit, upscale, or run a named preset on an EXISTING image. Use this to transform an image you already ' +
+    'have — change its style/content ("make the sky purple", "add a hat"), upscale it, or remove its ' +
+    'background — WITHOUT redrawing from scratch. The source `image` can be a Library artifact id (e.g. from a ' +
+    'prior image_generate), a file path in your working folder (a file you wrote OR one uploaded into the ' +
+    'session), or an http(s) image URL. The result is saved as a NEW image in the Library (the source is never ' +
+    'changed) and the tool returns the new artifact id. Pass `prompt` to describe an edit, `scale` (2 or 4) to ' +
+    'upscale, OR `operation` for a named preset ("remove-background" → a transparent PNG cutout). Governed ' +
     '(cost-metered + audited). Requires an Atlas Cloud key.',
   inputSchema: {
     type: 'object',
     properties: {
       image: { type: 'string', description: 'The image to edit: a Library artifact id, a file path in your working folder (written or uploaded), or an http(s) image URL.' },
-      prompt: { type: 'string', description: 'How to change the image (e.g. "turn it into a watercolor painting", "remove the background"). Required unless upscaling.' },
+      prompt: { type: 'string', description: 'How to change the image (e.g. "turn it into a watercolor painting"). Required unless upscaling or using an `operation` preset.' },
       scale: { type: 'number', description: 'Upscale factor (2 or 4). When set, upscales the image and `prompt` is ignored.' },
+      operation: { type: 'string', enum: ['remove-background'], description: 'A named preset. "remove-background" removes the background and returns a transparent PNG (no `prompt` needed). Takes precedence over `scale`/`prompt`.' },
       model: { type: 'string', description: 'Optional model id override (an Atlas image-to-image / upscaler model). Omit for the default.' },
     },
     required: ['image'],
@@ -1117,10 +1119,12 @@ async function imageGenerate(args: Record<string, unknown>): Promise<string> {
 async function imageEdit(args: Record<string, unknown>): Promise<string> {
   const image = String(args.image ?? '').trim();
   if (!image) return 'An input `image` is required (a Library artifact id, a working-folder file path, or an image URL).';
+  const operation = args.operation === 'remove-background' ? 'remove-background' : undefined;
   const scale = args.scale !== undefined ? Number(args.scale) : undefined;
   const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
-  if (!(scale && scale > 1) && !prompt) return 'Describe the edit in `prompt`, or pass `scale` (2 or 4) to upscale.';
+  if (!operation && !(scale && scale > 1) && !prompt) return 'Describe the edit in `prompt`, pass `scale` (2 or 4) to upscale, or set `operation` (e.g. "remove-background").';
   const body: Record<string, unknown> = { session: SESSION, image };
+  if (operation) body.operation = operation;
   if (prompt) body.prompt = prompt;
   if (scale !== undefined) body.scale = scale;
   if (typeof args.model === 'string' && args.model.trim()) body.model = args.model.trim();
@@ -1133,7 +1137,7 @@ async function imageEdit(args: Record<string, unknown>): Promise<string> {
   if (!d.ok) return `Could not edit image: ${d.error ?? 'unknown error'}`;
   const list = (d.artifacts ?? []).map((a) => `${a.id} (${a.filename})`).join(', ');
   const cost = typeof d.costUsd === 'number' ? ` · ~$${d.costUsd.toFixed(3)}` : '';
-  const what = scale && scale > 1 ? `Upscaled ${scale}×` : 'Edited';
+  const what = operation === 'remove-background' ? 'Removed background' : scale && scale > 1 ? `Upscaled ${scale}×` : 'Edited';
   const warn = d.warning ? ` ⚠ ${d.warning}` : '';
   return `${what} with ${d.model ?? 'the default model'}${cost}. New image saved to the Library: ${list}.${warn}`;
 }

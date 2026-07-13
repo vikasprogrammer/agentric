@@ -8,8 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.138.4] — 2026-07-13
-### Fixed
+## [0.139.0] — 2026-07-13
+### Added
+- **`image_edit` gains a `remove-background` preset.** Alongside prompt-guided edit and upscale, agents can
+  now cut out an image's subject with `image_edit({ image, operation: "remove-background" })` — no prompt
+  needed. It returns a **transparent PNG** saved as a new Library image (source untouched), via Atlas's
+  dedicated `youchuan/v8.1/remove-background` model. Same governed `generateImage` submit+poll as the other
+  edit modes (`operation` takes precedence over `scale`/`prompt`), classified `image.edit` (money-capped),
+  audited `image.edited` (op=remove-background). Verified live (→ 822 KB transparent PNG).
 - **An invalid/partial default image model no longer silently breaks generation.** A half-typed default
   (e.g. `google/` left in the Settings field) used to fail every `image_generate`/`image_edit` with a
   cryptic Atlas "not found". Now guarded two ways: (1) **console warning** — the default-model fields flag
