@@ -1821,7 +1821,8 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
           <Terminal className="h-3.5 w-3.5" /> {takingOver ? 'taking over…' : 'Take over'}
         </button>
       )}
-      <ImageDropZone session={session} onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}
+      <ImageDropZone session={session} attachable={Boolean(session) && (isLive(session!) || overrideAttach)}
+        onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}
         fontSize={fontSize} setFontSize={setFontSize}>
         <Xterm key={nonce} wsUrl={wsUrl} fontSize={fontSize} copyOnSelect />
       </ImageDropZone>
@@ -1835,14 +1836,17 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
  *  (file paste). Each uploads the bytes; the server saves them in the agent's folder and types the path
  *  into the running claude. Now that the terminal is same-document (no iframe), drops/pastes over it
  *  bubble to our window handlers directly — no cross-document interception needed. */
-function ImageDropZone({ session, children, onActivity, fontSize, setFontSize }: {
-  session?: Session; children: ReactNode; onActivity?: () => void
+function ImageDropZone({ session, attachable, children, onActivity, fontSize, setFontSize }: {
+  session?: Session; attachable?: boolean; children: ReactNode; onActivity?: () => void
   fontSize: number; setFontSize: (f: number | ((s: number) => number)) => void
 }) {
   const [drag, setDrag] = useState(false)
   const [help, setHelp] = useState(false)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err' | 'busy'; text: string } | null>(null)
-  const live = session?.status === 'running'
+  // Gate on the pane being attached/live — the same `isLive` notion the green dot uses, plus the
+  // just-took-over override — NOT raw `status === 'running'`, which lags a poll behind a take-over and
+  // reads terminal on a still-attached run. The server (`attachFile`) stays the hard authority.
+  const live = Boolean(attachable)
   const wrapRef = useRef<HTMLDivElement>(null)
   // Keep the latest upload closure reachable from imperative (addEventListener) handlers without
   // re-binding them every render.

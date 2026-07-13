@@ -1098,7 +1098,13 @@ export class TerminalManager {
     if (row.claimed_by) return { ok: true }; // already taken over — the pane is already sticky/attachable
     // A prior stop must not veto the deliberate take-over; clear any sentinel so a re-open resurrects.
     this.allowResume(sessionId);
-    this.db.prepare("UPDATE term_sessions SET headless = 0, claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ?")
+    // Force status back to 'running' (like markResumed does for the resume path). A take-over can race the
+    // Stop-hook turn-end teardown, which may have already flipped an unattended run to 'done'; without this,
+    // the claimed run keeps a terminal status and everything gated on `status === 'running'` — notably
+    // attachFile ("session is not live") — wrongly rejects the now-attached, steerable session. The sentinel
+    // is already cleared above, so a re-open resurrects the pane; 'running' is the one flag resume set that
+    // claim was missing.
+    this.db.prepare("UPDATE term_sessions SET headless = 0, status = 'running', claimed_by = ?, claimed_at = ?, updated_at = ? WHERE id = ?")
       .run(by, Date.now(), Date.now(), sessionId);
     // No kill, no relaunch — the live pane keeps streaming; the caller opens ttyd and attaches to it.
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent });

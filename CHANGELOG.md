@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.138.2] — 2026-07-13
+### Fixed
+- **Taking over an unattended session no longer breaks file attach with "session is not live."** Take-over
+  (`claimSession`, `POST /api/sessions/:id/interactive`) flipped `headless→0`, set `claimed_by`, and cleared
+  the resume sentinel — but, unlike the resume path (`markResumed`), it never set `status = 'running'`. A
+  take-over can race the Stop-hook turn-end teardown, which may have already moved the run to `done`; the
+  claimed-and-attached run then kept a terminal status, so everything gated on `status === 'running'` —
+  notably `attachFile` — rejected the now-live, steerable session as "not live." Take-over now forces
+  `status = 'running'` (the pane resurrects on re-open via the already-cleared sentinel), matching resume.
+  The console's 📎 attach/drag/paste gate also now keys off the pane being **attached/live** (the same
+  `isLive` rule the green dot uses, plus the just-took-over override) instead of raw `status`, so it stops
+  lagging a poll behind a take-over; the server stays the hard authority.
+  (`TerminalManager.claimSession`, `ImageDropZone` in `web/src/App.tsx`.)
+
 ## [0.138.1] — 2026-07-13
 ### Fixed
 - **The Profile page now loads instead of bouncing to the Inbox.** `profile` was added to the `Route`
