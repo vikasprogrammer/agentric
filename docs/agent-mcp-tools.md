@@ -102,6 +102,12 @@ meant for the team, and manage/rotate them from the console **Secrets** page (ag
 `updated_by = agent:<id>`). Not yet done: generic cross-plane redaction (scrubbing a leaked value out
 of memory/KB/inbox if an agent ignores the read-once guidance) — tracked as a follow-up.
 
+Complementary admin path (not an agent tool): from **Settings → Secrets** an owner/admin can *assign* a
+stored secret to specific agents (`PUT /api/secrets/agents`, `secret_assignments` table), and the OS
+injects it as a shell env var into each assigned agent's session at launch — the central-grant inverse of
+a manifest's `shellSecrets`, so a plain CLI (`gh`, `psql`) authenticates. Injection only: an assignment
+does **not** widen `secret_get` read access.
+
 ### `schedule` — governance model
 
 A scheduled run is a **time-shift of work the agent is already authorized to do**: same agent, same
