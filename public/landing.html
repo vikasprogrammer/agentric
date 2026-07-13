@@ -255,10 +255,22 @@
     padding-top: clamp(3.5rem, 8vw, 6rem);
     padding-bottom: clamp(2rem, 5vw, 3.5rem);
   }
+  .hero::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image: radial-gradient(color-mix(in srgb, var(--ink) 7%, transparent) 1px, transparent 1.4px);
+    background-size: 24px 24px;
+    -webkit-mask-image: radial-gradient(ellipse 62% 58% at 68% 34%, #000 0%, transparent 72%);
+    mask-image: radial-gradient(ellipse 62% 58% at 68% 34%, #000 0%, transparent 72%);
+    opacity: 0.55;
+  }
   .hero-grid {
     display: grid;
-    grid-template-columns: 1.05fr 0.95fr;
-    gap: clamp(2rem, 5vw, 4rem);
+    grid-template-columns: 0.92fr 1.08fr;
+    gap: clamp(2rem, 4.5vw, 3.5rem);
     align-items: center;
   }
   @media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
@@ -413,6 +425,127 @@
     .frow { flex-wrap: wrap; gap: 0.5rem 0.9rem; }
     .fname { min-width: 0; }
     .frole { flex-basis: 100%; order: 3; }
+  }
+
+  /* ---------- HERO PRODUCT VISUAL (browser-framed console) ---------- */
+  .hero-visual { position: relative; z-index: 1; }
+  .browser {
+    position: relative;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: var(--shadow-lg);
+  }
+  .browser-bar {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.62rem 0.85rem;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+  }
+  .bdot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+  .bdot.r { background: #E9736A; }
+  .bdot.y { background: #E7B44F; }
+  .bdot.g { background: #5FB56A; }
+  .browser-url {
+    margin-left: 0.55rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--ink-faint);
+    background: var(--ground);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 0.3rem 0.75rem;
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .browser-url svg { width: 12px; height: 12px; flex: 0 0 auto; opacity: 0.7; }
+  .browser-url b { color: var(--ink-soft); font-weight: 500; }
+  .browser-body { display: grid; grid-template-columns: 138px 1fr; }
+  .cmock-side {
+    background: var(--surface-2);
+    border-right: 1px solid var(--line);
+    padding: 0.85rem 0.6rem;
+  }
+  .cmock-brand {
+    font-family: var(--display); font-weight: 600; font-size: 0.82rem;
+    display: flex; align-items: center; gap: 0.35rem;
+    margin: 0.1rem 0.35rem 0.95rem;
+  }
+  .cmock-brand .dot { width: 0.42em; height: 0.42em; border-radius: 50%; background: var(--accent); }
+  .cmock-nav { display: flex; flex-direction: column; gap: 0.12rem; }
+  .cmock-nav a {
+    font-size: 0.75rem; color: var(--ink-soft);
+    padding: 0.36rem 0.5rem; border-radius: 8px;
+    display: flex; align-items: center; justify-content: space-between; gap: 0.4rem;
+    text-decoration: none;
+  }
+  .cmock-nav a .ni { display: inline-flex; align-items: center; gap: 0.45rem; }
+  .cmock-nav a .ni svg { width: 14px; height: 14px; flex: 0 0 auto; opacity: 0.85; }
+  .cmock-nav a.active { background: var(--accent-tint); color: var(--accent); font-weight: 600; }
+  .cmock-nav .badge {
+    font-family: var(--mono); font-size: 0.6rem; line-height: 1;
+    background: var(--accent); color: #fff;
+    border-radius: 999px; padding: 0.15rem 0.36rem;
+  }
+  :root[data-theme="dark"] .cmock-nav .badge { color: #17131A; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .cmock-nav .badge { color:#17131A; } }
+  .cmock-main { padding: 0.95rem 1.05rem 1.1rem; min-width: 0; }
+  .cmock-main .fleet-head { padding-bottom: 0.85rem; margin-bottom: 0.1rem; }
+  .cmock-main .fname { min-width: 116px; font-size: 0.82rem; }
+  .cmock-main .frole { font-size: 0.82rem; }
+  .cmock-main .frow { padding: 0.62rem 0.15rem; }
+
+  .float-card {
+    position: absolute;
+    left: 16px; bottom: -26px;
+    width: min(272px, 78%);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow-lg);
+    padding: 0.8rem 0.9rem;
+    z-index: 2;
+  }
+  .fc-top { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.55rem; }
+  .fc-ico {
+    width: 24px; height: 24px; border-radius: 7px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--warn) 16%, transparent);
+    color: var(--warn-ink);
+  }
+  .fc-ico svg { width: 14px; height: 14px; }
+  .fc-title { font-family: var(--display); font-weight: 600; font-size: 0.82rem; }
+  .fc-tag {
+    margin-left: auto; font-family: var(--mono); font-size: 0.6rem;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--warn-ink); background: color-mix(in srgb, var(--warn) 14%, transparent);
+    border-radius: 999px; padding: 0.16rem 0.5rem;
+  }
+  .fc-cmd {
+    font-family: var(--mono); font-size: 0.74rem; color: var(--ink-soft);
+    background: var(--ground); border: 1px solid var(--line);
+    border-radius: 8px; padding: 0.45rem 0.6rem; margin-bottom: 0.6rem;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .fc-actions { display: flex; gap: 0.5rem; }
+  .fc-btn {
+    font-family: var(--body); font-size: 0.74rem; font-weight: 500;
+    border-radius: 8px; padding: 0.34rem 0.7rem; flex: 1; text-align: center;
+  }
+  .fc-approve { background: var(--accent); color: #fff; }
+  :root[data-theme="dark"] .fc-approve { color: #17131A; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .fc-approve { color:#17131A; } }
+  .fc-reject { border: 1px solid var(--line); color: var(--ink-soft); background: var(--surface); }
+
+  @media (max-width: 900px) {
+    .float-card { position: static; width: auto; margin-top: 1.4rem; box-shadow: var(--shadow-md); }
+  }
+  @media (max-width: 460px) {
+    .browser-body { grid-template-columns: 1fr; }
+    .cmock-side { display: none; }
   }
 
   /* ---------- STAT STRIP ---------- */
@@ -794,41 +927,81 @@
           </div>
         </div>
 
-        <div class="card fleet fade" id="fleetCard">
-          <div class="fleet-head">
-            <h3>Your fleet</h3>
-            <span class="fleet-count" id="fleetCount">6 agents &middot; 4 running</span>
+        <div class="hero-visual fade" id="fleetCard">
+          <div class="browser">
+            <div class="browser-bar">
+              <span class="bdot r" aria-hidden="true"></span>
+              <span class="bdot y" aria-hidden="true"></span>
+              <span class="bdot g" aria-hidden="true"></span>
+              <span class="browser-url">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                your-company.agent-os.app<b>/fleet</b>
+              </span>
+            </div>
+            <div class="browser-body">
+              <aside class="cmock-side" aria-hidden="true">
+                <div class="cmock-brand"><span class="dot"></span>Agent OS</div>
+                <nav class="cmock-nav">
+                  <a class="active"><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/></svg>Fleet</span></a>
+                  <a><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="4" height="14" rx="1"/><rect x="10" y="5" width="4" height="9" rx="1"/><rect x="17" y="5" width="4" height="6" rx="1"/></svg>Tasks</span></a>
+                  <a><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-4 4z"/></svg>Inbox</span><span class="badge">2</span></a>
+                  <a><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/></svg>Knowledge</span></a>
+                  <a><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m4 17 5-4 4 3 3-2 4 3"/></svg>Library</span></a>
+                  <a><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19V9M11 19V5M17 19v-7"/></svg>Insights</span></a>
+                  <a><span class="ni"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><path d="M12 9v3l2 1"/></svg>Automations</span></a>
+                </nav>
+              </aside>
+              <div class="cmock-main">
+                <div class="fleet-head">
+                  <h3>Your fleet</h3>
+                  <span class="fleet-count" id="fleetCount">6 agents &middot; 4 running</span>
+                </div>
+                <div class="fleet-rows">
+                  <div class="frow">
+                    <span class="fname">support-triage</span>
+                    <span class="frole">Front-line support</span>
+                    <span class="pill pill-running"><span class="dot"></span>running</span>
+                  </div>
+                  <div class="frow">
+                    <span class="fname">ops-oncall</span>
+                    <span class="frole">Infra &amp; incidents</span>
+                    <span class="pill pill-running"><span class="dot"></span>running</span>
+                  </div>
+                  <div class="frow">
+                    <span class="fname">collections</span>
+                    <span class="frole">Billing &amp; dunning</span>
+                    <span class="pill pill-warn"><span class="dot"></span>needs a human</span>
+                  </div>
+                  <div class="frow">
+                    <span class="fname">growth-research</span>
+                    <span class="frole">Market &amp; SEO</span>
+                    <span class="pill pill-idle" id="growthPill"><span class="dot"></span><span id="growthState">idle</span></span>
+                  </div>
+                  <div class="frow">
+                    <span class="fname">strategist</span>
+                    <span class="frole">Turns goals into tasks</span>
+                    <span class="pill pill-running"><span class="dot"></span>running</span>
+                  </div>
+                  <div class="frow">
+                    <span class="fname">consolidator</span>
+                    <span class="frole">Fleet memory</span>
+                    <span class="pill pill-running"><span class="dot"></span>running</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="fleet-rows">
-            <div class="frow">
-              <span class="fname">support-triage</span>
-              <span class="frole">Front-line support</span>
-              <span class="pill pill-running"><span class="dot"></span>running</span>
+
+          <div class="float-card" role="img" aria-label="Governance approval card: ssh.exec on prod-db-1 held for owner approval">
+            <div class="fc-top">
+              <span class="fc-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6z"/><path d="M12 9v4M12 16h.01"/></svg></span>
+              <span class="fc-title">Approval needed</span>
+              <span class="fc-tag">owner</span>
             </div>
-            <div class="frow">
-              <span class="fname">ops-oncall</span>
-              <span class="frole">Infra &amp; incidents</span>
-              <span class="pill pill-running"><span class="dot"></span>running</span>
-            </div>
-            <div class="frow">
-              <span class="fname">collections</span>
-              <span class="frole">Billing &amp; dunning</span>
-              <span class="pill pill-warn"><span class="dot"></span>needs a human</span>
-            </div>
-            <div class="frow">
-              <span class="fname">growth-research</span>
-              <span class="frole">Market &amp; SEO</span>
-              <span class="pill pill-idle" id="growthPill"><span class="dot"></span><span id="growthState">idle</span></span>
-            </div>
-            <div class="frow">
-              <span class="fname">strategist</span>
-              <span class="frole">Turns goals into tasks</span>
-              <span class="pill pill-running"><span class="dot"></span>running</span>
-            </div>
-            <div class="frow">
-              <span class="fname">consolidator</span>
-              <span class="frole">Fleet memory</span>
-              <span class="pill pill-running"><span class="dot"></span>running</span>
+            <div class="fc-cmd">ssh.exec host=prod-db-1</div>
+            <div class="fc-actions">
+              <span class="fc-btn fc-approve">Approve</span>
+              <span class="fc-btn fc-reject">Reject</span>
             </div>
           </div>
         </div>

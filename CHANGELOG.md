@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.176.2] — 2026-07-13
+### Changed
+- **Hero product visual + template polish on the landing page** (`public/landing.html`). Replaced the plain
+  hero fleet card with a realistic **browser-framed console mockup**: browser chrome (traffic-light dots +
+  an address bar), an icon **sidebar nav** (Fleet · Tasks · Inbox · Knowledge · Library · Insights ·
+  Automations), the live **"Your fleet"** panel (keeps its idle↔running animation), and a **floating
+  "Approval needed / owner" governance card** (`ssh.exec host=prod-db-1`, Approve/Reject) overlapping for
+  depth — putting the governance story in the hero. Added a subtle **dot-grid texture** behind the hero and
+  rebalanced the hero columns to give the visual more room. The mockup reflows on small screens (sidebar
+  hides, the approval card drops below the panel). Re-reviewed with the design-review harness in light **and**
+  dark at desktop/tablet/mobile: no overflow and **zero axe-core accessibility violations** (decorative
+  sidebar nav items made non-focusable so they don't trip `aria-hidden-focus`).
+
 ## [0.176.1] — 2026-07-13
 ### Changed
 - **Digest drops agent self-maintenance lines.** A report about an agent editing its OWN prompt (e.g.
