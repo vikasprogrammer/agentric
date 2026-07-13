@@ -8,7 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.129.0] — 2026-07-13
+## [0.130.0] — 2026-07-13
+### Added
+- **Default-model pickers are now live dropdowns (Settings → Integrations → Media generation).** The image
+  and video "Default model" fields became comboboxes backed by the **live Atlas catalog** — a new
+  admin-only `GET /api/integrations/atlas/models` fetches `GET /api/v1/models` with the stored key, filters
+  to `TEXT-TO-IMAGE` (~47) and `TEXT-TO-VIDEO` (~47) models, and caches per-key for 5 min. The console
+  renders them as native `<datalist>` suggestions on the model inputs, so you can **pick from the current
+  catalog or still type any id** (free text preserved). The list refreshes when the Atlas key changes; a
+  fetch failure or missing key falls back to a plain free-text field. Agents can still override the model
+  per call — this only sets the fleet default.
 ### Added
 - **One-click GitHub App setup — no more manual walkthrough.** The **Connections → Creds → GitHub** card
   now creates the company GitHub App for you via GitHub's **App-manifest flow**: click **Create GitHub App**
