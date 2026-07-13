@@ -991,6 +991,11 @@ function Console({ me }: { me: Member }) {
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1">
             <span className={`min-w-0 flex-1 truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
+            {s.headless && (
+              <span title="background run — headless, runs unattended to completion (won't auto-open a terminal tab)" className="shrink-0 text-amber-500/80">
+                <Cpu className="h-3 w-3" />
+              </span>
+            )}
             {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
           </span>
           <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
@@ -2281,7 +2286,11 @@ function SessionsPage({
     // The currently-open session stays force-visible so explicitly opening someone else's run (e.g. an
     // admin taking over) still shows its tab and can't orphan the iframe.
     const mine = (s: Session) => s.spawnedBy === me.id || s.runAs === me.id || s.tmux === selected.tmux
-    const liveTabs = orderTabs(sessions.filter((s) => isLive(s) && visible(s) && mine(s)))
+    // A background (headless) run doesn't auto-pop a terminal tab — it isn't something you sit and watch;
+    // it runs to completion unattended. It still shows in the sessions list (with a bg marker) and can be
+    // opened explicitly or taken over — either of which makes it `selected`/`claimedBy`, so it pins here.
+    const autoTab = (s: Session) => !s.headless || !!s.claimedBy || s.tmux === selected.tmux
+    const liveTabs = orderTabs(sessions.filter((s) => isLive(s) && visible(s) && mine(s) && autoTab(s)))
     const endedTabs = sessions.filter((s) => !isLive(s))
     const selectedEnded = endedTabs.find((s) => s.tmux === selected.tmux)
     const collapsibleEnded = endedTabs.filter((s) => s.tmux !== selected.tmux && visible(s) && mine(s))

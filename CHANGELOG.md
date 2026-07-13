@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.129.0] — 2026-07-13
+### Changed
+- **Background (headless) runs no longer auto-open a terminal tab.** A headless session runs to
+  completion unattended — it isn't something you sit and watch — so it no longer auto-pops into the
+  terminal tab strip while you're viewing another session. It still appears in the sessions list and
+  can be opened explicitly (or taken over), either of which pins its tab. Interactive runs are
+  unchanged. Also adds a small **bg marker** (a `Cpu` glyph) beside headless sessions in the sidebar
+  Sessions list so background runs are distinguishable at a glance. Console-only, no API change.
+
 ## [0.128.4] — 2026-07-13
 ### Changed
 - **Settings → Integrations: one "Media generation" card for image + video.** The two separate cards
