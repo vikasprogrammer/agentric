@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.174.0] — 2026-07-13
+### Fixed
+- **Success-rate metric no longer misjudges chat agents or conflates crashes with failures** (found via a
+  false "docs-bot is struggling (14%)" alert). Three corrections across the scorecard, measurement, and
+  alerts:
+  1. **Chat sessions excluded from the success rate.** Chat-triggered (`chat:`) sessions are conversational
+     Q&A that don't call `report`, so they were dragging chat-heavy agents to a fake-low rate. They're now
+     kept out of the rate denominator and surfaced separately as a **chats** count.
+  2. **Crashes distinguished from failures.** A `crashed` session (process/pane died — infra) is surfaced
+     as its own **crashed** count, not lumped into failures; the scorecard is now based on all terminated
+     sessions so hard crashes (which emit no terminal event) are actually counted.
+  3. **Alerts split accordingly.** The "struggling" alert now requires **real failures** (≥2), so a chat- or
+     crash-heavy agent won't trip it; a new **"runs keep crashing"** alert (≥3 crashes) points at infra /
+     task-scoping instead of blaming the agent. On real data docs-bot flips from a misleading "14% struggling"
+     to an accurate "6 runs crashing." `src/edge/insights.ts`, `measurement.ts`, `alerts.ts`.
+
 ## [0.173.0] — 2026-07-13
 ### Added
 - **Improvement tiles on Insights — what to make better across the whole OS.** A grid of six deterministic

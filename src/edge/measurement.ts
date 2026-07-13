@@ -49,8 +49,10 @@ const RANK: Record<string, number> = { 'session.reported': 3, 'run.completed': 2
 
 /** Distinct terminated sessions in [from, to) as { ts, success } — one row per session. */
 function outcomes(db: Db, from: number, to: number): { ts: number; success: boolean }[] {
+  // Exclude chat-triggered sessions — they're conversational and rarely `report` a success outcome, so
+  // they'd deflate the fleet success rate (matches the scorecard's chat exclusion).
   const rows = db
-    .prepare("SELECT run_id, ts, type, data FROM audit_events WHERE ts >= ? AND ts < ? AND type IN ('session.reported','session.ended','session.stopped','run.completed') ORDER BY ts")
+    .prepare("SELECT a.run_id, a.ts, a.type, a.data FROM audit_events a JOIN term_sessions s ON s.id = a.run_id WHERE a.ts >= ? AND a.ts < ? AND a.type IN ('session.reported','session.ended','session.stopped','run.completed') AND (s.spawned_by IS NULL OR s.spawned_by NOT LIKE 'chat:%') ORDER BY a.ts")
     .all<OutRow>(from, to);
   const bySession = new Map<string, OutRow>();
   for (const r of rows) {
