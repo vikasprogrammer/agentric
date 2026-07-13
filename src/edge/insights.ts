@@ -18,15 +18,14 @@ type Db = AgentOS['db'];
 
 const DAY = 24 * 3_600_000;
 const WINDOW_DAYS = 30;
-const RANK: Record<string, number> = { 'session.reported': 3, 'run.completed': 2, 'session.ended': 1, 'session.stopped': 0 };
 const STOP = new Set(['task', 'outcome', 'session', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none', 'then', 'call', 'test', 'once', 'stop', 'tool', 'tools', 'exactly', 'nothing', 'else']);
 
-export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; rate: number | null; focus: string[]; diagnosis?: { at: number; slug: string } }
+export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; crashed: number; chats: number; rate: number | null; focus: string[]; diagnosis?: { at: number; slug: string } }
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
 
-interface OutRow { run_id: string | null; ts: number; type: string; data: string; agent: string }
+interface OutRow { run_id: string; agent: string; spawned_by: string | null; status: string; outcome: string | null }
 interface EpRow { agent_id: string; content: string }
 
 /** Top few focus keywords for one agent's episode first-lines (what it actually spends runs on). */
@@ -48,26 +47,30 @@ export function buildInsights(os: AgentOS, now = Date.now()): Insights {
   const db = os.db;
   const since = now - WINDOW_DAYS * DAY;
 
-  // Per-agent outcomes: session terminal events joined to the session's real agent, one canonical row per
-  // session (principal is unreliable — it can be the run-as member). Then tally by agent.
+  // Base the tally on every TERMINATED session in the window (not just those that emitted a terminal
+  // audit event) — so a HARD crash (process/pane died, no `session.ended`) is still counted; its outcome
+  // comes from a per-session subquery, or falls back to the row's `status` (e.g. crashed). Excludes
+  // still-running sessions.
   const rows = db
     .prepare(
-      "SELECT a.run_id, a.ts, a.type, a.data, s.agent FROM audit_events a JOIN term_sessions s ON s.id = a.run_id " +
-        "WHERE a.ts >= ? AND a.type IN ('session.reported','session.ended','session.stopped','run.completed') ORDER BY a.ts",
+      "SELECT s.id AS run_id, s.agent, s.spawned_by, s.status, " +
+        "(SELECT CASE WHEN a.type = 'session.stopped' THEN 'stopped' ELSE COALESCE(json_extract(a.data,'$.outcome'),'unknown') END " +
+        "   FROM audit_events a WHERE a.run_id = s.id AND a.type IN ('session.reported','session.ended','session.stopped','run.completed') " +
+        "   ORDER BY CASE a.type WHEN 'session.reported' THEN 3 WHEN 'run.completed' THEN 2 WHEN 'session.ended' THEN 1 ELSE 0 END DESC LIMIT 1) AS outcome " +
+        "FROM term_sessions s WHERE s.created_at >= ? AND s.status != 'running'",
     )
     .all<OutRow>(since);
-  const bySession = new Map<string, OutRow>();
+  const tally = new Map<string, { runs: number; success: number; failed: number; stopped: number; crashed: number; chats: number }>();
   for (const r of rows) {
-    const cur = bySession.get(r.run_id || `x:${r.ts}`);
-    if (!cur || (RANK[r.type] ?? -1) > (RANK[cur.type] ?? -1)) bySession.set(r.run_id || `x:${r.ts}`, r);
-  }
-  const tally = new Map<string, { runs: number; success: number; failed: number; stopped: number }>();
-  for (const r of bySession.values()) {
-    let outcome = r.type === 'session.stopped' ? 'stopped' : 'unknown';
-    try { outcome = String((JSON.parse(r.data) as { outcome?: unknown }).outcome ?? outcome); } catch { /* keep */ }
-    const t = tally.get(r.agent) ?? { runs: 0, success: 0, failed: 0, stopped: 0 };
+    const t = tally.get(r.agent) ?? { runs: 0, success: 0, failed: 0, stopped: 0, crashed: 0, chats: 0 };
+    // Chat-triggered sessions are conversational Q&A — they don't call `report`, so counting them in the
+    // success rate unfairly penalises chat-heavy agents (they'd all look like they're "failing"). Track
+    // them separately and keep them OUT of the rate denominator.
+    if ((r.spawned_by ?? '').startsWith('chat:')) { t.chats++; tally.set(r.agent, t); continue; }
+    const outcome = r.outcome ?? 'unknown';
     t.runs++;
-    if (outcome === 'success') t.success++;
+    if (r.status === 'crashed') t.crashed++;          // crash = infra died, surfaced distinctly from a `failure`
+    else if (outcome === 'success') t.success++;
     else if (outcome === 'failure') t.failed++;
     else if (outcome === 'stopped') t.stopped++;
     tally.set(r.agent, t);
@@ -81,9 +84,10 @@ export function buildInsights(os: AgentOS, now = Date.now()): Insights {
   const agents: AgentScore[] = [...tally.entries()]
     .map(([agent, t]) => {
       const dx = os.kb.read(os.tenant, 'operations', diagnosisSlug(agent)); // existing root-cause diagnosis, if any
-      return { agent, runs: t.runs, success: t.success, failed: t.failed, stopped: t.stopped, rate: t.runs ? Math.round((t.success / t.runs) * 100) : null, focus: focusFor(epByAgent.get(agent) ?? []), diagnosis: dx ? { at: dx.updatedAt, slug: dx.slug } : undefined };
+      return { agent, runs: t.runs, success: t.success, failed: t.failed, stopped: t.stopped, crashed: t.crashed, chats: t.chats, rate: t.runs ? Math.round((t.success / t.runs) * 100) : null, focus: focusFor(epByAgent.get(agent) ?? []), diagnosis: dx ? { at: dx.updatedAt, slug: dx.slug } : undefined };
     })
-    .sort((a, b) => b.runs - a.runs)
+    // Rank by activity — work runs, then chats — so a chat-only agent still appears.
+    .sort((a, b) => (b.runs + b.chats) - (a.runs + a.chats))
     .slice(0, 12);
 
   // Friction: capabilities rejected at approval (deny or auto-allow?), + approvals waiting on a human.

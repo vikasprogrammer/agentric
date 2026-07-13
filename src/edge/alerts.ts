@@ -34,12 +34,24 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
 
   // An individual agent is failing badly.
   for (const a of ins.agents) {
-    if (a.rate != null && a.rate <= 25 && a.runs >= 4 && a.failed + a.stopped >= 3) {
+    // Struggling = genuinely FAILING its work. Rate is over work runs (chat excluded upstream); require
+    // real failures so a chat-heavy or crash-heavy agent doesn't trip a false "struggling" alarm.
+    if (a.rate != null && a.rate <= 30 && a.runs >= 4 && a.failed >= 2) {
       out.push({
         key: `agent-low:${a.agent}`,
         severity: 'high',
-        title: `${a.agent} is struggling (${a.rate}% success)`,
-        body: `${a.agent} succeeded on only ${a.rate}% of ${a.runs} runs in the last ${ins.windowDays} days (${a.failed} failed, ${a.stopped} stopped). Open Insights and "Diagnose" it to see the root cause.`,
+        title: `${a.agent} is failing (${a.rate}% success)`,
+        body: `${a.agent} succeeded on only ${a.rate}% of ${a.runs} work runs in the last ${ins.windowDays} days (${a.failed} failed). Open Insights and "Diagnose" it to see the root cause.`,
+      });
+    }
+    // Crashing = the process/pane keeps dying (infra: too heavy / OOM / timeout) — a different fix than
+    // "the agent does bad work". Kept distinct so it doesn't read as poor agent quality.
+    else if (a.crashed >= 3) {
+      out.push({
+        key: `agent-crash:${a.agent}`,
+        severity: 'high',
+        title: `${a.agent}'s runs keep crashing`,
+        body: `${a.crashed} of ${a.agent}'s runs crashed in the last ${ins.windowDays} days — the process died mid-run (usually too-heavy work, OOM, or a timeout), not a task failure. Scope its tasks smaller, or give it more headroom.`,
       });
     }
   }

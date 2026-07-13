@@ -8476,12 +8476,12 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
             <div className="space-y-1">
               {insights.agents.map((a) => {
                 const rateCls = a.rate == null ? 'text-muted-foreground' : a.rate >= 70 ? 'text-emerald-600' : a.rate >= 40 ? 'text-amber-600' : 'text-red-600'
-                const struggling = a.rate != null && a.rate < 50 && (a.failed + a.stopped) >= 2
+                const struggling = a.rate != null && a.rate < 50 && (a.failed + a.stopped + a.crashed) >= 2
                 return (
                   <div key={a.agent} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b py-1.5 text-xs last:border-0">
                     <a className="w-40 shrink-0 truncate font-medium underline-offset-2 hover:underline" href={`#/agents/${a.agent}`}>{a.agent}</a>
                     <span className={`w-10 shrink-0 tabular-nums font-medium ${rateCls}`}>{a.rate == null ? '—' : `${a.rate}%`}</span>
-                    <span className="text-muted-foreground">{a.runs} run{a.runs === 1 ? '' : 's'}{a.failed ? ` · ${a.failed} failed` : ''}{a.stopped ? ` · ${a.stopped} stopped` : ''}</span>
+                    <span className="text-muted-foreground">{a.runs} run{a.runs === 1 ? '' : 's'}{a.failed ? ` · ${a.failed} failed` : ''}{a.crashed ? ` · ${a.crashed} crashed` : ''}{a.stopped ? ` · ${a.stopped} stopped` : ''}{a.chats ? ` · ${a.chats} chats` : ''}</span>
                     {a.focus.length > 0 && <span className="text-muted-foreground">· {a.focus.join(', ')}</span>}
                     <span className="ml-auto shrink-0">
                       {a.diagnosis

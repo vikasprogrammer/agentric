@@ -269,7 +269,7 @@ export interface DreamingState {
   totals?: { sessions: number; success: number; failure: number; partial: number; stopped: number; unknown: number; rejected: number; budgetStops: number; errors: number }
   recent?: DreamingReview[]
 }
-export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; rate: number | null; focus: string[]; diagnosis?: { at: number; slug: string } }
+export interface AgentScore { agent: string; runs: number; success: number; failed: number; stopped: number; crashed: number; chats: number; rate: number | null; focus: string[]; diagnosis?: { at: number; slug: string } }
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
