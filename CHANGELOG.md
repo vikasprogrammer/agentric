@@ -8,8 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.139.0] — 2026-07-13
+## [0.140.0] — 2026-07-13
 ### Added
+- **`video_understand`: agents can now "watch" a video (video → text).** Claude can't see video natively;
+  this new governed MCP tool delegates to an Atlas **multimodal LLM** (the ~10 catalog models with video
+  input — qwen3.5, glm-5v, kimi-k2…) via the OpenAI-compatible chat endpoint and returns a **text**
+  answer directly (no artifact). Pass `video` (a Library artifact id — e.g. one `video_generate` just made
+  — a working-folder file written *or* terminal-uploaded, or an http(s) URL) and an optional `prompt`
+  ("summarise", "transcribe on-screen text", "what happens at the end?"); omit it for a general
+  description. Local files are inlined as base64 (no hosting needed). Also handles stills with
+  `kind:"image"`. Governed like the other media calls: classified `video.understand` with a cost estimate
+  (money-cap applies), audited `video.understood`. New backend `src/edge/media-understand.ts`, route
+  `POST /api/agent/video/understand`, default model `qwen/qwen3.5-27b`; exposed whenever Atlas is
+  configured (`VIDEO_UNDERSTAND`). Verified live (correctly described a test clip).
 - **`image_edit` gains a `remove-background` preset.** Alongside prompt-guided edit and upscale, agents can
   now cut out an image's subject with `image_edit({ image, operation: "remove-background" })` — no prompt
   needed. It returns a **transparent PNG** saved as a new Library image (source untouched), via Atlas's

@@ -904,6 +904,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
+  // OS-owned video/image UNDERSTANDING (`video_understand` MCP tool): delegate to an Atlas multimodal LLM
+  // and return the text answer. Same loopback/gate posture; TerminalManager.understandVideo owns the path.
+  if (method === 'POST' && p === '/api/agent/video/understand') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const out = await tm.understandVideo(session, {
+      video: String(b.video || b.image || ''),
+      prompt: b.prompt ? String(b.prompt) : undefined,
+      model: b.model ? String(b.model) : undefined,
+      kind: b.kind === 'image' ? 'image' : 'video',
+    });
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
   // native Slack egress (proactive): DM a person by Slack user id or email. Audited as `slack.dm`.
   if (method === 'POST' && p === '/api/agent/slack/dm') {
     const b = await readBody(req);
