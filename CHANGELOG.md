@@ -8,7 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.180.0] — 2026-07-14
+## [0.181.0] — 2026-07-14
+### Added
+- **Insights improvement tiles v2 — Goals domain ("unstick").** The Goals tile expands the actual stuck
+  goals in place (active, no progress in 7+ days), each with a **plan** action that spawns the existing
+  governed **strategist** (`Strategist.plan` — reused wholesale, no new spawn or apply surface) to file the
+  next tasks under the goal for a human to review + dispatch. The stuck-goal list is surfaced in the
+  `/api/insights` + `/api/dreaming` payloads (`stuckGoals`); planning reuses `POST /api/goals/:id/plan`.
 ### Added
 - **Insights improvement tiles v2 — KB domain ("preview tidy").** The KB tile gains a **Preview tidy**
   action: a deterministic preview of exactly which DEAD pages (never read, 30d+ old) would be archived —
