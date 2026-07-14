@@ -21,7 +21,7 @@ import { Audience, approvalAudience, resolveRecipients } from './governance/reci
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
-import { claudeSupportsReloadSkills } from './edge/claude-cli';
+import { claudeSupportsReloadSkills, claudeSupportsGoal } from './edge/claude-cli';
 import { DEFAULT_IMAGE_COST_USD, resolveImageBackend, imageErrorInfo } from './edge/image-gen';
 import { VendorError, retryableStatus, timedFetch, withRetry, vendorErrorInfo } from './edge/vendor-fetch';
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
@@ -419,7 +419,7 @@ export class TerminalManager {
     // System spawns with no run-as member (an automation or an ownerless task) share the `automations`
     // space rather than minting a per-provenance uid — a `task:<id>` is unique per task, so bucketing
     // by it would leak a space per ownerless task. A task WITH an owner passes run_as here (→ the member).
-    if (!spawnedBy || spawnedBy.startsWith('automation:') || spawnedBy.startsWith('task:')) return 'automations';
+    if (!spawnedBy || spawnedBy.startsWith('automation:') || spawnedBy.startsWith('task:') || spawnedBy.startsWith('poke:')) return 'automations';
     return spawnedBy;
   }
 
@@ -679,6 +679,8 @@ export class TerminalManager {
     if (spawnedBy.startsWith('task:')) return `Task · ${spawnedBy.slice('task:'.length)}${asSuffix}`;
     // One-off ask_agent delegate (`ask:<caller>`) — another agent asked this one a question and is waiting.
     if (spawnedBy.startsWith('ask:')) return `Ask · ${spawnedBy.slice('ask:'.length)}${asSuffix}`;
+    // Async poke-back (`poke:<task>`) — this caller was resumed because a delegate it handed off finished.
+    if (spawnedBy.startsWith('poke:')) return `Poke · ${spawnedBy.slice('poke:'.length)}${asSuffix}`;
     const m = this.os.team.getMember(spawnedBy);
     return m ? m.name || m.email : spawnedBy;
   }
@@ -2288,7 +2290,7 @@ export class TerminalManager {
    * {@link agentAskStatus}. An ephemeral request/response — no task row, no board/inbox surface.
    * Returns `{ error }` for an unknown/ineligible target.
    */
-  askAgent(callerSession: string, callerAgent: string, targetAgent: string, question: string): { id?: string; error?: string } {
+  askAgent(callerSession: string, callerAgent: string, targetAgent: string, question: string, goal?: string): { id?: string; error?: string } {
     const target = (targetAgent || '').trim();
     if (!target) return { error: 'which agent? (agent is required)' };
     if (target === callerAgent) return { error: 'an agent cannot ask itself — pick a different teammate' };
@@ -2304,7 +2306,10 @@ export class TerminalManager {
       .run(id, this.os.tenant, callerSession, callerAgent, target, question, 'pending', runAs ?? null, Date.now());
     // Provenance `ask:<caller>` makes the delegate an ask-answerer at launch (→ ASK_ANSWER exposes the
     // `answer` tool); run-as passes the accountable human through. Headless one-off — reaped at turn end.
-    const s = this.createSession(target, `Ask ← ${callerAgent}`, buildAskAgentPrompt(id, callerAgent, question), `ask:${callerAgent}`, true, undefined, undefined, runAs);
+    // A `goal` (when the installed claude supports `/goal`) opens the prompt under a convergence condition
+    // so the delegate works to the objective before answering — the taskless "delegate with a goal" path.
+    const goalMode = !!(goal && goal.trim()) && claudeSupportsGoal();
+    const s = this.createSession(target, `Ask ← ${callerAgent}`, buildAskAgentPrompt(id, callerAgent, question, goalMode ? goal!.trim() : undefined), `ask:${callerAgent}`, true, undefined, undefined, runAs);
     this.db.prepare('UPDATE agent_asks SET delegate_run_id = ? WHERE id = ?').run(s.id, id);
     this.audit(callerSession, callerAgent, 'agent.asked', { askId: id, target, delegate: s.id, runAs: runAs ?? null });
     return { id };
@@ -3693,15 +3698,17 @@ function titleFromSummary(summary: string): string {
 
 /** The prompt handed to an ask_agent delegate: answer the caller's question, then close the loop with
  *  the `answer` tool. Everything the caller receives is the `answer` text — so it must be self-contained. */
-function buildAskAgentPrompt(id: string, callerAgent: string, question: string): string {
-  return (
+function buildAskAgentPrompt(id: string, callerAgent: string, question: string, goal?: string): string {
+  const base =
     `Another agent (${callerAgent}) needs your help and is WAITING on your answer.\n\n` +
     `Their question / request:\n${question}\n\n` +
     `Do whatever it takes to answer it — investigate, run tools, reason it through. When you have the ` +
     `answer, call answer({ answer: "<your complete answer>" }). That returns it to ${callerAgent} and ends ` +
     `this run. Put EVERYTHING they need in that one call — they receive only the \`answer\` text, not the ` +
-    `rest of your output. If you genuinely cannot help, still call answer with a short explanation of why.`
-  );
+    `rest of your output. If you genuinely cannot help, still call answer with a short explanation of why.`;
+  // A `goal` opens the run under a `/goal` convergence condition, so an independent evaluator drives the
+  // delegate across turns until the objective holds; it then returns via `answer` in that same turn.
+  return goal ? `/goal ${goal}\n\n${base}` : base;
 }
 
 function toSession(r: SessionRow): Session {

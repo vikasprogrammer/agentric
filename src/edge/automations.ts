@@ -413,6 +413,36 @@ export class Automations {
     return this.remove(id);
   }
 
+  /**
+   * Wake a CALLER agent by resuming its transcript with a completion poke — the async "really done" signal
+   * a delegate sends back when it finishes a `poke_on_done` hand-off. Fires IMMEDIATELY (unlike schedule(),
+   * whose 1-min floor makes it a scheduler, not a wake): `--resume`s `callerClaudeId` with `message` as the
+   * next turn, so the caller continues its OWN plan with full context. Guarded — if that transcript already
+   * has a live session, the running caller will observe the outcome itself, so we skip rather than spawn a
+   * competing run on one conversation (same concern the chat thread-continuity path handles). The delegate
+   * (task assignee) is always the actor, never the caller, so this can't self-wake. Audited `agent.poked`.
+   */
+  pokeCaller(input: { callerAgent: string; callerClaudeId: string; runAs?: string; message: string; source: string }): FireResult {
+    const agentId = input.callerAgent.startsWith('agent:') ? input.callerAgent.slice('agent:'.length) : input.callerAgent;
+    if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown caller agent: ${agentId}` };
+    if (!input.callerClaudeId) return { ok: false, reason: 'no caller transcript to resume' };
+    const live = this.db
+      .prepare("SELECT id FROM term_sessions WHERE claude_session_id = ? AND status = 'running'")
+      .all<{ id: string }>(input.callerClaudeId)
+      .some((r) => this.tm.isAlive(r.id));
+    if (live) return { ok: false, reason: 'caller session still live — it will see the result itself' };
+    const s = this.tm.createSession(agentId, `Poke ← ${input.source}`, input.message, `poke:${input.source}`, true, undefined, undefined, input.runAs, input.callerClaudeId);
+    this.os.audit.append({
+      ts: Date.now(),
+      runId: s.id,
+      tenant: this.os.tenant,
+      principal: input.runAs ? `member:${input.runAs}` : 'system',
+      type: 'agent.poked',
+      data: { caller: agentId, source: input.source, runAs: input.runAs ?? null },
+    });
+    return { ok: true, sessionId: s.id, tmux: s.tmux };
+  }
+
   update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean }): Automation | undefined {
     const a = this.get(id);
     if (!a) return undefined;

@@ -725,6 +725,15 @@ function migrate(db: Db): void {
   addColumn(db, 'tasks', 'goal_id', 'TEXT');
   addColumn(db, 'tasks', 'criteria', 'TEXT');
 
+  // Async poke-back: when one AGENT delegates a task to another (task_create with poke_on_done), we
+  // stamp the caller's agent id + its pinned claude transcript id here. On the delegate closing the loop
+  // (task_update → done/blocked), the notifier `--resume`s the caller's transcript with a "really done"
+  // poke, so a fire-and-forget hand-off wakes the caller instead of the caller having to poll. Nullable;
+  // a task with no caller (human-filed, or poke off) never pokes. See docs/tasks-plan.md.
+  addColumn(db, 'tasks', 'caller_agent', 'TEXT');
+  addColumn(db, 'tasks', 'caller_claude_id', 'TEXT');
+  addColumn(db, 'tasks', 'poke_on_done', 'INTEGER NOT NULL DEFAULT 0');
+
   // Human verdict on a finished run — the ground-truth signal for the agent maturity score (a person
   // who oversaw the run says it did / didn't do what they wanted). One verdict per session, latest wins.
   // Feeds src/state/agent-stats.ts as the HIGHEST-confidence outcome layer, above the agent's own

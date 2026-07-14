@@ -26,6 +26,7 @@ interface TaskRow {
   id: string; tenant: string; title: string; body: string; status: string; priority: number;
   labels: string; assignee: string | null; owner: string | null; parent_id: string | null;
   mode: string; auto_dispatch: number; goal_id: string | null; criteria: string | null;
+  caller_agent: string | null; caller_claude_id: string | null; poke_on_done: number;
   due_at: number | null; attempts: number; last_session_id: string | null;
   created_by: string; created_at: number; updated_at: number; updated_by: string;
   rank?: number;
@@ -91,12 +92,14 @@ export class TaskStore {
     this.db
       .prepare(`INSERT INTO tasks
         (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, auto_dispatch,
-         goal_id, criteria, due_at, attempts, last_session_id, created_by, created_at, updated_at, updated_by)
-        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`)
+         goal_id, criteria, caller_agent, caller_claude_id, poke_on_done, due_at, attempts, last_session_id,
+         created_by, created_at, updated_at, updated_by)
+        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', priority,
         JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
         mode, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
+        input.callerAgent ?? null, input.callerClaudeId ?? null, input.pokeOnDone ? 1 : 0,
         input.dueAt ?? null, input.createdBy, now, now, input.createdBy,
       );
     if (goalId && this.db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId)) {
@@ -531,6 +534,8 @@ function toTask(r: TaskRow): Task {
     owner: r.owner ?? undefined, parentId: r.parent_id ?? undefined,
     mode: r.mode === 'interactive' ? 'interactive' : 'headless', autoDispatch: r.auto_dispatch === 1,
     goalId: r.goal_id ?? undefined, criteria: r.criteria ?? undefined,
+    callerAgent: r.caller_agent ?? undefined, callerClaudeId: r.caller_claude_id ?? undefined,
+    pokeOnDone: r.poke_on_done === 1,
     dueAt: r.due_at ?? undefined, attempts: r.attempts, lastSessionId: r.last_session_id ?? undefined,
     createdBy: r.created_by, createdAt: r.created_at, updatedAt: r.updated_at, updatedBy: r.updated_by,
   };
