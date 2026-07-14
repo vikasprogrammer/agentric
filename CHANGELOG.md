@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.185.0] — 2026-07-14
+### Changed
+- **Reworked the default agent fleet — generalists are now install-on-demand, System = OS-provided.**
+  - **Only `agent-author` seeds on boot.** `BUILTIN_SEED_IDS` dropped from
+    `['agent-author','engineer','support','marketer','researcher']` to just `['agent-author']`, so a fresh
+    home comes up able to *build* its own team but with no fixed department roster — every generalist
+    (engineer/support/marketer/researcher/ops/sales + the new ones) is installed on demand from the agent
+    library. **No impact on existing tenants:** `seedBuiltinAgents` leaves any on-disk agent folder
+    untouched, so an already-installed + edited generalist survives unchanged — it simply stops being a
+    protected built-in and becomes a normal, deletable agent (verified via an isolated seed/install test).
+  - **No more hard model pins.** Removed `model: 'claude-opus-4-8'` from `agent-author` and every System
+    machinery agent (consolidator, skill-scout, strategist, improver, analyst); they now inherit the
+    workspace runtime default like the generalists.
+- **`System` category now means "OS-provided"** (agent-author + the five code-provisioned machinery agents),
+  not "auto-spawned" — `agent-author` stays in System deliberately.
+
+### Added
+- **Five new department generalists in the agent library** (all install-on-demand): **designer** (Design),
+  **data-analyst** (Data), **product-manager** (Product), **writer** (Content), **finance** (Finance) —
+  each an `<id>/{agent.json,CLAUDE.md}` catalog entry mirroring the existing generalists. Brings the
+  `config/agents` catalog to 12 entries (agent-author + 11 department generalists). Full fleet =
+  6 System OS-provided (agent-author + the 5 code-provisioned machinery agents) + 11 generalists.
+
 ## [0.184.0] — 2026-07-14
 ### Changed
 - **The "authorized but not installed" GitHub warning now links straight to the install page.** The amber

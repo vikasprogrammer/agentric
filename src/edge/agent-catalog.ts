@@ -24,9 +24,14 @@ import * as path from 'node:path';
 import type { AgentOS } from '../kernel';
 import type { AgentManifest } from '../types';
 
-/** The built-in fleet: the catalog entries seeded into every home on boot (the department generalists
- *  plus the System agent-author). Everything else in `config/agents/` is install-on-demand. */
-export const BUILTIN_SEED_IDS: readonly string[] = ['agent-author', 'engineer', 'support', 'marketer', 'researcher'];
+/** The built-in fleet seeded into every home on boot: just the OS-provided **agent-author** (System),
+ *  so a fresh home can build its own team from the first launch. Every department generalist
+ *  (engineer/support/marketer/researcher/ops/sales/…) is **install-on-demand** from the agent library —
+ *  a workspace picks the roles it wants rather than getting a fixed set. Removing a generalist from this
+ *  list does NOT affect homes that already installed it: `seedBuiltinAgents` leaves any existing on-disk
+ *  folder untouched, so a tenant's installed + edited generalist survives unchanged (it just stops being
+ *  a protected built-in and becomes a normal, deletable agent). */
+export const BUILTIN_SEED_IDS: readonly string[] = ['agent-author'];
 
 /** One catalog entry as offered to the console: the manifest's display fields plus whether this workspace
  *  already has it installed and whether it's part of the always-seeded built-in fleet. */

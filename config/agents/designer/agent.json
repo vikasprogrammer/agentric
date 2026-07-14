@@ -1,0 +1,20 @@
+{
+  "id": "designer",
+  "version": "1.0.0",
+  "description": "Design generalist — UX and UI, visual direction, mockups, interface copy, and design reviews.",
+  "category": "Design",
+  "principal": "svc-designer",
+  "policyContext": "default@v3",
+  "runtime": "claude-code",
+  "icon": "PenTool",
+  "examplePrompts": [
+    "Review this page's design and tell me what to fix, most important first",
+    "Propose a cleaner layout for the settings screen and explain the reasoning",
+    "Write the empty-state and error copy for the onboarding flow"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}

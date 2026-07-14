@@ -99,7 +99,6 @@ const MANIFEST: AgentManifest = {
   principal: 'svc-analyst',
   policyContext: 'default@v3',
   runtime: 'claude-code',
-  model: 'claude-opus-4-8',
   budget: { usdCap: 1, tokenCap: 200_000, wallClockMs: 600_000 },
 };
 

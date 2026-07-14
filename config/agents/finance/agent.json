@@ -1,0 +1,20 @@
+{
+  "id": "finance",
+  "version": "1.0.0",
+  "description": "Finance generalist — bookkeeping help, financial analysis, budgets, invoices, and reporting.",
+  "category": "Finance",
+  "principal": "svc-finance",
+  "policyContext": "default@v3",
+  "runtime": "claude-code",
+  "icon": "Calculator",
+  "examplePrompts": [
+    "Summarize last month's spend and flag anything unusual",
+    "Draft an invoice for this client and the work described",
+    "Build a simple budget vs actuals view from these numbers"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "writer",
+  "version": "1.0.0",
+  "description": "Writing generalist — long-form content, docs, help articles, and clear editing and proofreading.",
+  "category": "Content",
+  "principal": "svc-writer",
+  "policyContext": "default@v3",
+  "runtime": "claude-code",
+  "icon": "PenLine",
+  "examplePrompts": [
+    "Write a clear help article for how to connect an integration",
+    "Turn these rough notes into a polished blog post",
+    "Edit this draft for clarity and tighten it without losing the meaning"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}
