@@ -86,14 +86,29 @@ function stripMouseTracking(onWant: (want: boolean) => void): (input: Uint8Array
 // ── link detection ───────────────────────────────────────────────────────────────────────────────────
 // Matchers run in priority order; earlier matches win over later ones on the same columns, so a full URL
 // isn't also picked up as a bare domain. The TLD list is deliberately conservative so `file.ts:42` or
-// `Component.tsx` don't get underlined as if they were `example.com`.
-const TLD = 'com|net|org|io|ai|dev|app|sh|co|gg|xyz|me|so|to|tv|cloud|tech|edu|gov|info|biz|us|uk|ca|de|fr|jp|in'
+// `Component.tsx`, `src/main.rs` and version strings don't get underlined as if they were `example.com`.
+// The disambiguation rule mirrors how a human reads it: a **bare** `host.tld` needs a KNOWN TLD (so
+// `file.ts`/`main.rs` are excluded), but a host that carries a **/path** is almost certainly a URL, so we
+// accept any TLD there (`foo.bar/baz`, `docs.github.io/xterm`). The broad TLD list covers the common
+// gTLDs + ccTLDs; add to it rather than loosening the bare-domain rule (that's what guards false hits).
+const TLD = 'com|net|org|io|ai|dev|app|sh|co|gg|xyz|me|so|to|tv|cloud|tech|edu|gov|info|biz|us|uk|ca|de|fr'
+  + '|jp|in|store|shop|site|online|live|ly|im|be|nl|eu|au|nz|ru|cn|br|es|it|se|no|fi|pl|ch|at|dk|ie|pro'
+  + '|page|blog|wiki|news|design|studio|agency|digital|link|click|network|systems|solutions|group|world'
+  + '|life|today|media|email|chat|zone|run|build|host|space|fun|art|tools|cc|tw|kr|za|mx|ar|id|ua|sg|hk'
 const TAIL = `[^\\s"'\`<>)\\]}]` // a link body char — stops at whitespace and common wrappers
+const HOST = `[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9-]+)+` // a multi-label host: at least one dot
 const MATCHERS: { re: RegExp; url: (m: string) => string }[] = [
-  { re: new RegExp(`(?:https?|file)://${TAIL}+`, 'gi'), url: (m) => m },
+  // 1. explicit scheme — take the whole thing verbatim.
+  { re: new RegExp(`(?:https?|ftp|file)://${TAIL}+`, 'gi'), url: (m) => m },
+  // 2. www.… — no scheme, assume https.
   { re: new RegExp(`\\bwww\\.${TAIL}+`, 'gi'), url: (m) => `https://${m}` },
-  { re: new RegExp(`\\b(?:localhost|127\\.0\\.0\\.1)(?::\\d+)?(?:/${TAIL}*)?`, 'gi'), url: (m) => `http://${m}` },
-  { re: new RegExp(`\\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9-]+)*\\.(?:${TLD})(?::\\d+)?(?:/${TAIL}*)?`, 'gi'), url: (m) => `https://${m}` },
+  // 3. localhost / IPv4, with optional :port and /path — local dev servers, assume http.
+  { re: new RegExp(`\\b(?:localhost|\\d{1,3}(?:\\.\\d{1,3}){3})(?::\\d+)?(?:/${TAIL}*)?`, 'gi'), url: (m) => `http://${m}` },
+  // 4. any multi-label host that carries a /path (the slash makes it a URL regardless of TLD).
+  { re: new RegExp(`\\b${HOST}(?::\\d+)?/${TAIL}*`, 'gi'), url: (m) => `https://${m}` },
+  // 5. a BARE host (no path) — one or more labels ending in a known TLD, and the TLD must not run into a
+  //    longer label (`v1.2.io-beta` is not `…io`). Optional :port for e.g. a bare `host.tld:8080`.
+  { re: new RegExp(`\\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9-]+)*\\.(?:${TLD})(?![a-z0-9-])(?::\\d+)?`, 'gi'), url: (m) => `https://${m}` },
 ]
 
 function openUrl(url: string) { try { window.open(url, '_blank', 'noopener,noreferrer') } catch { /* popup blocked */ } }
@@ -113,32 +128,33 @@ function trimTrail(s: string): { text: string; shaved: number } {
 function makeLinkProvider(term: Terminal): ILinkProvider {
   return {
     provideLinks(row, cb) {
-      const line = term.buffer.active.getLine(row - 1)
-      if (!line) return cb(undefined)
-      const text = line.translateToString(true)
-      if (!text || !/[.:/]/.test(text)) return cb(undefined)
-      const taken: boolean[] = []
-      const links: ILink[] = []
-      for (const { re, url } of MATCHERS) {
-        re.lastIndex = 0
-        let m: RegExpExecArray | null
-        while ((m = re.exec(text))) {
-          const start = m.index
-          const { text: raw, shaved } = trimTrail(m[0])
-          const end = start + raw.length // exclusive
-          if (raw.length < 4 || taken[start] || taken[end - 1]) continue
-          for (let k = start; k < end; k++) taken[k] = true
-          const target = url(raw)
-          links.push({
-            text: raw,
-            range: { start: { x: start + 1, y: row }, end: { x: end, y: row } },
-            decorations: { pointerCursor: true, underline: true },
-            activate: (e) => { e.preventDefault(); openUrl(target) },
-          })
-          if (shaved && re.lastIndex > end) re.lastIndex = end // don't skip a link glued right after
+      try {
+        const line = term.buffer.active.getLine(row - 1)
+        if (!line) return cb(undefined)
+        const text = line.translateToString(true)
+        if (!text || !/[.:/]/.test(text)) return cb(undefined)
+        const taken: boolean[] = []
+        const links: ILink[] = []
+        for (const { re, url } of MATCHERS) {
+          re.lastIndex = 0
+          let m: RegExpExecArray | null
+          while ((m = re.exec(text))) {
+            const start = m.index
+            const { text: raw } = trimTrail(m[0])
+            const end = start + raw.length // exclusive
+            if (raw.length < 4 || taken[start] || taken[end - 1]) continue
+            for (let k = start; k < end; k++) taken[k] = true
+            const target = url(raw)
+            links.push({
+              text: raw,
+              range: { start: { x: start + 1, y: row }, end: { x: end, y: row } },
+              decorations: { pointerCursor: true, underline: true },
+              activate: (e) => { e.preventDefault(); openUrl(target) },
+            })
+          }
         }
-      }
-      cb(links.length ? links : undefined)
+        cb(links.length ? links : undefined)
+      } catch { cb(undefined) } // never let a bad row break the linkifier
     },
   }
 }
@@ -247,15 +263,16 @@ export function Xterm({
     const search = new SearchAddon()
     term.loadAddon(fit)
     term.loadAddon(search)
-    // Clickable links for bare domains / localhost:port / www / full URLs (our own provider — the stock
-    // WebLinksAddon only matches full `https://…`, missing exactly the "rendered link without a scheme").
-    term.registerLinkProvider(makeLinkProvider(term))
     term.open(host)
     // Canvas renderer: draw the grid to a <canvas> instead of the default DOM renderer, whose real
     // per-cell text is natively selectable by the browser — that native selection competes with xterm's
     // own selection overlay and "wobbles" (a second, differently-coloured highlight). Canvas has no
     // selectable DOM, so only xterm's selection shows. Falls back to DOM if canvas 2d is unavailable.
     try { term.loadAddon(new CanvasAddon()) } catch { /* no 2d context — DOM renderer stays */ }
+    // Clickable links for bare domains / localhost:port / www / paths / full URLs (our own provider — the
+    // stock WebLinksAddon only matches full `https://…`, missing exactly the "rendered link without a
+    // scheme"). Registered AFTER open()/the renderer so the linkifier is fully wired first.
+    term.registerLinkProvider(makeLinkProvider(term))
     termRef.current = term
     fitRef.current = fit
     try { fit.fit() } catch { /* not laid out yet */ }

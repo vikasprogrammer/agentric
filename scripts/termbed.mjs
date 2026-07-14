@@ -43,7 +43,7 @@ for (const opt of [
   ['set', '-g', 'set-clipboard', 'on'],       // forward OSC 52 copy-on-select → our client's OSC 52 handler
   ['set', '-g', 'allow-passthrough', 'on'],
   ['set', '-s', 'extended-keys', 'on'],
-  ['set', '-as', 'terminal-features', 'xterm*:extkeys'],
+  ['set', '-as', 'terminal-features', 'xterm*:extkeys:hyperlinks'],
   // Mouse on so the WHEEL scrolls tmux's scrollback even at a bare shell prompt (xterm can't reach it
   // otherwise — everything lives on tmux's alternate screen). A running TUI (claude) that requests its
   // own mouse mode still gets the wheel forwarded to it.

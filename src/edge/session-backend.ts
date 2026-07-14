@@ -106,7 +106,10 @@ export class LocalSessionBackend implements SessionBackend {
     // extended-keys pair lets tmux distinguish Shift+Enter from Enter so the newline shortcut works;
     // set-clipboard on lets claude's copy-on-select OSC 52 escape reach the browser terminal so a
     // selection in the TUI lands on the USER's browser clipboard (claude DCS-wraps it for the
-    // passthrough path, and forwards the raw variant too — this covers both). Global + idempotent, so
+    // passthrough path, and forwards the raw variant too — this covers both). The `hyperlinks`
+    // terminal-feature tells tmux the outer terminal (our xterm.js) understands OSC 8 — WITHOUT it tmux
+    // STRIPS every OSC-8 hyperlink, so claude's markdown links never reach the browser and aren't
+    // clickable (plain-text URLs still are, via <Xterm>'s link matchers). Global + idempotent, so
     // re-applying per spawn is harmless; older tmux may reject an option → stdio is ignored so it can't
     // break a session.
     // mouse on: the WHEEL scrolls tmux's scrollback at a bare shell prompt (e.g. claude's resume screen);
@@ -115,7 +118,7 @@ export class LocalSessionBackend implements SessionBackend {
     // MouseDragEnd copy-selection-no-clear copies (→ OSC 52 → clipboard) WITHOUT clearing the highlight.
     for (const opt of [['set', '-g', 'allow-passthrough', 'on'], ['set', '-s', 'extended-keys', 'on'],
                        ['set', '-g', 'set-clipboard', 'on'],
-                       ['set', '-as', 'terminal-features', 'xterm*:extkeys'],
+                       ['set', '-as', 'terminal-features', 'xterm*:extkeys:hyperlinks'],
                        ['set', '-g', 'mouse', 'on'],
                        ['set', '-g', 'mode-style', 'bg=#2563eb,fg=#ffffff'],
                        ['bind', '-T', 'copy-mode', 'MouseDragEnd1Pane', 'send-keys', '-X', 'copy-selection-no-clear'],
