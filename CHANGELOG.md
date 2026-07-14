@@ -10,17 +10,23 @@ new version heading in the same commit.
 
 ## [0.186.0] — 2026-07-14
 ### Added
-- **`secret_request` — an agent asks a human to PROVIDE a credential, without a paste into the session.**
-  The inverse of `secret_put`: when an agent needs a password/API key/token it does not already have, it
-  now `secret_request`s the KEY (with a reason) instead of prompting the human to paste the raw value into
-  chat — where it would persist in the transcript. The request carries only the key + reason (never a
-  value), posts a `secret.request` card to owner/admins (Inbox + a new **Settings → Secrets → Agent
-  requests** review section), and short-circuits `exists` if the agent can already resolve the key or
-  `duplicate` on an open request. A human fulfils it by typing the value into a password field
-  (`POST /api/secrets/requests/:id/fulfill`): it is sealed straight into the vault under the requesting
-  agent's principal (default — only that agent can `secret_get` it — or tenant-wide `*`) and can be
-  injected into that agent's shell at launch (reusing `secret_assignments`). The value never touches the
-  transcript, the card, or the audit trail; audited `secret.requested` / `secret.request.fulfilled` /
+- **`secret_request` — an agent asks a human about a credential KEY, without a paste into the session.**
+  When an agent needs a password/API key/token, it now `secret_request`s the KEY (with a reason) rather
+  than a human pasting the raw value into chat — where it would persist in the transcript. The request
+  carries only the key + reason (never a value) and **auto-detects two modes** so the agent doesn't have
+  to know which case it's in:
+  - **provide** (the inverse of `secret_put`) — the vault doesn't have the key: a human types the value
+    into a password field (`POST …/fulfill`), sealed into the vault under the requesting agent's principal
+    (default — only that agent can `secret_get` it — or tenant-wide `*`).
+  - **access** — the key already EXISTS but is scoped away from the agent (owned by another agent or a
+    person): a human **grants** access and the existing sealed value is re-scoped to the agent
+    server-side — no value is re-typed or shown. Grant is agent-scoped (not widened to everyone).
+
+  Either mode can also inject the value into the agent's shell at launch (reusing `secret_assignments`),
+  short-circuits `exists` if the agent can already resolve the key or `duplicate` on an open request, and
+  posts a `secret.request` card to owner/admins (Inbox + a new **Settings → Secrets → Agent requests**
+  review section). The value never touches the transcript, the card, or the audit trail; audited
+  `secret.requested` (with `mode`) / `secret.request.fulfilled` / `secret.request.granted` /
   `secret.request.dismissed` by key only. New MCP tool `secret_request`, loopback
   `POST /api/agent/secret/request`, admin routes `GET /api/secrets/requests` +
   `POST /api/secrets/requests/:id/{fulfill,dismiss}`, and `TerminalManager.requestSecret` /

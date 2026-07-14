@@ -55,7 +55,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `secret_put` | `POST /api/agent/secret/put` | `TerminalManager.putSecret` | W | shared-scope (`*`) vault write; **approval-gated** (policy `secret.put`, blocks until decided); value NEVER in audit/approval-card/policy args; audited `secret.put` (key only); `updated_by=agent:<id>` |
 | `secret_get` | `POST /api/agent/secret/get` | `TerminalManager.getSecret` | R | returns plaintext to caller; allow+audit (a policy `deny`/`ask` on `secret.get` refuses — reads never hang); audited `secret.get` (key + found, never value) |
 | `secret_list` | `GET /api/agent/secret/list` | `TerminalManager.listSecrets` | R | shared (`*`) secret KEYS + metadata only, never values |
-| `secret_request` | `POST /api/agent/secret/request` | `TerminalManager.requestSecret` + messages | W | the inverse of `secret_put`: an agent that does NOT have a credential **asks a human to provide it**, so the raw value is typed into a secure form instead of pasted into the transcript. Carries only the KEY + reason, never a value. Short-circuits `exists` if the agent can already `getSync` the key, `duplicate` on an open request for the same key+agent (dedup via `json_extract`), else posts a `secret.request` card to owner/admins; audited `secret.requested`. Human fulfils via `POST /api/secrets/requests/:id/fulfill` (owner/admin; seals the value under the requesting agent's principal by default — or tenant-wide `*` — and optionally `setAssignedAgents` to inject it into that agent's shell at launch; VALUE never audited, only key/principal/injected) or dismisses via `POST /api/secrets/requests/:id/dismiss`. Delivery: `secret_get` immediately, or the injected shell env var on the agent's next session |
+| `secret_request` | `POST /api/agent/secret/request` | `TerminalManager.requestSecret` + messages | W | an agent **asks a human about a credential KEY** — carrying only the KEY + reason, never a value, so nothing sensitive hits the transcript. **Auto-detects `mode`:** `provide` (key not in vault → human types the value; the inverse of `secret_put`) or `access` (key EXISTS but scoped away → human grants; the server re-scopes the existing sealed value to the agent, no re-type). Short-circuits `exists` if the agent can already `getSync` the key, `duplicate` on an open request for the same key+agent (dedup via `json_extract`), else posts a `secret.request` card to owner/admins; audited `secret.requested` (+`mode`). Human resolves via `POST /api/secrets/requests/:id/fulfill` (owner/admin): **provide** seals a typed value under the agent's principal (default; or `*`); **access** copies the existing value to the agent's principal (`grantRead`, default on) — agent-scoped, not widened. Both can `setAssignedAgents` to inject into the agent's shell at launch; VALUE never audited (only key/principal/mode/injected). Dismiss via `…/dismiss`. Delivery: `secret_get` immediately, or the injected shell env var next session |
 | `github_refresh` | `POST /api/agent/github/refresh` | `GithubIdentity.forceRefresh` | W | recover a live run whose injected `GH_TOKEN` (the run-as member's ~8h user token) went bad mid-flight. FORCES a refresh now (unlike the launch-time `ensureFresh`, which only fires within the expiry skew) via the stored `ghr_` refresh token, and RETURNS the fresh token so the agent can `export GH_TOKEN=…` (env can't be mutated from outside the process; the git credential helper + `gh` read `$GH_TOKEN` at call time). The token is the run's OWN identity, already injected at launch — no new exposure. Run-as-scoped: resolves the member from the session (`no_member` for company/bot runs). Typed non-ok statuses tell the agent to STOP retrying and have the human re-link GitHub: `not_connected`/`no_refresh_token`/`not_configured`/`failed`. Audited `github.token.refreshed` / `github.token.refresh_failed` (`via:'agent'`, never the token) |
 | `slack_reply` | `POST /api/agent/slack/reply` | SlackSocket | W | only when `SLACK_REPLY=1` (chat-triggered) |
 | `discord_reply` | `POST /api/agent/discord/reply` | DiscordSocket | W | only when `DISCORD_REPLY=1` (chat-triggered) |
@@ -119,18 +119,27 @@ on their linked Slack/Discord (`TerminalManager.setMemberNotifier` → `notifyMe
 It is **one named recipient only** — there is deliberately no team-wide broadcast — and it's
 allow+audit (`member.notified`), no policy gate, same posture as `slack_send`.
 
-### `secret_request` — ask a human to provide a credential (no paste)
+### `secret_request` — ask a human about a credential KEY (no paste)
 
-The inverse of `secret_put`: when an agent needs a credential it does **not** already have, it
-`secret_request`s the KEY (with a reason) rather than asking the human to paste the value into chat —
-where it would land in the transcript. This posts a `secret.request` card to owner/admins (Inbox + a
-**Secrets → Agent requests** review section). The human types the value into a password field; it is
-sealed straight into the vault under the requesting agent's principal (default — only that agent can
-`secret_get` it) or tenant-wide `*`, and can optionally be injected into the agent's shell env at
-launch (reusing `secret_assignments`). The request itself never carries a value, so nothing sensitive
-touches the transcript, audit, or the card. It short-circuits `exists` if the agent can already resolve
-the key, and `duplicate` on an open request for the same key. Delivery to the agent: `secret_get` once
-fulfilled, or the shell env var on its next session if injected.
+When an agent needs a credential, it `secret_request`s the KEY (with a reason) rather than asking a
+human to paste the value into chat — where it would land in the transcript. The request never carries
+a value, so nothing sensitive touches the transcript, audit, or the card. It **auto-detects two modes**
+so the agent doesn't have to know which case it's in, and posts a `secret.request` card to owner/admins
+(Inbox + a **Secrets → Agent requests** review section):
+
+- **provide** — the vault doesn't have the key (the inverse of `secret_put`). The human types the value
+  into a password field; it is sealed under the requesting agent's principal (default — only that agent
+  can `secret_get` it) or tenant-wide `*`.
+- **access** — the key already **exists** in the vault but under a principal this agent can't read
+  (another agent, or a person). The human **grants** access: the server reads the existing sealed value
+  inside the process and writes a copy under the requesting agent's principal (`grantRead`, default on)
+  — the value is never re-typed or shown, and the grant is **agent-scoped**, not widened to everyone.
+
+Either mode can also inject the value into the agent's shell at launch (reusing `secret_assignments`).
+It short-circuits `exists` if the agent can already resolve the key, and `duplicate` on an open request
+for the same key. Delivery: `secret_get` once resolved, or the shell env var on its next session if
+injected. (Caveat, same as the rest of the vault's per-principal model: an access grant copies the
+value, so a later rotation of the source secret does not propagate to the granted copy.)
 
 ### `secret_put` / `secret_get` — the shared credential handoff
 

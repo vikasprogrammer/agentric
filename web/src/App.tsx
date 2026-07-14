@@ -3041,9 +3041,10 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Skills'}</Badge>
   } else if (m.type === 'secret.request') {
     Icon = KeyRound; iconCls = 'text-amber-600'; highlight = m.status === 'open'
-    const resolved = m.status === 'fulfilled' ? 'provided' : m.status === 'rejected' ? 'dismissed' : ''
-    verb = 'requested a secret'; detail = m.body
-    badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{resolved || 'provide in Secrets'}</Badge>
+    const isAccess = (m.args as { mode?: string } | undefined)?.mode === 'access'
+    const resolved = m.status === 'fulfilled' ? (isAccess ? 'granted' : 'provided') : m.status === 'rejected' ? 'dismissed' : ''
+    verb = isAccess ? 'requested secret access' : 'requested a secret'; detail = m.body
+    badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{resolved || (isAccess ? 'grant in Secrets' : 'provide in Secrets')}</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
@@ -8049,20 +8050,26 @@ function AgentSkillRequestCard({ r, onChanged }: { r: SkillRequest; onChanged: (
   )
 }
 
-/** A single agent secret-request awaiting a human (via `secret_request`). The human types the value into
- *  a password field — it is sealed straight into the vault (default: scoped to the requesting agent, or
- *  tenant-wide), optionally injected into that agent's shell — and never returned or shown to the agent. */
+/** A single agent secret-request awaiting a human (via `secret_request`). Two modes:
+ *  • provide — the key isn't in the vault: type the value into a password field; it is sealed straight
+ *    into the vault (scoped to the requesting agent, or tenant-wide), optionally injected into its shell.
+ *  • access — the key exists but the agent can't read it: GRANT access; the existing value is re-scoped
+ *    to the agent server-side (no value typed or shown), optionally injected into its shell. */
 function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; agents: AgentInfo[]; onChanged: () => void }) {
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [value, setValue] = useState('')
   const [tenantWide, setTenantWide] = useState(false)
   const [inject, setInject] = useState(true)
+  const [grantRead, setGrantRead] = useState(true)
   const knownAgent = agents.some((a) => a.id === r.agent)
-  const provide = async () => {
-    if (!value) return
+  const isAccess = r.mode === 'access'
+  const submit = async () => {
+    if (isAccess ? (!grantRead && !(inject && knownAgent)) : !value) return
     setBusy(true); setHint('')
-    const res = await api.fulfillSecretRequest(r.id, value, { principal: tenantWide ? '*' : r.agent, inject: inject && knownAgent })
+    const res = isAccess
+      ? await api.fulfillSecretRequest(r.id, { grantRead, inject: inject && knownAgent })
+      : await api.fulfillSecretRequest(r.id, { value, principal: tenantWide ? '*' : r.agent, inject: inject && knownAgent })
     setBusy(false)
     if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
     setValue(''); onChanged()
@@ -8081,7 +8088,7 @@ function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; ag
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-mono text-sm font-medium">{r.key}</span>
-              <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">requested</Badge>
+              <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{isAccess ? 'access requested' : 'requested'}</Badge>
             </div>
             <div className="mt-1 text-[11px] text-muted-foreground">
               by <span className="font-mono">{r.agent}</span>{r.createdAt ? ` · ${timeAgo(r.createdAt)}` : ''}
@@ -8090,18 +8097,27 @@ function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; ag
           </div>
           <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="dismiss" disabled={busy} onClick={dismiss}><Trash2 className="h-3.5 w-3.5" /></Button>
         </div>
-        <Input type="password" value={value} disabled={busy} placeholder={`paste the value for ${r.key}`}
-          onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') provide() }} />
+        {isAccess
+          ? <p className="text-[11px] text-muted-foreground"><span className="font-mono">{r.key}</span> is already in the vault. Granting re-scopes its existing value to <span className="font-mono">{r.agent}</span> — the value is never re-typed or shown.</p>
+          : <Input type="password" value={value} disabled={busy} placeholder={`paste the value for ${r.key}`}
+              onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit() }} />}
         <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`store under the requesting agent (${r.agent}) only, or tenant-wide so any agent can secret_get it`}>
-            <input type="checkbox" checked={tenantWide} disabled={busy} onChange={(e) => setTenantWide(e.target.checked)} />
-            tenant-wide
-          </label>
+          {isAccess
+            ? <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`let ${r.agent} secret_get ${r.key} (copies the current value under its principal)`}>
+                <input type="checkbox" checked={grantRead} disabled={busy} onChange={(e) => setGrantRead(e.target.checked)} />
+                allow secret_get
+              </label>
+            : <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`store under the requesting agent (${r.agent}) only, or tenant-wide so any agent can secret_get it`}>
+                <input type="checkbox" checked={tenantWide} disabled={busy} onChange={(e) => setTenantWide(e.target.checked)} />
+                tenant-wide
+              </label>}
           <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={knownAgent ? `also inject ${r.key} into ${r.agent}'s shell env at launch` : `${r.agent} is not a current agent — it can still secret_get the value`}>
             <input type="checkbox" checked={inject} disabled={busy || !knownAgent} onChange={(e) => setInject(e.target.checked)} />
             inject into {r.agent}'s shell
           </label>
-          <Button size="sm" className="ml-auto" disabled={busy || !value} onClick={provide}><Check className="mr-1 h-3.5 w-3.5" />Provide</Button>
+          <Button size="sm" className="ml-auto" disabled={busy || (isAccess ? (!grantRead && !(inject && knownAgent)) : !value)} onClick={submit}>
+            <Check className="mr-1 h-3.5 w-3.5" />{isAccess ? 'Grant' : 'Provide'}
+          </Button>
         </div>
         {hint && <div className="text-xs text-destructive">{hint}</div>}
       </CardContent>
@@ -9550,8 +9566,9 @@ function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
               <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{requests.length}</Badge>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              An agent asked (via <span className="font-mono">secret_request</span>) for a credential it needs. Provide the value here —
-              it is <strong>sealed straight into the vault</strong>, never shown to the agent or pasted into its session.
+              An agent asked (via <span className="font-mono">secret_request</span>) for a credential. If the vault doesn't have it,
+              <strong> provide</strong> the value here — sealed straight into the vault, never shown to the agent or pasted into its session.
+              If it already exists but is scoped away from the agent, <strong>grant</strong> access — the existing value is re-scoped, never re-typed.
             </p>
             {requests.map((r) => <AgentSecretRequestCard key={r.id} r={r} agents={agents} onChanged={onRequestResolved} />)}
           </CardContent>

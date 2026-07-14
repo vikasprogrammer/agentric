@@ -4234,16 +4234,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.assigned', data: { secretPrincipal: principal, key, agents } });
     return sendJson(res, 200, { ok: true, agents });
   }
-  // List open agent secret-requests for the Secrets settings review section (owner/admin). These are
-  // agents that ran `secret_request` — asking a human to PROVIDE a credential, without a value in play.
+  // List open agent secret-requests for the Secrets settings review section (owner/admin). Each is an
+  // agent that ran `secret_request`, tagged `mode`: 'provide' (the key isn't in the vault — a human must
+  // enter a value) or 'access' (the key exists but the agent can't read it — a human grants access).
   if (method === 'GET' && p === '/api/secrets/requests') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, { requests: tm.openSecretRequests() });
   }
-  // Fulfill an agent's secret.request card (owner/admin): the human types the value into a secure form
-  // (it arrives here, never touches the session transcript), we seal it into the vault under the chosen
-  // principal, optionally inject it into the requesting agent's shell at launch, and mark the card done.
-  // The VALUE is never audited — only the key + who/where.
+  // Fulfill an agent's secret.request card (owner/admin). Two paths keyed by the card's `mode`:
+  //  • provide — the human types the value into a secure form (it arrives here, never touching the
+  //    session transcript); we seal it into the vault under the chosen principal.
+  //  • access — the key already exists under a principal the agent can't read; NO value is typed. We
+  //    re-scope the existing sealed value to the requesting agent server-side (read it via the vault,
+  //    write a copy under the agent's principal) so it can secret_get — the value is never returned.
+  // Either path optionally injects it into the agent's shell at launch. The VALUE is never audited.
   const secretReqFulfill = p.match(/^\/api\/secrets\/requests\/([\w.-]+)\/fulfill$/);
   if (method === 'POST' && secretReqFulfill) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -4251,11 +4255,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!card) return sendJson(res, 404, { error: 'no such secret request' });
     if (card.status !== 'open') return sendJson(res, 409, { error: 'this request was already resolved' });
     const b = await readBody(req);
+    const inject = b.inject === true || b.inject === 'true';
+    if (card.mode === 'access') {
+      // Grant access to an EXISTING vault secret: find where it lives (any principal but this agent),
+      // resolve its current value inside the process, and copy it under the agent's own principal.
+      const src = os.secrets.list(os.tenant).find((s) => s.key === card.key && s.principal !== card.agent);
+      if (!src) return sendJson(res, 404, { error: `"${card.key}" is no longer in the vault to grant` });
+      const val = os.secrets.getSync(os.tenant, src.principal, card.key);
+      if (val === undefined) return sendJson(res, 404, { error: `could not resolve "${card.key}" to grant` });
+      const grantRead = b.grantRead !== false && b.grantRead !== 'false'; // default: enable secret_get
+      if (grantRead) os.secrets.set(os.tenant, card.key, val, { principal: card.agent, updatedBy: me.email });
+      // Inject reads the owner's value at launch — use the agent's fresh copy if we made one, else the source.
+      if (inject) os.secrets.setAssignedAgents(os.tenant, grantRead ? card.agent : src.principal, card.key, [card.agent]);
+      if (!grantRead && !inject) return sendJson(res, 400, { error: 'grant read access, inject into the shell, or both' });
+      tm.setSecretRequestStatus(secretReqFulfill[1], 'fulfilled');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'secret.request.granted', data: { key: card.key, from: src.principal, grantedTo: card.agent, read: grantRead, injected: inject } });
+      return sendJson(res, 200, { ok: true, granted: true, injected: inject });
+    }
+    // provide mode: a human-entered value seals into the vault.
     const value = b.value != null ? String(b.value) : '';
     if (!value) return sendJson(res, 400, { error: 'value is required' });
     // Default scope: the requesting agent's own principal (only it can secret_get). `*` = tenant-wide.
     const principal = b.principal ? String(b.principal).trim() : card.agent;
-    const inject = b.inject === true || b.inject === 'true';
     os.secrets.set(os.tenant, card.key, value, { principal, updatedBy: me.email });
     if (inject) os.secrets.setAssignedAgents(os.tenant, principal, card.key, [card.agent]);
     tm.setSecretRequestStatus(secretReqFulfill[1], 'fulfilled');

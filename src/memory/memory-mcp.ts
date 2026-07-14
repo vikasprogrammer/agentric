@@ -1090,13 +1090,15 @@ const TOOLS = [
   {
     name: 'secret_request',
     description:
-      'Ask a human to PROVIDE a credential you need but do NOT have — an API key, password, token, or ' +
-      'connection string. Use this INSTEAD of asking the human to paste the secret to you in chat: the raw ' +
-      'value would end up in this transcript. This raises a request card an owner/admin fulfils by typing ' +
-      'the value into a secure form (encrypted at rest, never shown to you unless you secret_get it). You ' +
-      'pass only the KEY name you will fetch it by and why you need it — never a value. Once fulfilled, the ' +
-      'credential is in the vault: secret_get it by that key, or (if they chose to inject it) it is a shell ' +
-      'env var on your next session. First check secret_list — the team may already have it.',
+      'Ask a human about a credential KEY you need — an API key, password, token, or connection string. ' +
+      'Two cases, handled automatically: (1) if the vault does NOT have the key, an owner/admin PROVIDES ' +
+      'it by typing the value into a secure form — use this INSTEAD of asking them to paste the secret to ' +
+      'you in chat, where the raw value would end up in this transcript; (2) if the key already EXISTS in ' +
+      'the vault but you cannot read it (it belongs to another agent or person), an owner/admin GRANTS you ' +
+      'ACCESS and the existing value is re-scoped to you — no one re-types it. Either way you pass only the ' +
+      'KEY name and why you need it, never a value. Once resolved: secret_get it by that key, or (if they ' +
+      'inject it) it is a shell env var on your next session. First check secret_list — you may already ' +
+      'have access.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2044,10 +2046,11 @@ async function secretRequest(args: Record<string, unknown>): Promise<string> {
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify({ session: SESSION, key, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
   });
-  const d = (await res.json()) as { ok?: boolean; status?: string; error?: string };
+  const d = (await res.json()) as { ok?: boolean; status?: string; mode?: string; error?: string };
   if (!d.ok) return `Could not request the secret: ${d.error ?? 'unknown error'}`;
   if (d.status === 'exists') return `"${key}" is already in the vault and available to you — secret_get "${key}".`;
   if (d.status === 'duplicate') return `A request for "${key}" is already awaiting review.`;
+  if (d.mode === 'access') return `Requested ACCESS to "${key}" — it's already in the vault but scoped away from you. An owner/admin will grant you access (the existing value is re-scoped to you; no one re-types it). Once granted, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
   return `Requested "${key}" — an owner/admin will provide it into the vault (they type the value, you never see it pasted here). Once fulfilled, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
 }
 
