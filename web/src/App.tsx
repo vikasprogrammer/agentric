@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -8302,6 +8302,8 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [dxBusy, setDxBusy] = useState('')
   const [dxHint, setDxHint] = useState('')
   const [proposals, setProposals] = useState<string[]>([])
+  const [cleanup, setCleanup] = useState<MemoryCleanupPlan | null>(null)
+  const [cleanupBusy, setCleanupBusy] = useState(false)
   const [alertsOn, setAlertsOn] = useState(true)
   const toggleAlerts = async (on: boolean) => { setAlertsOn(on); await api.setInsightAlerts(on) }
   const [busy, setBusy] = useState(false)
@@ -8358,6 +8360,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     setDxBusy(agent); await api.dismissProposal(agent); setDxBusy('')
     setDxHint(`Dismissed the draft for ${agent}.`); setTimeout(() => setDxHint(''), 4000); refresh()
   }
+  const previewCleanup = async () => {
+    setCleanupBusy(true); const r = await api.memoryCleanupPreview(); setCleanupBusy(false)
+    if (r.error || !r.plan) return setDxHint(`⚠ ${r.error ?? 'could not build a plan'}`)
+    setCleanup(r.plan)
+  }
+  const applyCleanup = async () => {
+    setCleanupBusy(true); const r = await api.memoryCleanupApply(); setCleanupBusy(false); setCleanup(null)
+    setDxHint(r.error ? `⚠ ${r.error}` : `Cleaned up memory — pruned ${r.pruned ?? 0}, merged ${r.merged ?? 0}.`)
+    setTimeout(() => setDxHint(''), 6000); refresh()
+  }
   const applyRec = async (id: string) => { setBusy(true); const r = await api.applyRecommendation(id); setBusy(false); if (r.error) return setHint('⚠ ' + r.error); setHint('applied'); setTimeout(() => setHint(''), 1500); refresh() }
   const dismissRec = async (id: string) => { setBusy(true); await api.dismissRecommendation(id); setBusy(false); refresh() }
   useEffect(() => { refresh() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
@@ -8410,18 +8422,65 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
         <div>
           <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Improvements</div>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-            {[...improvements].sort((a, b) => b.count - a.count).map((t) => (
-              <a key={t.domain} href={t.href} className={`flex flex-col rounded-lg border p-3 transition-colors hover:bg-muted/50 ${t.count > 0 ? '' : 'opacity-60'}`}>
-                <div className="flex items-baseline justify-between">
-                  <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t.domain}</span>
-                  {t.count > 0 ? <span className="text-lg font-semibold tabular-nums">{t.count}</span> : <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
-                </div>
-                <div className="mt-0.5 text-sm font-medium leading-tight">{t.title}</div>
-                <div className="mt-1 line-clamp-3 text-[11px] leading-snug text-muted-foreground">{t.detail}</div>
-                <div className="mt-2 text-[11px] font-medium text-primary">{t.actionLabel} →</div>
-              </a>
-            ))}
+            {[...improvements].sort((a, b) => b.count - a.count).map((t) => {
+              const inner = (
+                <>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{t.domain}</span>
+                    {t.count > 0 ? <span className="text-lg font-semibold tabular-nums">{t.count}</span> : <CheckCircle2 className="h-4 w-4 text-emerald-600" />}
+                  </div>
+                  <div className="mt-0.5 text-sm font-medium leading-tight">{t.title}</div>
+                  <div className="mt-1 line-clamp-3 text-[11px] leading-snug text-muted-foreground">{t.detail}</div>
+                </>
+              )
+              const cls = `flex flex-col rounded-lg border p-3 text-left transition-colors hover:bg-muted/50 ${t.count > 0 ? '' : 'opacity-60'}`
+              // Memory tile is generative: preview the exact prune/merge plan in place rather than navigate.
+              if (t.domain === 'memory' && t.count > 0) return (
+                <button key={t.domain} onClick={previewCleanup} disabled={cleanupBusy} className={`${cls} disabled:opacity-50`}>
+                  {inner}
+                  <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview cleanup →'}</div>
+                </button>
+              )
+              return (
+                <a key={t.domain} href={t.href} className={cls}>
+                  {inner}
+                  <div className="mt-2 text-[11px] font-medium text-primary">{t.actionLabel} →</div>
+                </a>
+              )
+            })}
           </div>
+          {cleanup && (
+            <div className="mt-3 rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="font-medium">Memory cleanup preview <span className="font-normal text-muted-foreground">— nothing is deleted until you apply</span></div>
+                <div className="flex items-center gap-2">
+                  <button onClick={applyCleanup} disabled={cleanupBusy || (cleanup.prune.total + cleanup.merge.drops === 0)} className="rounded bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700 disabled:opacity-50">{cleanupBusy ? 'applying…' : `Apply — remove ${cleanup.prune.total + cleanup.merge.drops}`}</button>
+                  <button onClick={() => setCleanup(null)} className="text-[11px] text-muted-foreground underline underline-offset-2">Cancel</button>
+                </div>
+              </div>
+              <div className="text-[11px] text-muted-foreground">Policy: prune never-recalled memories older than <strong>{cleanup.opts.pruneAfterDays}d</strong> below importance <strong>{cleanup.opts.keepImportance}</strong>; merge duplicates{cleanup.opts.dedupeThreshold != null ? ` (cosine ≥ ${cleanup.opts.dedupeThreshold})` : ' (exact-content)'}.</div>
+              <div className="mt-2 grid gap-3 md:grid-cols-2">
+                <div>
+                  <div className="mb-1 font-medium">Prune — {cleanup.prune.total} never-recalled</div>
+                  {cleanup.prune.total === 0 ? <div className="text-muted-foreground">nothing to prune</div> : (
+                    <ul className="space-y-0.5">
+                      {cleanup.prune.sample.map((m) => <li key={m.id} className="truncate text-muted-foreground"><span className="text-foreground">{m.agent}</span> · {m.ageDays}d · {m.snippet}</li>)}
+                      {cleanup.prune.total > cleanup.prune.sample.length && <li className="text-muted-foreground">+{cleanup.prune.total - cleanup.prune.sample.length} more…</li>}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-1 font-medium">Merge — {cleanup.merge.groups} group{cleanup.merge.groups === 1 ? '' : 's'}, {cleanup.merge.drops} removed</div>
+                  {cleanup.merge.groups === 0 ? <div className="text-muted-foreground">no duplicates</div> : (
+                    <ul className="space-y-0.5">
+                      {cleanup.merge.sample.map((g, i) => <li key={i} className="truncate text-muted-foreground"><span className="text-foreground">{g.agent}</span> · −{g.drop} dup · {g.keepSnippet}</li>)}
+                      {cleanup.merge.groups > cleanup.merge.sample.length && <li className="text-muted-foreground">+{cleanup.merge.groups - cleanup.merge.sample.length} more group{cleanup.merge.groups - cleanup.merge.sample.length === 1 ? '' : 's'}…</li>}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

@@ -275,6 +275,9 @@ export interface FrictionMap { rejections: RejectedCapability[]; pendingApproval
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
 export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations'
 export interface ImprovementTile { domain: ImprovementDomain; count: number; title: string; detail: string; actionLabel: string; href: string }
+export interface CleanupPruneItem { id: string; agent: string; snippet: string; ageDays: number; importance: number | null }
+export interface CleanupMergeGroup { agent: string; keepSnippet: string; drop: number }
+export interface MemoryCleanupPlan { opts: { pruneAfterDays: number; keepImportance: number; dedupeThreshold?: number }; prune: { total: number; sample: CleanupPruneItem[] }; merge: { groups: number; drops: number; sample: CleanupMergeGroup[] } }
 export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
 export interface MeasureIntervention { id: string; title: string; at: number; before: { n: number; rate: number | null }; after: { n: number; rate: number | null }; deltaPp: number | null; verdict: 'improved' | 'declined' | 'flat' | 'insufficient' }
 export interface Measurement {
@@ -1112,6 +1115,9 @@ export const api = {
   improveAgent: (agent: string) => call<{ ok: boolean; spawned: boolean; reason?: string; sessionId?: string; items?: number; slug?: string; error?: string }>('POST', '/api/insights/improve', { agent }),
   applyProposal: (agent: string) => call<{ ok: boolean; rev?: number; error?: string }>('POST', `/api/insights/proposal/${encodeURIComponent(agent)}/apply`),
   dismissProposal: (agent: string) => call<{ ok: boolean; error?: string }>('POST', `/api/insights/proposal/${encodeURIComponent(agent)}/dismiss`),
+  // Memory domain: preview exactly what a cleanup would prune + merge (no mutation), then apply the same plan.
+  memoryCleanupPreview: () => call<{ ok: boolean; plan?: MemoryCleanupPlan; error?: string }>('GET', '/api/insights/memory/cleanup'),
+  memoryCleanupApply: () => call<{ ok: boolean; pruned?: number; merged?: number; error?: string }>('POST', '/api/insights/memory/cleanup'),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),

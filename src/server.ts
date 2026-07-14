@@ -28,6 +28,7 @@ import { buildInsights } from './edge/insights';
 import { buildImprovements } from './edge/improvements';
 import { Diagnosis } from './edge/diagnosis';
 import { Improver, proposalSlug } from './edge/improver';
+import { planMemoryCleanup, applyMemoryCleanup, cleanupOpts } from './edge/memory-cleanup';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -2482,6 +2483,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.kb.remove(page.id);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'insights.improve.applied', data: { agent: agentId, rev, chars: proposed.length } });
     return sendJson(res, 200, { ok: true, agent: agentId, rev });
+  }
+  // Memory domain "generate the fix": PREVIEW exactly what a cleanup would prune + merge (deterministic,
+  // no mutation) so the owner reviews before deleting; POST applies the same plan. The review-gated
+  // counterpart to the blind scheduled maintain in Settings → Memory.
+  if (p === '/api/insights/memory/cleanup' && (method === 'GET' || method === 'POST')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planMemoryCleanup(os) });
+    const r = applyMemoryCleanup(os, cleanupOpts(os), me.email);
+    return sendJson(res, 200, { ok: true, ...r });
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);
