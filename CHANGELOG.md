@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.184.0] — 2026-07-14
+### Changed
+- **The "authorized but not installed" GitHub warning now links straight to the install page.** The amber
+  banner on the per-member GitHub card (Connections → Mine / Profile) that appears when a member has
+  authorized but the App isn't installed anywhere used to just say "install the App (Connections → Creds)" —
+  now **"install the App ↗"** is a real link to `github.com/apps/<slug>/installations/new`. For Apps
+  configured by hand (no slug from the one-click manifest flow), the slug is **resolved on demand** from
+  `GET /app` (new `appMetadata` + `GithubIdentity.ensureAppSlug`, self-healed when `/api/github/me` is
+  viewed) so the link works regardless of how the App was set up; if the slug still can't be resolved it
+  falls back to the previous text. (`src/connectors/github.ts`, `src/edge/github-identity.ts`,
+  `src/server.ts`, `web/src/connectors.tsx`, `web/src/lib/api.ts`; `scripts/github-per-member-test.cjs` now 74/74.)
+
 ## [0.183.1] — 2026-07-14
 ### Fixed
 - **Flag the System machinery agents as built-in.** The code-provisioned System agents spawned by the

@@ -549,7 +549,11 @@ export function GithubMineCard() {
       {/* Authorized but NOT installed — the trap: looks connected, but the App can't touch any repo. */}
       {st?.connected && st.install && !st.install.installed && (
         <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-700 dark:text-amber-400">
-          ⚠ You’re authorized, but the App isn’t <strong>installed</strong> on any repositories yet — so pushes will still fail. Authorizing and installing are separate steps: an owner needs to <strong>install the App</strong> on your org’s repos (Connections → Creds → Install the App). Until then, agents fall back to any configured token.
+          ⚠ You’re authorized, but the App isn’t <strong>installed</strong> on any repositories yet — so pushes will still fail. Authorizing and installing are separate steps: an owner needs to{' '}
+          {st.installUrl
+            ? <a href={st.installUrl} target="_blank" rel="noreferrer" className="font-medium underline hover:no-underline">install the App ↗</a>
+            : <strong>install the App</strong>}{' '}
+          on your org’s repos{st.installUrl ? '' : ' (Connections → Creds → Install the App)'}. Until then, agents fall back to any configured token.
         </p>
       )}
       {!st?.configured && !st?.connected && (
