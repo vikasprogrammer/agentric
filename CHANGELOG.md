@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.196.1] — 2026-07-14
+### Fixed
+- **Sessions filters now survive leaving the page and coming back.** The sessions list's filters
+  (status / agent / source / mode / owner / search / My-All / sort) were mirrored only to the URL hash
+  query — a refresh or deep-link restored them, but clicking the sidebar's **Sessions** link routes to a
+  bare `#/sessions` with no query, so every filter snapped back to its default. They're now also mirrored
+  to `localStorage` (`aos_sessions_filters`) on every change and seeded from there when the URL carries no
+  query, so the last-used filter is restored when you navigate away and return. (`web/src/App.tsx`.)
+
 ## [0.196.0] — 2026-07-14
 ### Added
 - **Apps — hosting core (first slice).** The foundation for hosting small server-side apps (a mini-CRM,
