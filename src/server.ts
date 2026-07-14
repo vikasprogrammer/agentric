@@ -138,6 +138,16 @@ function pendingProposals(os: AgentOS): string[] {
     .filter((id) => !!os.agents.get(id));
 }
 
+/** Active goals with no progress (no goal_event) in 7+ days — the Insights Goals tile's "plan"-able list.
+ *  Matches the tile's stuck-count query; each can be nudged with the existing strategist plan route. */
+function stuckGoals(os: AgentOS, now = Date.now()): Array<{ id: string; title: string; days: number }> {
+  const cutoff = now - 7 * 86_400_000;
+  return os.db
+    .prepare("SELECT g.id, g.title, COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) AS last FROM goals g WHERE g.tenant = ? AND g.status = 'active' AND COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) < ? ORDER BY last")
+    .all<{ id: string; title: string; last: number }>(os.tenant, cutoff)
+    .map((g) => ({ id: g.id, title: g.title, days: Math.floor((now - g.last) / 86_400_000) }));
+}
+
 /** Read the agent's current on-disk snapshot (manifest fields + CLAUDE.md), to record as the "before". */
 function readAgentSnapshot(ag: AgentManifest): AgentConfigSnapshot {
   const file = ag.dir ? path.join(ag.dir, 'CLAUDE.md') : '';
@@ -2420,6 +2430,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
       insights: dreamInsights, improvements: buildImprovements(os, dreamInsights), // scorecard + friction + improvement tiles
       proposals: pendingProposals(os), // agents with a drafted-CLAUDE.md proposal awaiting Apply/Dismiss
+      stuckGoals: stuckGoals(os), // active goals with no progress in 7+ days — plan-able from the Goals tile
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
   }
@@ -2428,7 +2439,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/insights') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const ins = buildInsights(os);
-    return sendJson(res, 200, { insights: ins, improvements: buildImprovements(os, ins), measurement: measureLearning(os), proposals: pendingProposals(os) });
+    return sendJson(res, 200, { insights: ins, improvements: buildImprovements(os, ins), measurement: measureLearning(os), proposals: pendingProposals(os), stuckGoals: stuckGoals(os) });
   }
   // Root-cause diagnosis: spawn the analyst to work out WHY a struggling agent keeps failing, into a KB page.
   if (method === 'POST' && p === '/api/insights/diagnose') {
