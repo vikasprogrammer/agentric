@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.198.0] — 2026-07-14
+### Added
+- **`app-builder` — a dedicated hosted-apps agent in the library.** A ready-made catalog agent
+  (`config/agents/app-builder/`, Engineering, install-on-demand from the agent Library like the
+  department generalists) whose CLAUDE.md teaches the whole Apps workflow: the single-file Node
+  contract (bind `process.env.PORT`, honour `X-Forwarded-Prefix`, persist to `$AOS_APP_HOME/data.db`
+  via `node:sqlite`, trust the `X-Aos-Member` header, zero deps), the `app_create`/`app_list`/
+  `app_update` tools, the **proposed → a human publishes** review flow, and a worked mini-CRM shape. So
+  "build me a little tool / CRM / internal form" now has an agent that knows how — instead of relying on
+  a generalist stumbling into the `app_*` tools. Install it from **Agents → Library**. (No code change —
+  the catalog auto-scans the bundle folder.) See [`docs/apps-plan.md`](docs/apps-plan.md).
+
 ## [0.197.0] — 2026-07-14
 ### Added
 - **Apps — authoring (agents + humans build hosted apps).** Building on the v0.196.0 hosting core, apps

@@ -1,0 +1,20 @@
+{
+  "id": "app-builder",
+  "version": "1.0.0",
+  "description": "Builds small hosted apps — a mini-CRM, an internal form, a dashboard, a calculator — as governed apps that run at /apps/<id>.",
+  "category": "Engineering",
+  "principal": "svc-app-builder",
+  "policyContext": "default@v3",
+  "runtime": "claude-code",
+  "icon": "Blocks",
+  "examplePrompts": [
+    "Build a mini-CRM to track contacts and deals",
+    "Make an internal tool to log and browse support tickets",
+    "Build a simple form that saves responses I can review"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}
