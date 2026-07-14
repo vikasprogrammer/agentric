@@ -1,7 +1,7 @@
 {
   "id": "engineer",
   "version": "1.0.0",
-  "description": "Engineering generalist — writes and reviews code, debugs, investigates systems, ships fixes.",
+  "description": "Engineering generalist — reads, writes, and reviews code, debugs, and ships well-scoped code changes.",
   "category": "Engineering",
   "principal": "svc-engineer",
   "policyContext": "default@v3",

@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.186.1] — 2026-07-14
+### Changed
+- **Sharpened the `engineer` ↔ `ops` boundary** so the two generalists stop overlapping. Both used to say
+  they "investigate systems" / "investigate incidents". Now the line is explicit: **engineer owns the
+  code** (reads/writes/reviews code, debugs, ships changes; hands live-systems work — alerts, prod
+  restarts, key rotations, runbooks — to ops), **ops owns the running system** (monitors, responds to
+  incidents, runs routine reversible operations, mitigates; files the durable *code* fix to engineer
+  instead of editing the codebase). Reworded both descriptions + CLAUDE.md intros, methods, and boundaries.
+
 ## [0.186.0] — 2026-07-14
 ### Added
 - **`secret_request` — an agent asks a human about a credential KEY, without a paste into the session.**
