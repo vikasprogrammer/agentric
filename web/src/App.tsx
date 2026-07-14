@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -11978,6 +11978,70 @@ function coerceValue(s: string): number | string | boolean {
   return s
 }
 
+/** Settings → Governance: agent-proposed policy changes (tighten-only, owner-approved) + revision history
+ *  with one-click revert. Sits atop the PolicyEditor so the review queue is the first thing an owner sees. */
+function PolicyProposalsPanel({ me, onApplied }: { me: Member; onApplied: () => void }) {
+  const [proposals, setProposals] = useState<PolicyProposal[]>([])
+  const [revisions, setRevisions] = useState<PolicyRevision[]>([])
+  const [canApply, setCanApply] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => {
+    api.policyProposals().then((r) => { setProposals(r.proposals ?? []); setCanApply(!!r.canApply) }).catch(() => {})
+    api.policyRevisions().then((r) => setRevisions(r.revisions ?? [])).catch(() => {})
+  }
+  useEffect(load, [])
+  const approve = async (id: string) => { setBusy(id); setHint(''); const r = await api.approvePolicyProposal(id); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load(); onApplied() }
+  const reject = async (id: string) => { setBusy(id); setHint(''); const r = await api.rejectPolicyProposal(id); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load() }
+  const revert = async (rev: number) => { if (!confirm(`Revert the live policy to revision r${rev}? This applies immediately to every running session.`)) return; setBusy('rev' + rev); setHint(''); const r = await api.revertPolicy(rev); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load(); onApplied() }
+
+  if (!proposals.length && !revisions.length) return null
+  return (
+    <>
+      {proposals.length > 0 && <>
+        <div className="mb-2 mt-4 text-[11px] uppercase tracking-wider text-muted-foreground">Agent proposals</div>
+        <div className="space-y-2">
+          {proposals.map((pr) => (
+            <Card key={pr.id} className="border-amber-200">
+              <CardContent className="space-y-2 p-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{pr.delta.kind}</Badge>
+                  <span className="font-mono text-sm">{pr.delta.match.capability}{pr.delta.match.when ? ` when ${pr.delta.match.when.arg}` : ''}</span>
+                  <span className="text-[11px] text-muted-foreground">by <span className="font-mono">{pr.agent}</span>{pr.createdAt ? ` · ${timeAgo(pr.createdAt)}` : ''}</span>
+                </div>
+                {pr.preview && <div className="rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
+                {pr.rationale && <p className="text-[11px] italic text-muted-foreground">“{pr.rationale}”</p>}
+                {canApply
+                  ? <div className="flex items-center gap-2"><Button size="sm" disabled={!!busy} onClick={() => approve(pr.id)}>Approve &amp; apply</Button><Button size="sm" variant="ghost" disabled={!!busy} onClick={() => reject(pr.id)}>Reject</Button></div>
+                  : <p className="text-[11px] text-muted-foreground">Only an owner can apply a policy change.</p>}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </>}
+      {hint && <p className="mt-1 text-[11px] text-destructive">{hint}</p>}
+      {revisions.length > 0 && (
+        <div className="mt-3">
+          <button className="text-[11px] text-muted-foreground underline hover:text-foreground" onClick={() => setShowHistory(!showHistory)}>
+            {showHistory ? 'Hide' : 'Show'} revision history ({revisions.length})
+          </button>
+          {showHistory && (
+            <div className="mt-2 space-y-1">
+              {revisions.map((rv) => (
+                <div key={rv.id} className="flex items-center justify-between gap-2 rounded border px-2 py-1 text-[11px]">
+                  <div className="min-w-0 truncate"><span className="font-mono">r{rv.rev}</span> · {rv.summary || '(no summary)'} · <span className="text-muted-foreground">{rv.author} · {timeAgo(rv.createdAt)}</span></div>
+                  {me.role === 'owner' && <Button size="sm" variant="ghost" className="h-6 text-[11px]" disabled={!!busy} onClick={() => revert(rv.rev)}>Revert</Button>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
 function PolicyEditor({ me }: { me: Member }) {
   const [doc, setDoc] = useState<PolicyDocument | null>(null)
   const [saved, setSaved] = useState('')
@@ -12053,6 +12117,8 @@ function PolicyEditor({ me }: { me: Member }) {
         <strong> Ask</strong> pauses for an admin or owner to approve in the Inbox, <strong>Never</strong> is refused outright.
         {canEdit ? ' Changes apply live to every running session.' : ' Only an owner can edit the policy.'}
       </p>
+
+      <PolicyProposalsPanel me={me} onApplied={() => api.policy().then((r) => { if (r.document) { setDoc(r.document); setSaved(JSON.stringify(r.document)) } }).catch(() => {})} />
 
       {/* Simple: the permissions real agents actually use */}
       <div className="mb-2 mt-4 text-[11px] uppercase tracking-wider text-muted-foreground">Permissions</div>

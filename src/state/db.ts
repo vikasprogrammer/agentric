@@ -434,6 +434,20 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_agent_rev ON agent_revisions(agent_id, rev);
 
+    -- Full-document snapshots of the policy ruleset — the revert backbone for governance edits (human
+    -- edits, "Always approve" learns, and owner-approved agent proposals). One rev counter per DB (the DB
+    -- is already the tenant boundary). See src/state/policy-revisions.ts.
+    CREATE TABLE IF NOT EXISTS policy_revisions (
+      id          TEXT PRIMARY KEY,
+      tenant      TEXT NOT NULL,
+      rev         INTEGER NOT NULL,
+      document    TEXT NOT NULL,          -- full PolicyDocument JSON snapshot
+      summary     TEXT,                   -- one-line "what changed"
+      author      TEXT NOT NULL,          -- member email | agent:<id> | system
+      created_at  INTEGER NOT NULL,
+      UNIQUE(rev)
+    );
+
     -- FTS5 over title+tags+body for ranked search (mirrors memories_fts).
     CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
       title, tags, body, content='kb_pages', content_rowid='rowid'

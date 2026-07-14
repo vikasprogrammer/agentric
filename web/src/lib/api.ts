@@ -969,6 +969,16 @@ export interface PolicyResp {
   id?: string
   error?: string
 }
+/** A tighten-only change an agent proposed to the ruleset (awaiting owner approval). */
+export interface PolicyDelta {
+  kind: 'tighten' | 'reorder' | 'add'
+  match: { capability: string; when?: { arg: string; op: PolicyOp; value: number | string | boolean } }
+  outcome?: PolicyOutcome
+}
+export interface PolicyProposal { id: string; agent: string; delta: PolicyDelta; rationale?: string; preview?: string; createdAt: number }
+export interface PolicyProposalsResp { proposals: PolicyProposal[]; canApply?: boolean; error?: string }
+export interface PolicyRevision { id: string; rev: number; document: PolicyDocument; summary: string | null; author: string; createdAt: number }
+export interface PolicyRevisionsResp { revisions: PolicyRevision[]; canRevert?: boolean; error?: string }
 
 /** One entry in the non-technical chat timeline (mirrors src/edge/conversation.ts). */
 export type ChatTurn =
@@ -1296,6 +1306,11 @@ export const api = {
 
   policy: () => call<PolicyResp>('GET', '/api/policy'),
   savePolicy: (document: PolicyDocument) => call<{ ok: boolean; document?: PolicyDocument; error?: string }>('PUT', '/api/policy', { document }),
+  policyProposals: () => call<PolicyProposalsResp>('GET', '/api/policy/proposals'),
+  approvePolicyProposal: (id: string) => call<{ ok: boolean; rev?: number; document?: PolicyDocument; error?: string }>('POST', '/api/policy/proposals/' + encodeURIComponent(id) + '/approve'),
+  rejectPolicyProposal: (id: string, note?: string) => call<{ ok: boolean; error?: string }>('POST', '/api/policy/proposals/' + encodeURIComponent(id) + '/reject', { note }),
+  policyRevisions: () => call<PolicyRevisionsResp>('GET', '/api/policy/revisions'),
+  revertPolicy: (rev: number) => call<{ ok: boolean; rev?: number; document?: PolicyDocument; error?: string }>('POST', '/api/policy/revisions/' + rev + '/revert'),
 
   files: {
     list: (path = '') => call<DirListing>('GET', `/api/files/list?path=${encodeURIComponent(path)}`),
