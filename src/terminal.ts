@@ -18,6 +18,7 @@ import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, 
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
+import { JsonPolicyEngine, PolicyDelta, applyProposal, describeProposal } from './governance/policy';
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
@@ -209,7 +210,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal';
   sessionId: string;
   agent: string;
   title: string;
@@ -2692,6 +2693,77 @@ export class TerminalManager {
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
         return { id: r.id, key: String(a.key ?? ''), agent: r.agent, mode: a.mode === 'access' ? 'access' : 'provide', reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
       });
+  }
+
+  /** Live governance thresholds (the numeric caps the never-tier rules read), for the proposal
+   *  monotonicity sweep — same source the policy engine resolves `$moneyCapUsd` etc. from. */
+  private governanceThresholds(): Record<string, number> {
+    return this.os.settings.governanceThresholds() as unknown as Record<string, number>;
+  }
+
+  /**
+   * An agent PROPOSES a constrained policy change (`policy_propose`) — the governance counterpart of
+   * `skill_propose`/`host_propose`. TIGHTEN-ONLY: `applyProposal` refuses anything that would loosen a
+   * guardrail, touch a hard-deny, or change the default, so the proposal is validated up front and the
+   * agent gets immediate feedback. A valid proposal is stored as an owner-addressed `policy.proposal`
+   * inbox card carrying the delta + a before→after preview; NOTHING is applied until an owner approves
+   * (POST /api/policy/proposals/:id/approve). Deduped against an identical still-open proposal.
+   */
+  proposePolicy(sessionId: string, agent: string, delta: PolicyDelta, rationale?: string): { ok: boolean; preview?: string; error?: string } {
+    if (!(this.os.policy instanceof JsonPolicyEngine)) return { ok: false, error: 'the active policy engine is not editable, so it cannot take proposals' };
+    const thresholds = this.governanceThresholds();
+    const res = applyProposal(this.os.policy.document, delta, thresholds);
+    if ('error' in res) return { ok: false, error: res.error };
+    const desc = describeProposal(this.os.policy.document, delta, thresholds);
+    const preview = 'preview' in desc ? desc.preview : undefined;
+    // Cap the queue and dedupe an identical open proposal from this agent (mirrors the secret-request guard).
+    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'policy.proposal' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
+    if (open.length >= 10) return { ok: false, error: 'you already have 10 open policy proposals awaiting review — wait for an owner to act on them first' };
+    const deltaKey = JSON.stringify(delta);
+    if (open.some((o) => { try { return JSON.stringify((JSON.parse(o.args || '{}') as { delta?: unknown }).delta) === deltaKey; } catch { return false; } })) {
+      return { ok: false, error: 'an identical proposal from you is already awaiting review' };
+    }
+    const label = delta.match.capability + (delta.match.when ? ` when ${delta.match.when.arg}` : '');
+    this.addMessage({
+      type: 'policy.proposal', sessionId, agent,
+      title: `Policy change proposed — ${label}`,
+      body: (rationale?.trim() || `${agent} proposes a ${delta.kind} change to "${label}".`) + (preview ? `\n\n${preview}` : ''),
+      status: 'open',
+      args: { delta, preview, ...(rationale ? { rationale } : {}) },
+      // Applying a policy change is an OWNER act — address to the admin tier so it lands in their inbox
+      // (the approve route itself is owner-only; admins see it for oversight).
+      audienceKind: 'admins',
+    });
+    this.audit(sessionId, agent, 'policy.proposed', { kind: delta.kind, capability: delta.match.capability, when: delta.match.when, outcome: delta.outcome, preview, rationale });
+    return { ok: true, preview };
+  }
+
+  /** Read a 'policy.proposal' card's payload (for the approve/reject routes). undefined if not one. */
+  policyProposalCard(id: string): { agent: string; delta: PolicyDelta; rationale?: string; preview?: string; status: string } | undefined {
+    const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'policy.proposal'`).get<{ agent: string; args: string | null; status: string }>(id);
+    if (!row) return undefined;
+    let a: Record<string, unknown> = {};
+    try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+    if (!a.delta) return undefined;
+    return { agent: row.agent, delta: a.delta as PolicyDelta, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+  }
+
+  /** Mark a 'policy.proposal' card resolved once an owner approved or rejected it. */
+  setPolicyProposalStatus(id: string, status: 'approved' | 'rejected'): void {
+    this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'policy.proposal'`).run(status, id);
+  }
+
+  /** Open (unresolved) policy.proposal cards — the Settings → Governance review section. */
+  openPolicyProposals(): { id: string; agent: string; delta: PolicyDelta; rationale?: string; preview?: string; createdAt: number }[] {
+    return this.db
+      .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'policy.proposal' AND status = 'open' ORDER BY created_at DESC`)
+      .all<{ id: string; agent: string; args: string | null; created_at: number }>()
+      .map((r) => {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
+        return { id: r.id, agent: r.agent, delta: a.delta as PolicyDelta, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+      })
+      .filter((p) => p.delta);
   }
 
   /** Agent posts a mid-task progress update to the Inbox feed. Unlike the (now removed) spawn/stop/exit

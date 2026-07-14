@@ -35,6 +35,7 @@ import { ArtifactStore } from './state/artifacts';
 import { AppStore } from './state/apps';
 import { KbStore } from './state/kb';
 import { AgentRevisions } from './state/agent-revisions';
+import { PolicyRevisions } from './state/policy-revisions';
 import { TaskStore } from './state/tasks';
 import { GoalStore } from './state/goals';
 import { VideoJobStore } from './state/video-jobs';
@@ -88,6 +89,8 @@ export class AgentOS {
   readonly kb: KbStore;
   /** Revision history for every agent's config/CLAUDE.md — the rollback backbone for self-editing agents. */
   readonly agentRevisions: AgentRevisions;
+  /** Full-document snapshots of the policy ruleset — the revert backbone for governance edits + proposals. */
+  readonly policyRevisions: PolicyRevisions;
   /** The shared work queue — durable tasks humans + agents create, claim, and drain (auto-dispatchable). */
   readonly tasks: TaskStore;
   /** The strategic layer work ladders up to — human-owned goals agents read + propose. See goals-plan.md. */
@@ -139,6 +142,7 @@ export class AgentOS {
     this.apps = new AppStore(opts.paths?.apps);
     this.kb = new KbStore(this.db, opts.paths?.kb);
     this.agentRevisions = new AgentRevisions(this.db);
+    this.policyRevisions = new PolicyRevisions(this.db);
     // Task rows are db-only structured state (§Decision 2), but attachments are real files, so the
     // store also gets the on-disk attachments dir (snapshot model, like artifacts).
     this.tasks = new TaskStore(this.db, opts.paths?.taskAttachments);
@@ -183,6 +187,25 @@ export class AgentOS {
   applyMemory(cfg: MemoryConfig): MemoryProvider {
     this.memory = createMemoryProvider(cfg, this.db);
     return this.memory;
+  }
+
+  /**
+   * Persist + hot-reload a new policy document, snapshotting the prior + new document to
+   * `policyRevisions` so any change is one-click revertable. Returns the new revision number (or null
+   * when the live engine isn't the editable JSON one). The caller audits `policy.updated`. Shared by the
+   * console editor, the "Always approve" learn step, and owner-approved agent proposals — so every path
+   * that touches the ruleset leaves a revertable trail.
+   */
+  applyPolicyDocument(doc: PolicyDocument, by: string, summary: string): number | null {
+    if (!(this.policy instanceof JsonPolicyEngine)) return null;
+    const prior = this.policy.document;
+    const rev = this.policyRevisions.commit(this.tenant, prior, doc, summary, by);
+    if (this.paths) {
+      fs.mkdirSync(path.dirname(this.paths.policyOverride), { recursive: true });
+      fs.writeFileSync(this.paths.policyOverride, JSON.stringify(doc, null, 2));
+    }
+    this.policy.update(doc);
+    return rev;
   }
 
   /**

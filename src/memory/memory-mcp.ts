@@ -551,6 +551,48 @@ const TOOLS = [
     },
   },
   {
+    name: 'policy_propose',
+    description:
+      'Propose a change to the GOVERNANCE POLICY — the ruleset that decides which actions run freely, ' +
+      'pause for a human, or are refused. Use this when you spot a guardrail that should be tighter: an ' +
+      'action running un-gated that ought to need approval, an ordering bug where a broad allow shadows a ' +
+      'narrower ask, or a newly-dangerous capability with no gate. Inspect the current ruleset first with ' +
+      '`list_capabilities` (it returns the raw `rules`) and confirm the effect with `policy_check`. Your ' +
+      'proposal is a DRAFT that changes NOTHING until an OWNER approves it (an inbox card notifies them). ' +
+      'IMPORTANT: proposals may only TIGHTEN — you can raise an action to ask/never, move a conditional ' +
+      'rule above the allow rules, or add a new ask/never guardrail, but you can NEVER loosen a guardrail, ' +
+      'touch a red-line `never`, or change the default (a human does those directly). Always include a ' +
+      '`rationale` — the owner reads it to decide.\n' +
+      '  • kind:"tighten" — make an EXISTING rule stricter. Give its `capability` (+ `when`) and the new ' +
+      '`action`/`approver` (allow→ask, ask→never, admin→owner, …).\n' +
+      '  • kind:"reorder" — lift an existing CONDITIONAL rule above the unconditional allow rules (fixes a ' +
+      'first-match ordering hole). Give its `capability` + `when`.\n' +
+      '  • kind:"add" — add a NEW guardrail. Give `capability` (a glob like "*" or "shell.exec"), an ' +
+      'optional `when` {arg,op,value} condition, and `action`:"ask"|"never" (+ `approver` for ask).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        kind: { type: 'string', enum: ['tighten', 'reorder', 'add'], description: 'tighten an existing rule, reorder a conditional rule above the allow rules, or add a new ask/never guardrail.' },
+        capability: { type: 'string', description: 'The rule\'s capability to target/define — a glob like "*", "shell.exec", "email.send". "*" matches every action (used with a `when` condition).' },
+        when: {
+          type: 'object', additionalProperties: false,
+          description: 'Optional condition that narrows the rule to attempts where an enriched arg matches — e.g. { arg: "stripeRefund", op: "eq", value: true }.',
+          properties: {
+            arg: { type: 'string', description: 'The enriched arg/fact to test (e.g. stripeRefund, destructive, amountUsd).' },
+            op: { type: 'string', enum: ['gt', 'gte', 'lt', 'lte', 'eq', 'ne'], description: 'Comparison operator.' },
+            value: { description: 'The value to compare against — a boolean, number, string, or a "$cap" threshold reference (e.g. "$moneyCapUsd").' },
+          },
+          required: ['arg', 'op', 'value'],
+        },
+        action: { type: 'string', enum: ['ask', 'never'], description: 'The new outcome for tighten/add: "ask" pauses for a human, "never" refuses outright. (You cannot propose "allow".)' },
+        approver: { type: 'string', enum: ['admin', 'owner'], description: 'Who may approve an "ask" outcome. Defaults to admin.' },
+        rationale: { type: 'string', description: 'Why this change matters — the owner reads this to decide. Include the evidence (e.g. what policy_check returned).' },
+      },
+      required: ['kind', 'capability'],
+    },
+  },
+  {
     name: 'host_propose',
     description:
       'Propose a HOST connection for the workspace — a reachable destination (an SSH box, an internal ' +
@@ -1565,6 +1607,30 @@ async function skillPropose(args: Record<string, unknown>): Promise<string> {
     : `Could not propose skill: ${d.error ?? 'unknown error'}`;
 }
 
+async function policyPropose(args: Record<string, unknown>): Promise<string> {
+  const kind = String(args.kind ?? '').trim();
+  const capability = String(args.capability ?? '').trim();
+  if (!['tighten', 'reorder', 'add'].includes(kind)) return 'policy_propose needs kind = "tighten", "reorder", or "add".';
+  if (!capability) return 'policy_propose needs the rule\'s capability (e.g. "shell.exec" or "*").';
+  const when = args.when && typeof args.when === 'object'
+    ? { arg: String((args.when as Record<string, unknown>).arg ?? ''), op: String((args.when as Record<string, unknown>).op ?? 'eq'), value: (args.when as Record<string, unknown>).value }
+    : undefined;
+  const res = await fetch(AOS_URL + '/api/agent/policy/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, agent: AGENT, kind, capability, when,
+      action: args.action ? String(args.action) : undefined,
+      approver: args.approver ? String(args.approver) : undefined,
+      rationale: args.rationale ? String(args.rationale) : undefined,
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
+  return d.ok
+    ? `Policy change proposed${d.preview ? ` (${d.preview})` : ''} — it's in the owner's inbox for review. NOTHING changes until an owner approves it. Proposals may only tighten guardrails, never loosen them.`
+    : `Could not propose the policy change: ${d.error ?? 'unknown error'}`;
+}
+
 async function hostPropose(args: Record<string, unknown>): Promise<string> {
   const name = String(args.name ?? '').trim();
   const match = String(args.match ?? '').trim();
@@ -2542,6 +2608,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'notify' ? await notify(args)
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
+        : name === 'policy_propose' ? await policyPropose(args)
         : name === 'host_propose' ? await hostPropose(args)
         : name === 'skill_find' ? await skillFind(args)
         : name === 'skill_request' ? await skillRequest(args)

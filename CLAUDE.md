@@ -205,7 +205,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 46 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 47 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`library_list` (session cards are
@@ -260,7 +260,15 @@ Key modules:
   `agent_update`/`agent_history`/`agent_revert` — an agent refines its OWN listing (description, starter
   prompts, tuning) + CLAUDE.md system prompt and can roll back a bad self-edit; every change snapshots a
   reversible revision (`src/state/agent-revisions.ts`, the KB-style rollback backbone; no agent can edit
-  another agent). Plus
+  another agent). Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
+  guardrail proposes a **TIGHTEN-ONLY** ruleset change (`tighten` a rule stricter, `reorder` a conditional
+  rule above the unconditional allows — the first-match ordering fix, or `add` a new `ask`/`never`
+  guardrail). `applyProposal` (`src/governance/policy.ts`) refuses any loosening (by construction + an
+  exhaustive monotonicity sweep), hard-deny edit, default change, or added `allow`; a valid proposal posts
+  an owner-addressed `policy.proposal` card and applies NOTHING until an **owner** approves
+  (`POST /api/policy/proposals/:id/approve`, re-validated). Every applied policy edit (console,
+  always-approve, approved proposal) snapshots to `policy_revisions` via `AgentOS.applyPolicyDocument` and
+  is one-click revertable (owner). Plus
   `directory_lookup` (team/identity-map
   search), `list_capabilities`/`policy_check` (policy preview), `slack_reply`/`discord_reply` when
   chat-triggered, and **proactive egress** `slack_send`/`slack_dm`/`discord_send`/`discord_dm` (exposed

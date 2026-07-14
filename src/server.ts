@@ -41,7 +41,7 @@ import { GithubIdentity } from './edge/github-identity';
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
-import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
+import { JsonPolicyEngine, PolicyDocument, applyProposal, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
@@ -617,7 +617,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         level: d.effect === 'approve' ? d.level : undefined,
       };
     });
-    return sendJson(res, 200, { policy: os.policy.id, capabilities });
+    // Expose the raw ruleset + default so an agent can craft a precise `policy_propose` delta (which rule
+    // to tighten/reorder, or where a new guardrail fits). Read-only; it's the agent's own governing policy.
+    const doc = os.policy instanceof JsonPolicyEngine ? os.policy.document : undefined;
+    return sendJson(res, 200, { policy: os.policy.id, capabilities, rules: doc?.rules, default: doc?.default, editable: !!doc });
   }
   if (method === 'POST' && p === '/api/agent/policy/check') {
     const b = await readBody(req);
@@ -629,6 +632,30 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!capability) return sendJson(res, 400, { error: 'capability is required' });
     const args = b.args && typeof b.args === 'object' ? (b.args as Record<string, unknown>) : {};
     return sendJson(res, 200, { decision: tm.policyCheck(String(b.session), agent, capability, args) });
+  }
+  // Agent PROPOSES a constrained, TIGHTEN-ONLY policy change (`policy_propose`) — the governance sibling of
+  // skill_propose/host_propose. Validated up front (applyProposal refuses any loosening); a valid proposal
+  // posts an owner-addressed 'policy.proposal' card and applies NOTHING until an owner approves. Pre-auth
+  // loopback, session-secret gated (agent resolved from the session row, never trusted from the body).
+  if (method === 'POST' && p === '/api/agent/policy/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const kind = String(b.kind || '').trim();
+    if (!['tighten', 'reorder', 'add'].includes(kind)) return sendJson(res, 400, { error: 'kind must be tighten, reorder, or add' });
+    const capability = String(b.capability || '').trim();
+    if (!capability) return sendJson(res, 400, { error: 'capability is required' });
+    const when = b.when && typeof b.when === 'object'
+      ? { arg: String((b.when as Record<string, unknown>).arg || ''), op: String((b.when as Record<string, unknown>).op || '') as never, value: (b.when as Record<string, unknown>).value as never }
+      : undefined;
+    const outcome = b.action
+      ? { action: String(b.action) as never, ...(String(b.action) === 'ask' ? { approver: String(b.approver || 'admin') as never } : {}) }
+      : undefined;
+    const delta = { kind: kind as never, match: { capability, ...(when ? { when } : {}) }, ...(outcome ? { outcome } : {}) };
+    const out = tm.proposePolicy(session, agent, delta, b.rationale != null ? String(b.rationale) : undefined);
+    return sendJson(res, out.ok ? 200 : 400, out);
   }
 
   // ── Secrets vault, agent-facing (loopback, session-scoped) — the A2A credential-handoff path ──
@@ -4318,13 +4345,61 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const err = validatePolicyDocument(b.document);
     if (err) return sendJson(res, 400, { error: err });
     const doc = b.document as PolicyDocument;
-    if (os.paths) {
-      fs.mkdirSync(path.dirname(os.paths.policyOverride), { recursive: true });
-      fs.writeFileSync(os.paths.policyOverride, JSON.stringify(doc, null, 2));
-    }
-    os.policy.update(doc); // hot reload — gateway + terminal gate share this instance
+    os.applyPolicyDocument(doc, me.email, 'edited in the console'); // snapshot + persist + hot reload
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: doc.id, rules: doc.rules.length } });
     return sendJson(res, 200, { ok: true, document: os.policy.document });
+  }
+  // Agent policy proposals — the owner-approved fine-tuning path (tighten-only). Review list is owner/admin;
+  // approve/reject/revert are OWNER only (same guard as PUT /api/policy — an admin may see but not rewrite).
+  if (method === 'GET' && p === '/api/policy/proposals') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { proposals: tm.openPolicyProposals(), canApply: me.role === 'owner' });
+  }
+  const propApprove = p.match(/^\/api\/policy\/proposals\/([\w.-]+)\/approve$/);
+  if (method === 'POST' && propApprove) {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required — applying a policy change is an owner act' });
+    if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 400, { error: 'active policy engine is not editable' });
+    const card = tm.policyProposalCard(propApprove[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such policy proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    // Re-evaluate against the CURRENT doc (it may have changed since the proposal was filed) so we never
+    // apply a stale delta, and the tighten-only guarantee is re-checked at apply time.
+    const thresholds = os.settings.governanceThresholds() as unknown as Record<string, number>;
+    const result = applyProposal(os.policy.document, card.delta, thresholds);
+    if ('error' in result) return sendJson(res, 400, { error: `can't apply — the policy changed since this was proposed (${result.error}). Ask the agent to re-propose.` });
+    const rev = os.applyPolicyDocument(result.doc, me.email, `approved ${card.agent}'s proposal: ${card.preview ?? card.delta.kind}`);
+    tm.setPolicyProposalStatus(propApprove[1], 'approved');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.proposal.approved', data: { by: me.email, agent: card.agent, kind: card.delta.kind, capability: card.delta.match.capability, preview: card.preview, rev } });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: result.doc.id, rules: result.doc.rules.length } });
+    return sendJson(res, 200, { ok: true, rev, document: os.policy.document });
+  }
+  const propReject = p.match(/^\/api\/policy\/proposals\/([\w.-]+)\/reject$/);
+  if (method === 'POST' && propReject) {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const card = tm.policyProposalCard(propReject[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such policy proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    const b = await readBody(req);
+    tm.setPolicyProposalStatus(propReject[1], 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.proposal.rejected', data: { by: me.email, agent: card.agent, kind: card.delta.kind, capability: card.delta.match.capability, note: b.note ? String(b.note) : undefined } });
+    return sendJson(res, 200, { ok: true });
+  }
+  // Policy revision history + one-click revert (owner). Every edit path (console, always-approve, approved
+  // proposal) snapshots here, so a bad change rolls back to any prior full document.
+  if (method === 'GET' && p === '/api/policy/revisions') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { revisions: os.policyRevisions.list(), canRevert: me.role === 'owner' });
+  }
+  const polRevert = p.match(/^\/api\/policy\/revisions\/(\d+)\/revert$/);
+  if (method === 'POST' && polRevert) {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 400, { error: 'active policy engine is not editable' });
+    const target = os.policyRevisions.get(Number(polRevert[1]));
+    if (!target) return sendJson(res, 404, { error: 'no such revision' });
+    const rev = os.applyPolicyDocument(target.document, me.email, `reverted to rev ${target.rev}`);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.reverted', data: { to: target.rev, rev, id: target.document.id } });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: target.document.id, rules: target.document.rules.length } });
+    return sendJson(res, 200, { ok: true, rev, document: os.policy.document });
   }
 
   // ── connectors (user-registered MCP servers: Slack / Gmail / GitHub / …) ─────
@@ -4716,11 +4791,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.approvals.resolve(alwaysMatch[1], true, me.email);
     if ('error' in result) return sendJson(res, 200, { ok: true, ruleAdded: false, note: result.error });
     if (result.added) {
-      if (os.paths) {
-        fs.mkdirSync(path.dirname(os.paths.policyOverride), { recursive: true });
-        fs.writeFileSync(os.paths.policyOverride, JSON.stringify(result.doc, null, 2));
-      }
-      os.policy.update(result.doc); // hot reload — gateway + terminal gate share this instance
+      os.applyPolicyDocument(result.doc, me.email, `always-approve ${cap}`); // snapshot + persist + hot reload
       os.audit.append({ ts: Date.now(), runId: ap.runId, tenant: os.tenant, principal: me.email, type: 'policy.rule.added', data: { capability: cap, effect: 'allow', from: 'inbox.always_approve' } });
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: result.doc.id, rules: result.doc.rules.length } });
     }

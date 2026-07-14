@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.203.0] — 2026-07-14
+### Added
+- **Agents can propose governance-policy changes — owner-approved, tighten-only.** A new `policy_propose`
+  MCP tool lets an agent that spots a weak guardrail *propose* fixing it, without ever holding the pen:
+  it can `tighten` an existing rule to a stricter outcome, `reorder` a conditional rule above the
+  unconditional allow rules (the first-match ordering hole that let `./iwp stripe-refund` run un-gated),
+  or `add` a new `ask`/`never` guardrail. The safety story is that a proposal may only ever **tighten** —
+  `applyProposal` (`src/governance/policy.ts`) refuses anything that would loosen a guardrail (verified
+  both by construction and by an exhaustive monotonicity sweep over the ruleset's finite arg space),
+  remove/shadow a hard-deny `never`, change the default, or add an `allow`. A valid proposal posts an
+  owner-addressed `policy.proposal` inbox card carrying the delta + a computed before→after preview and
+  **applies nothing** until an **owner** approves (admins may see, not apply — same guard as
+  `PUT /api/policy`). Approval re-validates against the current doc, then persists + hot-reloads.
+- **Policy revision history + one-click revert.** Every edit path — the console editor, the "Always
+  approve" learn step, and an approved agent proposal — now snapshots the full document to a new
+  `policy_revisions` table via `AgentOS.applyPolicyDocument`, so any change rolls back from
+  **Settings → Governance** (owner). Agents can read the raw `rules` (`GET /api/agent/policy`) to craft a
+  precise delta. Routes: `POST /api/agent/policy/propose`, `GET /api/policy/proposals`,
+  `POST /api/policy/proposals/:id/{approve,reject}`, `GET /api/policy/revisions`,
+  `POST /api/policy/revisions/:rev/revert`. Audited `policy.proposed` / `policy.proposal.approved` /
+  `policy.proposal.rejected` / `policy.reverted`. See `docs/agent-mcp-tools.md`.
+
 ## [0.202.0] — 2026-07-14
 ### Added
 - **Apps are permalinkable — `#/apps/<slug>`.** Selecting an app now deep-links to it (the URL is the

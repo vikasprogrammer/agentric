@@ -186,6 +186,271 @@ function resolveValue(value: number | string | boolean, thresholds: Record<strin
   return value;
 }
 
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
+// Agent-proposed policy changes (owner-approved). An agent can PROPOSE a constrained, typed change to
+// the ruleset via the `policy_propose` MCP tool; only an owner applies it. The whole safety story is that
+// a proposal may only ever TIGHTEN — never loosen an existing guardrail, never touch a hard-deny, never
+// change the default. `applyProposal` produces the candidate document and refuses anything that isn't a
+// strict tightening, verified two ways: by construction (the three ops are shaped to tighten) AND by an
+// exhaustive monotonicity sweep (`firstLoosening`) over the finite arg space the policy can branch on.
+// ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The three constrained shapes an agent may propose. `tighten`/`add` carry a new `outcome`; `reorder`
+ *  lifts an existing conditional rule above the unconditional allow rules (the stripe-refund fix). */
+export type PolicyProposalKind = 'tighten' | 'reorder' | 'add';
+
+export interface PolicyDelta {
+  kind: PolicyProposalKind;
+  /** Targets the rule to tighten/reorder, or defines the rule to add. Matched by capability (+ when). */
+  match: { capability: string; when?: PolicyRule['match']['when'] };
+  /** The new outcome — required for `tighten` (must be strictly stricter) and `add` (ask|never only). */
+  outcome?: PolicyOutcome;
+}
+
+/** Strictness order for an outcome: allow(0) < ask:admin(1) < ask:owner(2) < never(3). Higher = stricter. */
+function outcomeRank(o: PolicyOutcome): number {
+  if (o.action === 'allow') return 0;
+  if (o.action === 'never') return 3;
+  return o.approver === 'owner' ? 2 : 1; // ask
+}
+
+/** Strictness order for a live Decision (same scale as {@link outcomeRank}). */
+function decisionRank(d: Decision): number {
+  if (d.effect === 'allow') return 0;
+  if (d.effect === 'deny') return 3;
+  // approve
+  return d.level === 'owner' ? 2 : 1;
+}
+
+/** Find the index of the rule matching a delta's target (exact capability + when equality), or -1. */
+function findRuleIndex(doc: PolicyDocument, match: PolicyDelta['match']): number {
+  const cap = match.capability.trim();
+  const wantWhen = JSON.stringify(match.when ?? null);
+  return doc.rules.findIndex((r) => r.match.capability === cap && JSON.stringify(r.match.when ?? null) === wantWhen);
+}
+
+/** Index of the first UNCONDITIONAL `allow` rule (no `when`), or -1. */
+function firstUnconditionalAllowIndex(doc: PolicyDocument): number {
+  return doc.rules.findIndex((r) => r.action === 'allow' && !r.match.when);
+}
+
+/** Normalise a rule so an `approver` is present iff the action is `ask` (keeps the doc well-formed). */
+function withApprover(rule: PolicyRule, outcome: PolicyOutcome): PolicyRule {
+  const next: PolicyRule = { ...rule, action: outcome.action };
+  if (outcome.action === 'ask') next.approver = outcome.approver;
+  else delete next.approver;
+  return next;
+}
+
+/** Every UNCONDITIONAL `never` (red-line deny) present in `before` is still present in `after`. A proposal
+ *  that removed or weakened a hard-deny fails this — the `firstLoosening` sweep catches shadowing on top. */
+function hardDeniesPreserved(before: PolicyDocument, after: PolicyDocument): boolean {
+  return before.rules
+    .filter((r) => r.action === 'never' && !r.match.when)
+    .every((r) => after.rules.some((a) => a.action === 'never' && !a.match.when && a.match.capability === r.match.capability));
+}
+
+/** A synthetic capability id that matches ONLY `*` rules (used to exercise the wildcard guardrails). */
+const WILDCARD_PROBE = 'aos.__wildcard_probe__';
+
+/** Concrete capability ids to test: every literal (glob-free) capability named in either doc, plus a
+ *  wildcard probe for the `*` rules. This is the full set of ids whose classification the rules can key on. */
+function sampleCapabilities(before: PolicyDocument, after: PolicyDocument): string[] {
+  const caps = new Set<string>([WILDCARD_PROBE]);
+  for (const doc of [before, after]) {
+    for (const r of doc.rules) {
+      const c = r.match.capability.trim();
+      if (c && c !== '*' && !c.includes('*')) caps.add(c);
+    }
+  }
+  return [...caps];
+}
+
+/** For each `when.arg` the rules branch on, the set of values worth testing. Booleans → {true,false};
+ *  a numeric/threshold comparison → boundary values around the resolved cap. This is exhaustive because
+ *  `classify` reads ONLY args named in a `when` clause — nothing else can change an outcome. */
+function sampleArgDomains(before: PolicyDocument, after: PolicyDocument, thresholds: Record<string, number>): Map<string, Array<unknown>> {
+  const domains = new Map<string, Set<unknown>>();
+  const add = (arg: string, v: unknown) => { (domains.get(arg) ?? domains.set(arg, new Set()).get(arg)!).add(v); };
+  for (const doc of [before, after]) {
+    for (const r of doc.rules) {
+      const w = r.match.when;
+      if (!w) continue;
+      // Always cover the boolean truth table for the flag.
+      add(w.arg, true); add(w.arg, false);
+      // For a numeric/threshold comparison, cover the boundary either side of the cap.
+      if (['gt', 'gte', 'lt', 'lte'].includes(w.op)) {
+        const resolved = resolveValue(w.value, thresholds);
+        const n = typeof resolved === 'number' ? resolved : Number(resolved);
+        if (Number.isFinite(n)) { add(w.arg, n - 1); add(w.arg, n); add(w.arg, n + 1); add(w.arg, 0); }
+      } else if (typeof w.value !== 'boolean') {
+        add(w.arg, w.value); // an eq/ne against a concrete string/number
+      }
+    }
+  }
+  const out = new Map<string, unknown[]>();
+  for (const [k, v] of domains) out.set(k, [...v]);
+  return out;
+}
+
+const MAX_SWEEP_COMBOS = 50_000;
+
+/**
+ * The authoritative safety gate: return a human description of the FIRST attempt whose classification
+ * gets LOOSER (strictly less strict) from `before` to `after`, or null if the change only ever tightens.
+ * Sweeps the cartesian product of every branch-arg's tested values across every candidate capability —
+ * exhaustive over the arg space the ruleset can key on, so a `null` result is a real monotonicity proof
+ * (up to that space). Falls back to a per-arg-independent sweep for the rare huge product.
+ */
+function firstLoosening(before: PolicyDocument, after: PolicyDocument, thresholds: Record<string, number>): string | null {
+  const eB = new JsonPolicyEngine(before); eB.setThresholds(() => thresholds);
+  const eA = new JsonPolicyEngine(after); eA.setThresholds(() => thresholds);
+  const caps = sampleCapabilities(before, after);
+  const domains = [...sampleArgDomains(before, after, thresholds).entries()];
+  const ctx = {} as RunContext;
+  const check = (cap: string, args: Record<string, unknown>): string | null => {
+    const d1 = eB.classify({ capabilityId: cap, args } as ActionAttempt, ctx);
+    const d2 = eA.classify({ capabilityId: cap, args } as ActionAttempt, ctx);
+    return decisionRank(d2) < decisionRank(d1)
+      ? `${cap} ${JSON.stringify(args)}: ${d1.effect}${d1.effect === 'approve' ? ':' + d1.level : ''} → ${d2.effect}${d2.effect === 'approve' ? ':' + d2.level : ''}`
+      : null;
+  };
+  const combos = caps.length * domains.reduce((n, [, vals]) => n * vals.length, 1);
+  if (combos <= MAX_SWEEP_COMBOS) {
+    for (const cap of caps) {
+      // Enumerate the cartesian product of all branch args.
+      const total = domains.reduce((n, [, vals]) => n * vals.length, 1);
+      for (let i = 0; i < total; i++) {
+        const args: Record<string, unknown> = {};
+        let idx = i;
+        for (const [arg, vals] of domains) { args[arg] = vals[idx % vals.length]; idx = Math.floor(idx / vals.length); }
+        const hit = check(cap, args); if (hit) return hit;
+      }
+    }
+    return null;
+  }
+  // Fallback (rare): vary each arg independently against an all-false/zero baseline.
+  for (const cap of caps) {
+    const base: Record<string, unknown> = {};
+    for (const [arg] of domains) base[arg] = false;
+    const hit0 = check(cap, base); if (hit0) return hit0;
+    for (const [arg, vals] of domains) for (const v of vals) { const hit = check(cap, { ...base, [arg]: v }); if (hit) return hit; }
+  }
+  return null;
+}
+
+/**
+ * Produce the candidate document for a proposed policy change, or an error. TIGHTEN-ONLY: refuses any
+ * delta that loosens a guardrail, removes/weakens a hard-deny, or changes the default. Callers persist +
+ * hot-reload the returned doc (owner-only) and surface `error` to the requester.
+ *   - tighten: same match, strictly stricter outcome (allow→ask, ask→never, admin→owner, …).
+ *   - reorder: lift an existing CONDITIONAL rule up to just before the unconditional allow rules, without
+ *              crossing above any never/ask (the exact shape of the stripe-refund ordering fix).
+ *   - add:     insert a NEW ask|never guardrail (never allow). A never goes on top; an ask goes below the
+ *              stricter rules; the monotonicity sweep is the backstop that guarantees no loosening.
+ */
+export function applyProposal(
+  doc: PolicyDocument,
+  delta: PolicyDelta,
+  thresholds: Record<string, number> = {},
+): { doc: PolicyDocument } | { error: string } {
+  let next: PolicyDocument;
+  if (delta.kind === 'tighten') {
+    if (!delta.outcome) return { error: 'tighten needs a new (stricter) outcome' };
+    const outErr = validateOutcome(delta.outcome, 'outcome');
+    if (outErr) return { error: outErr };
+    const idx = findRuleIndex(doc, delta.match);
+    if (idx < 0) return { error: 'no rule matches that capability/condition to tighten' };
+    const cur = doc.rules[idx];
+    if (cur.action === 'never') return { error: 'that rule is already a hard deny (never) — nothing stricter to tighten to' };
+    if (outcomeRank(delta.outcome) <= outcomeRank(cur)) {
+      return { error: 'the new outcome must be STRICTER than the current one (allow < ask:admin < ask:owner < never)' };
+    }
+    next = { ...doc, rules: doc.rules.map((r, i) => (i === idx ? withApprover(r, delta.outcome!) : r)) };
+  } else if (delta.kind === 'reorder') {
+    const idx = findRuleIndex(doc, delta.match);
+    if (idx < 0) return { error: 'no rule matches that capability/condition to reorder' };
+    if (!doc.rules[idx].match.when) return { error: 'only a conditional (when-carrying) rule can be reordered up — it targets specific attempts, so lifting it above the unconditional allows is a tightening' };
+    const target = firstUnconditionalAllowIndex(doc);
+    if (target < 0 || target >= idx) return { error: 'this rule already sits above the unconditional allow rules — nothing to reorder' };
+    for (let i = target; i < idx; i++) {
+      const r = doc.rules[i];
+      if (!(r.action === 'allow' && !r.match.when)) {
+        return { error: 'refusing to reorder: it would lift the rule above a non-allow rule (a never/ask), which could weaken a stricter guardrail. Only reordering above unconditional allow rules is allowed.' };
+      }
+    }
+    const rules = [...doc.rules];
+    const [moved] = rules.splice(idx, 1);
+    rules.splice(target, 0, moved);
+    next = { ...doc, rules };
+  } else {
+    // add
+    if (!delta.outcome) return { error: 'add needs an outcome (ask or never)' };
+    if (delta.outcome.action === 'allow') return { error: 'a proposal cannot add an allow rule (that loosens) — only a new ask or never guardrail. Ask an owner to add an allow directly.' };
+    const outErr = validateOutcome(delta.outcome, 'outcome');
+    if (outErr) return { error: outErr };
+    const cap = delta.match.capability.trim();
+    if (!cap) return { error: 'a capability is required' };
+    const rule = withApprover({ match: { capability: cap, ...(delta.match.when ? { when: delta.match.when } : {}) }, action: delta.outcome.action }, delta.outcome);
+    const dupe = doc.rules.some((r) => JSON.stringify(r) === JSON.stringify(rule));
+    if (dupe) return { error: 'an identical rule already exists' };
+    // Placement: a never can sit at the top; an ask goes just after the last never so it can't shadow one.
+    let insertAt = 0;
+    if (rule.action === 'ask') doc.rules.forEach((r, i) => { if (r.action === 'never') insertAt = i + 1; });
+    next = { ...doc, rules: [...doc.rules.slice(0, insertAt), rule, ...doc.rules.slice(insertAt)] };
+  }
+
+  // ── common guardrails (apply to every kind) ──
+  const vErr = validatePolicyDocument(next);
+  if (vErr) return { error: `the change would produce an invalid policy: ${vErr}` };
+  if (JSON.stringify(next.default) !== JSON.stringify(doc.default)) return { error: 'a proposal cannot change the default outcome' };
+  if (!hardDeniesPreserved(doc, next)) return { error: 'a proposal cannot remove or weaken a hard-deny (never) rule' };
+  const loosened = firstLoosening(doc, next, thresholds);
+  if (loosened) return { error: `refused: this change would LOOSEN an existing guardrail (${loosened}). Proposals may only tighten — ask an owner to make this change directly.` };
+  return { doc: next };
+}
+
+/** A compact, human-readable before→after summary of what a delta ACTUALLY changes — shown on the
+ *  owner's approval card. Sweeps the candidate against the current doc and reports the first attempt whose
+ *  classification tightens (preferring a concrete capability over the wildcard probe), so a reorder that
+ *  only bites on the `shell.exec` path is described as "shell.exec …: allow → ask", not a no-op. Returns a
+ *  "no effective change" note if nothing moves. */
+export function describeProposal(doc: PolicyDocument, delta: PolicyDelta, thresholds: Record<string, number> = {}): { preview: string } | { error: string } {
+  const res = applyProposal(doc, delta, thresholds);
+  if ('error' in res) return { error: res.error };
+  const eB = new JsonPolicyEngine(doc); eB.setThresholds(() => thresholds);
+  const eA = new JsonPolicyEngine(res.doc); eA.setThresholds(() => thresholds);
+  const fmt = (d: Decision) => (d.effect === 'approve' ? `ask ${d.level === 'owner' ? 'owner' : 'admin'}` : d.effect === 'deny' ? 'never' : 'allow');
+  // Concrete capabilities first, then the wildcard probe — so we name a real action when one changed.
+  const caps = sampleCapabilities(doc, res.doc).sort((a, b) => (a === WILDCARD_PROBE ? 1 : 0) - (b === WILDCARD_PROBE ? 1 : 0));
+  const domains = [...sampleArgDomains(doc, res.doc, thresholds).entries()];
+  const total = domains.reduce((n, [, vals]) => n * vals.length, 1);
+  for (const cap of caps) {
+    for (let i = 0; i < total && i < MAX_SWEEP_COMBOS; i++) {
+      const args: Record<string, unknown> = {}; let idx = i;
+      for (const [arg, vals] of domains) { args[arg] = vals[idx % vals.length]; idx = Math.floor(idx / vals.length); }
+      const before = eB.classify({ capabilityId: cap, args } as ActionAttempt, {} as RunContext);
+      const after = eA.classify({ capabilityId: cap, args } as ActionAttempt, {} as RunContext);
+      if (decisionRank(after) > decisionRank(before)) {
+        // Minimise: drop any flag whose default value preserves the same before→after change, so the
+        // preview names only the condition that actually causes it (not incidental co-set flags).
+        const min = { ...args };
+        for (const k of Object.keys(min)) {
+          if (min[k] === false || min[k] === 0) continue;
+          const trial = { ...min, [k]: typeof min[k] === 'number' ? 0 : false };
+          const b2 = eB.classify({ capabilityId: cap, args: trial } as ActionAttempt, {} as RunContext);
+          const a2 = eA.classify({ capabilityId: cap, args: trial } as ActionAttempt, {} as RunContext);
+          if (decisionRank(b2) === decisionRank(before) && decisionRank(a2) === decisionRank(after)) min[k] = trial[k];
+        }
+        const flags = Object.entries(min).filter(([, v]) => v !== false && v !== 0).map(([k, v]) => (v === true ? k : `${k}=${v}`));
+        const label = (cap === WILDCARD_PROBE ? 'any action' : cap) + (flags.length ? ` when ${flags.join(', ')}` : '');
+        return { preview: `${label}: ${fmt(before)} → ${fmt(after)}` };
+      }
+    }
+  }
+  return { preview: 'no effective change to any current outcome (the rule is already covered)' };
+}
+
 function evalWhen(
   when: NonNullable<PolicyRule['match']['when']>,
   args: Record<string, unknown>,
