@@ -2854,10 +2854,15 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
   // Conversation timeline for the selected session (polled).
   const [convo, setConvo] = useState<ChatTurn[]>([])
   const [found, setFound] = useState(false)
+  // Turn tracking: when we send, record the time + the agent-turn count then, so we can tell "still
+  // working" from "the run ended without replying" — and never spin "thinking…" forever.
+  const [sentAt, setSentAt] = useState<number | null>(null)
+  const [awaitBase, setAwaitBase] = useState(0)
+  const [lastSent, setLastSent] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!selected) { setConvo([]); setFound(false); return }
+    if (!selected) { setConvo([]); setFound(false); setSentAt(null); return }
     let stop = false
     const poll = async () => {
       const r = await api.conversation(selected)
@@ -2875,7 +2880,20 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
   const pending = messages.filter((m) => m.sessionId === selected && (m.type === 'approval' || m.type === 'question') && (m.status ?? 'pending') === 'pending')
   const agentOf = (id?: string) => chatAgents.find((a) => a.id === id) || agents.find((a) => a.id === id)
   const activeAgent = agentOf(active?.agent)
-  const working = !!active && (active.alive ?? active.status === 'running')
+  // A turn is only ever "live" while the run's pane is actually alive — the honest signal a headless turn
+  // gives us (it tears down at turn-end). `agentTurns` = replies+activity so far, so we can detect a new
+  // agent turn landing after a send.
+  const alive = !!active?.alive
+  const agentTurns = convo.filter((t) => t.kind !== 'user').length
+  const gotReply = sentAt != null && agentTurns > awaitBase
+  // Clear the awaiting flag the moment a fresh agent turn arrives.
+  useEffect(() => { if (gotReply) setSentAt(null) }, [gotReply])
+  const awaiting = sentAt != null
+  // Stalled = we sent, the run is no longer alive, and enough time passed for a cold start to have booted,
+  // yet no new agent turn appeared. Shows a Resend instead of an endless spinner.
+  const stalled = awaiting && !alive && Date.now() - (sentAt ?? 0) > 12_000
+  const thinking = awaiting && !stalled
+  const working = alive || thinking
 
   const startChat = async () => {
     const agent = newAgent || chatAgents[0]?.id
@@ -2898,7 +2916,23 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
     setDraft('')
     const r = await api.reply(selected, message)
     setBusy(false)
-    if (r.error) setErr(r.error)
+    if (r.status === 'busy') { setErr('The agent is still working — resend in a moment.'); setDraft(message); return }
+    if (r.error) { setErr(r.error); return }
+    // Sent: begin awaiting a reply (baseline = agent turns so far).
+    setLastSent(message)
+    setAwaitBase(convo.filter((t) => t.kind !== 'user').length)
+    setSentAt(Date.now())
+  }
+
+  const resend = async () => {
+    if (!selected || !lastSent || busy) return
+    setBusy(true); setErr('')
+    const r = await api.reply(selected, lastSent)
+    setBusy(false)
+    if (r.status === 'busy') { setErr('Still working — try again in a moment.'); return }
+    if (r.error) { setErr(r.error); return }
+    setAwaitBase(convo.filter((t) => t.kind !== 'user').length)
+    setSentAt(Date.now())
   }
 
   const onKey = (e: ReactKeyboardEvent, fn: () => void) => {
@@ -2987,9 +3021,14 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
                   ? <ActivityCard key={i} turn={t} />
                   : <ChatBubble key={i} turn={t} agentIcon={activeAgent?.icon} />,
               )}
-              {working && convo.length > 0 && convo[convo.length - 1].kind === 'user' && (
-                <div className="pl-9 text-xs text-muted-foreground">thinking…</div>
-              )}
+              {stalled ? (
+                <div className="flex items-center gap-2 pl-1 text-xs text-muted-foreground">
+                  <span>No reply came back.</span>
+                  <button className="font-medium text-primary hover:underline" onClick={resend}>Resend</button>
+                </div>
+              ) : thinking ? (
+                <div className="pl-9 text-xs text-muted-foreground animate-pulse">thinking…</div>
+              ) : null}
             </div>
 
             {/* Inline approvals / questions — the trust surface, in plain language */}

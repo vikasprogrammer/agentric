@@ -1023,9 +1023,10 @@ export const api = {
   /** Start a chat with an agent — spawns a warm resident session. Returns its id. */
   startChat: (agent: string, message: string) =>
     call<{ id?: string; tmux?: string; error?: string }>('POST', '/api/chat/start', { agent, message }),
-  /** Send the human's next turn into a chat session (warm deliver, else resume). */
+  /** Send the human's next turn into a chat session — a clean headless resume run. `busy` = a prior
+   *  turn is still generating (keep the draft, resend shortly). */
   reply: (id: string, message: string) =>
-    call<{ status?: 'delivered' | 'revived'; error?: string }>('POST', `/api/sessions/${id}/reply`, { message }),
+    call<{ status?: 'sent' | 'busy'; error?: string }>('POST', `/api/sessions/${id}/reply`, { message }),
   /** Upload a pasted/dropped/picked file (ANY type) into a live session; the server saves it in the
    *  agent's folder and types the path into the running claude. `dataB64` is base64 (no data: prefix);
    *  `ext` e.g. 'pdf'; `name` is the original filename, preserved when given. */

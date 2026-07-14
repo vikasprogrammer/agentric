@@ -1906,8 +1906,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const message = String(b.message || '').trim();
     if (!agent || !message) return sendJson(res, 400, { error: 'agent and message are required' });
     if (!os.team.canRun(me, agent)) return sendJson(res, 403, { error: `you are not assigned to run "${agent}"` });
-    // spawnedBy=chat provenance, runAs=me (accountable human for the turn), resident=true.
-    const s = tm.createSession(agent, chatTitle(message, agent), message, `chat:${me.id}`, false, undefined, undefined, me.id, undefined, true);
+    // Provenance chat:me, runAs=me (accountable human). HEADLESS one-shot (not resident): the greeting
+    // turn runs then tears itself down, so every subsequent turn is a clean headless resume (chatSend) —
+    // no warm pane to race/reap, and `alive` stays honest. See TerminalManager.chatSend.
+    const s = tm.createSession(agent, chatTitle(message, agent), message, `chat:${me.id}`, true, undefined, undefined, me.id, undefined, false);
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
   }
   // Read the friendly conversation timeline for a session (poll this like the rest of the console).
@@ -1921,9 +1923,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
     return sendJson(res, 200, { agent, ...convo });
   }
-  // Reply into a session (the human's next turn). Warm path types into the live resident pane; cold
-  // path (a reaped session) resumes the SAME transcript seeded with the message — identical to a Slack
-  // thread follow-up. The replier becomes the accountable run-as for this turn.
+  // Reply into a chat session (the human's next turn) as a clean, self-terminating headless resume run
+  // seeded with the message. `busy` (409) means the prior turn is still generating — the caller keeps the
+  // draft and asks the human to resend shortly. The replier is the accountable run-as for this turn.
   const chatReplyMatch = p.match(/^\/api\/sessions\/([\w-]+)\/reply$/);
   if (method === 'POST' && chatReplyMatch) {
     const id = chatReplyMatch[1];
@@ -1932,9 +1934,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     const message = String(b.message || '').trim();
     if (!message) return sendJson(res, 400, { error: 'message is required' });
-    if (tm.deliverToResident(id, message)) return sendJson(res, 200, { status: 'delivered' });
-    if (tm.reviveResident(id, message, me.id)) return sendJson(res, 200, { status: 'revived' });
-    return sendJson(res, 409, { error: 'this session could not accept the message' });
+    const r = tm.chatSend(id, message, me.id);
+    if (r === 'busy') return sendJson(res, 409, { status: 'busy', error: 'the agent is still working on the previous message — resend in a moment' });
+    if (r === 'error') return sendJson(res, 409, { error: 'this session could not accept the message' });
+    return sendJson(res, 200, { status: 'sent' });
   }
   // Session activity: "which agent-os primitives did this run use?" — the session's audit stream,
   // classified into a chronological timeline + a grouped count summary. Same visibility as the terminal
