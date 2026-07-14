@@ -45,7 +45,7 @@ import { JsonPolicyEngine, PolicyDocument, applyProposal, validatePolicyDocument
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus, GoalStatus } from './types';
+import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus, GoalStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
@@ -248,11 +248,25 @@ function resolveRuntime(registry: TenantRegistry, req: http.IncomingMessage): Te
   return slug ? registry.get(slug) : registry.default();
 }
 
+/** The process's registry, so a request handler can invalidate the app-domain cache after an edit
+ *  (there's one registry per process). Set in {@link createHttpServer}. */
+let currentRegistry: TenantRegistry | undefined;
+
 export function createHttpServer(registry: TenantRegistry): http.Server {
+  currentRegistry = registry;
   const server = http.createServer((req, res) => {
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {
       handleControl(registry, req, res).catch((err) => sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }));
+      return;
+    }
+    // Custom app domains: a request whose Host is bound to a published app serves that app at the domain
+    // ROOT — a separate origin from the console, reached WITHOUT a console login (public). Checked before
+    // tenant routing so a foreign domain never falls through to the default tenant's console.
+    const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0];
+    const appHit = registry.appForHost(host);
+    if (appHit) {
+      serveAppDomain(appHit.rt.apps, appHit.slug, req, res).catch(() => { if (!res.headersSent) sendJson(res, 502, { error: 'app unavailable' }); });
       return;
     }
     const rt = resolveRuntime(registry, req);
@@ -266,6 +280,10 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
   // that tenant's shared ttyd itself, so the browser terminal is self-contained. In production nginx
   // fronts /terminal/ and the app never receives these upgrades, so the shared branch is inert there.
   server.on('upgrade', (req, socket, head) => {
+    // Custom-domain app WebSocket upgrades route to the bound app at its root (public), before tenant routing.
+    const uHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0];
+    const uHit = registry.appForHost(uHost);
+    if (uHit) return void serveAppDomainUpgrade(uHit.rt.apps, uHit.slug, req, socket, head);
     const rt = resolveRuntime(registry, req);
     if (!rt) return void socket.destroy();
     // Hosted-app WebSocket upgrades (e.g. an app's live channel) route to the app's own port.
@@ -4206,16 +4224,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       for (const k of ['name', 'icon', 'lifecycle'] as const) if (b[k] !== undefined) patch[k] = b[k];
       if (b.idleTimeoutSec !== undefined) patch.idleTimeoutSec = Number(b.idleTimeoutSec);
       if (b.capabilities !== undefined) patch.capabilities = b.capabilities;
+      if (b.domains !== undefined) {
+        const wanted = sanitizeAppDomains(b.domains);
+        // Reject a host that would shadow the console (base domain / tenant subdomain / localhost / IP)
+        // or one already bound to a DIFFERENT app in this tenant (a domain maps to exactly one app).
+        const reserved = wanted.filter((d) => currentRegistry?.isReservedDomain(d));
+        if (reserved.length) return sendJson(res, 400, { error: `these hosts are reserved and can't be used: ${reserved.join(', ')}` });
+        const taken = os.apps.list().filter((a) => a.id !== slug).flatMap((a) => a.domains ?? []);
+        const clash = wanted.filter((d) => taken.includes(d));
+        if (clash.length) return sendJson(res, 400, { error: `already bound to another app: ${clash.join(', ')}` });
+        patch.domains = wanted;
+      }
       const saved = os.apps.save(slug, patch) ?? app;
       if (typeof b.source === 'string') { try { fs.writeFileSync(path.join(app.dir!, saved.entry), String(b.source)); } catch (e) { return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) }); } }
       // A manifest/source change to a live app takes effect on the next cold-start — bounce it.
       if (app.published) appSup?.kill(slug, 'edited via console');
+      if (b.domains !== undefined) { currentRegistry?.invalidateAppDomains(); os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.domains.set', data: { app: slug, domains: saved.domains ?? [], by: me.email } }); }
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.updated', data: { app: slug, by: me.email } });
       return sendJson(res, 200, { ok: true, app: appView(os.apps.get(slug)!, appSup) });
     }
     if (method === 'DELETE') {
       appSup?.kill(slug, 'deleted');
       os.apps.remove(slug);
+      if ((app.domains ?? []).length) currentRegistry?.invalidateAppDomains();
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.deleted', data: { app: slug, by: me.email } });
       return sendJson(res, 200, { ok: true });
     }
@@ -4294,6 +4325,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const published = action === 'publish';
     os.apps.setPublished(slug, published);
     if (!published) appSup?.kill(slug, 'unpublished');
+    // Publish state gates which domains are live (only published apps route by Host) → refresh the index.
+    if ((os.apps.get(slug)?.domains ?? []).length) currentRegistry?.invalidateAppDomains();
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: published ? 'app.published' : 'app.unpublished', data: { app: slug, by: me.email } });
     return sendJson(res, 200, { ok: true, app: appView(os.apps.get(slug)!, appSup) });
   }
@@ -4899,7 +4932,7 @@ function appView(a: AppManifest, appSup?: AppSupervisor) {
   return {
     id: a.id, name: a.name, icon: a.icon, entry: a.entry, lifecycle: a.lifecycle,
     idleTimeoutSec: a.idleTimeoutSec, capabilities: a.capabilities, owner: a.owner,
-    createdBy: a.createdBy, published: !!a.published, version: a.version,
+    createdBy: a.createdBy, published: !!a.published, domains: a.domains ?? [], version: a.version,
     status: st.status, uptimeMs: st.uptimeMs, lastError: st.lastError,
   };
 }
@@ -5163,6 +5196,44 @@ async function appProxy(os: AgentOS, apps: AppSupervisor, req: http.IncomingMess
     return sendJson(res, /no such app|not published/.test(msg) ? 404 : 502, { error: msg });
   }
   pipeHttpToApp(port, appSubPath(req.url || '/', slug), appHeaders(req.headers, slug, me), req, res);
+}
+/** Headers for a custom-domain (public) app request: strip any client-supplied identity spoof, mount at
+ *  the domain ROOT (empty prefix), and carry NO logged-in member — the app is reached without a console
+ *  login, so it's on its own for auth. */
+function appDomainHeaders(headers: http.IncomingHttpHeaders): http.IncomingHttpHeaders {
+  const out: http.IncomingHttpHeaders = { ...headers };
+  for (const k of Object.keys(out)) if (/^x-aos-member$|^x-aos-role$|^x-forwarded-prefix$/i.test(k)) delete out[k];
+  out['x-forwarded-prefix'] = '';
+  return out;
+}
+/** Serve a bound custom domain: the whole domain maps to one published app at its root, public (no login).
+ *  Cold-starts the app if needed. Separate origin from the console → the app can't reach the console. */
+async function serveAppDomain(apps: AppSupervisor, slug: string, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let port: number;
+  try { port = await apps.ensureReady(slug); }
+  catch (e) { return sendJson(res, /no such app|not published/.test(String(e)) ? 404 : 502, { error: 'app unavailable' }); }
+  pipeHttpToApp(port, req.url || '/', appDomainHeaders(req.headers), req, res);
+}
+/** WebSocket upgrade twin of {@link serveAppDomain}. */
+async function serveAppDomainUpgrade(apps: AppSupervisor, slug: string, req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): Promise<void> {
+  let port: number;
+  try { port = await apps.ensureReady(slug); } catch { return void socket.destroy(); }
+  const up = http.request({ host: '127.0.0.1', port, method: req.method, path: req.url, headers: appDomainHeaders(req.headers) });
+  up.on('upgrade', (pr, upSocket, upHead) => {
+    const lines = [`HTTP/1.1 ${pr.statusCode || 101} ${pr.statusMessage || 'Switching Protocols'}`];
+    for (const [k, v] of Object.entries(pr.headers)) {
+      if (Array.isArray(v)) v.forEach((vv) => lines.push(`${k}: ${vv}`));
+      else if (v !== undefined) lines.push(`${k}: ${v}`);
+    }
+    socket.write(lines.join('\r\n') + '\r\n\r\n');
+    if (upHead && upHead.length) socket.write(upHead);
+    upSocket.pipe(socket); socket.pipe(upSocket);
+    upSocket.on('error', () => socket.destroy());
+    socket.on('error', () => upSocket.destroy());
+  });
+  up.on('error', () => socket.destroy());
+  if (head && head.length) up.write(head);
+  up.end();
 }
 /** The /apps/<slug> WebSocket upgrade proxy — the upgrade twin of {@link appProxy}. */
 async function appUpgrade(os: AgentOS, apps: AppSupervisor | undefined, req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): Promise<void> {

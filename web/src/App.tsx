@@ -4137,7 +4137,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   const saveSettings = async () => {
     if (!detail) return
     setBusy('settings')
-    const r = await api.saveApp(detail.app.id, { name: detail.app.name, icon: detail.app.icon, lifecycle: detail.app.lifecycle, idleTimeoutSec: detail.app.idleTimeoutSec, capabilities: detail.app.capabilities })
+    const r = await api.saveApp(detail.app.id, { name: detail.app.name, icon: detail.app.icon, lifecycle: detail.app.lifecycle, idleTimeoutSec: detail.app.idleTimeoutSec, capabilities: detail.app.capabilities, domains: detail.app.domains ?? [] })
     setBusy('')
     if (r.error) return flash(`⚠ ${r.error}`)
     await load(); if (r.app) setDetail((d) => (d ? { ...d, app: r.app! } : d)); refreshPreview()
@@ -4292,6 +4292,29 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
                   <div className="mt-1.5 text-[11px] text-muted-foreground">Values are encrypted at rest and never shown again. Setting one bounces the app so it picks up the new value.</div>
                 </div>
               )}
+
+              {/* custom domains — point a hostname at this app (public, separate origin) */}
+              <div className="mt-3 border-t pt-3">
+                <div className="mb-1 text-xs font-medium text-muted-foreground">Custom domains</div>
+                <Input
+                  value={(a.domains ?? []).join(', ')}
+                  onChange={(e) => patchApp({ domains: e.target.value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean) })}
+                  className="h-8 font-mono text-xs" placeholder="my.tool.com, app.example.com"
+                />
+                <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-800">
+                  ⚠ A custom domain serves this app <b>publicly</b> at its root — a separate origin from the console, reached <b>without a login</b>. Only bind a domain for an app meant to be public, and have the app do its own auth if it needs it. Takes effect once the app is <b>published</b>.
+                </div>
+                <div className="mt-1.5 text-[11px] text-muted-foreground">
+                  DNS + TLS are external: point the hostname (A/CNAME) at this server and terminate TLS in front of it. Agent OS routes by the <code>Host</code> header. Save Settings to apply.
+                </div>
+                {(a.domains ?? []).length > 0 && a.published && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {(a.domains ?? []).map((d) => (
+                      <a key={d} href={`https://${d}/`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] text-primary hover:bg-primary/5"><ExternalLink className="h-3 w-3" />{d}</a>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             )}
 

@@ -15,7 +15,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { AppManifest, isValidAppSlug, sanitizeAppCapabilities } from '../types';
+import { AppManifest, isValidAppSlug, sanitizeAppCapabilities, sanitizeAppDomains } from '../types';
 
 export interface ScaffoldOptions {
   name: string;
@@ -84,6 +84,7 @@ export class AppStore {
       owner: typeof raw.owner === 'string' ? raw.owner : undefined,
       createdBy: typeof raw.createdBy === 'string' ? raw.createdBy : undefined,
       published: raw.published === true,
+      domains: sanitizeAppDomains(raw.domains),
       version: typeof raw.version === 'number' ? raw.version : 1,
       dir,
     };
@@ -138,6 +139,7 @@ export class AppStore {
       idleTimeoutSec: typeof patch.idleTimeoutSec === 'number' && patch.idleTimeoutSec > 0 ? Math.floor(patch.idleTimeoutSec) : cur.idleTimeoutSec,
       capabilities: patch.capabilities !== undefined ? sanitizeAppCapabilities(patch.capabilities) : cur.capabilities,
       owner: patch.owner !== undefined ? (typeof patch.owner === 'string' ? patch.owner : undefined) : cur.owner,
+      domains: patch.domains !== undefined ? sanitizeAppDomains(patch.domains) : cur.domains,
       version: (cur.version ?? 1) + 1,
     };
     this.writeManifest(next);
