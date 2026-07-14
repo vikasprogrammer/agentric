@@ -1088,6 +1088,28 @@ const TOOLS = [
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
   {
+    name: 'secret_request',
+    description:
+      'Ask a human about a credential KEY you need — an API key, password, token, or connection string. ' +
+      'Two cases, handled automatically: (1) if the vault does NOT have the key, an owner/admin PROVIDES ' +
+      'it by typing the value into a secure form — use this INSTEAD of asking them to paste the secret to ' +
+      'you in chat, where the raw value would end up in this transcript; (2) if the key already EXISTS in ' +
+      'the vault but you cannot read it (it belongs to another agent or person), an owner/admin GRANTS you ' +
+      'ACCESS and the existing value is re-scoped to you — no one re-types it. Either way you pass only the ' +
+      'KEY name and why you need it, never a value. Once resolved: secret_get it by that key, or (if they ' +
+      'inject it) it is a shell env var on your next session. First check secret_list — you may already ' +
+      'have access.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        key: { type: 'string', description: 'The handle you will fetch the credential by — a letter/underscore then letters, digits or underscores, e.g. "STRIPE_API_KEY", "PROD_DB_URL".' },
+        reasoning: { type: 'string', description: 'One line for the human: what this credential is and why you need it (helps them fulfil it quickly).' },
+      },
+      required: ['key'],
+    },
+  },
+  {
     name: 'github_refresh',
     description:
       'Refresh YOUR GitHub token when git/gh suddenly fails with "Bad credentials" or a 401. Your ' +
@@ -2016,6 +2038,22 @@ async function secretList(): Promise<string> {
     rows.map((s) => `• ${s.key}${s.updatedBy ? ` — set by ${s.updatedBy}` : ''}`).join('\n');
 }
 
+async function secretRequest(args: Record<string, unknown>): Promise<string> {
+  const key = String(args.key ?? '').trim();
+  if (!key) return 'secret_request needs the key name of the credential you need, e.g. secret_request({ key: "STRIPE_API_KEY" }).';
+  const res = await fetch(AOS_URL + '/api/agent/secret/request', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, key, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; status?: string; mode?: string; error?: string };
+  if (!d.ok) return `Could not request the secret: ${d.error ?? 'unknown error'}`;
+  if (d.status === 'exists') return `"${key}" is already in the vault and available to you — secret_get "${key}".`;
+  if (d.status === 'duplicate') return `A request for "${key}" is already awaiting review.`;
+  if (d.mode === 'access') return `Requested ACCESS to "${key}" — it's already in the vault but scoped away from you. An owner/admin will grant you access (the existing value is re-scoped to you; no one re-types it). Once granted, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
+  return `Requested "${key}" — an owner/admin will provide it into the vault (they type the value, you never see it pasted here). Once fulfilled, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
+}
+
 // ── Per-member GitHub token refresh: recover a live run whose ~8h GH_TOKEN went bad mid-flight ──────
 async function githubRefresh(): Promise<string> {
   const res = await fetch(AOS_URL + '/api/agent/github/refresh', {
@@ -2323,6 +2361,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'secret_put' ? await secretPut(args)
         : name === 'secret_get' ? await secretGet(args)
         : name === 'secret_list' ? await secretList()
+        : name === 'secret_request' ? await secretRequest(args)
         : name === 'github_refresh' ? await githubRefresh()
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -3039,6 +3039,12 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     const resolved = m.status === 'approved' ? 'installed' : m.status === 'rejected' ? 'dismissed' : ''
     verb = 'requested a skill'; detail = m.body
     badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Skills'}</Badge>
+  } else if (m.type === 'secret.request') {
+    Icon = KeyRound; iconCls = 'text-amber-600'; highlight = m.status === 'open'
+    const isAccess = (m.args as { mode?: string } | undefined)?.mode === 'access'
+    const resolved = m.status === 'fulfilled' ? (isAccess ? 'granted' : 'provided') : m.status === 'rejected' ? 'dismissed' : ''
+    verb = isAccess ? 'requested secret access' : 'requested a secret'; detail = m.body
+    badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{resolved || (isAccess ? 'grant in Secrets' : 'provide in Secrets')}</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
@@ -8044,6 +8050,81 @@ function AgentSkillRequestCard({ r, onChanged }: { r: SkillRequest; onChanged: (
   )
 }
 
+/** A single agent secret-request awaiting a human (via `secret_request`). Two modes:
+ *  • provide — the key isn't in the vault: type the value into a password field; it is sealed straight
+ *    into the vault (scoped to the requesting agent, or tenant-wide), optionally injected into its shell.
+ *  • access — the key exists but the agent can't read it: GRANT access; the existing value is re-scoped
+ *    to the agent server-side (no value typed or shown), optionally injected into its shell. */
+function AgentSecretRequestCard({ r, agents, onChanged }: { r: SecretRequest; agents: AgentInfo[]; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const [value, setValue] = useState('')
+  const [tenantWide, setTenantWide] = useState(false)
+  const [inject, setInject] = useState(true)
+  const [grantRead, setGrantRead] = useState(true)
+  const knownAgent = agents.some((a) => a.id === r.agent)
+  const isAccess = r.mode === 'access'
+  const submit = async () => {
+    if (isAccess ? (!grantRead && !(inject && knownAgent)) : !value) return
+    setBusy(true); setHint('')
+    const res = isAccess
+      ? await api.fulfillSecretRequest(r.id, { grantRead, inject: inject && knownAgent })
+      : await api.fulfillSecretRequest(r.id, { value, principal: tenantWide ? '*' : r.agent, inject: inject && knownAgent })
+    setBusy(false)
+    if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
+    setValue(''); onChanged()
+  }
+  const dismiss = async () => {
+    setBusy(true); setHint('')
+    const res = await api.dismissSecretRequest(r.id)
+    setBusy(false)
+    if (!res.ok || res.error) return setHint('⚠ ' + (res.error || 'failed'))
+    onChanged()
+  }
+  return (
+    <Card className="border-amber-200">
+      <CardContent className="space-y-2 p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-sm font-medium">{r.key}</span>
+              <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{isAccess ? 'access requested' : 'requested'}</Badge>
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              by <span className="font-mono">{r.agent}</span>{r.createdAt ? ` · ${timeAgo(r.createdAt)}` : ''}
+              {r.reasoning ? <> · <span className="italic">“{r.reasoning}”</span></> : null}
+            </div>
+          </div>
+          <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="dismiss" disabled={busy} onClick={dismiss}><Trash2 className="h-3.5 w-3.5" /></Button>
+        </div>
+        {isAccess
+          ? <p className="text-[11px] text-muted-foreground"><span className="font-mono">{r.key}</span> is already in the vault. Granting re-scopes its existing value to <span className="font-mono">{r.agent}</span> — the value is never re-typed or shown.</p>
+          : <Input type="password" value={value} disabled={busy} placeholder={`paste the value for ${r.key}`}
+              onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit() }} />}
+        <div className="flex flex-wrap items-center gap-3">
+          {isAccess
+            ? <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`let ${r.agent} secret_get ${r.key} (copies the current value under its principal)`}>
+                <input type="checkbox" checked={grantRead} disabled={busy} onChange={(e) => setGrantRead(e.target.checked)} />
+                allow secret_get
+              </label>
+            : <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={`store under the requesting agent (${r.agent}) only, or tenant-wide so any agent can secret_get it`}>
+                <input type="checkbox" checked={tenantWide} disabled={busy} onChange={(e) => setTenantWide(e.target.checked)} />
+                tenant-wide
+              </label>}
+          <label className="flex items-center gap-1 text-[11px] text-muted-foreground" title={knownAgent ? `also inject ${r.key} into ${r.agent}'s shell env at launch` : `${r.agent} is not a current agent — it can still secret_get the value`}>
+            <input type="checkbox" checked={inject} disabled={busy || !knownAgent} onChange={(e) => setInject(e.target.checked)} />
+            inject into {r.agent}'s shell
+          </label>
+          <Button size="sm" className="ml-auto" disabled={busy || (isAccess ? (!grantRead && !(inject && knownAgent)) : !value)} onClick={submit}>
+            <Check className="mr-1 h-3.5 w-3.5" />{isAccess ? 'Grant' : 'Provide'}
+          </Button>
+        </div>
+        {hint && <div className="text-xs text-destructive">{hint}</div>}
+      </CardContent>
+    </Card>
+  )
+}
+
 function ProposedSkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void }) {
   const [reviewing, setReviewing] = useState(false)
   const [content, setContent] = useState('')
@@ -9442,10 +9523,13 @@ function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const [openRow, setOpenRow] = useState<string | null>(null)
+  const [requests, setRequests] = useState<SecretRequest[]>([])
   const canEdit = me.role === 'owner' || me.role === 'admin'
 
   const refresh = () => api.secrets().then((r) => { if (!r.error) setSecrets(r.secrets); setLoading(false) }).catch(() => setLoading(false))
-  useEffect(() => { refresh() }, [])
+  const loadRequests = () => api.secretRequests().then((r) => setRequests(r.requests ?? [])).catch(() => setRequests([]))
+  useEffect(() => { refresh(); if (canEdit) loadRequests() }, [])
+  const onRequestResolved = () => { loadRequests(); refresh() }
 
   const toggleAgent = async (s: SecretMeta, agentId: string) => {
     const cur = s.agents ?? []
@@ -9473,6 +9557,23 @@ function SecretsSettings({ me, agents }: { me: Member; agents: AgentInfo[] }) {
 
   return (
     <div className="space-y-4">
+      {canEdit && requests.length > 0 && (
+        <Card className="border-amber-200">
+          <CardContent className="space-y-2.5 p-4">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-4 w-4 text-amber-600" />
+              <h3 className="text-sm font-medium">Agent requests</h3>
+              <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{requests.length}</Badge>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              An agent asked (via <span className="font-mono">secret_request</span>) for a credential. If the vault doesn't have it,
+              <strong> provide</strong> the value here — sealed straight into the vault, never shown to the agent or pasted into its session.
+              If it already exists but is scoped away from the agent, <strong>grant</strong> access — the existing value is re-scoped, never re-typed.
+            </p>
+            {requests.map((r) => <AgentSecretRequestCard key={r.id} r={r} agents={agents} onChanged={onRequestResolved} />)}
+          </CardContent>
+        </Card>
+      )}
       <Card>
         <CardContent className="space-y-3 p-4">
           <p className="text-sm text-muted-foreground">

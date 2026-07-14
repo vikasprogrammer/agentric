@@ -205,7 +205,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 45 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 46 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`library_list` (session cards are
@@ -235,9 +235,18 @@ Key modules:
   SYNCHRONOUS — the caller BLOCKS until the delegate finishes and resumes with its result, each poll kicking
   the same guarded dispatch so waiting drives the work (and retries a crashed run). An agent `task_create` now
   also dispatches an `autoDispatch` hand-off immediately (parity with the console) instead of waiting for the tick. Secrets
-  (shared credential handoff): `secret_put`/`secret_get`/`secret_list` — an agent stores a password/key
+  (shared credential handoff): `secret_put`/`secret_get`/`secret_list`/`secret_request` — an agent stores a password/key
   tenant-wide under a KEY (approval-gated `secret.put`; value kept out of audit/approval-card/policy args,
-  encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. (Complementary,
+  encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. `secret_request`
+  is the ASK counterpart for a credential the agent needs — it carries only the key + reason, never a
+  value, so nothing lands in the session transcript, and **auto-detects two modes**: `provide` (the key
+  isn't in the vault → a human types the value into a password field, sealed under the agent's principal
+  or tenant-wide `*`) and `access` (the key EXISTS but is scoped away from the agent → a human GRANTS it;
+  the server re-scopes the existing sealed value to the agent, no re-type, agent-scoped not widened). Posts
+  a `secret.request` card to owner/admins (Inbox + **Settings → Secrets → Agent requests**); resolved via
+  `POST /api/secrets/requests/:id/fulfill` (either mode can also inject into the agent's shell);
+  short-circuits `exists`/`duplicate`, audited `secret.requested` (+`mode`) / `secret.request.fulfilled` /
+  `secret.request.granted` / `secret.request.dismissed` (never the value). (Complementary,
   admin-side: **Settings → Secrets** can *assign* a stored secret to agents — `PUT /api/secrets/agents`,
   the `secret_assignments` table — so it's injected into each assigned agent's shell at launch, the
   central-grant inverse of manifest `shellSecrets`. Injection only, not a `secret_get` grant.) GitHub

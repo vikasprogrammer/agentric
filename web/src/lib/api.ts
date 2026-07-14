@@ -466,12 +466,12 @@ export interface AddGoalReq {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'host.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed'
   sessionId: string
   agent: string
   title: string
   body: string
-  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered' | 'cancelled'
+  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered' | 'cancelled' | 'fulfilled'
   approvalId?: string
   capability?: string
   args?: unknown
@@ -781,6 +781,11 @@ export interface SkillshResp { query: string; hits: SkillshHit[]; error?: string
 /** An agent's pending request to have a catalog skill installed (via `skill_request`). */
 export interface SkillRequest { id: string; skill: string; source: string; agent: string; rationale?: string; createdAt: number }
 export interface SkillRequestsResp { requests: SkillRequest[]; error?: string }
+
+/** An agent's `secret_request` awaiting a human. `mode`: 'provide' (enter a new value) or 'access'
+ *  (grant the agent an existing vault key — no value typed). No secret value is ever in play here. */
+export interface SecretRequest { id: string; key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; createdAt: number }
+export interface SecretRequestsResp { requests: SecretRequest[]; error?: string }
 
 export interface CompanySettings {
   companyMd: string
@@ -1162,6 +1167,13 @@ export const api = {
   setSecret: (key: string, value: string, principal?: string) => call<{ ok: boolean; error?: string }>('POST', '/api/secrets', { key, value, principal }),
   deleteSecret: (key: string, principal?: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/secrets', { key, principal }),
   setSecretAgents: (principal: string, key: string, agents: string[]) => call<{ ok: boolean; agents?: string[]; error?: string }>('PUT', '/api/secrets/agents', { principal, key, agents }),
+  secretRequests: () => call<SecretRequestsResp>('GET', '/api/secrets/requests'),
+  // provide mode: pass the typed `value` (+ optional principal). access (grant) mode: omit `value`,
+  // pass `grantRead` (enable secret_get) and/or `inject`. `inject` applies to both modes.
+  fulfillSecretRequest: (id: string, opts: { value?: string; principal?: string; inject?: boolean; grantRead?: boolean }) =>
+    call<{ ok: boolean; injected?: boolean; granted?: boolean; error?: string }>('POST', '/api/secrets/requests/' + encodeURIComponent(id) + '/fulfill', opts),
+  dismissSecretRequest: (id: string) =>
+    call<{ ok: boolean; error?: string }>('POST', '/api/secrets/requests/' + encodeURIComponent(id) + '/dismiss'),
   killSwitch: () => call<{ engaged: boolean; reason?: string; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/kill-switch'),
   setKillSwitch: (engaged: boolean, reason?: string, haltSessions?: boolean) => call<{ ok: boolean; engaged: boolean; reason?: string; halted?: number; updatedBy?: string; error?: string }>('POST', '/api/settings/kill-switch', { engaged, reason, haltSessions }),
 
