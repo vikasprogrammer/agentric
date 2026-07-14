@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.193.0] — 2026-07-14
+### Added
+- **Transfer a session to another owner.** A session's accountable human — its `run_as` — can now be
+  reassigned from the Sessions list. Each session's action row gains a **Transfer** control (a member
+  picker; labeled button in the grid view, icon in the list view) that hands the run to another teammate:
+  ownership, the "mine" filter, the owner chip, and connectors/identity of any future effect all follow
+  the new `run_as`, while provenance (`spawned_by` — what originally triggered the run) is left untouched.
+  Gated to an owner/admin or the session's current owner (mirrored server-side), and every transfer is
+  audited `session.transferred` (`{from, to, agent}`). New `TerminalManager.transferSession` +
+  `POST /api/sessions/:id/transfer`; no schema change (`run_as` already existed).
+
 ## [0.192.0] — 2026-07-14
 ### Changed
 - **The browser terminal now selects and clicks like a web page — no more Option-drag, and links work.**

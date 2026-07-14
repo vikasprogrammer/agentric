@@ -2082,6 +2082,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const r = tm.renameSession(id, me, String((b as { title?: unknown }).title ?? ''));
     return sendJson(res, r.ok ? 200 : 400, r);
   }
+  // Transfer a session to another owner — reassign its run-as (the accountable human). Beyond the view
+  // gate, this changes accountability, so restrict it to an owner/admin OR the session's current owner
+  // (a member handing off their own run). The target is any real member; the tm method validates it.
+  const transferMatch = p.match(/^\/api\/sessions\/([\w-]+)\/transfer$/);
+  if (method === 'POST' && transferMatch) {
+    const id = transferMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    if (!isAdmin(me) && tm.sessionRunAs(id) !== me.id) return sendJson(res, 403, { error: 'only an owner/admin or the current owner can transfer this session' });
+    const b = await readBody(req);
+    const to = String((b as { to?: unknown }).to ?? '').trim();
+    if (!to) return sendJson(res, 400, { error: 'to (member id) is required' });
+    const r = tm.transferSession(id, me, to);
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   // Deliberately resume a stopped session: lift the stop-block so the ttyd attach wrapper resurrects it
   // (`claude --resume`) on the next reconnect. The actual relaunch happens in attach.sh when the terminal
   // (re)connects; this just clears the "stay stopped" sentinel. Same per-member gate as stop.

@@ -937,6 +937,14 @@ function Console({ me }: { me: Member }) {
     const r = await api.renameSession(id, t)
     if (r.title) setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title: r.title! } : s)))
   }
+  // Hand a session to another owner — reassign its run-as. Optimistic (the owner chip updates instantly);
+  // the poll reconciles with the server (which also refreshes runAsLabel).
+  const transferSession = async (id: string, to: string) => {
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, runAs: to, runAsLabel: members.find((m) => m.id === to)?.name ?? to } : s)))
+    const r = await api.transferSession(id, to)
+    if (r.error) alert(r.error)
+    setSessions(await api.sessions())
+  }
   const deleteSession = async (id: string, tmux: string) => {
     if (!confirm('Delete this session? Its inbox messages and transcript files are removed; the audit log is kept.')) return
     await api.deleteSession(id)
@@ -1200,7 +1208,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} messages={messages} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} />}
@@ -2096,8 +2104,37 @@ function EditableSessionTitle({ title, onRename }: { title: string; onRename: (t
   )
 }
 
+// Hand a session to another owner — reassign its run-as (the accountable human). Visible only to an
+// owner/admin or the session's current owner (mirrors the server gate); lists every other member. The
+// `variant` matches the two Sessions views: a labeled button (grid) vs. a bare icon (list row).
+function TransferMenu({ session, members, me, onTransfer, variant }: {
+  session: Session; members: Member[]; me: Member; onTransfer: (id: string, to: string) => void; variant: 'label' | 'icon'
+}) {
+  if (me.role !== 'owner' && me.role !== 'admin' && session.runAs !== me.id) return null
+  const targets = members.filter((m) => m.id !== session.runAs)
+  if (targets.length === 0) return null
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={variant === 'label'
+          ? <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs" title="transfer — hand this session to another owner"><Users className="h-3 w-3" /> Transfer</Button>
+          : <Button size="icon" variant="ghost" className="h-7 w-7" title="transfer — hand this session to another owner"><Users className="h-3.5 w-3.5" /></Button>}
+      />
+      <DropdownMenuContent align="end" className="max-h-64 overflow-y-auto">
+        <div className="px-2 py-1 text-[11px] text-muted-foreground">Transfer to…</div>
+        {targets.map((m) => (
+          <DropdownMenuItem key={m.id} className="gap-2 text-xs" onClick={() => onTransfer(session.id, m.id)}>
+            <MemberAvatar member={m} className="h-4 w-4 text-[9px]" />
+            <span className="truncate">{m.name}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 function SessionsPage({
-  me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onTransfer, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   me: Member
   members: Member[]
@@ -2115,6 +2152,7 @@ function SessionsPage({
   onDelete: (id: string, tmux: string) => void
   onRate: (id: string, rating: 'up' | 'down' | null) => void
   onRename: (id: string, title: string) => void
+  onTransfer: (id: string, toMemberId: string) => void
   onBulkStop: (ids: string[]) => void
   onBulkDelete: (ids: string[]) => void
   /** Current hash-query string — the persisted filter state, read once to seed the filters. */
@@ -2576,6 +2614,7 @@ function SessionsPage({
                 <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs" onClick={() => setInspect(s)} title="which agent-os primitives this session used">
                   <Activity className="h-3 w-3" /> Activity
                 </Button>
+                <TransferMenu session={s} members={members} me={me} onTransfer={onTransfer} variant="label" />
                 <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-destructive" onClick={() => onDelete(s.id, s.tmux)} title="delete session + its messages/files">
                   <Trash2 className="h-3 w-3" /> Delete
                 </Button>
@@ -2648,6 +2687,7 @@ function SessionsPage({
                 <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setInspect(s)} title="activity — which agent-os primitives this session used">
                   <Activity className="h-3.5 w-3.5" />
                 </Button>
+                <TransferMenu session={s} members={members} me={me} onTransfer={onTransfer} variant="icon" />
                 <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => onDelete(s.id, s.tmux)} title="delete session + its messages/files">
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>

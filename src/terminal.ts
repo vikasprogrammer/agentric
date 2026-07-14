@@ -3300,6 +3300,24 @@ export class TerminalManager {
     return { ok: true, title: clean };
   }
 
+  /** Hand a session off to another member: reassign its `run_as` — the accountable human it acts as, and
+   *  the key its ownership/visibility (`ownsSession`, the sessions list "mine" filter, connectors/identity
+   *  of any FUTURE effect) derive from. Provenance (`spawned_by`) is left untouched — the record of what
+   *  originally triggered the run doesn't change, only who now owns it going forward. The target must be a
+   *  real member; a no-op transfer (already owned by them) succeeds quietly. Audited `session.transferred`.
+   *  The caller applies the ownership gate (owner/admin or current owner). */
+  transferSession(sessionId: string, by: Member, toMemberId: string): { ok: boolean; error?: string; runAs?: string } {
+    const r = this.db.prepare('SELECT id, agent, run_as FROM term_sessions WHERE id = ?')
+      .get<{ id: string; agent: string; run_as: string | null }>(sessionId);
+    if (!r) return { ok: false, error: 'unknown session' };
+    const target = this.os.team.getMember(toMemberId);
+    if (!target) return { ok: false, error: 'unknown member' };
+    if (r.run_as === target.id) return { ok: true, runAs: target.id };
+    this.db.prepare('UPDATE term_sessions SET run_as = ?, updated_at = ? WHERE id = ?').run(target.id, Date.now(), sessionId);
+    this.audit(sessionId, by.email, 'session.transferred', { from: r.run_as, to: target.id, agent: r.agent });
+    return { ok: true, runAs: target.id };
+  }
+
   /** Path of a session's "do not auto-resurrect" sentinel (see stopSession / attach.sh). */
   private stopMarkerPath(sessionId: string): string | null {
     return this.os.paths ? path.join(this.os.paths.connectors, `session-${sessionId}.stopped`) : null;

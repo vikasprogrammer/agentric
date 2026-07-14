@@ -1002,6 +1002,9 @@ export const api = {
   rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
   /** Give a session a human-chosen display title (overrides the auto/AI-generated one). */
   renameSession: (id: string, title: string) => call<{ ok: boolean; error?: string; title?: string }>('POST', `/api/sessions/${id}/rename`, { title }),
+  /** Hand a session to another owner — reassign its run-as (the accountable human). Owner/admin, or the
+   *  session's current owner handing off their own run. `to` is the target member id. */
+  transferSession: (id: string, to: string) => call<{ ok: boolean; error?: string; runAs?: string }>('POST', `/api/sessions/${id}/transfer`, { to }),
   /** Lift the stop-block so a stopped session resurrects (claude --resume) on the next terminal open. */
   resumeSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/resume`),
   /** Take over a headless run: convert it to an attachable interactive session (claude --resume). Kills
