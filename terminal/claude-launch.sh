@@ -71,7 +71,13 @@ STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # under it and a deny would block the agent reading its OWN files — so we deny only crown-jewel
 # paths that never overlap the agent folder.
 H="${HOME#/}"
-DENYS="\"Read(//$H/.ssh/**)\", \"Read(//$H/.aws/**)\", \"Read(//$H/.gnupg/**)\", \"Read(//$H/.claude/**)\""
+# Deny the native AskUserQuestion tool: it renders a multiple-choice picker in the TUI and BLOCKS the
+# turn until someone presses Enter at the keyboard — but an Agent OS run has no human at the terminal
+# (chat/automation/task/Slack runs are unattended; even an attached session interacts via the console).
+# So it hangs the run forever and never reaches the Inbox. Denied here, the agent asks via `ask_human`
+# (governed → Inbox card + DM, blocks for the answer) or in plain prose — both work everywhere. (deny
+# rules apply even under --dangerously-skip-permissions.)
+DENYS="\"AskUserQuestion\", \"Read(//$H/.ssh/**)\", \"Read(//$H/.aws/**)\", \"Read(//$H/.gnupg/**)\", \"Read(//$H/.claude/**)\""
 DATA_HOME="$(cd "$AGENT_DIR/../.." 2>/dev/null && pwd)"
 if [ -n "$DATA_HOME" ]; then
   DH="${DATA_HOME#/}"

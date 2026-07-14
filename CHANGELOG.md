@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.195.1] — 2026-07-14
+### Fixed
+- **Agents can no longer hang a run on the native `AskUserQuestion` picker.** Claude's built-in
+  `AskUserQuestion` tool renders an interactive multiple-choice prompt in the terminal TUI and blocks the
+  turn until someone presses Enter at the keyboard — but an Agent OS run has no human at the terminal
+  (chat/automation/task/Slack runs are unattended). So an agent that reached for it (e.g. asked to "ask a
+  question") would **hang forever**: no turn output, nothing in the Inbox, a stuck pane — and in the new
+  Chat surface it looked like the question tool "wasn't rendering." The launcher now **denies
+  `AskUserQuestion`** (`terminal/claude-launch.sh`; deny rules apply even under
+  `--dangerously-skip-permissions`), and the operating notes steer agents to **`ask_human`** (governed →
+  Inbox card + DM, blocks for the reply) or plain prose — both work in every surface, including Chat.
+  This was a latent bug for all unattended runs, surfaced by the Chat work. (`terminal/claude-launch.sh`,
+  `src/terminal.ts`.)
+
 ## [0.195.0] — 2026-07-14
 ### Fixed
 - **Plain-text links in the terminal are now clickable — no scheme needed, and OSC-8 markdown links work
