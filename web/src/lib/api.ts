@@ -1092,7 +1092,7 @@ export const api = {
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`),
-  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; state?: DreamingState; measurement?: Measurement; insights?: Insights; improvements?: ImprovementTile[]; alertsEnabled?: boolean; error?: string }>('GET', '/api/dreaming'),
+  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; state?: DreamingState; measurement?: Measurement; insights?: Insights; improvements?: ImprovementTile[]; proposals?: string[]; alertsEnabled?: boolean; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),
   setDreaming: (everyHours: number) => call<{ ok: boolean; everyHours: number; error?: string }>('PUT', '/api/dreaming', { everyHours }),
@@ -1108,6 +1108,10 @@ export const api = {
   digestRefresh: () => call<DigestModel & { ok: boolean; error?: string }>('POST', '/api/digest/refresh'),
   // Spawn the analyst to diagnose why a struggling agent keeps failing (writes a KB page).
   diagnose: (agent: string) => call<{ ok: boolean; spawned: boolean; reason?: string; sessionId?: string; items?: number; slug?: string; error?: string }>('POST', '/api/insights/diagnose', { agent }),
+  // Spawn the improver to DRAFT a better CLAUDE.md (lands as a review-gated proposal), then apply/dismiss it.
+  improveAgent: (agent: string) => call<{ ok: boolean; spawned: boolean; reason?: string; sessionId?: string; items?: number; slug?: string; error?: string }>('POST', '/api/insights/improve', { agent }),
+  applyProposal: (agent: string) => call<{ ok: boolean; rev?: number; error?: string }>('POST', `/api/insights/proposal/${encodeURIComponent(agent)}/apply`),
+  dismissProposal: (agent: string) => call<{ ok: boolean; error?: string }>('POST', `/api/insights/proposal/${encodeURIComponent(agent)}/dismiss`),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),

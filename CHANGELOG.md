@@ -8,7 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.176.3] — 2026-07-14
+## [0.177.0] — 2026-07-14
+### Added
+- **Insights improvement tiles v2 — "generate the fix" (Agents domain).** The scorecard already says an
+  agent is underperforming (which) and Diagnose says why; a new **draft fix** action closes the loop. It
+  spawns a governed headless **improver** agent (`src/edge/improver.ts`, same shape as the analyst /
+  consolidation gardener) that reads the target's current CLAUDE.md + its recent failed/stopped runs + any
+  diagnosis, then writes a **revised CLAUDE.md as a review-gated proposal** — a KB page at
+  `operations/proposed/<agent>` whose body IS the proposed system prompt. Nothing changes live: the owner
+  reviews the draft in Knowledge and **Applies** it (committed as a reversible agent revision) or
+  **Dismisses** it, from the Fleet scorecard. Reuses existing rails end to end — KB stores/versions the
+  draft, agent-revisions applies + can roll it back, `report` posts the owner Inbox card. Routes:
+  `POST /api/insights/improve`, `POST /api/insights/proposal/:agent/{apply,dismiss}`; pending proposals are
+  surfaced in the `/api/insights` + `/api/dreaming` payloads. (Skills + Memory domains follow.)
 ### Fixed
 - **Reflect-pass honesty** (`src/edge/dreaming.ts`) — two gaps in what Insights reports about itself:
   - **Chat sessions no longer dilute the self-learning success rate.** The reflect pass tallied every

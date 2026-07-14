@@ -27,6 +27,7 @@ import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
 import { buildImprovements } from './edge/improvements';
 import { Diagnosis } from './edge/diagnosis';
+import { Improver, proposalSlug } from './edge/improver';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -121,6 +122,15 @@ function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentConfigSna
     examplePrompts: ag.examplePrompts ?? [], shellSecrets: ag.shellSecrets ?? [],
     claudeMd,
   };
+}
+
+/** Agent ids that currently have an improver-drafted CLAUDE.md proposal awaiting review (Apply/Dismiss).
+ *  Derived from the KB `operations/proposed/*` pages — the proposal store — so no extra table. */
+function pendingProposals(os: AgentOS): string[] {
+  return os.kb.list(os.tenant, 'operations')
+    .filter((pg) => pg.slug.startsWith('proposed/'))
+    .map((pg) => pg.slug.slice('proposed/'.length))
+    .filter((id) => !!os.agents.get(id));
 }
 
 /** Read the agent's current on-disk snapshot (manifest fields + CLAUDE.md), to record as the "before". */
@@ -2404,6 +2414,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: openRecs, state, alertsEnabled: os.settings.insightsAlertsEnabled(),
       measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
       insights: dreamInsights, improvements: buildImprovements(os, dreamInsights), // scorecard + friction + improvement tiles
+      proposals: pendingProposals(os), // agents with a drafted-CLAUDE.md proposal awaiting Apply/Dismiss
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
   }
@@ -2412,7 +2423,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/insights') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const ins = buildInsights(os);
-    return sendJson(res, 200, { insights: ins, improvements: buildImprovements(os, ins), measurement: measureLearning(os) });
+    return sendJson(res, 200, { insights: ins, improvements: buildImprovements(os, ins), measurement: measureLearning(os), proposals: pendingProposals(os) });
   }
   // Root-cause diagnosis: spawn the analyst to work out WHY a struggling agent keeps failing, into a KB page.
   if (method === 'POST' && p === '/api/insights/diagnose') {
@@ -2426,6 +2437,49 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
+  }
+  // Generate-the-fix: spawn the improver to DRAFT a better CLAUDE.md for an underperforming agent. The
+  // draft lands as a review-gated KB proposal (`operations/proposed/<agent>`) — nothing changes live until
+  // an owner Applies it below. The counterpart to Diagnose ("why") — this is "here's the fix, your call".
+  if (method === 'POST' && p === '/api/insights/improve') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const agent = String(b.agent || '').trim();
+    if (!agent) return sendJson(res, 400, { error: 'agent required' });
+    try {
+      const r = await new Improver(os, tm).improveAgent(agent, me.email);
+      return sendJson(res, r.spawned ? 200 : 400, { ok: r.spawned, ...r });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // Apply / dismiss the improver's drafted CLAUDE.md proposal for an agent (owner/admin — nothing
+  // auto-applies). Apply commits the KB draft as a new agent revision (reversible in the agent's history);
+  // both actions discard the proposal page.
+  const propMatch = p.match(/^\/api\/insights\/proposal\/([\w.-]+)\/(apply|dismiss)$/);
+  if (propMatch && method === 'POST') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const [, agentId, action] = propMatch;
+    const page = os.kb.read(os.tenant, 'operations', proposalSlug(agentId));
+    if (!page) return sendJson(res, 404, { error: 'no pending proposal for this agent' });
+    if (action === 'dismiss') {
+      os.kb.remove(page.id);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'insights.improve.dismissed', data: { agent: agentId } });
+      return sendJson(res, 200, { ok: true });
+    }
+    // apply — write the proposed body as the agent's CLAUDE.md, snapshot a revision, drop the draft page.
+    if (!os.paths) return sendJson(res, 200, { ok: false, error: 'editing agents requires a data home' });
+    const ag = os.agents.get(agentId);
+    if (!ag?.dir) return sendJson(res, 404, { error: `unknown agent "${agentId}"` });
+    const proposed = page.body;
+    if (!proposed.trim()) return sendJson(res, 400, { error: 'proposal is empty' });
+    const before = readAgentSnapshot(ag);
+    const next = applyAgentSnapshot(os, ag, { ...before, claudeMd: proposed });
+    const rev = os.agentRevisions.commit(os.tenant, agentId, before, manifestToSnapshot(next, proposed), `applied improver proposal (by ${me.email})`, me.email);
+    tm.refreshAgentSkills?.(agentId); // if it has a live resident session, no-op otherwise
+    os.kb.remove(page.id);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'insights.improve.applied', data: { agent: agentId, rev, chars: proposed.length } });
+    return sendJson(res, 200, { ok: true, agent: agentId, rev });
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);

@@ -8301,6 +8301,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [improvements, setImprovements] = useState<ImprovementTile[]>([])
   const [dxBusy, setDxBusy] = useState('')
   const [dxHint, setDxHint] = useState('')
+  const [proposals, setProposals] = useState<string[]>([])
   const [alertsOn, setAlertsOn] = useState(true)
   const toggleAlerts = async (on: boolean) => { setAlertsOn(on); await api.setInsightAlerts(on) }
   const [busy, setBusy] = useState(false)
@@ -8311,7 +8312,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setImprovements(r.improvements ?? []); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setImprovements(r.improvements ?? []); setProposals(r.proposals ?? []); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -8341,6 +8342,21 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     const r = await api.diagnose(agent); setDxBusy('')
     setDxHint(r.error ? `⚠ ${r.error}` : r.spawned ? `Diagnosing ${agent}… the analyst will write it to Knowledge in a minute — refresh to see the link.` : (r.reason ?? 'nothing to diagnose'))
     setTimeout(() => setDxHint(''), 6000)
+  }
+  const improve = async (agent: string) => {
+    setDxBusy(agent); setDxHint('')
+    const r = await api.improveAgent(agent); setDxBusy('')
+    setDxHint(r.error ? `⚠ ${r.error}` : r.spawned ? `Drafting a better CLAUDE.md for ${agent}… the improver will post a report + a proposal you can review — refresh in a minute.` : (r.reason ?? 'nothing to draft'))
+    setTimeout(() => setDxHint(''), 7000)
+  }
+  const applyProposal = async (agent: string) => {
+    setDxBusy(agent); const r = await api.applyProposal(agent); setDxBusy('')
+    setDxHint(r.error ? `⚠ ${r.error}` : `Applied — ${agent}'s CLAUDE.md updated (rev ${r.rev ?? '?'}), reversible in its history.`)
+    setTimeout(() => setDxHint(''), 6000); refresh()
+  }
+  const dismissProposal = async (agent: string) => {
+    setDxBusy(agent); await api.dismissProposal(agent); setDxBusy('')
+    setDxHint(`Dismissed the draft for ${agent}.`); setTimeout(() => setDxHint(''), 4000); refresh()
   }
   const applyRec = async (id: string) => { setBusy(true); const r = await api.applyRecommendation(id); setBusy(false); if (r.error) return setHint('⚠ ' + r.error); setHint('applied'); setTimeout(() => setHint(''), 1500); refresh() }
   const dismissRec = async (id: string) => { setBusy(true); await api.dismissRecommendation(id); setBusy(false); refresh() }
@@ -8483,17 +8499,28 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                     <span className={`w-10 shrink-0 tabular-nums font-medium ${rateCls}`}>{a.rate == null ? '—' : `${a.rate}%`}</span>
                     <span className="text-muted-foreground">{a.runs} run{a.runs === 1 ? '' : 's'}{a.failed ? ` · ${a.failed} failed` : ''}{a.crashed ? ` · ${a.crashed} crashed` : ''}{a.stopped ? ` · ${a.stopped} stopped` : ''}{a.chats ? ` · ${a.chats} chats` : ''}</span>
                     {a.focus.length > 0 && <span className="text-muted-foreground">· {a.focus.join(', ')}</span>}
-                    <span className="ml-auto shrink-0">
-                      {a.diagnosis
-                        ? <a href="#/kb" className="text-emerald-600 underline underline-offset-2" title={`updated ${new Date(a.diagnosis.at).toLocaleString()}`}>diagnosis →</a>
-                        : struggling && <button onClick={() => diagnose(a.agent)} disabled={dxBusy === a.agent} className="text-primary underline underline-offset-2 disabled:opacity-50">{dxBusy === a.agent ? 'diagnosing…' : 'diagnose'}</button>}
+                    <span className="ml-auto flex shrink-0 items-baseline gap-2">
+                      {proposals.includes(a.agent) ? (
+                        <>
+                          <a href={`#/kb`} className="text-emerald-600 underline underline-offset-2" title="Read the drafted CLAUDE.md in Knowledge">review draft →</a>
+                          <button onClick={() => applyProposal(a.agent)} disabled={dxBusy === a.agent} className="text-emerald-600 underline underline-offset-2 disabled:opacity-50">{dxBusy === a.agent ? '…' : 'apply'}</button>
+                          <button onClick={() => dismissProposal(a.agent)} disabled={dxBusy === a.agent} className="text-muted-foreground underline underline-offset-2 disabled:opacity-50">dismiss</button>
+                        </>
+                      ) : (
+                        <>
+                          {a.diagnosis
+                            ? <a href="#/kb" className="text-emerald-600 underline underline-offset-2" title={`updated ${new Date(a.diagnosis.at).toLocaleString()}`}>diagnosis →</a>
+                            : struggling && <button onClick={() => diagnose(a.agent)} disabled={dxBusy === a.agent} className="text-primary underline underline-offset-2 disabled:opacity-50">{dxBusy === a.agent ? 'diagnosing…' : 'diagnose'}</button>}
+                          {struggling && <button onClick={() => improve(a.agent)} disabled={dxBusy === a.agent} className="text-primary underline underline-offset-2 disabled:opacity-50">{dxBusy === a.agent ? '…' : 'draft fix'}</button>}
+                        </>
+                      )}
                     </span>
                   </div>
                 )
               })}
             </div>
             {dxHint && <div className="text-[11px] text-muted-foreground">{dxHint}</div>}
-            <p className="text-[11px] text-muted-foreground">A <strong>diagnose</strong> spawns the analyst to read a struggling agent's failed runs and write a root-cause + fix to <a className="underline" href="#/kb">Knowledge</a>.</p>
+            <p className="text-[11px] text-muted-foreground"><strong>Diagnose</strong> spawns the analyst to find WHY an agent struggles (→ <a className="underline" href="#/kb">Knowledge</a>); <strong>draft fix</strong> spawns the improver to rewrite its CLAUDE.md as a proposal you <strong>apply</strong> (reversible) or <strong>dismiss</strong>.</p>
           </CardContent>
         </Card>
       )}
