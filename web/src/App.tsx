@@ -4060,7 +4060,10 @@ function AppStatusBadge({ s }: { s: AppInfo['status'] }) {
 function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detail?: string) => void }) {
   const [apps, setApps] = useState<AppInfo[] | null>(null)
   const [enabled, setEnabled] = useState(true)
-  const [sel, setSel] = useState<string>(permalink || '')
+  // The URL is the source of truth for which app is open (permalink: #/apps/<slug>) — so selecting an
+  // app deep-links to it and it's shareable/bookmarkable. `select()` navigates; `sel` follows the hash.
+  const sel = permalink || ''
+  const select = (slug: string) => nav('apps', slug || undefined)
   const [detail, setDetail] = useState<{ app: AppInfo; log: string } | null>(null)
   const [files, setFiles] = useState<AppFile[]>([])
   const [openPath, setOpenPath] = useState('')
@@ -4071,7 +4074,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   const [creating, setCreating] = useState(false)
   const [newId, setNewId] = useState('')
   const [newName, setNewName] = useState('')
-  const [tab, setTab] = useState<'source' | 'preview' | 'settings'>('source')
+  const [tab, setTab] = useState<'source' | 'preview' | 'settings'>('preview')
   const [previewNonce, setPreviewNonce] = useState(0)
 
   const load = () => api.apps().then((r) => { setApps(r.apps); setEnabled(r.enabled) }).catch(() => { setApps([]); setEnabled(false) })
@@ -4096,7 +4099,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
     const id = newId.trim().toLowerCase()
     const r = await api.createApp({ id, name: newName.trim() || id })
     if (r.error || !r.ok) return flash(`⚠ ${r.error || 'could not create'}`)
-    setCreating(false); setNewId(''); setNewName(''); await load(); setSel(id); flash(`✓ Created ${id} — edit + publish it`)
+    setCreating(false); setNewId(''); setNewName(''); await load(); select(id); flash(`✓ Created ${id} — edit + publish it`)
   }
   const openFile = async (fpath: string) => {
     if (dirty && !confirm('Discard unsaved changes to this file?')) return
@@ -4154,7 +4157,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
     if (!detail || !confirm(`Delete app "${detail.app.id}" and all its data? This cannot be undone.`)) return
     const r = await api.deleteApp(detail.app.id)
     if (r.error) return flash(`⚠ ${r.error}`)
-    setSel(''); await load(); flash('✓ Deleted')
+    select(''); await load(); flash('✓ Deleted')
   }
   const stopApp = async () => { if (detail) { await api.stopApp(detail.app.id); await load(); flash('✓ Stopped') } }
 
@@ -4173,7 +4176,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
         </div>
         {apps.length === 0 && <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">No apps yet. Build one here, or an agent can with <code>app_create</code>.</div>}
         {apps.map((app) => (
-          <button key={app.id} onClick={() => setSel(app.id)} className={`w-full rounded-lg border p-2.5 text-left transition ${sel === app.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'}`}>
+          <button key={app.id} onClick={() => select(app.id)} className={`w-full rounded-lg border p-2.5 text-left transition ${sel === app.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'}`}>
             <div className="flex items-center justify-between gap-2">
               <span className="truncate text-sm font-medium">{app.name}</span>
               {app.published ? <AppStatusBadge s={app.status} /> : <Badge variant="secondary" className="text-[10px]">proposed</Badge>}
@@ -4214,7 +4217,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
 
             {/* tab strip — Source / Preview / Settings */}
             <div className="flex items-center gap-1 border-b">
-              {([['source', 'Source'], ['preview', 'Preview'], ['settings', 'Settings']] as const).map(([key, label]) => (
+              {([['preview', 'Preview'], ['source', 'Source'], ['settings', 'Settings']] as const).map(([key, label]) => (
                 <button
                   key={key}
                   onClick={() => setTab(key)}
