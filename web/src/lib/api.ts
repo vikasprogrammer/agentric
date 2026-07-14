@@ -1118,6 +1118,8 @@ export const api = {
   // Memory domain: preview exactly what a cleanup would prune + merge (no mutation), then apply the same plan.
   memoryCleanupPreview: () => call<{ ok: boolean; plan?: MemoryCleanupPlan; error?: string }>('GET', '/api/insights/memory/cleanup'),
   memoryCleanupApply: () => call<{ ok: boolean; pruned?: number; merged?: number; error?: string }>('POST', '/api/insights/memory/cleanup'),
+  // Skills domain: spawn the scout to mine fleet runs for a recurring pattern and draft a skill (proposal-gated).
+  draftSkill: () => call<{ ok: boolean; spawned: boolean; reason?: string; sessionId?: string; items?: number; error?: string }>('POST', '/api/insights/skills/draft'),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),

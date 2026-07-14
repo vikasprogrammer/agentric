@@ -8360,6 +8360,11 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     setDxBusy(agent); await api.dismissProposal(agent); setDxBusy('')
     setDxHint(`Dismissed the draft for ${agent}.`); setTimeout(() => setDxHint(''), 4000); refresh()
   }
+  const draftSkill = async () => {
+    setCleanupBusy(true); const r = await api.draftSkill(); setCleanupBusy(false)
+    setDxHint(r.error ? `⚠ ${r.error}` : r.spawned ? `Mining ${r.items ?? ''} recent runs for a reusable pattern… if the scout finds one it'll appear as a proposal on the Skills page to review & publish.` : (r.reason ?? 'no candidate'))
+    setTimeout(() => setDxHint(''), 8000)
+  }
   const previewCleanup = async () => {
     setCleanupBusy(true); const r = await api.memoryCleanupPreview(); setCleanupBusy(false)
     if (r.error || !r.plan) return setDxHint(`⚠ ${r.error ?? 'could not build a plan'}`)
@@ -8440,6 +8445,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                   {inner}
                   <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview cleanup →'}</div>
                 </button>
+              )
+              // Skills tile is generative too: mine fleet patterns for a NEW skill, and (if any) review the queue.
+              if (t.domain === 'skills') return (
+                <div key={t.domain} className={cls}>
+                  {inner}
+                  <div className="mt-2 flex items-center gap-3 text-[11px] font-medium">
+                    <button onClick={draftSkill} disabled={cleanupBusy} className="text-primary underline underline-offset-2 disabled:opacity-50">{cleanupBusy ? 'mining…' : 'Draft a skill'}</button>
+                    {t.count > 0 && <a href={t.href} className="text-emerald-600 underline underline-offset-2">Review {t.count} →</a>}
+                  </div>
+                </div>
               )
               return (
                 <a key={t.domain} href={t.href} className={cls}>
