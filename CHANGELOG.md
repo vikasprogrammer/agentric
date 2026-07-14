@@ -8,7 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.177.1] — 2026-07-14
+## [0.178.0] — 2026-07-14
+### Added
+- **Insights improvement tiles v2 — Memory domain ("preview cleanup").** The Memory tile is now generative:
+  a **Preview cleanup** action shows exactly what a maintenance pass would prune (never-recalled aged
+  memories) and merge (duplicates) — the real counts + sample items, per agent — **without deleting
+  anything**, so an owner reviews before applying. **Apply** then runs the same plan; **Cancel** discards
+  it. The review-gated, on-demand counterpart to the blind scheduled `maintain` in Settings → Memory.
+  Deterministic (a query + cosine via the existing `planConsolidation`, no spawned agent — unlike the
+  Agents CLAUDE.md rewrite): `src/edge/memory-cleanup.ts` reads the local `memories` table (the SQL
+  readers' source of truth) and mirrors `maintain`'s prune + merge SQL so preview and apply agree exactly.
+  Route `GET|POST /api/insights/memory/cleanup`; audited `memory.maintained` (`via: 'insights-cleanup'`).
 ### Fixed
 - **Improver proposals now surface in the scorecard.** The KB store normalizes a slug's `/` to `-`, so the
   improver's `proposed/<agent>` page is stored as `proposed-<agent>`; `pendingProposals` matched the raw
