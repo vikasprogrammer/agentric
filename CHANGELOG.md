@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.183.0] — 2026-07-14
+### Added
+- **`github_refresh` agent tool — recover a live run whose GitHub token expired mid-flight.** An agent's
+  injected `GH_TOKEN` is the run-as member's ~8h GitHub user-to-server token; it's refreshed only at launch
+  (fire-and-forget, within the expiry skew) and can't be mutated in the running process, so a long or
+  resumed run that outlives it hits "Bad credentials" with no recovery. The new tool (`POST
+  /api/agent/github/refresh`, session-secret loopback) FORCES a refresh now via the stored `ghr_` refresh
+  token (`GithubIdentity.forceRefresh`) and returns the fresh token for the agent to `export GH_TOKEN=…`
+  (the git credential helper + `gh` re-read `$GH_TOKEN` at call time). Run-as-scoped; the returned token is
+  the run's own identity, already injected at launch (no new exposure). Typed statuses
+  (`not_connected`/`no_refresh_token`/`not_configured`/`failed`) tell the agent to stop retrying and have
+  the human re-link GitHub. Audited `github.token.refreshed` / `github.token.refresh_failed` (never the
+  token value).
+
 ## [0.182.0] — 2026-07-14
 ### Added
 - **Insights improvement tiles v2 — Automations domain ("triage").** Completes the v2 set (all six tiles

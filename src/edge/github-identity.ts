@@ -240,6 +240,43 @@ export class GithubIdentity {
     return blob.expiresAt !== undefined && blob.expiresAt - REFRESH_SKEW_MS <= nowMs;
   }
 
+  /**
+   * On-demand refresh for a LIVE session (the `github_refresh` agent tool). Unlike `ensureFresh` — which
+   * only fires within the expiry skew and is fire-and-forget at launch — this UNCONDITIONALLY exchanges
+   * the stored refresh token for a new access token, because the agent only calls it after a token has
+   * already gone bad mid-run (the launch-time refresh window is long past). Returns the fresh blob so the
+   * caller can hand the new token back to the running process, or a typed reason it couldn't:
+   *  - `not_connected`   — the member never linked GitHub (nothing to refresh).
+   *  - `no_refresh_token` — no `ghr_` stored AND the current token is expiring; the App likely lacks
+   *                         "Expire user authorization tokens", so re-linking is the only recovery.
+   *  - `not_configured`  — the App's OAuth client id/secret aren't set, so we can't call GitHub.
+   *  - `failed`          — GitHub rejected the refresh (revoked/invalid); the stale blob is kept.
+   * When a refresh token is missing but the current token still has life, we return it as-is
+   * (`refreshed:false`) rather than error — the agent can keep using it.
+   */
+  async forceRefresh(
+    memberId: string,
+    nowMs: number = Date.now(),
+  ): Promise<
+    | { status: 'ok'; blob: MemberGithub; refreshed: boolean }
+    | { status: 'not_connected' }
+    | { status: 'no_refresh_token' }
+    | { status: 'not_configured' }
+    | { status: 'failed'; detail: string }
+  > {
+    const blob = this.load(memberId);
+    if (!blob) return { status: 'not_connected' };
+    if (!blob.refreshToken) {
+      return this.needsRefresh(blob, nowMs) ? { status: 'no_refresh_token' } : { status: 'ok', blob, refreshed: false };
+    }
+    if (!this.configured()) return { status: 'not_configured' };
+    const tok = await refreshUserToken({ clientId: this.clientId(), clientSecret: this.clientSecret(), refreshToken: blob.refreshToken }, nowMs);
+    if ('error' in tok) return { status: 'failed', detail: tok.error };
+    const next = this.toBlob(tok, blob.login, nowMs, blob);
+    this.save(memberId, next);
+    return { status: 'ok', blob: next, refreshed: true };
+  }
+
   /** Merge an OAuth token result into a stored blob (carrying the refresh token forward if a new one wasn't issued). */
   private toBlob(tok: UserToken, login: string, nowMs: number, prev?: MemberGithub): MemberGithub {
     return {

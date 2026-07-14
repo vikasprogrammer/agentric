@@ -1087,6 +1087,18 @@ const TOOLS = [
       'store a duplicate or ask a human, then secret_get the one you need.',
     inputSchema: { type: 'object', additionalProperties: false, properties: {} },
   },
+  {
+    name: 'github_refresh',
+    description:
+      'Refresh YOUR GitHub token when git/gh suddenly fails with "Bad credentials" or a 401. Your ' +
+      'GH_TOKEN is a short-lived (~8h) user token tied to the human you run as; a long or resumed run can ' +
+      'outlive it. This forces a fresh token now. On success it returns a shell line to run — copy it ' +
+      'EXACTLY (`export GH_TOKEN=…`) so both git and gh pick up the new token — then retry your git/gh ' +
+      'command. The token is your own identity, already injected at launch; do not store or echo it ' +
+      'anywhere. If it reports the human must re-link GitHub, say so and stop retrying — you cannot fix ' +
+      'that yourself.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
 ];
 
 function send(msg: JsonRpc): void {
@@ -2004,6 +2016,39 @@ async function secretList(): Promise<string> {
     rows.map((s) => `• ${s.key}${s.updatedBy ? ` — set by ${s.updatedBy}` : ''}`).join('\n');
 }
 
+// ── Per-member GitHub token refresh: recover a live run whose ~8h GH_TOKEN went bad mid-flight ──────
+async function githubRefresh(): Promise<string> {
+  const res = await fetch(AOS_URL + '/api/agent/github/refresh', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION }),
+  });
+  const d = (await res.json()) as { status?: string; token?: string; login?: string; refreshed?: boolean; detail?: string; error?: string };
+  if (d.error) return `Could not refresh the GitHub token: ${d.error}`;
+  switch (d.status) {
+    case 'ok':
+      // The env var can't be mutated from outside this process, so hand the new token back for the agent
+      // to re-export. The git credential helper + gh both read $GH_TOKEN at call time.
+      return (
+        `${d.refreshed ? 'Refreshed' : 'Current'} GitHub token for ${d.login ?? 'you'} is ready. Run this in your shell, then retry your git/gh command:\n\n` +
+        `export GH_TOKEN=${d.token} GITHUB_TOKEN=${d.token}\n\n` +
+        '(This is your own identity — do not store or echo it into a memory, report, task, or the knowledge base.)'
+      );
+    case 'no_member':
+      return 'This run has no linked GitHub identity to refresh — it acts under the company/bot credential. If git/gh is failing, ask a human to check the bot token in Settings → Integrations.';
+    case 'not_connected':
+      return 'You (the human you run as) have not linked a GitHub account, so there is no token to refresh. Ask them to connect GitHub in Settings, then retry.';
+    case 'no_refresh_token':
+      return 'Your GitHub token expired and cannot be auto-refreshed — no refresh token is stored (the GitHub App likely does not issue them). The human you run as must RE-LINK GitHub in Settings. Stop retrying git/gh until they do.';
+    case 'not_configured':
+      return 'GitHub is not configured for this workspace (no OAuth client id/secret), so the token cannot be refreshed. Ask an admin to set it up in Settings → Integrations.';
+    case 'failed':
+      return `The GitHub refresh was rejected${d.detail ? `: ${d.detail}` : ''}. The token may have been revoked — the human you run as should re-link GitHub in Settings. Stop retrying until they do.`;
+    default:
+      return `Could not refresh the GitHub token${d.detail ? `: ${d.detail}` : ''}.`;
+  }
+}
+
 async function taskList(args: Record<string, unknown>): Promise<string> {
   const u = new URL(AOS_URL + '/api/tasks/list');
   u.searchParams.set('session', SESSION);
@@ -2278,6 +2323,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'secret_put' ? await secretPut(args)
         : name === 'secret_get' ? await secretGet(args)
         : name === 'secret_list' ? await secretList()
+        : name === 'github_refresh' ? await githubRefresh()
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });
     } catch (e) {

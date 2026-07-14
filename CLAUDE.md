@@ -205,7 +205,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 44 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 45 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`library_list` (session cards are
@@ -240,7 +240,13 @@ Key modules:
   encrypted at rest), hands the key NAME to another agent, who `secret_get`s it read-once. (Complementary,
   admin-side: **Settings → Secrets** can *assign* a stored secret to agents — `PUT /api/secrets/agents`,
   the `secret_assignments` table — so it's injected into each assigned agent's shell at launch, the
-  central-grant inverse of manifest `shellSecrets`. Injection only, not a `secret_get` grant.) Agents
+  central-grant inverse of manifest `shellSecrets`. Injection only, not a `secret_get` grant.) GitHub
+  self-recovery: `github_refresh` — an agent whose injected `GH_TOKEN` (the run-as member's ~8h user
+  token) goes bad mid-run (`git`/`gh` → "Bad credentials") FORCES a token refresh (`GithubIdentity.forceRefresh`
+  via the stored `ghr_`, unlike launch-time `ensureFresh` which only fires within the expiry skew) and
+  gets the fresh token back to `export GH_TOKEN=…` (env can't be mutated externally; the git credential
+  helper + `gh` re-read `$GH_TOKEN` at call time). Its own identity, already injected — no new exposure;
+  typed statuses tell it to stop retrying + have the human re-link when there's no refresh token. Agents
   (build + self-improve): `agent_create` (spin up a new governed teammate) and the **self-only**
   `agent_update`/`agent_history`/`agent_revert` — an agent refines its OWN listing (description, starter
   prompts, tuning) + CLAUDE.md system prompt and can roll back a bad self-edit; every change snapshots a

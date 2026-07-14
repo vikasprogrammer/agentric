@@ -650,6 +650,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { secrets: tm.listSecrets() });
   }
 
+  // ── Per-member GitHub token refresh, agent-facing (loopback, session-scoped) ──────────────────────
+  // An agent's injected GH_TOKEN is the run-as member's user-to-server token (~8h life). It's refreshed
+  // only at launch (fire-and-forget, within the expiry skew) and can't be mutated in the running
+  // process — so a long/resumed run that outlives its token hits "Bad credentials" with no recovery.
+  // This lets the agent force a refresh NOW and get the fresh token back to re-export as GH_TOKEN (the
+  // git credential helper reads $GH_TOKEN at call time, so a re-export flows through to git + gh). The
+  // token returned is the run's OWN identity — already injected at launch — so this is no new exposure.
+  if (method === 'POST' && p === '/api/agent/github/refresh') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const member = tm.sessionRunAs(session);
+    if (!member) return sendJson(res, 200, { status: 'no_member' });
+    const gh = new GithubIdentity(os);
+    const out = await gh.forceRefresh(member).catch((e) => ({ status: 'failed' as const, detail: e instanceof Error ? e.message : String(e) }));
+    if (out.status === 'ok') {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'github.token.refreshed', data: { login: out.blob.login, principal: member, refreshed: out.refreshed, via: 'agent' } });
+      return sendJson(res, 200, { status: 'ok', token: out.blob.token, login: out.blob.login, expiresAt: out.blob.expiresAt, refreshed: out.refreshed });
+    }
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: agent, type: 'github.token.refresh_failed', data: { principal: member, reason: out.status, via: 'agent' } });
+    return sendJson(res, 200, out);
+  }
+
   if (method === 'GET' && p === '/api/memory/recall') {
     const session = url.searchParams.get('session') || '';
     const agent = tm.sessionAgent(session);
