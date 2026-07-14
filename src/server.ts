@@ -26,12 +26,12 @@ import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
 import { buildImprovements } from './edge/improvements';
-import { Diagnosis } from './edge/diagnosis';
-import { Improver, proposalSlug } from './edge/improver';
+import { Diagnosis, ANALYST_ID } from './edge/diagnosis';
+import { Improver, proposalSlug, IMPROVER_ID } from './edge/improver';
 import { planMemoryCleanup, applyMemoryCleanup, cleanupOpts } from './edge/memory-cleanup';
-import { SkillScout } from './edge/skill-scout';
+import { SkillScout, SCOUT_ID } from './edge/skill-scout';
 import { planKbTidy, applyKbTidy } from './edge/kb-tidy';
-import { Strategist } from './edge/strategist';
+import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { CATALOG, redact } from './connectors/connectors';
@@ -109,12 +109,17 @@ const CONSOLE_HTML = path.resolve(__dirname, '../public/console.html');
 const LANDING_HTML = path.resolve(__dirname, '../public/landing.html');
 const WEB_DIST = path.resolve(__dirname, '../web/dist');
 
-/** The agents Agent OS ships with, code-provisioned into every home on boot (the department
- *  generalists + the agent-author + the consolidator). We flag these by id rather than by disk
- *  location because they materialise UNDER the user's agents home, so the `deletable` path check
- *  can't tell them apart from a hand-authored agent — and homes provisioned before this flag existed
- *  carry no marker in their on-disk manifests. */
-const BUILT_IN_AGENT_IDS = new Set<string>([...BUILTIN_SEED_IDS, CONSOLIDATOR_ID]);
+/** The agents Agent OS ships with: the boot-seeded fleet (department generalists + agent-author) plus
+ *  the code-provisioned System machinery spawned by the edge loops (consolidator, skill-scout,
+ *  strategist, improver, analyst). We flag these by id rather than by disk location because they
+ *  materialise UNDER the user's agents home, so the `deletable` path check can't tell them apart from a
+ *  hand-authored agent — and homes provisioned before this flag existed carry no marker in their on-disk
+ *  manifests. The flag drives the console "built-in" badge + delete protection (a System agent is OS
+ *  infrastructure a loop depends on, not a user teammate). */
+const BUILT_IN_AGENT_IDS = new Set<string>([
+  ...BUILTIN_SEED_IDS, CONSOLIDATOR_ID,
+  SCOUT_ID, STRATEGIST_ID, IMPROVER_ID, ANALYST_ID,
+]);
 
 /** The full editable state of an agent, from its manifest + on-disk CLAUDE.md — the unit revisions snapshot. */
 function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentConfigSnapshot {

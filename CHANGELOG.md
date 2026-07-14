@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.183.1] — 2026-07-14
+### Fixed
+- **Flag the System machinery agents as built-in.** The code-provisioned System agents spawned by the
+  edge loops — `skill-scout`, `strategist`, `improver`, `analyst` — were missing from `BUILT_IN_AGENT_IDS`,
+  so (unlike `consolidator` and the seeded generalists) they showed in the console *without* the "built-in"
+  badge and were **deletable** — letting an admin remove OS infrastructure a learning/goals loop depends on.
+  Added all four to the set so the whole System fleet is consistently flagged + delete-protected. No change
+  to `BUILTIN_SEED_IDS` (they're code-provisioned on first use, not boot-seeded from `config/agents/`);
+  their manifests already carry `category: 'System'`.
+
 ## [0.183.0] — 2026-07-14
 ### Added
 - **`github_refresh` agent tool — recover a live run whose GitHub token expired mid-flight.** An agent's
