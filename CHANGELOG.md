@@ -8,7 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.181.0] — 2026-07-14
+## [0.182.0] — 2026-07-14
+### Added
+- **Insights improvement tiles v2 — Automations domain ("triage").** Completes the v2 set (all six tiles
+  now actionable). The Automations tile expands the enabled automations needing attention in place — the
+  ones whose **last run errored** (shown WITH the extracted error text) and **cron gone idle** (14+ days
+  quiet, with days-since) — each with **run now** (idle) and **disable** (retire) actions. Deterministic,
+  no spawned agent: the fix is to see WHY and act. The list is surfaced in `/api/insights` +
+  `/api/dreaming` (`troubledAutomations`); actions reuse the existing `PATCH /api/automations/:id` +
+  `POST /api/automations/:id/run` routes.
 ### Added
 - **Insights improvement tiles v2 — Goals domain ("unstick").** The Goals tile expands the actual stuck
   goals in place (active, no progress in 7+ days), each with a **plan** action that spawns the existing

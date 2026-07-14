@@ -148,6 +148,29 @@ function stuckGoals(os: AgentOS, now = Date.now()): Array<{ id: string; title: s
     .map((g) => ({ id: g.id, title: g.title, days: Math.floor((now - g.last) / 86_400_000) }));
 }
 
+/** Enabled automations that need attention — last run ERRORED (with the error text) or a cron gone IDLE
+ *  (14+ days quiet). Matches the tile's failing+idle count; each can be disabled with the existing
+ *  updateAutomation route. The fix here is deterministic: see WHY, then retire it — no spawned agent. */
+function troubledAutomations(os: AgentOS, now = Date.now()): Array<{ id: string; name: string; type: string; reason: 'errored' | 'idle'; detail: string }> {
+  const out: Array<{ id: string; name: string; type: string; reason: 'errored' | 'idle'; detail: string }> = [];
+  const errored = os.db
+    .prepare("SELECT a.id, a.name, a.type, (SELECT e.data FROM audit_events e WHERE e.run_id = a.last_session_id AND e.type = 'session.error' ORDER BY e.ts DESC LIMIT 1) AS err FROM automations a WHERE a.enabled = 1 AND a.last_session_id IS NOT NULL AND EXISTS (SELECT 1 FROM audit_events e WHERE e.run_id = a.last_session_id AND e.type = 'session.error')")
+    .all<{ id: string; name: string; type: string; err: string | null }>();
+  for (const a of errored) {
+    let msg = 'last run errored';
+    try { const d = JSON.parse(a.err || '{}') as { error?: unknown }; if (d.error) msg = String(d.error); } catch { /* keep default */ }
+    out.push({ id: a.id, name: a.name, type: a.type, reason: 'errored', detail: msg.replace(/\s+/g, ' ').slice(0, 160) });
+  }
+  const idle = os.db
+    .prepare("SELECT id, name, type, last_fired_at FROM automations WHERE enabled = 1 AND type = 'cron' AND (last_fired_at IS NULL OR last_fired_at < ?)")
+    .all<{ id: string; name: string; type: string; last_fired_at: number | null }>(now - 14 * 86_400_000);
+  for (const a of idle) {
+    const detail = a.last_fired_at ? `no run in ${Math.floor((now - a.last_fired_at) / 86_400_000)} days` : 'never fired';
+    out.push({ id: a.id, name: a.name, type: a.type, reason: 'idle', detail });
+  }
+  return out;
+}
+
 /** Read the agent's current on-disk snapshot (manifest fields + CLAUDE.md), to record as the "before". */
 function readAgentSnapshot(ag: AgentManifest): AgentConfigSnapshot {
   const file = ag.dir ? path.join(ag.dir, 'CLAUDE.md') : '';
@@ -2431,6 +2454,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       insights: dreamInsights, improvements: buildImprovements(os, dreamInsights), // scorecard + friction + improvement tiles
       proposals: pendingProposals(os), // agents with a drafted-CLAUDE.md proposal awaiting Apply/Dismiss
       stuckGoals: stuckGoals(os), // active goals with no progress in 7+ days — plan-able from the Goals tile
+      troubledAutomations: troubledAutomations(os), // errored/idle automations — triage from the Automations tile
       digest: { enabled: os.settings.digestEnabled(), channel: os.settings.digestChannel(), discordChannel: os.settings.digestDiscordChannel(), hour: os.settings.digestHour(), slackConfigured: os.settings.slackConfigured(), discordConfigured: os.settings.discordConfigured(), lastPostedAt: lastPosted?.t ?? undefined },
     });
   }
@@ -2439,7 +2463,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/insights') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const ins = buildInsights(os);
-    return sendJson(res, 200, { insights: ins, improvements: buildImprovements(os, ins), measurement: measureLearning(os), proposals: pendingProposals(os), stuckGoals: stuckGoals(os) });
+    return sendJson(res, 200, { insights: ins, improvements: buildImprovements(os, ins), measurement: measureLearning(os), proposals: pendingProposals(os), stuckGoals: stuckGoals(os), troubledAutomations: troubledAutomations(os) });
   }
   // Root-cause diagnosis: spawn the analyst to work out WHY a struggling agent keeps failing, into a KB page.
   if (method === 'POST' && p === '/api/insights/diagnose') {

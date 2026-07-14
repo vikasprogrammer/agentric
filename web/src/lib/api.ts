@@ -281,6 +281,7 @@ export interface MemoryCleanupPlan { opts: { pruneAfterDays: number; keepImporta
 export interface KbTidyItem { id: string; section: string; slug: string; title: string; ageDays: number; lastReadDays: number | null }
 export interface KbTidyPlan { deadAfterDays: number; staleAfterDays: number; dead: { total: number; sample: KbTidyItem[] }; stale: { total: number; sample: KbTidyItem[] } }
 export interface StuckGoal { id: string; title: string; days: number }
+export interface TroubledAutomation { id: string; name: string; type: string; reason: 'errored' | 'idle'; detail: string }
 export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
 export interface MeasureIntervention { id: string; title: string; at: number; before: { n: number; rate: number | null }; after: { n: number; rate: number | null }; deltaPp: number | null; verdict: 'improved' | 'declined' | 'flat' | 'insufficient' }
 export interface Measurement {
@@ -1098,7 +1099,7 @@ export const api = {
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
   deleteGoal: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/goals/${id}`),
   planGoal: (id: string) => call<{ ok: boolean; sessionId?: string; error?: string }>('POST', `/api/goals/${id}/plan`),
-  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; state?: DreamingState; measurement?: Measurement; insights?: Insights; improvements?: ImprovementTile[]; proposals?: string[]; stuckGoals?: StuckGoal[]; alertsEnabled?: boolean; error?: string }>('GET', '/api/dreaming'),
+  dreaming: () => call<{ everyHours: number; lastDreamedAt?: number; applyLearnings?: boolean; guidance?: string; recommendations?: Recommendation[]; digest?: DigestConfig; state?: DreamingState; measurement?: Measurement; insights?: Insights; improvements?: ImprovementTile[]; proposals?: string[]; stuckGoals?: StuckGoal[]; troubledAutomations?: TroubledAutomation[]; alertsEnabled?: boolean; error?: string }>('GET', '/api/dreaming'),
   applyRecommendation: (id: string) => call<{ ok: boolean; applied?: unknown; error?: string }>('POST', `/api/dreaming/recommendation/${id}/apply`),
   dismissRecommendation: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/dreaming/recommendation/${id}/dismiss`),
   setDreaming: (everyHours: number) => call<{ ok: boolean; everyHours: number; error?: string }>('PUT', '/api/dreaming', { everyHours }),

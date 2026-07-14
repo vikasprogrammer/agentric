@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -8307,6 +8307,8 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [kbTidy, setKbTidy] = useState<KbTidyPlan | null>(null)
   const [stuckGoals, setStuckGoals] = useState<StuckGoal[]>([])
   const [goalsOpen, setGoalsOpen] = useState(false)
+  const [troubledAutos, setTroubledAutos] = useState<TroubledAutomation[]>([])
+  const [autosOpen, setAutosOpen] = useState(false)
   const [alertsOn, setAlertsOn] = useState(true)
   const toggleAlerts = async (on: boolean) => { setAlertsOn(on); await api.setInsightAlerts(on) }
   const [busy, setBusy] = useState(false)
@@ -8317,7 +8319,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setImprovements(r.improvements ?? []); setProposals(r.proposals ?? []); setStuckGoals(r.stuckGoals ?? []); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setImprovements(r.improvements ?? []); setProposals(r.proposals ?? []); setStuckGoals(r.stuckGoals ?? []); setTroubledAutos(r.troubledAutomations ?? []); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -8362,6 +8364,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const dismissProposal = async (agent: string) => {
     setDxBusy(agent); await api.dismissProposal(agent); setDxBusy('')
     setDxHint(`Dismissed the draft for ${agent}.`); setTimeout(() => setDxHint(''), 4000); refresh()
+  }
+  const disableAuto = async (id: string, name: string) => {
+    setDxBusy(id); const r = await api.updateAutomation(id, { enabled: false }); setDxBusy('')
+    setDxHint(r.error ? `⚠ ${r.error}` : `Disabled "${name}" — re-enable it any time on the Automations page.`)
+    setTimeout(() => setDxHint(''), 5000); refresh()
+  }
+  const runAuto = async (id: string, name: string) => {
+    setDxBusy(id); const r = await api.runAutomation(id); setDxBusy('')
+    setDxHint(r.error ? `⚠ ${r.error}` : r.ok ? `Ran "${name}" now — check its result on the Automations page.` : (r.reason ?? 'could not run'))
+    setTimeout(() => setDxHint(''), 6000)
   }
   const planStuckGoal = async (id: string, title: string) => {
     setDxBusy(id); const r = await api.planGoal(id); setDxBusy('')
@@ -8478,6 +8490,13 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                   <div className="mt-2 text-[11px] font-medium text-primary">{goalsOpen ? 'Hide stuck goals' : 'Unstick →'}</div>
                 </button>
               )
+              // Automations tile: expand the errored/idle ones in place, each with its cause + disable/run.
+              if (t.domain === 'automations' && t.count > 0) return (
+                <button key={t.domain} onClick={() => setAutosOpen((v) => !v)} className={`${cls}`}>
+                  {inner}
+                  <div className="mt-2 text-[11px] font-medium text-primary">{autosOpen ? 'Hide' : 'Triage →'}</div>
+                </button>
+              )
               // Skills tile is generative too: mine fleet patterns for a NEW skill, and (if any) review the queue.
               if (t.domain === 'skills') return (
                 <div key={t.domain} className={cls}>
@@ -8569,6 +8588,22 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                     <a href={`#/goals/${g.id}`} className="flex-1 truncate font-medium underline-offset-2 hover:underline">{g.title}</a>
                     <span className="shrink-0 text-muted-foreground">{g.days}d idle</span>
                     <button onClick={() => planStuckGoal(g.id, g.title)} disabled={dxBusy === g.id} className="shrink-0 text-primary underline underline-offset-2 disabled:opacity-50">{dxBusy === g.id ? 'planning…' : 'plan'}</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {autosOpen && troubledAutos.length > 0 && (
+            <div className="mt-3 rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-2 font-medium">Automations needing attention <span className="font-normal text-muted-foreground">— see the cause, then re-run or disable</span></div>
+              <ul className="space-y-1.5">
+                {troubledAutos.map((a) => (
+                  <li key={a.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 border-b py-1 last:border-0">
+                    <a href="#/automations" className="max-w-[12rem] truncate font-medium underline-offset-2 hover:underline">{a.name}</a>
+                    <span className={`shrink-0 rounded px-1 text-[10px] ${a.reason === 'errored' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>{a.reason}</span>
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground" title={a.detail}>{a.detail}</span>
+                    {a.reason === 'idle' && <button onClick={() => runAuto(a.id, a.name)} disabled={dxBusy === a.id} className="shrink-0 text-primary underline underline-offset-2 disabled:opacity-50">{dxBusy === a.id ? '…' : 'run now'}</button>}
+                    <button onClick={() => disableAuto(a.id, a.name)} disabled={dxBusy === a.id} className="shrink-0 text-muted-foreground underline underline-offset-2 disabled:opacity-50">disable</button>
                   </li>
                 ))}
               </ul>
