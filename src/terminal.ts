@@ -1195,6 +1195,40 @@ export class TerminalManager {
   }
 
   /**
+   * Send the human's next turn into a NATIVE-CONSOLE chat session. Unlike Slack's warm send-keys path
+   * (`deliverToResident`), every turn here is a clean, SELF-TERMINATING governed run: a HEADLESS in-place
+   * resume of the same transcript, seeded with the message as the prompt. This is the deliberate trade the
+   * "harden" pass makes over the warm-pane model — the message is the launch prompt (reliably starts a
+   * turn, vs. injected keystrokes that may not), and the run tears itself down at turn-end so `alive`
+   * reflects reality (no perpetual "thinking…" when a pane dies silently). Cost: a cold start per turn;
+   * v2 (Agent SDK runtime) removes that. The PreToolUse gate hook still governs every effect.
+   *
+   * Returns: 'busy' (a prior turn is still running — the caller asks the human to resend shortly, so we
+   * never double-launch two claudes on one transcript), 'sent' (a fresh resume run was launched), or
+   * 'error' (unknown / non-resumable session).
+   */
+  chatSend(sessionId: string, message: string, runAs?: string): 'sent' | 'busy' | 'error' {
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!row || !row.claude_session_id) return 'error';
+    const body = (message || '').trim();
+    if (!body) return 'error';
+    if (this.isAlive(sessionId)) return 'busy'; // a turn is still generating — don't launch a competing run
+    const actingMember = runAs ?? row.run_as ?? undefined;
+    const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
+    const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 1, resident = 0, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
+      .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
+    this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null });
+    this.launchClaudeCode({
+      id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
+      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      headless: true, resident: false, resume: true, claudeSessionId: row.claude_session_id,
+    });
+    return 'sent';
+  }
+
+  /**
    * "Take over" an unattended run: CLAIM its live, attachable TUI so a human can watch and steer — with
    * ZERO disruption. Unattended automation/task runs are now a real interactive claude in a detached tmux
    * pane (not `claude -p`), so there is nothing to kill and nothing to resume: we just mark the row claimed

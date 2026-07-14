@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.193.1] — 2026-07-14
+### Fixed
+- **Chat replies no longer stall on "thinking…" forever.** The v1 Chat surface delivered a follow-up by
+  typing it into a warm resident TUI pane (`deliverToResident`); when that pane had been reaped or the
+  keystrokes didn't trigger a turn, the message was silently lost and the UI spun indefinitely (the DB row
+  still read `running`). Replies now go through **`TerminalManager.chatSend`** — every turn is a clean,
+  self-terminating **headless resume** run seeded with the message as the prompt (reliable turn trigger,
+  not injected keystrokes), and `chat/start` is likewise a headless one-shot. The run tears down at
+  turn-end, so the UI's "thinking…" is driven by *real* pane liveness and can't hang; a genuinely stalled
+  turn shows a **Resend**, and a reply sent while the prior turn is still generating returns `busy` (the
+  draft is kept). Trade: a cold start per turn — removed properly by the SDK runtime (see below). The
+  PreToolUse gate still governs every effect. (`src/terminal.ts`, `src/server.ts`, `web/src/App.tsx`,
+  `web/src/lib/api.ts`.)
+### Added
+- **`docs/sdk-chat-runtime-plan.md`** — the proposed v2: drive the chat surface via the Claude Agent SDK
+  (`query()` + `includePartialMessages` + `canUseTool` → the existing gateway) for token streaming and a
+  first-class approval hook, running beside the CLI/tmux runtime. Not started; greenlight before building.
+
 ## [0.193.0] — 2026-07-14
 ### Added
 - **Transfer a session to another owner.** A session's accountable human — its `run_as` — can now be
