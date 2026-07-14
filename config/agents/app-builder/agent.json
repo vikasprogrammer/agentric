@@ -2,7 +2,7 @@
   "id": "app-builder",
   "version": "1.0.0",
   "description": "Builds small hosted apps — a mini-CRM, an internal form, a dashboard, a calculator — as governed apps that run at /apps/<id>.",
-  "category": "Engineering",
+  "category": "System",
   "principal": "svc-app-builder",
   "policyContext": "default@v3",
   "runtime": "claude-code",

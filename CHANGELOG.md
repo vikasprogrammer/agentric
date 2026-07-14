@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.202.0] — 2026-07-14
+### Added
+- **Apps are permalinkable — `#/apps/<slug>`.** Selecting an app now deep-links to it (the URL is the
+  source of truth, like Tasks/KB/Goals), so an app's editor is shareable + bookmarkable and opening
+  `…/#/apps/mini-calculator` jumps straight to it. (`web/src/App.tsx`.)
+### Changed
+- **Apps editor: Preview is now the first/default tab** (Preview · Source · Settings), so opening an app
+  shows it running first. (`web/src/App.tsx`.)
+- **The `app-builder` agent moved to the `System` category** (alongside `agent-author`), since it's an
+  OS-provided builder, not a department generalist. (`config/agents/app-builder/agent.json`.)
+
 ## [0.201.1] — 2026-07-14
 ### Changed
 - **Apps editor: the right pane is now tabbed — Source · Preview · Settings** — instead of the three
