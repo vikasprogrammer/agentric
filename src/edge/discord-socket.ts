@@ -228,6 +228,28 @@ export class DiscordSocket {
       }
     }
 
+    // Thread continuity: a message inside a guild thread already bound to a session continues THAT
+    // conversation (resume the same agent + transcript) instead of firing a fresh trigger — so a plain
+    // "ok, now do X" in the thread keeps talking to the agent rather than hitting the /agent router's help
+    // list. Guild-only (DMs have no threads); only the first @mention (nothing bound yet) falls through to
+    // a fresh spawn below. Mirrors slack-socket's continueSlackThread branch.
+    if (ev.guildId) {
+      const cont = this.autos.continueDiscordThread({ channel: ev.channel, actorLabel, text, raw: ev.raw }, runAsMember);
+      if (cont.status !== 'none') {
+        this.os.audit.append({
+          ts: Date.now(), runId: cont.sessionId ?? '-', tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'discord', type: 'trigger.discord',
+          data: { eventType: ev.eventType, channel: ev.channel, thread: true, continued: cont.status, runAs: runAsMember ?? null },
+        });
+        return;
+      }
+    }
+
+    // Not a thread continuation. A guild message that didn't @-mention us was surfaced only for the check
+    // above — drop it so ordinary channel chatter never spawns a run or spams the router (mirrors Slack's
+    // non-mention drop; the parser now lets these through solely for continuity). DMs always proceed.
+    if (!ev.mentioned) return;
+
     // Keep the whole exchange in ONE thread. For a guild @mention, branch a thread off the user's
     // message so the ack, the agent's replies, and everything after live together (not scattered as
     // channel replies). DMs have no threads → post back in the DM channel as before. If thread creation

@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.200.0] — 2026-07-14
+### Added
+- **Discord thread continuity — parity with Slack.** A follow-up message inside a Discord thread already
+  bound to a session now *continues that conversation* (resumes the same agent + transcript) instead of
+  firing a brand-new run. Before this, every message in a Discord thread re-triggered a fresh,
+  duplicate-and-competing session; only Slack had continuity. The Discord message parser now surfaces
+  plain (non-@mention) guild messages — flagged `mentioned:false` — so a thread reply like "ok, now do X"
+  reaches the dispatcher, which routes it to the bound session via the new
+  `Automations.continueDiscordThread` / `TerminalManager.sessionForDiscordThread` (line-for-line analogues
+  of the proven Slack path); a non-mention message that isn't a live-thread continuation is dropped, so
+  ordinary channel chatter never spawns a run. The `/agent` router also spawns Discord chat sessions
+  **resident** (warm) now, matching Slack, so follow-ups deliver into the live pane. (`src/connectors/discord.ts`,
+  `src/edge/discord-socket.ts`, `src/edge/automations.ts`, `src/terminal.ts`)
+
+### Fixed
+- **Unattended-run crashes are no longer silent.** A crash of a session with *no human owner* (a pure
+  `automation:`/`task:` run — e.g. a nightly cron agent that dies at 3am) used to notify **nobody**: its
+  crash card was addressed to `sessionOwner`, which resolves to empty, so it was invisible in every
+  member's inbox and DM'd no one. `notifySessionEvent` now treats a **crash as an always-on failure
+  signal**: the owner is DM'd regardless of their opt-in `dm` preference, and an ownerless run **escalates
+  to the `admins` tier** — so an unattended crash always reaches a person. Routine `waiting`/`completed`
+  beats stay opt-in owner-only (no flood). (`src/tenant-registry.ts`)
+- **Chat-triggered runs no longer leave their thread hanging on crash or no-report completion.** The
+  Slack/Discord chat-mirror only fired on an explicit agent `report`. A chat-spawned run that **crashed**,
+  or that **exited cleanly without calling `report`**, posted its outcome to the console inbox but never
+  back to the originating chat thread — the human who pinged it saw silence. Both end paths now mirror a
+  finish/crash line into the bound thread (no-op for non-chat runs). (`src/terminal.ts`)
+
 ## [0.199.0] — 2026-07-14
 ### Added
 - **Apps — background dispatch (apps trigger agents).** A hosted app can now hand work to an agent in

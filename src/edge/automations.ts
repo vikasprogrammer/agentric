@@ -713,6 +713,35 @@ export class Automations {
   }
 
   /**
+   * Discord thread continuity — the exact analogue of {@link continueSlackThread}. A message inside a
+   * guild thread already bound to a session CONTINUES that conversation (deliver into the live claude, or
+   * revive the row) instead of hitting the `/agent` router with a fresh spawn. Keyed on the thread's
+   * channel id (the socket binds the session to the thread it branched at spawn). `none` → nothing
+   * resumable is bound → the caller falls through to a fresh spawn. The socket posts no ack; the agent's
+   * own `discord_reply` is the feedback.
+   */
+  continueDiscordThread(
+    event: { channel: string; actorLabel: string; text: string; raw: unknown },
+    runAsMember?: string,
+  ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
+    const bound = this.tm.sessionForDiscordThread(event.channel);
+    if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
+    const runAs = runAsMember ?? bound.runAs;
+    const msg = this.stripChatPrefix(event.text);
+    if (!msg) return { status: 'none' };
+    const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
+      ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
+      principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
+      data: { mode, platform: 'discord', agent: bound.agent, session: bound.sessionId, channel: event.channel, runAs: runAs ?? null },
+    });
+    // Warm path: live resident session → deliver by typing into it.
+    if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
+    // Cold path: reaped/ended → revive the SAME row (resume transcript, seeded with the message).
+    if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', sessionId: bound.sessionId }; }
+    return { status: 'none' };
+  }
+
+  /**
    * Inbound DM that might be answering a pending `ask_human` question: if the sender (`provider` + their
    * `externalId`) has a still-pending question we DM'd them, record the reply as its answer and return the
    * asking agent. `null` → nothing pending is bound to them, so the caller falls through to the normal chat
@@ -761,7 +790,7 @@ export class Automations {
     if (sessions.length === 0 && this.os.settings.chatRouterEnabled()) {
       const routed = this.routeChat(event.text);
       if (routed.agentId) {
-        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId }, title: chatTitle(event.text, routed.agentId) });
+        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId }, title: chatTitle(event.text, routed.agentId), resident: true });
         if (r.ok) sessions.push(r.sessionId);
       } else {
         reply = routed.help;

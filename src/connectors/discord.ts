@@ -143,15 +143,21 @@ export interface DiscordMessageEvent {
   text: string;
   /** Whether the author is a bot/webhook (caller should skip these to avoid loops). */
   fromBot: boolean;
+  /** True when this is an explicit trigger — a DM, or a guild message that @-mentioned the bot. A guild
+   *  message that did NOT mention us is still surfaced (for thread-continuity), but with `mentioned:false`
+   *  so the dispatcher only lets it CONTINUE a bound thread, never start a fresh run. */
+  mentioned: boolean;
   /** The full inner message object (capped when injected into a task template). */
   raw: any;
 }
 
 /**
- * Normalise a `MESSAGE_CREATE` payload into a routed message event, or null when it isn't one we act
- * on. We route exactly two cases — mirroring Slack's `app_mention` + DM `message`:
+ * Normalise a `MESSAGE_CREATE` payload into a routed message event (null only when it's unparseable).
+ * `mentioned` marks the two cases that start a FRESH run — mirroring Slack's `app_mention` + DM `message`:
  *   • a **DM** to the bot (no `guild_id`), or
  *   • a **guild** message that **@-mentions the bot** (`mentions[]` contains the bot's user id).
+ * A guild message that did NOT mention us is still returned (`mentioned:false`) so the dispatcher can use
+ * it for thread-continuity (a plain follow-up in a bound thread); it never fires a fresh run on its own.
  * Defensive: Discord's shapes vary, so every field is best-effort.
  */
 export function parseDiscordMessage(d: any, botUserId: string): DiscordMessageEvent | null {
@@ -162,9 +168,13 @@ export function parseDiscordMessage(d: any, botUserId: string): DiscordMessageEv
   const mentionsBot = Array.isArray(d.mentions) && botUserId
     ? d.mentions.some((m: any) => String(m?.id) === botUserId)
     : false;
-  if (!isDM && !mentionsBot) return null; // a guild message that didn't @ us — ignore
+  // We used to DROP every non-mention guild message here. Now we surface them too (flagged
+  // `mentioned:false`) so a plain follow-up inside a bound thread can CONTINUE that conversation —
+  // Discord parity with Slack's `message.channels` thread continuity. The dispatcher drops any
+  // non-mention message that isn't a live-thread continuation, so this never spams the /agent router.
   return {
     eventType: isDM ? 'direct_message' : 'mention',
+    mentioned: isDM || mentionsBot,
     channel: String(d.channel_id || ''),
     guildId,
     messageId: String(d.id || ''),

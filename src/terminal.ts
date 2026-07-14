@@ -484,6 +484,11 @@ export class TerminalManager {
             const body = 'The session ended unexpectedly (the process died).';
             this.addMessage({ type: 'completed', sessionId: r.id, agent: r.agent, title, body, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: r.id });
             this.fireSessionEvent(r.id, r.agent, 'crashed', title, body);
+            // Close the chat loop: a crash fires no `report` (the only other mirror point), so a chat-
+            // triggered run that DIED would otherwise leave its Slack/Discord thread hanging forever. Tell
+            // the thread it broke. No-op for non-chat runs (no bound thread).
+            const inboxLink = consolePage(this.publicOrigin, 'inbox');
+            try { this.chatMirror?.(r.id, (p) => `💥 ${r.agent} crashed — the session ended unexpectedly.\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
           }
         }
       }
@@ -790,6 +795,25 @@ export class TerminalManager {
           ORDER BY t.created_at DESC LIMIT 1`,
       )
       .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel, threadTs);
+    if (!row) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+  /**
+   * The MOST RECENT session bound to a Discord channel — the thread-continuity twin of
+   * {@link sessionForSlackThread}. For a guild @mention the socket branches a real thread and binds the
+   * session to the THREAD's channel id, so a plain follow-up posted in that thread (which carries the
+   * thread's channel id) resumes the same agent + claude conversation. Undefined when nothing is bound
+   * (the first mention) or the newest run predates the claude-id column (unresumable → fresh spawn).
+   */
+  sessionForDiscordThread(channel: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+           FROM discord_threads d JOIN term_sessions t ON t.id = d.session_id
+          WHERE d.channel = ?
+          ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(channel);
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
   }
@@ -3226,6 +3250,11 @@ export class TerminalManager {
       const body = 'The session ended.';
       this.addMessage({ type: 'completed', sessionId, agent: s.agent, title, body, status: 'open', outcome: 'ended', audienceKind: 'sessionOwner', audienceId: sessionId });
       this.fireSessionEvent(sessionId, s.agent, 'completed', title, body);
+      // Mirror the finish back to the chat thread the run came from: an agent that exits WITHOUT calling
+      // `report` (the only other mirror point) would otherwise leave its Slack/Discord thread waiting
+      // forever. No-op for non-chat runs (no bound thread).
+      const inboxLink = consolePage(this.publicOrigin, 'inbox');
+      try { this.chatMirror?.(sessionId, (p) => `☑️ ${s.agent} finished — the session ended.\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
     }
     this.audit(sessionId, s.agent, 'session.ended', {});
   }

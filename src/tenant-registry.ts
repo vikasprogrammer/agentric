@@ -469,14 +469,20 @@ export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
 
 /**
  * DM the owner of a session that just changed state (started waiting / finished / crashed), on their
- * linked Slack/Discord — the lifecycle twin of {@link notifyMember}. Unlike approvals/questions this is
- * OPT-IN: only fires when the run's owner set their `dm` notification preference, since the inbox bell
- * already surfaces every one of these. Targets the `sessionOwner` audience only — a pure automation/task
- * run with no human owner pings nobody (there's no one whose bell it belongs to). Best-effort, audited.
+ * linked Slack/Discord — the lifecycle twin of {@link notifyMember}. Two tiers by kind:
+ * - **waiting / completed** are routine beats: OPT-IN and owner-only (fire only if the run's owner set
+ *   their `dm` pref), since the inbox bell already surfaces them and DMing every finish would flood.
+ * - **crashed** is a FAILURE signal, so it's always-on and escalates — like an unanswered question. The
+ *   owner hears it regardless of their `dm` pref, and a run with NO human owner (a pure automation/task)
+ *   falls back to the `admins` tier, so an unattended agent that dies at 3am still reaches a person
+ *   instead of failing silently (the largest silent class before this).
+ * Best-effort, audited.
  */
 export async function notifySessionEvent(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: SessionEventNotice): Promise<void> {
-  const targets = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId })
-    .filter((m) => os.team.notificationPrefs(m.id).dm);
+  const owner = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId });
+  const targets = notice.kind === 'crashed'
+    ? (owner.length ? owner : resolveRecipients(os, { kind: 'admins' }))
+    : owner.filter((m) => os.team.notificationPrefs(m.id).dm);
   if (!targets.length) return;
   const icon = notice.kind === 'waiting' ? '🔔' : notice.kind === 'crashed' ? '💥' : '✅';
   const url = consolePage(consoleOrigin, 'sessions');
