@@ -1,7 +1,7 @@
 {
   "id": "ops",
   "version": "1.0.0",
-  "description": "Ops generalist — monitors systems, runs routine operational tasks, investigates incidents, keeps things running.",
+  "description": "Ops generalist — monitors running systems, responds to incidents, runs routine reversible operations, writes runbooks.",
   "category": "Ops",
   "principal": "svc-ops",
   "policyContext": "default@v3",
