@@ -219,6 +219,29 @@ export interface SessionActivityResp {
   total: number
   error?: string
 }
+export interface AppCapabilities {
+  dispatchAgents?: string[]
+  egress?: boolean
+  secrets?: string[]
+  dependencies?: 'stdlib' | 'vendored' | 'npm'
+}
+export interface AppInfo {
+  id: string
+  name: string
+  icon?: string
+  entry: string
+  lifecycle: 'scale-to-zero' | 'resident'
+  idleTimeoutSec?: number
+  capabilities: AppCapabilities
+  owner?: string
+  createdBy?: string
+  published: boolean
+  version?: number
+  status: 'cold' | 'starting' | 'ready' | 'crashed'
+  uptimeMs?: number
+  lastError?: string
+}
+
 export interface Artifact {
   id: string
   sessionId: string
@@ -1301,6 +1324,18 @@ export const api = {
   moveArtifact: (id: string, folder: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PATCH', '/api/artifacts/' + id, { folder }),
   /** Direct URL to an artifact's bytes (for <img>/<iframe>/download). `file` selects a sibling (sites). */
   artifactRawUrl: (id: string, file?: string) => `/api/artifacts/${id}/raw${file ? `?file=${encodeURIComponent(file)}` : ''}`,
+
+  // Hosted apps (owner/admin) — the management surface for small server-side apps.
+  apps: () => call<{ apps: AppInfo[]; enabled: boolean }>('GET', '/api/apps'),
+  createApp: (body: { id: string; name: string; icon?: string; capabilities?: AppCapabilities }) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('POST', '/api/apps', body),
+  getApp: (slug: string) => call<{ app: AppInfo; source: string; log: string }>('GET', '/api/apps/' + slug),
+  saveApp: (slug: string, body: { name?: string; icon?: string; lifecycle?: string; idleTimeoutSec?: number; capabilities?: AppCapabilities; source?: string }) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('PUT', '/api/apps/' + slug, body),
+  publishApp: (slug: string) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('POST', `/api/apps/${slug}/publish`),
+  unpublishApp: (slug: string) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('POST', `/api/apps/${slug}/unpublish`),
+  stopApp: (slug: string) => call<{ ok?: boolean }>('POST', `/api/apps/${slug}/stop`),
+  deleteApp: (slug: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/apps/' + slug),
+  /** The mounted URL a published app is served at (open in a new tab). */
+  appUrl: (slug: string) => `/apps/${slug}/`,
 
   connectors: () => call<ConnectorsResp>('GET', '/api/connectors'),
   addConnector: (c: AddConnectorReq) => call<Connector | { error: string }>('POST', '/api/connectors', c),

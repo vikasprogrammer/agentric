@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -22,16 +22,16 @@ import { Xterm } from './Xterm'
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'overview' | 'inbox' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'overview' | 'inbox' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['overview', 'inbox', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['overview', 'inbox', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 // The single source of truth for a page's human name — used for the header <h1> AND the browser-tab
 // title, so both always agree. The `agent` detail page appends the agent id at the call site.
 const ROUTE_TITLES: Record<Route, string> = {
   overview: 'Overview', inbox: 'Inbox', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
   'new-agent': 'New agent', agent: 'Agent', connectors: 'Connections', team: 'Team',
   automations: 'Automations', goals: 'Goals', tasks: 'Tasks', memory: 'Memory', insights: 'Insights',
-  kb: 'Knowledge Base', skills: 'Skills', files: 'Files', artifacts: 'Library', audit: 'Audit log',
+  kb: 'Knowledge Base', skills: 'Skills', apps: 'Apps', files: 'Files', artifacts: 'Library', audit: 'Audit log',
   settings: 'Company settings', docs: 'Docs', profile: 'Profile',
 }
 type Selected = { tmux: string; title: string } | null
@@ -715,7 +715,7 @@ function UpdateNotice() {
  *  this list; Sessions is the middle switcher; Feedback is an external link. `route` drives active
  *  state; `adminOnly` hides the item entirely from members who can't view that page (so they can't pin
  *  what they can't see). Order here is the canonical order items render in, whether in Main or Manage. */
-type NavKey = 'chat' | 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'insights' | 'skills' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
+type NavKey = 'chat' | 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'insights' | 'skills' | 'apps' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
 interface NavMeta { key: NavKey; route: Route; label: string; icon: ReactNode; adminOnly?: boolean; beta?: boolean }
 const PINNABLE_NAV: NavMeta[] = [
   { key: 'chat',        route: 'chat',        label: 'Chat',        icon: <MessageSquare className="h-4 w-4" />, beta: true },
@@ -727,6 +727,7 @@ const PINNABLE_NAV: NavMeta[] = [
   { key: 'memory',      route: 'memory',      label: 'Memory',      icon: <Brain className="h-4 w-4" /> },
   { key: 'insights',    route: 'insights',    label: 'Insights',    icon: <Lightbulb className="h-4 w-4" />, adminOnly: true },
   { key: 'skills',      route: 'skills',      label: 'Skills',      icon: <Sparkles className="h-4 w-4" />, adminOnly: true },
+  { key: 'apps',        route: 'apps',        label: 'Apps',        icon: <Blocks className="h-4 w-4" />, adminOnly: true, beta: true },
   { key: 'connectors',  route: 'connectors',  label: 'Connections', icon: <Plug className="h-4 w-4" /> },
   { key: 'team',        route: 'team',        label: 'Team',        icon: <Users className="h-4 w-4" /> },
   { key: 'files',       route: 'files',       label: 'Files',       icon: <FolderTree className="h-4 w-4" />, adminOnly: true },
@@ -1247,6 +1248,7 @@ function Console({ me }: { me: Member }) {
           {route === 'insights' && <DreamingSettings me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} permalink={detail} nav={nav} />}
           {route === 'skills' && <SkillsPage />}
+          {route === 'apps' && <AppsPage permalink={detail} nav={nav} />}
           {route === 'files' && <FilesPage initialDir={detail} />}
           {route === 'artifacts' && <ArtifactsPage me={me} permalink={detail} nav={nav} />}
           {route === 'audit' && <AuditPage />}
@@ -4036,6 +4038,198 @@ function ArtifactBody({ a }: { a: Artifact }) {
       <ArtifactIcon a={a} className="mx-auto mb-2 h-8 w-8 text-muted-foreground" />
       No inline preview for this file type.
       <div className="mt-3"><a href={raw} download={a.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download {a.filename}</Button></a></div>
+    </div>
+  )
+}
+
+/** A small live-status dot + label for a hosted app's supervisor state. */
+function AppStatusBadge({ s }: { s: AppInfo['status'] }) {
+  const map: Record<AppInfo['status'], { c: string; t: string }> = {
+    ready: { c: 'bg-emerald-500', t: 'running' },
+    starting: { c: 'bg-amber-500 animate-pulse', t: 'starting' },
+    crashed: { c: 'bg-red-500', t: 'crashed' },
+    cold: { c: 'bg-muted-foreground/40', t: 'idle' },
+  }
+  const { c, t } = map[s]
+  return <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><span className={`h-2 w-2 rounded-full ${c}`} />{t}</span>
+}
+
+/** Apps — the owner/admin surface for small hosted apps. List on the left, a manifest + source editor
+ *  on the right; publish is the gate that makes an app routable at /apps/<slug>. See docs/apps-plan.md. */
+function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detail?: string) => void }) {
+  const [apps, setApps] = useState<AppInfo[] | null>(null)
+  const [enabled, setEnabled] = useState(true)
+  const [sel, setSel] = useState<string>(permalink || '')
+  const [detail, setDetail] = useState<{ app: AppInfo; source: string; log: string } | null>(null)
+  const [source, setSource] = useState('')
+  const [dirty, setDirty] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [msg, setMsg] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [newId, setNewId] = useState('')
+  const [newName, setNewName] = useState('')
+
+  const load = () => api.apps().then((r) => { setApps(r.apps); setEnabled(r.enabled) }).catch(() => { setApps([]); setEnabled(false) })
+  useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (!sel) { setDetail(null); return }
+    api.getApp(sel).then((d) => { setDetail(d); setSource(d.source); setDirty(false) }).catch(() => setDetail(null))
+  }, [sel])
+  // Poll status while an app is starting/running so the dot + Open button stay live.
+  useEffect(() => {
+    if (!apps?.some((a) => a.status === 'starting' || a.status === 'ready')) return
+    const t = setInterval(load, 3000)
+    return () => clearInterval(t)
+  }, [apps])
+
+  const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 3000) }
+  const createApp = async () => {
+    const id = newId.trim().toLowerCase()
+    const r = await api.createApp({ id, name: newName.trim() || id })
+    if (r.error || !r.ok) return flash(`⚠ ${r.error || 'could not create'}`)
+    setCreating(false); setNewId(''); setNewName(''); await load(); setSel(id); flash(`✓ Created ${id} — edit + publish it`)
+  }
+  const saveApp = async () => {
+    if (!detail) return
+    setBusy('save')
+    const r = await api.saveApp(detail.app.id, { source, capabilities: detail.app.capabilities, name: detail.app.name, icon: detail.app.icon, lifecycle: detail.app.lifecycle, idleTimeoutSec: detail.app.idleTimeoutSec })
+    setBusy('')
+    if (r.error) return flash(`⚠ ${r.error}`)
+    setDirty(false); await load(); flash('✓ Saved' + (detail.app.published ? ' — bounced; changes live on next open' : ''))
+  }
+  const patchApp = (patch: Partial<AppInfo>) => setDetail((d) => (d ? { ...d, app: { ...d.app, ...patch } } : d))
+  const patchCaps = (patch: Partial<AppCapabilities>) => setDetail((d) => (d ? { ...d, app: { ...d.app, capabilities: { ...d.app.capabilities, ...patch } } } : d))
+  const togglePublish = async () => {
+    if (!detail) return
+    setBusy('publish')
+    const r = detail.app.published ? await api.unpublishApp(detail.app.id) : await api.publishApp(detail.app.id)
+    setBusy('')
+    if (r.error) return flash(`⚠ ${r.error}`)
+    await load(); if (r.app) setDetail((d) => (d ? { ...d, app: r.app! } : d))
+    flash(detail.app.published ? '✓ Unpublished' : '✓ Published — live at /apps/' + detail.app.id)
+  }
+  const removeApp = async () => {
+    if (!detail || !confirm(`Delete app "${detail.app.id}" and all its data? This cannot be undone.`)) return
+    const r = await api.deleteApp(detail.app.id)
+    if (r.error) return flash(`⚠ ${r.error}`)
+    setSel(''); await load(); flash('✓ Deleted')
+  }
+  const stopApp = async () => { if (detail) { await api.stopApp(detail.app.id); await load(); flash('✓ Stopped') } }
+
+  if (apps === null) return <div className="text-sm text-muted-foreground">Loading…</div>
+  if (!enabled) return <div className="text-sm text-muted-foreground">Hosting apps requires a data home. Nothing to configure here.</div>
+
+  const a = detail?.app
+  const caps = a?.capabilities ?? {}
+  return (
+    <div className="flex max-w-6xl gap-6">
+      {/* left: app list */}
+      <div className="w-64 shrink-0 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-medium">Apps</div>
+          <Button size="sm" variant="outline" className="gap-1" onClick={() => setCreating(true)}><Plus className="h-3.5 w-3.5" /> New</Button>
+        </div>
+        {apps.length === 0 && <div className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">No apps yet. Build one here, or an agent can with <code>app_create</code>.</div>}
+        {apps.map((app) => (
+          <button key={app.id} onClick={() => setSel(app.id)} className={`w-full rounded-lg border p-2.5 text-left transition ${sel === app.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'}`}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-sm font-medium">{app.name}</span>
+              {app.published ? <AppStatusBadge s={app.status} /> : <Badge variant="secondary" className="text-[10px]">proposed</Badge>}
+            </div>
+            <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">/apps/{app.id}</div>
+          </button>
+        ))}
+      </div>
+
+      {/* right: editor */}
+      <div className="min-w-0 flex-1">
+        {msg && <div className="mb-3 rounded-lg border bg-muted/40 px-3 py-2 text-sm">{msg}</div>}
+        {!a && <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">Select an app, or create one.</div>}
+        {a && (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input value={a.name} onChange={(e) => patchApp({ name: e.target.value })} className="h-9 max-w-xs font-medium" />
+              {a.published
+                ? <Badge className="bg-emerald-600">published</Badge>
+                : <Badge variant="secondary">proposed</Badge>}
+              {a.published && <AppStatusBadge s={a.status} />}
+              <div className="ml-auto flex items-center gap-2">
+                {a.published && <a href={api.appUrl(a.id)} target="_blank" rel="noreferrer" className={buttonVariants({ size: 'sm', variant: 'outline' }) + ' gap-1'}><ExternalLink className="h-3.5 w-3.5" /> Open</a>}
+                <Button size="sm" variant={a.published ? 'outline' : 'default'} disabled={busy === 'publish'} onClick={togglePublish}>{a.published ? 'Unpublish' : 'Publish'}</Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<Button size="sm" variant="ghost" className="px-2"><SlidersHorizontal className="h-4 w-4" /></Button>} />
+                  <DropdownMenuContent align="end">
+                    {a.status === 'ready' && <DropdownMenuItem onClick={stopApp}>Stop process</DropdownMenuItem>}
+                    <DropdownMenuItem onClick={() => nav('audit', undefined)}>View in audit</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem className="text-red-600" onClick={removeApp}>Delete app</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
+            {a.lastError && a.status === 'crashed' && <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">Crashed: {a.lastError}</div>}
+
+            {/* capabilities (default-deny) */}
+            <div className="rounded-lg border p-3">
+              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Capabilities (default-deny)</div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!caps.egress} onChange={(e) => patchCaps({ egress: e.target.checked })} /> Outbound network (egress)</label>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-muted-foreground">Lifecycle</span>
+                  <Select value={a.lifecycle} onValueChange={(v) => patchApp({ lifecycle: v as AppInfo['lifecycle'] })}>
+                    <SelectTrigger className="h-8 w-40"><SelectValue /></SelectTrigger>
+                    <SelectContent><SelectItem value="scale-to-zero">scale-to-zero</SelectItem><SelectItem value="resident">resident</SelectItem></SelectContent>
+                  </Select>
+                </div>
+                <label className="text-sm sm:col-span-2">
+                  <span className="text-muted-foreground">Agents it may trigger (comma-separated ids)</span>
+                  <Input value={(caps.dispatchAgents ?? []).join(', ')} onChange={(e) => patchCaps({ dispatchAgents: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className="mt-1 h-8 font-mono text-xs" placeholder="support-bot, coder" />
+                </label>
+                <label className="text-sm sm:col-span-2">
+                  <span className="text-muted-foreground">Vault secrets it may read (comma-separated keys)</span>
+                  <Input value={(caps.secrets ?? []).join(', ')} onChange={(e) => patchCaps({ secrets: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className="mt-1 h-8 font-mono text-xs" placeholder="STRIPE_KEY" />
+                </label>
+              </div>
+              <div className="mt-2 text-[11px] text-muted-foreground">Dispatch, egress + secrets are follow-ups — declaring them now records the contract; enforcement lands with those slices.</div>
+            </div>
+
+            {/* source editor */}
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{a.entry}</span>
+                <Button size="sm" disabled={busy === 'save'} onClick={saveApp} className="gap-1"><Save className="h-3.5 w-3.5" /> Save</Button>
+              </div>
+              <Textarea value={source} onChange={(e) => { setSource(e.target.value); setDirty(true) }} spellCheck={false} className="h-80 font-mono text-xs leading-relaxed" />
+              {dirty && <div className="mt-1 text-[11px] text-amber-600">Unsaved changes</div>}
+            </div>
+
+            {detail?.log && (
+              <details className="rounded-lg border">
+                <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted-foreground">Run log</summary>
+                <pre className="max-h-60 overflow-auto border-t bg-muted/30 p-3 font-mono text-[11px] leading-relaxed">{detail.log}</pre>
+              </details>
+            )}
+          </div>
+        )}
+      </div>
+
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>New app</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <label className="block text-sm">
+              <span className="text-muted-foreground">Slug (the /apps/&lt;id&gt; URL)</span>
+              <Input value={newId} onChange={(e) => setNewId(e.target.value)} placeholder="mini-crm" className="mt-1 font-mono" />
+            </label>
+            <label className="block text-sm">
+              <span className="text-muted-foreground">Name</span>
+              <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Mini CRM" className="mt-1" />
+            </label>
+            <div className="text-xs text-muted-foreground">Scaffolds a hello-world Node app. It starts <b>proposed</b> — edit the source, then Publish to make it live.</div>
+            <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button><Button onClick={createApp} disabled={!newId.trim()}>Create</Button></div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

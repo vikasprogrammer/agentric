@@ -209,7 +209,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -2180,6 +2180,17 @@ export class TerminalManager {
       type: 'goal.proposed', sessionId: `goal:${input.goalId}`, agent: input.agent, title: input.title,
       body: input.body, status: 'open', args: { goalId: input.goalId },
       audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
+    });
+  }
+
+  /** An agent proposed (or edited) a hosted App — post a review card so an owner/admin publishes it.
+   *  Addressed to admins; the card's `slug` deep-links the console Apps page. See docs/apps-plan.md §6. */
+  postAppCard(input: { slug: string; agent: string; title: string; body: string; audience?: Audience }): void {
+    const audience = input.audience ?? { kind: 'admins' as const };
+    this.addMessage({
+      type: 'app.proposed', sessionId: `app:${input.slug}`, agent: input.agent, title: input.title,
+      body: input.body, status: 'open', args: { slug: input.slug },
+      audienceKind: audience.kind, audienceId: audienceIdOf(audience),
     });
   }
 

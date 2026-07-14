@@ -1,14 +1,25 @@
 # Agent OS Apps — Implementation Plan
 
-> **Status: PROPOSED (2026-07-14).** Not built. This is the design of record for the **Apps** plane —
-> the ability to host small server-side apps (a mini-CRM, an internal mini-tool) inside a tenant,
-> built **by agents and humans only** (no bundled seed apps — the fleet writes them). This plan reuses
-> two primitives Agent OS already ships: the `/terminal/` reverse-proxy machinery and the
-> `launcher.ts` DynamicUser isolation daemon. Nothing here is a PaaS: an App is a supervised,
-> uid-isolated Node process reached through the same authenticated proxy the terminal uses, and its
-> only channel out is the same pre-auth loopback the agent MCP tools already use — so **every effect
-> an App has (the HTTP into it, the agent it triggers, the data it writes) stays inside the gateway
-> boundary.**
+> **Status: BUILDING (2026-07-14).** Design of record for the **Apps** plane — hosting small
+> server-side apps (a mini-CRM, an internal mini-tool) inside a tenant, built **by agents and humans
+> only** (no bundled seed apps — the fleet writes them). Reuses two primitives Agent OS already ships:
+> the `/terminal/` reverse-proxy machinery and the `launcher.ts` DynamicUser isolation daemon. Nothing
+> here is a PaaS: an App is a supervised, uid-isolated Node process reached through the same
+> authenticated proxy the terminal uses, and its only channel out is the same pre-auth loopback the
+> agent MCP tools already use — so **every effect an App has (the HTTP into it, the agent it triggers,
+> the data it writes) stays inside the gateway boundary.**
+>
+> **Shipped so far:**
+> - **v0.196.0 — hosting core** (§1–3): `AppStore`, `AppSupervisor` (spawn + readiness + scale-to-zero
+>   + resident restart + per-launch `AOS_APP_TOKEN`), and the login-gated `/apps/<slug>` HTTP+WS proxy
+>   with trusted identity injection.
+> - **v0.197.0 — authoring** (§6): the human console **Apps page** (create · manifest + capability
+>   editor · source editor · publish/unpublish · open · stop · delete, owner/admin, `/api/apps/*`) and
+>   the agent tools **`app_create` / `app_list` / `app_update`** (single-file `server.js` for v1, lands
+>   proposed, posts an `app.proposed` review card; editing a live app unpublishes it for re-review).
+>
+> **Still to build:** `/api/app/dispatch` (§4), secrets (§4.1), Linux uid-isolation (§3.3),
+> `app_history`/`app_revert` revisions, multi-file bundles (§6).
 
 ## 0. Where Apps sit relative to Sessions, Automations, Tasks, and the Library
 

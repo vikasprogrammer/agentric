@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.197.0] — 2026-07-14
+### Added
+- **Apps — authoring (agents + humans build hosted apps).** Building on the v0.196.0 hosting core, apps
+  can now be *created and managed* — by humans in the console and by agents via MCP tools, with **no seed
+  apps** (the fleet writes them). **Console Apps page** (owner/admin, `Blocks` nav, Beta): list apps with
+  live status (proposed / running / idle / crashed), create (slug + name → scaffold), a manifest +
+  **default-deny capability** editor (egress · lifecycle · agents-it-may-trigger · vault secrets) and a
+  `server.js` source editor, **publish/unpublish** (the code-review gate that makes an app routable),
+  open-in-tab, stop, delete, and a run-log tail — over `GET/POST /api/apps`, `GET/PUT/DELETE
+  /api/apps/:slug`, `POST /api/apps/:slug/{publish,unpublish,stop}`. **Agent tools** `app_create` /
+  `app_list` / `app_update` (loopback, session-secret gated): an agent builds a single-file app by
+  passing the `server.js` source (like `agent_create`'s `claudeMd`); it lands **proposed** and posts an
+  `app.proposed` inbox card for an owner/admin to review + publish. Editing a **live** app via
+  `app_update` **unpublishes it for re-review** — app code never goes live without human sign-off.
+  Audited `app.created`/`app.updated`/`app.published`/`app.unpublished`/`app.deleted`. Follow-ups:
+  `/api/app/dispatch` (background agent triggers), vault secrets, Linux uid-isolation,
+  `app_history`/`app_revert` revisions, multi-file bundles. (`src/server.ts`,
+  `src/memory/memory-mcp.ts`, `src/terminal.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`;
+  [`docs/apps-plan.md`](docs/apps-plan.md), [`docs/agent-mcp-tools.md`](docs/agent-mcp-tools.md).)
+
 ## [0.196.3] — 2026-07-14
 ### Changed
 - **Standardized browser-tab titles across the whole console.** The tab title now leads with the current
