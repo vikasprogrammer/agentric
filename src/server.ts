@@ -3165,6 +3165,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── integration credentials (Composio now; Slack app etc. later) — instance-wide secrets ──
   if (method === 'GET' && p === '/api/settings/integrations') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    // Self-heal the App slug (→ the Creds "Install the App" button) for a hand-configured App that never
+    // got one from the manifest flow. Resolves once from GET /app whenever the bot creds are present.
+    const ghv = new GithubIdentity(os);
+    if (ghv.botConfigured() && !ghv.appSlug()) await ghv.ensureAppSlug(me.email).catch(() => { /* best-effort */ });
     return sendJson(res, 200, integrationsView(os));
   }
   // Live Atlas catalog for the default-model pickers (dropdown + free text). Fetched with the stored
@@ -3223,6 +3227,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const ghb = new GithubIdentity(os);
       if (ghb.botConfigured()) {
         const bot = await ghb.ensureBotToken(Date.now(), me.email).catch(() => undefined);
+        // Also resolve the App slug now → the "Install the App" link/button (a hand-set App has no slug yet).
+        if (!ghb.appSlug()) await ghb.ensureAppSlug(me.email).catch(() => { /* best-effort */ });
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: bot ? 'github.bot_token.minted' : 'github.bot_token.failed', data: { installationId: os.settings.githubInstallationId() || null } });
       }
     }
@@ -3267,8 +3273,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (st && !('error' in st)) install = st;
     }
     // Self-heal the install link: a hand-configured App has no slug from the manifest flow, so resolve it
-    // once (from GET /app) when we can, so the "Install the App" prompt is a real link, not just text.
-    if (blob && install && !install.installed && gh.botConfigured() && !gh.appSlug()) {
+    // once (from GET /app) whenever the bot creds are present — regardless of install state, so the link is
+    // ready both for the not-installed warning AND the admin's "install on more repos" button.
+    if (gh.botConfigured() && !gh.appSlug()) {
       await gh.ensureAppSlug(me.email).catch(() => { /* best-effort; the text guidance still shows */ });
     }
     return sendJson(res, 200, { configured: gh.configured(), connected: !!blob, login: blob?.login, expiresAt: blob?.expiresAt, install, installUrl: gh.installUrl() });

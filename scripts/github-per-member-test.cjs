@@ -336,7 +336,15 @@ async function main() {
   const meNI2 = await (await call('GET', '/api/github/me')).json();
   assert(meNI2.install && meNI2.install.installed === false && (meNI2.installUrl || '').includes('/apps/agent-os-northwind/installations/new'),
     '/me self-heals the App slug → a real install link when authorized-but-not-installed');
+  // Resolves even when ALREADY installed (so the admin "install on more repos" button is available too).
+  osx.settings.setGithubAppSlug('', 'owner@test');
   installState = 'installed';
+  const meInst = await (await call('GET', '/api/github/me')).json();
+  assert((meInst.installUrl || '').includes('/apps/agent-os-northwind/installations/new'), 'App slug resolves regardless of install state');
+  // And the admin Creds view (GET /api/settings/integrations) self-heals + exposes the install button.
+  osx.settings.setGithubAppSlug('', 'owner@test');
+  const iv2 = await (await call('GET', '/api/settings/integrations')).json();
+  assert(iv2.github && (iv2.github.installUrl || '').includes('/apps/agent-os-northwind/installations/new'), 'Creds view resolves the slug → install button URL');
   gid2.clear(ownerId);
   // Removing the private key drops the cached bot token + resolved installation.
   gid2.setPrivateKey('', 'owner@test');

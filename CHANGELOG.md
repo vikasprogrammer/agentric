@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.187.0] — 2026-07-14
+### Fixed
+- **The GitHub "Install the App" button/link now shows for hand-configured Apps, regardless of install
+  state.** The App slug (needed to build the `github.com/apps/<slug>/installations/new` link) is resolved
+  from `GET /app` whenever the bot creds are present — not only in the authorized-but-not-installed case.
+  So the **Connections → Creds → GitHub** admin install button appears even when the App is already
+  installed (for adding more orgs/repos), and it self-heals on any admin Creds view / member GitHub-panel
+  view / bot-creds save — not just when a member is stuck uninstalled. (`src/server.ts` — resolve in
+  `GET/PUT /api/settings/integrations` + ungate `/api/github/me`; `scripts/github-per-member-test.cjs` now 76/76.)
+
 ## [0.186.1] — 2026-07-14
 ### Changed
 - **Sharpened the `engineer` ↔ `ops` boundary** so the two generalists stop overlapping. Both used to say
