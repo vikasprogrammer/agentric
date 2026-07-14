@@ -10414,6 +10414,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [ghSecret, setGhSecret] = useState('')
   const [ghAppId, setGhAppId] = useState('')
   const [ghPem, setGhPem] = useState('')
+  const [ghSlug, setGhSlug] = useState('')
   const [githubFlash, setGithubFlash] = useState<'created' | 'error' | null>(null)
   const [image, setImage] = useState<IntegrationsResp['image']>({ openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false })
   const [atKey, setAtKey] = useState('')
@@ -10505,12 +10506,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
     }
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setGhAppId(''); setGhPem(''); setAtKey(''); setFalKey('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setGhAppId(''); setGhPem(''); setGhSlug(''); setAtKey(''); setFalKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
     // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
@@ -10783,14 +10784,29 @@ function IntegrationsSettings({ me }: { me: Member }) {
           {/* One-click create is the primary path when nothing's configured yet. */}
           {!github.configured && <GithubSetupGuide />}
 
-          {/* After creation: the App must be installed on the repos it may touch. */}
-          {github.installUrl && (
+          {/* The App must be installed on the repos it may touch. Show the button when we know the App's
+              slug (from the one-click flow, the bot creds, or a connected member's install); otherwise let
+              the admin paste it so the link still works. */}
+          {github.configured && (
             <div className="rounded-md border bg-muted/20 p-3">
               <div className="text-xs font-medium text-foreground">Install the App on your repositories</div>
               <p className="mt-0.5 text-[11px] text-muted-foreground">A GitHub App can only act on repos it's installed on. Grant it your org or specific repos.</p>
-              <a href={github.installUrl} target="_blank" rel="noreferrer" className={`mt-2 inline-flex ${buttonVariants({ size: 'sm' })}`}>
-                Install the App ↗
-              </a>
+              {github.installUrl ? (
+                <a href={github.installUrl} target="_blank" rel="noreferrer" className={`mt-2 inline-flex ${buttonVariants({ size: 'sm' })}`}>
+                  Install the App ↗
+                </a>
+              ) : (
+                <div className="mt-2 space-y-1.5">
+                  <p className="text-[11px] text-muted-foreground">
+                    We couldn't auto-detect the App's <strong>slug</strong> (needs the bot creds below, or a connected install). Paste it to enable the link —
+                    it's the last part of the App's URL, <code className="text-[11px]">github.com/apps/<strong>&lt;slug&gt;</strong></code>.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Input value={ghSlug} onChange={(e) => setGhSlug(e.target.value.trim())} placeholder="e.g. agentosiwp" className="h-8 font-mono text-xs" />
+                    <Button size="sm" onClick={() => save({ githubAppSlug: ghSlug.trim() }, 'saved')} disabled={busy || !ghSlug.trim()}>Set slug</Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

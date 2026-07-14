@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.188.0] — 2026-07-14
+### Added
+- **Set the GitHub App slug by hand when it can't be auto-detected.** The "Install the App" button needs
+  the App's slug; normally it's auto-resolved (one-click flow, bot creds via `GET /app`, or a connected
+  member's install). When none of those apply — e.g. an OAuth-only setup with no bot creds and nobody
+  installed yet — the **Connections → Creds → GitHub** install section now shows an **App slug** input
+  (accepts the bare slug or a full `github.com/apps/<slug>` URL, normalized) so an admin can enable the
+  install link directly. Previously there was no way to set it, so the button just never appeared.
+  (`src/server.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`; `scripts/github-per-member-test.cjs` now 78/78.)
+
 ## [0.187.0] — 2026-07-14
 ### Fixed
 - **The GitHub "Install the App" button/link now shows for hand-configured Apps, regardless of install

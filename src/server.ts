@@ -3218,6 +3218,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (!b.githubClientId.trim()) os.settings.setGithubAppSlug('', me.email);
     }
     if (typeof b.githubClientSecret === 'string') new GithubIdentity(os).setClientSecret(b.githubClientSecret, me.email);
+    // App slug — manual override for the "Install the App" link when it can't be auto-resolved (no bot
+    // creds + no member installation to read it from). Accept the bare slug or a full github.com/apps/<slug>
+    // URL; keep only the slug-safe part.
+    if (typeof b.githubAppSlug === 'string') {
+      const slug = (b.githubAppSlug.trim().match(/[\w.-]+$/)?.[0] || '').toLowerCase();
+      os.settings.setGithubAppSlug(slug, me.email);
+    }
     // Company-bot (installation-token) credentials: App ID → setting, RSA private key → vault. When both
     // are set, pre-warm + VALIDATE by minting a bot token now, so the admin gets immediate feedback and
     // the first session doesn't have to wait on a cold mint. Audited github.bot_token.minted / .failed.

@@ -1189,7 +1189,7 @@ export const api = {
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
   atlasModels: () => call<{ configured: boolean; image: { id: string; label: string; priceUsd: number | null }[]; video: { id: string; label: string; priceUsd: number | null }[]; error?: string }>('GET', '/api/integrations/atlas/models'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   // Per-member GitHub (user-to-server OAuth): each member links their OWN account so run-as sessions
   // push / open PRs as the actual human. `connect` returns the authorize URL to navigate to.
   githubMe: () => call<GithubMe>('GET', '/api/github/me'),

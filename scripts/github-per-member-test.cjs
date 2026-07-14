@@ -345,6 +345,14 @@ async function main() {
   osx.settings.setGithubAppSlug('', 'owner@test');
   const iv2 = await (await call('GET', '/api/settings/integrations')).json();
   assert(iv2.github && (iv2.github.installUrl || '').includes('/apps/agent-os-northwind/installations/new'), 'Creds view resolves the slug → install button URL');
+  // Manual slug: an admin can set it directly (bare slug OR a full github.com/apps/<slug> URL) when it
+  // can't be auto-resolved — so the install button works even with no bot creds + no member install.
+  gid2.setPrivateKey('', 'owner@test'); osx.settings.setGithubAppSlug('', 'owner@test'); // no bot creds, no slug
+  let ivm = await (await call('PUT', '/api/settings/integrations', { githubAppSlug: 'https://github.com/apps/my-manual-app' })).json();
+  assert((ivm.github.installUrl || '').includes('/apps/my-manual-app/installations/new'), 'manual App slug (from a URL) → install button URL');
+  ivm = await (await call('PUT', '/api/settings/integrations', { githubAppSlug: 'Bare-Slug' })).json();
+  assert((ivm.github.installUrl || '') === 'https://github.com/apps/bare-slug/installations/new', 'manual bare slug is normalized (lowercased) into the install URL');
+  osx.settings.setGithubAppSlug('', 'owner@test');
   gid2.clear(ownerId);
   // Removing the private key drops the cached bot token + resolved installation.
   gid2.setPrivateKey('', 'owner@test');
