@@ -34,6 +34,8 @@ export interface Paths {
   artifacts: string;
   /** Files attached to tasks (`<taskId>/<id>-<filename>`). */
   taskAttachments: string;
+  /** Hosted apps — each a folder (`apps/<slug>/`: `app.json` + source + private `data.db`). See apps-plan.md. */
+  apps: string;
   /** The company knowledge base: living wiki pages (`kb/<section>/<slug>.md`). */
   kb: string;
   /** Append-only audit event store for this instance. */
@@ -99,6 +101,7 @@ function pathsUnder(baseDir: string, cfg: HomeConfig, home: string): Paths {
     skills: path.join(home, 'skills'),
     artifacts: path.join(home, 'artifacts'),
     taskAttachments: path.join(home, 'task-attachments'),
+    apps: path.join(home, 'apps'),
     kb: path.join(home, 'kb'),
     audit: path.join(home, 'audit'),
     db: path.join(home, 'agent-os.db'),

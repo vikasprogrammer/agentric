@@ -32,6 +32,7 @@ import { SettingsStore } from './governance/settings';
 import { SkillsStore } from './governance/skills';
 import { Db, openDb } from './state/db';
 import { ArtifactStore } from './state/artifacts';
+import { AppStore } from './state/apps';
 import { KbStore } from './state/kb';
 import { AgentRevisions } from './state/agent-revisions';
 import { TaskStore } from './state/tasks';
@@ -81,6 +82,8 @@ export class AgentOS {
   readonly skills: SkillsStore;
   /** The deliverables gallery — artifacts agents publish (PDF/Markdown/image), snapshotted + governed. */
   readonly artifacts: ArtifactStore;
+  /** Hosted apps — the on-disk registry of small server-side apps humans + agents build. See apps-plan.md. */
+  readonly apps: AppStore;
   /** The company knowledge base — the shared, living wiki agents + humans co-author (revision-chained). */
   readonly kb: KbStore;
   /** Revision history for every agent's config/CLAUDE.md — the rollback backbone for self-editing agents. */
@@ -132,6 +135,8 @@ export class AgentOS {
     this.settings = new SettingsStore(this.db);
     this.skills = new SkillsStore(opts.paths?.skills, this.db, opts.paths?.bundledSkills);
     this.artifacts = new ArtifactStore(this.db, opts.paths?.artifacts);
+    // Apps are on-disk folders (like agents), not DB rows — the store just needs the apps dir.
+    this.apps = new AppStore(opts.paths?.apps);
     this.kb = new KbStore(this.db, opts.paths?.kb);
     this.agentRevisions = new AgentRevisions(this.db);
     // Task rows are db-only structured state (§Decision 2), but attachments are real files, so the

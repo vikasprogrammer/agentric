@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.196.0] — 2026-07-14
+### Added
+- **Apps — hosting core (first slice).** The foundation for hosting small server-side apps (a mini-CRM,
+  an internal mini-tool) inside a tenant, built by agents + humans (never seeded). An **App** is a folder
+  under `<home>/apps/<slug>/` (`app.json` manifest + Node source + its own private `data.db`), reached at
+  **`/apps/<slug>/…`** through the same authenticated reverse-proxy the terminal uses. This slice ships
+  the runtime spine: the `AppStore` (disk-backed manifest CRUD + a base-path-aware scaffold), the
+  `AppSupervisor` (spawns each app as a supervised child Node process on an ephemeral loopback port,
+  polls readiness, **scale-to-zero** idle-reaps it, restarts `resident` apps with backoff, mints a
+  per-launch `AOS_APP_TOKEN`), and the `/apps/<slug>` HTTP + WebSocket proxy (login-gated, strips the
+  mount prefix, injects a **trusted** `X-Forwarded-Prefix` + `X-Aos-Member`/`X-Aos-Role` after stripping
+  any client-supplied spoof). Capabilities are **default-deny** (`dispatchAgents`/`egress`/`secrets`,
+  `dependencies:'stdlib'`); a proposed app is inert until published. Reuses the terminal-proxy machinery
+  and needs no new trust boundary — an App can't do anything the gateway doesn't mediate. Background
+  agent-dispatch (`/api/app/dispatch`), vault secrets, Linux uid-isolation (`launcher.ts` `start_app`),
+  the `app_*` agent tools, and the console Apps page land in follow-ups. Design of record:
+  [`docs/apps-plan.md`](docs/apps-plan.md); pillar 13 in [`docs/PILLARS.md`](docs/PILLARS.md).
+  (`src/state/apps.ts`, `src/edge/app-supervisor.ts`, `src/server.ts`, `src/kernel.ts`,
+  `src/tenant-registry.ts`, `src/home.ts`, `src/types.ts`.)
+
 ## [0.195.1] — 2026-07-14
 ### Fixed
 - **Agents can no longer hang a run on the native `AskUserQuestion` picker.** Claude's built-in

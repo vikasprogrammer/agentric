@@ -21,6 +21,7 @@ import { readConversation } from './edge/conversation';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
+import { AppSupervisor } from './edge/app-supervisor';
 import { DreamingEngine, recommendationResolved } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
@@ -252,7 +253,7 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     }
     const rt = resolveRuntime(registry, req);
     if (!rt) return sendJson(res, 404, { error: 'no such workspace' });
-    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack, rt.discord).catch((err) =>
+    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack, rt.discord, rt.apps).catch((err) =>
       sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }),
     );
   });
@@ -263,6 +264,8 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
   server.on('upgrade', (req, socket, head) => {
     const rt = resolveRuntime(registry, req);
     if (!rt) return void socket.destroy();
+    // Hosted-app WebSocket upgrades (e.g. an app's live channel) route to the app's own port.
+    if ((req.url || '').startsWith('/apps/')) return void appUpgrade(rt.os, rt.apps, req, socket, head);
     if (UID_ISOLATION) terminalUpgrade(rt.os, rt.tm, req, socket, head);
     else sharedTerminalUpgrade(rt.os, rt.tm, rt.ttydPort, req, socket, head);
   });
@@ -391,7 +394,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   return server;
 }
 
-async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket): Promise<void> {
+async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket, apps?: AppSupervisor): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const p = url.pathname;
   const method = req.method || 'GET';
@@ -401,6 +404,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // the terminal works self-contained, with the same cookie + per-session attach authz nginx enforces.
   if (UID_ISOLATION && p.startsWith('/terminal/')) return terminalProxy(os, tm, req, res);
   if (!UID_ISOLATION && ttydPort && p.startsWith('/terminal/')) return sharedTerminalProxy(os, tm, ttydPort, req, res);
+
+  // /apps/<slug>/… → the hosted-app reverse proxy. Login-gated (any member may open an app in v1),
+  // cold-starts the app if needed, strips the /apps/<slug> prefix, and injects the trusted identity
+  // headers. See docs/apps-plan.md §3.2.
+  if (apps && p.startsWith('/apps/')) return appProxy(os, apps, req, res);
 
   if (method === 'GET' && (p === '/' || p === '/index.html')) {
     const idx = path.join(WEB_DIST, 'index.html');
@@ -4683,6 +4691,87 @@ function sharedTerminalAuthz(os: AgentOS, tm: TerminalManager, req: http.Incomin
   const id = arg.replace(/^aos-/, '');
   return !!tm.sessionAgent(id) && tm.canViewSession(id, me);
 }
+// ── hosted-app reverse proxy (/apps/<slug>/…) ──────────────────────────────────
+/** Extract `<slug>` from `/apps/<slug>` or `/apps/<slug>/…` (query stripped). null if it doesn't match. */
+function appSlug(rawUrl: string | undefined): string | null {
+  const pathOnly = (rawUrl || '/').split('?')[0];
+  const m = pathOnly.match(/^\/apps\/([a-z0-9-]+)(?:\/|$)/);
+  return m ? m[1] : null;
+}
+/** Rewrite `/apps/<slug>/rest?q` → `/rest?q` (the path the app sees). Root `/apps/<slug>` → `/`. */
+function appSubPath(rawUrl: string, slug: string): string {
+  const [pathPart, query] = rawUrl.split('?');
+  let rest = pathPart.slice(`/apps/${slug}`.length);
+  if (!rest.startsWith('/')) rest = '/' + rest;
+  return query ? `${rest}?${query}` : rest;
+}
+/** The headers handed to the app: drop hop-by-hop + any client-supplied identity spoof, then inject
+ *  the proxy-trusted prefix + who's-logged-in. The app can rely on these being authoritative. */
+function appHeaders(headers: http.IncomingHttpHeaders, slug: string, me: Member): http.IncomingHttpHeaders {
+  const out: http.IncomingHttpHeaders = { ...headers };
+  // A client must never be able to forge the identity the app trusts, or the mount prefix.
+  for (const k of Object.keys(out)) {
+    if (/^x-aos-member$|^x-aos-role$|^x-forwarded-prefix$/i.test(k)) delete out[k];
+  }
+  out['x-forwarded-prefix'] = `/apps/${slug}`;
+  out['x-aos-member'] = me.email;
+  out['x-aos-role'] = me.role;
+  return out;
+}
+/** Proxy an HTTP request to a hosted app on `port`, rewriting the path to strip the mount prefix. */
+function pipeHttpToApp(port: number, subPath: string, headers: http.IncomingHttpHeaders, req: http.IncomingMessage, res: http.ServerResponse): void {
+  const up = http.request({ host: '127.0.0.1', port, method: req.method, path: subPath, headers }, (pr) => {
+    res.writeHead(pr.statusCode || 502, pr.headers);
+    pr.pipe(res);
+  });
+  up.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end('app upstream unavailable'); });
+  req.pipe(up);
+}
+/** The /apps/<slug> HTTP proxy: login-gate, resolve the app's live port (cold-start if needed), then
+ *  pipe with the prefix stripped + identity injected. */
+async function appProxy(os: AgentOS, apps: AppSupervisor, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const me = memberFor(os, req);
+  if (!me) return end(res, 401);
+  const slug = appSlug(req.url);
+  if (!slug) return end(res, 404);
+  let port: number;
+  try {
+    port = await apps.ensureReady(slug);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return sendJson(res, /no such app|not published/.test(msg) ? 404 : 502, { error: msg });
+  }
+  pipeHttpToApp(port, appSubPath(req.url || '/', slug), appHeaders(req.headers, slug, me), req, res);
+}
+/** The /apps/<slug> WebSocket upgrade proxy — the upgrade twin of {@link appProxy}. */
+async function appUpgrade(os: AgentOS, apps: AppSupervisor | undefined, req: http.IncomingMessage, socket: import('stream').Duplex, head: Buffer): Promise<void> {
+  if (!apps) return void socket.destroy();
+  const me = memberFor(os, req);
+  const slug = appSlug(req.url);
+  if (!me || !slug) return void socket.destroy();
+  let port: number;
+  try { port = await apps.ensureReady(slug); } catch { return void socket.destroy(); }
+  const subPath = appSubPath(req.url || '/', slug);
+  const headers = appHeaders(req.headers, slug, me);
+  const up = http.request({ host: '127.0.0.1', port, method: req.method, path: subPath, headers });
+  up.on('upgrade', (pr, upSocket, upHead) => {
+    const lines = [`HTTP/1.1 ${pr.statusCode || 101} ${pr.statusMessage || 'Switching Protocols'}`];
+    for (const [k, v] of Object.entries(pr.headers)) {
+      if (Array.isArray(v)) v.forEach((vv) => lines.push(`${k}: ${vv}`));
+      else if (v !== undefined) lines.push(`${k}: ${v}`);
+    }
+    socket.write(lines.join('\r\n') + '\r\n\r\n');
+    if (upHead && upHead.length) socket.write(upHead);
+    upSocket.pipe(socket);
+    socket.pipe(upSocket);
+    upSocket.on('error', () => socket.destroy());
+    socket.on('error', () => upSocket.destroy());
+  });
+  up.on('error', () => socket.destroy());
+  if (head && head.length) up.write(head);
+  up.end();
+}
+
 /** Proxy /terminal/ HTTP to the single shared ttyd (local mode). */
 function sharedTerminalProxy(os: AgentOS, tm: TerminalManager, port: number, req: http.IncomingMessage, res: http.ServerResponse): void {
   if (!sharedTerminalAuthz(os, tm, req)) return end(res, memberFor(os, req) ? 403 : 401);
