@@ -158,7 +158,15 @@ const compareSessions = (a: Session, b: Session, key: SessionSortKey): number =>
 }
 
 /** The sessions-list view state (filters + sort), held in the URL hash query so it survives a
- *  refresh / deep-link. */
+ *  refresh / deep-link, AND mirrored to localStorage so it survives navigating away and back via the
+ *  sidebar's "Sessions" link (which routes to a bare `#/sessions` with no query). */
+const SESSIONS_FILTER_KEY = 'aos_sessions_filters'
+/** The query string to seed the sessions filters from: prefer an explicit URL query (a refresh /
+ *  deep-link / same-route nav preserves it), else the last-used filters saved in localStorage. */
+const seedSessionFilterQuery = (urlQuery: string): string => {
+  if (urlQuery) return urlQuery
+  try { return localStorage.getItem(SESSIONS_FILTER_KEY) ?? '' } catch { return '' }
+}
 interface SessionFilters { q: string; status: SessionStatusFilter; agent: string; source: 'all' | SessionSource; mode: SessionModeFilter; owner: string; mine: boolean; sortKey: SessionSortKey; sortDir: SortDir }
 const parseSessionFilters = (qs: string): SessionFilters => {
   const p = new URLSearchParams(qs)
@@ -2226,8 +2234,11 @@ function SessionsPage({
 
   // Filters (client-side over the already-fetched list). Search spans title/agent/id/task/starter;
   // status/agent/source/owner narrow by dimension. All default to "show everything". Seeded ONCE from
-  // the URL hash query (so a refresh / deep-link restores them) and mirrored back on every change.
-  const seed = useRef(parseSessionFilters(urlQuery)).current
+  // the URL hash query (so a refresh / deep-link restores them) — or, when the URL carries none (e.g.
+  // arriving via the sidebar's bare `#/sessions` link), from the last-used filters in localStorage —
+  // and mirrored back to both on every change.
+  const seedQs = useRef(seedSessionFilterQuery(urlQuery)).current
+  const seed = useRef(parseSessionFilters(seedQs)).current
   const [query, setQuery] = useState(seed.q)
   const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>(seed.status)
   const [agentFilter, setAgentFilter] = useState(seed.agent)
@@ -2241,7 +2252,7 @@ function SessionsPage({
   // automation-fired run they're entitled to, and the toggle is hidden for them anyway). An explicit
   // `?mine=` in the URL wins over the default, so a deliberate choice survives a refresh / deep-link.
   const isFleetViewer = me.role === 'owner' || me.role === 'admin'
-  const seedMineParam = useRef(new URLSearchParams(urlQuery).get('mine')).current
+  const seedMineParam = useRef(new URLSearchParams(seedQs).get('mine')).current
   const [mine, setMine] = useState(seedMineParam === null ? isFleetViewer : seedMineParam === '1')
   const [sortKey, setSortKey] = useState<SessionSortKey>(seed.sortKey)
   const [sortDir, setSortDir] = useState<SortDir>(seed.sortDir)
@@ -2249,6 +2260,9 @@ function SessionsPage({
     const params = sessionFiltersToParams({ q: query, status: statusFilter, agent: agentFilter, source: sourceFilter, mode: modeFilter, owner: ownerFilter, mine, sortKey, sortDir })
     if (mine !== isFleetViewer) params.mine = mine ? '1' : '0' // only persist a deviation from the per-viewer default
     onFiltersChange(params)
+    // Also mirror to localStorage so the choice survives leaving the page and returning via the bare
+    // `#/sessions` sidebar link (which carries no query). Empty = defaults, which seeds cleanly next time.
+    try { localStorage.setItem(SESSIONS_FILTER_KEY, new URLSearchParams(params).toString()) } catch { /* storage unavailable */ }
     // onFiltersChange is a stable replaceState wrapper; depending on the filter/sort values only is intentional.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, statusFilter, agentFilter, sourceFilter, modeFilter, ownerFilter, mine, sortKey, sortDir])
