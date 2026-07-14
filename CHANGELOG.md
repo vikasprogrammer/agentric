@@ -8,7 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.179.0] — 2026-07-14
+## [0.180.0] — 2026-07-14
+### Added
+- **Insights improvement tiles v2 — KB domain ("preview tidy").** The KB tile gains a **Preview tidy**
+  action: a deterministic preview of exactly which DEAD pages (never read, 30d+ old) would be archived —
+  real counts + sample — **without removing anything**, so an owner eyeballs them before applying. **Apply**
+  archives them via `kb.remove`, which is soft: the `kb_revisions` history survives, so an archived page is
+  recoverable via revert. Long-unread-but-once-read (STALE) pages are surfaced for MANUAL review (linked,
+  never auto-archived) — a once-useful reference shouldn't vanish on a timer. Deterministic, no LLM (like
+  Memory cleanup). `src/edge/kb-tidy.ts`; route `GET|POST /api/insights/kb/tidy`; audited `kb.tidied`.
 ### Added
 - **Insights improvement tiles v2 — Skills domain ("draft a skill").** Completes the first v2 batch
   (Agents · Memory · Skills). The Skills tile gains a **Draft a skill** action that spawns a governed

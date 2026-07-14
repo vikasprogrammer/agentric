@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -8304,6 +8304,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [proposals, setProposals] = useState<string[]>([])
   const [cleanup, setCleanup] = useState<MemoryCleanupPlan | null>(null)
   const [cleanupBusy, setCleanupBusy] = useState(false)
+  const [kbTidy, setKbTidy] = useState<KbTidyPlan | null>(null)
   const [alertsOn, setAlertsOn] = useState(true)
   const toggleAlerts = async (on: boolean) => { setAlertsOn(on); await api.setInsightAlerts(on) }
   const [busy, setBusy] = useState(false)
@@ -8364,6 +8365,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     setCleanupBusy(true); const r = await api.draftSkill(); setCleanupBusy(false)
     setDxHint(r.error ? `⚠ ${r.error}` : r.spawned ? `Mining ${r.items ?? ''} recent runs for a reusable pattern… if the scout finds one it'll appear as a proposal on the Skills page to review & publish.` : (r.reason ?? 'no candidate'))
     setTimeout(() => setDxHint(''), 8000)
+  }
+  const previewKbTidy = async () => {
+    setCleanupBusy(true); const r = await api.kbTidyPreview(); setCleanupBusy(false)
+    if (r.error || !r.plan) return setDxHint(`⚠ ${r.error ?? 'could not build a plan'}`)
+    setKbTidy(r.plan)
+  }
+  const applyKbTidy = async () => {
+    setCleanupBusy(true); const r = await api.kbTidyApply(); setCleanupBusy(false); setKbTidy(null)
+    setDxHint(r.error ? `⚠ ${r.error}` : `Archived ${r.archived ?? 0} dead page${r.archived === 1 ? '' : 's'} — recoverable from page history.`)
+    setTimeout(() => setDxHint(''), 6000); refresh()
   }
   const previewCleanup = async () => {
     setCleanupBusy(true); const r = await api.memoryCleanupPreview(); setCleanupBusy(false)
@@ -8446,6 +8457,13 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                   <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview cleanup →'}</div>
                 </button>
               )
+              // KB tile is generative: preview which dead pages would be archived (soft, revertable).
+              if (t.domain === 'kb' && t.count > 0) return (
+                <button key={t.domain} onClick={previewKbTidy} disabled={cleanupBusy} className={`${cls} disabled:opacity-50`}>
+                  {inner}
+                  <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview tidy →'}</div>
+                </button>
+              )
               // Skills tile is generative too: mine fleet patterns for a NEW skill, and (if any) review the queue.
               if (t.domain === 'skills') return (
                 <div key={t.domain} className={cls}>
@@ -8492,6 +8510,38 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                       {cleanup.merge.groups > cleanup.merge.sample.length && <li className="text-muted-foreground">+{cleanup.merge.groups - cleanup.merge.sample.length} more group{cleanup.merge.groups - cleanup.merge.sample.length === 1 ? '' : 's'}…</li>}
                     </ul>
                   )}
+                </div>
+              </div>
+            </div>
+          )}
+          {kbTidy && (
+            <div className="mt-3 rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="font-medium">KB tidy preview <span className="font-normal text-muted-foreground">— archiving is soft (recoverable from page history)</span></div>
+                <div className="flex items-center gap-2">
+                  <button onClick={applyKbTidy} disabled={cleanupBusy || kbTidy.dead.total === 0} className="rounded bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700 disabled:opacity-50">{cleanupBusy ? 'archiving…' : `Archive ${kbTidy.dead.total} dead`}</button>
+                  <button onClick={() => setKbTidy(null)} className="text-[11px] text-muted-foreground underline underline-offset-2">Cancel</button>
+                </div>
+              </div>
+              <div className="mt-2 grid gap-3 md:grid-cols-2">
+                <div>
+                  <div className="mb-1 font-medium">Archive — {kbTidy.dead.total} dead <span className="font-normal text-muted-foreground">(never read, {kbTidy.deadAfterDays}d+ old)</span></div>
+                  {kbTidy.dead.total === 0 ? <div className="text-muted-foreground">nothing dead to archive</div> : (
+                    <ul className="space-y-0.5">
+                      {kbTidy.dead.sample.map((pg) => <li key={pg.id} className="truncate text-muted-foreground"><span className="text-foreground">{pg.section}/{pg.slug}</span> · {pg.ageDays}d</li>)}
+                      {kbTidy.dead.total > kbTidy.dead.sample.length && <li className="text-muted-foreground">+{kbTidy.dead.total - kbTidy.dead.sample.length} more…</li>}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-1 font-medium">Review — {kbTidy.stale.total} stale <span className="font-normal text-muted-foreground">(unread {kbTidy.staleAfterDays}d+)</span></div>
+                  {kbTidy.stale.total === 0 ? <div className="text-muted-foreground">nothing stale</div> : (
+                    <ul className="space-y-0.5">
+                      {kbTidy.stale.sample.map((pg) => <li key={pg.id} className="truncate text-muted-foreground"><a href="#/kb" className="text-foreground underline underline-offset-2">{pg.section}/{pg.slug}</a> · last read {pg.lastReadDays}d ago</li>)}
+                      {kbTidy.stale.total > kbTidy.stale.sample.length && <li className="text-muted-foreground">+{kbTidy.stale.total - kbTidy.stale.sample.length} more…</li>}
+                    </ul>
+                  )}
+                  <div className="mt-1 text-[10px] text-muted-foreground">Stale pages were useful once — refresh or archive them by hand in <a href="#/kb" className="underline">Knowledge</a>.</div>
                 </div>
               </div>
             </div>

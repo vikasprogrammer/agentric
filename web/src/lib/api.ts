@@ -278,6 +278,8 @@ export interface ImprovementTile { domain: ImprovementDomain; count: number; tit
 export interface CleanupPruneItem { id: string; agent: string; snippet: string; ageDays: number; importance: number | null }
 export interface CleanupMergeGroup { agent: string; keepSnippet: string; drop: number }
 export interface MemoryCleanupPlan { opts: { pruneAfterDays: number; keepImportance: number; dedupeThreshold?: number }; prune: { total: number; sample: CleanupPruneItem[] }; merge: { groups: number; drops: number; sample: CleanupMergeGroup[] } }
+export interface KbTidyItem { id: string; section: string; slug: string; title: string; ageDays: number; lastReadDays: number | null }
+export interface KbTidyPlan { deadAfterDays: number; staleAfterDays: number; dead: { total: number; sample: KbTidyItem[] }; stale: { total: number; sample: KbTidyItem[] } }
 export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
 export interface MeasureIntervention { id: string; title: string; at: number; before: { n: number; rate: number | null }; after: { n: number; rate: number | null }; deltaPp: number | null; verdict: 'improved' | 'declined' | 'flat' | 'insufficient' }
 export interface Measurement {
@@ -1120,6 +1122,9 @@ export const api = {
   memoryCleanupApply: () => call<{ ok: boolean; pruned?: number; merged?: number; error?: string }>('POST', '/api/insights/memory/cleanup'),
   // Skills domain: spawn the scout to mine fleet runs for a recurring pattern and draft a skill (proposal-gated).
   draftSkill: () => call<{ ok: boolean; spawned: boolean; reason?: string; sessionId?: string; items?: number; error?: string }>('POST', '/api/insights/skills/draft'),
+  // KB domain: preview which dead pages would be archived (no mutation), then apply (soft remove, revertable).
+  kbTidyPreview: () => call<{ ok: boolean; plan?: KbTidyPlan; error?: string }>('GET', '/api/insights/kb/tidy'),
+  kbTidyApply: () => call<{ ok: boolean; archived?: number; error?: string }>('POST', '/api/insights/kb/tidy'),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
