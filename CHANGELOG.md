@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.192.0] — 2026-07-14
+### Changed
+- **The browser terminal now selects and clicks like a web page — no more Option-drag, and links work.**
+  claude's fullscreen TUI turns on mouse tracking, which made xterm hand every click/drag to the app: a
+  plain drag wouldn't select (you had to hold Option), and links couldn't be clicked. But claude only ever
+  uses the *wheel* (it runs with `DISABLE_MOUSE_CLICKS`) — so our first-party `<Xterm>` client now strips
+  just the mouse-*tracking* DECSET modes (1000–1003) out of the PTY output stream before xterm sees them
+  (native drag-select + clickable links come back), and forwards **only the wheel** back to claude as SGR
+  events so its conversation still scrolls. Uses documented xterm API only (no internals), so it survives
+  xterm upgrades. (`web/src/Xterm.tsx` `stripMouseTracking` + the custom wheel handler.)
+- **Links no longer need a scheme to be clickable.** Replaced the stock `WebLinksAddon` (full `https://…`
+  only) with custom link providers that also match bare domains (`example.com`), subdomains, `www.…`,
+  `localhost:PORT`/`127.0.0.1:PORT`, and OSC-8 hyperlinks — opening the right target in a new tab — while
+  deliberately *not* underlining `file.tsx:42`-style tokens. (`web/src/Xterm.tsx` `makeLinkProvider`.)
+- Test bed: `scripts/mouse-tui.mjs` reproduces claude's mouse-reporting condition (plain bash never did),
+  and `TERMBED_CMD=…` points the test bed at it — so selection/links/wheel can be verified against a real
+  mouse-mode app. (`scripts/termbed.mjs`, `web/src/termbed.tsx`.)
+
 ## [0.191.0] — 2026-07-14
 ### Added
 - **Chat — a plain-language window onto a claude-code run for non-technical teammates.** A new **Chat**

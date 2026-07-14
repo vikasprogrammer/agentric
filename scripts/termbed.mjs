@@ -34,7 +34,11 @@ for (const bin of ['tmux', 'ttyd']) {
 // host's tmux config. (A `set -g mouse on` there would hand wheel + drag to tmux copy-mode — tmux would
 // scroll its own history and copy-on-select, clearing the highlight — masking the real client behaviour.)
 const shell = process.env.SHELL || '/bin/bash'
-spawnSync('tmux', ['-f', '/dev/null', '-S', SOCK, 'new-session', '-d', '-s', SESSION, shell], { stdio: 'ignore' })
+// TERMBED_CMD lets you point the session at a mouse-reporting TUI instead of a bare shell — e.g.
+// `TERMBED_CMD='node ../scripts/mouse-tui.mjs' node scripts/termbed.mjs` to reproduce claude's mouse
+// mode and verify native drag-select + clickable links + wheel forwarding. Default: a login shell.
+const prog = process.env.TERMBED_CMD ? ['sh', '-c', process.env.TERMBED_CMD] : [shell]
+spawnSync('tmux', ['-f', '/dev/null', '-S', SOCK, 'new-session', '-d', '-s', SESSION, ...prog], { stdio: 'ignore' })
 for (const opt of [
   ['set', '-g', 'set-clipboard', 'on'],       // forward OSC 52 copy-on-select → our client's OSC 52 handler
   ['set', '-g', 'allow-passthrough', 'on'],
@@ -55,7 +59,7 @@ for (const opt of [
 const ttyd = spawn('ttyd', [
   '-p', String(TTYD_PORT), '-i', '127.0.0.1', '-b', '/pty', '-W',
   '-t', 'disableLeaveAlert=true',
-  'tmux', '-f', '/dev/null', '-u', '-S', SOCK, 'new-session', '-A', '-s', SESSION, shell,
+  'tmux', '-f', '/dev/null', '-u', '-S', SOCK, 'new-session', '-A', '-s', SESSION, ...prog,
 ], { stdio: 'inherit' })
 ttyd.on('error', (e) => { console.error('✗ ttyd failed:', e.message); cleanup(1) })
 
