@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.201.0] — 2026-07-14
+### Added
+- **Apps — multi-file authoring + pre-publish preview.** An app is now a normal Node project directory:
+  the entry can `require('./lib/…')`, read sibling templates, serve static assets — Node runs it from
+  its folder, so relative requires just work (the runtime always allowed this; now the *authoring*
+  surfaces do too). `AppStore` gains **sandboxed file ops** (`listFiles`/`readFile`/`writeFile`/
+  `deleteFile`, blocking path traversal + protecting the manifest and `data.db`/`app.log`), exposed as
+  **console file routes** (`GET /api/apps/:slug/files`, `GET/PUT/DELETE /api/apps/:slug/file`) and
+  **agent tools `app_files` / `app_write_file` / `app_delete_file`** — so the fleet can scaffold
+  `routes/`, `lib/`, `templates/` instead of cramming one string. The console **Apps** page is rebuilt
+  around a **file-tree editor** (open/add/delete files, per-file save) and a **sandboxed pre-publish
+  preview iframe**: an owner/admin can reach an *unpublished* app through the proxy
+  (`AppSupervisor.ensureReady({allowUnpublished})`) to see it before publishing — the iframe is
+  opaque-origin (`sandbox` without `allow-same-origin`) so a previewed app can't touch the console.
+  Editing any file bounces the app so the next preview/open reflects it; editing a live app unpublishes
+  it for re-review. Audited `app.file.written`/`app.file.deleted`. Verified end-to-end (multi-file
+  `require()` runs in preview; traversal + manifest + entry-delete guarded); governance CI 68/68.
+  **Security note:** apps still render same-origin as the console — the preview iframe is sandboxed, but
+  a top-level "Open" of a published app runs at the app-os origin; separate-origin isolation is tracked
+  in `docs/apps-plan.md` §9. (`src/state/apps.ts`, `src/edge/app-supervisor.ts`, `src/server.ts`,
+  `src/memory/memory-mcp.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`.)
+
 ## [0.200.0] — 2026-07-14
 ### Added
 - **Discord thread continuity — parity with Slack.** A follow-up message inside a Discord thread already

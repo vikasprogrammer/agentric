@@ -90,12 +90,13 @@ export class AppSupervisor {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
-  /** Resolve `slug` → a live port, cold-starting the app if needed. Throws if it's absent, unpublished,
-   *  or fails to come up. Records a hit so scale-to-zero idle timing is accurate. */
-  async ensureReady(slug: string): Promise<number> {
+  /** Resolve `slug` → a live port, cold-starting the app if needed. Throws if it's absent, unpublished
+   *  (unless `allowUnpublished` — the owner/admin preview path), or fails to come up. Records a hit so
+   *  scale-to-zero idle timing is accurate. */
+  async ensureReady(slug: string, opts: { allowUnpublished?: boolean } = {}): Promise<number> {
     const manifest = this.apps.get(slug);
     if (!manifest) throw new Error(`no such app: ${slug}`);
-    if (!manifest.published) throw new Error(`app not published: ${slug}`);
+    if (!manifest.published && !opts.allowUnpublished) throw new Error(`app not published: ${slug}`);
 
     let r = this.running.get(slug);
     if (r?.status === 'ready' && r.port) { r.lastHit = Date.now(); return r.port; }

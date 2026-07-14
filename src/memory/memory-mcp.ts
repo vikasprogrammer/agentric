@@ -1114,6 +1114,54 @@ const TOOLS = [
     },
   },
   {
+    name: 'app_files',
+    description:
+      'List the source files of a hosted app (relative paths + sizes), or read one file by passing ' +
+      '`path`. Use this to build on / edit an app made of several files (routes/, lib/, templates/) — see ' +
+      'the tree, then read the file you want to change.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The app id.' },
+        path: { type: 'string', description: 'Optional — a file path to read instead of listing the tree.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'app_write_file',
+    description:
+      'Create or overwrite ONE source file inside a hosted app — this is how you build a MULTI-FILE app ' +
+      '(e.g. app/server.js that require()s ./routes/contacts.js, ./lib/db.js, ./templates/list.html). Node ' +
+      'runs the app from its folder, so relative requires + reads just work. Send the full file content. ' +
+      'Editing a LIVE app unpublishes it for re-review. (For a single-file app, app_create/app_update is ' +
+      'simpler.) You cannot write app.json (the manifest — use app_update) or data.db (runtime state).',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The app id.' },
+        path: { type: 'string', description: 'File path relative to the app folder, e.g. "app/routes/contacts.js" or "app/templates/list.html". Parent dirs are created.' },
+        content: { type: 'string', description: 'The full file content.' },
+      },
+      required: ['id', 'path', 'content'],
+    },
+  },
+  {
+    name: 'app_delete_file',
+    description: "Delete a source file from a hosted app. Can't delete the entry file, the manifest, or runtime state.",
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The app id.' },
+        path: { type: 'string', description: 'The file path to delete, relative to the app folder.' },
+      },
+      required: ['id', 'path'],
+    },
+  },
+  {
     name: 'secret_put',
     description:
       'Store a credential (password, API key, token, connection string) in the shared secrets vault so ' +
@@ -2125,6 +2173,47 @@ async function appUpdate(args: Record<string, unknown>): Promise<string> {
   return `Updated app "${id}".${d.unpublished ? ' It was LIVE, so it was unpublished for re-review — an owner/admin re-publishes to push the change live.' : ''}`;
 }
 
+async function appFiles(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim().toLowerCase();
+  if (!id) return 'Which app? Pass its id.';
+  const qs = new URLSearchParams({ session: SESSION, id });
+  if (args.path !== undefined) qs.set('path', String(args.path));
+  const res = await fetch(AOS_URL + '/api/apps/files?' + qs.toString(), { headers: H() });
+  const d = (await res.json()) as { ok?: boolean; files?: Array<{ path: string; bytes: number }>; path?: string; content?: string; error?: string };
+  if (!d.ok) return `Could not read the app's files: ${d.error ?? 'unknown error'}`;
+  if (d.content !== undefined) return `${d.path}:\n\n${d.content}`;
+  if (!d.files?.length) return 'This app has no source files yet.';
+  return `Files in "${id}":\n` + d.files.map((f) => `  ${f.path} (${f.bytes} bytes)`).join('\n');
+}
+
+async function appWriteFile(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim().toLowerCase();
+  const filePath = String(args.path ?? '').trim();
+  if (!id || !filePath) return 'app_write_file needs an app id and a file path.';
+  const res = await fetch(AOS_URL + '/api/apps/file/write', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, id, path: filePath, content: args.content != null ? String(args.content) : '' }),
+  });
+  const d = (await res.json()) as { ok?: boolean; unpublished?: boolean; error?: string };
+  if (!d.ok) return `Could not write ${filePath}: ${d.error ?? 'unknown error'}`;
+  return `Wrote ${filePath} in "${id}".${d.unpublished ? ' The app was LIVE, so it was unpublished for re-review.' : ''}`;
+}
+
+async function appDeleteFile(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim().toLowerCase();
+  const filePath = String(args.path ?? '').trim();
+  if (!id || !filePath) return 'app_delete_file needs an app id and a file path.';
+  const res = await fetch(AOS_URL + '/api/apps/file/delete', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, id, path: filePath }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  if (!d.ok) return `Could not delete ${filePath}: ${d.error ?? 'unknown error'}`;
+  return `Deleted ${filePath} from "${id}".`;
+}
+
 // ── Secrets vault: shared credential handoff (value stays out of every durable plane) ─────────────
 async function secretPut(args: Record<string, unknown>): Promise<string> {
   const key = String(args.key ?? '').trim();
@@ -2493,6 +2582,9 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'app_create' ? await appCreate(args)
         : name === 'app_list' ? await appList()
         : name === 'app_update' ? await appUpdate(args)
+        : name === 'app_files' ? await appFiles(args)
+        : name === 'app_write_file' ? await appWriteFile(args)
+        : name === 'app_delete_file' ? await appDeleteFile(args)
         : name === 'secret_put' ? await secretPut(args)
         : name === 'secret_get' ? await secretGet(args)
         : name === 'secret_list' ? await secretList()
