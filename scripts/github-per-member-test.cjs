@@ -234,7 +234,10 @@ async function main() {
   assert(Array.isArray(manifestObj.callback_urls) && manifestObj.callback_urls[0].endsWith('/api/github/callback'), 'manifest carries our OAuth callback URL');
   assert(manifestObj.redirect_url.endsWith('/api/github/manifest-callback'), 'manifest carries the manifest-callback URL');
   assert(manifestObj.default_permissions.contents === 'write' && manifestObj.default_permissions.pull_requests === 'write', 'manifest requests least-privilege Contents + PR write');
-  assert(manifestObj.hook_attributes.active === false && manifestObj.public === false, 'manifest disables webhook + keeps the App private');
+  // hook_attributes MUST be omitted: GitHub requires hook_attributes.url whenever the object is present,
+  // so including it (even active:false) makes GitHub reject the manifest with "url wasn't supplied".
+  assert(!('hook_attributes' in manifestObj) && typeof manifestObj.url === 'string' && manifestObj.url.length > 0, 'manifest omits hook_attributes (no webhook) + carries the required top-level url');
+  assert(manifestObj.public === false, 'manifest keeps the App private');
   const mState = new URL(man.postUrl).searchParams.get('state');
 
   const rOrg = await call('GET', '/api/github/manifest?org=acme-inc');

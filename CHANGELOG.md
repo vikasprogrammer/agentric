@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.189.0] — 2026-07-14
+### Fixed
+- **One-click "Create GitHub App" now actually works — the manifest was invalid.** Every attempt failed on
+  GitHub with *"Invalid GitHub App configuration … 'url' wasn't supplied"*, forcing manual App creation.
+  Root cause: the manifest sent `hook_attributes: { active: false }` to disable the webhook, but
+  [GitHub requires `hook_attributes.url` whenever the object is present](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
+  (even with `active:false`) — so GitHub rejected the whole manifest, and the "url" it meant was the
+  *webhook* url, not our (present) top-level one. Fix: **omit `hook_attributes` entirely** — that's an App
+  with no webhook, exactly what we want, and no required url. (`src/server.ts` `githubAppManifest`;
+  `scripts/github-per-member-test.cjs` now 79/79.)
+
 ## [0.188.0] — 2026-07-14
 ### Added
 - **Set the GitHub App slug by hand when it can't be auto-detected.** The "Install the App" button needs

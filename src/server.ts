@@ -4528,10 +4528,12 @@ function githubRedirectUri(req: http.IncomingMessage): string {
  */
 function githubAppManifest(req: http.IncomingMessage, os: AgentOS): Record<string, unknown> {
   const origin = publicOrigin(req);
+  // NB: do NOT include `hook_attributes` — GitHub requires `hook_attributes.url` whenever the object is
+  // present (even with `active:false`), so sending `{active:false}` makes GitHub reject the whole manifest
+  // with "url wasn't supplied". Omitting it entirely = no webhook, which is exactly what we want.
   return {
     name: `Agent OS — ${os.tenantName}`,
     url: origin,
-    hook_attributes: { active: false },
     redirect_url: `${origin}/api/github/manifest-callback`,
     callback_urls: [`${origin}/api/github/callback`],
     setup_on_update: false,
