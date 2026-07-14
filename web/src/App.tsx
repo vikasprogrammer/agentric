@@ -4071,7 +4071,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   const [creating, setCreating] = useState(false)
   const [newId, setNewId] = useState('')
   const [newName, setNewName] = useState('')
-  const [showPreview, setShowPreview] = useState(true)
+  const [tab, setTab] = useState<'source' | 'preview' | 'settings'>('source')
   const [previewNonce, setPreviewNonce] = useState(0)
 
   const load = () => api.apps().then((r) => { setApps(r.apps); setEnabled(r.enabled) }).catch(() => { setApps([]); setEnabled(false) })
@@ -4210,9 +4210,23 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
               </div>
             </div>
             {a.lastError && a.status === 'crashed' && <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">Crashed: {a.lastError}</div>}
-            {!a.published && <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">Proposed — visible only to owners/admins in the preview below. Publish to make it live at <code>/apps/{a.id}</code>.</div>}
+            {!a.published && <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">Proposed — visible only to owners/admins on the Preview tab. Publish to make it live at <code>/apps/{a.id}</code>.</div>}
 
-            {/* capabilities (default-deny) */}
+            {/* tab strip — Source / Preview / Settings */}
+            <div className="flex items-center gap-1 border-b">
+              {([['source', 'Source'], ['preview', 'Preview'], ['settings', 'Settings']] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => setTab(key)}
+                  className={`-mb-px border-b-2 px-3 py-1.5 text-sm transition ${tab === key ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Settings tab — manifest + capabilities (default-deny) */}
+            {tab === 'settings' && (
             <div className="rounded-lg border p-3">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Settings &amp; capabilities (default-deny)</span>
@@ -4238,8 +4252,10 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
               </div>
               <div className="mt-2 text-[11px] text-muted-foreground"><b>dispatchAgents</b> is enforced now; <b>egress</b> + <b>secrets</b> record the contract (enforcement lands with those slices).</div>
             </div>
+            )}
 
-            {/* multi-file source: tree + editor */}
+            {/* Source tab — multi-file tree + editor */}
+            {tab === 'source' && (
             <div className="rounded-lg border">
               <div className="flex items-center justify-between border-b px-3 py-2">
                 <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Source</span>
@@ -4267,37 +4283,37 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
                 </div>
               </div>
             </div>
+            )}
 
-            {/* preview — the app rendered in a sandboxed iframe (owner/admin can preview it unpublished) */}
-            <div className="rounded-lg border">
-              <div className="flex items-center justify-between border-b px-3 py-2">
-                <button onClick={() => setShowPreview((s) => !s)} className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  {showPreview ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Preview
-                </button>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" onClick={refreshPreview}><RefreshCw className="h-3.5 w-3.5" /> Reload</Button>
-                  <a href={api.appUrl(a.id)} target="_blank" rel="noreferrer" className={buttonVariants({ size: 'sm', variant: 'ghost' }) + ' h-7 gap-1 px-2 text-xs'}><ExternalLink className="h-3.5 w-3.5" /> New tab</a>
+            {/* Preview tab — the app in a sandboxed iframe (owner/admin can preview it unpublished) + log */}
+            {tab === 'preview' && (
+            <div className="space-y-4">
+              <div className="rounded-lg border">
+                <div className="flex items-center justify-between border-b px-3 py-2">
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Preview</span>
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" onClick={refreshPreview}><RefreshCw className="h-3.5 w-3.5" /> Reload</Button>
+                    <a href={api.appUrl(a.id)} target="_blank" rel="noreferrer" className={buttonVariants({ size: 'sm', variant: 'ghost' }) + ' h-7 gap-1 px-2 text-xs'}><ExternalLink className="h-3.5 w-3.5" /> New tab</a>
+                  </div>
                 </div>
-              </div>
-              {showPreview && (
                 <div className="p-2">
                   <iframe
                     key={previewNonce}
                     src={api.appUrl(a.id) + '?_preview=' + previewNonce}
                     title={`${a.name} preview`}
                     sandbox="allow-scripts allow-forms allow-popups allow-modals"
-                    className="h-[28rem] w-full rounded border bg-white"
+                    className="h-[32rem] w-full rounded border bg-white"
                   />
-                  <div className="mt-1 text-[11px] text-muted-foreground">Sandboxed (no access to the console). Save a file, then Reload to see changes.</div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">Sandboxed (no access to the console). Save a file on the Source tab, then Reload.</div>
                 </div>
+              </div>
+              {detail?.log && (
+                <details className="rounded-lg border">
+                  <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted-foreground">Run log</summary>
+                  <pre className="max-h-60 overflow-auto border-t bg-muted/30 p-3 font-mono text-[11px] leading-relaxed">{detail.log}</pre>
+                </details>
               )}
             </div>
-
-            {detail?.log && (
-              <details className="rounded-lg border">
-                <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-muted-foreground">Run log</summary>
-                <pre className="max-h-60 overflow-auto border-t bg-muted/30 p-3 font-mono text-[11px] leading-relaxed">{detail.log}</pre>
-              </details>
             )}
           </div>
         )}

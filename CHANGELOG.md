@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.201.1] — 2026-07-14
+### Changed
+- **Apps editor: the right pane is now tabbed — Source · Preview · Settings** — instead of the three
+  panels stacked vertically. The app header (name, status, publish, menu) stays pinned above the tabs;
+  the Source tab holds the file-tree editor, the Preview tab the sandboxed iframe (+ the run log), and
+  the Settings tab the manifest + capability editor. Just a layout change — no behaviour difference.
+  (`web/src/App.tsx`.)
+
 ## [0.201.0] — 2026-07-14
 ### Added
 - **Apps — multi-file authoring + pre-publish preview.** An app is now a normal Node project directory:
