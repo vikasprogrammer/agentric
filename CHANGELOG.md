@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.195.0] — 2026-07-14
+### Fixed
+- **Plain-text links in the terminal are now clickable — no scheme needed, and OSC-8 markdown links work
+  too.** Two gaps from the v0.192.0 rework:
+  - The custom link matchers were too narrow: a bare domain only clicked if its TLD was in a short list,
+    and a `host/path` with an unusual TLD didn't match at all. Rewrote them — a broad common-TLD list for
+    bare `example.com`/`my-shop.store`, and **any multi-label host that carries a `/path` is treated as a
+    URL** (`foo.bar/baz`, `docs.github.io/xterm`) since the slash is a strong signal — while still NOT
+    linking `Component.tsx`, `src/main.rs`, or version strings. The provider is now registered after the
+    renderer and wrapped so a bad row can't break linkification. (`web/src/Xterm.tsx`.)
+  - **tmux was silently stripping every OSC-8 hyperlink** (claude's markdown links) before they reached
+    the browser, because the outer terminal wasn't advertised as hyperlink-capable. Added `hyperlinks` to
+    tmux's `terminal-features`, so OSC-8 links now flow through and open on click via `<Xterm>`'s
+    `linkHandler`. (`src/edge/session-backend.ts`, `scripts/termbed.mjs`.)
+- Test bed: `scripts/mouse-tui.mjs` now prints the realistic link cases (trailing punctuation, in a
+  sentence, parenthesised, uncommon TLD, an OSC-8 link, non-link tokens), and `termbed.html?strict=0`
+  renders without React StrictMode so the prod single-run behaviour can be reproduced. Verified 13/13 via
+  Playwright against the mouse-reporting harness in both StrictMode configs. (`web/src/termbed.tsx`.)
+
 ## [0.193.2] — 2026-07-14
 ### Fixed
 - **Sidebar "All" session badge now counts only genuinely live runs.** It was keyed off `isLive`, which

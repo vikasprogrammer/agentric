@@ -84,4 +84,9 @@ function TermBed() {
   )
 }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><TermBed /></StrictMode>)
+// StrictMode double-invokes effects in dev, which can mask single-run bugs that only bite the prod
+// build (e.g. link-provider registration). `?strict=0` renders without it so the test bed can reproduce
+// the production single-run behaviour.
+const strict = new URLSearchParams(location.search).get('strict') !== '0'
+const app = <TermBed />
+createRoot(document.getElementById('root')!).render(strict ? <StrictMode>{app}</StrictMode> : app)
