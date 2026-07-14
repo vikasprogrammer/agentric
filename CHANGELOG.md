@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.184.0] — 2026-07-14
+### Added
+- **`secret_request` — an agent asks a human to PROVIDE a credential, without a paste into the session.**
+  The inverse of `secret_put`: when an agent needs a password/API key/token it does not already have, it
+  now `secret_request`s the KEY (with a reason) instead of prompting the human to paste the raw value into
+  chat — where it would persist in the transcript. The request carries only the key + reason (never a
+  value), posts a `secret.request` card to owner/admins (Inbox + a new **Settings → Secrets → Agent
+  requests** review section), and short-circuits `exists` if the agent can already resolve the key or
+  `duplicate` on an open request. A human fulfils it by typing the value into a password field
+  (`POST /api/secrets/requests/:id/fulfill`): it is sealed straight into the vault under the requesting
+  agent's principal (default — only that agent can `secret_get` it — or tenant-wide `*`) and can be
+  injected into that agent's shell at launch (reusing `secret_assignments`). The value never touches the
+  transcript, the card, or the audit trail; audited `secret.requested` / `secret.request.fulfilled` /
+  `secret.request.dismissed` by key only. New MCP tool `secret_request`, loopback
+  `POST /api/agent/secret/request`, admin routes `GET /api/secrets/requests` +
+  `POST /api/secrets/requests/:id/{fulfill,dismiss}`, and `TerminalManager.requestSecret` /
+  `secretRequestCard` / `setSecretRequestStatus` / `openSecretRequests`.
+
 ## [0.183.1] — 2026-07-14
 ### Fixed
 - **Flag the System machinery agents as built-in.** The code-provisioned System agents spawned by the

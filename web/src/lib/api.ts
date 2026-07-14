@@ -466,12 +466,12 @@ export interface AddGoalReq {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'host.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed'
   sessionId: string
   agent: string
   title: string
   body: string
-  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered' | 'cancelled'
+  status: 'open' | 'pending' | 'approved' | 'rejected' | 'answered' | 'cancelled' | 'fulfilled'
   approvalId?: string
   capability?: string
   args?: unknown
@@ -781,6 +781,10 @@ export interface SkillshResp { query: string; hits: SkillshHit[]; error?: string
 /** An agent's pending request to have a catalog skill installed (via `skill_request`). */
 export interface SkillRequest { id: string; skill: string; source: string; agent: string; rationale?: string; createdAt: number }
 export interface SkillRequestsResp { requests: SkillRequest[]; error?: string }
+
+/** An agent's `secret_request` awaiting a human to provide the credential value (no value in play here). */
+export interface SecretRequest { id: string; key: string; agent: string; reasoning?: string; createdAt: number }
+export interface SecretRequestsResp { requests: SecretRequest[]; error?: string }
 
 export interface CompanySettings {
   companyMd: string
@@ -1160,6 +1164,11 @@ export const api = {
   setSecret: (key: string, value: string, principal?: string) => call<{ ok: boolean; error?: string }>('POST', '/api/secrets', { key, value, principal }),
   deleteSecret: (key: string, principal?: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/secrets', { key, principal }),
   setSecretAgents: (principal: string, key: string, agents: string[]) => call<{ ok: boolean; agents?: string[]; error?: string }>('PUT', '/api/secrets/agents', { principal, key, agents }),
+  secretRequests: () => call<SecretRequestsResp>('GET', '/api/secrets/requests'),
+  fulfillSecretRequest: (id: string, value: string, opts?: { principal?: string; inject?: boolean }) =>
+    call<{ ok: boolean; injected?: boolean; error?: string }>('POST', '/api/secrets/requests/' + encodeURIComponent(id) + '/fulfill', { value, principal: opts?.principal, inject: opts?.inject }),
+  dismissSecretRequest: (id: string) =>
+    call<{ ok: boolean; error?: string }>('POST', '/api/secrets/requests/' + encodeURIComponent(id) + '/dismiss'),
   killSwitch: () => call<{ engaged: boolean; reason?: string; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/kill-switch'),
   setKillSwitch: (engaged: boolean, reason?: string, haltSessions?: boolean) => call<{ ok: boolean; engaged: boolean; reason?: string; halted?: number; updatedBy?: string; error?: string }>('POST', '/api/settings/kill-switch', { engaged, reason, haltSessions }),
 

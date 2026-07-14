@@ -207,7 +207,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'host.proposed';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -2541,6 +2541,66 @@ export class TerminalManager {
         let a: Record<string, unknown> = {};
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
         return { id: r.id, skill: String(a.skill ?? ''), source: String(a.source ?? 'catalog'), agent: r.agent, rationale: a.rationale ? String(a.rationale) : undefined, createdAt: r.created_at };
+      });
+  }
+
+  /**
+   * Agent asks a human to PROVIDE a credential it needs (the `secret_request` tool) — the inverse of
+   * {@link putSecret}. Where `secret_put` is an agent handing a value it already HAS to the vault,
+   * `secret_request` is an agent that does NOT have the value asking a human to enter it, so the raw
+   * secret is typed into a secure form (encrypted at rest) instead of being pasted into the session
+   * transcript. It never carries a value — only the KEY it wants and why. Short-circuits if the agent
+   * can already resolve that key (it doesn't need to ask) or an identical request is already open, else
+   * posts an owner/admin-addressed 'secret.request' card and audits `secret.requested`. A human fulfills
+   * it via POST /api/secrets/requests/:id/fulfill (which stores the value + optionally injects it). */
+  requestSecret(sessionId: string, agent: string, key: string, reasoning?: string): { ok: boolean; status?: 'requested' | 'exists' | 'duplicate'; error?: string } {
+    const k = (key || '').trim();
+    if (!k) return { ok: false, error: 'a secret key is required' };
+    // Already resolvable for this agent (its own principal or the shared `*`) → no need to ask a human.
+    if (this.os.secrets.getSync(this.os.tenant, agent, k) !== undefined) return { ok: true, status: 'exists' };
+    // Dedupe against an already-open request for the same key from the same agent.
+    const open = this.db
+      .prepare(`SELECT 1 FROM messages WHERE type = 'secret.request' AND status = 'open' AND agent = ? AND json_extract(args, '$.key') = ?`)
+      .get(agent, k);
+    if (open) return { ok: true, status: 'duplicate' };
+    this.addMessage({
+      type: 'secret.request', sessionId, agent,
+      title: `Secret requested — ${k}`,
+      body: (reasoning?.trim() || `${agent} needs the credential "${k}" to continue.`).trim(),
+      status: 'open',
+      args: { key: k, ...(reasoning ? { reasoning } : {}) },
+      // Providing a credential is an owner/admin act — address the request card to the admin tier.
+      audienceKind: 'admins',
+    });
+    this.audit(sessionId, agent, 'secret.requested', { key: k, reasoning });
+    return { ok: true, status: 'requested' };
+  }
+
+  /** Read a 'secret.request' card's payload (for the fulfill/dismiss routes). undefined if not one. */
+  secretRequestCard(id: string): { key: string; agent: string; reasoning?: string; status: string } | undefined {
+    const row = this.db
+      .prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'secret.request'`)
+      .get<{ agent: string; args: string | null; status: string }>(id);
+    if (!row) return undefined;
+    let a: Record<string, unknown> = {};
+    try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+    return { key: String(a.key ?? ''), agent: row.agent, reasoning: a.reasoning ? String(a.reasoning) : undefined, status: row.status };
+  }
+
+  /** Mark a 'secret.request' card resolved once a human fulfilled (provided) or dismissed it. */
+  setSecretRequestStatus(id: string, status: 'fulfilled' | 'rejected'): void {
+    this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'secret.request'`).run(status, id);
+  }
+
+  /** Open (unresolved) secret.request cards — the Secrets settings page's agent-request review section. */
+  openSecretRequests(): { id: string; key: string; agent: string; reasoning?: string; createdAt: number }[] {
+    return this.db
+      .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'secret.request' AND status = 'open' ORDER BY created_at DESC`)
+      .all<{ id: string; agent: string; args: string | null; created_at: number }>()
+      .map((r) => {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
+        return { id: r.id, key: String(a.key ?? ''), agent: r.agent, reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
       });
   }
 
