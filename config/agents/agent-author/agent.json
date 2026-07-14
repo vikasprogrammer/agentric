@@ -6,7 +6,6 @@
   "principal": "svc-agent-author",
   "policyContext": "default@v3",
   "runtime": "claude-code",
-  "model": "claude-opus-4-8",
   "icon": "Wand2",
   "examplePrompts": [
     "Create a support agent that triages inbound bug reports",

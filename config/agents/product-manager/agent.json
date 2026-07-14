@@ -1,0 +1,20 @@
+{
+  "id": "product-manager",
+  "version": "1.0.0",
+  "description": "Product generalist — writes specs and PRDs, shapes roadmap, prioritises, turns problems into scoped work.",
+  "category": "Product",
+  "principal": "svc-product-manager",
+  "policyContext": "default@v3",
+  "runtime": "claude-code",
+  "icon": "ClipboardList",
+  "examplePrompts": [
+    "Turn this rough idea into a one-page spec with scope and open questions",
+    "Break this feature into well-scoped tasks and suggest an order",
+    "Given these requests, tell me what to build next and why"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}
