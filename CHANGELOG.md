@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.196.2] — 2026-07-14
+### Added
+- **`ask_human` can offer one-click choices.** The tool takes an optional `options` list (up to 8); the
+  question then renders as **clickable buttons** in the human's Inbox and in Chat, and their reply is the
+  option they pick (they can still type a different answer). This is the governed, works-everywhere
+  answer to Claude's native multiple-choice picker (which is denied — it hangs unattended runs, v0.195.1):
+  same delightful UX, real tool result, no native-tool interception. (`src/memory/memory-mcp.ts`,
+  `src/server.ts` `/api/ask`, `src/terminal.ts` `askQuestion` → message `args.options`, `web/src/App.tsx`
+  Chat + Inbox question cards.) Also folds the siteboon/claudecodeui (Agent SDK `canUseTool` +
+  interactive-tool bridge) findings into `docs/sdk-chat-runtime-plan.md`.
+### Changed
+- **Chat is now a pinnable nav item, hidden by default, tagged Beta.** Moved out of the hardwired sidebar
+  into the pin-customizable nav (not in the default pin set) — it lives under **Manage** until a member
+  pins it to Main, so the console isn't cluttered for people who don't use it — and carries a small
+  **Beta** badge. (`web/src/App.tsx`.)
+- **New-chat screen no longer buries the message box.** With many agents the composer was pushed off the
+  bottom of the screen. The agent list now scrolls in a capped area while the heading and the message box
+  stay fixed and visible, plus a filter box appears when there are more than six agents. (`web/src/App.tsx`.)
+
 ## [0.196.1] — 2026-07-14
 ### Fixed
 - **Sessions filters now survive leaving the page and coming back.** The sessions list's filters

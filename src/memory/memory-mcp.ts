@@ -445,6 +445,7 @@ const TOOLS = [
       properties: {
         question: { type: 'string', description: 'A specific, self-contained question.' },
         to: { type: 'string', description: 'Optional. A teammate to ask instead of the operator — their name or email (e.g. "Alex Rivera" or "alex@acme.com"). Omit to ask the human who owns this run.' },
+        options: { type: 'array', items: { type: 'string' }, description: 'Optional. A short list of choices for a multiple-choice question — they render as one-click buttons in the human\'s Inbox/Chat, and their reply is the option they pick. Use this instead of a native picker when the answer is one of a few known choices (e.g. ["Ship it", "Hold", "Let me look first"]); omit for an open question.' },
       },
       required: ['question'],
     },
@@ -1157,10 +1158,14 @@ async function ask(args: Record<string, unknown>): Promise<string> {
   const question = String(args.question ?? '').trim();
   if (!question) return 'No question provided.';
   const to = args.to ? String(args.to).trim() : undefined;
+  // Optional multiple-choice: a short list of string choices → one-click buttons in the human's card.
+  const options = Array.isArray(args.options)
+    ? args.options.map((o) => String(o).trim()).filter(Boolean).slice(0, 8)
+    : undefined;
   const res = await fetch(AOS_URL + '/api/ask', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, agent: AGENT, question, to: to || undefined }),
+    body: JSON.stringify({ session: SESSION, agent: AGENT, question, to: to || undefined, options: options?.length ? options : undefined }),
   });
   const posted = (await res.json()) as { id?: string; error?: string; to?: string };
   if (posted.error) return `Could not ask: ${posted.error}`;

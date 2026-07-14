@@ -87,3 +87,35 @@ Chat page ──SSE── /api/chat/stream ──▶ SdkChatRuntime (new)
 v1 (hardened, transcript-driven) stays shippable and is the fallback. v2 swaps the **driver** and
 **display source** under the same Chat page and the same gateway; the page, the approval cards, and the
 session model are largely reused.
+
+## Reference implementation — siteboon/claudecodeui (now "CloudCLI")
+
+The closest open prior art, and worth reading before building (AGPL-3.0 — **study the pattern, don't
+fork/embed the code**; the network-copyleft clause would reach our hosted multi-tenant service). It
+rebranded to CloudCLI and **rewrote itself onto the Agent SDK** (`query()` + `canUseTool`) — independent
+validation of this plan. Concrete lessons to carry over:
+
+- **The bridge shape (server):** one `canUseTool(toolName, input, ctx)` choke point that short-circuits
+  against allow/deny lists, else mints a `requestId`, pushes a `permission_request` frame to the browser,
+  and `await`s a `pendingApprovals` promise resolved by the browser's response — returning SDK-native
+  `{ behavior: 'allow', updatedInput }` or `{ behavior: 'deny', message }`. This is exactly our
+  gateway→approval suspend/resume, expressed as an SDK callback. (`server/claude-sdk.js`.)
+- **Interactive tools resolved through the SAME callback:** `AskUserQuestion` / `ExitPlanMode` are kept in
+  a `TOOLS_REQUIRING_INTERACTION` set and answered by returning an **edited `updatedInput`** (the chosen
+  answers) with an **indefinite (no-timeout) wait**, rendered as clickable option buttons. So the native
+  multiple-choice picker becomes a web multiple-choice instead of a hang.
+- **The caveat that matters most for us:** in `auto`/`bypassPermissions` permission modes the SDK
+  **skips `canUseTool` entirely** — interactive tools must instead be caught by a **PreToolUse hook**
+  (which runs before the mode check). **Agent OS already has that gate hook**, so we are actually better
+  positioned than a pure-SDK app: our existing PreToolUse choke point can bridge interactive tools even
+  under skip-permissions.
+- **Reconnect resilience:** replay pending permission requests (by sequence number) on WS reconnect so an
+  in-flight approval survives a page refresh — adopt for the SSE/WS layer.
+
+### Stepping stone already shipped (v1.5)
+
+Rather than intercept Claude's native `AskUserQuestion` (denied fleet-wide — it hangs unattended runs;
+see CHANGELOG v0.195.1), Agent OS's own **`ask_human` now takes an optional `options[]`** that renders as
+one-click buttons in the Inbox and Chat (the human's reply is the option they pick). This delivers the
+multiple-choice UX through a governed tool with a real result — no native-tool interception, no hook
+hackery — and is the pattern the SDK runtime will generalize via `canUseTool`/`updatedInput`.

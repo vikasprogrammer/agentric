@@ -883,7 +883,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const question = String(b.question || '').trim();
     if (!question) return sendJson(res, 400, { error: 'question is required' });
     const to = b.to ? String(b.to).trim() : undefined;
-    const out = tm.askQuestion(session, agent, question, to);
+    const options = Array.isArray(b.options)
+      ? (b.options as unknown[]).map((o) => String(o).trim()).filter(Boolean).slice(0, 8)
+      : undefined;
+    const out = tm.askQuestion(session, agent, question, to, options?.length ? options : undefined);
     return sendJson(res, out.error ? 400 : 200, out);
   }
   const askMatch = p.match(/^\/api\/ask\/([\w-]+)$/);
