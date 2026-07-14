@@ -1682,6 +1682,54 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (wasPublished) tm.postAppCard({ slug: id, agent, title: `App edited — ${cur.name}`, body: `${agent} changed the live app "${cur.name}" (\`${id}\`); it was unpublished for review. Re-publish to make the change live.` });
     return sendJson(res, 200, { ok: true, id, rev: saved?.version, unpublished: wasPublished });
   }
+  // Multi-file authoring (agent loopback): an agent lists / reads / writes / deletes an app's source
+  // files, so it can build a structured app (routes/, lib/, templates/) not just a single server.js.
+  // Same session-secret gate as the other app tools; the store sandboxes every path.
+  if (method === 'GET' && p === '/api/apps/files') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(url.searchParams.get('id') || '').trim().toLowerCase();
+    if (!os.apps.get(id)) return sendJson(res, 200, { ok: false, error: `unknown app "${id}"` });
+    const rel = url.searchParams.get('path');
+    if (rel) {
+      const content = os.apps.readFile(id, rel);
+      return sendJson(res, 200, content === null ? { ok: false, error: 'no such file' } : { ok: true, path: rel, content });
+    }
+    return sendJson(res, 200, { ok: true, files: os.apps.listFiles(id) });
+  }
+  if (method === 'POST' && p === '/api/apps/file/write') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim().toLowerCase();
+    const cur = os.apps.get(id);
+    if (!cur) return sendJson(res, 200, { ok: false, error: `unknown app "${id}"` });
+    const rel = String(b.path || '');
+    if (!os.apps.writeFile(id, rel, typeof b.content === 'string' ? b.content : '')) return sendJson(res, 200, { ok: false, error: 'invalid or protected path' });
+    const wasPublished = !!cur.published;
+    if (wasPublished) { os.apps.setPublished(id, false); appSup?.kill(id, 'edited — needs re-publish'); }
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'app.file.written', data: { app: id, path: rel, by: `agent:${agent}`, unpublished: wasPublished } });
+    if (wasPublished) tm.postAppCard({ slug: id, agent, title: `App edited — ${cur.name}`, body: `${agent} edited \`${rel}\` in the live app "${cur.name}" (\`${id}\`); it was unpublished for review. Re-publish to make the change live.` });
+    return sendJson(res, 200, { ok: true, id, path: rel, unpublished: wasPublished });
+  }
+  if (method === 'POST' && p === '/api/apps/file/delete') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim().toLowerCase();
+    const cur = os.apps.get(id);
+    if (!cur) return sendJson(res, 200, { ok: false, error: `unknown app "${id}"` });
+    const rel = String(b.path || '');
+    if (!os.apps.deleteFile(id, rel)) return sendJson(res, 200, { ok: false, error: 'cannot delete (missing, protected, or the entry file)' });
+    if (cur.published) { os.apps.setPublished(id, false); appSup?.kill(id, 'edited — needs re-publish'); }
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'app.file.deleted', data: { app: id, path: rel, by: `agent:${agent}` } });
+    return sendJson(res, 200, { ok: true, id, path: rel });
+  }
 
   // ── App runtime callbacks (`/api/app/*`) ─────────────────────────────────────
   // A HOSTED APP calls these over loopback. It has no cookie and no session secret — it authenticates
@@ -4098,12 +4146,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const app = os.apps.get(slug);
     if (!app) return sendJson(res, 404, { error: 'no such app' });
     if (method === 'GET') {
-      // Return the manifest, the entry source (for the editor), a tail of the run log, + live status.
+      // Return the manifest, the file tree, the entry source (for the editor's initial file), a tail of
+      // the run log, + live status.
+      const files = os.apps.listFiles(slug);
       let source = '';
       try { source = fs.readFileSync(path.join(app.dir!, app.entry), 'utf8'); } catch { /* new/renamed entry */ }
       let log = '';
       try { log = fs.readFileSync(path.join(app.dir!, 'app.log'), 'utf8').split('\n').slice(-200).join('\n'); } catch { /* no log yet */ }
-      return sendJson(res, 200, { app: appView(app, appSup), source, log });
+      return sendJson(res, 200, { app: appView(app, appSup), files, source, log });
     }
     if (method === 'PUT') {
       const b = await readBody(req);
@@ -4123,6 +4173,42 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.apps.remove(slug);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.deleted', data: { app: slug, by: me.email } });
       return sendJson(res, 200, { ok: true });
+    }
+  }
+  // Per-app source files (multi-file authoring): list the tree, read/write/delete one file. Owner/admin.
+  // The store sandboxes every path under the app folder and protects the manifest + runtime state.
+  const appFiles = p.match(/^\/api\/apps\/([a-z0-9-]+)\/files$/);
+  if (method === 'GET' && appFiles) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.apps.get(appFiles[1])) return sendJson(res, 404, { error: 'no such app' });
+    return sendJson(res, 200, { files: os.apps.listFiles(appFiles[1]) });
+  }
+  const appFile = p.match(/^\/api\/apps\/([a-z0-9-]+)\/file$/);
+  if (appFile) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const slug = appFile[1];
+    const app = os.apps.get(slug);
+    if (!app) return sendJson(res, 404, { error: 'no such app' });
+    if (method === 'GET') {
+      const rel = String(url.searchParams.get('path') || '');
+      const content = os.apps.readFile(slug, rel);
+      if (content === null) return sendJson(res, 404, { error: 'no such file' });
+      return sendJson(res, 200, { path: rel, content });
+    }
+    if (method === 'PUT') {
+      const b = await readBody(req);
+      const rel = String(b.path || '');
+      if (!os.apps.writeFile(slug, rel, typeof b.content === 'string' ? b.content : '')) return sendJson(res, 400, { error: 'invalid or protected path' });
+      if (app.published) appSup?.kill(slug, 'file edited via console'); // bounce so the change shows next open
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.file.written', data: { app: slug, path: rel, by: me.email } });
+      return sendJson(res, 200, { ok: true, files: os.apps.listFiles(slug) });
+    }
+    if (method === 'DELETE') {
+      const rel = String(url.searchParams.get('path') || '');
+      if (!os.apps.deleteFile(slug, rel)) return sendJson(res, 400, { error: 'cannot delete (missing, protected, or the entry file)' });
+      if (app.published) appSup?.kill(slug, 'file deleted via console');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.file.deleted', data: { app: slug, path: rel, by: me.email } });
+      return sendJson(res, 200, { ok: true, files: os.apps.listFiles(slug) });
     }
   }
   const appPub = p.match(/^\/api\/apps\/([a-z0-9-]+)\/(publish|unpublish|stop)$/);
@@ -4948,9 +5034,12 @@ async function appProxy(os: AgentOS, apps: AppSupervisor, req: http.IncomingMess
   if (!me) return end(res, 401);
   const slug = appSlug(req.url);
   if (!slug) return end(res, 404);
+  // A proposed (unpublished) app is reachable ONLY by an owner/admin — the pre-publish preview. Everyone
+  // else sees a published app only (ensureReady rejects unpublished).
+  const allowUnpublished = me.role === 'owner' || me.role === 'admin';
   let port: number;
   try {
-    port = await apps.ensureReady(slug);
+    port = await apps.ensureReady(slug, { allowUnpublished });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return sendJson(res, /no such app|not published/.test(msg) ? 404 : 502, { error: msg });

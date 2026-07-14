@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -4054,48 +4054,90 @@ function AppStatusBadge({ s }: { s: AppInfo['status'] }) {
   return <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><span className={`h-2 w-2 rounded-full ${c}`} />{t}</span>
 }
 
-/** Apps — the owner/admin surface for small hosted apps. List on the left, a manifest + source editor
- *  on the right; publish is the gate that makes an app routable at /apps/<slug>. See docs/apps-plan.md. */
+/** Apps — the owner/admin surface for small hosted apps. List on the left; on the right a manifest +
+ *  capability editor, a multi-file source editor (file tree + per-file editing), and a sandboxed
+ *  preview iframe so you can see the app before you publish. See docs/apps-plan.md. */
 function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detail?: string) => void }) {
   const [apps, setApps] = useState<AppInfo[] | null>(null)
   const [enabled, setEnabled] = useState(true)
   const [sel, setSel] = useState<string>(permalink || '')
-  const [detail, setDetail] = useState<{ app: AppInfo; source: string; log: string } | null>(null)
-  const [source, setSource] = useState('')
+  const [detail, setDetail] = useState<{ app: AppInfo; log: string } | null>(null)
+  const [files, setFiles] = useState<AppFile[]>([])
+  const [openPath, setOpenPath] = useState('')
+  const [content, setContent] = useState('')
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState('')
   const [msg, setMsg] = useState('')
   const [creating, setCreating] = useState(false)
   const [newId, setNewId] = useState('')
   const [newName, setNewName] = useState('')
+  const [showPreview, setShowPreview] = useState(true)
+  const [previewNonce, setPreviewNonce] = useState(0)
 
   const load = () => api.apps().then((r) => { setApps(r.apps); setEnabled(r.enabled) }).catch(() => { setApps([]); setEnabled(false) })
   useEffect(() => { load() }, [])
   useEffect(() => {
-    if (!sel) { setDetail(null); return }
-    api.getApp(sel).then((d) => { setDetail(d); setSource(d.source); setDirty(false) }).catch(() => setDetail(null))
+    if (!sel) { setDetail(null); setFiles([]); setOpenPath(''); setContent(''); return }
+    api.getApp(sel).then((d) => {
+      setDetail({ app: d.app, log: d.log }); setFiles(d.files || [])
+      // Open the entry file by default (its content came back as `source`).
+      setOpenPath(d.app.entry); setContent(d.source); setDirty(false); setPreviewNonce((n) => n + 1)
+    }).catch(() => setDetail(null))
   }, [sel])
-  // Poll status while an app is starting/running so the dot + Open button stay live.
   useEffect(() => {
-    if (!apps?.some((a) => a.status === 'starting' || a.status === 'ready')) return
+    if (!apps?.some((x) => x.status === 'starting' || x.status === 'ready')) return
     const t = setInterval(load, 3000)
     return () => clearInterval(t)
   }, [apps])
 
-  const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 3000) }
+  const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(''), 3500) }
+  const refreshPreview = () => setPreviewNonce((n) => n + 1)
   const createApp = async () => {
     const id = newId.trim().toLowerCase()
     const r = await api.createApp({ id, name: newName.trim() || id })
     if (r.error || !r.ok) return flash(`⚠ ${r.error || 'could not create'}`)
     setCreating(false); setNewId(''); setNewName(''); await load(); setSel(id); flash(`✓ Created ${id} — edit + publish it`)
   }
-  const saveApp = async () => {
-    if (!detail) return
+  const openFile = async (fpath: string) => {
+    if (dirty && !confirm('Discard unsaved changes to this file?')) return
+    const r = await api.readAppFile(sel, fpath)
+    if (r.error) return flash(`⚠ ${r.error}`)
+    setOpenPath(fpath); setContent(r.content); setDirty(false)
+  }
+  const saveFile = async () => {
+    if (!detail || !openPath) return
     setBusy('save')
-    const r = await api.saveApp(detail.app.id, { source, capabilities: detail.app.capabilities, name: detail.app.name, icon: detail.app.icon, lifecycle: detail.app.lifecycle, idleTimeoutSec: detail.app.idleTimeoutSec })
+    const r = await api.writeAppFile(sel, openPath, content)
     setBusy('')
     if (r.error) return flash(`⚠ ${r.error}`)
-    setDirty(false); await load(); flash('✓ Saved' + (detail.app.published ? ' — bounced; changes live on next open' : ''))
+    if (r.files) setFiles(r.files)
+    setDirty(false); await load(); refreshPreview()
+    flash('✓ Saved ' + openPath + (detail.app.published ? ' — unpublished for re-review' : ''))
+  }
+  const addFile = async () => {
+    const p = prompt('New file path (relative to the app folder), e.g. app/lib/db.js')
+    if (!p) return
+    const r = await api.writeAppFile(sel, p.trim(), '')
+    if (r.error) return flash(`⚠ ${r.error}`)
+    if (r.files) setFiles(r.files)
+    openFile(p.trim())
+  }
+  const deleteFile = async (fpath: string) => {
+    if (!confirm(`Delete ${fpath}?`)) return
+    const r = await api.deleteAppFile(sel, fpath)
+    if (r.error) return flash(`⚠ ${r.error}`)
+    if (r.files) setFiles(r.files)
+    if (openPath === fpath && detail) openFile(detail.app.entry)
+    flash('✓ Deleted ' + fpath)
+  }
+  const saveSettings = async () => {
+    if (!detail) return
+    setBusy('settings')
+    const r = await api.saveApp(detail.app.id, { name: detail.app.name, icon: detail.app.icon, lifecycle: detail.app.lifecycle, idleTimeoutSec: detail.app.idleTimeoutSec, capabilities: detail.app.capabilities })
+    setBusy('')
+    if (r.error) return flash(`⚠ ${r.error}`)
+    await load(); if (r.app) setDetail((d) => (d ? { ...d, app: r.app! } : d)); refreshPreview()
+    flash('✓ Settings saved')
   }
   const patchApp = (patch: Partial<AppInfo>) => setDetail((d) => (d ? { ...d, app: { ...d.app, ...patch } } : d))
   const patchCaps = (patch: Partial<AppCapabilities>) => setDetail((d) => (d ? { ...d, app: { ...d.app, capabilities: { ...d.app.capabilities, ...patch } } } : d))
@@ -4105,7 +4147,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
     const r = detail.app.published ? await api.unpublishApp(detail.app.id) : await api.publishApp(detail.app.id)
     setBusy('')
     if (r.error) return flash(`⚠ ${r.error}`)
-    await load(); if (r.app) setDetail((d) => (d ? { ...d, app: r.app! } : d))
+    await load(); if (r.app) setDetail((d) => (d ? { ...d, app: r.app! } : d)); refreshPreview()
     flash(detail.app.published ? '✓ Unpublished' : '✓ Published — live at /apps/' + detail.app.id)
   }
   const removeApp = async () => {
@@ -4122,7 +4164,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   const a = detail?.app
   const caps = a?.capabilities ?? {}
   return (
-    <div className="flex max-w-6xl gap-6">
+    <div className="flex max-w-[1400px] gap-6">
       {/* left: app list */}
       <div className="w-64 shrink-0 space-y-2">
         <div className="flex items-center justify-between">
@@ -4168,10 +4210,14 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
               </div>
             </div>
             {a.lastError && a.status === 'crashed' && <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">Crashed: {a.lastError}</div>}
+            {!a.published && <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">Proposed — visible only to owners/admins in the preview below. Publish to make it live at <code>/apps/{a.id}</code>.</div>}
 
             {/* capabilities (default-deny) */}
             <div className="rounded-lg border p-3">
-              <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Capabilities (default-deny)</div>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Settings &amp; capabilities (default-deny)</span>
+                <Button size="sm" variant="outline" disabled={busy === 'settings'} onClick={saveSettings} className="gap-1"><Save className="h-3 w-3" /> Save settings</Button>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!caps.egress} onChange={(e) => patchCaps({ egress: e.target.checked })} /> Outbound network (egress)</label>
                 <div className="flex items-center gap-2 text-sm">
@@ -4190,17 +4236,61 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
                   <Input value={(caps.secrets ?? []).join(', ')} onChange={(e) => patchCaps({ secrets: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className="mt-1 h-8 font-mono text-xs" placeholder="STRIPE_KEY" />
                 </label>
               </div>
-              <div className="mt-2 text-[11px] text-muted-foreground">Dispatch, egress + secrets are follow-ups — declaring them now records the contract; enforcement lands with those slices.</div>
+              <div className="mt-2 text-[11px] text-muted-foreground"><b>dispatchAgents</b> is enforced now; <b>egress</b> + <b>secrets</b> record the contract (enforcement lands with those slices).</div>
             </div>
 
-            {/* source editor */}
-            <div>
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{a.entry}</span>
-                <Button size="sm" disabled={busy === 'save'} onClick={saveApp} className="gap-1"><Save className="h-3.5 w-3.5" /> Save</Button>
+            {/* multi-file source: tree + editor */}
+            <div className="rounded-lg border">
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Source</span>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" onClick={addFile}><FilePlus className="h-3.5 w-3.5" /> New file</Button>
+                  <Button size="sm" disabled={busy === 'save' || !dirty} onClick={saveFile} className="h-7 gap-1 px-2 text-xs"><Save className="h-3.5 w-3.5" /> Save file</Button>
+                </div>
               </div>
-              <Textarea value={source} onChange={(e) => { setSource(e.target.value); setDirty(true) }} spellCheck={false} className="h-80 font-mono text-xs leading-relaxed" />
-              {dirty && <div className="mt-1 text-[11px] text-amber-600">Unsaved changes</div>}
+              <div className="flex min-h-[22rem]">
+                <div className="w-52 shrink-0 space-y-0.5 overflow-auto border-r p-2">
+                  {files.map((f) => (
+                    <div key={f.path} className={`group flex items-center gap-1 rounded px-2 py-1 text-xs ${openPath === f.path ? 'bg-primary/10 font-medium' : 'hover:bg-muted/60'}`}>
+                      <button onClick={() => openFile(f.path)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+                        <FileCode className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate font-mono">{f.path}{f.path === a.entry ? ' ·entry' : ''}</span>
+                      </button>
+                      {f.path !== a.entry && <button onClick={() => deleteFile(f.path)} className="opacity-0 transition group-hover:opacity-100" title="delete file"><Trash2 className="h-3 w-3 text-red-500" /></button>}
+                    </div>
+                  ))}
+                  {files.length === 0 && <div className="px-2 py-1 text-[11px] text-muted-foreground">No files.</div>}
+                </div>
+                <div className="min-w-0 flex-1 p-2">
+                  <div className="mb-1 font-mono text-[11px] text-muted-foreground">{openPath || '—'}{dirty ? ' •' : ''}</div>
+                  <Textarea value={content} onChange={(e) => { setContent(e.target.value); setDirty(true) }} spellCheck={false} className="h-[19rem] font-mono text-xs leading-relaxed" />
+                </div>
+              </div>
+            </div>
+
+            {/* preview — the app rendered in a sandboxed iframe (owner/admin can preview it unpublished) */}
+            <div className="rounded-lg border">
+              <div className="flex items-center justify-between border-b px-3 py-2">
+                <button onClick={() => setShowPreview((s) => !s)} className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {showPreview ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} Preview
+                </button>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" onClick={refreshPreview}><RefreshCw className="h-3.5 w-3.5" /> Reload</Button>
+                  <a href={api.appUrl(a.id)} target="_blank" rel="noreferrer" className={buttonVariants({ size: 'sm', variant: 'ghost' }) + ' h-7 gap-1 px-2 text-xs'}><ExternalLink className="h-3.5 w-3.5" /> New tab</a>
+                </div>
+              </div>
+              {showPreview && (
+                <div className="p-2">
+                  <iframe
+                    key={previewNonce}
+                    src={api.appUrl(a.id) + '?_preview=' + previewNonce}
+                    title={`${a.name} preview`}
+                    sandbox="allow-scripts allow-forms allow-popups allow-modals"
+                    className="h-[28rem] w-full rounded border bg-white"
+                  />
+                  <div className="mt-1 text-[11px] text-muted-foreground">Sandboxed (no access to the console). Save a file, then Reload to see changes.</div>
+                </div>
+              )}
             </div>
 
             {detail?.log && (

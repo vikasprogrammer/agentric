@@ -160,6 +160,81 @@ export class AppStore {
     fs.rmSync(dir, { recursive: true, force: true });
     return true;
   }
+
+  // ── multi-file source ops ────────────────────────────────────────────────────
+  // An app is a normal Node project directory: the entry can `require('./lib/…')`, read sibling
+  // templates, serve static assets. These methods let humans (console) + agents (`app_*file*` tools)
+  // author that whole tree, sandboxed under the app folder. The manifest (`app.json`) is edited via
+  // save(); the runtime state (`data.db*`, `app.log`) is not source and is hidden from the editor.
+
+  /** Resolve `relPath` to an absolute path strictly inside the app folder, or null if it escapes /
+   *  targets a protected non-source file. Blocks traversal, absolute paths, dotfiles, and the manifest
+   *  + runtime state. */
+  private resolveFile(slug: string, relPath: string): string | null {
+    const app = this.get(slug);
+    if (!app?.dir) return null;
+    const clean = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '').trim();
+    if (!clean || clean.split('/').some((seg) => seg === '..' || seg === '' || seg.startsWith('.'))) return null;
+    const base = /^(app\.json|data\.db|app\.log)$/i;
+    if (base.test(clean) || /\.(db|db-wal|db-shm)$/i.test(clean)) return null; // manifest + runtime, not source
+    const abs = path.resolve(app.dir, clean);
+    if (abs !== app.dir && !abs.startsWith(path.resolve(app.dir) + path.sep)) return null;
+    return abs;
+  }
+
+  /** List the app's source files (relative paths + byte sizes), skipping the manifest, runtime DB, log,
+   *  and dotfiles. Recurses the folder. */
+  listFiles(slug: string): { path: string; bytes: number }[] {
+    const app = this.get(slug);
+    if (!app?.dir) return [];
+    const out: { path: string; bytes: number }[] = [];
+    const skip = /^(app\.json|data\.db|data\.db-wal|data\.db-shm|app\.log)$/i;
+    const walk = (dir: string, prefix: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.')) continue;
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) { walk(path.join(dir, entry.name), rel); continue; }
+        if (!prefix && skip.test(entry.name)) continue;
+        try { out.push({ path: rel, bytes: fs.statSync(path.join(dir, entry.name)).size }); } catch { /* vanished */ }
+      }
+    };
+    walk(app.dir, '');
+    return out.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  /** Read one source file's text, or null if it's missing/protected/out of bounds. */
+  readFile(slug: string, relPath: string): string | null {
+    const abs = this.resolveFile(slug, relPath);
+    if (!abs || !fs.existsSync(abs) || fs.statSync(abs).isDirectory()) return null;
+    try { return fs.readFileSync(abs, 'utf8'); } catch { return null; }
+  }
+
+  /** Create/overwrite a source file (making parent dirs). Returns false if the path is out of bounds
+   *  or protected. */
+  writeFile(slug: string, relPath: string, content: string): boolean {
+    const abs = this.resolveFile(slug, relPath);
+    if (!abs) return false;
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content, 'utf8');
+    return true;
+  }
+
+  /** Delete a source file (never the entry, manifest, or runtime state). Prunes now-empty parent dirs. */
+  deleteFile(slug: string, relPath: string): boolean {
+    const app = this.get(slug);
+    const abs = this.resolveFile(slug, relPath);
+    if (!app?.dir || !abs || !fs.existsSync(abs)) return false;
+    if (path.resolve(app.dir, app.entry) === abs) return false; // the entry can be edited, not deleted
+    fs.rmSync(abs, { force: true });
+    // Tidy empty dirs up to (but not including) the app root.
+    let dir = path.dirname(abs);
+    const root = path.resolve(app.dir);
+    while (dir.startsWith(root + path.sep) && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+      fs.rmdirSync(dir);
+      dir = path.dirname(dir);
+    }
+    return true;
+  }
 }
 
 /** The starter app the scaffold writes: a zero-dependency Node server that binds `PORT`, honours the

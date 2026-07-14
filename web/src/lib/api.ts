@@ -225,6 +225,7 @@ export interface AppCapabilities {
   secrets?: string[]
   dependencies?: 'stdlib' | 'vendored' | 'npm'
 }
+export interface AppFile { path: string; bytes: number }
 export interface AppInfo {
   id: string
   name: string
@@ -1328,8 +1329,13 @@ export const api = {
   // Hosted apps (owner/admin) — the management surface for small server-side apps.
   apps: () => call<{ apps: AppInfo[]; enabled: boolean }>('GET', '/api/apps'),
   createApp: (body: { id: string; name: string; icon?: string; capabilities?: AppCapabilities }) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('POST', '/api/apps', body),
-  getApp: (slug: string) => call<{ app: AppInfo; source: string; log: string }>('GET', '/api/apps/' + slug),
+  getApp: (slug: string) => call<{ app: AppInfo; files: AppFile[]; source: string; log: string }>('GET', '/api/apps/' + slug),
   saveApp: (slug: string, body: { name?: string; icon?: string; lifecycle?: string; idleTimeoutSec?: number; capabilities?: AppCapabilities; source?: string }) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('PUT', '/api/apps/' + slug, body),
+  // Multi-file source: the tree + per-file read/write/delete (owner/admin).
+  appFiles: (slug: string) => call<{ files: AppFile[] }>('GET', `/api/apps/${slug}/files`),
+  readAppFile: (slug: string, filePath: string) => call<{ path: string; content: string; error?: string }>('GET', `/api/apps/${slug}/file?path=${encodeURIComponent(filePath)}`),
+  writeAppFile: (slug: string, filePath: string, content: string) => call<{ ok?: boolean; files?: AppFile[]; error?: string }>('PUT', `/api/apps/${slug}/file`, { path: filePath, content }),
+  deleteAppFile: (slug: string, filePath: string) => call<{ ok?: boolean; files?: AppFile[]; error?: string }>('DELETE', `/api/apps/${slug}/file?path=${encodeURIComponent(filePath)}`),
   publishApp: (slug: string) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('POST', `/api/apps/${slug}/publish`),
   unpublishApp: (slug: string) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('POST', `/api/apps/${slug}/unpublish`),
   stopApp: (slug: string) => call<{ ok?: boolean }>('POST', `/api/apps/${slug}/stop`),

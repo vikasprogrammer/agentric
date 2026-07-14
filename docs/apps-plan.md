@@ -26,9 +26,16 @@
 >   work becomes a governed `TaskStore` task (`createdBy = app:<slug>`, run-as = the current UI member),
 >   auto-dispatched, with an optional bounded synchronous `wait`. `GET /api/app/dispatches` polls
 >   results. So an app can hand judgement work to the fleet without any new trust surface.
+> - **v0.201.0 — multi-file authoring + pre-publish preview** (§6): an app is a normal Node project dir
+>   (the entry can `require('./lib/…')`, read sibling templates) — the store gains sandboxed file ops
+>   (`listFiles`/`readFile`/`writeFile`/`deleteFile`, protecting the manifest + `data.db`), exposed as
+>   console file routes + agent tools **`app_files`/`app_write_file`/`app_delete_file`**. The console Apps
+>   page gains a **file-tree editor** and a **sandboxed preview iframe** (owner/admin can reach an
+>   unpublished app via the proxy — `ensureReady({allowUnpublished})` — so you see it before publishing).
 >
 > **Still to build:** secrets (§4.1), Linux uid-isolation (§3.3), `app_history`/`app_revert` revisions,
-> multi-file bundles (§6), `/api/app/notify`.
+> `/api/app/notify`, **separate-origin isolation** (§9 — published apps currently render same-origin as
+> the console; the preview iframe is sandboxed, but a top-level "Open" runs at the app-os origin).
 
 ## 0. Where Apps sit relative to Sessions, Automations, Tasks, and the Library
 
@@ -318,6 +325,12 @@ the manifest:
   members/roles, enforced in `appProxy` (like `canRun` for agents).
 - **Custom domains / subdomain-per-app** — v1 is path-based `/apps/<slug>`. The registry already
   resolves tenants by subdomain; an app-subdomain is a later routing extension.
+- **Separate-origin isolation (security).** Apps render at `/apps/<slug>`, the SAME origin as the
+  console, so a published app's client-side JS opened top-level ("Open in new tab") runs at the app-os
+  origin and could call the authed `/api/*` with the viewer's cookie. The **preview iframe is already
+  sandboxed** (opaque origin, no `allow-same-origin`), so it can't reach the console — but the top-level
+  case wants real isolation: serve apps from a distinct origin (subdomain-per-app / a dedicated apps
+  domain) with their own auth, or a strict per-app CSP. Track before apps host anything sensitive.
 - **Shared app data ↔ KB/Tasks bridges** — an app reading/writing the OS's own KB or Tasks via
   `/api/app/*` (capability-gated) rather than only its private `data.db`.
 - **`npm`/`vendored` dependency tiers** beyond `stdlib`.
