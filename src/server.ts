@@ -29,6 +29,7 @@ import { buildImprovements } from './edge/improvements';
 import { Diagnosis } from './edge/diagnosis';
 import { Improver, proposalSlug } from './edge/improver';
 import { planMemoryCleanup, applyMemoryCleanup, cleanupOpts } from './edge/memory-cleanup';
+import { SkillScout } from './edge/skill-scout';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -2492,6 +2493,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planMemoryCleanup(os) });
     const r = applyMemoryCleanup(os, cleanupOpts(os), me.email);
     return sendJson(res, 200, { ok: true, ...r });
+  }
+  // Skills domain "generate the fix": spawn the skill-scout to mine recent successful fleet runs for a
+  // recurring procedure and draft it as a skill via skill_propose — lands on the existing proposed-skill
+  // review queue (published from the Skills page); no new apply surface.
+  if (method === 'POST' && p === '/api/insights/skills/draft') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    try {
+      const r = await new SkillScout(os, tm).draft(me.email);
+      return sendJson(res, r.spawned ? 200 : 400, { ok: r.spawned, ...r });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
   }
   // Apply / dismiss a config recommendation (human-gated — nothing auto-applies).
   const recMatch = p.match(/^\/api\/dreaming\/recommendation\/([\w.-]+)\/(apply|dismiss)$/);

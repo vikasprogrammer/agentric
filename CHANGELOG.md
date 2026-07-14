@@ -8,7 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.178.0] — 2026-07-14
+## [0.179.0] — 2026-07-14
+### Added
+- **Insights improvement tiles v2 — Skills domain ("draft a skill").** Completes the first v2 batch
+  (Agents · Memory · Skills). The Skills tile gains a **Draft a skill** action that spawns a governed
+  headless **skill-scout** (`src/edge/skill-scout.ts`, same shape as the analyst / improver) which mines a
+  slice of the fleet's recent SUCCESSFUL runs, finds a recurring multi-step procedure the fleet keeps doing
+  by hand (checking `skill_find` so it never duplicates an existing skill), and drafts ONE reusable skill
+  via `skill_propose` — landing on the **existing** proposed-skill review queue (published from the Skills
+  page), so there's no new apply surface. It's told to draft nothing rather than force a weak skill. The
+  tile keeps a **Review N →** link to the queue alongside. Route `POST /api/insights/skills/draft`; audited
+  `insights.skill.scout`.
 ### Added
 - **Insights improvement tiles v2 — Memory domain ("preview cleanup").** The Memory tile is now generative:
   a **Preview cleanup** action shows exactly what a maintenance pass would prune (never-recalled aged
