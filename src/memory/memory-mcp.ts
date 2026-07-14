@@ -1627,7 +1627,7 @@ async function policyPropose(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
   return d.ok
-    ? `Policy change proposed${d.preview ? ` (${d.preview})` : ''} — it's in the owner's inbox for review. NOTHING changes until an owner approves it. Proposals may only tighten guardrails, never loosen them.`
+    ? `Policy change proposed${d.preview ? ` (${d.preview})` : ''} — it's in the owner's inbox for review. NOTHING changes until an owner approves it. Proposals may only tighten guardrails, never loosen them. Once approved, the change hot-reloads and applies LIVE to every running session at its next gated action — no restart or respawn needed (unlike an MCP tool-schema change, which a live session only picks up when it respawns).`
     : `Could not propose the policy change: ${d.error ?? 'unknown error'}`;
 }
 
