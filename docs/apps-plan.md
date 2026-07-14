@@ -38,11 +38,20 @@
 >   an app can re-read one on demand via **`POST /api/app/secret/get`** — both **default-deny** (only
 >   declared keys). Value never leaves the vault into audit/GET responses. Console **Settings** tab shows
 >   set/unset per key + a write-only value field.
+> - **v0.205.0 — custom domains** (§9): a published app can bind custom domains (`my.tool.com`). A request
+>   whose `Host` matches serves that app at the domain **root**, on a **separate origin** from the console
+>   and **without a console login** (public). `TenantRegistry.appForHost` resolves Host → app (10s-cached,
+>   published-only, invalidated on edit); `serveAppDomain` proxies root-mounted + strips identity. Owner/
+>   admin bind domains in Settings; reserved hosts (base domain / tenant subdomains / localhost / IPs) and
+>   cross-app collisions are rejected. **This is also the separate-origin isolation for the custom-domain
+>   path** — a domain-served app is cross-origin, so its JS can't reach the console cookie/API. DNS + TLS
+>   are external (point a record at the box, terminate TLS in front).
 >
 > **Still to build:** Linux uid-isolation (§3.3), `app_history`/`app_revert` revisions,
-> `secret_request`/admin-assignment for apps, `/api/app/notify`, **separate-origin isolation** (§9 —
-> published apps currently render same-origin as the console; the preview iframe is sandboxed, but a
-> top-level "Open" runs at the app-os origin).
+> `secret_request`/admin-assignment for apps, `/api/app/notify`. **Separate-origin isolation** is now
+> solved for **custom domains**; the default **`/apps/<slug>`** path is still same-origin as the console
+> (fine for internal tools; use a custom domain — or a future per-app subdomain — for anything public or
+> untrusted).
 
 ## 0. Where Apps sit relative to Sessions, Automations, Tasks, and the Library
 

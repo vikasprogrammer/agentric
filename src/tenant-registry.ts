@@ -117,6 +117,46 @@ export class TenantRegistry {
     }
     return '';
   }
+  /** Resolve a request Host to a published app that has bound it as a custom domain — the whole domain
+   *  serves that app at its root (a separate origin from the console). Cached ~10s so it doesn't re-scan
+   *  every app manifest per request; only PUBLISHED apps' domains are live. */
+  private appDomains?: { at: number; map: Map<string, { tenant: string; slug: string }> };
+  appForHost(host: string): { rt: TenantRuntime; slug: string } | undefined {
+    const hostname = String(host || '').split(':')[0].trim().toLowerCase();
+    if (!hostname || !hostname.includes('.')) return undefined;
+    const now = Date.now();
+    if (!this.appDomains || now - this.appDomains.at > 10_000) {
+      const map = new Map<string, { tenant: string; slug: string }>();
+      for (const rt of this.runtimes.values()) {
+        for (const app of rt.os.apps.list()) {
+          if (!app.published) continue;
+          for (const d of app.domains ?? []) if (!map.has(d)) map.set(d, { tenant: rt.record.slug, slug: app.id });
+        }
+      }
+      this.appDomains = { at: now, map };
+    }
+    const hit = this.appDomains.map.get(hostname);
+    if (!hit) return undefined;
+    const rt = this.runtimes.get(hit.tenant);
+    return rt ? { rt, slug: hit.slug } : undefined;
+  }
+  /** Drop the app-domain cache so a just-saved binding takes effect immediately (called after edits). */
+  invalidateAppDomains(): void {
+    this.appDomains = undefined;
+  }
+  /** A host that must NOT be bindable as a custom app domain — it would shadow the console: the base
+   *  domain + its subdomains (tenant hosts), localhost, an IP literal, or the pinned public URL host. */
+  isReservedDomain(host: string): boolean {
+    const h = String(host || '').split(':')[0].trim().toLowerCase();
+    if (!h) return true;
+    const base = this.cfg.baseDomain?.toLowerCase();
+    if (base && (h === base || h === `www.${base}` || h.endsWith(`.${base}`))) return true;
+    if (h === 'localhost' || h.endsWith('.localhost')) return true;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return true;
+    const pub = process.env.AGENT_OS_PUBLIC_URL || this.cfg.publicUrl || '';
+    if (pub) { try { if (h === new URL(pub).hostname.toLowerCase()) return true; } catch { /* ignore */ } }
+    return false;
+  }
   list(): TenantRecord[] {
     return this.store.list();
   }

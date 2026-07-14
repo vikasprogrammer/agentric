@@ -237,6 +237,7 @@ export interface AppInfo {
   owner?: string
   createdBy?: string
   published: boolean
+  domains?: string[]
   version?: number
   status: 'cold' | 'starting' | 'ready' | 'crashed'
   uptimeMs?: number
@@ -1345,7 +1346,7 @@ export const api = {
   apps: () => call<{ apps: AppInfo[]; enabled: boolean }>('GET', '/api/apps'),
   createApp: (body: { id: string; name: string; icon?: string; capabilities?: AppCapabilities }) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('POST', '/api/apps', body),
   getApp: (slug: string) => call<{ app: AppInfo; files: AppFile[]; source: string; log: string; secretsSet: string[] }>('GET', '/api/apps/' + slug),
-  saveApp: (slug: string, body: { name?: string; icon?: string; lifecycle?: string; idleTimeoutSec?: number; capabilities?: AppCapabilities; source?: string }) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('PUT', '/api/apps/' + slug, body),
+  saveApp: (slug: string, body: { name?: string; icon?: string; lifecycle?: string; idleTimeoutSec?: number; capabilities?: AppCapabilities; domains?: string[]; source?: string }) => call<{ ok?: boolean; app?: AppInfo; error?: string }>('PUT', '/api/apps/' + slug, body),
   // Multi-file source: the tree + per-file read/write/delete (owner/admin).
   appFiles: (slug: string) => call<{ files: AppFile[] }>('GET', `/api/apps/${slug}/files`),
   readAppFile: (slug: string, filePath: string) => call<{ path: string; content: string; error?: string }>('GET', `/api/apps/${slug}/file?path=${encodeURIComponent(filePath)}`),

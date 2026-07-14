@@ -951,6 +951,11 @@ export interface AppManifest {
   /** Whether this app has been published (routable + launchable). A proposed app stays inert until an
    *  owner/admin publishes it — the code-review gate. Undefined/false → proposed. */
   published?: boolean;
+  /** Custom domains bound to this app (`my.tool.com`). A request whose Host matches serves THIS app at
+   *  the domain root — a separate origin from the console, so it is reached WITHOUT a console login
+   *  (public). Only a published app's domains are live. DNS + TLS are external (point a record at the
+   *  box). Owner/admin only. See docs/apps-plan.md §9. */
+  domains?: string[];
   /** Bumped per saved revision (the rollback backbone). */
   version?: number;
   /** Absolute folder the manifest was loaded from. Set at load; never persisted. */
@@ -993,6 +998,23 @@ export function sanitizeAppCapabilities(input: unknown): AppCapabilities {
   if (raw.dependencies === 'vendored' || raw.dependencies === 'npm') out.dependencies = raw.dependencies;
   else out.dependencies = 'stdlib';
   return out;
+}
+
+/** Normalize a custom-domains payload: lowercase, trim, strip a scheme/port/path if pasted, keep only
+ *  syntactically valid hostnames (a dotted DNS name — no bare `localhost`, no IPs), dedupe, cap at 10.
+ *  Never throws; drops junk so a malformed entry can't shadow the console or another app by accident. */
+export function sanitizeAppDomains(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== 'string') continue;
+    let h = raw.trim().toLowerCase();
+    h = h.replace(/^[a-z]+:\/\//, '').split('/')[0].split(':')[0].trim(); // strip scheme/path/port if pasted
+    // A real dotted hostname: labels of alphanumerics/hyphens, at least one dot, valid TLD-ish tail.
+    if (!/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(h)) continue;
+    if (!out.includes(h)) out.push(h);
+  }
+  return out.slice(0, 10);
 }
 
 /** Normalize+validate a runtime-tuning payload (from an API body or config file): drops empty

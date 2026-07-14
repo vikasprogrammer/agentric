@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.205.0] — 2026-07-14
+### Added
+- **Apps — custom domains (point `my.tool.com` at any app).** A published app can bind one or more
+  custom domains in its **Settings** tab; a request whose `Host` matches serves that app **at the domain
+  root** — on a **separate origin** from the console and **without a console login** (public). New
+  `TenantRegistry.appForHost` resolves `Host → { tenant, app }` (10s-cached, **published-only**,
+  invalidated on edit/publish), checked before tenant routing; `serveAppDomain` proxies root-mounted
+  (empty `X-Forwarded-Prefix`) and strips any identity header (the app is on its own for auth). Owner/
+  admin only; **reserved hosts** (the base domain, tenant subdomains, `localhost`, IP literals, the
+  pinned public-URL host) and **cross-app collisions** are rejected, and a domain can't shadow the
+  console. Because a domain-served app is **cross-origin**, this is also the **separate-origin isolation**
+  for that path — the app's JS can't reach the console cookie/API. **DNS + TLS are external**: point an
+  A/CNAME at the box and terminate TLS in front; Agent OS routes by the `Host` header. Audited
+  `app.domains.set`. Verified end-to-end (bind → publish → served at root, public, console-API isolated,
+  reserved + uniqueness guards, unbind, console host never shadowed); governance CI 68/68. (`src/types.ts`,
+  `src/state/apps.ts`, `src/tenant-registry.ts`, `src/server.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`;
+  [`docs/apps-plan.md`](docs/apps-plan.md) §9.)
+
 ## [0.204.0] — 2026-07-14
 ### Added
 - **Apps — secrets (an app can hold a real credential).** A hosted app can now use API keys / tokens
