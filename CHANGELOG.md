@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.193.2] — 2026-07-14
+### Fixed
+- **Sidebar "All" session badge now counts only genuinely live runs.** It was keyed off `isLive`, which
+  is deliberately broad — an interactive session that reported `done` but keeps an attachable pane reads
+  live so its dot stays green and reattachable. That inflated the badge with finished sessions whose tmux
+  panes were never reaped (some days old), so the count could read ~10 when only a handful were actually
+  running. The badge now mirrors the server's canonical `aliveSessionCount`: a session with stored status
+  `running` and a live (or unpollable) pane. Per-session dots/reattach affordances are unchanged.
+
 ## [0.193.1] — 2026-07-14
 ### Fixed
 - **Chat replies no longer stall on "thinking…" forever.** The v1 Chat surface delivered a follow-up by

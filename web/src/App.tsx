@@ -997,7 +997,13 @@ function Console({ me }: { me: Member }) {
   const pendingApprovals = messages.filter(isActionRequired).length
   // Sessions where Claude is blocked waiting on the human — drives the per-session bell everywhere.
   const waiting = new Set(messages.filter((m) => m.type === 'notification' && m.status === 'open').map((m) => m.sessionId))
-  const runningSessions = sessions.filter(isLive).length
+  // The sidebar "All" badge counts genuinely LIVE runs — a session actively RUNNING with a live pane —
+  // mirroring the server's canonical aliveSessionCount. `isLive` is deliberately broader (an interactive
+  // session that reported `done` but keeps an attachable pane reads live so its dot stays green +
+  // reattachable), which would inflate this badge with finished sessions whose panes were never reaped.
+  // A running row with a confirmed-dead pane (alive === false) is mid-reap → excluded; alive undefined
+  // (poll failed / launcher backend) falls back to the stored 'running' status.
+  const runningSessions = sessions.filter((s) => s.status === 'running' && s.alive !== false).length
   // The sidebar is a switcher over the sessions *I'm accountable for* — ones I started directly
   // (spawnedBy is my member id) OR ones a trigger spawned that run AS me (runAs): a Task I own that
   // auto-dispatched, a chat message I sent. Those have a `task:`/`automation:` provenance, so keying
