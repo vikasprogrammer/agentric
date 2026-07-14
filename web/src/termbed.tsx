@@ -15,7 +15,12 @@ function TermBed() {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const [copied, setCopied] = useState(false)
   const h = useRef<XtermHandle | null>(null)
-  const onReady = useCallback((handle: XtermHandle) => { h.current = handle }, [])
+  const onReady = useCallback((handle: XtermHandle) => {
+    h.current = handle
+    // Test hook: expose the live Terminal so the Playwright harness can assert selection/buffer state
+    // (the canvas renderer draws no readable DOM). Test bed only — never mounted in the real console.
+    ;(window as unknown as { __aosTerm?: unknown }).__aosTerm = handle.term
+  }, [])
   const copyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const onCopy = useCallback(() => {
     setCopied(true)

@@ -12,10 +12,21 @@
 //     '2' PAUSE · '3' RESUME
 //   • server→client: first byte is the command —  '0' OUTPUT (raw bytes) · '1' SET_WINDOW_TITLE ·
 //     '2' SET_PREFERENCES
+//
+// Natural selection + links over a mouse-reporting TUI. claude's TUI (fullscreen, alt-screen) turns on
+// mouse tracking. The moment xterm sees a tracking mode it DISABLES its own selection service and starts
+// forwarding click/drag to the app — so a plain drag no longer selects (you'd need Option held) and a
+// link click gets eaten. But claude only actually uses the WHEEL (it runs with DISABLE_MOUSE_CLICKS);
+// it ignores the click/drag reports entirely. So we intercept the PTY output stream and strip just the
+// mouse-*tracking* DECSET modes (1000/1001/1002/1003) before xterm sees them: xterm stays in its normal,
+// no-mouse state (plain drag selects, links are clickable like a web page), and we forward ONLY the
+// wheel back to claude ourselves (as SGR mouse events) so its conversation still scrolls. claude's own
+// mouse state is unchanged — it enabled tracking on its side and happily parses the wheel events we send;
+// it just never gets clicks, which it discards anyway. Uses only documented xterm API (no internals), so
+// it survives xterm upgrades. See `stripMouseTracking` + the custom wheel handler below.
 import { useEffect, useRef } from 'react'
-import { Terminal, type ITheme } from '@xterm/xterm'
+import { Terminal, type ITheme, type ILink, type ILinkProvider } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
-import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
@@ -28,6 +39,109 @@ const C_RESUME = '3'
 const S_OUTPUT = 48 // '0'
 const S_TITLE = 49 // '1'
 const S_PREFS = 50 // '2'
+
+// ── mouse-tracking stripper ──────────────────────────────────────────────────────────────────────────
+// The DECSET private modes that make xterm switch into "forward the mouse to the app" (and thus disable
+// selection). We drop these from the output stream; every other private mode — SGR encoding (1006),
+// focus (1004), alt-screen (1049), bracketed paste (2004), … — passes through untouched.
+const TRACK_MODES = new Set([1000, 1001, 1002, 1003])
+const ESC = 0x1b, LBRACK = 0x5b, QUEST = 0x3f, SET = 0x68 /* h */, RESET = 0x6c /* l */
+
+/** A stateful filter over the raw PTY byte stream that removes mouse-tracking DECSET/DECRST sequences
+ *  (`ESC [ ? …h|l`) while preserving all other output verbatim, and reports (via `onWant`) whether the
+ *  app currently wants the mouse — so the wheel handler knows to forward. Handles a sequence split across
+ *  WebSocket frames by carrying an unfinished tail to the next call. */
+function stripMouseTracking(onWant: (want: boolean) => void): (input: Uint8Array) => Uint8Array {
+  let carry = new Uint8Array(0)
+  return (input: Uint8Array): Uint8Array => {
+    let buf = input
+    if (carry.length) { const j = new Uint8Array(carry.length + input.length); j.set(carry); j.set(input, carry.length); buf = j; carry = new Uint8Array(0) }
+    const n = buf.length
+    const out = new Uint8Array(n)
+    let o = 0, i = 0
+    while (i < n) {
+      const b = buf[i]
+      if (b !== ESC) { out[o++] = b; i++; continue }
+      // Need ESC '[' '?' to be a private mode set/reset; if the buffer ends mid-prefix, hold it.
+      if (i + 2 >= n) { if (buf[i + 1] === LBRACK || i + 1 >= n) { carry = buf.slice(i); break } out[o++] = b; i++; continue }
+      if (buf[i + 1] !== LBRACK || buf[i + 2] !== QUEST) { out[o++] = b; i++; continue }
+      // Scan numeric params (digits + ';') then a final byte.
+      let j = i + 3
+      let params = ''
+      while (j < n) { const c = buf[j]; if ((c >= 0x30 && c <= 0x39) || c === 0x3b) { params += String.fromCharCode(c); j++ } else break }
+      if (j >= n) { carry = buf.slice(i); break } // incomplete — wait for the rest
+      const fin = buf[j]
+      if (fin !== SET && fin !== RESET) { for (let k = i; k <= j; k++) out[o++] = buf[k]; i = j + 1; continue } // e.g. ?…$p — pass through
+      const modes = params.split(';').filter((s) => s.length)
+      const kept = modes.filter((m) => !TRACK_MODES.has(Number(m)))
+      if (modes.some((m) => TRACK_MODES.has(Number(m)))) onWant(fin === SET)
+      if (kept.length) { out[o++] = ESC; out[o++] = LBRACK; out[o++] = QUEST; const s = kept.join(';'); for (let k = 0; k < s.length; k++) out[o++] = s.charCodeAt(k); out[o++] = fin }
+      i = j + 1
+    }
+    if (carry.length > 64) { for (let k = 0; k < carry.length; k++) out[o++] = carry[k]; carry = new Uint8Array(0) } // runaway guard
+    return o === n ? out : out.subarray(0, o)
+  }
+}
+
+// ── link detection ───────────────────────────────────────────────────────────────────────────────────
+// Matchers run in priority order; earlier matches win over later ones on the same columns, so a full URL
+// isn't also picked up as a bare domain. The TLD list is deliberately conservative so `file.ts:42` or
+// `Component.tsx` don't get underlined as if they were `example.com`.
+const TLD = 'com|net|org|io|ai|dev|app|sh|co|gg|xyz|me|so|to|tv|cloud|tech|edu|gov|info|biz|us|uk|ca|de|fr|jp|in'
+const TAIL = `[^\\s"'\`<>)\\]}]` // a link body char — stops at whitespace and common wrappers
+const MATCHERS: { re: RegExp; url: (m: string) => string }[] = [
+  { re: new RegExp(`(?:https?|file)://${TAIL}+`, 'gi'), url: (m) => m },
+  { re: new RegExp(`\\bwww\\.${TAIL}+`, 'gi'), url: (m) => `https://${m}` },
+  { re: new RegExp(`\\b(?:localhost|127\\.0\\.0\\.1)(?::\\d+)?(?:/${TAIL}*)?`, 'gi'), url: (m) => `http://${m}` },
+  { re: new RegExp(`\\b[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9-]+)*\\.(?:${TLD})(?::\\d+)?(?:/${TAIL}*)?`, 'gi'), url: (m) => `https://${m}` },
+]
+
+function openUrl(url: string) { try { window.open(url, '_blank', 'noopener,noreferrer') } catch { /* popup blocked */ } }
+
+/** Trim trailing sentence punctuation that a link body regex greedily swallowed (`…example.com.` → drop
+ *  the period), returning how many chars were shaved so the highlight range can shrink to match. */
+function trimTrail(s: string): { text: string; shaved: number } {
+  const m = s.match(/[.,;:!?)\]}'"]+$/)
+  const shaved = m ? m[0].length : 0
+  return { text: shaved ? s.slice(0, -shaved) : s, shaved }
+}
+
+/** A link provider spanning the four matchers above over a single buffer row. xterm asks per row; we read
+ *  that row's text, find every non-overlapping match, and hand back clickable ranges (1-based, inclusive)
+ *  that open in a new tab. Wrapped links that span rows are matched on whichever row they start — good
+ *  enough for the URLs claude prints; keeps this simple and allocation-light. */
+function makeLinkProvider(term: Terminal): ILinkProvider {
+  return {
+    provideLinks(row, cb) {
+      const line = term.buffer.active.getLine(row - 1)
+      if (!line) return cb(undefined)
+      const text = line.translateToString(true)
+      if (!text || !/[.:/]/.test(text)) return cb(undefined)
+      const taken: boolean[] = []
+      const links: ILink[] = []
+      for (const { re, url } of MATCHERS) {
+        re.lastIndex = 0
+        let m: RegExpExecArray | null
+        while ((m = re.exec(text))) {
+          const start = m.index
+          const { text: raw, shaved } = trimTrail(m[0])
+          const end = start + raw.length // exclusive
+          if (raw.length < 4 || taken[start] || taken[end - 1]) continue
+          for (let k = start; k < end; k++) taken[k] = true
+          const target = url(raw)
+          links.push({
+            text: raw,
+            range: { start: { x: start + 1, y: row }, end: { x: end, y: row } },
+            decorations: { pointerCursor: true, underline: true },
+            activate: (e) => { e.preventDefault(); openUrl(target) },
+          })
+          if (shaved && re.lastIndex > end) re.lastIndex = end // don't skip a link glued right after
+        }
+      }
+      cb(links.length ? links : undefined)
+    },
+  }
+}
 
 const enc = new TextEncoder()
 
@@ -120,18 +234,22 @@ export function Xterm({
       theme,
       cursorBlink: true,
       scrollback: 10000,
-      // Copy/paste ergonomics — the reason we own the frontend:
-      // hold Option (mac) / any drag with this on lets you select even while claude's mouse-reporting is
-      // active; right-click pastes the OS clipboard.
+      // Selection ergonomics — the reason we own the frontend. We strip the app's mouse-tracking modes
+      // (see `stripMouseTracking`), so a plain drag already selects with no modifier; Option-drag stays a
+      // harmless fallback in case some future app enables a mode we don't strip.
       macOptionClickForcesSelection: true,
       rightClickSelectsWord: false,
       allowProposedApi: true,
+      // OSC 8 hyperlinks (ESC ] 8 ; ; <uri>) — claude and modern CLIs emit these; open them in a new tab.
+      linkHandler: { activate: (_e, uri) => openUrl(uri), allowNonHttpProtocols: false },
     })
     const fit = new FitAddon()
     const search = new SearchAddon()
     term.loadAddon(fit)
     term.loadAddon(search)
-    term.loadAddon(new WebLinksAddon())
+    // Clickable links for bare domains / localhost:port / www / full URLs (our own provider — the stock
+    // WebLinksAddon only matches full `https://…`, missing exactly the "rendered link without a scheme").
+    term.registerLinkProvider(makeLinkProvider(term))
     term.open(host)
     // Canvas renderer: draw the grid to a <canvas> instead of the default DOM renderer, whose real
     // per-cell text is natively selectable by the browser — that native selection competes with xterm's
@@ -170,6 +288,30 @@ export function Xterm({
       return true
     })
 
+    // ── mouse forwarding ───────────────────────────────────────────────────────────────────────────
+    // We strip the app's mouse-tracking from the output stream (below), so xterm no longer forwards the
+    // wheel to the app on its own. Re-supply just the wheel: while the app WANTS the mouse (it emitted a
+    // tracking DECSET — claude's TUI, or tmux at a bare prompt), translate each wheel notch into SGR
+    // wheel-button events (button 64 up / 65 down) and send them down, so claude scrolls its conversation
+    // and tmux scrolls its scrollback exactly as if we'd never stripped the mode. When no app wants the
+    // mouse, return true to let xterm do its own local scrollback scroll.
+    let appMouseWanted = false
+    term.attachCustomWheelEventHandler((e) => {
+      if (!appMouseWanted || e.deltaY === 0) return true
+      const rect = host.getBoundingClientRect()
+      const col = Math.min(term.cols, Math.max(1, Math.floor(((e.clientX - rect.left) / rect.width) * term.cols) + 1))
+      const rowY = Math.min(term.rows, Math.max(1, Math.floor(((e.clientY - rect.top) / rect.height) * term.rows) + 1))
+      const btn = e.deltaY < 0 ? 64 : 65
+      const notches = e.deltaMode === 1 ? Math.abs(e.deltaY) // lines
+        : e.deltaMode === 2 ? Math.abs(e.deltaY) * term.rows // pages
+        : Math.max(1, Math.round(Math.abs(e.deltaY) / 40)) // pixels
+      let seq = ''
+      for (let k = 0; k < Math.min(notches, 8); k++) seq += `\x1b[<${btn};${col};${rowY}M`
+      send(C_INPUT + seq)
+      return false // handled — don't let xterm also scroll its (empty, on the alt-screen) local buffer
+    })
+    const mouseFilter = stripMouseTracking((w) => { appMouseWanted = w })
+
     // ── socket ───────────────────────────────────────────────────────────────────────────────────
     const url = wsUrl.startsWith('/')
       ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${wsUrl}`
@@ -203,9 +345,12 @@ export function Xterm({
       const cmd = view[0]
       const body = view.subarray(1)
       if (cmd === S_OUTPUT) {
-        pending += body.length
+        // Strip the app's mouse-tracking DECSET modes before xterm sees them (keeps native drag-select +
+        // clickable links) — see stripMouseTracking. Flow-control accounts for the cleaned length.
+        const clean = mouseFilter(body)
+        pending += clean.length
         if (pending > HIGH) send(C_PAUSE)
-        term.write(body, () => { pending -= body.length; if (pending <= HIGH) send(C_RESUME) })
+        term.write(clean, () => { pending -= clean.length; if (pending <= HIGH) send(C_RESUME) })
       } else if (cmd === S_TITLE) {
         cbs.current.onTitle?.(new TextDecoder().decode(body))
       } else if (cmd === S_PREFS) {
