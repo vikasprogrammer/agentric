@@ -30,6 +30,7 @@ import { Diagnosis } from './edge/diagnosis';
 import { Improver, proposalSlug } from './edge/improver';
 import { planMemoryCleanup, applyMemoryCleanup, cleanupOpts } from './edge/memory-cleanup';
 import { SkillScout } from './edge/skill-scout';
+import { planKbTidy, applyKbTidy } from './edge/kb-tidy';
 import { Strategist } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -2492,6 +2493,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planMemoryCleanup(os) });
     const r = applyMemoryCleanup(os, cleanupOpts(os), me.email);
+    return sendJson(res, 200, { ok: true, ...r });
+  }
+  // KB domain "generate the fix": PREVIEW which dead (never-read, aged) pages would be archived (no
+  // mutation), then POST archives them — soft remove, history survives + revertable. Review-gated tidy.
+  if (p === '/api/insights/kb/tidy' && (method === 'GET' || method === 'POST')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planKbTidy(os) });
+    const r = applyKbTidy(os, me.email);
     return sendJson(res, 200, { ok: true, ...r });
   }
   // Skills domain "generate the fix": spawn the skill-scout to mine recent successful fleet runs for a
