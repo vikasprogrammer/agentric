@@ -17,7 +17,8 @@ import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './state/session-activity';
-import { Automation, Automations, nextCronRun, derivedConcurrencyCap } from './edge/automations';
+import { readConversation } from './edge/conversation';
+import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { DreamingEngine, recommendationResolved } from './edge/dreaming';
@@ -1892,6 +1893,48 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!os.team.canRun(me, agent)) return sendJson(res, 403, { error: `you are not assigned to run "${agent}"` });
     const s = tm.createSession(agent, String(b.title || task), task, me.id);
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
+  }
+  // ─── Native chat surface (non-technical) — a plain-language window onto a claude-code run, an
+  //     alternative to the ttyd terminal. Governance is UNCHANGED: the gate hook + approvals still
+  //     mediate every effect; this only reads the transcript and drives replies via the same
+  //     resident deliver/revive path Slack thread-continuity uses.
+  //
+  // Start a chat: spawn a RESIDENT interactive session (kept warm for fast follow-ups, like Slack chat).
+  if (method === 'POST' && p === '/api/chat/start') {
+    const b = await readBody(req);
+    const agent = String(b.agent || '').trim();
+    const message = String(b.message || '').trim();
+    if (!agent || !message) return sendJson(res, 400, { error: 'agent and message are required' });
+    if (!os.team.canRun(me, agent)) return sendJson(res, 403, { error: `you are not assigned to run "${agent}"` });
+    // spawnedBy=chat provenance, runAs=me (accountable human for the turn), resident=true.
+    const s = tm.createSession(agent, chatTitle(message, agent), message, `chat:${me.id}`, false, undefined, undefined, me.id, undefined, true);
+    return sendJson(res, 200, { id: s.id, tmux: s.tmux });
+  }
+  // Read the friendly conversation timeline for a session (poll this like the rest of the console).
+  const convoMatch = p.match(/^\/api\/sessions\/([\w-]+)\/conversation$/);
+  if (method === 'GET' && convoMatch) {
+    const id = convoMatch[1];
+    const agent = tm.sessionAgent(id);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
+    const claudeId = tm.sessionClaudeId(id);
+    const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
+    return sendJson(res, 200, { agent, ...convo });
+  }
+  // Reply into a session (the human's next turn). Warm path types into the live resident pane; cold
+  // path (a reaped session) resumes the SAME transcript seeded with the message — identical to a Slack
+  // thread follow-up. The replier becomes the accountable run-as for this turn.
+  const chatReplyMatch = p.match(/^\/api\/sessions\/([\w-]+)\/reply$/);
+  if (method === 'POST' && chatReplyMatch) {
+    const id = chatReplyMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to reply to this session' });
+    const b = await readBody(req);
+    const message = String(b.message || '').trim();
+    if (!message) return sendJson(res, 400, { error: 'message is required' });
+    if (tm.deliverToResident(id, message)) return sendJson(res, 200, { status: 'delivered' });
+    if (tm.reviveResident(id, message, me.id)) return sendJson(res, 200, { status: 'revived' });
+    return sendJson(res, 409, { error: 'this session could not accept the message' });
   }
   // Session activity: "which agent-os primitives did this run use?" — the session's audit stream,
   // classified into a chronological timeline + a grouped count summary. Same visibility as the terminal

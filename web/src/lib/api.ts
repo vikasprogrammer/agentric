@@ -946,6 +946,18 @@ export interface PolicyResp {
   error?: string
 }
 
+/** One entry in the non-technical chat timeline (mirrors src/edge/conversation.ts). */
+export type ChatTurn =
+  | { kind: 'user'; text: string; ts: number }
+  | { kind: 'assistant'; text: string; ts: number }
+  | { kind: 'activity'; tool: string; label: string; detail?: string; status: 'running' | 'ok' | 'error'; ts: number }
+export interface ConversationResp {
+  agent?: string
+  turns: ChatTurn[]
+  found: boolean
+  error?: string
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -1003,6 +1015,14 @@ export const api = {
   sessionTranscript: (id: string) => call<{ text?: string; error?: string }>('GET', `/api/sessions/${id}/transcript`),
   /** The agent-os primitives this session used — a classified timeline + grouped counts. */
   sessionActivity: (id: string) => call<SessionActivityResp>('GET', `/api/sessions/${id}/activity`),
+  /** Non-technical chat surface: the friendly conversation timeline for a session (poll it). */
+  conversation: (id: string) => call<ConversationResp>('GET', `/api/sessions/${id}/conversation`),
+  /** Start a chat with an agent — spawns a warm resident session. Returns its id. */
+  startChat: (agent: string, message: string) =>
+    call<{ id?: string; tmux?: string; error?: string }>('POST', '/api/chat/start', { agent, message }),
+  /** Send the human's next turn into a chat session (warm deliver, else resume). */
+  reply: (id: string, message: string) =>
+    call<{ status?: 'delivered' | 'revived'; error?: string }>('POST', `/api/sessions/${id}/reply`, { message }),
   /** Upload a pasted/dropped/picked file (ANY type) into a live session; the server saves it in the
    *  agent's folder and types the path into the running claude. `dataB64` is base64 (no data: prefix);
    *  `ext` e.g. 'pdf'; `name` is the original filename, preserved when given. */

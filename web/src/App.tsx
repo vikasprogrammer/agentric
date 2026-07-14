@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type DirListing, type FileEntry, type FileContent, type Artifact, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -22,9 +22,9 @@ import { Xterm } from './Xterm'
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'overview' | 'inbox' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'overview' | 'inbox' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['overview', 'inbox', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['overview', 'inbox', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -1050,6 +1050,7 @@ function Console({ me }: { me: Member }) {
             {me.role === 'owner' && <Button render={<a href={navHref('overview')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'overview' ? 'text-primary' : 'text-muted-foreground'}`} title="Overview" onClick={onNavClick(() => nav('overview'))}><LayoutGrid className="h-4 w-4" /></Button>}
             <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
+            <Button render={<a href={navHref('chat')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'chat' ? 'text-primary' : 'text-muted-foreground'}`} title="Chat" onClick={onNavClick(() => nav('chat'))}><MessageSquare className="h-4 w-4" /></Button>
             {pinnedNav.map((n) => (
               <Button key={n.key} render={<a href={navHref(n.route)} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === n.route ? 'text-primary' : 'text-muted-foreground'}`} title={n.label} onClick={onNavClick(() => nav(n.route))}>{n.icon}</Button>
             ))}
@@ -1076,6 +1077,7 @@ function Console({ me }: { me: Member }) {
             {me.role === 'owner' && <NavItem icon={<LayoutGrid className="h-4 w-4" />} label="Overview" active={route === 'overview'} href={navHref('overview')} onClick={() => nav('overview')} />}
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
+            <NavItem icon={<MessageSquare className="h-4 w-4" />} label="Chat" active={route === 'chat'} href={navHref('chat')} onClick={() => nav('chat')} />
             {pinnedNav.map((n) => (
               <NavItem key={n.key} icon={n.icon} label={n.label} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned onTogglePin={() => togglePin(n.key)} />
             ))}
@@ -1188,7 +1190,7 @@ function Console({ me }: { me: Member }) {
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-                {route === 'overview' ? 'Overview' : route === 'inbox' ? 'Inbox' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'insights' ? 'Insights' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
+                {route === 'overview' ? 'Overview' : route === 'inbox' ? 'Inbox' : route === 'chat' ? 'Chat' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'insights' ? 'Insights' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
               </h1>
             </div>
           )}
@@ -1201,6 +1203,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} messages={messages} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
+          {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
@@ -2745,6 +2748,273 @@ function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
         {children}
       </div>
     </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// ChatPage — a plain-language window onto a claude-code run for non-technical teammates (support/
+// sales/marketing). No terminal: message bubbles + friendly "activity" cards + inline approvals, all
+// driven by the same governed session the terminal uses. Reads the transcript via /conversation and
+// sends the human's turns via /reply (warm deliver, else transcript resume — the Slack-continuity path).
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** One friendly activity card ("Sent a Slack message" ✓). Terminal detail stays hidden by default. */
+function ActivityCard({ turn }: { turn: Extract<ChatTurn, { kind: 'activity' }> }) {
+  const dot =
+    turn.status === 'error' ? 'bg-destructive' : turn.status === 'ok' ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'
+  return (
+    <div className="flex items-center gap-2 pl-1 text-[12px] text-muted-foreground">
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+      <span className="font-medium">{turn.label}</span>
+      {turn.detail && <span className="truncate font-mono text-[11px] opacity-70" title={turn.detail}>{turn.detail}</span>}
+    </div>
+  )
+}
+
+function ChatBubble({ turn, agentIcon }: { turn: Extract<ChatTurn, { kind: 'user' | 'assistant' }>; agentIcon?: string }) {
+  const mine = turn.kind === 'user'
+  return (
+    <div className={`flex gap-2.5 ${mine ? 'flex-row-reverse' : ''}`}>
+      <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted">
+        {mine ? <User className="h-3.5 w-3.5 text-muted-foreground" /> : <AgentIcon icon={agentIcon} className="h-3.5 w-3.5 text-muted-foreground" />}
+      </div>
+      <div className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-sm ${mine ? 'bg-primary text-primary-foreground' : 'bg-muted'}`}>
+        {mine ? (
+          <span className="whitespace-pre-wrap">{turn.text}</span>
+        ) : (
+          <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-pre:my-1"><ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown></div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ChatPage({ agents, sessions, messages, selected, onSelect }: {
+  agents: AgentInfo[]
+  sessions: Session[]
+  messages: Msg[]
+  selected: string
+  onSelect: (id: string) => void
+}) {
+  // Chattable agents = claude-code runtime the member is allowed to run. Chat sessions = ones this
+  // surface (or the chat router) spawned, newest first.
+  const chatAgents = useMemo(() => agents.filter((a) => a.runtime === 'claude-code'), [agents])
+  const chats = useMemo(
+    () => sessions.filter((s) => s.sourceKind === 'chat').sort((a, b) => b.updatedAt - a.updatedAt),
+    [sessions],
+  )
+  const active = selected ? sessions.find((s) => s.id === selected) : undefined
+
+  // New-chat composer state (shown when nothing is selected).
+  const [newAgent, setNewAgent] = useState('')
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  // Conversation timeline for the selected session (polled).
+  const [convo, setConvo] = useState<ChatTurn[]>([])
+  const [found, setFound] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!selected) { setConvo([]); setFound(false); return }
+    let stop = false
+    const poll = async () => {
+      const r = await api.conversation(selected)
+      if (stop) return
+      if (!r.error) { setConvo(r.turns || []); setFound(!!r.found) }
+    }
+    poll()
+    const t = setInterval(poll, 2000)
+    return () => { stop = true; clearInterval(t) }
+  }, [selected])
+
+  // Keep pinned to the newest turn.
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [convo.length, selected])
+
+  const pending = messages.filter((m) => m.sessionId === selected && (m.type === 'approval' || m.type === 'question') && (m.status ?? 'pending') === 'pending')
+  const agentOf = (id?: string) => chatAgents.find((a) => a.id === id) || agents.find((a) => a.id === id)
+  const activeAgent = agentOf(active?.agent)
+  const working = !!active && (active.alive ?? active.status === 'running')
+
+  const startChat = async () => {
+    const agent = newAgent || chatAgents[0]?.id
+    const message = draft.trim()
+    if (!agent || !message || busy) return
+    setBusy(true); setErr('')
+    const r = await api.startChat(agent, message)
+    setBusy(false)
+    if (r.error || !r.id) { setErr(r.error || 'could not start the chat'); return }
+    setDraft('')
+    onSelect(r.id)
+  }
+
+  const sendReply = async () => {
+    const message = draft.trim()
+    if (!message || !selected || busy) return
+    setBusy(true); setErr('')
+    // Optimistically show the human's turn immediately.
+    setConvo((c) => [...c, { kind: 'user', text: message, ts: Date.now() }])
+    setDraft('')
+    const r = await api.reply(selected, message)
+    setBusy(false)
+    if (r.error) setErr(r.error)
+  }
+
+  const onKey = (e: ReactKeyboardEvent, fn: () => void) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); fn() }
+  }
+
+  return (
+    <div className="flex h-full min-h-0 gap-4">
+      {/* Left rail: your chats + a new-chat button */}
+      <div className="flex w-60 shrink-0 flex-col gap-2">
+        <Button size="sm" variant={selected ? 'outline' : 'default'} className="w-full justify-start gap-2" onClick={() => onSelect('')}>
+          <Plus className="h-4 w-4" /> New chat
+        </Button>
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
+          {chats.length === 0 && <p className="px-1 pt-2 text-xs text-muted-foreground">No chats yet. Start one to talk to an agent in plain language.</p>}
+          {chats.map((s) => {
+            const a = agentOf(s.agent)
+            const live = s.alive ?? s.status === 'running'
+            return (
+              <button
+                key={s.id}
+                onClick={() => onSelect(s.id)}
+                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm hover:bg-muted ${selected === s.id ? 'bg-muted' : ''}`}
+              >
+                <AgentIcon icon={a?.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{s.title || a?.id || s.agent}</span>
+                {live && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" title="working" />}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Right: either the new-chat composer or the conversation */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {!selected ? (
+          <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-4">
+            <div>
+              <h2 className="text-lg font-semibold">Start a conversation</h2>
+              <p className="text-sm text-muted-foreground">Pick a teammate and tell them what you need. They work under the same approvals and guardrails as everyone else.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {chatAgents.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => setNewAgent(a.id)}
+                  className={`flex items-start gap-2 rounded-lg border p-2.5 text-left hover:border-primary ${(newAgent || chatAgents[0]?.id) === a.id ? 'border-primary bg-primary/5' : ''}`}
+                >
+                  <AgentIcon icon={a.icon} className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium capitalize">{a.id}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{a.description}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="flex items-end gap-2">
+              <Textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => onKey(e, startChat)}
+                placeholder={`Message ${newAgent || chatAgents[0]?.id || 'an agent'}…`}
+                className="max-h-40 min-h-[44px] resize-none text-sm"
+                rows={2}
+              />
+              <Button size="icon" disabled={busy || !draft.trim()} onClick={startChat}><Send className="h-4 w-4" /></Button>
+            </div>
+            {err && <p className="text-xs text-destructive">{err}</p>}
+          </div>
+        ) : (
+          <>
+            {/* Header */}
+            <div className="mb-2 flex items-center gap-2 border-b pb-2">
+              <AgentIcon icon={activeAgent?.icon} className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{active?.title || activeAgent?.id || active?.agent}</div>
+                <div className="text-[11px] capitalize text-muted-foreground">{activeAgent?.id || active?.agent}{working ? ' · working…' : ''}</div>
+              </div>
+            </div>
+
+            {/* Timeline */}
+            <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-1 py-2">
+              {!found && <p className="pt-6 text-center text-sm text-muted-foreground">Getting started…</p>}
+              {convo.map((t, i) =>
+                t.kind === 'activity'
+                  ? <ActivityCard key={i} turn={t} />
+                  : <ChatBubble key={i} turn={t} agentIcon={activeAgent?.icon} />,
+              )}
+              {working && convo.length > 0 && convo[convo.length - 1].kind === 'user' && (
+                <div className="pl-9 text-xs text-muted-foreground">thinking…</div>
+              )}
+            </div>
+
+            {/* Inline approvals / questions — the trust surface, in plain language */}
+            {pending.map((m) => (
+              <div key={m.id} className={`mb-2 rounded-lg border p-3 ${m.type === 'approval' ? 'border-amber-400/60 bg-amber-50/60 dark:bg-amber-950/20' : 'border-primary/40 bg-primary/5'}`}>
+                {m.type === 'approval' ? (
+                  <>
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+                      <div className="min-w-0 text-sm">
+                        <div className="font-medium">Needs your OK</div>
+                        <div className="text-muted-foreground">{m.policyReason || m.title}</div>
+                        {m.body && <div className="mt-1 whitespace-pre-wrap text-[13px]">{m.body}</div>}
+                      </div>
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <Button size="sm" onClick={() => m.approvalId && api.resolve(m.approvalId, true)}><Check className="mr-1 h-3.5 w-3.5" /> Approve</Button>
+                      <Button size="sm" variant="outline" onClick={() => m.approvalId && api.resolve(m.approvalId, false)}><X className="mr-1 h-3.5 w-3.5" /> Decline</Button>
+                    </div>
+                  </>
+                ) : (
+                  <QuestionReply m={m} />
+                )}
+              </div>
+            ))}
+
+            {/* Reply composer */}
+            <div className="flex items-end gap-2 border-t pt-2">
+              <Textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => onKey(e, sendReply)}
+                placeholder="Reply…"
+                className="max-h-40 min-h-[44px] resize-none text-sm"
+                rows={1}
+              />
+              <Button size="icon" disabled={busy || !draft.trim()} onClick={sendReply}><Send className="h-4 w-4" /></Button>
+            </div>
+            {err && <p className="pt-1 text-xs text-destructive">{err}</p>}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** Inline reply box for an agent's question, inside the chat thread. */
+function QuestionReply({ m }: { m: Msg }) {
+  const [answer, setAnswer] = useState('')
+  const [sent, setSent] = useState(false)
+  if (sent) return <div className="text-sm text-muted-foreground">Answer sent.</div>
+  return (
+    <>
+      <div className="flex items-start gap-2">
+        <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+        <div className="min-w-0 text-sm">
+          <div className="font-medium">A question for you</div>
+          <div className="whitespace-pre-wrap text-muted-foreground">{m.body || m.title}</div>
+        </div>
+      </div>
+      <div className="mt-2 flex items-end gap-2">
+        <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer…" className="h-8 text-sm" onKeyDown={(e) => { if (e.key === 'Enter' && answer.trim() && m.questionId) { api.answerQuestion(m.questionId, answer.trim()); setSent(true) } }} />
+        <Button size="sm" disabled={!answer.trim()} onClick={() => { if (m.questionId) { api.answerQuestion(m.questionId, answer.trim()); setSent(true) } }}>Reply</Button>
+      </div>
+    </>
   )
 }
 
