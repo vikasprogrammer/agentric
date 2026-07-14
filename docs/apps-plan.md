@@ -17,6 +17,10 @@
 >   editor · source editor · publish/unpublish · open · stop · delete, owner/admin, `/api/apps/*`) and
 >   the agent tools **`app_create` / `app_list` / `app_update`** (single-file `server.js` for v1, lands
 >   proposed, posts an `app.proposed` review card; editing a live app unpublishes it for re-review).
+> - **v0.198.0 — the `app-builder` agent** (§6): a bundled library agent (`config/agents/app-builder/`)
+>   whose CLAUDE.md teaches the single-file Node contract + the `app_*` tools + the proposed→publish
+>   flow, so "build me a mini-CRM / internal tool" has a purpose-built teammate. Install-on-demand from
+>   the agent Library (not seeded), like the department generalists.
 >
 > **Still to build:** `/api/app/dispatch` (§4), secrets (§4.1), Linux uid-isolation (§3.3),
 > `app_history`/`app_revert` revisions, multi-file bundles (§6).
