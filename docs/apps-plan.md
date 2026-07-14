@@ -21,9 +21,14 @@
 >   whose CLAUDE.md teaches the single-file Node contract + the `app_*` tools + the proposed→publish
 >   flow, so "build me a mini-CRM / internal tool" has a purpose-built teammate. Install-on-demand from
 >   the agent Library (not seeded), like the department generalists.
+> - **v0.199.0 — background dispatch** (§4): an app triggers an agent via `POST /api/app/dispatch`
+>   (per-app-secret gated), enforcing the manifest's **default-deny `dispatchAgents`** capability; the
+>   work becomes a governed `TaskStore` task (`createdBy = app:<slug>`, run-as = the current UI member),
+>   auto-dispatched, with an optional bounded synchronous `wait`. `GET /api/app/dispatches` polls
+>   results. So an app can hand judgement work to the fleet without any new trust surface.
 >
-> **Still to build:** `/api/app/dispatch` (§4), secrets (§4.1), Linux uid-isolation (§3.3),
-> `app_history`/`app_revert` revisions, multi-file bundles (§6).
+> **Still to build:** secrets (§4.1), Linux uid-isolation (§3.3), `app_history`/`app_revert` revisions,
+> multi-file bundles (§6), `/api/app/notify`.
 
 ## 0. Where Apps sit relative to Sessions, Automations, Tasks, and the Library
 

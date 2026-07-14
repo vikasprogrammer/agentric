@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.199.0] — 2026-07-14
+### Added
+- **Apps — background dispatch (apps trigger agents).** A hosted app can now hand work to an agent in
+  the background — a CRM's "draft a follow-up" button asking a writer agent, say. New loopback route
+  **`POST /api/app/dispatch`**, authenticated by the app's per-launch `AOS_APP_TOKEN` (header
+  `x-aos-app-secret`, verified by the supervisor) and gated by the manifest's **default-deny
+  `capabilities.dispatchAgents`** — an app may only trigger agents it declares. A dispatch becomes a
+  governed **`TaskStore` task** (`createdBy = app:<slug>` provenance, **run-as = the current UI member**
+  forwarded from the trusted `X-Aos-Member`, else the app's owner), auto-dispatched via the existing
+  task engine (pile-up guard + attempts ceiling), so the agent's work still passes the gateway — no new
+  trust surface. Optional bounded synchronous **`wait`** blocks until the delegate finishes; otherwise
+  the app polls **`GET /api/app/dispatches?slug=…`** for results. The scaffold template + the
+  `app-builder` agent's CLAUDE.md now document the protocol. Audited `app.dispatch`. Verified
+  end-to-end: a hosted app calls back with its own token → capability gate denies undeclared agents
+  (403) → an allowed dispatch creates the task with the right provenance/assignee/run-as; governance CI
+  68/68. Follow-ups: vault secrets, Linux uid-isolation, `app_history`/`app_revert`, `/api/app/notify`.
+  (`src/server.ts`, `src/state/apps.ts`, `config/agents/app-builder/CLAUDE.md`;
+  [`docs/apps-plan.md`](docs/apps-plan.md).)
+
 ## [0.198.0] — 2026-07-14
 ### Added
 - **`app-builder` — a dedicated hosted-apps agent in the library.** A ready-made catalog agent

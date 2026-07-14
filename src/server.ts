@@ -234,6 +234,10 @@ export function bootstrap(baseDir: string = path.resolve(__dirname, '..')): Agen
 
 /** Phase A: when on, the app reverse-proxies /terminal/<member>/ to that member's own ttyd. */
 const UID_ISOLATION = process.env.AOS_UID_ISOLATION === '1';
+/** How long `/api/app/dispatch { wait:true }` blocks for the delegate to finish before telling the app
+ *  to poll `/api/app/dispatches`. Kept short so a proxied HTTP request never hangs near client timeouts. */
+const APP_DISPATCH_WAIT_MS = 20_000;
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Resolve which tenant runtime a request belongs to: explicit `x-aos-tenant` (loopback agent calls)
  *  wins, else the Host subdomain; no signal → the default tenant. */
@@ -1677,6 +1681,67 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'app.updated', data: { app: id, by: `agent:${agent}`, unpublished: wasPublished } });
     if (wasPublished) tm.postAppCard({ slug: id, agent, title: `App edited — ${cur.name}`, body: `${agent} changed the live app "${cur.name}" (\`${id}\`); it was unpublished for review. Re-publish to make the change live.` });
     return sendJson(res, 200, { ok: true, id, rev: saved?.version, unpublished: wasPublished });
+  }
+
+  // ── App runtime callbacks (`/api/app/*`) ─────────────────────────────────────
+  // A HOSTED APP calls these over loopback. It has no cookie and no session secret — it authenticates
+  // with its per-launch app token (header `x-aos-app-secret`, exported as AOS_APP_TOKEN), verified by the
+  // supervisor. These sit before the member gate, like the agent loopback routes, and enforce the app's
+  // DEFAULT-DENY capabilities per call — so an app can only reach what its manifest declares. See
+  // docs/apps-plan.md §4.
+  const appSecretOk = (slug: string): boolean => !!appSup && appSup.verifyAppSecret(slug, String(req.headers['x-aos-app-secret'] || ''));
+  if (method === 'POST' && p === '/api/app/dispatch') {
+    const b = await readBody(req);
+    const slug = String(b.slug || '').trim().toLowerCase();
+    if (!appSecretOk(slug)) return sendJson(res, 403, { error: 'bad app secret' });
+    const manifest = os.apps.get(slug);
+    if (!manifest || !manifest.published) return sendJson(res, 404, { error: 'app not found or not published' });
+    const agent = String(b.agent || '').trim().toLowerCase();
+    // Capability gate (default-deny): the app may only trigger agents its manifest names.
+    const allowed = manifest.capabilities.dispatchAgents ?? [];
+    if (!agent || !allowed.includes(agent)) return sendJson(res, 403, { error: `app "${slug}" is not allowed to dispatch "${agent}" (declare it in capabilities.dispatchAgents)` });
+    if (!os.agents.has(agent)) return sendJson(res, 400, { error: `unknown agent: ${agent}` });
+    const goal = String(b.goal || b.input || '').trim();
+    if (!goal) return sendJson(res, 400, { error: 'goal is required' });
+    // Run-as: the human currently using the app (forwarded from the trusted X-Aos-Member the app got),
+    // else the app's accountable owner. Validate it resolves to a real member; unknown → ownerless.
+    const wantRunAs = String(b.runAsMember || manifest.owner || '').trim();
+    const runAsMember = wantRunAs ? os.team.getMemberByEmail(wantRunAs) : undefined;
+    const owner = runAsMember?.email;
+    const mode = b.mode === 'interactive' ? 'interactive' : 'headless';
+    const task = os.tasks.create({
+      tenant: os.tenant, title: goal.slice(0, 80), body: goal, assignee: `agent:${agent}`,
+      owner, autoDispatch: true, mode, createdBy: `app:${slug}`,
+    });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: `app:${slug}`, type: 'app.dispatch', data: { app: slug, agent, task: task.id, runAs: owner ?? null, mode } });
+    const fire = autos.dispatchTask(task.id, { guard: true, by: `app:${slug}` });
+    // Synchronous convenience: bounded server-side wait until the delegate reaches a terminal state,
+    // re-kicking dispatch as needed (mirrors task_wait). On timeout the app polls /api/app/dispatches.
+    if (b.wait) {
+      const deadline = Date.now() + APP_DISPATCH_WAIT_MS;
+      for (;;) {
+        const cur = os.tasks.get(task.id);
+        if (!cur) break;
+        const terminal = cur.status === 'done' || cur.status === 'cancelled';
+        if (terminal || cur.status === 'blocked' || Date.now() >= deadline) {
+          return sendJson(res, 200, { ok: true, taskId: task.id, status: cur.status, terminal, note: os.tasks.latestNote(task.id) ?? null });
+        }
+        if (!(cur.lastSessionId && tm.isAlive(cur.lastSessionId))) autos.dispatchTask(task.id, { guard: true, by: `app:${slug}` });
+        await sleep(1500);
+      }
+    }
+    return sendJson(res, 200, { ok: true, taskId: task.id, status: 'todo', dispatched: fire.ok, sessionId: fire.ok ? fire.sessionId : undefined });
+  }
+  // An app lists the background runs IT triggered + their status (to poll for completion).
+  if (method === 'GET' && p === '/api/app/dispatches') {
+    const slug = String(url.searchParams.get('slug') || '').trim().toLowerCase();
+    if (!appSecretOk(slug)) return sendJson(res, 403, { error: 'bad app secret' });
+    const runs = os.tasks.list({ tenant: os.tenant, limit: 200 }).filter((t) => t.createdBy === `app:${slug}`).slice(0, 50).map((t) => ({
+      taskId: t.id, title: t.title, agent: (t.assignee || '').replace(/^agent:/, ''), status: t.status,
+      terminal: t.status === 'done' || t.status === 'cancelled', note: os.tasks.latestNote(t.id) ?? null,
+      createdAt: t.createdAt,
+    }));
+    return sendJson(res, 200, { ok: true, dispatches: runs });
   }
 
   // Every other /api/* route requires a logged-in member.

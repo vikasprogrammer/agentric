@@ -24,6 +24,29 @@ The rules your `server.js` MUST follow (the platform contract):
 The app has **no ambient power**: it can't touch the network, other apps' data, or secrets unless a human
 grants those capabilities. Keep your apps to data + UI and they "just work."
 
+### Triggering an agent from an app (optional)
+
+An app can hand work to an agent in the background — e.g. a CRM's "Draft follow-up" button that asks a
+writer agent to draft an email. This only works for agents you **declare** in the manifest's
+`capabilities.dispatchAgents` (default-deny), which a human reviews at publish time. From `server.js`:
+
+```js
+const body = JSON.stringify({
+  slug: process.env.AOS_APP_SLUG,
+  agent: 'writer',                 // must be in capabilities.dispatchAgents
+  goal: 'Draft a follow-up email to ' + name,
+  runAsMember: req.headers['x-aos-member'],   // the run is accountable to the current human
+});
+const r = http.request(process.env.AOS_LOOPBACK + '/api/app/dispatch', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', 'x-aos-app-secret': process.env.AOS_APP_TOKEN, 'x-aos-tenant': process.env.AOS_TENANT },
+}, (pr) => { /* { ok, taskId } — poll GET /api/app/dispatches?slug=<id> for the result */ });
+r.end(body);
+```
+
+The dispatch becomes a governed task (the agent's work still passes the gate). Set it up when a request
+genuinely needs an agent's judgement; a plain data/UI app needs none of this.
+
 ## Your tools
 
 - **`app_create`** — build a new app. Pass `id` (a DNS-safe slug like `mini-crm`), `name`, and `serverJs`
