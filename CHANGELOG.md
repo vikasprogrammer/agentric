@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.190.0] — 2026-07-14
+### Added
+- **Callee agents can poke the caller back when they're really done — async delegation, no polling.** A
+  delegate now closes an agent→agent hand-off by RESUMING the caller's own transcript with the outcome,
+  so a fire-and-forget delegation wakes the caller instead of making it block on `task_wait`. Opt in with
+  `task_create({ assignee:"agent:<id>", goal:"…", poke_on_done:true })`: the caller stamps its agent id +
+  pinned claude transcript on the task (`caller_agent`/`caller_claude_id`), ends its turn, and is
+  `--resume`d the moment the delegate marks the task **done** (`✅ Really done: …`) or hands it back
+  **blocked** (`⛔ Handed back: …`). The wake fires immediately via `Automations.pokeCaller` (not the
+  1-min-floored `schedule()`), is guarded so it never spawns a competing run on a still-live caller, gets
+  provenance `poke:<task>` (console badge "Poke · …"), and is audited `agent.poked`. The async counterpart
+  to `wait` (which blocks). `poke_on_done` implies `autoDispatch`.
+- **State a GOAL when delegating to an agent — with or without a task in between.** `task_create` /
+  `task_dispatch` take `goal` as the ergonomic synonym for `criteria` (the single-line objective that runs
+  a headless delegate under a `/goal` convergence condition until it holds). `ask_agent` gains the same
+  optional `goal`, so a taskless synchronous consult can hand the delegate an objective it works to before
+  answering — one vocabulary across both delegation surfaces.
+  (`src/state/{db,tasks}.ts`, `src/types.ts`, `src/edge/automations.ts`, `src/terminal.ts`,
+  `src/server.ts`, `src/tenant-registry.ts`, `src/memory/memory-mcp.ts`, `docs/agent-mcp-tools.md`.)
+
 ## [0.189.0] — 2026-07-14
 ### Fixed
 - **One-click "Create GitHub App" now actually works — the manifest was invalid.** Every attempt failed on

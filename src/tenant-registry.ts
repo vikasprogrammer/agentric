@@ -211,7 +211,12 @@ export class TenantRegistry {
     // Task lifecycle → Inbox: a create/assign/status change lands an audience-addressed inbox card for
     // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
     // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.
-    os.tasks.setNotifier((notice) => { void notifyTaskEvent(os, tm, slack, discord, consoleOrigin, notice); });
+    os.tasks.setNotifier((notice) => {
+      void notifyTaskEvent(os, tm, slack, discord, consoleOrigin, notice);
+      // Async poke-back: a delegate that closed a `poke_on_done` hand-off resumes the CALLER agent's
+      // transcript with the outcome, so a fire-and-forget delegation wakes the caller (no polling).
+      maybePokeCaller(autos, os, notice);
+    });
     // Agent → teammate: when an agent uses the `notify` tool, the inbox card is written inline (addressed
     // to the target member); this sink DMs that member on their linked Slack/Discord too.
     tm.setMemberNotifier((notice) => { void notifyMember(os, slack, discord, notice); });
@@ -400,6 +405,30 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
+}
+
+/**
+ * Async poke-back. When a delegate closes a `poke_on_done` hand-off — the task reaches a terminal-for-now
+ * state (done, or blocked and handed back) — resume the CALLER agent's transcript with the outcome, so a
+ * fire-and-forget delegation wakes the caller instead of making it poll. No-op unless the task carries a
+ * caller + its pinned claude id (only agent→agent hand-offs with poke opted in do). The delegate (assignee)
+ * is the actor, so `maybePokeCaller` never wakes the caller for its own edits. Best-effort; the poke itself
+ * is guarded (a still-live caller is skipped) inside {@link Automations.pokeCaller}.
+ */
+function maybePokeCaller(autos: Automations, os: AgentOS, notice: TaskNotice): void {
+  if (notice.kind !== 'status') return;
+  const t = notice.task;
+  if (!t.pokeOnDone || !t.callerAgent || !t.callerClaudeId) return;
+  if (t.status !== 'done' && t.status !== 'blocked') return;
+  const delegate = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : (t.assignee ?? 'the delegate');
+  const note = os.tasks.latestNote(t.id) || '(no note left)';
+  const goal = t.criteria ? ` — goal "${t.criteria}"` : '';
+  const message = t.status === 'done'
+    ? `✅ Really done: ${delegate} finished the task you handed off (${t.id}: "${t.title}")${goal}.\n\n` +
+      `Result: ${note}\n\nPick your own work back up from here.`
+    : `⛔ Handed back: ${delegate} is BLOCKED on the task you handed off (${t.id}: "${t.title}")${goal}.\n\n` +
+      `Why: ${note}\n\nDecide how to proceed — unblock it, re-scope it, or take it on yourself.`;
+  autos.pokeCaller({ callerAgent: t.callerAgent, callerClaudeId: t.callerClaudeId, runAs: t.owner, message, source: t.id });
 }
 
 /**

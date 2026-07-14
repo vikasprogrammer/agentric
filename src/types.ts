@@ -673,6 +673,9 @@ export interface Task {
   goalId?: string; // the strategic Goal this task advances (Slice 2 linkage)
   criteria?: string; // single-line acceptance condition; drives a headless run under a `/goal` on dispatch
   dependsOn?: string[]; // task ids this task is blocked by — it won't dispatch until they're done/cancelled
+  callerAgent?: string; // 'agent:<id>' that delegated this task and wants a poke-back on completion
+  callerClaudeId?: string; // the caller's pinned claude transcript id — resumed to deliver the poke
+  pokeOnDone?: boolean; // wake the caller (resume its transcript) when this task reaches done/blocked
   dueAt?: number;
   attempts: number;
   lastSessionId?: string;
@@ -719,6 +722,9 @@ export interface TaskCreateInput {
   goalId?: string; // link to a strategic Goal (Slice 2)
   criteria?: string; // single-line acceptance condition → `/goal` convergence on a headless dispatch
   dependsOn?: string[]; // task ids this task is blocked by (won't dispatch until they finish)
+  callerAgent?: string; // 'agent:<id>' delegating this task — poked back on completion (poke-on-done)
+  callerClaudeId?: string; // the caller's pinned claude transcript id (for the resume-poke)
+  pokeOnDone?: boolean; // resume the caller's transcript when this task reaches done/blocked
   dueAt?: number;
   createdBy: string; // member id | 'agent:<id>'
 }

@@ -892,7 +892,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const target = String(b.agent || '').trim();
     const question = String(b.question || '').trim();
     if (!question) return sendJson(res, 400, { error: 'question is required' });
-    const out = tm.askAgent(session, agent, target, question);
+    const goal = typeof b.goal === 'string' && b.goal.trim() ? b.goal.trim() : undefined;
+    const out = tm.askAgent(session, agent, target, question, goal);
     return sendJson(res, out.error ? 400 : 200, out);
   }
   const askAgentMatch = p.match(/^\/api\/ask-agent\/([\w-]+)$/);
@@ -1290,6 +1291,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         return sendJson(res, 200, { ok: false, error: `no agent "${targetId}" — assign to one of: ${valid} (call list_agents to see the roster)` });
       }
     }
+    // Poke-back: an agent delegating to ANOTHER agent can ask to be woken when the delegate finishes.
+    // We stamp the caller's agent id + pinned claude transcript so the task notifier can `--resume` this
+    // session on done/blocked. Only meaningful for an agent→agent hand-off (a poke has a caller to wake).
+    const pokeOnDone = (b.pokeOnDone === true || b.pokeOnDone === 'true') && !!assignee && assignee.startsWith('agent:');
     try {
       // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
@@ -1305,6 +1310,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
         dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
+        callerAgent: pokeOnDone ? `agent:${agent}` : undefined,
+        callerClaudeId: pokeOnDone ? tm.sessionClaudeId(session) : undefined,
+        pokeOnDone: pokeOnDone || undefined,
         dueAt: typeof b.dueAt === 'number' && Number.isFinite(b.dueAt) ? b.dueAt : undefined,
         createdBy: `agent:${agent}`,
       });

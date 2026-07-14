@@ -682,6 +682,7 @@ const TOOLS = [
       properties: {
         agent: { type: 'string', description: "The id of the agent to ask (from list_agents), e.g. \"researcher\"." },
         question: { type: 'string', description: 'A specific, self-contained question or task — everything the other agent needs to answer without more context.' },
+        goal: { type: 'string', description: 'Optional single-line objective / definition of done. When set, the other agent works under it as a `/goal` and converges autonomously until it holds before answering — delegate WITH a goal, no task required.' },
         timeoutSeconds: { type: 'number', description: 'Optional. How long to block before parking (default ~15min interactive / ~15min unattended, max 6h). On timeout the other agent keeps working; ask again to keep waiting.' },
       },
       required: ['agent', 'question'],
@@ -789,7 +790,9 @@ const TOOLS = [
         labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },
         parentId: { type: 'string', description: 'Parent task id, to file this as a sub-task.' },
         goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
-        criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds.' },
+        goal: { type: 'string', description: 'The single-line objective the delegate must achieve — the definition of done. On a headless auto-dispatched task the worker runs under this as a `/goal` and converges autonomously until it holds (alias for `criteria`). This is what to state when you delegate WITH a goal.' },
+        criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds. Synonym of `goal`.' },
+        poke_on_done: { type: 'boolean', description: 'Fire-and-forget delegation with an async wake-up: hand off, end your turn, and be RESUMED automatically when the delegate finishes (or blocks) — no polling. The async counterpart to `wait` (which blocks). Only for an agent-assigned auto-dispatched task. Default false.' },
         dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this task is BLOCKED BY — it will not dispatch until they are all done. To encode a pipeline: file the earlier steps first, capture their ids from the results, and pass them here so this step waits for them.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
@@ -1200,7 +1203,7 @@ async function askAgent(args: Record<string, unknown>): Promise<string> {
   const res = await fetch(AOS_URL + '/api/ask-agent', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
-    body: JSON.stringify({ session: SESSION, agent, question }),
+    body: JSON.stringify({ session: SESSION, agent, question, goal: args.goal !== undefined ? String(args.goal) : undefined }),
   });
   const posted = (await res.json()) as { id?: string; error?: string };
   if (posted.error) return `Could not ask ${agent}: ${posted.error}`;
@@ -1811,10 +1814,13 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       labels: Array.isArray(args.labels) ? args.labels.map(String) : undefined,
       parentId: args.parentId !== undefined ? String(args.parentId) : undefined,
       goalId: args.goalId !== undefined ? String(args.goalId) : undefined,
-      criteria: args.criteria !== undefined ? String(args.criteria) : undefined,
+      // `goal` is the ergonomic alias for `criteria` (the /goal convergence condition); either sets it.
+      criteria: args.criteria !== undefined ? String(args.criteria) : (args.goal !== undefined ? String(args.goal) : undefined),
       dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn.map(String) : undefined,
-      // `wait` implies autoDispatch — you can't block on work that never starts.
-      autoDispatch: args.autoDispatch === true || args.wait === true,
+      // `wait` (block) and `poke_on_done` (async wake) both imply autoDispatch — you can't await/be-woken
+      // by work that never starts.
+      autoDispatch: args.autoDispatch === true || args.wait === true || args.poke_on_done === true,
+      pokeOnDone: args.poke_on_done === true,
       mode: args.mode === 'interactive' ? 'interactive' : undefined,
       dueAt: parseDue(args.due),
     }),
@@ -1826,6 +1832,11 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
   if (args.wait === true) {
     const outcome = await taskWait({ id: d.id, timeoutSeconds: args.timeoutSeconds });
     return `Filed task ${d.id}: "${title}"${who}.\n${outcome}`;
+  }
+  // poke_on_done → fire-and-forget async: don't poll or wait. End your turn; you'll be resumed with the
+  // result the moment the delegate finishes (or blocks).
+  if (args.poke_on_done === true) {
+    return `Filed task ${d.id}: "${title}"${who}. You'll be woken with the result when it finishes — you can end your turn now; no need to poll.`;
   }
   return `Filed task ${d.id}: "${title}"${who}. Track it with task_get "${d.id}".`;
 }
