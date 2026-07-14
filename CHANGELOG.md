@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.191.0] — 2026-07-14
+### Added
+- **Chat — a plain-language window onto a claude-code run for non-technical teammates.** A new **Chat**
+  page (nav next to Agents) renders a session as a messaging app instead of a terminal: message bubbles,
+  friendly activity cards ("Sent a Slack message" ✓ / "Read a file"), and **inline approvals/questions**
+  as Approve/Decline buttons — the governance surface in language support/sales/marketing can act on. It
+  reads the session's claude transcript (`GET /api/sessions/:id/conversation`, parsed by
+  `src/edge/conversation.ts`) and drives the human's turns via `POST /api/sessions/:id/reply` and
+  `POST /api/chat/start` — reusing the **exact** resident-deliver / transcript-resume path Slack
+  thread-continuity already uses (`deliverToResident`/`reviveResident`), so no governance, gate, or DB
+  changes: the gate hook + approvals still mediate every effect. Message-level polling (2s), no terminal.
+  (`src/edge/conversation.ts`, `src/server.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`.)
+
 ## [0.190.0] — 2026-07-14
 ### Added
 - **Callee agents can poke the caller back when they're really done — async delegation, no polling.** A
@@ -38,7 +51,6 @@ new version heading in the same commit.
   *webhook* url, not our (present) top-level one. Fix: **omit `hook_attributes` entirely** — that's an App
   with no webhook, exactly what we want, and no required url. (`src/server.ts` `githubAppManifest`;
   `scripts/github-per-member-test.cjs` now 79/79.)
-
 ## [0.188.0] — 2026-07-14
 ### Added
 - **Set the GitHub App slug by hand when it can't be auto-detected.** The "Install the App" button needs
