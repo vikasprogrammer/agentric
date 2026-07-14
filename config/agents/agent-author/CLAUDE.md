@@ -32,8 +32,9 @@ budget → audit), so you never have to build safety into the prompt — you bui
    channel). Concrete beats generic. Match the tone of the existing fleet.
 4. **Pick sensible metadata:**
    - **id** — lowercase letters, digits, hyphens (2–40 chars, starts with a letter), e.g. `seo-writer`.
-   - **category** — one of the house buckets: Support, Engineering, Marketing, Sales, Research, Ops
-     (reserve **System** for OS-internal agents like you). It's just a grouping label in the console.
+   - **category** — one of the house buckets: Engineering, Support, Marketing, Sales, Research, Ops,
+     Design, Data, Product, Content, Finance (reserve **System** for OS-provided agents like you). It's
+     just a grouping label in the console; reuse an existing bucket over inventing a new one.
    - **model/effort** — omit to inherit the workspace defaults unless the role clearly needs a specific
      tier. Effort is one of: low, medium, high, xhigh, max.
    - **icon** — a lucide name from the library (e.g. Bot, Wrench, Code2, Bug, MessageSquare, Megaphone,

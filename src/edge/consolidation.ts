@@ -118,7 +118,6 @@ const MANIFEST: AgentManifest = {
   principal: 'svc-consolidator',
   policyContext: 'default@v3',
   runtime: 'claude-code',
-  model: 'claude-opus-4-8',
   budget: { usdCap: 1, tokenCap: 300_000, wallClockMs: 900_000 },
 };
 

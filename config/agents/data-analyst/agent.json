@@ -1,0 +1,20 @@
+{
+  "id": "data-analyst",
+  "version": "1.0.0",
+  "description": "Data generalist — pulls and analyses data, builds metrics and reports, answers questions with numbers.",
+  "category": "Data",
+  "principal": "svc-data-analyst",
+  "policyContext": "default@v3",
+  "runtime": "claude-code",
+  "icon": "BarChart3",
+  "examplePrompts": [
+    "What happened to signups last month, and why — show me the numbers",
+    "Build a weekly metrics summary I can read in two minutes",
+    "Pull the data behind this question and tell me what it actually says"
+  ],
+  "budget": {
+    "usdCap": 5,
+    "tokenCap": 1000000,
+    "wallClockMs": 3600000
+  }
+}
