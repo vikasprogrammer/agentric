@@ -25,6 +25,15 @@ const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 type Route = 'overview' | 'inbox' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
 const ROUTES: Route[] = ['overview', 'inbox', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+// The single source of truth for a page's human name — used for the header <h1> AND the browser-tab
+// title, so both always agree. The `agent` detail page appends the agent id at the call site.
+const ROUTE_TITLES: Record<Route, string> = {
+  overview: 'Overview', inbox: 'Inbox', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
+  'new-agent': 'New agent', agent: 'Agent', connectors: 'Connections', team: 'Team',
+  automations: 'Automations', goals: 'Goals', tasks: 'Tasks', memory: 'Memory', insights: 'Insights',
+  kb: 'Knowledge Base', skills: 'Skills', files: 'Files', artifacts: 'Library', audit: 'Audit log',
+  settings: 'Company settings', docs: 'Docs', profile: 'Profile',
+}
 type Selected = { tmux: string; title: string } | null
 
 /** Mirror of the server rule: owner approves anything, admin approves head-level only. */
@@ -825,9 +834,12 @@ function Console({ me }: { me: Member }) {
   const notifyItems = useMemo(() => buildNotifyItems(messages, prefs), [messages, prefs])
   const notifyUnread = notifyItems.filter((x) => x.unread).length
   useEffect(() => {
-    const base = `${state?.tenantName || state?.tenant ? `${state.tenantName || state.tenant} · ` : ''}Agent OS`
+    const brand = `${state?.tenantName || state?.tenant ? `${state.tenantName || state.tenant} · ` : ''}Agent OS`
+    // Lead with the current page (or the open session/agent) so the tab says "<page> · <tenant> · Agent OS".
+    const page = selected ? selected.title : route === 'agent' && editAgent ? `Agent · ${editAgent}` : ROUTE_TITLES[route]
+    const base = page ? `${page} · ${brand}` : brand
     document.title = notifyUnread > 0 ? `🔔 (${notifyUnread}) ${base}` : base
-  }, [notifyUnread, state?.tenantName, state?.tenant])
+  }, [notifyUnread, state?.tenantName, state?.tenant, route, editAgent, selected])
 
   // Toast pop-ins: watch the unread notification set and surface a toast for any item that's newly
   // appeared since the last poll (seeded on first load so the backlog stays quiet). Respects the
@@ -1211,7 +1223,7 @@ function Console({ me }: { me: Member }) {
           ) : (
             <div className="flex items-center gap-3">
               <h1 className="max-w-[60vw] truncate text-lg font-semibold">
-                {route === 'overview' ? 'Overview' : route === 'inbox' ? 'Inbox' : route === 'chat' ? 'Chat' : route === 'sessions' ? 'Sessions' : route === 'connectors' ? 'Connections' : route === 'team' ? 'Team' : route === 'automations' ? 'Automations' : route === 'goals' ? 'Goals' : route === 'tasks' ? 'Tasks' : route === 'memory' ? 'Memory' : route === 'insights' ? 'Insights' : route === 'kb' ? 'Knowledge Base' : route === 'skills' ? 'Skills' : route === 'files' ? 'Files' : route === 'artifacts' ? 'Library' : route === 'audit' ? 'Audit log' : route === 'settings' ? 'Company settings' : route === 'docs' ? 'Docs' : route === 'new-agent' ? 'New agent' : route === 'agent' ? `Agent · ${editAgent}` : route === 'profile' ? 'Profile' : 'Agents'}
+                {route === 'agent' ? `Agent · ${editAgent}` : ROUTE_TITLES[route]}
               </h1>
             </div>
           )}

@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.196.3] — 2026-07-14
+### Changed
+- **Standardized browser-tab titles across the whole console.** The tab title now leads with the current
+  page — `<page> · <tenant> · Agent OS` (e.g. `Tasks · northwind · Agent OS`) — instead of just
+  `<tenant> · Agent OS`, so pinned/duplicated tabs are distinguishable at a glance. An open session or
+  agent-detail page uses its own name (`<session title>` / `Agent · <id>`), and the unread-notification
+  `🔔 (N)` prefix is preserved. Page names now come from one `ROUTE_TITLES` map that also drives the
+  header `<h1>`, so the tab and the on-screen heading can never drift. (`web/src/App.tsx`.)
+
 ## [0.196.2] — 2026-07-14
 ### Added
 - **`ask_human` can offer one-click choices.** The tool takes an optional `options` list (up to 8); the
