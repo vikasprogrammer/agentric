@@ -170,8 +170,11 @@ function scaffoldServerJs(name: string): string {
 // The proxy strips the /apps/<slug> prefix and injects:
 //   X-Forwarded-Prefix: /apps/<slug>   (use it to build absolute links back to yourself)
 //   X-Aos-Member / X-Aos-Role          (the logged-in human — trusted, set by the proxy)
-// Your own SQLite lives at $AOS_APP_HOME/data.db. To trigger an agent in the background, POST to
-// $AOS_LOOPBACK/api/app/dispatch with header 'x-aos-app-secret: ' + process.env.AOS_APP_TOKEN.
+// Your own SQLite lives at $AOS_APP_HOME/data.db. To trigger an agent in the background, POST JSON to
+// $AOS_LOOPBACK/api/app/dispatch with headers { 'x-aos-app-secret': process.env.AOS_APP_TOKEN,
+// 'x-aos-tenant': process.env.AOS_TENANT } and body { slug: process.env.AOS_APP_SLUG, agent, goal,
+// runAsMember: <the X-Aos-Member header>, wait?: true } — the agent must be listed in your manifest's
+// capabilities.dispatchAgents (default-deny). Poll GET /api/app/dispatches?slug=... for results.
 const http = require('http');
 
 const PORT = Number(process.env.PORT) || 0;
