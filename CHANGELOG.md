@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.176.3] — 2026-07-14
+### Fixed
+- **Reflect-pass honesty** (`src/edge/dreaming.ts`) — two gaps in what Insights reports about itself:
+  - **Chat sessions no longer dilute the self-learning success rate.** The reflect pass tallied every
+    terminal session, but a chat reply rarely calls `report`, so it landed as `unknown`/`ended` and dragged
+    the RATE down — the same rate that drives the "slow down" guidance and the raise-effort recommendation.
+    Now the outcome tally excludes `spawned_by LIKE 'chat:%'` sessions (parity with the scorecard /
+    measurement / alerts, which were already fixed). Friction counts (rejections/budget/errors) stay whole.
+    On live globex this dropped the 7-day denominator 194→183.
+  - **Skipped and errored reflect passes are now audited** (`learning.skipped`). Previously a pass that
+    found no activity, no-opped as `busy`, or *threw* vanished silently (the scheduler `.catch`es it), so
+    "ran and found nothing" / "ran and errored" looked identical to "never ran" in the Insights history.
+
 ## [0.176.2] — 2026-07-13
 ### Changed
 - **Hero product visual + template polish on the landing page** (`public/landing.html`). Replaced the plain

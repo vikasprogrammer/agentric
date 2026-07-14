@@ -73,11 +73,29 @@ export class DreamingEngine {
   private static inFlight = new Set<string>();
   async dream(by = 'automation:dreamer'): Promise<DreamResult> {
     if (DreamingEngine.inFlight.has(this.os.tenant)) {
+      this.markPass(by, { skipped: 'busy' });
       return { skipped: true, busy: true, window: { since: 0, until: Date.now() }, passes: this.load()?.passes };
     }
     DreamingEngine.inFlight.add(this.os.tenant);
-    try { return await this.dreamInner(by); }
-    finally { DreamingEngine.inFlight.delete(this.os.tenant); }
+    try {
+      return await this.dreamInner(by);
+    } catch (err) {
+      // A reflect pass that THREW used to vanish (the scheduler `.catch`es it silently), so "ran and
+      // errored" looked identical to "never ran". Leave a durable marker either way.
+      this.markPass(by, { error: String((err as Error)?.message ?? err) });
+      throw err;
+    } finally {
+      DreamingEngine.inFlight.delete(this.os.tenant);
+    }
+  }
+
+  /** One durable audit line per reflect pass that did NOT complete — skipped (no activity / busy) or
+   *  errored — so the Insights history distinguishes "ran, found nothing" and "errored" from "never ran".
+   *  A completed pass emits its own richer `learning.dreamed`; this only covers the no-op/failure tails. */
+  private markPass(by: string, data: Record<string, unknown>): void {
+    try {
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: by, type: 'learning.skipped', data });
+    } catch { /* best-effort telemetry — never let it break the pass */ }
   }
 
   /** Run one reflection pass: fold activity since the last pass into the cumulative state, re-render. */
@@ -95,14 +113,19 @@ export class DreamingEngine {
     const episodes = db
       .prepare("SELECT content, created_at FROM memories WHERE created_at > ? AND tags LIKE '%\"episode\"%' ORDER BY created_at")
       .all<EpisodeRow>(since);
+    // Exclude CHAT sessions from the outcome tally (parity with the scorecard/measurement/alerts): a chat
+    // reply rarely calls `report`, so it lands as `unknown`/`ended` and drags the success RATE down — the
+    // rate that drives guidance ("slow down") + the effort recommendation. Work sessions only. Friction
+    // (rejections/budget/errors) below is left whole — a rejected approval is friction whoever hit it.
     const outcomeRows = db
-      .prepare("SELECT run_id, ts, type, data FROM audit_events WHERE ts > ? AND type IN ('session.reported','session.ended','session.stopped','run.completed') ORDER BY ts")
+      .prepare("SELECT run_id, ts, type, data FROM audit_events WHERE ts > ? AND type IN ('session.reported','session.ended','session.stopped','run.completed') AND (run_id IS NULL OR run_id NOT IN (SELECT id FROM term_sessions WHERE spawned_by LIKE 'chat:%')) ORDER BY ts")
       .all<OutcomeRow>(since);
     const frictionRows = db
       .prepare("SELECT ts, type, data FROM audit_events WHERE ts > ? AND type IN ('budget.exceeded','session.error','approval.resolved')")
       .all<FrictionRow>(since);
 
     if (!episodes.length && !outcomeRows.length) {
+      this.markPass(by, { skipped: 'no-activity', window });
       return { skipped: true, window, passes: prior?.passes };
     }
 
