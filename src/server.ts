@@ -125,11 +125,13 @@ function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentConfigSna
 }
 
 /** Agent ids that currently have an improver-drafted CLAUDE.md proposal awaiting review (Apply/Dismiss).
- *  Derived from the KB `operations/proposed/*` pages — the proposal store — so no extra table. */
+ *  Derived from the KB proposal pages — no extra table. NB: the KB store normSeg's a slug's `/` to `-`, so
+ *  `proposalSlug()`'s `proposed/<agent>` is stored as `proposed-<agent>`; match that normalized form (the
+ *  read-based apply/dismiss are unaffected — they normalize the same way). */
 function pendingProposals(os: AgentOS): string[] {
   return os.kb.list(os.tenant, 'operations')
-    .filter((pg) => pg.slug.startsWith('proposed/'))
-    .map((pg) => pg.slug.slice('proposed/'.length))
+    .filter((pg) => pg.slug.startsWith('proposed-'))
+    .map((pg) => pg.slug.slice('proposed-'.length))
     .filter((id) => !!os.agents.get(id));
 }
 

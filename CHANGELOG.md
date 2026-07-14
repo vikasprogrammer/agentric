@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.177.1] — 2026-07-14
+### Fixed
+- **Improver proposals now surface in the scorecard.** The KB store normalizes a slug's `/` to `-`, so the
+  improver's `proposed/<agent>` page is stored as `proposed-<agent>`; `pendingProposals` matched the raw
+  `proposed/` prefix and so never listed any draft (Apply/Dismiss buttons never appeared). Match the
+  normalized prefix. Apply/Dismiss themselves were already correct (read normalizes identically). Caught on
+  the first live northwind dry-run — the improver ran and wrote the draft, but the UI couldn't see it.
+
 ## [0.177.0] — 2026-07-14
 ### Added
 - **Insights improvement tiles v2 — "generate the fix" (Agents domain).** The scorecard already says an
