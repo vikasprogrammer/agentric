@@ -2192,7 +2192,7 @@ export class TerminalManager {
    * "ask a teammate for info / a confirmation" channel — and both the inbox card and the DM target them,
    * and {@link canViewQuestion} grants them the answer. Returns `{ error }` when `to` matches no member.
    */
-  askQuestion(sessionId: string, agent: string, prompt: string, to?: string): { id?: string; error?: string; to?: string } {
+  askQuestion(sessionId: string, agent: string, prompt: string, to?: string, options?: string[]): { id?: string; error?: string; to?: string } {
     let target: Member | undefined;
     if (to && to.trim()) {
       target = this.resolveMember(to);
@@ -2205,7 +2205,9 @@ export class TerminalManager {
     // Card audience: the addressed teammate when `to` is set, else the session operator.
     const audienceKind = target ? 'member' : 'sessionOwner';
     const audienceId = target ? target.id : sessionId;
-    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id, audienceKind, audienceId });
+    // Multiple-choice options (if any) ride along in the message args → the card renders one-click buttons.
+    const cleanOptions = options?.map((o) => o.trim()).filter(Boolean).slice(0, 8);
+    this.addMessage({ type: 'question', sessionId, agent, title: `Question — ${agent}`, body: prompt, status: 'pending', questionId: id, audienceKind, audienceId, ...(cleanOptions?.length ? { args: { options: cleanOptions } } : {}) });
     this.audit(sessionId, agent, 'question.asked', { questionId: id, prompt, ...(target ? { to: target.id } : {}) });
     // Out-of-band ping (like approvals): DM the person the run acts for — or the addressed teammate — so a
     // blocking `ask` doesn't sit unseen in the console. And if the run was triggered from chat, mirror the

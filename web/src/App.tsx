@@ -706,9 +706,10 @@ function UpdateNotice() {
  *  this list; Sessions is the middle switcher; Feedback is an external link. `route` drives active
  *  state; `adminOnly` hides the item entirely from members who can't view that page (so they can't pin
  *  what they can't see). Order here is the canonical order items render in, whether in Main or Manage. */
-type NavKey = 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'insights' | 'skills' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
-interface NavMeta { key: NavKey; route: Route; label: string; icon: ReactNode; adminOnly?: boolean }
+type NavKey = 'chat' | 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'insights' | 'skills' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
+interface NavMeta { key: NavKey; route: Route; label: string; icon: ReactNode; adminOnly?: boolean; beta?: boolean }
 const PINNABLE_NAV: NavMeta[] = [
+  { key: 'chat',        route: 'chat',        label: 'Chat',        icon: <MessageSquare className="h-4 w-4" />, beta: true },
   { key: 'goals',       route: 'goals',       label: 'Goals',       icon: <Target className="h-4 w-4" /> },
   { key: 'tasks',       route: 'tasks',       label: 'Tasks',       icon: <ListChecks className="h-4 w-4" /> },
   { key: 'artifacts',   route: 'artifacts',   label: 'Library',     icon: <Package className="h-4 w-4" /> },
@@ -1072,7 +1073,6 @@ function Console({ me }: { me: Member }) {
             {me.role === 'owner' && <Button render={<a href={navHref('overview')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'overview' ? 'text-primary' : 'text-muted-foreground'}`} title="Overview" onClick={onNavClick(() => nav('overview'))}><LayoutGrid className="h-4 w-4" /></Button>}
             <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
             <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
-            <Button render={<a href={navHref('chat')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'chat' ? 'text-primary' : 'text-muted-foreground'}`} title="Chat" onClick={onNavClick(() => nav('chat'))}><MessageSquare className="h-4 w-4" /></Button>
             {pinnedNav.map((n) => (
               <Button key={n.key} render={<a href={navHref(n.route)} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === n.route ? 'text-primary' : 'text-muted-foreground'}`} title={n.label} onClick={onNavClick(() => nav(n.route))}>{n.icon}</Button>
             ))}
@@ -1099,9 +1099,8 @@ function Console({ me }: { me: Member }) {
             {me.role === 'owner' && <NavItem icon={<LayoutGrid className="h-4 w-4" />} label="Overview" active={route === 'overview'} href={navHref('overview')} onClick={() => nav('overview')} />}
             <NavItem icon={<InboxIcon className="h-4 w-4" />} label="Inbox" active={route === 'inbox'} badge={pendingApprovals || undefined} href={navHref('inbox')} onClick={() => nav('inbox')} />
             <NavItem icon={<Bot className="h-4 w-4" />} label="Agents" active={route === 'agents' || route === 'agent'} href={navHref('agents')} onClick={() => nav('agents')} />
-            <NavItem icon={<MessageSquare className="h-4 w-4" />} label="Chat" active={route === 'chat'} href={navHref('chat')} onClick={() => nav('chat')} />
             {pinnedNav.map((n) => (
-              <NavItem key={n.key} icon={n.icon} label={n.label} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned onTogglePin={() => togglePin(n.key)} />
+              <NavItem key={n.key} icon={n.icon} label={n.label} beta={n.beta} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned onTogglePin={() => togglePin(n.key)} />
             ))}
           </nav>
         </div>
@@ -1157,7 +1156,7 @@ function Console({ me }: { me: Member }) {
           {manageOpen && (
             <nav className="mb-1 space-y-1">
               {manageNav.map((n) => (
-                <NavItem key={n.key} icon={n.icon} label={n.label} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned={false} onTogglePin={() => togglePin(n.key)} />
+                <NavItem key={n.key} icon={n.icon} label={n.label} beta={n.beta} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned={false} onTogglePin={() => togglePin(n.key)} />
               ))}
               <a
                 href={FEEDBACK_URL}
@@ -1430,7 +1429,7 @@ function NotificationsBell({ items, unread, onOpen, onMarkAllRead, onOpenSetting
 /** A sidebar nav row. When `onTogglePin` is provided the row grows a hover-only pin button on the
  *  right — `pinned` items show "unpin" (send down to Manage), unpinned ones show "pin" (promote to
  *  Main). The button lives above the anchor and swallows the click so toggling never navigates. */
-function NavItem({ icon, label, active, badge, href, onClick, pinned, onTogglePin }: { icon: ReactNode; label: string; active: boolean; badge?: number; href: string; onClick: () => void; pinned?: boolean; onTogglePin?: () => void }) {
+function NavItem({ icon, label, active, badge, beta, href, onClick, pinned, onTogglePin }: { icon: ReactNode; label: string; active: boolean; badge?: number; beta?: boolean; href: string; onClick: () => void; pinned?: boolean; onTogglePin?: () => void }) {
   return (
     <div className="group relative">
       <a
@@ -1440,6 +1439,7 @@ function NavItem({ icon, label, active, badge, href, onClick, pinned, onTogglePi
       >
         {icon}
         <span className="flex-1 text-left">{label}</span>
+        {beta ? <span className="rounded bg-primary/10 px-1.5 py-0 text-[9px] font-semibold uppercase tracking-wide text-primary group-hover:invisible">Beta</span> : null}
         {badge ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{badge}</Badge> : null}
       </a>
       {onTogglePin && (
@@ -2867,6 +2867,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
 
   // New-chat composer state (shown when nothing is selected).
   const [newAgent, setNewAgent] = useState('')
+  const [newFilter, setNewFilter] = useState('')
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -2989,39 +2990,57 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
       {/* Right: either the new-chat composer or the conversation */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {!selected ? (
-          <div className="mx-auto flex w-full max-w-xl flex-1 flex-col justify-center gap-4">
-            <div>
-              <h2 className="text-lg font-semibold">Start a conversation</h2>
-              <p className="text-sm text-muted-foreground">Pick a teammate and tell them what you need. They work under the same approvals and guardrails as everyone else.</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {chatAgents.map((a) => (
-                <button
-                  key={a.id}
-                  onClick={() => setNewAgent(a.id)}
-                  className={`flex items-start gap-2 rounded-lg border p-2.5 text-left hover:border-primary ${(newAgent || chatAgents[0]?.id) === a.id ? 'border-primary bg-primary/5' : ''}`}
-                >
-                  <AgentIcon icon={a.icon} className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium capitalize">{a.id}</span>
-                    <span className="block truncate text-xs text-muted-foreground">{a.description}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="flex items-end gap-2">
-              <Textarea
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => onKey(e, startChat)}
-                placeholder={`Message ${newAgent || chatAgents[0]?.id || 'an agent'}…`}
-                className="max-h-40 min-h-[44px] resize-none text-sm"
-                rows={2}
-              />
-              <Button size="icon" disabled={busy || !draft.trim()} onClick={startChat}><Send className="h-4 w-4" /></Button>
-            </div>
-            {err && <p className="text-xs text-destructive">{err}</p>}
-          </div>
+          (() => {
+            const q = newFilter.trim().toLowerCase()
+            const shown = q ? chatAgents.filter((a) => a.id.toLowerCase().includes(q) || (a.description || '').toLowerCase().includes(q)) : chatAgents
+            const chosen = newAgent || chatAgents[0]?.id
+            return (
+              <div className="mx-auto flex h-full min-h-0 w-full max-w-xl flex-col gap-3 py-2">
+                <div className="shrink-0">
+                  <h2 className="text-lg font-semibold">Start a conversation</h2>
+                  <p className="text-sm text-muted-foreground">Pick a teammate and tell them what you need. They work under the same approvals and guardrails as everyone else.</p>
+                </div>
+                {chatAgents.length > 6 && (
+                  <Input value={newFilter} onChange={(e) => setNewFilter(e.target.value)} placeholder="Filter agents…" className="h-8 shrink-0 text-sm" />
+                )}
+                {/* The agent list scrolls; the heading and the composer stay put, so the message box is
+                    always visible no matter how many agents there are. */}
+                <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+                  <div className="grid grid-cols-2 gap-2">
+                    {shown.map((a) => (
+                      <button
+                        key={a.id}
+                        onClick={() => setNewAgent(a.id)}
+                        className={`flex items-start gap-2 rounded-lg border p-2.5 text-left hover:border-primary ${chosen === a.id ? 'border-primary bg-primary/5' : ''}`}
+                      >
+                        <AgentIcon icon={a.icon} className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium capitalize">{a.id}</span>
+                          <span className="block truncate text-xs text-muted-foreground">{a.description}</span>
+                        </span>
+                      </button>
+                    ))}
+                    {shown.length === 0 && <p className="col-span-2 px-1 py-2 text-xs text-muted-foreground">No agents match “{newFilter}”.</p>}
+                  </div>
+                </div>
+                <div className="shrink-0">
+                  <div className="mb-1 text-xs text-muted-foreground">Chatting with <span className="font-medium capitalize text-foreground">{chosen || 'an agent'}</span></div>
+                  <div className="flex items-end gap-2">
+                    <Textarea
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => onKey(e, startChat)}
+                      placeholder={`Message ${chosen || 'an agent'}…`}
+                      className="max-h-40 min-h-[44px] resize-none text-sm"
+                      rows={2}
+                    />
+                    <Button size="icon" disabled={busy || !draft.trim()} onClick={startChat}><Send className="h-4 w-4" /></Button>
+                  </div>
+                  {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
+                </div>
+              </div>
+            )
+          })()
         ) : (
           <>
             {/* Header */}
@@ -3098,8 +3117,10 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
 /** Inline reply box for an agent's question, inside the chat thread. */
 function QuestionReply({ m }: { m: Msg }) {
   const [answer, setAnswer] = useState('')
-  const [sent, setSent] = useState(false)
-  if (sent) return <div className="text-sm text-muted-foreground">Answer sent.</div>
+  const [sent, setSent] = useState('')
+  const options = (m.args as { options?: string[] } | undefined)?.options?.filter(Boolean) ?? []
+  const submit = (text: string) => { if (text.trim() && m.questionId) { api.answerQuestion(m.questionId, text.trim()); setSent(text.trim()) } }
+  if (sent) return <div className="text-sm text-muted-foreground">You answered: <span className="font-medium text-foreground">{sent}</span></div>
   return (
     <>
       <div className="flex items-start gap-2">
@@ -3109,10 +3130,18 @@ function QuestionReply({ m }: { m: Msg }) {
           <div className="whitespace-pre-wrap text-muted-foreground">{m.body || m.title}</div>
         </div>
       </div>
-      <div className="mt-2 flex items-end gap-2">
-        <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer…" className="h-8 text-sm" onKeyDown={(e) => { if (e.key === 'Enter' && answer.trim() && m.questionId) { api.answerQuestion(m.questionId, answer.trim()); setSent(true) } }} />
-        <Button size="sm" disabled={!answer.trim()} onClick={() => { if (m.questionId) { api.answerQuestion(m.questionId, answer.trim()); setSent(true) } }}>Reply</Button>
-      </div>
+      {options.length > 0 ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {options.map((o, i) => (
+            <Button key={i} size="sm" variant="outline" onClick={() => submit(o)}>{o}</Button>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-2 flex items-end gap-2">
+          <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Your answer…" className="h-8 text-sm" onKeyDown={(e) => { if (e.key === 'Enter') submit(answer) }} />
+          <Button size="sm" disabled={!answer.trim()} onClick={() => submit(answer)}>Reply</Button>
+        </div>
+      )}
     </>
   )
 }
@@ -3315,7 +3344,9 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
   }
 
   // ── Question (pending) ──
-  const send = async () => { if (!answer.trim()) return; setBusy(true); const r = await api.answerQuestion(m.questionId!, answer.trim()); if (r.error) setBusy(false) }
+  const qOptions = (m.args as { options?: string[] } | undefined)?.options?.filter(Boolean) ?? []
+  const answerWith = async (text: string) => { if (!text.trim()) return; setBusy(true); const r = await api.answerQuestion(m.questionId!, text.trim()); if (r.error) setBusy(false) }
+  const send = () => answerWith(answer)
   // Dismiss without answering: cancels the question so it leaves "Needs you" (and unblocks a live agent's `ask`).
   const dismissQ = async () => { setBusy(true); const r = await api.cancelQuestion(m.questionId!); if (r.error) { setBusy(false); alert(r.error) } }
   return (
@@ -3329,8 +3360,15 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
         <a href={navHref('sessions', 'aos-' + m.sessionId)} className="shrink-0 pt-0.5 text-[11px] text-muted-foreground underline hover:text-foreground" onClick={onNavClick(open)}>open</a>
         {time}
       </div>
+      {qOptions.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {qOptions.map((o, i) => (
+            <Button key={i} size="sm" variant="outline" className="h-8 text-xs" disabled={busy} onClick={() => answerWith(o)}>{o}</Button>
+          ))}
+        </div>
+      )}
       <div className="mt-2 flex gap-1.5">
-        <Input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder="Type your answer — the agent is waiting…" className="h-8 text-sm" />
+        <Input value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()} placeholder={qOptions.length > 0 ? '…or type a different answer' : 'Type your answer — the agent is waiting…'} className="h-8 text-sm" />
         <Button size="sm" className="h-8 px-2.5 text-xs" disabled={busy || !answer.trim()} onClick={send}><Send className="mr-1 h-3.5 w-3.5" />Reply</Button>
         <Button size="sm" variant="ghost" className="h-8 px-2 text-xs text-muted-foreground" disabled={busy} onClick={dismissQ} title="Dismiss without answering — the agent stops waiting on this">Dismiss</Button>
       </div>
