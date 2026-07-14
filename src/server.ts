@@ -1818,6 +1818,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }));
     return sendJson(res, 200, { ok: true, dispatches: runs });
   }
+  // An app reads one of ITS declared vault secrets at runtime (e.g. a key rotated since launch). Gated
+  // by the per-app secret AND the manifest's default-deny `capabilities.secrets` — an app can only read
+  // keys it declares. Value returned to the app only; audit records the key + found, never the value.
+  if (method === 'POST' && p === '/api/app/secret/get') {
+    const b = await readBody(req);
+    const slug = String(b.slug || '').trim().toLowerCase();
+    if (!appSecretOk(slug)) return sendJson(res, 403, { error: 'bad app secret' });
+    const manifest = os.apps.get(slug);
+    if (!manifest || !manifest.published) return sendJson(res, 404, { error: 'app not found or not published' });
+    const key = String(b.key || '').trim();
+    if (!key || !(manifest.capabilities.secrets ?? []).includes(key)) return sendJson(res, 403, { error: `app "${slug}" may not read "${key}" (declare it in capabilities.secrets)` });
+    const value = os.secrets.getSync(os.tenant, `app:${slug}`, key);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: `app:${slug}`, type: 'app.secret.read', data: { app: slug, key, found: value !== undefined } });
+    return sendJson(res, 200, value === undefined ? { ok: false, error: 'not set' } : { ok: true, key, value });
+  }
 
   // Every other /api/* route requires a logged-in member.
   const member = memberFor(os, req);
@@ -4180,7 +4195,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       try { source = fs.readFileSync(path.join(app.dir!, app.entry), 'utf8'); } catch { /* new/renamed entry */ }
       let log = '';
       try { log = fs.readFileSync(path.join(app.dir!, 'app.log'), 'utf8').split('\n').slice(-200).join('\n'); } catch { /* no log yet */ }
-      return sendJson(res, 200, { app: appView(app, appSup), files, source, log });
+      // Which DECLARED secrets currently resolve to a stored value (metadata only, never the value) — so
+      // the Settings tab can show set/unset per key.
+      const secretsSet = (app.capabilities.secrets ?? []).filter((k) => os.secrets.getSync(os.tenant, `app:${slug}`, k) !== undefined);
+      return sendJson(res, 200, { app: appView(app, appSup), files, source, log, secretsSet });
     }
     if (method === 'PUT') {
       const b = await readBody(req);
@@ -4236,6 +4254,35 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (app.published) appSup?.kill(slug, 'file deleted via console');
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.file.deleted', data: { app: slug, path: rel, by: me.email } });
       return sendJson(res, 200, { ok: true, files: os.apps.listFiles(slug) });
+    }
+  }
+  // Store/clear a value for one of an app's declared secrets (owner/admin), sealed under `app:<slug>` in
+  // the vault. Write-only: the value is never returned or audited, only the key. The app reads it via
+  // launch injection or /api/app/secret/get.
+  const appSecret = p.match(/^\/api\/apps\/([a-z0-9-]+)\/secret$/);
+  if (appSecret) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const slug = appSecret[1];
+    const app = os.apps.get(slug);
+    if (!app) return sendJson(res, 404, { error: 'no such app' });
+    if (method === 'PUT') {
+      const b = await readBody(req);
+      const key = String(b.key || '').trim();
+      const value = b.value != null ? String(b.value) : '';
+      if (!key) return sendJson(res, 400, { error: 'key is required' });
+      if (!value) return sendJson(res, 400, { error: 'value is required' });
+      os.secrets.set(os.tenant, key, value, { principal: `app:${slug}`, updatedBy: me.email });
+      if (app.published) appSup?.kill(slug, 'secret changed'); // bounce so injection picks up the new value
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.secret.set', data: { app: slug, key, by: me.email } });
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'DELETE') {
+      const key = String(url.searchParams.get('key') || '').trim();
+      if (!key) return sendJson(res, 400, { error: 'key is required' });
+      os.secrets.delete(os.tenant, key, `app:${slug}`);
+      if (app.published) appSup?.kill(slug, 'secret cleared');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.secret.cleared', data: { app: slug, key, by: me.email } });
+      return sendJson(res, 200, { ok: true });
     }
   }
   const appPub = p.match(/^\/api\/apps\/([a-z0-9-]+)\/(publish|unpublish|stop)$/);

@@ -193,7 +193,13 @@ export class TenantRegistry {
     autos.start();
     // Hosted apps: the supervisor spawns each app on demand + idle-reaps it. In-session/app loopback
     // calls carry the tenant via x-aos-tenant, so it's exported into every app's env.
-    const apps = new AppSupervisor(os.apps, { loopbackBase: this.loopbackBase, tenant: rec.slug });
+    const apps = new AppSupervisor(os.apps, {
+      loopbackBase: this.loopbackBase, tenant: rec.slug,
+      // Inject a published app's DECLARED vault secrets into its process env at launch (principal
+      // `app:<slug>` → tenant-wide `*`). Injection only — never widens who can read the value.
+      resolveSecret: (principal, key) => os.secrets.getSync(os.tenant, principal, key),
+      onSecretEvent: (slug, type, key) => os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: `app:${slug}`, type: `app.secret.${type}`, data: { app: slug, key } }),
+    });
     apps.start();
     const slack = new SlackSocket(os, autos);
     void slack.start();

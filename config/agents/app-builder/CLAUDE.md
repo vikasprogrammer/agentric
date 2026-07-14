@@ -47,6 +47,15 @@ r.end(body);
 The dispatch becomes a governed task (the agent's work still passes the gate). Set it up when a request
 genuinely needs an agent's judgement; a plain data/UI app needs none of this.
 
+### Using a secret (API key, token)
+
+If an app talks to an external service, declare the key names in `capabilities.secrets` (e.g.
+`["STRIPE_KEY"]`). A human sets the value in the app's **Settings** tab; it's then injected as
+`process.env.STRIPE_KEY` at launch — never hard-code a credential in the source. You can also re-read one
+on demand (e.g. after rotation): POST `{ slug, key }` to `$AOS_LOOPBACK/api/app/secret/get` with the same
+`x-aos-app-secret` + `x-aos-tenant` headers → `{ ok, value }`. Default-deny: you can only read keys you
+declare. Tell the human which keys they need to set when you hand off the app.
+
 ## Your tools
 
 - **`app_create`** — build a new app. Pass `id` (a DNS-safe slug like `mini-crm`), `name`, and `serverJs`

@@ -4064,7 +4064,8 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   // app deep-links to it and it's shareable/bookmarkable. `select()` navigates; `sel` follows the hash.
   const sel = permalink || ''
   const select = (slug: string) => nav('apps', slug || undefined)
-  const [detail, setDetail] = useState<{ app: AppInfo; log: string } | null>(null)
+  const [detail, setDetail] = useState<{ app: AppInfo; log: string; secretsSet: string[] } | null>(null)
+  const [secretDraft, setSecretDraft] = useState<Record<string, string>>({})
   const [files, setFiles] = useState<AppFile[]>([])
   const [openPath, setOpenPath] = useState('')
   const [content, setContent] = useState('')
@@ -4082,7 +4083,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   useEffect(() => {
     if (!sel) { setDetail(null); setFiles([]); setOpenPath(''); setContent(''); return }
     api.getApp(sel).then((d) => {
-      setDetail({ app: d.app, log: d.log }); setFiles(d.files || [])
+      setDetail({ app: d.app, log: d.log, secretsSet: d.secretsSet || [] }); setFiles(d.files || []); setSecretDraft({})
       // Open the entry file by default (its content came back as `source`).
       setOpenPath(d.app.entry); setContent(d.source); setDirty(false); setPreviewNonce((n) => n + 1)
     }).catch(() => setDetail(null))
@@ -4144,6 +4145,19 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
   }
   const patchApp = (patch: Partial<AppInfo>) => setDetail((d) => (d ? { ...d, app: { ...d.app, ...patch } } : d))
   const patchCaps = (patch: Partial<AppCapabilities>) => setDetail((d) => (d ? { ...d, app: { ...d.app, capabilities: { ...d.app.capabilities, ...patch } } } : d))
+  const reloadDetail = () => api.getApp(sel).then((d) => { setDetail({ app: d.app, log: d.log, secretsSet: d.secretsSet || [] }); setFiles(d.files || []) }).catch(() => {})
+  const setSecret = async (key: string) => {
+    const value = (secretDraft[key] || '').trim()
+    if (!value) return
+    const r = await api.setAppSecret(sel, key, value)
+    if (r.error) return flash(`⚠ ${r.error}`)
+    setSecretDraft((s) => ({ ...s, [key]: '' })); await reloadDetail(); flash(`✓ ${key} set`)
+  }
+  const clearSecret = async (key: string) => {
+    const r = await api.clearAppSecret(sel, key)
+    if (r.error) return flash(`⚠ ${r.error}`)
+    await reloadDetail(); flash(`✓ ${key} cleared`)
+  }
   const togglePublish = async () => {
     if (!detail) return
     setBusy('publish')
@@ -4253,7 +4267,31 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
                   <Input value={(caps.secrets ?? []).join(', ')} onChange={(e) => patchCaps({ secrets: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} className="mt-1 h-8 font-mono text-xs" placeholder="STRIPE_KEY" />
                 </label>
               </div>
-              <div className="mt-2 text-[11px] text-muted-foreground"><b>dispatchAgents</b> is enforced now; <b>egress</b> + <b>secrets</b> record the contract (enforcement lands with those slices).</div>
+              <div className="mt-2 text-[11px] text-muted-foreground"><b>dispatchAgents</b> + <b>secrets</b> are enforced; <b>egress</b> records the contract (enforcement lands with uid-isolation).</div>
+
+              {/* per-key secret values: declared keys, set/unset + a write-only value field */}
+              {(caps.secrets ?? []).length > 0 && (
+                <div className="mt-3 border-t pt-3">
+                  <div className="mb-1.5 text-xs font-medium text-muted-foreground">Secret values <span className="font-normal">— injected as <code>process.env.KEY</code> at launch. Save Settings first to declare a new key.</span></div>
+                  <div className="space-y-1.5">
+                    {(caps.secrets ?? []).map((key) => {
+                      const isSet = (detail?.secretsSet ?? []).includes(key)
+                      return (
+                        <div key={key} className="flex items-center gap-2">
+                          <span className="w-40 shrink-0 truncate font-mono text-xs">{key}</span>
+                          {isSet
+                            ? <Badge variant="secondary" className="gap-1 text-[10px]"><KeyRound className="h-3 w-3" /> set</Badge>
+                            : <Badge className="bg-amber-500 text-[10px]">unset</Badge>}
+                          <Input type="password" value={secretDraft[key] ?? ''} onChange={(e) => setSecretDraft((s) => ({ ...s, [key]: e.target.value }))} placeholder={isSet ? 'replace value…' : 'paste value…'} className="h-7 flex-1 font-mono text-xs" />
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={!(secretDraft[key] || '').trim()} onClick={() => setSecret(key)}>Set</Button>
+                          {isSet && <Button size="sm" variant="ghost" className="h-7 px-2 text-xs text-red-600" onClick={() => clearSecret(key)}>Clear</Button>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className="mt-1.5 text-[11px] text-muted-foreground">Values are encrypted at rest and never shown again. Setting one bounces the app so it picks up the new value.</div>
+                </div>
+              )}
             </div>
             )}
 

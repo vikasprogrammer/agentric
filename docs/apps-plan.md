@@ -32,10 +32,17 @@
 >   console file routes + agent tools **`app_files`/`app_write_file`/`app_delete_file`**. The console Apps
 >   page gains a **file-tree editor** and a **sandboxed preview iframe** (owner/admin can reach an
 >   unpublished app via the proxy — `ensureReady({allowUnpublished})` — so you see it before publishing).
+> - **v0.204.0 — secrets** (§4.1): an app holds real credentials. A manifest-declared
+>   `capabilities.secrets` key whose value a human set (in the Settings tab, sealed under `app:<slug>`)
+>   is **injected as `process.env.KEY` at launch** (reuses the vault, principal `app:<slug>` → `*`), and
+>   an app can re-read one on demand via **`POST /api/app/secret/get`** — both **default-deny** (only
+>   declared keys). Value never leaves the vault into audit/GET responses. Console **Settings** tab shows
+>   set/unset per key + a write-only value field.
 >
-> **Still to build:** secrets (§4.1), Linux uid-isolation (§3.3), `app_history`/`app_revert` revisions,
-> `/api/app/notify`, **separate-origin isolation** (§9 — published apps currently render same-origin as
-> the console; the preview iframe is sandboxed, but a top-level "Open" runs at the app-os origin).
+> **Still to build:** Linux uid-isolation (§3.3), `app_history`/`app_revert` revisions,
+> `secret_request`/admin-assignment for apps, `/api/app/notify`, **separate-origin isolation** (§9 —
+> published apps currently render same-origin as the console; the preview iframe is sandboxed, but a
+> top-level "Open" runs at the app-os origin).
 
 ## 0. Where Apps sit relative to Sessions, Automations, Tasks, and the Library
 
