@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.203.1] — 2026-07-14
+### Changed
+- **`policy_propose` success response now spells out propagation.** It tells the agent that an approved
+  policy change hot-reloads and applies LIVE to every running session at its next gated action — no
+  restart/respawn — contrasted with an MCP tool-schema change, which a live session only picks up on
+  respawn. Removes the ambiguity about when a tightened guardrail takes effect. (`src/memory/memory-mcp.ts`.)
+
 ## [0.203.0] — 2026-07-14
 ### Added
 - **Agents can propose governance-policy changes — owner-approved, tighten-only.** A new `policy_propose`
