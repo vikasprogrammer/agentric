@@ -11,7 +11,7 @@
  * Constructed on demand from the pieces the caller already holds (`os.secrets`, `os.settings`,
  * `os.tenant`) — no kernel wiring, so the blast radius stays small.
  */
-import { authorizeUrl, exchangeUserCode, refreshUserToken, githubUser, UserToken, listInstallations, mintInstallationToken } from '../connectors/github';
+import { authorizeUrl, exchangeUserCode, refreshUserToken, githubUser, UserToken, listInstallations, mintInstallationToken, appMetadata } from '../connectors/github';
 
 /** The vault key (per-member principal) holding the JSON token blob. */
 const USER_BLOB_KEY = 'github_user';
@@ -80,6 +80,24 @@ export class GithubIdentity {
   /** The created App's slug (manifest flow) → the "Install on your repos" link. */
   appSlug(): string {
     return this.os.settings.githubAppSlug();
+  }
+  /** The GitHub install page for this App, or '' if the slug isn't known yet. */
+  installUrl(): string {
+    const slug = this.appSlug();
+    return slug ? `https://github.com/apps/${slug}/installations/new` : '';
+  }
+  /**
+   * Resolve + cache the App slug from `GET /app` when we have the App credentials but no slug yet — so an
+   * App configured by hand (no slug from the manifest flow) still gets an "Install the App" link. One-shot:
+   * returns immediately once the slug is known; needs the bot creds (App id + private key).
+   */
+  async ensureAppSlug(by?: string): Promise<string> {
+    const existing = this.appSlug();
+    if (existing || !this.botConfigured()) return existing;
+    const meta = await appMetadata(this.appId(), this.privateKey());
+    if ('error' in meta || !meta.slug) return '';
+    this.os.settings.setGithubAppSlug(meta.slug, by);
+    return meta.slug;
   }
   /** Persist a freshly-created App's credentials in one shot (the manifest-conversion result). */
   saveApp(app: { clientId: string; clientSecret: string; slug: string }, by?: string): void {

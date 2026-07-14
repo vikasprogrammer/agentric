@@ -189,6 +189,28 @@ export async function githubUser(token: string): Promise<{ login: string; id: nu
 }
 
 /**
+ * The App's own metadata (`GET /app`, App-JWT authed) — chiefly its `slug`, which we need to build the
+ * `github.com/apps/<slug>/installations/new` install link for Apps that were configured by hand (so no
+ * slug came from the manifest flow). Cheap + idempotent; resolve once and cache in settings.
+ */
+export async function appMetadata(appId: string | number, privateKeyPem: string): Promise<{ slug: string; name: string; htmlUrl: string } | { error: string }> {
+  let jwt: string;
+  try {
+    jwt = appJwt(appId, privateKeyPem);
+  } catch (e) {
+    return { error: `could not sign App JWT (check the private key): ${e instanceof Error ? e.message : e}` };
+  }
+  try {
+    const res = await fetch(`${GH_API}/app`, { headers: { ...BASE_HEADERS, authorization: `Bearer ${jwt}` } });
+    if (!res.ok) return { error: `GET /app → ${res.status}` };
+    const j = (await res.json().catch(() => ({}))) as any;
+    return { slug: String(j?.slug ?? ''), name: String(j?.name ?? ''), htmlUrl: String(j?.html_url ?? '') };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'GET /app failed' };
+  }
+}
+
+/**
  * Whether a connected user token can actually *act* — i.e. the App is installed somewhere the token
  * reaches, not merely OAuth-authorized. This is the distinction that bit us in practice: a member can
  * "Connect" (authorize) and get a token with **zero installations**, which looks connected but can't

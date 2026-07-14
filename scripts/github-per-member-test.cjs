@@ -55,6 +55,7 @@ global.fetch = async (urlIn, opts = {}) => {
   }
   if (/\/user\/installations\/\d+\/repositories/.test(url)) return json({ total_count: 5, repositories: [] });
   // Company-bot minter: list App installations, then mint an installation (bot) token.
+  if (url === 'https://api.github.com/app') return json({ slug: 'agent-os-northwind', name: 'Agent OS', html_url: 'https://github.com/apps/agent-os-northwind' });
   if (url === 'https://api.github.com/app/installations') return json([{ id: 555, account: { login: 'Globex' }, repository_selection: 'all' }]);
   if (/\/app\/installations\/\d+\/access_tokens$/.test(url)) {
     botMintCount++;
@@ -326,6 +327,16 @@ async function main() {
   tm.injectGithubBaseline(be3, 'coder', 'sessB3');
   tm.injectMemberGithub(be3, 'coder', ownerId, 'sessB3');
   assert(be3.GH_TOKEN === 'gho_member', 'connected member token overrides the bot baseline (attribution)');
+
+  // installUrl self-heal: authorized-but-not-installed + bot creds present → /me resolves the App slug
+  // from GET /app so the warning links to the real install page (no manifest slug needed).
+  osx.settings.setGithubAppSlug('', 'owner@test');
+  gid2.save(ownerId, { token: 'gho_ni', login: 'octocat', connectedAt: Date.now() });
+  installState = 'none';
+  const meNI2 = await (await call('GET', '/api/github/me')).json();
+  assert(meNI2.install && meNI2.install.installed === false && (meNI2.installUrl || '').includes('/apps/agent-os-northwind/installations/new'),
+    '/me self-heals the App slug → a real install link when authorized-but-not-installed');
+  installState = 'installed';
   gid2.clear(ownerId);
   // Removing the private key drops the cached bot token + resolved installation.
   gid2.setPrivateKey('', 'owner@test');

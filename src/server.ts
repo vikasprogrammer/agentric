@@ -3266,7 +3266,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const st = await userInstallationStatus(blob.token).catch(() => null);
       if (st && !('error' in st)) install = st;
     }
-    return sendJson(res, 200, { configured: gh.configured(), connected: !!blob, login: blob?.login, expiresAt: blob?.expiresAt, install });
+    // Self-heal the install link: a hand-configured App has no slug from the manifest flow, so resolve it
+    // once (from GET /app) when we can, so the "Install the App" prompt is a real link, not just text.
+    if (blob && install && !install.installed && gh.botConfigured() && !gh.appSlug()) {
+      await gh.ensureAppSlug(me.email).catch(() => { /* best-effort; the text guidance still shows */ });
+    }
+    return sendJson(res, 200, { configured: gh.configured(), connected: !!blob, login: blob?.login, expiresAt: blob?.expiresAt, install, installUrl: gh.installUrl() });
   }
   if (method === 'GET' && p === '/api/github/connect') {
     const gh = new GithubIdentity(os);
