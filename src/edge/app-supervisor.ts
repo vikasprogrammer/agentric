@@ -45,6 +45,11 @@ export interface SupervisorOptions {
   readyTimeoutMs?: number;
   /** Idle-sweep cadence. Default 30s. */
   sweepMs?: number;
+  /** Resolve a vault secret for injection into an app's env at launch (principal `app:<slug>` → `*`).
+   *  Wired to `os.secrets.getSync` in the tenant registry; omitted in tests → no secret injection. */
+  resolveSecret?: (principal: string, key: string) => string | undefined;
+  /** Audit sink for the launch-time secret injection (injected/unresolved, key only, never the value). */
+  onSecretEvent?: (slug: string, type: 'injected' | 'unresolved', key: string) => void;
 }
 
 export class AppSupervisor {
@@ -160,12 +165,13 @@ export class AppSupervisor {
     }
   }
 
-  /** The env a hosted app process gets. Declared vault secrets are injected in the secrets increment
-   *  (docs/apps-plan.md §4.1) — this is the seam. */
+  /** The env a hosted app process gets. A deliberately minimal, non-inherited env plus any vault secrets
+   *  the manifest DECLARES (`capabilities.secrets`), resolved under the app's principal (widening to the
+   *  tenant-wide `*`) — the app's opt-in, human-reviewed-at-publish credential channel (docs/apps-plan.md
+   *  §4.1). Injection only; a missing value leaves the var unset (so the app sees "no key", not empty). */
   private childEnv(manifest: AppManifest, port: number, secret: string): NodeJS.ProcessEnv {
-    return {
-      // A deliberately minimal, non-inherited env: the app gets PATH + the OS contract, not the
-      // server's whole environment (no stray secrets leak in). Broaden only via declared capabilities.
+    const env: NodeJS.ProcessEnv = {
+      // The app gets PATH + the OS contract, not the server's whole environment (no stray secrets leak in).
       PATH: process.env.PATH,
       HOME: manifest.dir,
       PORT: String(port),
@@ -176,6 +182,16 @@ export class AppSupervisor {
       AOS_TENANT: this.opts.tenant,
       NODE_ENV: 'production',
     };
+    const keys = manifest.capabilities.secrets ?? [];
+    if (keys.length && this.opts.resolveSecret) {
+      for (const key of keys) {
+        const value = this.opts.resolveSecret(`app:${manifest.id}`, key);
+        if (value === undefined) { this.opts.onSecretEvent?.(manifest.id, 'unresolved', key); continue; }
+        env[key] = value;
+        this.opts.onSecretEvent?.(manifest.id, 'injected', key);
+      }
+    }
+    return env;
   }
 
   private wireLogs(manifest: AppManifest, proc: ChildProcess): void {

@@ -250,6 +250,9 @@ function scaffoldServerJs(name: string): string {
 // 'x-aos-tenant': process.env.AOS_TENANT } and body { slug: process.env.AOS_APP_SLUG, agent, goal,
 // runAsMember: <the X-Aos-Member header>, wait?: true } — the agent must be listed in your manifest's
 // capabilities.dispatchAgents (default-deny). Poll GET /api/app/dispatches?slug=... for results.
+// Secrets: any key in capabilities.secrets that a human has set is injected as process.env[KEY] at
+// launch (e.g. process.env.STRIPE_KEY). You can also re-read one on demand: POST the same app-secret +
+// tenant headers to $AOS_LOOPBACK/api/app/secret/get with body { slug, key } → { ok, value }.
 const http = require('http');
 
 const PORT = Number(process.env.PORT) || 0;

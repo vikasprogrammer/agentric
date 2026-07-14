@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.204.0] — 2026-07-14
+### Added
+- **Apps — secrets (an app can hold a real credential).** A hosted app can now use API keys / tokens
+  without hard-coding them. A key declared in the manifest's **default-deny `capabilities.secrets`**
+  whose value a human sets — in the app's **Settings** tab, sealed under `app:<slug>` in the existing
+  encrypted vault — is **injected as `process.env.KEY` into the app process at launch** (reuses the
+  agent-`shellSecrets` machinery: `AppSupervisor` resolves via `os.secrets.getSync`, principal
+  `app:<slug>` widening to tenant-wide `*`). An app can also **re-read** one on demand (e.g. after
+  rotation) via **`POST /api/app/secret/get`** — both paths **capability-gated** (an app only reads keys
+  it declares) and per-app-secret authenticated. The **value never leaves the vault** into audit,
+  GET responses, or the console (write-only field; audit records the key + found, never the value).
+  Console Settings shows **set/unset per declared key** with a masked value field; setting/clearing
+  bounces the app so it picks up the change. Routes: `PUT/DELETE /api/apps/:slug/secret`,
+  `POST /api/app/secret/get`; audited `app.secret.set`/`.cleared`/`.read`/`.injected`/`.unresolved`.
+  The scaffold + `app-builder` agent document the pattern. Verified end-to-end (set → injected as
+  `process.env` → read → undeclared-key denied 403 → value never leaked); governance CI 68/68.
+  Follow-ups: `secret_request`/admin-assignment for apps. (`src/edge/app-supervisor.ts`,
+  `src/tenant-registry.ts`, `src/server.ts`, `src/state/apps.ts`, `config/agents/app-builder/CLAUDE.md`,
+  `web/src/App.tsx`, `web/src/lib/api.ts`.)
+
 ## [0.203.1] — 2026-07-14
 ### Changed
 - **`policy_propose` success response now spells out propagation.** It tells the agent that an approved
