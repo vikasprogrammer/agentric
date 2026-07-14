@@ -45,7 +45,7 @@ import { JsonPolicyEngine, PolicyDocument, validatePolicyDocument, withAlwaysAll
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus, GoalStatus } from './types';
+import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus, GoalStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
@@ -394,7 +394,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   return server;
 }
 
-async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket, apps?: AppSupervisor): Promise<void> {
+async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket, appSup?: AppSupervisor): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const p = url.pathname;
   const method = req.method || 'GET';
@@ -408,7 +408,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // /apps/<slug>/… → the hosted-app reverse proxy. Login-gated (any member may open an app in v1),
   // cold-starts the app if needed, strips the /apps/<slug> prefix, and injects the trusted identity
   // headers. See docs/apps-plan.md §3.2.
-  if (apps && p.startsWith('/apps/')) return appProxy(os, apps, req, res);
+  if (appSup && p.startsWith('/apps/')) return appProxy(os, appSup, req, res);
 
   if (method === 'GET' && (p === '/' || p === '/index.html')) {
     const idx = path.join(WEB_DIST, 'index.html');
@@ -1613,6 +1613,70 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const newRev = os.agentRevisions.commit(os.tenant, agent, before, manifestToSnapshot(next, target.claudeMd), `revert to rev ${rev}`, `agent:${agent}`);
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.reverted', data: { agent, toRev: rev, rev: newRev, by: `agent:${agent}` } });
     return sendJson(res, 200, { ok: true, id: agent, toRev: rev, rev: newRev });
+  }
+
+  // ── Apps (agent loopback) ────────────────────────────────────────────────────
+  // An agent builds a hosted app AS ITSELF. Like agents/skills this is auto-apply + audited, but the
+  // app lands PROPOSED (published:false) — a human reviews the code + capabilities and publishes it
+  // (the review gate; see docs/apps-plan.md §6). Single-file for v1: the agent passes the server.js
+  // source directly (like agent_create's claudeMd); multi-file bundles are a follow-up.
+  if (method === 'POST' && p === '/api/apps/create') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!os.apps.enabled) return sendJson(res, 200, { ok: false, error: 'hosting apps requires a data home' });
+    const id = String(b.id || '').trim().toLowerCase();
+    const name = String(b.name || '').trim() || id;
+    if (!isValidAppSlug(id)) return sendJson(res, 200, { ok: false, error: 'id must be a DNS-safe slug: lowercase letters, digits and single hyphens (1–32 chars)' });
+    if (os.apps.get(id)) return sendJson(res, 200, { ok: false, error: `an app named "${id}" already exists` });
+    try {
+      const manifest = os.apps.scaffold(id, {
+        name, icon: b.icon !== undefined ? String(b.icon) : undefined,
+        owner: tm.sessionRunAs(session), createdBy: `agent:${agent}`,
+        capabilities: b.capabilities,
+      });
+      if (typeof b.serverJs === 'string' && b.serverJs.trim()) {
+        fs.writeFileSync(path.join(manifest.dir!, 'app', 'server.js'), String(b.serverJs));
+      }
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'app.created', data: { app: id, by: `agent:${agent}` } });
+      tm.postAppCard({ slug: id, agent, title: `App proposed — ${name}`, body: `${agent} built a hosted app "${name}" (\`${id}\`). Review its code + capabilities and publish it to make it live.` });
+      return sendJson(res, 200, { ok: true, id });
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  // An agent lists the apps in this workspace + their live status (to build on / avoid duplicating).
+  if (method === 'GET' && p === '/api/apps/list') {
+    const session = url.searchParams.get('session') || '';
+    if (!tm.sessionAgent(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const appList = os.apps.list().map((a) => ({ id: a.id, name: a.name, published: !!a.published, createdBy: a.createdBy, status: appSup?.statusOf(a.id).status ?? 'cold' }));
+    return sendJson(res, 200, { ok: true, apps: appList });
+  }
+  // An agent edits an app's manifest/source. Edits to a PUBLISHED app flip it back to proposed and post
+  // a re-review card — an agent can't push code into a live app without a human re-publishing it.
+  if (method === 'POST' && p === '/api/apps/update') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim().toLowerCase();
+    const cur = os.apps.get(id);
+    if (!cur) return sendJson(res, 200, { ok: false, error: `unknown app "${id}"` });
+    const patch: Record<string, unknown> = {};
+    for (const k of ['name', 'icon', 'lifecycle'] as const) if (b[k] !== undefined) patch[k] = b[k];
+    if (b.idleTimeoutSec !== undefined) patch.idleTimeoutSec = Number(b.idleTimeoutSec);
+    if (b.capabilities !== undefined) patch.capabilities = b.capabilities;
+    const saved = os.apps.save(id, patch);
+    if (typeof b.serverJs === 'string') fs.writeFileSync(path.join(cur.dir!, cur.entry), String(b.serverJs));
+    const wasPublished = !!cur.published;
+    if (wasPublished) { os.apps.setPublished(id, false); appSup?.kill(id, 'edited — needs re-publish'); }
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'app.updated', data: { app: id, by: `agent:${agent}`, unpublished: wasPublished } });
+    if (wasPublished) tm.postAppCard({ slug: id, agent, title: `App edited — ${cur.name}`, body: `${agent} changed the live app "${cur.name}" (\`${id}\`); it was unpublished for review. Re-publish to make the change live.` });
+    return sendJson(res, 200, { ok: true, id, rev: saved?.version, unpublished: wasPublished });
   }
 
   // Every other /api/* route requires a logged-in member.
@@ -3937,6 +4001,78 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 404, { error: 'unknown files route' });
   }
 
+  // ── apps (hosted apps — the console management surface) ───────────────────────
+  //    Owner/admin only: an App runs server-side code, so who can create/edit/publish/delete one is a
+  //    privileged action (the publish step is the code-review gate). Reads include live runtime status
+  //    from the supervisor. See docs/apps-plan.md.
+  if (method === 'GET' && p === '/api/apps') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const apps = os.apps.list().map((a) => appView(a, appSup));
+    return sendJson(res, 200, { apps, enabled: os.apps.enabled });
+  }
+  if (method === 'POST' && p === '/api/apps') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (!os.apps.enabled) return sendJson(res, 400, { error: 'hosting apps requires a data home' });
+    const b = await readBody(req);
+    const id = String(b.id || '').trim().toLowerCase();
+    const name = String(b.name || '').trim() || id;
+    if (!isValidAppSlug(id)) return sendJson(res, 400, { error: 'id must be a DNS-safe slug: lowercase letters, digits and single hyphens (1–32 chars)' });
+    if (os.apps.get(id)) return sendJson(res, 400, { error: `an app named "${id}" already exists` });
+    try {
+      const m = os.apps.scaffold(id, { name, icon: b.icon !== undefined ? String(b.icon) : undefined, owner: me.email, createdBy: me.email, capabilities: b.capabilities });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.created', data: { app: id, by: me.email } });
+      return sendJson(res, 200, { ok: true, app: appView(m, appSup) });
+    } catch (e) {
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const appMatch = p.match(/^\/api\/apps\/([a-z0-9-]+)$/);
+  if (appMatch) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const slug = appMatch[1];
+    const app = os.apps.get(slug);
+    if (!app) return sendJson(res, 404, { error: 'no such app' });
+    if (method === 'GET') {
+      // Return the manifest, the entry source (for the editor), a tail of the run log, + live status.
+      let source = '';
+      try { source = fs.readFileSync(path.join(app.dir!, app.entry), 'utf8'); } catch { /* new/renamed entry */ }
+      let log = '';
+      try { log = fs.readFileSync(path.join(app.dir!, 'app.log'), 'utf8').split('\n').slice(-200).join('\n'); } catch { /* no log yet */ }
+      return sendJson(res, 200, { app: appView(app, appSup), source, log });
+    }
+    if (method === 'PUT') {
+      const b = await readBody(req);
+      const patch: Record<string, unknown> = {};
+      for (const k of ['name', 'icon', 'lifecycle'] as const) if (b[k] !== undefined) patch[k] = b[k];
+      if (b.idleTimeoutSec !== undefined) patch.idleTimeoutSec = Number(b.idleTimeoutSec);
+      if (b.capabilities !== undefined) patch.capabilities = b.capabilities;
+      const saved = os.apps.save(slug, patch) ?? app;
+      if (typeof b.source === 'string') { try { fs.writeFileSync(path.join(app.dir!, saved.entry), String(b.source)); } catch (e) { return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) }); } }
+      // A manifest/source change to a live app takes effect on the next cold-start — bounce it.
+      if (app.published) appSup?.kill(slug, 'edited via console');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.updated', data: { app: slug, by: me.email } });
+      return sendJson(res, 200, { ok: true, app: appView(os.apps.get(slug)!, appSup) });
+    }
+    if (method === 'DELETE') {
+      appSup?.kill(slug, 'deleted');
+      os.apps.remove(slug);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'app.deleted', data: { app: slug, by: me.email } });
+      return sendJson(res, 200, { ok: true });
+    }
+  }
+  const appPub = p.match(/^\/api\/apps\/([a-z0-9-]+)\/(publish|unpublish|stop)$/);
+  if (method === 'POST' && appPub) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const [, slug, action] = appPub;
+    if (!os.apps.get(slug)) return sendJson(res, 404, { error: 'no such app' });
+    if (action === 'stop') { appSup?.kill(slug, 'stopped via console'); return sendJson(res, 200, { ok: true }); }
+    const published = action === 'publish';
+    os.apps.setPublished(slug, published);
+    if (!published) appSup?.kill(slug, 'unpublished');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: published ? 'app.published' : 'app.unpublished', data: { app: slug, by: me.email } });
+    return sendJson(res, 200, { ok: true, app: appView(os.apps.get(slug)!, appSup) });
+  }
+
   // ── artifacts (the deliverables gallery) ──────────────────────────────────────
   //    Any member, but scoped exactly like the inbox: owner/admin see all; a member sees only
   //    artifacts from sessions they spawned (or an automation they created). Unlike the raw file
@@ -4487,6 +4623,16 @@ function parseTags(s: string | null): string[] {
 }
 function approvalView(a: ApprovalRequest) {
   return { id: a.id, runId: a.runId, level: a.level, capability: a.attempt.capabilityId, args: a.attempt.args, reason: a.reason };
+}
+/** The console view of a hosted app: its manifest fields + the supervisor's live runtime status. */
+function appView(a: AppManifest, appSup?: AppSupervisor) {
+  const st = appSup?.statusOf(a.id) ?? { status: 'cold' as const };
+  return {
+    id: a.id, name: a.name, icon: a.icon, entry: a.entry, lifecycle: a.lifecycle,
+    idleTimeoutSec: a.idleTimeoutSec, capabilities: a.capabilities, owner: a.owner,
+    createdBy: a.createdBy, published: !!a.published, version: a.version,
+    status: st.status, uptimeMs: st.uptimeMs, lastError: st.lastError,
+  };
 }
 /** Strip the webhook secret for non-admins; give admins the ready-to-paste hook URL instead. */
 function automationView(a: Automation, req: http.IncomingMessage, admin: boolean, canManage = true) {

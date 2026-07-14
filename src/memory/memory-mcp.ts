@@ -1044,6 +1044,75 @@ const TOOLS = [
       required: ['rev'],
     },
   },
+  // ── Apps: build hosted apps (a mini-CRM, an internal mini-tool) ──
+  {
+    name: 'app_create',
+    description:
+      'Build a small HOSTED APP for this workspace — a self-contained tool a human opens in the browser (a ' +
+      'mini-CRM, a form, a dashboard, a calculator). You supply its id + name and the server.js source: a ' +
+      'zero-dependency Node HTTP server that binds process.env.PORT and honours the X-Forwarded-Prefix ' +
+      'header the platform injects (it is mounted at /apps/<id>). It gets its OWN SQLite at ' +
+      '$AOS_APP_HOME/data.db and the logged-in user in the X-Aos-Member header. The app lands PROPOSED — a ' +
+      'human reviews the code and publishes it to make it live. Use this when someone asks you to build an ' +
+      'internal tool or app rather than a one-off document.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'DNS-safe slug: lowercase letters, digits and single hyphens (1–32 chars), e.g. "mini-crm". Becomes the /apps/<id> URL.' },
+        name: { type: 'string', description: 'Human-facing name shown in the console + nav.' },
+        serverJs: { type: 'string', description: 'The full Node server.js source (single file). Binds process.env.PORT; honours X-Forwarded-Prefix; opens $AOS_APP_HOME/data.db for persistence. Omit → a hello-world template you edit later.' },
+        icon: { type: 'string', description: 'A lucide icon name (e.g. "Table", "Contact"). Omit → default glyph.' },
+        capabilities: {
+          type: 'object',
+          additionalProperties: false,
+          description: 'Default-deny governance grants. Omit for a pure UI/data app.',
+          properties: {
+            dispatchAgents: { type: 'array', items: { type: 'string' }, description: 'Agent ids this app may trigger in the background (via /api/app/dispatch). Empty → none.' },
+            egress: { type: 'boolean', description: 'Allow outbound network. Default false.' },
+            secrets: { type: 'array', items: { type: 'string' }, description: 'Vault keys the app may read.' },
+          },
+        },
+      },
+      required: ['id', 'name'],
+    },
+  },
+  {
+    name: 'app_list',
+    description:
+      'List the hosted apps in this workspace and their status (published?, running/cold) — so you can ' +
+      'build on an existing one or avoid duplicating it before you app_create.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+  },
+  {
+    name: 'app_update',
+    description:
+      'Edit a hosted app you (or a teammate) built — change its name, icon, capabilities, or replace the ' +
+      'server.js source. Pass only what you want to change (id is required). Editing a LIVE (published) app ' +
+      'unpublishes it for re-review — a human re-publishes to push the change live, so app code never goes ' +
+      'live without human sign-off.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The app id to edit.' },
+        name: { type: 'string', description: 'New name.' },
+        serverJs: { type: 'string', description: 'Replacement server.js source (send the full file, not a diff).' },
+        icon: { type: 'string', description: 'New lucide icon name.' },
+        lifecycle: { type: 'string', enum: ['scale-to-zero', 'resident'], description: 'scale-to-zero (default): cold-start on demand, idle-reaped. resident: kept warm.' },
+        capabilities: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            dispatchAgents: { type: 'array', items: { type: 'string' } },
+            egress: { type: 'boolean' },
+            secrets: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+      required: ['id'],
+    },
+  },
   {
     name: 'secret_put',
     description:
@@ -2009,6 +2078,53 @@ async function agentRevert(args: Record<string, unknown>): Promise<string> {
   return `Reverted your listing to rev ${d.toRev}${d.rev ? ` (recorded as rev ${d.rev})` : ''}. The next session you run will use it.`;
 }
 
+// ── Apps: build hosted apps (proposed → a human publishes) ────────────────────────────────────────
+async function appCreate(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim().toLowerCase();
+  const name = String(args.name ?? '').trim();
+  if (!id) return 'A new app needs an id (a DNS-safe slug, e.g. "mini-crm").';
+  if (!name) return 'A new app needs a name.';
+  const res = await fetch(AOS_URL + '/api/apps/create', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, id, name,
+      serverJs: args.serverJs !== undefined ? String(args.serverJs) : undefined,
+      icon: args.icon !== undefined ? String(args.icon) : undefined,
+      capabilities: args.capabilities,
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  if (!d.ok) return `Could not create the app: ${d.error ?? 'unknown error'}`;
+  return `Built app "${name}" (\`${id}\`) — it's PROPOSED. An owner/admin can review its code + capabilities and publish it; once published it's live at /apps/${id}. Edit it with app_update.`;
+}
+
+async function appList(): Promise<string> {
+  const res = await fetch(AOS_URL + `/api/apps/list?session=${encodeURIComponent(SESSION)}`, { headers: H() });
+  const d = (await res.json()) as { ok?: boolean; apps?: Array<{ id: string; name: string; published: boolean; status: string; createdBy?: string }>; error?: string };
+  if (!d.ok) return `Could not list apps: ${d.error ?? 'unknown error'}`;
+  if (!d.apps?.length) return 'No hosted apps yet. Build one with app_create.';
+  return 'Hosted apps:\n' + d.apps
+    .map((a) => `  ${a.id} · ${a.name} · ${a.published ? `published (${a.status})` : 'proposed'}${a.createdBy ? ` · by ${a.createdBy}` : ''}`)
+    .join('\n');
+}
+
+async function appUpdate(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim().toLowerCase();
+  if (!id) return 'Which app? Pass its id.';
+  const body: Record<string, unknown> = { session: SESSION, id };
+  for (const k of ['name', 'icon', 'lifecycle', 'serverJs'] as const) if (args[k] !== undefined) body[k] = String(args[k]);
+  if (args.capabilities !== undefined) body.capabilities = args.capabilities;
+  const res = await fetch(AOS_URL + '/api/apps/update', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; id?: string; unpublished?: boolean; error?: string };
+  if (!d.ok) return `Could not update the app: ${d.error ?? 'unknown error'}`;
+  return `Updated app "${id}".${d.unpublished ? ' It was LIVE, so it was unpublished for re-review — an owner/admin re-publishes to push the change live.' : ''}`;
+}
+
 // ── Secrets vault: shared credential handoff (value stays out of every durable plane) ─────────────
 async function secretPut(args: Record<string, unknown>): Promise<string> {
   const key = String(args.key ?? '').trim();
@@ -2374,6 +2490,9 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'agent_update' ? await agentUpdate(args)
         : name === 'agent_history' ? await agentHistory()
         : name === 'agent_revert' ? await agentRevert(args)
+        : name === 'app_create' ? await appCreate(args)
+        : name === 'app_list' ? await appList()
+        : name === 'app_update' ? await appUpdate(args)
         : name === 'secret_put' ? await secretPut(args)
         : name === 'secret_get' ? await secretGet(args)
         : name === 'secret_list' ? await secretList()
