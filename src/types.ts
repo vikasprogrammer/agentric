@@ -921,6 +921,80 @@ export interface AgentManifest extends RuntimeTuning {
   dir?: string;
 }
 
+/** An **App** — a small server-side app (a mini-CRM, an internal mini-tool) hosted inside a tenant,
+ *  built by agents + humans (never seeded). Reached at `/apps/<slug>/…` through the authenticated
+ *  reverse-proxy the terminal uses; run as a supervised, (on Linux) uid-isolated Node process with its
+ *  own SQLite. See docs/apps-plan.md. The manifest lives at `<home>/apps/<slug>/app.json`; the source
+ *  it runs is `<home>/apps/<slug>/<entry>`, and its private data is `<home>/apps/<slug>/data.db`. */
+export interface AppManifest {
+  /** DNS-safe slug — the `/apps/<slug>` path segment and the app's principal (`app:<slug>`). */
+  id: string;
+  /** Human-facing name shown in the console + nav. */
+  name: string;
+  /** Cosmetic icon — a lucide id or raw `<svg>` markup, same convention as an agent's `icon`. */
+  icon?: string;
+  /** Node entry, relative to the app folder. The process MUST bind `process.env.PORT` and honour the
+   *  injected `X-Forwarded-Prefix` when building absolute URLs. Default `app/server.js`. */
+  entry: string;
+  /** `scale-to-zero` (default): cold-start on first request, idle-killed after `idleTimeoutSec`.
+   *  `resident`: kept warm (restart-on-crash), never idle-killed. */
+  lifecycle: 'scale-to-zero' | 'resident';
+  /** Idle seconds before a scale-to-zero app is torn down (no effect when `resident`). Default 900. */
+  idleTimeoutSec?: number;
+  /** The governance contract — default-deny. Enforced at the boundary (proxy + `/api/app/*`), never by
+   *  trusting the app's own code. */
+  capabilities: AppCapabilities;
+  /** The accountable human (email) — the default `run_as` for a background agent dispatch. */
+  owner?: string;
+  /** Provenance of authorship (e.g. `agent:app-builder` or a member email). Display/audit only. */
+  createdBy?: string;
+  /** Whether this app has been published (routable + launchable). A proposed app stays inert until an
+   *  owner/admin publishes it — the code-review gate. Undefined/false → proposed. */
+  published?: boolean;
+  /** Bumped per saved revision (the rollback backbone). */
+  version?: number;
+  /** Absolute folder the manifest was loaded from. Set at load; never persisted. */
+  dir?: string;
+}
+
+/** An App's declared, default-deny capabilities. Anything not listed is denied at the boundary. */
+export interface AppCapabilities {
+  /** Agent ids this app may trigger in the background via `/api/app/dispatch`. Empty ⇒ none. */
+  dispatchAgents?: string[];
+  /** Outbound network. Default false ⇒ (on Linux) the process runs with egress denied. */
+  egress?: boolean;
+  /** Vault keys injected into the app's env at launch + readable via `/api/app/secret/get`. */
+  secrets?: string[];
+  /** Dependency posture: `stdlib` (Node built-ins + provided helpers, default), `vendored` (curated
+   *  allowlist), or `npm` (arbitrary deps — a reviewed capability, installed at build not runtime). */
+  dependencies?: 'stdlib' | 'vendored' | 'npm';
+}
+
+/** A DNS-safe app slug: lowercase alphanumeric + single hyphens, 1–32 chars, no leading/trailing/double
+ *  hyphen. Same shape as a tenant slug — it becomes a URL segment and a process principal. */
+export function isValidAppSlug(slug: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/.test(slug) && !slug.includes('--');
+}
+
+/** Normalize+validate an App capabilities payload (API body / config file). Never throws; drops junk
+ *  and clamps to the known shape so a malformed manifest can't silently widen the default-deny grant. */
+export function sanitizeAppCapabilities(input: unknown): AppCapabilities {
+  const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+  const out: AppCapabilities = {};
+  if (Array.isArray(raw.dispatchAgents)) {
+    const agents = raw.dispatchAgents.filter((x): x is string => typeof x === 'string').map((s) => s.trim()).filter(Boolean);
+    if (agents.length) out.dispatchAgents = [...new Set(agents)];
+  }
+  if (raw.egress === true) out.egress = true;
+  if (Array.isArray(raw.secrets)) {
+    const keys = raw.secrets.filter((x): x is string => typeof x === 'string').map((s) => s.trim()).filter(Boolean);
+    if (keys.length) out.secrets = [...new Set(keys)];
+  }
+  if (raw.dependencies === 'vendored' || raw.dependencies === 'npm') out.dependencies = raw.dependencies;
+  else out.dependencies = 'stdlib';
+  return out;
+}
+
 /** Normalize+validate a runtime-tuning payload (from an API body or config file): drops empty
  *  strings to undefined and rejects out-of-set effort values. Returns the clean tuning plus any
  *  validation error (so callers can 400). Unknown model strings pass through — the CLI validates

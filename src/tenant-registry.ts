@@ -16,6 +16,7 @@ import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
 import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice } from './terminal';
 import { Automations } from './edge/automations';
+import { AppSupervisor } from './edge/app-supervisor';
 import { InsightAlert } from './edge/alerts';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
@@ -31,6 +32,7 @@ export interface TenantRuntime {
   os: AgentOS;
   tm: TerminalManager;
   autos: Automations;
+  apps: AppSupervisor;
   slack: SlackSocket;
   discord: DiscordSocket;
   ttyd: ChildProcess | null;
@@ -145,6 +147,7 @@ export class TenantRegistry {
       try { rt.slack.stop(); } catch { /* best-effort */ }
       try { rt.discord.stop(); } catch { /* best-effort */ }
       try { rt.autos.stop(); } catch { /* best-effort */ }
+      try { rt.apps.stop(); } catch { /* best-effort */ }
       this.runtimes.delete(slug);
     }
     return this.store.remove(slug);
@@ -157,6 +160,7 @@ export class TenantRegistry {
       try { rt.slack.stop(); } catch { /* best-effort */ }
       try { rt.discord.stop(); } catch { /* best-effort */ }
       try { rt.autos.stop(); } catch { /* best-effort */ }
+      try { rt.apps.stop(); } catch { /* best-effort */ }
     }
   }
 
@@ -187,6 +191,10 @@ export class TenantRegistry {
     const tm = new TerminalManager(os, this.loopbackBase, paths.tmuxSocket, consoleOrigin);
     const autos = new Automations(os, tm);
     autos.start();
+    // Hosted apps: the supervisor spawns each app on demand + idle-reaps it. In-session/app loopback
+    // calls carry the tenant via x-aos-tenant, so it's exported into every app's env.
+    const apps = new AppSupervisor(os.apps, { loopbackBase: this.loopbackBase, tenant: rec.slug });
+    apps.start();
     const slack = new SlackSocket(os, autos);
     void slack.start();
     const discord = new DiscordSocket(os, autos);
@@ -226,7 +234,7 @@ export class TenantRegistry {
     tm.setSessionEventNotifier((notice) => { void notifySessionEvent(os, slack, discord, consoleOrigin, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
-    return { record: rec, os, tm, autos, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
+    return { record: rec, os, tm, autos, apps, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
   }
 
   /** Build a tenant's accept-link. Default tenant → apex localhost; others → its subdomain. */
