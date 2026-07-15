@@ -236,8 +236,8 @@ if [ "${RESIDENT:-}" = "1" ] || [ "${UNATTENDED:-}" = "1" ]; then
   echo
   if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
     notify_resumed
-    claude --resume "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" "$TASK" \
-      || claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" "$TASK"
+    claude --resume "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" ${TASK:+"$TASK"} \
+      || claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" ${TASK:+"$TASK"}
   elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
     claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" "$TASK"
   else

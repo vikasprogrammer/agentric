@@ -1237,7 +1237,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} messages={messages} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
-          {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} />}
+          {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
@@ -2863,12 +2863,13 @@ function ChatBubble({ turn, agentIcon }: { turn: Extract<ChatTurn, { kind: 'user
   )
 }
 
-function ChatPage({ agents, sessions, messages, selected, onSelect }: {
+function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTerminal }: {
   agents: AgentInfo[]
   sessions: Session[]
   messages: Msg[]
   selected: string
   onSelect: (id: string) => void
+  onOpenTerminal: (tmux: string, title?: string) => void
 }) {
   // Chattable agents = claude-code runtime the member is allowed to run. Chat sessions = ones this
   // surface (or the chat router) spawned, newest first.
@@ -2974,6 +2975,17 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); fn() }
   }
 
+  // Hand this conversation off to the Terminal: make it a live, attachable interactive session (claim the
+  // live pane or resurrect an idle chat as an interactive resume), then open the terminal on it.
+  const takeover = async () => {
+    if (!selected || busy) return
+    setBusy(true); setErr('')
+    const r = await api.takeoverToTerminal(selected)
+    setBusy(false)
+    if (r.error) { setErr(r.error); return }
+    onOpenTerminal('aos-' + selected, activeAgent?.id || active?.agent)
+  }
+
   return (
     <div className="flex h-full min-h-0 gap-4">
       {/* Left rail: your chats + a new-chat button */}
@@ -3060,10 +3072,13 @@ function ChatPage({ agents, sessions, messages, selected, onSelect }: {
             {/* Header */}
             <div className="mb-2 flex items-center gap-2 border-b pb-2">
               <AgentIcon icon={activeAgent?.icon} className="h-5 w-5 shrink-0 text-muted-foreground" />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">{active?.title || activeAgent?.id || active?.agent}</div>
                 <div className="text-[11px] capitalize text-muted-foreground">{activeAgent?.id || active?.agent}{working ? ' · working…' : ''}</div>
               </div>
+              <Button size="sm" variant="ghost" className="h-7 shrink-0 gap-1.5 text-xs text-muted-foreground" onClick={takeover} disabled={busy} title="Open this conversation in the Terminal — a live session you can type into and steer">
+                <TerminalSquare className="h-3.5 w-3.5" /> Open in Terminal
+              </Button>
             </div>
 
             {/* Timeline */}
