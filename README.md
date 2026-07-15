@@ -82,6 +82,39 @@ between the platforms is entirely in how the process supervisor treats that surv
   ungated). Full runbook — nginx `X-Forwarded-*` handling, deploy steps, per-user uid isolation — is in
   `CLAUDE.md`; multi-tenant fan-out is in `docs/process-per-tenant.md`.
 
+  > **nginx gotcha — make the `Connection: upgrade` header conditional.** The app's Node server both
+  > proxies WebSockets (the browser terminal) and serves plain HTTP. If your proxy sets the common
+  > WebSocket boilerplate `proxy_set_header Connection "upgrade";` **unconditionally**, every *normal*
+  > request 502s with `upstream prematurely closed connection while reading response header` — the Node
+  > server reads `Connection: upgrade` on a non-WebSocket request as a socket-upgrade attempt and
+  > destroys the connection. Gate it on `$http_upgrade` so only real WebSocket requests get `upgrade`:
+  >
+  > ```nginx
+  > map $http_upgrade $connection_upgrade { default upgrade; "" close; }
+  > # …then in each location:
+  > proxy_http_version 1.1;
+  > proxy_set_header   Upgrade    $http_upgrade;
+  > proxy_set_header   Connection $connection_upgrade;   # NOT a bare "upgrade"
+  > ```
+
+  > **systemd gotcha — every `ReadWritePaths=` dir must already exist.** Under `ProtectHome=read-only`
+  > the unit carves out writable paths (the data home, the checkout, `~/.claude`, …); if any listed path
+  > is missing on disk the service refuses to start with `status=226/NAMESPACE`
+  > (`Failed to set up mount namespacing: <path>: No such file or directory`). On a fresh box some of
+  > these (e.g. `~/.config`, `~/.cache`, `~/.claude`) may not exist yet — `mkdir -p` them before the
+  > first `systemctl start`.
+
+  > **systemd + trust gotcha — the service user's HOME must be writable, or every interactive session
+  > hangs.** At launch the OS pre-accepts Claude Code's one-time folder-trust dialog for each agent
+  > folder by seeding `hasTrustDialogAccepted` into **`~/.claude.json`** (a file in the home *root*, via
+  > an atomic temp-file + rename). `ProtectHome=read-only` with only `~/.claude` (the sub-dir) carved out
+  > leaves the home *root* read-only, so that write fails silently and every **interactive** session then
+  > hangs forever on "Do you trust the files in this folder?" (headless dodges it via
+  > `--dangerously-skip-permissions`). Fix: put the service user's home in `ReadWritePaths=` and re-lock
+  > the sensitive bits — e.g. `ReadWritePaths=/home/svc` + `ReadOnlyPaths=/home/svc/.ssh` — keeping
+  > `ProtectSystem=strict`. Symptom to recognize: sessions show `running` in the DB and the tmux pane is
+  > alive, but it's parked at the trust prompt.
+
   > **Operational note:** because sessions now outlive the app, never run `tmux` against
   > `<home>/tmux.sock` as root (e.g. `sudo tmux`) — it leaves the socket root-owned and the
   > service (running as its own user) can no longer spawn sessions on it. If spawns start failing with

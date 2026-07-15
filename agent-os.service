@@ -45,11 +45,21 @@ NoNewPrivileges=true
 # Linux-only pairing needed to match its "sessions survive a restart" behaviour.)
 PrivateTmp=false
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/agent-os/tools/agent-os/data
+# ProtectHome=read-only would be tighter, BUT the OS pre-accepts Claude Code's one-time folder-trust
+# dialog per agent folder by seeding ~/.claude.json (a file in the HOME ROOT, written via atomic
+# temp+rename → needs the home DIRECTORY writable, not just ~/.claude). Under ProtectHome=read-only with
+# only ~/.claude carved out, that write fails silently and every INTERACTIVE session then hangs forever
+# on "Do you trust the files in this folder?". So we make the service user's home writable and re-lock
+# the sensitive bits below (ProtectSystem=strict still shields /usr, /etc, /boot). If you prefer
+# ProtectHome=read-only, you must additionally make the home root writable enough for ~/.claude.json.
+ReadWritePaths=/home/agent-os
 ReadWritePaths=/tmp
-# claude-code agents run the `claude` CLI, which writes session state/transcripts here.
-ReadWritePaths=/home/agent-os/.claude
+# Re-lock the real persistence vectors a compromised agent could abuse (SSH keys, shell rc).
+ReadOnlyPaths=/home/agent-os/.ssh
+# NOTE (fresh box): the ~/.claude dir must exist AND hold a completed login (`claude` → /login, or
+# ANTHROPIC_API_KEY) — otherwise every spawned session launches claude, hits "Not logged in", and dies
+# instantly (symptom: "sessions won't spawn"). Any ReadWritePaths/ReadOnlyPaths path must already exist
+# or systemd fails start with status=226/NAMESPACE.
 
 # Resource limits
 LimitNOFILE=65536

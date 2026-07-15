@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.207.2] — 2026-07-15
+### Fixed
+- **Bundled `agent-os.service` no longer hangs every interactive session on a fresh hardened box.** The
+  unit shipped `ProtectHome=read-only` carving out only `~/.claude`, but the launch script's
+  folder-trust seeder writes `~/.claude.json` (a home-root file, atomic temp+rename → needs the home
+  *directory* writable). The write failed silently, so trust was never recorded and interactive sessions
+  parked forever on Claude Code's "Do you trust the files in this folder?" prompt. The unit now makes the
+  service user's home writable and re-locks `~/.ssh` (`ReadOnlyPaths`), keeping `ProtectSystem=strict`.
+### Docs
+- **Documented three deploy gotchas hit provisioning a fresh Linux/systemd tenant.** (1) nginx: a
+  hardcoded `proxy_set_header Connection "upgrade";` 502s **every** non-WebSocket request (the Node
+  server treats it as a socket-upgrade attempt and drops the connection) — front the app with the
+  conditional `map $http_upgrade $connection_upgrade` instead. (2) systemd: every `ReadWritePaths=`/
+  `ReadOnlyPaths=` path must already exist under `ProtectHome=read-only` or the unit dies with
+  `status=226/NAMESPACE`; on a fresh box `mkdir -p ~/.config ~/.cache ~/.claude` first. (3) the
+  trust-dialog hang above. README + `agent-os.service` comments + CLAUDE.md.
+
 ## [0.207.1] — 2026-07-15
 ### Fixed
 - **The Chat window now only ever shows chat-started sessions.** The chat *list* already filtered to
