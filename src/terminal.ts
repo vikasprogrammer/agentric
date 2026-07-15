@@ -1289,6 +1289,41 @@ export class TerminalManager {
   }
 
   /**
+   * Take a native-console CHAT session over into the Terminal. A chat session is headless per-turn (no
+   * persisted launch env, and between turns its pane is gone), so unlike {@link claimSession} we can't
+   * always just attach. Two cases:
+   *  - a turn is still running → `claimSession` the live pane (zero disruption, attach to the stream);
+   *  - idle/dead → resurrect it as an interactive RESIDENT TUI that resumes the SAME transcript with no
+   *    seed prompt (drops the human straight into a steerable claude), writes the launch env (so ttyd can
+   *    attach + later reattach), and marks it claimed/sticky so the reapers leave it alone.
+   * The caller then opens the terminal on `aos-<id>`. Returns an error only for an unknown / non-resumable
+   * / non-claude-code session.
+   */
+  takeoverToTerminal(sessionId: string, by: string): { ok: boolean; error?: string } {
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!row) return { ok: false, error: 'unknown session' };
+    const manifest = this.os.agents.get(row.agent);
+    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be taken over' };
+    if (!row.claude_session_id) return { ok: false, error: 'this chat has no conversation to open yet' };
+    // A turn is still generating → attach to the live pane, no relaunch.
+    if (this.isAlive(sessionId)) return this.claimSession(sessionId, by);
+    // Idle/dead → resurrect as an interactive resident TUI (resumes the transcript, no seed prompt).
+    this.allowResume(sessionId);
+    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, resident = 1, claimed_by = ?, claimed_at = ?, last_activity = ?, updated_at = ? WHERE id = ?")
+      .run(by, Date.now(), Date.now(), Date.now(), sessionId);
+    const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
+    const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'chat-takeover' });
+    this.launchClaudeCode({
+      id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
+      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Idle reaper (run from the process-wide 60s sweep in server.ts). Two jobs, one pass; never throws:
    *
    *  1. RESIDENT (warm chat) sessions whose last turn is older than the configured timeout

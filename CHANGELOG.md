@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.206.0] — 2026-07-15
+### Added
+- **"Open in Terminal" from a Chat session.** A chat conversation can now be handed off to the raw
+  Terminal in one click — for when a technical teammate needs to watch or steer the run hands-on. Since a
+  chat session is headless per-turn (no live pane between turns), the take-over is two-mode: if a turn is
+  mid-flight it **claims the live pane**; if the chat is idle it **resurrects it as an interactive resident
+  session that resumes the same transcript** (no seed prompt — drops you straight into a steerable claude),
+  writes the launch env so ttyd can attach, and marks it claimed/sticky. Then the console opens the
+  terminal on it. New `TerminalManager.takeoverToTerminal` + `POST /api/sessions/:id/takeover-terminal`;
+  the launcher's resident-resume now omits an empty seed (`${TASK:+…}`) so a no-prompt resume lands in the
+  interactive TUI. Same session, same governance — just the raw view. (`src/terminal.ts`, `src/server.ts`,
+  `terminal/claude-launch.sh`, `web/src/App.tsx`, `web/src/lib/api.ts`.)
+
 ## [0.205.0] — 2026-07-14
 ### Added
 - **Apps — custom domains (point `my.tool.com` at any app).** A published app can bind one or more

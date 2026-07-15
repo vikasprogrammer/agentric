@@ -1062,6 +1062,9 @@ export const api = {
    *  turn is still generating (keep the draft, resend shortly). */
   reply: (id: string, message: string) =>
     call<{ status?: 'sent' | 'busy'; error?: string }>('POST', `/api/sessions/${id}/reply`, { message }),
+  /** Take a chat session over into the Terminal — makes it a live attachable interactive TUI; the caller
+   *  then opens the terminal on it. */
+  takeoverToTerminal: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/takeover-terminal`),
   /** Upload a pasted/dropped/picked file (ANY type) into a live session; the server saves it in the
    *  agent's folder and types the path into the running claude. `dataB64` is base64 (no data: prefix);
    *  `ext` e.g. 'pdf'; `name` is the original filename, preserved when given. */

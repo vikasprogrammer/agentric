@@ -2187,6 +2187,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (r === 'error') return sendJson(res, 409, { error: 'this session could not accept the message' });
     return sendJson(res, 200, { status: 'sent' });
   }
+  // Take a chat session over into the Terminal: make it a live, attachable interactive TUI (claim the
+  // live pane, or resurrect an idle chat as an interactive resident resume). The client then opens the
+  // terminal on aos-<id>.
+  const takeoverMatch = p.match(/^\/api\/sessions\/([\w-]+)\/takeover-terminal$/);
+  if (method === 'POST' && takeoverMatch) {
+    const id = takeoverMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to take over this session' });
+    const out = tm.takeoverToTerminal(id, me.email);
+    return sendJson(res, out.ok ? 200 : 409, out);
+  }
   // Session activity: "which agent-os primitives did this run use?" — the session's audit stream,
   // classified into a chronological timeline + a grouped count summary. Same visibility as the terminal
   // (canViewSession), so a member sees the activity of the runs they can attach to, not just admins.
