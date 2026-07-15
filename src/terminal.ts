@@ -1359,13 +1359,17 @@ export class TerminalManager {
       } catch { /* one bad row must not stop the sweep */ }
     }
 
-    // (2) unattended backstop — the safety net for markTurnIdle. Two ways an unattended run leaks a live pane:
-    //   (a) DONE ORPHAN — it ended via `report`, which flips the row to 'done' before the Stop beacon lands, so
-    //       markTurnIdle used to bail. Its pane must die regardless of idle time; a done run should hold no TUI.
-    //       (markTurnIdle now reaps these directly; this sweep also clears any that predate the fix or whose
-    //       Stop beacon never landed.) Only detectable when we can poll liveness (see below).
-    //   (b) IDLE STRAGGLER — still 'running' with a turn-end beacon seen (`last_activity` set) and idle past the
-    //       timeout: the classic case where the Stop beacon was lost or a human attached then detached.
+    // (2) DONE-ORPHAN + unattended-straggler backstop — the safety net for markTurnIdle. Two ways a run leaks
+    // a live pane:
+    //   (a) DONE ORPHAN — the run ended via `report`, which flips the row to 'done' while its interactive TUI
+    //       pane is still live; a done run should hold NO pane, ever, regardless of idle time. This bites BOTH
+    //       lanes: an unattended run whose Stop beacon never landed, AND — the common one — an INTERACTIVE
+    //       (`headless=0`) member/chat run, for which markTurnIdle bails (non-headless) and the idle-interactive
+    //       sweep (3) only touches 'running' rows, so a report-ended one is caught by neither. So we sweep
+    //       done-orphans of EITHER lane here. Only detectable when we can poll liveness (see below).
+    //   (b) IDLE STRAGGLER — an UNATTENDED (`headless=1`) run still 'running' with a turn-end beacon seen
+    //       (`last_activity` set) and idle past the timeout: the classic lost-Stop-beacon / attach-then-detach
+    //       case. (Interactive stragglers are sweep (3)'s job, on the longer interactive timeout.)
     // `aliveNames()` returns the live tmux set, or NULL when the backend can't report liveness (the Linux
     // LauncherSessionBackend always; a transient local poll failure). When we CAN poll, gate on true pane
     // liveness so a cleanly-reaped row is never re-killed / re-audited on a later tick (a `done` row keeps its
@@ -1373,7 +1377,7 @@ export class TerminalManager {
     // back to the classic time-based rule for RUNNING rows only (never blind-sweep a 'done' row, or we'd
     // re-teardown it every tick with no way to know its pane already died).
     const alive = this.backend.aliveNames();
-    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, last_activity FROM term_sessions WHERE headless = 1 AND resident = 0 AND claimed_by IS NULL AND status IN ('running','done')")
+    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, last_activity FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; last_activity: number | null }>();
     for (const r of unattended) {
       try {

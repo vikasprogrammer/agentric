@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.206.1] — 2026-07-15
+### Fixed
+- **Interactive sessions that `report` done no longer leak their pane forever.** A `headless=0`
+  (member/chat) run ends by calling `report`, which flips its row to `status='done'` while its interactive
+  TUI pane is still live. `markTurnIdle` bails on non-headless runs and the idle-interactive reaper (sweep 3)
+  only touches `running` rows, so the `done`+`headless=0` combination was caught by **no** reaper branch —
+  its `claude` process (~350 MB RSS) lingered indefinitely. Over days these piled up until a box's RAM/CPU
+  was exhausted (observed on the globex tenant: 19 orphaned tmux/`claude` processes, some 5 days old, swap
+  full, load avg 100). The done-orphan backstop (reaper sweep 2) is now **lane-agnostic** — it reaps a live
+  `done` pane of *either* lane on sight, keeping the existing "human attached / blocked on a person" guards
+  so an actively-watched pane is never killed. The unattended idle-straggler rule stays `headless=1`-only.
+  (`src/terminal.ts`.)
+
 ## [0.206.0] — 2026-07-15
 ### Added
 - **"Open in Terminal" from a Chat session.** A chat conversation can now be handed off to the raw
