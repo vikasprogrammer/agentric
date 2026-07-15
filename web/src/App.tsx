@@ -106,16 +106,20 @@ const sessionSource = (s: Session): SessionSource => {
 }
 
 /** Session-list status filter. `live` matches any session with a live pane (regardless of stored
- *  status); the terminal states match only when NOT live, so a live pane reporting `done` reads as
- *  Live, never Done — the same rule `statusLabel` uses for the dot. */
-type SessionStatusFilter = 'all' | 'live' | 'done' | 'stopped' | 'crashed'
+ *  status); `blocked` narrows to live runs waiting on a human (a pending ask/approval); the terminal
+ *  states match only when NOT live, so a live pane reporting `done` reads as Live, never Done — the same
+ *  rule `statusLabel` uses for the dot. */
+type SessionStatusFilter = 'all' | 'live' | 'blocked' | 'done' | 'stopped' | 'crashed'
 const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
-  f === 'all' ? true : f === 'live' ? isLive(s) : !isLive(s) && s.status === f
+  f === 'all' ? true
+    : f === 'live' ? isLive(s)
+      : f === 'blocked' ? isLive(s) && Boolean(s.blocked)
+        : !isLive(s) && s.status === f
 
 // Filter labels — shared by the dropdown options AND the collapsed trigger (base-ui's SelectValue
 // renders the raw value unless given a formatter, so the two must read from one source).
 const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
-  { all: 'All statuses', live: 'Live', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
+  { all: 'All statuses', live: 'Live', blocked: 'Blocked', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
@@ -1017,8 +1021,12 @@ function Console({ me }: { me: Member }) {
   }
 
   const pendingApprovals = messages.filter(isActionRequired).length
-  // Sessions where Claude is blocked waiting on the human — drives the per-session bell everywhere.
+  // Sessions where Claude is blocked waiting on the human — drives the per-session bell everywhere. Union
+  // of two signals: an open 'notification' card (the agent said so / a permission-prompt Notification) and
+  // the server-authoritative `s.blocked` (a pending governed ask/approval), so the bell shows even when a
+  // block produced no card.
   const waiting = new Set(messages.filter((m) => m.type === 'notification' && m.status === 'open').map((m) => m.sessionId))
+  for (const s of sessions) if (s.blocked) waiting.add(s.id)
   // The sidebar "All" badge counts genuinely LIVE runs — a session actively RUNNING with a live pane —
   // mirroring the server's canonical aliveSessionCount. `isLive` is deliberately broader (an interactive
   // session that reported `done` but keeps an attachable pane reads live so its dot stays green +
@@ -1235,7 +1243,7 @@ function Console({ me }: { me: Member }) {
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
-          {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} messages={messages} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
+          {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
@@ -5722,12 +5730,13 @@ const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00
 /** Owner-only home. What the fleet is doing right now (live sessions + who's accountable for each) and
  *  which agents are earning trust. Pure-props: it reads the sessions/messages the Console already polls
  *  and the fleet maturity map, so it live-updates on the 1.5s tick with no fetch of its own. */
-function OverviewPage({ me, sessions, messages, members, agents, maturity, onOpen, nav }: {
-  me: Member; sessions: Session[]; messages: Msg[]; members: Member[]; agents: AgentInfo[]
+function OverviewPage({ me, sessions, members, agents, maturity, onOpen, nav }: {
+  me: Member; sessions: Session[]; members: Member[]; agents: AgentInfo[]
   maturity: Record<string, AgentStats>; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void
 }) {
-  // A run is "blocked" when it has a pending approval/question waiting on a human (keyed by session id).
-  const blockedRuns = useMemo(() => new Set(messages.filter(isActionRequired).map((m) => m.sessionId)), [messages])
+  // A run is "blocked" when it's waiting on a human (a pending ask/approval). Read straight off the
+  // server-authoritative `s.blocked` flag now, rather than re-deriving it from the message feed.
+  const blockedRuns = useMemo(() => new Set(sessions.filter((s) => s.blocked).map((s) => s.id)), [sessions])
   const live = useMemo(() => sessions.filter(isLive).sort((a, b) => a.createdAt - b.createdAt), [sessions])
   const t0 = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }, [])
   const doneToday = sessions.filter((s) => s.status === 'done' && s.updatedAt >= t0).length

@@ -188,6 +188,12 @@ export interface Session {
   /** The member id who "took over" (claimed) this unattended run to watch/steer it — set makes the
    *  session sticky (never auto-reaped at turn-end). Undefined = nobody has claimed it. */
   claimedBy?: string;
+  /** True when the run is BLOCKED on a human right now — a pending `ask` question or a pending approval
+   *  gate whose turn can't end until someone answers. The one authoritative "needs you" state, resolved
+   *  server-side (a pending question OR approval for this run) so the console doesn't re-derive it from the
+   *  message feed. Only meaningful for a live run (`status === 'running'`). Drives the "blocked" list
+   *  filter and the sidebar/overview "waiting on you" treatment. */
+  blocked?: boolean;
   /** The member id this session ACTS AS (run_as) — distinct from `spawnedBy` provenance. A task- or
    *  chat-triggered run is spawned by `task:`/`automation:` but runs as (and is owned by) a member,
    *  so the console keys "my sessions" off this too. */
@@ -342,16 +348,16 @@ export interface MemberNotice {
   important: boolean;
 }
 
-/** What the session-event notifier sink receives when one of a member's own sessions changes state —
- *  it started waiting on them, finished, or crashed. The registry DMs the run's owner (its `run_as`,
- *  else the console member who spawned it) on Slack/Discord IF that member opted into `dm` notifications.
- *  The inbox card is written inline regardless; this is only the out-of-band push, gated on preference so
- *  it doesn't flood. Approvals/questions have their own (always-on) notifiers — this covers the newer
- *  complete/waiting/crashed events the console added a bell for. */
+/** What the session-event notifier sink receives when one of a member's own sessions changes state — it
+ *  began (a delegated/unattended run), started waiting on them, finished, or crashed. The registry DMs the
+ *  run's owner (its `run_as`, else the console member who spawned it) on Slack/Discord IF that member opted
+ *  into `dm` notifications (except `crashed`, an always-on failure signal that also escalates to admins).
+ *  Most kinds also write an inbox card inline; `started` is DM-only (no card — the feed stays agent-
+ *  authored, not a lifecycle log). Approvals/questions have their own (always-on) notifiers. */
 export interface SessionEventNotice {
   sessionId: string;
   agent: string;
-  kind: 'waiting' | 'completed' | 'crashed';
+  kind: 'started' | 'waiting' | 'completed' | 'crashed';
   title: string;
   message: string;
 }
@@ -465,40 +471,18 @@ export class TerminalManager {
     if (alive) {
       const cutoff = Date.now() - 10_000;
       for (const r of rows) {
-        if (r.status === 'running' && !alive.has(r.tmux) && r.created_at < cutoff) {
-          const crashedAt = Date.now();
-          this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(crashedAt, r.id);
-          r.status = 'crashed';
-          r.updated_at = crashedAt; // keep the in-memory row in sync so this same response isn't stale
-          // A crash fires no end signal (no `report`/`markEnded`/`stopSession`), so this sweep is the
-          // only place to capture what the run did before it died. Outcome 'crashed'; idempotent, so
-          // repeated polls won't write twice; skipped if the session did no real work.
-          this.writeEpisode(r.id, r.agent, 'crashed');
-          // A crashed agent can't answer or act — retire its open questions + approvals like a clean stop.
-          this.cancelPendingQuestions(r.id, 'system');
-          this.cancelPendingApprovals(r.id, 'system');
-          // Surface the crash to the owner: a 'completed' card (outcome 'crashed') is the only feed entry a
-          // crash produces, since it fires no clean end signal. Guarded on hasCompleted so a run that had
-          // already reported before its pane died isn't double-carded; the status flip makes it once-only.
-          if (!this.hasCompleted(r.id)) {
-            const title = `Crashed — ${r.agent}`;
-            const body = 'The session ended unexpectedly (the process died).';
-            this.addMessage({ type: 'completed', sessionId: r.id, agent: r.agent, title, body, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: r.id });
-            this.fireSessionEvent(r.id, r.agent, 'crashed', title, body);
-            // Close the chat loop: a crash fires no `report` (the only other mirror point), so a chat-
-            // triggered run that DIED would otherwise leave its Slack/Discord thread hanging forever. Tell
-            // the thread it broke. No-op for non-chat runs (no bound thread).
-            const inboxLink = consolePage(this.publicOrigin, 'inbox');
-            try { this.chatMirror?.(r.id, (p) => `💥 ${r.agent} crashed — the session ended unexpectedly.\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
-          }
-        }
+        if (r.status === 'running' && !alive.has(r.tmux) && r.created_at < cutoff) this.markCrashed(r);
       }
     }
     const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
     const resumable = this.resumableIds();
+    // One query resolves the whole list's blocked-on-human state (a pending ask/approval), instead of a
+    // per-row check — so the console gets an authoritative `blocked` without re-deriving it from the feed.
+    const blocked = this.blockedSessionIds();
     return visible.map((r) => ({
       ...toSession(r),
       alive: alive ? alive.has(r.tmux) : undefined,
+      blocked: r.status === 'running' && blocked.has(r.id),
       resumable: resumable.has(r.id),
       forkable: !!r.claude_session_id && this.os.agents.get(r.agent)?.runtime === 'claude-code',
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
@@ -506,6 +490,64 @@ export class TerminalManager {
       runAsLabel: this.runAsLabel(r.run_as),
       ratedByLabel: this.runAsLabel(r.rated_by),
     }));
+  }
+
+  /**
+   * Flip a `running` row whose tmux pane vanished with no end signal (kill/OOM/reboot) to `crashed`, and
+   * surface it: capture the pre-death episode, retire its open questions/approvals (a dead agent can't
+   * answer), and — once only, guarded by `hasCompleted` + the status flip — post the owner crash card, the
+   * always-on crash notification, and the chat-thread mirror. Mutates the passed row so an in-flight
+   * `listSessions` response reflects the new status the same tick. Shared by the lazy read-time detection
+   * (`listSessions`) and the periodic timer sweep (`sweepCrashed`) so a crash surfaces even with no console
+   * open. Idempotent — a second call after the status flip is a cheap no-op.
+   */
+  private markCrashed(r: SessionRow): void {
+    const crashedAt = Date.now();
+    this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(crashedAt, r.id);
+    r.status = 'crashed';
+    r.updated_at = crashedAt;
+    this.writeEpisode(r.id, r.agent, 'crashed');
+    this.cancelPendingQuestions(r.id, 'system');
+    this.cancelPendingApprovals(r.id, 'system');
+    if (!this.hasCompleted(r.id)) {
+      const title = `Crashed — ${r.agent}`;
+      const body = 'The session ended unexpectedly (the process died).';
+      this.addMessage({ type: 'completed', sessionId: r.id, agent: r.agent, title, body, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: r.id });
+      this.fireSessionEvent(r.id, r.agent, 'crashed', title, body);
+      // Close the chat loop: a crash fires no `report` (the only other mirror point), so a chat-triggered
+      // run that DIED would otherwise leave its Slack/Discord thread hanging forever. No-op for non-chat runs.
+      const inboxLink = consolePage(this.publicOrigin, 'inbox');
+      try { this.chatMirror?.(r.id, (p) => `💥 ${r.agent} crashed — the session ended unexpectedly.\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
+    }
+  }
+
+  /**
+   * Timer-driven crash detection — the same rule `listSessions` applies lazily on read, but run on the
+   * process-wide 60s sweep so a crash (and its always-on owner/admin DM) surfaces even when nobody has the
+   * console open (before this, an unattended run that OOM'd at 3am stayed `running` in the DB until the next
+   * UI poll, delaying the crash notification indefinitely). A `running` row whose pane is gone past the 10s
+   * grace died with no end signal → `markCrashed`. No-op when liveness can't be polled (launcher backend /
+   * transient failure) so a tmux hiccup can't false-crash the fleet.
+   */
+  private sweepCrashed(alive: Set<string> | null): void {
+    if (!alive) return;
+    const cutoff = Date.now() - 10_000;
+    const rows = this.db.prepare("SELECT * FROM term_sessions WHERE status = 'running'").all<SessionRow>();
+    for (const r of rows) {
+      if (!alive.has(r.tmux) && r.created_at < cutoff) {
+        try { this.markCrashed(r); } catch { /* one bad row must not stop the sweep */ }
+      }
+    }
+  }
+
+  /** The set of session ids BLOCKED on a human right now — a pending `ask` question or a pending approval
+   *  gate. One batched pass over the questions table + the tenant's pending approvals, for `listSessions`
+   *  to stamp `blocked` per row without an N+1 of {@link hasPendingHumanBlock}. */
+  private blockedSessionIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const q of this.db.prepare("SELECT DISTINCT run_id FROM questions WHERE status = 'pending'").all<{ run_id: string }>()) ids.add(q.run_id);
+    for (const a of this.os.approvals.pending(this.os.tenant)) ids.add(a.runId);
+    return ids;
   }
 
   /**
@@ -1001,6 +1043,15 @@ export class TerminalManager {
     // a member), the trail shows what fired it AND whose identity it used.
     this.audit(id, agent, 'session.created', { tmux, task, runtime, dir: manifest?.dir, headless, resident, spawnedBy: spawnedBy ?? null, runAs: actingMember ?? null });
 
+    // "Picked up" beat for a DELEGATED, unattended run (automation/task provenance): its owner isn't
+    // watching the console, so without this they learn nothing until it finishes, asks, or crashes. Fire a
+    // `started` lifecycle event → an opt-in DM to the run's owner (gated on their `dm` pref; no inbox card,
+    // to keep the feed agent-authored). Deliberately scoped: a console-spawned run (the operator is right
+    // there) and a chat run (its thread already gets an "on it" ack) skip this, so it's a signal, not noise.
+    if (spawnedBy && (spawnedBy.startsWith('automation:') || spawnedBy.startsWith('task:'))) {
+      this.fireSessionEvent(id, agent, 'started', `Started — ${agent}`, task || 'A delegated run began.');
+    }
+
     if (runtime === 'claude-code' && manifest?.dir) {
       this.launchClaudeCode({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, headless, resident, resume: !!resumeClaudeId, claudeSessionId });
     } else {
@@ -1341,6 +1392,12 @@ export class TerminalManager {
   reapIdleSessions(): void {
     const timeoutMin = this.os.settings.chatIdleTimeoutMinutes();
     const cutoff = timeoutMin > 0 ? Date.now() - timeoutMin * 60_000 : Date.now() + 1; // 0 → reap all now
+    // One liveness poll for the whole sweep (crash detection + the unattended backstop both need it).
+    const alive = this.backend.aliveNames();
+
+    // (0) crash detection on the timer — flip any running row whose pane vanished with no end signal to
+    // `crashed` and fire its (always-on) notification NOW, instead of waiting for the next console poll.
+    this.sweepCrashed(alive);
 
     // (1) resident warm-chat idle reap — unchanged behavior.
     const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status = 'running' AND COALESCE(last_activity, created_at) < ?")
@@ -1375,8 +1432,8 @@ export class TerminalManager {
     // liveness so a cleanly-reaped row is never re-killed / re-audited on a later tick (a `done` row keeps its
     // status forever once torn down) — this is what lets us sweep 'done' orphans safely. When we CAN'T, fall
     // back to the classic time-based rule for RUNNING rows only (never blind-sweep a 'done' row, or we'd
-    // re-teardown it every tick with no way to know its pane already died).
-    const alive = this.backend.aliveNames();
+    // re-teardown it every tick with no way to know its pane already died). Uses the single `alive` poll
+    // taken at the top of the sweep.
     const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, last_activity FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; last_activity: number | null }>();
     for (const r of unattended) {

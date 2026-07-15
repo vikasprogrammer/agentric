@@ -169,6 +169,10 @@ export interface Session {
   /** The member id who "took over" (claimed) this unattended run — set means it's sticky (won't be
    *  auto-closed at turn-end) and the Take-over affordance is hidden. Undefined = unclaimed. */
   claimedBy?: string
+  /** True when a LIVE run is blocked on a human right now — a pending `ask` question or approval gate.
+   *  Server-authoritative (the console no longer re-derives "waiting on you" from the message feed).
+   *  Drives the "Blocked" list filter, the per-session waiting bell, and the Overview blocked count. */
+  blocked?: boolean
   /** The member id this session runs AS (run_as). A task/chat-triggered run is spawnedBy `task:`/
    *  `automation:` but runs as a member — the sidebar keys "my sessions" off this too. */
   runAs?: string

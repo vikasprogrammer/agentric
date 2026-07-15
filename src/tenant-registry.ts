@@ -530,7 +530,7 @@ export async function notifySessionEvent(os: AgentOS, slack: Pick<SlackSocket, '
     ? (owner.length ? owner : resolveRecipients(os, { kind: 'admins' }))
     : owner.filter((m) => os.team.notificationPrefs(m.id).dm);
   if (!targets.length) return;
-  const icon = notice.kind === 'waiting' ? '🔔' : notice.kind === 'crashed' ? '💥' : '✅';
+  const icon = notice.kind === 'waiting' ? '🔔' : notice.kind === 'crashed' ? '💥' : notice.kind === 'started' ? '🚀' : '✅';
   const url = consolePage(consoleOrigin, 'sessions');
   const text = (p: ChatPlatform) => `${icon} ${notice.title}\n${notice.message}\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
   const dms = await deliverDM(slack, discord, os, targets, text);

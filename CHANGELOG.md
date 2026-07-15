@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.207.0] — 2026-07-15
+### Added
+- **Delegated runs announce themselves — a "picked up" beat.** When an **automation/task** run spawns
+  (its owner isn't watching the console), it now fires a `started` lifecycle event → an **opt-in DM** to
+  the run's owner (🚀, gated on their `dm` pref; no inbox card, so the feed stays agent-authored). Before,
+  a human learned nothing about a delegated run until it finished, asked, or crashed. Deliberately scoped:
+  console-spawned runs (the operator is right there) and chat runs (their thread already gets an "on it"
+  ack) skip it, so it's a signal, not noise. (`src/terminal.ts`, `src/tenant-registry.ts`)
+- **"Blocked" is a first-class session state.** `GET /api/sessions` now returns a server-authoritative
+  **`blocked`** flag per live run (a pending `ask` question or approval gate), instead of the console
+  re-deriving "waiting on you" from the message feed in three different places. New **"Blocked" filter**
+  on the Sessions list; the per-session waiting bell and the Overview blocked-count now read the one
+  authoritative field (the bell unions it with the old notification-card signal, so a governed block that
+  wrote no card still lights up). (`src/terminal.ts`, `web/src/lib/api.ts`, `web/src/App.tsx`)
+
+### Fixed
+- **Crashes surface on the timer, not just on page load.** Crash detection (a `running` row whose tmux
+  pane vanished with no end signal) ran only *lazily* — when someone read the sessions list — so an
+  unattended run that OOM'd with no console open stayed `running` in the DB, and its crash card + (now
+  always-on) owner/admin notification didn't fire until the next UI poll. The detection now also runs on
+  the process-wide 60s sweep (`sweepCrashed`, sharing the sweep's single liveness poll), so a crash and
+  its alert land promptly regardless of who's watching. Detection logic is factored into one `markCrashed`
+  path shared by the lazy read and the timer. (`src/terminal.ts`)
+
 ## [0.206.1] — 2026-07-15
 ### Fixed
 - **Interactive sessions that `report` done no longer leak their pane forever.** A `headless=0`
