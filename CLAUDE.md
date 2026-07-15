@@ -424,6 +424,29 @@ in `src/types.ts` and `TeamStore.canRun()`.
   location sets none of its own. Every location there sets `Upgrade`/`Connection`, so each must
   repeat `Host`/`X-Forwarded-*` explicitly — otherwise the app sees `Host: 127.0.0.1:3010` and mints
   wrong invite/webhook links. There's a comment in the config; keep it.
+- **nginx gotcha that bit the umbrella deploy (2026-07-15) — conditional `Connection: upgrade`.** The
+  Node server both proxies WebSockets (the terminal) and serves plain HTTP through the SAME port, so a
+  hardcoded `proxy_set_header Connection "upgrade";` makes **every non-WebSocket request 502** with
+  `upstream prematurely closed connection while reading response header` (the server reads `Connection:
+  upgrade` on a plain request as a socket-upgrade attempt and destroys it). Fix = the standard
+  `map $http_upgrade $connection_upgrade { default upgrade; "" close; }` + `proxy_set_header Connection
+  $connection_upgrade;` so plain requests get `Connection: close`. Symptom is deceptive: `curl` straight
+  to `127.0.0.1:3010` (and a raw `nc` HTTP/1.1 request) both return 200, only the nginx hop 502s.
+- **Hardened-unit gotcha — `ReadWritePaths=` dirs must pre-exist.** Under `ProtectHome=read-only` the
+  unit fails to start with `status=226/NAMESPACE` (`Failed to set up mount namespacing: <path>: No such
+  file or directory`) if any carve-out path is missing. On a fresh box `~/.config`/`~/.cache`/`~/.claude`
+  often don't exist yet — `mkdir -p` them before the first `systemctl start`.
+- **⚠ `ProtectHome=read-only` silently HANGS every interactive session on the trust dialog (umbrella,
+  2026-07-15).** `terminal/claude-launch.sh` pre-accepts Claude Code's one-time folder-trust dialog by
+  seeding `hasTrustDialogAccepted` into **`~/.claude.json`** — a file in the HOME ROOT, written via
+  atomic temp-file + rename, so it needs the home **directory** writable, not just `~/.claude`. With
+  `ProtectHome=read-only` + `ReadWritePaths=…/.claude` (the sub-dir only), that write fails and is
+  swallowed by the seeder's `|| true`, so trust is never recorded and every **interactive** run parks
+  forever on "Do you trust the files in this folder?" (headless dodges it via
+  `--dangerously-skip-permissions`). **Deceptive symptom:** the session row is `running` and the tmux
+  pane is alive, `capture-pane` shows the trust prompt. **Fix:** make the service user's home writable
+  (`ReadWritePaths=/home/<svc>`) and re-lock persistence vectors (`ReadOnlyPaths=/home/<svc>/.ssh`),
+  keeping `ProtectSystem=strict`. The bundled `agent-os.service` now ships this pattern.
 
 ## Multi-session development (git worktrees)
 
