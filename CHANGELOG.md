@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.207.1] — 2026-07-15
+### Fixed
+- **The Chat window now only ever shows chat-started sessions.** The chat *list* already filtered to
+  `sourceKind === 'chat'`, but the open-conversation view keyed off the URL, so a deep-link to a
+  non-chat session id (a terminal/automation/task run) could still render inside the Chat window. It now
+  bounces such a selection back to the composer — the Chat surface stays strictly for sessions started as
+  chat. (`web/src/App.tsx`.)
+
 ## [0.207.0] — 2026-07-15
 ### Added
 - **Delegated runs announce themselves — a "picked up" beat.** When an **automation/task** run spawns
