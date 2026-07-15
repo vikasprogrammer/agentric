@@ -2887,6 +2887,11 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
     [sessions],
   )
   const active = selected ? sessions.find((s) => s.id === selected) : undefined
+  // The Chat window only ever shows chat-started sessions. If the URL points at a session that's known to
+  // NOT be a chat (e.g. a deep-link to a terminal/automation run), don't render it as a chat — bounce back
+  // to the composer. An unknown id (a just-started chat not yet in the polled list) is allowed through.
+  const nonChatSelected = !!active && active.sourceKind !== 'chat'
+  useEffect(() => { if (nonChatSelected) onSelect('') }, [nonChatSelected])
 
   // New-chat composer state (shown when nothing is selected).
   const [newAgent, setNewAgent] = useState('')
@@ -3023,7 +3028,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
 
       {/* Right: either the new-chat composer or the conversation */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {!selected ? (
+        {!selected || nonChatSelected ? (
           (() => {
             const q = newFilter.trim().toLowerCase()
             const shown = q ? chatAgents.filter((a) => a.id.toLowerCase().includes(q) || (a.description || '').toLowerCase().includes(q)) : chatAgents
