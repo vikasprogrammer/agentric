@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.220.0] — 2026-07-16
+### Added
+- **Chat renders Library deliverables inline.** When an agent produces a Library artifact mid-conversation
+  — `publish` a report/file, `image_generate`/`image_edit` a picture, `video_generate` a clip — the plain-language
+  Chat window now shows it **inline** instead of a generic "Posted an update" line: an image thumbnail, a
+  video player, or a titled file tile, each deep-linking into the Library (`#/artifacts/<id>`). The transcript
+  parser (`src/edge/conversation.ts`) tags those activities with the artifact id(s) it finds in the tool
+  result (prefixed `art_…` ids), and the `/api/sessions/:id/conversation` route resolves them into
+  viewer-safe preview cards (`ChatArtifactRef`) — filtered by the same visibility gate as the Library, so a
+  card only shows a deliverable the viewer may already see. Also gave those tools distinct activity labels
+  ("Published to the Library", "Created an image", "Created a video") so the inline card reads naturally.
+
 ## [0.219.1] — 2026-07-16
 ### Removed
 - **Dead `randomId` helper in the control plane.** `src/state/control.ts` exported a legacy

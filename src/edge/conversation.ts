@@ -15,6 +15,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+/** A viewer-safe reference to a Library artifact an activity produced — enough for the chat UI to render
+ *  an inline preview card (thumbnail for images, a titled tile + open-in-Library link for everything else).
+ *  Resolved by the /conversation route from an activity's {@link ChatTurn} `artifactIds`; carries no
+ *  share token. `raw` is the bytes URL (`/api/artifacts/<id>/raw`) for an `<img>`/`<video>`. */
+export interface ChatArtifactRef {
+  id: string;
+  title: string;
+  kind: string;
+  mime: string;
+  filename: string;
+  isImage: boolean;
+  isVideo: boolean;
+  raw: string;
+}
+
 /** One entry in the human-readable timeline. */
 export type ChatTurn =
   | { kind: 'user'; text: string; ts: number }
@@ -27,6 +42,13 @@ export type ChatTurn =
       /** short human hint (a filename, a URL host, a query) — the UI may hide this behind a toggle */
       detail?: string;
       status: 'running' | 'ok' | 'error';
+      /** Library artifact id(s) this activity produced (publish / image_generate / video_generate / …),
+       *  parsed from the tool result. The /conversation route resolves these to rich {@link
+       *  ChatArtifactRef} cards the chat UI renders inline; unresolvable ids are dropped there. */
+      artifactIds?: string[];
+      /** Resolved, viewer-filtered artifact previews (populated by the /conversation route from
+       *  {@link ChatArtifactRef}); absent in the raw transcript parse. */
+      artifacts?: ChatArtifactRef[];
       ts: number;
     };
 
@@ -80,6 +102,13 @@ const host = (u: unknown): string | undefined => {
 const clip = (s: unknown, n = 80): string | undefined =>
   typeof s === 'string' && s ? (s.length > n ? s.slice(0, n) + '…' : s) : undefined;
 
+/** Strip the `mcp__<server>__` wrapper off an agent-os MCP tool name (`mcp__aos__publish` → `publish`);
+ *  a plain built-in name (`Bash`) passes through unchanged. */
+function bareName(name: string): string {
+  const mcp = name.match(/^mcp__[^_]*(?:_[^_]+)*__(.+)$/) || name.match(/^mcp__.+?__(.+)$/);
+  return mcp ? mcp[1] : name;
+}
+
 /** Map a tool_use block to a friendly label + short detail, tuned for a non-technical reader. */
 function friendlyTool(name: string, input: Record<string, unknown>): { label: string; detail?: string } {
   switch (name) {
@@ -107,18 +136,48 @@ function friendlyTool(name: string, input: Record<string, unknown>): { label: st
       return { label: 'Updated its plan' };
   }
   // agent-os MCP tools arrive as mcp__<server>__<tool>.
-  const mcp = name.match(/^mcp__[^_]*(?:_[^_]+)*__(.+)$/) || name.match(/^mcp__.+?__(.+)$/);
-  const bare = mcp ? mcp[1] : name;
+  const bare = bareName(name);
   if (/^slack_/.test(bare)) return { label: 'Sent a Slack message', detail: clip(input.text ?? input.message ?? input.channel) };
   if (/^discord_/.test(bare)) return { label: 'Sent a Discord message', detail: clip(input.content ?? input.message) };
   if (/^(remember|recall|revise|forget)$/.test(bare)) return { label: 'Used its memory' };
   if (/^kb_/.test(bare)) return { label: 'Used the knowledge base', detail: clip(input.query ?? input.slug ?? input.title) };
   if (/^task_/.test(bare)) return { label: 'Updated the task board', detail: clip(input.title) };
-  if (/^(report|update|notify|publish)$/.test(bare)) return { label: 'Posted an update' };
+  // Artifact-producing tools: keep a distinct label so the inline artifact card reads naturally under it.
+  if (bare === 'publish') return { label: 'Published to the Library', detail: clip(input.title ?? basename(input.path)) };
+  if (bare === 'image_generate') return { label: 'Created an image', detail: clip(input.prompt) };
+  if (bare === 'image_edit') return { label: 'Edited an image', detail: clip(input.prompt ?? input.operation) };
+  if (bare === 'video_generate') return { label: 'Created a video', detail: clip(input.prompt) };
+  if (/^(report|update|notify)$/.test(bare)) return { label: 'Posted an update' };
   if (bare === 'ask') return { label: 'Asked a question', detail: clip(input.question) };
   if (/^secret_/.test(bare)) return { label: 'Used a stored credential', detail: clip(input.key) };
   if (bare === 'directory_lookup') return { label: 'Looked someone up' };
   return { label: humanize(bare), detail: clip((input as any).query ?? (input as any).title) };
+}
+
+/** Bare (mcp-stripped) names of tools whose result yields Library artifact id(s) we render inline. */
+const ARTIFACT_TOOLS = new Set(['publish', 'image_generate', 'image_edit', 'video_generate']);
+
+/** Flatten a tool_result's `content` (string, or an array of `{type:'text',text}` blocks) to plain text. */
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => (b && typeof b === 'object' && (b as any).type === 'text' ? String((b as any).text ?? '') : ''))
+      .join('\n');
+  }
+  return '';
+}
+
+/** Pull Library artifact ids out of a tool result. New ids are prefixed (`art_<hex>`); this deliberately
+ *  matches only the prefixed form (all publish/generate outputs mint prefixed ids), so we never mistake a
+ *  stray hex token for an id. De-duped, order preserved. */
+function extractArtifactIds(text: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const m of text.matchAll(/\bart_[0-9a-f]+\b/g)) {
+    if (!seen.has(m[0])) { seen.add(m[0]); ids.push(m[0]); }
+  }
+  return ids;
 }
 
 /** Parse a claude transcript line's `message.content` into ordered turns; merge tool results by id. */
@@ -169,7 +228,15 @@ export function readConversation(claudeSessionId: string): Conversation {
         const idx = activityById.get(String(b.tool_use_id));
         if (idx != null) {
           const card = turns[idx];
-          if (card && card.kind === 'activity') card.status = b.is_error ? 'error' : 'ok';
+          if (card && card.kind === 'activity') {
+            card.status = b.is_error ? 'error' : 'ok';
+            // Artifact-producing tool that succeeded → capture the Library id(s) it returned, so the
+            // route can resolve them into inline preview cards.
+            if (!b.is_error && ARTIFACT_TOOLS.has(bareName(card.tool))) {
+              const ids = extractArtifactIds(resultText(b.content));
+              if (ids.length) card.artifactIds = ids;
+            }
+          }
         }
       }
       // thinking blocks are deliberately dropped — noise for a non-technical reader.

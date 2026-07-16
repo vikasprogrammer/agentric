@@ -17,7 +17,7 @@ import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './state/session-activity';
-import { readConversation } from './edge/conversation';
+import { readConversation, type ChatArtifactRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
@@ -2237,6 +2237,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
     const claudeId = tm.sessionClaudeId(id);
     const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
+    // Resolve any artifact ids an activity produced (publish / image_generate / …) into viewer-safe
+    // preview cards the chat UI renders inline — dropping ids the viewer may not see or that no longer
+    // exist. The viewer already passed canViewSession, so their own run's deliverables resolve.
+    for (const t of convo.turns) {
+      if (t.kind !== 'activity' || !t.artifactIds?.length) continue;
+      const refs: ChatArtifactRef[] = [];
+      for (const aid of t.artifactIds) {
+        const a = os.artifacts.get(aid);
+        if (!a) continue;
+        if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) continue;
+        refs.push({
+          id: a.id,
+          title: a.title || a.filename,
+          kind: a.kind,
+          mime: a.mime,
+          filename: a.filename,
+          isImage: a.mime.startsWith('image/'),
+          isVideo: a.mime.startsWith('video/'),
+          raw: `/api/artifacts/${a.id}/raw`,
+        });
+      }
+      if (refs.length) t.artifacts = refs;
+    }
     return sendJson(res, 200, { agent, ...convo });
   }
   // Reply into a chat session (the human's next turn) as a clean, self-terminating headless resume run

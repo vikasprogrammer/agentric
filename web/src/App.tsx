@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -3020,15 +3020,64 @@ function MsgHeading({ m, children }: { m: Msg; children?: ReactNode }) {
 // sends the human's turns via /reply (warm deliver, else transcript resume — the Slack-continuity path).
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** One friendly activity card ("Sent a Slack message" ✓). Terminal detail stays hidden by default. */
+/** An inline preview of a Library deliverable an agent just produced — a thumbnail for images, a player
+ *  for videos, a titled tile otherwise. The whole card deep-links into the Library (`#/artifacts/<id>`),
+ *  so a non-technical teammate sees the result right in the conversation and can open/download it. */
+function ArtifactCard({ a }: { a: ChatArtifactRef }) {
+  const href = navHref('artifacts', a.id)
+  if (a.isImage) {
+    return (
+      <a href={href} className="group block max-w-[16rem] overflow-hidden rounded-xl border bg-card transition hover:border-primary">
+        <img src={a.raw} alt={a.title} loading="lazy" className="max-h-44 w-full object-cover" />
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs">
+          <ImageIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate font-medium" title={a.title}>{a.title}</span>
+          <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition group-hover:opacity-100" />
+        </div>
+      </a>
+    )
+  }
+  if (a.isVideo) {
+    return (
+      <div className="max-w-[20rem] overflow-hidden rounded-xl border bg-card">
+        <video src={a.raw} controls preload="metadata" className="max-h-52 w-full bg-black" />
+        <a href={href} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs hover:underline">
+          <Film className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate font-medium" title={a.title}>{a.title}</span>
+          <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
+        </a>
+      </div>
+    )
+  }
+  return (
+    <a href={href} className="group flex max-w-[20rem] items-center gap-2.5 rounded-xl border bg-card px-3 py-2 transition hover:border-primary">
+      <FileText className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium" title={a.title}>{a.title}</span>
+        <span className="block truncate text-[11px] text-muted-foreground">{a.filename}</span>
+      </span>
+      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition group-hover:opacity-100" />
+    </a>
+  )
+}
+
+/** One friendly activity card ("Sent a Slack message" ✓). Terminal detail stays hidden by default. An
+ *  artifact-producing activity (publish / image_generate / …) shows its deliverable(s) inline beneath. */
 function ActivityCard({ turn }: { turn: Extract<ChatTurn, { kind: 'activity' }> }) {
   const dot =
     turn.status === 'error' ? 'bg-destructive' : turn.status === 'ok' ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'
   return (
-    <div className="flex items-center gap-2 pl-1 text-[12px] text-muted-foreground">
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
-      <span className="font-medium">{turn.label}</span>
-      {turn.detail && <span className="truncate font-mono text-[11px] opacity-70" title={turn.detail}>{turn.detail}</span>}
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 pl-1 text-[12px] text-muted-foreground">
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+        <span className="font-medium">{turn.label}</span>
+        {turn.detail && <span className="truncate font-mono text-[11px] opacity-70" title={turn.detail}>{turn.detail}</span>}
+      </div>
+      {turn.artifacts && turn.artifacts.length > 0 && (
+        <div className="flex flex-wrap gap-2 pl-3.5">
+          {turn.artifacts.map((a) => <ArtifactCard key={a.id} a={a} />)}
+        </div>
+      )}
     </div>
   )
 }

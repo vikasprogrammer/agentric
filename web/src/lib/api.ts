@@ -1042,11 +1042,24 @@ export interface PolicyProposalsResp { proposals: PolicyProposal[]; canApply?: b
 export interface PolicyRevision { id: string; rev: number; document: PolicyDocument; summary: string | null; author: string; createdAt: number }
 export interface PolicyRevisionsResp { revisions: PolicyRevision[]; canRevert?: boolean; error?: string }
 
+/** A viewer-safe Library artifact preview attached to a chat activity (mirrors src/edge/conversation.ts). */
+export interface ChatArtifactRef {
+  id: string
+  title: string
+  kind: string
+  mime: string
+  filename: string
+  isImage: boolean
+  isVideo: boolean
+  /** Bytes URL (`/api/artifacts/<id>/raw`) for an inline <img>/<video>. */
+  raw: string
+}
+
 /** One entry in the non-technical chat timeline (mirrors src/edge/conversation.ts). */
 export type ChatTurn =
   | { kind: 'user'; text: string; ts: number }
   | { kind: 'assistant'; text: string; ts: number }
-  | { kind: 'activity'; tool: string; label: string; detail?: string; status: 'running' | 'ok' | 'error'; ts: number }
+  | { kind: 'activity'; tool: string; label: string; detail?: string; status: 'running' | 'ok' | 'error'; artifactIds?: string[]; artifacts?: ChatArtifactRef[]; ts: number }
 export interface ConversationResp {
   agent?: string
   turns: ChatTurn[]
