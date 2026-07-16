@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -10218,6 +10218,7 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
   return (
     <div className="space-y-4">
       <SoftwarePanel me={me} />
+      <NativeDepsPanel me={me} />
       <HostResourcesPanel />
       <StopAllPanel />
       <Card>
@@ -10252,6 +10253,146 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
           />
         </CardContent>
       </Card>
+    </div>
+  )
+}
+
+/**
+ * Settings → System → Native dependencies — is this box set up to run agent sessions? Probes the native
+ * commands Agent OS shells out to (tmux/ttyd/claude/git) via `GET /api/deps`. When something's missing it
+ * shows the exact install command (copyable) + the `npm run install-deps` shortcut, and — for the owner —
+ * an "Install now" button that runs the box's package manager (`POST /api/deps/install`) and re-checks.
+ */
+function NativeDepsPanel({ me }: { me: Member }) {
+  const [report, setReport] = useState<DepsReport | null>(null)
+  const [err, setErr] = useState('')
+  const [installing, setInstalling] = useState(false)
+  const [result, setResult] = useState<DepsInstallResult | null>(null)
+  const [copied, setCopied] = useState('')
+
+  const load = () => api.deps().then((r) => { setErr(''); setReport(r) }).catch(() => setErr('Could not read dependency status.'))
+  useEffect(() => { load() }, [])
+
+  const copy = async (text: string) => { if (await copyText(text)) { setCopied(text); setTimeout(() => setCopied(''), 1500) } }
+
+  const install = async () => {
+    setInstalling(true); setResult(null); setErr('')
+    const r = await api.installDeps().catch(() => null)
+    setInstalling(false)
+    if (!r) return setErr('Install request failed.')
+    setResult(r); setReport(r.report)
+  }
+
+  const isOwner = me.role === 'owner'
+  const missingRequired = report ? report.deps.filter((d) => d.required && !d.installed) : []
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold"><Boxes className="h-4 w-4" /> Native dependencies</div>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs" disabled={installing} onClick={load}>
+              <RefreshCw className="h-3.5 w-3.5" /> Re-check
+            </Button>
+            {isOwner && report && report.installable.length > 0 && (
+              <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs" disabled={installing} onClick={install}>
+                <Download className={`h-3.5 w-3.5 ${installing ? 'animate-pulse' : ''}`} /> {installing ? 'Installing…' : 'Install now'}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <p className="text-sm text-muted-foreground">
+          The native commands Agent OS shells out to on this box. Sessions won't start until the required ones are present.
+        </p>
+
+        {err && <p className="text-sm text-red-600">{err}</p>}
+        {!report ? (
+          <p className="text-sm text-muted-foreground">Checking…</p>
+        ) : (
+          <>
+            {report.ok
+              ? <div className="flex items-center gap-1.5 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> All required dependencies are installed.</div>
+              : <div className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {missingRequired.length} required {missingRequired.length === 1 ? 'dependency is' : 'dependencies are'} missing — agent sessions can't run.
+                </div>}
+
+            <dl className="divide-y rounded-md border">
+              {report.deps.map((d) => <DepRow key={d.bin} d={d} />)}
+            </dl>
+
+            {(report.installCommand || !report.ok) && (
+              <div className="space-y-2 rounded-md border bg-muted/40 p-3">
+                <p className="text-xs font-medium text-muted-foreground">Install the missing tools</p>
+                {report.installCommand ? (
+                  <CmdLine text={report.installCommand} copied={copied} onCopy={copy} />
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    No supported package manager found on this box{report.platform ? ` (${report.platform})` : ''} — install the missing tools by hand using each row's hint.
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">Or, from the repo checkout, run the shortcut:</p>
+                <CmdLine text={report.shortcut} copied={copied} onCopy={copy} />
+              </div>
+            )}
+
+            {result && (
+              <div className="space-y-1.5">
+                <p className={`text-xs font-medium ${result.ok ? 'text-emerald-600' : 'text-amber-600'}`}>
+                  {result.ok ? 'Installed — all required dependencies are present.' : (result.error || 'Install finished with problems.')}
+                </p>
+                {result.steps.length > 0 && (
+                  <div className="max-h-48 space-y-1.5 overflow-auto rounded-md border bg-muted/40 p-2">
+                    {result.steps.map((s, i) => (
+                      <div key={i}>
+                        <div className="flex items-center gap-1.5 text-[11px] font-medium">
+                          {s.ok ? <CheckCircle2 className="h-3 w-3 text-emerald-600" /> : <XCircle className="h-3 w-3 text-red-600" />}
+                          <span className="font-mono">{s.cmd}</span>
+                        </div>
+                        {s.out && <pre className="mt-0.5 whitespace-pre-wrap break-all pl-4 text-[10px] leading-snug text-muted-foreground">{s.out}</pre>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/** One dependency row: label + purpose + present/missing badge (with version/path when installed). */
+function DepRow({ d }: { d: DepStatus }) {
+  return (
+    <div className="flex items-start gap-3 px-3 py-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-sm font-medium">{d.label}</span>
+          {!d.required && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">optional</span>}
+        </div>
+        <p className="text-xs text-muted-foreground">{d.purpose}</p>
+        {d.installed
+          ? (d.version || d.path) && <p className="truncate font-mono text-[10px] text-muted-foreground" title={d.path}>{d.version || d.path}</p>
+          : d.hint && <p className="font-mono text-[10px] text-muted-foreground">install: {d.hint}</p>}
+      </div>
+      {d.installed
+        ? <span className="flex shrink-0 items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> installed</span>
+        : <span className={`flex shrink-0 items-center gap-1 text-xs ${d.required ? 'text-red-600' : 'text-amber-600'}`}><XCircle className="h-3.5 w-3.5" /> missing</span>}
+    </div>
+  )
+}
+
+/** A copyable one-line shell command. */
+function CmdLine({ text, copied, onCopy }: { text: string; copied: string; onCopy: (t: string) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap rounded bg-background px-2 py-1.5 font-mono text-xs">{text}</code>
+      <Button size="sm" variant="ghost" className="h-7 shrink-0 gap-1 px-2 text-xs" onClick={() => onCopy(text)}>
+        {copied === text ? <><Check className="h-3.5 w-3.5" /> Copied</> : <><Copy className="h-3.5 w-3.5" /> Copy</>}
+      </Button>
     </div>
   )
 }

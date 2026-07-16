@@ -37,6 +37,7 @@ import { planKbTidy, applyKbTidy } from './edge/kb-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
+import { checkDeps, installDeps } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
@@ -3524,6 +3525,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/system') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, await systemMetrics(tm));
+  }
+  // ── native system dependencies (tmux/ttyd/claude/git) — "is the box set up to run sessions?" ──
+  if (method === 'GET' && p === '/api/deps') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, checkDeps());
+  }
+  // Install the still-missing, package-manager-installable deps (brew/apt/…). Owner-gated (it runs a
+  // privileged system install), same posture as the self-update apply below.
+  if (method === 'POST' && p === '/api/deps/install') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const result = installDeps();
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'system.deps.installed', data: { ok: result.ok, steps: result.steps.map((s) => ({ cmd: s.cmd, ok: s.ok })) } });
+    return sendJson(res, 200, result);
   }
   // ── stop every running session (softer sibling of the kill switch; leaves the gate open) ──
   if (method === 'POST' && p === '/api/sessions/stop-all') {

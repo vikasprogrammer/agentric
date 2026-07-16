@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.210.0] — 2026-07-16
+### Added
+- **Native-dependency check + one-shot install.** A fresh box needs a few native commands Agent OS shells
+  out to (`tmux` backs every session pane, `ttyd` serves the in-browser terminal, `claude` is the agent
+  runtime, `git` powers self-update) — previously undocumented beyond a prose line in CLAUDE.md, and the
+  classic "why won't a session start?" gap.
+  - **Settings → System → Native dependencies** — a new panel (`GET /api/deps`) showing each tool's
+    present/missing state, version, and purpose. When something's missing it surfaces the exact install
+    command (copyable) and the `npm run install-deps` shortcut; the owner gets an **Install now** button
+    (`POST /api/deps/install`, owner-gated, audited `system.deps.installed`) that runs the box's package
+    manager (brew on macOS; apt/dnf/yum/pacman/zypper on Linux) and re-checks, streaming each step's log.
+  - **`npm run install-deps`** (and `npm run check-deps`) — a zero-dependency bootstrap shell script
+    (`scripts/install-deps.sh`) that works on a fresh checkout *before* `npm run build`, portable to
+    bash 3.2 + BSD userland. Detects the package manager and installs the still-missing tools.
+  - **`agent-os deps` / `agent-os install-deps`** — the same check/install from the built CLI, for a box
+    where the server is already running.
+  Deps installed another way (`claude`, via npm) are never auto-installed — their manual hint is shown
+  instead. New module `src/edge/deps.ts` (`checkDeps`/`installDeps`), modeled on the self-update path.
+
 ## [0.209.0] — 2026-07-16
 ### Added
 - **Quick Shortcuts on every terminal session** — a `⚡ Shortcuts` menu in the terminal chrome with:
