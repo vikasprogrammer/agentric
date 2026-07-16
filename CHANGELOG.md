@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.208.2] — 2026-07-16
+### Fixed
+- **Agent-emitted console deep-links now use the tenant's real FQDN, not `127.0.0.1:<port>`.** Links an
+  agent handed to a human (e.g. a `publish` "View it: …" Library link) were built from `AOS_URL`, which
+  is the **loopback** base the OS-owned MCP tools call the API on — correct for requests, unusable for a
+  human. The launcher now also exports `AOS_PUBLIC_URL` (the tenant's `consoleOrigin` —
+  `AGENT_OS_PUBLIC_URL`/config `publicUrl`/subdomain), and `memory-mcp`'s `consoleLink` prefers it,
+  falling back to the loopback base only in dev/demo where no public origin is configured. Out-of-band
+  notifier links (already built server-side from `consoleOrigin`) were unaffected; this closes the same
+  gap for anything the agent itself prints.
+
 ## [0.208.1] — 2026-07-16
 ### Changed
 - **Connections → Creds → GitHub: OAuth creds now sit above the company-bot creds.** The per-member OAuth

@@ -12,11 +12,16 @@
  * transport), and uses the global `fetch`. Spawned by claude with AOS_URL/SESSION/AGENT in env.
  */
 const AOS_URL = (process.env.AOS_URL || 'http://127.0.0.1:3010').replace(/\/$/, '');
-// Absolute console deep-links agents can hand to a human. Being absolute (AOS_URL is the deployment's
-// real public origin) they're clickable in the browser terminal (xterm WebLinks) and autolink in the
-// console's markdown/inbox renderers. Mirrors the web app's hash routes (#/kb/<section>/<slug>, etc.).
+// The base for absolute console deep-links agents hand to a human. Prefer AOS_PUBLIC_URL — the tenant's
+// REAL external origin (its Tailscale/FQDN, from AGENT_OS_PUBLIC_URL/config publicUrl via consoleOrigin,
+// exported by the launcher). AOS_URL is the LOOPBACK base (http://127.0.0.1:<port>) the tools call the
+// API on; correct for requests, but NOT a URL a human can open — quoting it gives out `127.0.0.1:<port>`
+// links. Fall back to AOS_URL only when no public origin is configured (dev/demo). Absolute links are
+// clickable in the browser terminal (xterm WebLinks) and autolink in the console's markdown/inbox
+// renderers. Mirrors the web app's hash routes (#/kb/<section>/<slug>, etc.).
+const PUBLIC_URL = (process.env.AOS_PUBLIC_URL || AOS_URL).replace(/\/$/, '');
 const consoleLink = (route: string, detail?: string): string =>
-  `${AOS_URL}/#/${route}${detail ? '/' + detail.split('/').map(encodeURIComponent).join('/') : ''}`;
+  `${PUBLIC_URL}/#/${route}${detail ? '/' + detail.split('/').map(encodeURIComponent).join('/') : ''}`;
 const kbLink = (section: string, slug: string): string => consoleLink('kb', `${section}/${slug}`);
 const SESSION = process.env.SESSION || '';
 const AGENT = process.env.AGENT || '';
