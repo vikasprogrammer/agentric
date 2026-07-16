@@ -7682,16 +7682,19 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
   const [scheduleCustom, setScheduleCustom] = useState(false)
   const [filter, setFilter] = useState('')
   const [task, setTask] = useState('')
+  const [runAs, setRunAs] = useState('') // member id the fired session acts as ('' = company identity)
+  const [members, setMembers] = useState<Member[]>([])
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const load = () => api.automations().then((r) => setItems(r.automations ?? []))
   useEffect(() => { load() }, [])
+  useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   useEffect(() => { if (!agentId && agents[0]) setAgentId(agents[0].id) }, [agents, agentId])
   // The form mounts at the top of the section, but Edit buttons live on cards further down — scroll the
   // form into view when it opens (or when switching which automation is being edited) so it isn't missed.
   useEffect(() => { if (showForm) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, [showForm, editId])
 
-  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setEditId(null) }
+  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setRunAs(''); setEditId(null) }
   const startCreate = () => { resetForm(); setShowForm(true); setHint('') }
   const startEdit = (a: Automation) => {
     if (a.type === 'once') return // one-shot deferred runs aren't editable from the console
@@ -7701,6 +7704,7 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
     setType(a.type)
     setMode(a.mode)
     setFilter(a.filter ?? '')
+    setRunAs(a.runAs ?? '')
     if (a.type === 'cron') {
       const preset = CRON_PRESETS.some((p) => p.value === a.schedule)
       setScheduleCustom(!preset)
@@ -7714,10 +7718,10 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
     setHint('')
     if (editId) {
       // agentId + type are immutable on edit; everything else is patchable. filter only for event triggers.
-      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task })
+      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task, runAs })
       if (r.error) return setHint('⚠ ' + r.error)
     } else {
-      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task })
+      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task, runAs: runAs || undefined })
       if (r.error) return setHint('⚠ ' + r.error)
     }
     closeForm()
@@ -7869,6 +7873,17 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="SLACK_DIRECT_MESSAGE_RECEIVED  (blank = any)" />
                   </Field>
                 )}
+                <Field label="Run as" help="The fired session acts as this member, so their personal connectors (e.g. their own ClickUp / Composio apps) are injected instead of the shared company account. Company identity = the company Composio only.">
+                  <Select value={runAs || '__company'} onValueChange={(v) => setRunAs(v && v !== '__company' ? v : '')}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__company">Company identity (no member)</SelectItem>
+                      {members.map((m) => (
+                        <SelectItem key={m.id} value={m.id}>{m.name || m.email}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
               </div>
               <Field label="Task">
                 <Textarea value={task} onChange={(e) => setTask(e.target.value)} className="min-h-[64px]" placeholder="What should the agent do each time this fires? (Webhook payloads are appended automatically.)" />

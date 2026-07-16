@@ -221,6 +221,9 @@ export interface AddAutomationInput {
   filter?: string;
   task: string;
   createdBy?: string;
+  /** Member id the fired session should act as — so a cron/webhook/etc. spawn binds THAT member's
+   *  connectors/Composio (e.g. their personal ClickUp) instead of the company-only fallback. */
+  runAs?: string;
 }
 
 export type FireResult =
@@ -355,10 +358,11 @@ export class Automations {
       enabled: true,
       createdBy: input.createdBy,
       createdAt: Date.now(),
+      runAs: input.runAs?.trim() || undefined,
     };
     this.db
-      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt);
+      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAs ?? null);
     return a;
   }
 
@@ -467,7 +471,7 @@ export class Automations {
     return { ok: true, sessionId: s.id, tmux: s.tmux };
   }
 
-  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean }): Automation | undefined {
+  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null }): Automation | undefined {
     const a = this.get(id);
     if (!a) return undefined;
     if (patch.schedule !== undefined && a.type === 'cron') parseCron(patch.schedule);
@@ -481,8 +485,10 @@ export class Automations {
         : a.type === 'composio'
           ? patch.filter.trim().toUpperCase()
           : patch.filter.trim();
+    // `runAs`: undefined = leave as-is; a member id sets it; null/'' clears it (back to company identity).
+    const nextRunAs = patch.runAs === undefined ? a.runAs ?? null : (patch.runAs || '').trim() || null;
     this.db
-      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ? WHERE id = ?')
+      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ?, run_as = ? WHERE id = ?')
       .run(
         patch.name?.trim() || a.name,
         patch.mode ?? a.mode,
@@ -490,6 +496,7 @@ export class Automations {
         nextFilter,
         patch.task ?? a.task,
         (patch.enabled ?? a.enabled) ? 1 : 0,
+        nextRunAs,
         id,
       );
     return this.get(id);
@@ -898,7 +905,9 @@ export class Automations {
       if (due == null) continue;                                                   // nothing due within the window
       if (a.lastFiredAt && Math.floor(a.lastFiredAt / 60_000) >= Math.floor(due / 60_000)) continue; // that occurrence already ran
       if (overCap()) { deferred++; continue; } // over cap → not stamped; retried next tick until the window closes
-      const r = this.fire(a, { guard: true });
+      // Bind the automation's run-as member (like the `once` branch) so a cron spawn acts under that
+      // identity — its personal Composio/connectors are injected instead of the company-only fallback.
+      const r = this.fire(a, { guard: true, runAs: a.runAs });
       if (r.ok) running++;
     }
     // Tasks share the same budget — dispatch only up to the remaining headroom (Infinity when uncapped).

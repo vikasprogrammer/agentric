@@ -628,6 +628,9 @@ export interface Automation {
   nextRunAt?: number
   /** Ready-to-paste webhook URL — present for admins on webhook automations only. */
   hookUrl?: string
+  /** Member id the fired session acts as — binds THAT member's connectors/Composio (e.g. personal
+   *  ClickUp) instead of the company fallback. Empty/absent = company identity. */
+  runAs?: string
 }
 export interface AddAutomationReq {
   agentId: string
@@ -637,6 +640,7 @@ export interface AddAutomationReq {
   schedule?: string
   filter?: string
   task: string
+  runAs?: string
 }
 
 export type Transport = 'stdio' | 'http' | 'sse'
@@ -1224,7 +1228,7 @@ export const api = {
 
   automations: () => call<{ automations: Automation[] }>('GET', '/api/automations'),
   addAutomation: (a: AddAutomationReq) => call<Automation & { error?: string }>('POST', '/api/automations', a),
-  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled'>>) =>
+  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled' | 'runAs'>>) =>
     call<Automation & { error?: string }>('PATCH', '/api/automations/' + id, patch),
   deleteAutomation: (id: string) => call<{ ok: boolean }>('DELETE', '/api/automations/' + id),
   /** Fire an automation once now. `mode` overrides its saved default for this run only (headless =

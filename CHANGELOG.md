@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.3] — 2026-07-17
+### Fixed
+- **Cron automations now honor `run_as` — personal Composio/connectors are injected.** The scheduler
+  `tick()` cron branch fired with `this.fire(a, { guard: true })`, dropping the automation's `run_as`, so
+  every cron spawn ran with `actingMember = undefined` and saw only the shared company Composio. A daily
+  cron for a member's personal ClickUp therefore couldn't reach it and raised an owner-gated RED
+  `connector.connect` on the company account. The cron branch now passes `runAs: a.runAs` (mirroring the
+  `once` branch), so a cron session binds that member's identity and their personal connectors are minted —
+  no connect prompt. The `run_as` column on a cron row was previously dead.
+### Added
+- **"Run as" selector on the automation editor.** The create/edit form (and `POST`/`PATCH
+  /api/automations`) now expose a Run-as member picker, persisted to `automations.run_as`, so a cron/webhook/
+  event automation can be bound to a member from the console — the reason `run_as` was silently always empty.
+
 ## [0.227.2] — 2026-07-17
 ### Fixed
 - **`agent-browser` cleanup now handles agents that relocate the socket dir (follow-up to 0.227.1).**

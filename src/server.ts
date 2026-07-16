@@ -2136,6 +2136,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     try {
       const type = b.type === 'webhook' ? 'webhook' : b.type === 'composio' ? 'composio' : b.type === 'slack' ? 'slack' : b.type === 'discord' ? 'discord' : 'cron';
+      // Optional "Run as": the fired session acts as this member so its connectors/Composio (e.g. their
+      // personal ClickUp) are injected. Validate it's a real member; '' clears it (company identity).
+      const runAs = b.runAs ? String(b.runAs) : '';
+      if (runAs && !os.team.getMember(runAs)) return sendJson(res, 400, { error: 'unknown run-as member' });
       const created = autos.add({
         agentId: String(b.agentId || ''),
         name: String(b.name || ''),
@@ -2145,6 +2149,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         filter: b.filter !== undefined ? String(b.filter) : undefined,
         task: String(b.task || ''),
         createdBy: me.id,
+        runAs: runAs || undefined,
       });
       return sendJson(res, 200, automationView(created, req, true));
     } catch (e) {
@@ -2187,6 +2192,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, ok ? 200 : 404, { ok });
     }
     const b = await readBody(req);
+    // "Run as" edit: undefined leaves it, a member id sets it (validated), '' clears it to company identity.
+    let runAs: string | null | undefined;
+    if (b.runAs !== undefined) {
+      const id = String(b.runAs || '');
+      if (id && !os.team.getMember(id)) return sendJson(res, 400, { error: 'unknown run-as member' });
+      runAs = id || null;
+    }
     try {
       const updated = autos.update(autoMatch[1], {
         name: b.name !== undefined ? String(b.name) : undefined,
@@ -2195,6 +2207,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         filter: b.filter !== undefined ? String(b.filter) : undefined,
         task: b.task !== undefined ? String(b.task) : undefined,
         enabled: b.enabled !== undefined ? !!b.enabled : undefined,
+        runAs,
       });
       return sendJson(res, updated ? 200 : 404, updated ? automationView(updated, req, true) : { error: 'not found' });
     } catch (e) {
