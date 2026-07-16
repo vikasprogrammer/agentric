@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.214.0] — 2026-07-16
+### Added
+- **Edit a text/Markdown deliverable in place in the Library.** A published artifact used to be a
+  read-only snapshot; now owner/admin — or the member whose session produced it — can fix a typo or
+  update a Markdown report without republishing. An **Edit** (pencil) button in the detail panel opens
+  an inline editor (Save/Cancel); it overwrites the snapshot's file in place, so its id-dir/filename are
+  unchanged and every existing link (Library deep-link, public `/shared/<token>`) keeps resolving. New
+  `ArtifactStore.writeContent` (text-only guard — binaries are refused so a write can't corrupt them),
+  `PUT /api/artifacts/:id/content` (same gate as move/delete/share), audited `artifact.edited`.
+
 ## [0.213.0] — 2026-07-16
 ### Changed
 - **"Open" on a Library deliverable renders markdown instead of showing raw source.** The Open button

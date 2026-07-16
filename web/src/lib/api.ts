@@ -1415,6 +1415,8 @@ export const api = {
   moveArtifact: (id: string, folder: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PATCH', '/api/artifacts/' + id, { folder }),
   /** Share an artifact with the tenant (`team`) and/or mint/revoke its public link (`public`). */
   shareArtifact: (id: string, body: { team?: boolean; public?: boolean }) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('POST', `/api/artifacts/${id}/share`, body),
+  /** Overwrite a text/markdown artifact's content in place (owner/admin or producer). */
+  editArtifact: (id: string, content: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PUT', `/api/artifacts/${id}/content`, { content }),
   /** Direct URL to an artifact's bytes (for <img>/<iframe>/download). `file` selects a sibling (sites). */
   artifactRawUrl: (id: string, file?: string) => `/api/artifacts/${id}/raw${file ? `?file=${encodeURIComponent(file)}` : ''}`,
 

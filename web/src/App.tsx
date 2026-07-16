@@ -4699,6 +4699,28 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
     load()
   }
 
+  // In-place editing of a text/markdown deliverable. `editing` holds the id being edited; the draft is
+  // seeded from the artifact's current bytes. Switching the selected artifact cancels any open edit.
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { setEditing(null) }, [sel])
+  const startEdit = async (a: Artifact) => {
+    setHint('')
+    try {
+      const t = await fetch(api.artifactRawUrl(a.id)).then((r) => r.text())
+      setDraft(t); setEditing(a.id)
+    } catch { setHint('⚠ could not load file for editing') }
+  }
+  const saveEdit = async () => {
+    if (!editing) return
+    setSaving(true)
+    const r = await api.editArtifact(editing, draft)
+    setSaving(false)
+    if (r.error || !r.ok) { setHint('⚠ ' + (r.error ?? 'save failed')); return }
+    setEditing(null); load()
+  }
+
   return (
     <div className="space-y-3">
       <p className="max-w-3xl text-sm text-muted-foreground">
@@ -4777,6 +4799,9 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                     <a href={api.artifactRawUrl(selected.id)} download={selected.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
                     {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
                       <>
+                        {(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) && editing !== selected.id && (
+                          <Button size="sm" variant="ghost" onClick={() => startEdit(selected)} title="Edit content"><Pencil className="h-4 w-4" /></Button>
+                        )}
                         <Button size="sm" variant="ghost" onClick={() => move(selected)} title="Move to a folder"><FolderPlus className="h-4 w-4" /></Button>
                         <Button size="sm" variant="ghost" className="text-destructive" onClick={() => remove(selected.id)}><Trash2 className="h-4 w-4" /></Button>
                       </>
@@ -4799,7 +4824,18 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                     )}
                   </div>
                 )}
-                <ArtifactBody a={selected} />
+                {editing === selected.id ? (
+                  <div className="space-y-2">
+                    <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} className="h-[60vh] w-full font-mono text-xs leading-relaxed" />
+                    <div className="flex items-center gap-2">
+                      <Button size="sm" disabled={saving} onClick={saveEdit}><Save className="mr-1 h-4 w-4" />{saving ? 'Saving…' : 'Save'}</Button>
+                      <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>Cancel</Button>
+                      <span className="text-[11px] text-muted-foreground">Editing <span className="font-mono">{selected.filename}</span> — overwrites the published file (existing links keep working).</span>
+                    </div>
+                  </div>
+                ) : (
+                  <ArtifactBody a={selected} />
+                )}
               </CardContent>
             </Card>
           ) : (
