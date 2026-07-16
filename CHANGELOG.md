@@ -8,7 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.225.1] — 2026-07-16
+## [0.226.0] — 2026-07-16
+### Added
+- **Distraction-free terminal + "Pop out" to its own tab.** The individual terminal view gets two new
+  affordances in its top-right toolbar. **Focus** (⤢) lifts the pane to a full-viewport overlay (`fixed
+  inset-0`, above the sidebar + tab strip) so nothing but the terminal is on screen — **Esc** or the
+  **Exit** button returns to the console; the pane refits automatically (its `ResizeObserver`). **Pop out**
+  (↗) opens the same pane on its own at a new chrome-less route `#/term/<tmux>` in a fresh browser tab —
+  rendered OUTSIDE the console shell (a slim title bar + "← Console" link, then just the terminal), reusing
+  the same `<TerminalFrame>` and the login cookie, so it's a real anchor (⌘/middle-click works). The
+  standalone view fetches the session row too, so an ended run still shows its transcript and file-attach
+  still works. Mirrors the existing chrome-less artifact viewer (`#/view/<id>`).
 ### Fixed
 - **Operations → Activity now works in the terminal-tabs view.** The v0.224.0 Activity shortcut set the
   panel state via `setInspect`, but `SessionsPage` early-returns the terminal-tabs view before the
