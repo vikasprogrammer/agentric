@@ -1420,10 +1420,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         return sendJson(res, 200, { ok: false, error: `no agent "${targetId}" — assign to one of: ${valid} (call list_agents to see the roster)` });
       }
     }
-    // Poke-back: an agent delegating to ANOTHER agent can ask to be woken when the delegate finishes.
-    // We stamp the caller's agent id + pinned claude transcript so the task notifier can `--resume` this
-    // session on done/blocked. Only meaningful for an agent→agent hand-off (a poke has a caller to wake).
-    const pokeOnDone = (b.pokeOnDone === true || b.pokeOnDone === 'true') && !!assignee && assignee.startsWith('agent:');
+    // Poke-back: an agent delegating to ANOTHER agent is woken when the delegate finishes (the MCP layer
+    // defaults this ON for agent→agent hand-offs so the delegation loop closes itself). We stamp the
+    // caller's agent id + pinned claude transcript so the task notifier can wake this session on
+    // done/blocked. Only for a hand-off to a DIFFERENT agent — a self-assignment has no separate caller to
+    // wake (and waking your own transcript from its own delegate would loop), so we drop the self-poke.
+    const pokeOnDone = (b.pokeOnDone === true || b.pokeOnDone === 'true')
+      && !!assignee && assignee.startsWith('agent:') && assignee !== `agent:${agent}`;
     try {
       // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.

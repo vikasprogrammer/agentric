@@ -415,23 +415,46 @@ export class Automations {
   }
 
   /**
-   * Wake a CALLER agent by resuming its transcript with a completion poke — the async "really done" signal
-   * a delegate sends back when it finishes a `poke_on_done` hand-off. Fires IMMEDIATELY (unlike schedule(),
-   * whose 1-min floor makes it a scheduler, not a wake): `--resume`s `callerClaudeId` with `message` as the
-   * next turn, so the caller continues its OWN plan with full context. Guarded — if that transcript already
-   * has a live session, the running caller will observe the outcome itself, so we skip rather than spawn a
-   * competing run on one conversation (same concern the chat thread-continuity path handles). The delegate
+   * Wake a CALLER agent with a completion poke — the "really done" signal a delegate sends back when it
+   * finishes a `poke_on_done` hand-off. Two delivery paths, chosen by whether the caller's transcript
+   * still has a LIVE session:
+   *
+   *  - **Live caller → inject** (the common interactive/resident case). The caller ended its turn and is
+   *    sitting IDLE at the prompt — it will NOT observe the delegate's completion on its own (the bug this
+   *    fixes: an interactive session had to be told "check that task status" by hand). So we type the poke
+   *    into its live pane (`injectToSession`, submit): an idle claude runs it immediately, a mid-turn
+   *    claude queues it to the next turn boundary — never a competing `--resume` on one conversation.
+   *  - **Dead caller → resume** (a headless caller that exited at turn-end). Nothing to type into, so we
+   *    `--resume` `callerClaudeId` in a fresh `poke:` run with `message` as the next turn, and the caller
+   *    continues its OWN plan with full context.
+   *
+   * Fires IMMEDIATELY (unlike schedule(), whose 1-min floor makes it a scheduler, not a wake). The delegate
    * (task assignee) is always the actor, never the caller, so this can't self-wake. Audited `agent.poked`.
    */
   pokeCaller(input: { callerAgent: string; callerClaudeId: string; runAs?: string; message: string; source: string }): FireResult {
     const agentId = input.callerAgent.startsWith('agent:') ? input.callerAgent.slice('agent:'.length) : input.callerAgent;
     if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown caller agent: ${agentId}` };
     if (!input.callerClaudeId) return { ok: false, reason: 'no caller transcript to resume' };
-    const live = this.db
-      .prepare("SELECT id FROM term_sessions WHERE claude_session_id = ? AND status = 'running'")
-      .all<{ id: string }>(input.callerClaudeId)
-      .some((r) => this.tm.isAlive(r.id));
-    if (live) return { ok: false, reason: 'caller session still live — it will see the result itself' };
+    // Prefer delivering into the caller's OWN live session if it still has one bound to this transcript —
+    // an idle interactive/resident caller would otherwise never learn the delegate finished.
+    const liveSession = this.db
+      .prepare("SELECT id, tmux FROM term_sessions WHERE claude_session_id = ? AND status = 'running'")
+      .all<{ id: string; tmux: string }>(input.callerClaudeId)
+      .find((r) => this.tm.isAlive(r.id));
+    if (liveSession) {
+      const injected = this.tm.injectToSession(liveSession.id, input.message, true, input.runAs ? `member:${input.runAs}` : 'system');
+      this.os.audit.append({
+        ts: Date.now(),
+        runId: liveSession.id,
+        tenant: this.os.tenant,
+        principal: input.runAs ? `member:${input.runAs}` : 'system',
+        type: 'agent.poked',
+        data: { caller: agentId, source: input.source, runAs: input.runAs ?? null, via: 'inject', ok: injected.ok },
+      });
+      // Keystrokes landed → the caller has (or will imminently have) the result. On the rare inject failure
+      // (unreadable pane) fall through to a resume so the poke is never silently dropped.
+      if (injected.ok) return { ok: true, sessionId: liveSession.id, tmux: liveSession.tmux };
+    }
     const s = this.tm.createSession(agentId, `Poke ← ${input.source}`, input.message, `poke:${input.source}`, true, undefined, undefined, input.runAs, input.callerClaudeId);
     this.os.audit.append({
       ts: Date.now(),
@@ -439,7 +462,7 @@ export class Automations {
       tenant: this.os.tenant,
       principal: input.runAs ? `member:${input.runAs}` : 'system',
       type: 'agent.poked',
-      data: { caller: agentId, source: input.source, runAs: input.runAs ?? null },
+      data: { caller: agentId, source: input.source, runAs: input.runAs ?? null, via: 'resume' },
     });
     return { ok: true, sessionId: s.id, tmux: s.tmux };
   }

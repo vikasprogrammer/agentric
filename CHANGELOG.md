@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.225.0] — 2026-07-16
+### Fixed
+- **Delegation loop closes itself: the caller is woken when the delegate finishes.** Two gaps meant an
+  agent that dispatched a task to another agent never learned it was done unless a human told it to "check
+  that task status": (1) `poke_on_done` was opt-in and defaulted off, and no agent ever set it, so the
+  caller was never recorded (`caller_agent` was null on every task in prod) and never woken — only the
+  human owner got a `task.notified` DM; (2) even when a poke did fire, `pokeCaller` *skipped* a caller
+  whose session was still alive, assuming it "will see the result itself" — but an interactive/resident
+  caller sits IDLE at the prompt after ending its turn and observes nothing. Now: `task_create` defaults
+  the async wake **ON** for an agent→agent hand-off (opt out with `poke_on_done:false`; `wait:true` still
+  supersedes with a synchronous block; self-assignment never wakes), and `pokeCaller` delivers into a live
+  caller by **injecting** the result into its pane (idle → runs now, mid-turn → queues to the next turn
+  boundary) instead of skipping — falling back to a `--resume` only when the caller has already exited.
+
 ## [0.224.0] — 2026-07-16
 ### Added
 - **"Activity" shortcut in the per-session Operations menu.** The session activity trail side panel

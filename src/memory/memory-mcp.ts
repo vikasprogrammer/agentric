@@ -880,7 +880,7 @@ const TOOLS = [
         goalId: { type: 'string', description: 'Link this task to a strategic goal it advances (see goal_list for ids). Its progress then counts toward that goal.' },
         goal: { type: 'string', description: 'The single-line objective the delegate must achieve — the definition of done. On a headless auto-dispatched task the worker runs under this as a `/goal` and converges autonomously until it holds (alias for `criteria`). This is what to state when you delegate WITH a goal.' },
         criteria: { type: 'string', description: 'A single-line, transcript-verifiable acceptance condition, e.g. "all tests in test/auth pass". When set on a headless auto-dispatched task, the worker runs under this as a `/goal` and converges autonomously until it holds. Synonym of `goal`.' },
-        poke_on_done: { type: 'boolean', description: 'Fire-and-forget delegation with an async wake-up: hand off, end your turn, and be RESUMED automatically when the delegate finishes (or blocks) — no polling. The async counterpart to `wait` (which blocks). Only for an agent-assigned auto-dispatched task. Default false.' },
+        poke_on_done: { type: 'boolean', description: 'Async wake-up on completion: hand off, end your turn, and be woken automatically when the delegate finishes (or blocks) — no polling. The async counterpart to `wait` (which blocks in-line). DEFAULTS ON when you delegate to another agent, so the loop closes itself — set it to false only when you truly want fire-and-forget and do NOT need the result. Ignored on a self-assignment or an open/human task (no separate caller to wake).' },
         dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this task is BLOCKED BY — it will not dispatch until they are all done. To encode a pipeline: file the earlier steps first, capture their ids from the results, and pass them here so this step waits for them.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
@@ -2101,6 +2101,15 @@ function parseDue(due: unknown): number | null | undefined {
 async function taskCreate(args: Record<string, unknown>): Promise<string> {
   const title = String(args.title ?? '').trim();
   if (!title) return 'A task needs a title.';
+  // Default the delegation loop CLOSED: an agent→agent hand-off wakes the caller when the delegate
+  // finishes, so a dispatch doesn't silently strand the caller waiting for a result it never learns
+  // arrived. `wait:true` supersedes (it delivers the result synchronously in-line); opt out of the wake
+  // with `poke_on_done:false`. Self-assignment ("me") never wakes — the server drops a self-poke too.
+  const assigneeStr = args.assignee !== undefined ? String(args.assignee) : '';
+  const toAgent = assigneeStr === 'me' || assigneeStr.startsWith('agent:');
+  const waiting = args.wait === true;
+  const pokeOnDone = args.poke_on_done === true
+    || (toAgent && assigneeStr !== 'me' && !waiting && args.poke_on_done !== false);
   const res = await fetch(AOS_URL + '/api/tasks/create', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
@@ -2117,8 +2126,8 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn.map(String) : undefined,
       // `wait` (block) and `poke_on_done` (async wake) both imply autoDispatch — you can't await/be-woken
       // by work that never starts.
-      autoDispatch: args.autoDispatch === true || args.wait === true || args.poke_on_done === true,
-      pokeOnDone: args.poke_on_done === true,
+      autoDispatch: args.autoDispatch === true || waiting || pokeOnDone,
+      pokeOnDone,
       mode: args.mode === 'interactive' ? 'interactive' : undefined,
       dueAt: parseDue(args.due),
     }),
@@ -2127,13 +2136,13 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
   if (!d.ok) return `Could not create the task: ${d.error ?? 'unknown error'}`;
   const who = args.assignee ? ` (assigned to ${String(args.assignee)})` : ' (open — anyone can claim it)';
   // wait:true → delegate synchronously: file it, then block until the delegate closes the loop.
-  if (args.wait === true) {
+  if (waiting) {
     const outcome = await taskWait({ id: d.id, timeoutSeconds: args.timeoutSeconds });
     return `Filed task ${d.id}: "${title}"${who}.\n${outcome}`;
   }
-  // poke_on_done → fire-and-forget async: don't poll or wait. End your turn; you'll be resumed with the
-  // result the moment the delegate finishes (or blocks).
-  if (args.poke_on_done === true) {
+  // poke_on_done (explicit or the agent→agent default) → don't poll or wait. End your turn; you'll be
+  // woken with the result the moment the delegate finishes (or blocks).
+  if (pokeOnDone) {
     return `Filed task ${d.id}: "${title}"${who}. You'll be woken with the result when it finishes — you can end your turn now; no need to poll.`;
   }
   return `Filed task ${d.id}: "${title}"${who}. Track it with task_get "${d.id}".`;
