@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.224.0] — 2026-07-16
+### Added
+- **"Activity" shortcut in the per-session Operations menu.** The session activity trail side panel
+  (objects the run opened + their live status, v0.221.0) was only reachable from the Sessions list rows.
+  Added it as the top item of the terminal-view **Operations** dropdown (`OperationsMenu`), so while
+  you're watching a live run you can open the trail in one click. Threaded a new `onActivity` callback
+  through `SessionOps` to `setInspect`, opening the same `SessionActivity` panel.
+
 ## [0.223.0] — 2026-07-16
 ### Added
 - **"Operations" menu on every session terminal.** A new dropdown pinned top-right of the live terminal,
