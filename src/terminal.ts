@@ -1551,6 +1551,10 @@ export class TerminalManager {
   private sessionEnv(id: string, agent: string, task: string, secret: string): Record<string, string> {
     const env: Record<string, string> = {
       AOS_URL: this.baseUrl,
+      // The tenant's REAL external origin (FQDN/Tailscale), for human-facing deep-links agents emit.
+      // AOS_URL above is the loopback base the tools call the API on — never show it to a human. Falls
+      // back to the loopback base when no public origin is configured (dev/demo), so a link still forms.
+      AOS_PUBLIC_URL: this.publicOrigin || this.baseUrl,
       AOS_TENANT: this.os.tenant, // routes loopback agent calls to THIS tenant's runtime (multi-tenant)
       SESSION: id,
       AGENT: agent,
@@ -1845,7 +1849,8 @@ export class TerminalManager {
       // `slack_send`/`slack_dm` (and Discord equivalents) whenever the workspace has that platform
       // configured — any session can message a channel/person, not just chat-triggered ones.
       env: {
-        AOS_URL: this.baseUrl, AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret,
+        AOS_URL: this.baseUrl, AOS_PUBLIC_URL: this.publicOrigin || this.baseUrl,
+        AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret,
         ...(slackReply ? { SLACK_REPLY: '1' } : {}),
         ...(discordReply ? { DISCORD_REPLY: '1' } : {}),
         // ASK_ANSWER: '1' exposes the `answer` tool — only on an ask_agent delegate, so it can return its
