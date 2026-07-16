@@ -11643,8 +11643,50 @@ function IntegrationsSettings({ me }: { me: Member }) {
             </div>
           )}
 
-          {/* Company-bot baseline: App ID + private key → a shared installation token every session can
-              push with, so per-agent PATs can be retired. Optional but recommended once the App is installed. */}
+          {/* Per-member OAuth creds (client id + secret) — the ESSENTIAL setup (drives Connect GitHub).
+              Shown first; the optional company-bot creds sit below it. */}
+          <details className="rounded-md border" open={!github.configured}>
+            <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
+              {github.configured ? 'Replace credentials manually' : 'Or paste credentials manually (GitHub App or OAuth App)'}
+            </summary>
+            <div className="space-y-3 border-t p-3">
+              <p className="text-[11px] text-muted-foreground">
+                Set the app's <strong>Authorization callback URL</strong> to this server's <code className="text-[11px]">/api/github/callback</code>.
+              </p>
+              <Field label="Client ID">
+                <Input
+                  value={ghId}
+                  onChange={(e) => setGhId(e.target.value.trim())}
+                  placeholder={github.clientId ? 'saved — type a new id to replace' : 'Iv1.… / a GitHub App or OAuth App client id'}
+                  className="font-mono text-xs"
+                />
+              </Field>
+              <Field label="Client secret">
+                <Input
+                  type="password"
+                  value={ghSecret}
+                  onChange={(e) => setGhSecret(e.target.value)}
+                  placeholder={github.clientSecret ? '•••• (saved) — type a new secret to replace' : 'the App client secret'}
+                  className="font-mono text-xs"
+                />
+              </Field>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => save({ ...(ghId.trim() ? { githubClientId: ghId.trim() } : {}), ...(ghSecret.trim() ? { githubClientSecret: ghSecret.trim() } : {}) }, 'saved')}
+                  disabled={busy || (!ghId.trim() && !ghSecret.trim())}
+                >
+                  Save GitHub App
+                </Button>
+                {(github.clientId || github.clientSecret) && (
+                  <Button variant="ghost" onClick={() => save({ githubClientId: '', githubClientSecret: '' }, 'removed')} disabled={busy}>Remove</Button>
+                )}
+              </div>
+            </div>
+          </details>
+
+          {/* Company-bot baseline (App ID + private key) — the OPTIONAL safety net: a shared installation
+              token so unconnected members + automation can still push. Sits below the essential OAuth creds. */}
           <details className="rounded-md border" open={github.configured && !github.botReady}>
             <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium hover:bg-muted/40">
               <span className="text-foreground">Company-bot token</span>{' '}
@@ -11689,47 +11731,6 @@ function IntegrationsSettings({ me }: { me: Member }) {
               {github.appId && github.privateKey && !github.botReady && (
                 <p className="text-[11px] text-destructive">⚠ Credentials saved but a bot token couldn't be minted — check the App ID matches the key and the App is installed on at least one account.</p>
               )}
-            </div>
-          </details>
-
-          {/* Manual / OAuth-App creds — the fallback. Collapsed once an App is configured. */}
-          <details className="rounded-md border" open={!github.configured}>
-            <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
-              {github.configured ? 'Replace credentials manually' : 'Or paste credentials manually (GitHub App or OAuth App)'}
-            </summary>
-            <div className="space-y-3 border-t p-3">
-              <p className="text-[11px] text-muted-foreground">
-                Set the app's <strong>Authorization callback URL</strong> to this server's <code className="text-[11px]">/api/github/callback</code>.
-              </p>
-              <Field label="Client ID">
-                <Input
-                  value={ghId}
-                  onChange={(e) => setGhId(e.target.value.trim())}
-                  placeholder={github.clientId ? 'saved — type a new id to replace' : 'Iv1.… / a GitHub App or OAuth App client id'}
-                  className="font-mono text-xs"
-                />
-              </Field>
-              <Field label="Client secret">
-                <Input
-                  type="password"
-                  value={ghSecret}
-                  onChange={(e) => setGhSecret(e.target.value)}
-                  placeholder={github.clientSecret ? '•••• (saved) — type a new secret to replace' : 'the App client secret'}
-                  className="font-mono text-xs"
-                />
-              </Field>
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  onClick={() => save({ ...(ghId.trim() ? { githubClientId: ghId.trim() } : {}), ...(ghSecret.trim() ? { githubClientSecret: ghSecret.trim() } : {}) }, 'saved')}
-                  disabled={busy || (!ghId.trim() && !ghSecret.trim())}
-                >
-                  Save GitHub App
-                </Button>
-                {(github.clientId || github.clientSecret) && (
-                  <Button variant="ghost" onClick={() => save({ githubClientId: '', githubClientSecret: '' }, 'removed')} disabled={busy}>Remove</Button>
-                )}
-              </div>
             </div>
           </details>
         </CardContent>

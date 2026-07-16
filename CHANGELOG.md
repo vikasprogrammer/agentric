@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.208.1] — 2026-07-16
+### Changed
+- **Connections → Creds → GitHub: OAuth creds now sit above the company-bot creds.** The per-member OAuth
+  **Client ID / secret** (the essential setup that drives Connect GitHub) is shown first; the optional
+  **company-bot** App ID / private key (the safety-net baseline) moved below it — reflecting that the bot is
+  an add-on, not the primary credential. Card ordering only. (`web/src/App.tsx`)
+
 ## [0.208.0] — 2026-07-16
 ### Added
 - **Share a Library deliverable with the team and the web.** An artifact was previously visible only to
