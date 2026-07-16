@@ -766,6 +766,43 @@ const TOOLS = [
     },
   },
   {
+    name: 'session_history',
+    description:
+      'List your OWN past sessions — your episodic run history ("have I done this before, and how did it ' +
+      'go?"). The companion to `recall`: memory holds distilled facts you chose to keep, this holds the ' +
+      'actual runs, which you can reopen in full. Returns each run\'s id, title, status, human rating ' +
+      '(👍/👎 if scored), and seed task — newest first, not the transcript (use `session_open` for that). ' +
+      'Scoped to THIS agent: you only ever see your own runs, never another agent\'s. Filter with `query` ' +
+      '(matches the title/task). Read-only.',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Optional text to match against past sessions\' title and seed task.' },
+        limit: { type: 'number', minimum: 1, maximum: 100, default: 20, description: 'Max sessions, newest first (default 20).' },
+      },
+    },
+  },
+  {
+    name: 'session_open',
+    description:
+      'Open ONE of your past sessions (id from `session_history`) and read what happened — the friendly ' +
+      'timeline of messages and the actions you took, so you can see how you approached something before ' +
+      'and what the outcome was. Set `summary:true` for a short recap of the whole run instead of the full ' +
+      'turn-by-turn timeline (best when the session was long). You can only open your OWN sessions. Read-only.',
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The session id to open (from session_history).' },
+        summary: { type: 'boolean', description: 'Return a condensed recap of the whole session instead of the message-by-message timeline. Default false.' },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'schedule',
     description:
       'Schedule a future task for yourself — a follow-up or "check back later". At the chosen time a ' +
@@ -1937,6 +1974,68 @@ async function artifactsList(args: Record<string, unknown>): Promise<string> {
     .join('\n') + folders + browse;
 }
 
+// ── Episodic self-query: your own past sessions (the run-history companion to `recall`) ──
+interface SessionLite { id: string; title: string; task: string; status: string; createdAt: number; updatedAt?: number; rating?: 'up' | 'down'; headless?: boolean; source?: string }
+interface SessionMeta { id: string; title: string; task: string; status: string; createdAt: number; updatedAt?: number; rating?: 'up' | 'down' }
+type ChatTurnLite =
+  | { kind: 'user'; text: string }
+  | { kind: 'assistant'; text: string }
+  | { kind: 'activity'; label: string; detail?: string; status: 'running' | 'ok' | 'error' };
+
+/** "2026-07-16 14:30" — matches the compact timestamp style used elsewhere in this MCP server. */
+const fmtWhen = (ms?: number): string => (ms ? new Date(ms).toISOString().slice(0, 16).replace('T', ' ') : '');
+/** Trim a long string to `n` chars with an ellipsis — for one-line seed/message previews. */
+const snip = (s: unknown, n = 100): string => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t; };
+const verdictMark = (r?: 'up' | 'down'): string => (r === 'up' ? ' 👍' : r === 'down' ? ' 👎' : '');
+
+function renderTurn(t: ChatTurnLite): string {
+  if (t.kind === 'user') return `👤 ${snip(t.text, 500)}`;
+  if (t.kind === 'assistant') return `🤖 ${snip(t.text, 500)}`;
+  const mark = t.status === 'error' ? '✗' : t.status === 'running' ? '…' : '·';
+  return `   ${mark} ${t.label}${t.detail ? ` — ${t.detail}` : ''}`;
+}
+
+async function sessionHistory(args: Record<string, unknown>): Promise<string> {
+  const u = new URL(AOS_URL + '/api/agent/sessions');
+  u.searchParams.set('session', SESSION);
+  if (typeof args.limit === 'number') u.searchParams.set('limit', String(args.limit));
+  if (args.query) u.searchParams.set('query', String(args.query));
+  const res = await fetch(u, { headers: H() });
+  const data = (await res.json()) as { sessions?: SessionLite[] };
+  const sessions = data.sessions ?? [];
+  if (!sessions.length) return args.query ? 'None of your past sessions match that.' : 'You have no past sessions yet.';
+  return sessions
+    .map((s) => `- ${s.id} · ${s.status}${verdictMark(s.rating)} · ${fmtWhen(s.updatedAt || s.createdAt)} — ${snip(s.title, 80)}${s.task ? `\n    ↳ ${snip(s.task, 100)}` : ''}`)
+    .join('\n') + '\n\n(Use `session_open <id>` to read one, or add `summary:true` for a recap.)';
+}
+
+async function sessionOpen(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim();
+  if (!id) return 'Provide the `id` of the session to open (from session_history).';
+  const wantSummary = args.summary === true;
+  const u = new URL(AOS_URL + '/api/agent/session');
+  u.searchParams.set('session', SESSION);
+  u.searchParams.set('id', id);
+  if (wantSummary) u.searchParams.set('summary', '1');
+  const res = await fetch(u, { headers: H() });
+  if (res.status === 403) return 'That session is not one of yours — you can only open your OWN past sessions (see session_history).';
+  const data = (await res.json()) as { meta?: SessionMeta; turns?: ChatTurnLite[]; found?: boolean; summary?: string; log?: string; error?: string };
+  if (data.error) return `Could not open that session: ${data.error}.`;
+  const m = data.meta;
+  const head = m ? `Session ${m.id} — ${snip(m.title, 100)} [${m.status}${verdictMark(m.rating)}]\nStarted ${fmtWhen(m.createdAt)}${m.task ? `\nSeed: ${snip(m.task, 200)}` : ''}\n\n` : '';
+  if (wantSummary) return head + (data.summary?.trim() || 'This session has no transcript to summarize yet.');
+  const turns = data.turns ?? [];
+  if (data.found && turns.length) {
+    const CAP = 60; // keep the tail — the outcome + most recent steps — bounded for the caller's context
+    const shown = turns.length > CAP ? turns.slice(turns.length - CAP) : turns;
+    const omitted = turns.length - shown.length;
+    const note = omitted > 0 ? `…(${omitted} earlier turns omitted — use \`summary:true\` for the full recap)\n\n` : '';
+    return head + note + shown.map(renderTurn).join('\n');
+  }
+  if (data.log) return head + 'No structured transcript; raw session log (tail):\n\n' + data.log;
+  return head + 'This session has no readable transcript yet.';
+}
+
 async function schedule(args: Record<string, unknown>): Promise<string> {
   const task = String(args.task ?? '').trim();
   if (!task) return 'Nothing to schedule (task is required).';
@@ -2639,6 +2738,8 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'list_agents' ? await listAgents()
         : name === 'check_inbox' ? await checkInbox(args)
         : name === 'library_list' ? await artifactsList(args)
+        : name === 'session_history' ? await sessionHistory(args)
+        : name === 'session_open' ? await sessionOpen(args)
         : name === 'schedule' ? await schedule(args)
         : name === 'unschedule' ? await unschedule(args)
         : name === 'stop' ? await stop(args)
