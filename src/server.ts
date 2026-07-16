@@ -2392,7 +2392,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return out;
     };
     for (const e of events) {
-      if (!e.target) continue;
+      if (!e.target || !e.target.id) continue; // no id to locate the object → nothing to resolve (not "deleted")
       const r = resolveStatus(e.target);
       if (r) { e.status = r.status; e.statusTone = r.tone; }
     }

@@ -8,7 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.222.0] — 2026-07-16
+## [0.222.1] — 2026-07-16
+### Fixed
+- **Session trail: `task_dispatch` no longer mis-reads as "deleted".** The `task.dispatched` audit event
+  keys the task id under `data.task` (not `data.id`), so the activity classifier resolved an empty id and
+  the trail showed the dispatch as `deleted` with a blank summary. It now reads `data.task` (falling back
+  to `data.id`), so a dispatch shows the task title + its live status; the endpoint also guards
+  empty-id targets so a missing id yields no status rather than a misleading "deleted". Follow-up to the
+  v0.221.0 session activity trail.
 ### Added
 - **Chat renders KB pages and hosted apps inline too.** Extends the inline-deliverable cards (v0.220.0)
   beyond Library artifacts: when an agent writes a Knowledge Base page (`kb_write`) or builds/changes a

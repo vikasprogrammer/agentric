@@ -40,6 +40,8 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     .run(t++, SID, T, type, 'website-bot', JSON.stringify(data));
   audit('task.created',   { id: 'tk1', title: 'migrate the DB' });
   audit('task.updated',   { id: 'tk1', status: 'doing' });
+  audit('task.dispatched', { task: 'tk1', title: 'migrate the DB', agent: 'website-bot' }); // id lives in data.task
+  audit('task.dispatched', { title: 'orphan (no id)' }); // no task id → must NOT resolve to "deleted"
   audit('secret.put',     { key: 'STRIPE_KEY', principal: '*' });
   audit('secret.requested', { key: 'OPENAI_KEY', mode: 'provide' });
   audit('skill.proposed', { name: 'triage-flow', description: 'triage playbook' });
@@ -82,6 +84,10 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   // (2) live status resolution
   assert(by('task_create').status === 'doing' && by('task_create').statusTone === 'open', 'task → live status "doing" (open)', JSON.stringify(by('task_create')));
   assert(by('task_update').status === 'doing', 'task_update entry also resolves to current "doing"');
+  // task.dispatched keys the id under data.task; an id-bearing dispatch resolves, an orphan stays blank
+  const disp = ev.filter((e) => e.primitive === 'task_dispatch');
+  assert(disp.some((e) => e.target && e.target.id === 'tk1' && e.status === 'doing'), 'task_dispatch (data.task=tk1) → resolves to "doing"', JSON.stringify(disp));
+  assert(disp.some((e) => !e.status && !(e.target && e.target.id)), 'task_dispatch with no id → no target, no misleading "deleted" status');
   assert(by('secret_put').status === 'stored', 'secret → "stored" (exists in vault)', JSON.stringify(by('secret_put')));
   assert(by('kb_write').status === 'rev 3' && by('kb_write').statusTone === 'muted', 'kb_write → current "rev 3"', JSON.stringify(by('kb_write')));
   assert(by('secret_request').status === 'approved' && by('secret_request').statusTone === 'done', 'secret_request → card status "approved" (done)', JSON.stringify(by('secret_request')));
