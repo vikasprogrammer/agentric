@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.212.0] — 2026-07-16
+### Added
+- **Agents link every PR back to their session by default.** A new `AOS_SESSION_URL` env var carries a
+  human-facing console deep-link to the run (`<publicOrigin>/#/sessions/aos-<id>`), injected into every
+  session's shell and persisted in the resurrect env. The OS operating notes now instruct agents to drop
+  that link into any pull request (or similar external deliverable) they raise, so a reviewer can trace
+  the change back to the audited run that produced it (`src/terminal.ts`).
+
 ## [0.211.0] — 2026-07-16
 ### Added
 - **Open a deliverable full-screen in a new tab.** The Library detail panel gains an **Open** button
