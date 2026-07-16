@@ -133,7 +133,7 @@ export function classifyActivity(type: string, data: Record<string, unknown>): A
     case 'task.claimed':    return { category: 'tasks', primitive: 'task_claim', summary: id(), target: { kind: 'task', id: id() } };
     case 'task.updated':    return { category: 'tasks', primitive: 'task_update', summary: `${id()} → ${str(data.status)}`, target: { kind: 'task', id: id() } };
     case 'task.completed':  return { category: 'tasks', primitive: 'task_update', summary: `${id()} → ${str(data.status) || 'done'}`, effect: 'allow', target: { kind: 'task', id: id() } };
-    case 'task.dispatched': return { category: 'tasks', primitive: 'task_dispatch', summary: id(), target: { kind: 'task', id: id() } };
+    case 'task.dispatched': { const tid = str(data.task) || id(); return { category: 'tasks', primitive: 'task_dispatch', summary: clipText(data.title) || tid, target: tid ? { kind: 'task', id: tid } : undefined }; }
     case 'task.deleted':    return { category: 'tasks', primitive: 'task_delete', summary: id(), target: { kind: 'task', id: id() } };
 
     // ── secrets vault (shared credential handoff) ──
