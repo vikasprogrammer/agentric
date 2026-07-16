@@ -884,6 +884,22 @@ export class Automations {
     }
     this.sweepOverdue(now);
     this.sweepStuckGoals(now);
+    this.sweepExpiredShares(now);
+  }
+
+  /**
+   * Auto-revoke public artifact links past their 7-day TTL — the "public forever" guard. The link
+   * already stops resolving at expiry (ArtifactStore.getByToken rejects it); this clears the token from
+   * the row so it's genuinely gone (and can be re-minted fresh). Wrapped so a bad row never kills the loop.
+   */
+  private sweepExpiredShares(now: Date): void {
+    try {
+      for (const id of this.os.artifacts.expirePublicShares(now.getTime())) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'system', type: 'artifact.share.expired', data: { id } });
+      }
+    } catch {
+      // never let the share-expiry sweep take down the automation scheduler
+    }
   }
 
   /**

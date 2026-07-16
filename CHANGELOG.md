@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.211.0] — 2026-07-16
+### Added
+- **Open a deliverable full-screen in a new tab.** The Library detail panel gains an **Open** button
+  next to Download — opens the artifact's raw URL in a new tab (`target="_blank"`), so a PDF/HTML/image
+  gets the whole viewport instead of the preview pane.
+### Changed
+- **Public Library links now auto-revoke after 7 days.** A protection so a shared link can't stay
+  world-reachable forever. Minting a public link stamps a 7-day expiry (`artifacts.share_expires_at`);
+  the public `/shared/<token>` route rejects an expired token immediately (404), and the scheduler tick
+  sweeps expired rows — clearing the token durably (audited `artifact.share.expired`). Re-toggling the
+  Public link renews the 7 days on the same URL. The detail panel shows when a link auto-revokes.
+- **Markdown preview fills the Library pane width.** The md/text preview was capped at `max-w-3xl`, so it
+  never widened with the pane (most visible after collapsing the sidebar); other artifact types are
+  already full-width. Markdown now matches (`web/src/App.tsx`).
+
 ## [0.210.0] — 2026-07-16
 ### Added
 - **Native-dependency check + one-shot install.** A fresh box needs a few native commands Agent OS shells

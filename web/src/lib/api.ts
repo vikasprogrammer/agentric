@@ -311,6 +311,8 @@ export interface Artifact {
   public?: boolean
   /** The public share token — only returned to whoever may manage sharing (owner/admin/producer). */
   shareToken?: string
+  /** Epoch ms when the public link auto-revokes (7 days after minting); present with `shareToken`. */
+  shareExpiresAt?: number
   /** The resolved public URL (`/shared/<token>`) — present only when `shareToken` is. */
   shareUrl?: string
   createdAt: number

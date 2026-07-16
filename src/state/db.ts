@@ -798,6 +798,10 @@ function migrate(db: Db): void {
   addColumn(db, 'artifacts', 'shared_team', 'INTEGER NOT NULL DEFAULT 0');
   addColumn(db, 'artifacts', 'share_token', 'TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_share_token ON artifacts(share_token) WHERE share_token IS NOT NULL');
+  // Public-link expiry: a public share auto-revokes after a fixed TTL (7 days) so a link can't stay
+  // world-reachable forever. Set when the link is minted; the public route rejects an expired token
+  // immediately and the scheduler sweep clears it from the row. NULL = no public link (nothing to expire).
+  addColumn(db, 'artifacts', 'share_expires_at', 'INTEGER');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

@@ -3746,6 +3746,12 @@ const fmtSize = (n: number): string =>
 /** Generated-media cost in USD — sub-cent amounts keep 4 decimals so a $0.0336 image doesn't read $0.03. */
 const fmtCost = (usd: number): string => (usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`)
 
+/** A coarse "in N days"/"today"/"expired" for a future epoch-ms deadline (public-link expiry). */
+const fmtRelDays = (at: number): string => {
+  const d = Math.round((at - Date.now()) / 86_400_000)
+  return d < 0 ? 'expired' : d === 0 ? 'today' : d === 1 ? 'in 1 day' : `in ${d} days`
+}
+
 /** Browse + edit files in the instance's data home. The server confines every path to the
  *  home root; navigation (folders/breadcrumb) + a text editor, plus upload (button or drag-drop),
  *  download, new-folder and delete. */
@@ -4696,6 +4702,7 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-2">
+                    <a href={api.artifactRawUrl(selected.id)} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="secondary"><ExternalLink className="mr-1 h-4 w-4" />Open</Button></a>
                     <a href={api.artifactRawUrl(selected.id)} download={selected.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
                     {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
                       <>
@@ -4716,6 +4723,9 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                       <span className="inline-flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" />Public link<span className="text-muted-foreground">— anyone with the URL can view, no login required</span></span>
                     </label>
                     {selected.shareUrl && <CopyLink link={selected.shareUrl} />}
+                    {selected.shareUrl && selected.shareExpiresAt && (
+                      <div className="flex items-center gap-1 text-[11px] text-muted-foreground"><Clock className="h-3 w-3" />Link auto-revokes {new Date(selected.shareExpiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ({fmtRelDays(selected.shareExpiresAt)}) — re-toggle to renew.</div>
+                    )}
                   </div>
                 )}
                 <ArtifactBody a={selected} />

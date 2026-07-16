@@ -16,6 +16,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Db } from './db';
 
+/** How long a public artifact link stays live before it auto-revokes (a "public forever" guard). */
+export const PUBLIC_SHARE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 export interface Artifact {
   id: string;
   sessionId: string;
@@ -35,6 +38,8 @@ export interface Artifact {
   sharedTeam: boolean;
   /** When set, the artifact has a public login-free link (`/shared/<token>`). undefined = not public. */
   shareToken?: string;
+  /** Epoch ms when the public link auto-revokes (mint time + {@link PUBLIC_SHARE_TTL_MS}). */
+  shareExpiresAt?: number;
   createdAt: number;
 }
 
@@ -54,6 +59,7 @@ interface ArtifactRow {
   cost_usd: number | null;
   shared_team: number;
   share_token: string | null;
+  share_expires_at: number | null;
   created_at: number;
 }
 
@@ -116,6 +122,7 @@ export class ArtifactStore {
       cost_usd: null, // published files aren't generated → no cost
       shared_team: 0, // published private to its producer until explicitly shared
       share_token: null,
+      share_expires_at: null,
       created_at: Date.now(),
     };
     this.insertRow(row);
@@ -126,13 +133,13 @@ export class ArtifactStore {
   private insertRow(row: ArtifactRow): void {
     this.db
       .prepare(
-        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, cost_usd, shared_team, share_token, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, cost_usd, shared_team, share_token, share_expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id, row.session_id, row.agent, row.source, row.kind, row.title, row.description,
         row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.cost_usd,
-        row.shared_team, row.share_token, row.created_at,
+        row.shared_team, row.share_token, row.share_expires_at, row.created_at,
       );
   }
 
@@ -177,6 +184,7 @@ export class ArtifactStore {
       cost_usd: typeof input.costUsd === 'number' ? input.costUsd : null,
       shared_team: 0,
       share_token: null,
+      share_expires_at: null,
       created_at: Date.now(),
     };
     this.insertRow(row);
@@ -234,23 +242,47 @@ export class ArtifactStore {
 
   /**
    * Toggle the public login-free link. Turning it ON mints a crypto-random token (reusing the existing
-   * one if already public, so the URL is stable across re-toggles); OFF clears it (revokes the link).
-   * Returns the resulting token (null when off / artifact missing). The token is the sole credential the
-   * public `/shared/<token>` route trusts, so it must be unguessable — `randomBytes`, not `Math.random`.
+   * one if already public, so the URL is stable across re-toggles) and (re)sets a fresh
+   * {@link PUBLIC_SHARE_TTL_MS} expiry — so re-sharing an expired/lapsing link renews its 7 days. OFF
+   * clears both (revokes the link). Returns the resulting token + expiry (nulls when off / missing). The
+   * token is the sole credential the public route trusts, so it must be unguessable — `randomBytes`.
    */
-  setPublic(id: string, on: boolean): string | null {
+  setPublic(id: string, on: boolean): { token: string | null; expiresAt: number | null } | null {
     const a = this.get(id);
     if (!a) return null;
-    const token = on ? a.shareToken ?? randomBytes(18).toString('base64url') : null;
-    this.db.prepare('UPDATE artifacts SET share_token = ? WHERE id = ?').run(token, id);
-    return token;
+    if (!on) {
+      this.db.prepare('UPDATE artifacts SET share_token = NULL, share_expires_at = NULL WHERE id = ?').run(id);
+      return { token: null, expiresAt: null };
+    }
+    const token = a.shareToken ?? randomBytes(18).toString('base64url');
+    const expiresAt = Date.now() + PUBLIC_SHARE_TTL_MS;
+    this.db.prepare('UPDATE artifacts SET share_token = ?, share_expires_at = ? WHERE id = ?').run(token, expiresAt, id);
+    return { token, expiresAt };
   }
 
-  /** Resolve an artifact by its public share token (the `/shared/<token>` lookup). undefined if none. */
+  /**
+   * Resolve an artifact by its public share token (the `/shared/<token>` lookup). Returns undefined if
+   * no such token OR the link has EXPIRED — so a lapsed link stops resolving the instant it expires, even
+   * before the scheduler sweep clears the row. undefined = serve a 404.
+   */
   getByToken(token: string): Artifact | undefined {
     if (!token) return undefined;
     const r = this.db.prepare('SELECT * FROM artifacts WHERE share_token = ?').get<ArtifactRow>(token);
-    return r ? toArtifact(r) : undefined;
+    if (!r) return undefined;
+    if (r.share_expires_at != null && r.share_expires_at < Date.now()) return undefined; // expired → gone
+    return toArtifact(r);
+  }
+
+  /**
+   * Auto-revoke public links past their expiry: clear the token + expiry from every lapsed row and return
+   * the affected ids (for the caller to audit). Called from the scheduler tick; the link already stops
+   * resolving at expiry (getByToken), this just makes the revocation durable so the token is truly gone.
+   */
+  expirePublicShares(now: number): string[] {
+    const where = 'share_token IS NOT NULL AND share_expires_at IS NOT NULL AND share_expires_at < ?';
+    const rows = this.db.prepare(`SELECT id FROM artifacts WHERE ${where}`).all<{ id: string }>(now);
+    if (rows.length) this.db.prepare(`UPDATE artifacts SET share_token = NULL, share_expires_at = NULL WHERE ${where}`).run(now);
+    return rows.map((r) => r.id);
   }
 
   /** Move an artifact into a folder (metadata only — the on-disk id-dir never moves). '' = root. */
@@ -286,6 +318,7 @@ function toArtifact(r: ArtifactRow): Artifact {
     costUsd: r.cost_usd ?? undefined,
     sharedTeam: r.shared_team === 1,
     shareToken: r.share_token ?? undefined,
+    shareExpiresAt: r.share_expires_at ?? undefined,
     createdAt: r.created_at,
   };
 }
