@@ -10,7 +10,7 @@
  * This store is DB-only (a snapshot is pure structured state). The manifest itself still lives on disk
  * (`agent.json` + `CLAUDE.md`); the server writes those files and calls `commit` to record the version.
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import { Db } from './db';
 import { Effort, PermissionMode } from '../types';
 
@@ -127,7 +127,7 @@ export class AgentRevisions {
         (id, tenant, agent_id, rev, description, category, icon, model, effort, permission_mode, example_prompts, shell_secrets, claude_md, summary, author, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
-        randomUUID().slice(0, 8), tenant, agentId, rev,
+        newId('agentRevision'), tenant, agentId, rev,
         s.description, s.category ?? null, s.icon ?? null,
         s.model ?? null, s.effort ?? null, s.permissionMode ?? null,
         JSON.stringify(s.examplePrompts ?? []), JSON.stringify(s.shellSecrets ?? []), s.claudeMd,

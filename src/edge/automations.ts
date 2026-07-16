@@ -8,7 +8,8 @@
  * (`TriggerRef` in types.ts); the **Orchestrator** (core/orchestrator.ts) remains the internal run
  * engine. Zero-dependency cron: a minimal 5-field parser below (minute hour dom month dow).
  */
-import { randomBytes, randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
+import { newId } from '../id';
 import * as os from 'os';
 import * as path from 'path';
 import { Strategist } from './strategist';
@@ -342,7 +343,7 @@ export class Automations {
       throw new Error('type must be cron, webhook, composio, slack, or discord');
     }
     const a: Automation = {
-      id: 'au_' + randomUUID().slice(0, 8),
+      id: newId('automation'),
       agentId: input.agentId,
       name: input.name.trim(),
       type: input.type,
@@ -386,7 +387,7 @@ export class Automations {
       throw new Error(`too many pending scheduled tasks (max ${SCHEDULE_MAX_PENDING}) — cancel one first`);
     }
     const a: Automation = {
-      id: 'au_' + randomUUID().slice(0, 8),
+      id: newId('automation'),
       agentId: input.agentId,
       name: input.name.trim() || 'Scheduled task',
       type: 'once',

@@ -9,7 +9,7 @@
  *
  * DB-only (a snapshot is pure structured state); the live document itself is the JSON override on disk.
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import { Db } from './db';
 import { PolicyDocument } from '../governance/policy';
 
@@ -72,6 +72,6 @@ export class PolicyRevisions {
   private insert(tenant: string, rev: number, doc: PolicyDocument, summary: string, author: string, ts: number): void {
     this.db
       .prepare('INSERT INTO policy_revisions (id, tenant, rev, document, summary, author, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(randomUUID().slice(0, 8), tenant, rev, JSON.stringify(doc), summary || null, author, ts);
+      .run(newId('policyRevision'), tenant, rev, JSON.stringify(doc), summary || null, author, ts);
   }
 }

@@ -10,7 +10,7 @@
  *
  * db-only (no on-disk mirror) — a job is transient control state, like TaskStore.
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import { Db } from './db';
 
 export type VideoJobStatus = 'rendering' | 'done' | 'failed' | 'expired';
@@ -69,7 +69,7 @@ export class VideoJobStore {
   }): VideoJob {
     const now = Date.now();
     const row: VideoJobRow = {
-      id: randomUUID().slice(0, 8),
+      id: newId('videoJob'),
       session_id: input.sessionId,
       agent: input.agent,
       source: input.source ?? null,

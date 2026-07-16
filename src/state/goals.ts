@@ -12,7 +12,7 @@
  * DB-only, like TaskStore: a goal is structured state, not a document to co-author on disk, so there's
  * no `<home>/…` markdown mirror and the constructor is just `(db)`.
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import { Db } from './db';
 import { Goal, GoalCreateInput, GoalEvent, GoalProgress, GoalQuery, GoalStatus, GoalUpdateInput, TaskStatus } from '../types';
 
@@ -53,7 +53,7 @@ export class GoalStore {
   /** Create a goal, log its opening `status` event, and (for a sub-goal) `link` it on the parent. */
   create(input: GoalCreateInput): Goal {
     const now = Date.now();
-    const id = randomUUID().slice(0, 8);
+    const id = newId('goal');
     const labels = input.labels ?? [];
     const status: GoalStatus = input.status && STATUSES.includes(input.status) ? input.status : 'active';
     this.db
@@ -203,7 +203,7 @@ export class GoalStore {
     for (const t of this.db.prepare('SELECT id FROM tasks WHERE goal_id = ?').all<{ id: string }>(id)) {
       this.db
         .prepare('INSERT INTO task_events (id, task_id, kind, body, author, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(randomUUID().slice(0, 8), t.id, 'link', 'goal deleted — detached', 'system', null, Date.now());
+        .run(newId('goalEvent'), t.id, 'link', 'goal deleted — detached', 'system', null, Date.now());
     }
     this.db.prepare('UPDATE tasks SET goal_id = NULL WHERE goal_id = ?').run(id);
     return true;
@@ -245,7 +245,7 @@ export class GoalStore {
   private addEvent(goalId: string, kind: GoalEvent['kind'], body: string, author: string): void {
     this.db
       .prepare('INSERT INTO goal_events (id, goal_id, kind, body, author, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(randomUUID().slice(0, 8), goalId, kind, body, author, Date.now());
+      .run(newId('goalEvent'), goalId, kind, body, author, Date.now());
   }
 }
 

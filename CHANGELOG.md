@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.216.0] — 2026-07-16
+### Changed
+- **Stripe-style prefixed entity ids across the board.** Every referenceable persisted entity now mints a
+  namespaced, self-describing id via a single source of truth — the new `src/id.ts` (`newId('session')` →
+  `ses_a1b2c3…`, 64 bits of entropy vs the old 8-char `randomUUID().slice(0,8)`). Prefixes: `ses_`
+  (sessions), `tsk_`/`tev_`/`tatt_` (tasks/events/attachments), `goal_`/`gev_` (goals/events), `msg_`
+  (inbox), `qst_` (ask-human questions), `ask_` (agent-asks), `apr_` (approvals), `art_` (artifacts),
+  `vid_` (video jobs), `mem_` (memories), `kbp_`/`kbr_` (KB pages/revisions), `arev_`/`prev_`
+  (agent/policy revisions); `m_` (members) and `au_` (automations) keep their existing prefixes, now
+  routed through the same helper. Rollout is **forward-only** — pre-existing bare-hex ids stay valid and
+  keep working; nothing parses an id prefix (the new `parseId`/`isId` helpers are introspection-only, not
+  a gate). Deliberately left unprefixed: bearer secrets (auth-session sid, invite/webhook/session
+  secrets, artifact share token), the `claudeSessionId` UUID (`claude --session-id` format), numeric
+  `audit_events.id`, and human slugs (`connectors.id`, `tenants.slug`). The core governance `Run`
+  (`src/core/run.ts`) keeps its raw UUID to preserve the "core imports only from `types.ts`" invariant.
+
 ## [0.215.0] — 2026-07-16
 ### Changed
 - **Re-publishing a deliverable now updates it in place instead of creating a duplicate.** `publish` is

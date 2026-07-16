@@ -6,7 +6,7 @@
  * in-memory with an optional auto-resolver so the demo can simulate a human.
  */
 import { ApprovalRequest, Approvals } from '../types';
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import { Db } from '../state/db';
 
 export class InMemoryApprovals implements Approvals {
@@ -23,7 +23,7 @@ export class InMemoryApprovals implements Approvals {
     req: ApprovalRequest;
     decision: Promise<boolean>;
   } {
-    const req: ApprovalRequest = { ...input, id: randomUUID(), status: 'pending', createdAt: Date.now() };
+    const req: ApprovalRequest = { ...input, id: newId('approval'), status: 'pending', createdAt: Date.now() };
     this.items.set(req.id, req);
 
     let resolveFn!: (approved: boolean) => void;
@@ -116,7 +116,7 @@ export class SqliteApprovals implements Approvals {
     req: ApprovalRequest;
     decision: Promise<boolean>;
   } {
-    const req: ApprovalRequest = { ...input, id: randomUUID(), status: 'pending', createdAt: Date.now() };
+    const req: ApprovalRequest = { ...input, id: newId('approval'), status: 'pending', createdAt: Date.now() };
     this.db
       .prepare('INSERT INTO approvals (id, run_id, tenant, level, capability, args, reasoning, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(req.id, req.runId, req.tenant, req.level, req.attempt.capabilityId, JSON.stringify(req.attempt.args), req.attempt.reasoning ?? null, req.reason, 'pending', req.createdAt);

@@ -16,7 +16,7 @@
  * there's no `<home>/…` markdown mirror and the constructor is just `(db)`. (Deliberate divergence from
  * the KB pattern — see docs/tasks-plan.md §Decision 2.)
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Db } from './db';
@@ -78,7 +78,7 @@ export class TaskStore {
   /** Create a task, log its opening `status` event, and (for a sub-task) `link` it on the parent. */
   create(input: TaskCreateInput): Task {
     const now = Date.now();
-    const id = randomUUID().slice(0, 8);
+    const id = newId('task');
     const labels = input.labels ?? [];
     const priority = clampPriority(input.priority);
     const mode = input.mode === 'interactive' ? 'interactive' : 'headless';
@@ -446,7 +446,7 @@ export class TaskStore {
 
   /** Shared writer: copy bytes to disk, insert the row, log the `attach` event. */
   private writeAttachment(taskId: string, filename: string, bytes: Buffer, uploadedBy: string): AttachResult {
-    const id = randomUUID().slice(0, 8);
+    const id = newId('taskAttachment');
     const rel = path.join(taskId, `${id}-${filename}`);
     const dest = path.join(this.dir!, rel);
     try {
@@ -501,7 +501,7 @@ export class TaskStore {
   private addEvent(taskId: string, kind: TaskEvent['kind'], body: string, author: string, sessionId?: string): void {
     this.db
       .prepare('INSERT INTO task_events (id, task_id, kind, body, author, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(randomUUID().slice(0, 8), taskId, kind, body, author, sessionId ?? null, Date.now());
+      .run(newId('taskEvent'), taskId, kind, body, author, sessionId ?? null, Date.now());
   }
 }
 

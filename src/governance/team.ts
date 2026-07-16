@@ -8,6 +8,7 @@
  * SQLite DB (see state/db.ts) so it survives restarts and stays isolated per data home.
  */
 import { randomBytes } from 'crypto';
+import { newId } from '../id';
 import { Db } from '../state/db';
 import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs, sanitizeNavPins, PromptShortcut, sanitizePromptShortcuts } from '../types';
 
@@ -391,7 +392,7 @@ export class TeamStore {
 
   // ── internals ────────────────────────────────────────────────────────────────
   private insertMember(email: string, name: string, role: Role, status: 'invited' | 'active'): Member {
-    const member: Member = { id: 'm_' + token().slice(0, 16), email: email.toLowerCase(), name, role, status, createdAt: Date.now() };
+    const member: Member = { id: newId('member'), email: email.toLowerCase(), name, role, status, createdAt: Date.now() };
     this.db
       .prepare('INSERT INTO members (id, email, name, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(member.id, member.email, member.name, member.role, member.status, member.createdAt);

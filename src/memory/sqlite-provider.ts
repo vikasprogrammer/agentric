@@ -13,7 +13,7 @@
  *
  * Isolation: every query is scoped by (tenant, agent_id), so an agent only ever sees its own.
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import { Db } from '../state/db';
 import {
   DeleteInput, MemoryMaintenance, MemoryMaintenanceResult, MemoryProvider, MemoryRanking,
@@ -51,7 +51,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
 
   async store(input: StoreInput): Promise<MemoryRecord> {
     const rec: MemoryRecord = {
-      id: randomUUID(),
+      id: newId('memory'),
       tenant: input.tenant,
       agentId: input.agentId,
       content: input.content,

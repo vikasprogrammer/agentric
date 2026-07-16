@@ -20,7 +20,7 @@
  * the core stays zero-dependency. If the backend is chosen without it installed, init throws with
  * an install hint.
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import {
   DeleteInput, LibsqlMemoryConfig, MemoryMaintenance, MemoryMaintenanceResult, MemoryProvider,
   MemoryRanking, MemoryRecord, RecallQuery, StoreInput, UpdateInput,
@@ -111,7 +111,7 @@ export class LibsqlMemoryProvider implements MemoryProvider {
   async store(input: StoreInput): Promise<MemoryRecord> {
     await this.init();
     const rec: MemoryRecord = {
-      id: randomUUID(),
+      id: newId('memory'),
       tenant: input.tenant,
       agentId: input.agentId,
       content: input.content,

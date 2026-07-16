@@ -10,6 +10,7 @@
 import { randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { newId } from './id';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
@@ -1005,7 +1006,7 @@ export class TerminalManager {
    * normal attachable TUI that stays live until closed.
    */
   createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false): Session {
-    const id = randomUUID().slice(0, 8);
+    const id = newId('session');
     const tmux = `aos-${id}`;
     // The claude conversation this run drives. A fresh run mints a new id (pinned via `--session-id`);
     // a thread follow-up passes the PRIOR run's id so the launcher `--resume`s the same transcript and
@@ -1085,7 +1086,7 @@ export class TerminalManager {
     if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be forked' };
     if (!src.claude_session_id) return { ok: false, error: 'this session has no conversation to fork yet' };
 
-    const id = randomUUID().slice(0, 8);
+    const id = newId('session');
     const tmux = `aos-${id}`;
     // The fork's OWN new conversation id (distinct from the parent's) — `--fork-session --session-id`
     // copies the parent history into it, leaving the parent's transcript intact.
@@ -2297,7 +2298,7 @@ export class TerminalManager {
     this.db
       .prepare('INSERT INTO messages (id, type, session_id, agent, title, body, status, approval_id, capability, args, level, source, question_id, outcome, audience_kind, audience_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(
-        randomUUID().slice(0, 8), m.type, m.sessionId, m.agent, m.title, m.body, m.status,
+        newId('message'), m.type, m.sessionId, m.agent, m.title, m.body, m.status,
         m.approvalId ?? null, m.capability ?? null, m.args !== undefined ? JSON.stringify(m.args) : null,
         m.level ?? null, m.source ?? null, m.questionId ?? null, m.outcome ?? null,
         m.audienceKind ?? null, m.audienceId ?? null, Date.now(),
@@ -2370,7 +2371,7 @@ export class TerminalManager {
       target = this.resolveMember(to);
       if (!target) return { error: `no teammate matches "${to}"` };
     }
-    const id = randomUUID().slice(0, 8);
+    const id = newId('question');
     this.db
       .prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, audience_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, sessionId, this.os.tenant, agent, prompt, 'pending', target?.id ?? null, Date.now());
@@ -2510,7 +2511,7 @@ export class TerminalManager {
     // Run-as passthrough: the delegate acts AS the caller's accountable human, so budget/approvals/identity
     // ladder to the same person the caller already answers to (mirrors task-owner passthrough).
     const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(callerSession)?.run_as ?? undefined;
-    const id = randomUUID().slice(0, 8);
+    const id = newId('agentAsk');
     this.db
       .prepare('INSERT INTO agent_asks (id, tenant, caller_run_id, caller_agent, target_agent, question, status, run_as, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, this.os.tenant, callerSession, callerAgent, target, question, 'pending', runAs ?? null, Date.now());

@@ -11,7 +11,7 @@
  * AND, when a data home exists, a `kb/<section>/<slug>.md` file on disk (human/git-friendly). The two
  * are written together on the single mutating path (`write`), so they never diverge.
  */
-import { randomUUID } from 'crypto';
+import { newId } from '../id';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Db } from './db';
@@ -50,7 +50,7 @@ export class KbStore {
     const existing = this.db
       .prepare('SELECT * FROM kb_pages WHERE tenant = ? AND section = ? AND slug = ?')
       .get<PageRow>(input.tenant, section, slug);
-    const id = existing?.id ?? randomUUID().slice(0, 8);
+    const id = existing?.id ?? newId('kbPage');
     const rev = existing ? existing.rev + 1 : 1;
     const title = (input.title ?? existing?.title ?? slug).trim() || slug;
     const tags = input.tags ?? (existing ? (JSON.parse(existing.tags) as string[]) : []);
@@ -69,7 +69,7 @@ export class KbStore {
     // Snapshot this version — the rollback + audit backbone.
     this.db
       .prepare('INSERT INTO kb_revisions (id, page_id, rev, title, tags, body, summary, author, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(randomUUID().slice(0, 8), id, rev, title, JSON.stringify(tags), input.body, input.summary ?? null, input.author, now);
+      .run(newId('kbRevision'), id, rev, title, JSON.stringify(tags), input.body, input.summary ?? null, input.author, now);
     // Mirror to disk (best-effort; the column is the source of record for the API + FTS).
     const abs = this.contained(section, slug);
     if (abs) {

@@ -11,7 +11,8 @@
  * small generated website — `kind:'site'`) is just MORE files in the same dir, served through the
  * same raw route via its `?file=` seam. No migration, no new storage shape.
  */
-import { randomBytes, randomUUID } from 'crypto';
+import { randomBytes } from 'crypto';
+import { newId } from '../id';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Db } from './db';
@@ -128,7 +129,7 @@ export class ArtifactStore {
       return { ok: true, updated: true, artifact: this.get(existing.id)! };
     }
 
-    const id = randomUUID().slice(0, 8);
+    const id = newId('artifact');
     const destDir = path.join(this.dir, id);
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(src, path.join(destDir, filename));
@@ -204,7 +205,7 @@ export class ArtifactStore {
   }): PublishResult {
     if (!this.dir) return { ok: false, error: 'no data home configured (artifacts disabled)' };
     const filename = path.basename(input.filename) || 'image.png';
-    const id = randomUUID().slice(0, 8);
+    const id = newId('artifact');
     const destDir = path.join(this.dir, id);
     fs.mkdirSync(destDir, { recursive: true });
     fs.writeFileSync(path.join(destDir, filename), input.bytes);
