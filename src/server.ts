@@ -18,6 +18,7 @@ import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './state/session-activity';
 import { readConversation } from './edge/conversation';
+import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
@@ -2306,6 +2307,36 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const r = tm.attachFile(id, me.email, data, String(b.ext || 'bin'), b.name ? String(b.name) : undefined);
     return sendJson(res, r.ok ? 200 : 400, r);
   }
+  // Quick Shortcuts — type text into a LIVE session's pane as if the attached human typed it (e.g.
+  // "Check now", a saved prompt). Same trust as attaching + typing, so the gate at canViewSession, not a
+  // policy check; every effect the resulting turn triggers is still mediated by the gate hook. Body:
+  // { text, submit? } (submit defaults true — the shortcut runs immediately).
+  const injectMatch = p.match(/^\/api\/sessions\/([\w-]+)\/inject$/);
+  if (method === 'POST' && injectMatch) {
+    const id = injectMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to send to this session' });
+    const b = await readBody(req);
+    const text = String(b.text || '');
+    if (!text.trim()) return sendJson(res, 400, { error: 'text is required' });
+    const submit = b.submit === undefined ? true : Boolean(b.submit);
+    const r = tm.injectToSession(id, text, submit, me.email);
+    return sendJson(res, r.ok ? 200 : 409, r);
+  }
+  // Out-of-band session summary — reads the run's existing transcript and summarizes it in a THROWAWAY
+  // claude, so the target session's own context is never touched (no pollution). Same visibility gate as
+  // the terminal/transcript. Returns { summary, via, found }; never blocks the session.
+  const summarizeMatch = p.match(/^\/api\/sessions\/([\w-]+)\/summarize$/);
+  if (method === 'POST' && summarizeMatch) {
+    const id = summarizeMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
+    const claudeId = tm.sessionClaudeId(id);
+    const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
+    const out = await summarizeConversation(convo);
+    os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.summarized', data: { via: out.via, found: out.found } });
+    return sendJson(res, 200, out);
+  }
   // Stop a running session (kill its tmux, keep the row). Per-member: only the session's owner, or
   // an owner/admin — agents are shared, so canRun would let a peer stop another member's session.
   const stopMatch = p.match(/^\/api\/sessions\/([\w-]+)\/stop$/);
@@ -2415,6 +2446,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const context = os.team.setMemberContext(me.id, (b as { context?: unknown }).context);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.context.set', data: { chars: context.length } });
     return sendJson(res, 200, { context });
+  }
+  // This member's Quick Shortcuts — saved canned prompts they fire into a live terminal session with one
+  // click. Personal, self-service (no role gate); the payload is `{ shortcuts: PromptShortcut[] }`.
+  if (method === 'GET' && p === '/api/me/shortcuts') return sendJson(res, 200, { shortcuts: os.team.promptShortcuts(me.id) });
+  if (method === 'PUT' && p === '/api/me/shortcuts') {
+    const b = await readBody(req);
+    return sendJson(res, 200, { shortcuts: os.team.setPromptShortcuts(me.id, (b as { shortcuts?: unknown }).shortcuts) });
   }
   // This member's pinned sidebar nav (which secondary items sit up in Main). Per person, not admin-gated
   // — everyone customizes their own. The initial value ships on /api/auth/me; this saves changes.

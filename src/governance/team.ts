@@ -9,7 +9,7 @@
  */
 import { randomBytes } from 'crypto';
 import { Db } from '../state/db';
-import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs, sanitizeNavPins } from '../types';
+import { AgentAccess, Member, MemberIdentity, IdentityProvider, Role, ApprovalLevel, canApprove, NotificationPrefs, sanitizeNotificationPrefs, sanitizeNavPins, PromptShortcut, sanitizePromptShortcuts } from '../types';
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // magic links valid for 7 days
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // login cookie valid for 30 days
@@ -105,6 +105,20 @@ export class TeamStore {
   setNavPins(memberId: string, pins: unknown): string[] {
     const clean = sanitizeNavPins(pins) ?? [];
     this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), navPins: clean });
+    return clean;
+  }
+
+  /** This member's saved prompt shortcuts (the Quick Shortcuts strip in the terminal). Personal, stored
+   *  alongside the rest of their prefs; empty list when never set. */
+  promptShortcuts(memberId: string): PromptShortcut[] {
+    return sanitizePromptShortcuts(this.rawPrefs(memberId).promptShortcuts);
+  }
+
+  /** Persist this member's prompt shortcuts (sanitized + capped), preserving sibling prefs in the same
+   *  blob. Returns the resolved list. */
+  setPromptShortcuts(memberId: string, shortcuts: unknown): PromptShortcut[] {
+    const clean = sanitizePromptShortcuts(shortcuts);
+    this.writeRawPrefs(memberId, { ...this.rawPrefs(memberId), promptShortcuts: clean });
     return clean;
   }
 

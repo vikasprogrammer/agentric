@@ -1954,6 +1954,30 @@ export class TerminalManager {
     this.addMessage({ type: 'update', sessionId, agent: s.agent, title: `Task Update (${s.agent})`, body, status: 'open', audienceKind: 'sessionOwner', audienceId: sessionId });
   }
 
+  /**
+   * Inject text into a LIVE session's pane exactly as if the attached human typed it (tmux send-keys),
+   * optionally submitting with Enter. Powers the console's Quick Shortcuts (e.g. "Check now", a saved
+   * prompt): a human affordance, not an agent effect, so it carries the SAME trust as attaching and
+   * typing — no policy gate here, but every effect the resulting turn triggers is still mediated by the
+   * PreToolUse gate hook. Newlines are flattened to a space so a stray return can't submit early; the
+   * separate Enter keypress (when `submit`) is the one authoritative submit. Refuses a dead/unknown
+   * session (there is no pane to type into).
+   */
+  injectToSession(sessionId: string, text: string, submit: boolean, by: string): { ok: boolean; error?: string } {
+    const row = this.db.prepare('SELECT tmux, status, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ tmux: string; status: string; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!row) return { ok: false, error: 'unknown session' };
+    const body = (text || '').replace(/\r?\n+/g, ' ').trim();
+    if (!body) return { ok: false, error: 'nothing to send' };
+    if (row.status !== 'running' || !this.isAlive(sessionId)) return { ok: false, error: 'session is not live — open it first' };
+    const space = this.spaceFor(row.run_as ?? row.spawned_by);
+    const ok = this.backend.injectText(space, row.tmux, body, submit);
+    if (!ok) return { ok: false, error: 'could not deliver keystrokes to the terminal' };
+    this.db.prepare('UPDATE term_sessions SET last_activity = ?, updated_at = ? WHERE id = ?').run(Date.now(), Date.now(), sessionId);
+    this.audit(sessionId, this.sessionAgent(sessionId) ?? '', 'session.inject', { by, chars: body.length, submit });
+    return { ok: true };
+  }
+
   /** The gate. Same policy brain as the console — allow flows, ask → inbox approval (auto-cleared for
    *  an attended approver), never → deny. Args are enriched into facts first (the single classifier). */
   gate(sessionId: string, agent: string, capability: string, rawArgs: Record<string, unknown>, reasoning: string): GateResult {

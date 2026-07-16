@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.209.0] — 2026-07-16
+### Added
+- **Quick Shortcuts on every terminal session** — a `⚡ Shortcuts` menu in the terminal chrome with:
+  - **Summarize this session** — an *out-of-band* summary. Reads the run's already-written transcript
+    and summarizes it in a throwaway `claude -p`, shown in a modal. The target session's own context is
+    never touched, so asking "what's this run doing?" doesn't pollute the agent. Degrades to a
+    deterministic transcript summary if the summarizer can't run (`POST /api/sessions/:id/summarize`).
+  - **Check now** / **Update yourself** — built-in canned prompts typed straight into the live session.
+  - **Personal shortcuts** — members save their own label+prompt canned prompts (Profile → *My
+    shortcuts*, or inline from the menu). Stored per member in `member_prefs`
+    (`GET`/`PUT /api/me/shortcuts`), capped/sanitized.
+  - Firing a shortcut injects text into the live pane exactly as if the attached human typed it
+    (`POST /api/sessions/:id/inject`, `TerminalManager.injectToSession`) — same trust as attaching and
+    typing, and every resulting effect is still mediated by the PreToolUse gate. Audited
+    `session.inject` / `session.summarized`.
+
 ## [0.208.2] — 2026-07-16
 ### Fixed
 - **Agent-emitted console deep-links now use the tenant's real FQDN, not `127.0.0.1:<port>`.** Links an

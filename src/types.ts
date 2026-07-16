@@ -114,6 +114,45 @@ export function sanitizeNavPins(input: unknown): string[] | null {
 }
 
 /**
+ * A member-defined prompt shortcut — a named canned prompt they can fire into a live terminal session
+ * with one click (the console's Quick Shortcuts strip). Purely a personal convenience stored in
+ * `member_prefs`; the text is injected into the running claude exactly as if the human typed it, so
+ * every effect it triggers is still governed by the gate. `id` is a stable client-minted handle used
+ * only to key the list for edit/delete.
+ */
+export interface PromptShortcut {
+  id: string;
+  label: string;
+  prompt: string;
+}
+
+export const PROMPT_SHORTCUT_MAX = 20;
+export const PROMPT_SHORTCUT_LABEL_MAX = 40;
+export const PROMPT_SHORTCUT_PROMPT_MAX = 2000;
+
+/** Validate/normalize an untrusted shortcuts payload: drop anything malformed, trim + cap each field,
+ *  synthesize a stable id when one is missing, and bound the list length. A shortcut with an empty
+ *  label or empty prompt is dropped (both are required to be useful). */
+export function sanitizePromptShortcuts(input: unknown): PromptShortcut[] {
+  if (!Array.isArray(input)) return [];
+  const out: PromptShortcut[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Partial<PromptShortcut>;
+    const label = String(r.label ?? '').trim().slice(0, PROMPT_SHORTCUT_LABEL_MAX);
+    const prompt = String(r.prompt ?? '').trim().slice(0, PROMPT_SHORTCUT_PROMPT_MAX);
+    if (!label || !prompt) continue;
+    let id = String(r.id ?? '').trim().slice(0, 40);
+    if (!id || seen.has(id)) id = `s${out.length + 1}`;
+    seen.add(id);
+    out.push({ id, label, prompt });
+    if (out.length >= PROMPT_SHORTCUT_MAX) break;
+  }
+  return out;
+}
+
+/**
  * The external accounts a member is known by on other platforms — the join key that lets a chat
  * trigger (Slack/Discord) run AS the right person. One external id maps to at most one member
  * (enforced by the table's `(provider, external_id)` primary key), so run-as is never ambiguous.

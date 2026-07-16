@@ -13,6 +13,12 @@ export interface Member {
    *  `[]` → the member explicitly pinned nothing. */
   navPins?: string[] | null
 }
+/** A member-defined canned prompt fired into a live session from the Quick Shortcuts strip. */
+export interface PromptShortcut {
+  id: string
+  label: string
+  prompt: string
+}
 export type IdentityProvider = 'slack' | 'discord' | 'email' | 'github'
 export const IDENTITY_PROVIDERS: IdentityProvider[] = ['slack', 'discord', 'email', 'github']
 export interface MemberIdentity {
@@ -1100,6 +1106,17 @@ export const api = {
   saveMyContext: (context: string) => call<{ context: string }>('PUT', '/api/me/context', { context }),
   /** Persist this member's pinned sidebar nav (the keys promoted to Main). Returns the resolved list. */
   saveNavPins: (pinned: string[]) => call<{ pinned: string[] }>('PUT', '/api/me/nav', { pinned }),
+  /** This member's saved Quick Shortcuts (canned prompts for a live terminal session). */
+  promptShortcuts: () => call<{ shortcuts: PromptShortcut[] }>('GET', '/api/me/shortcuts'),
+  savePromptShortcuts: (shortcuts: PromptShortcut[]) => call<{ shortcuts: PromptShortcut[] }>('PUT', '/api/me/shortcuts', { shortcuts }),
+  /** Type text into a LIVE session's pane as if the attached human typed it (Quick Shortcuts). `submit`
+   *  defaults true (fire immediately). 409 = the session isn't live to type into. */
+  injectToSession: (id: string, text: string, submit = true) =>
+    call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/inject`, { text, submit }),
+  /** Out-of-band summary of a session: reads its transcript and summarizes it in a throwaway claude —
+   *  the target session is never touched. `via` = 'ai' | 'fallback'. */
+  summarizeSession: (id: string) =>
+    call<{ summary: string; via: 'ai' | 'fallback'; found: boolean; error?: string }>('POST', `/api/sessions/${id}/summarize`),
 
   team: () => call<TeamResp>('GET', '/api/team'),
   audit: (f: { session?: string; type?: string; principal?: string; limit?: number } = {}) => {

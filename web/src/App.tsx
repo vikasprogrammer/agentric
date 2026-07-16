@@ -13,7 +13,7 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type ChatTurn } from '@/lib/api'
-import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { docPages } from '@/docs'
@@ -1827,6 +1827,157 @@ function TerminalHelpModal({ open, onClose }: { open: boolean; onClose: () => vo
   )
 }
 
+/** A plain-text, out-of-band summary of a session — reads the run's transcript and summarizes it in a
+ *  throwaway claude, so the session's own context is never touched. Fetches on open; regenerate re-asks. */
+function SessionSummaryModal({ sessionId, open, onClose }: { sessionId: string; open: boolean; onClose: () => void }) {
+  const [loading, setLoading] = useState(false)
+  const [summary, setSummary] = useState('')
+  const [via, setVia] = useState<'ai' | 'fallback' | null>(null)
+  const [err, setErr] = useState('')
+  const load = async () => {
+    setLoading(true); setErr(''); setVia(null)
+    const r = await api.summarizeSession(sessionId)
+    setLoading(false)
+    if (r.error) { setErr(r.error); return }
+    setSummary(r.summary || ''); setVia(r.via ?? null)
+  }
+  useEffect(() => { if (open) void load() }, [open, sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Session summary</DialogTitle></DialogHeader>
+        {loading ? (
+          <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><RefreshCw className="h-4 w-4 animate-spin" /> Reading the transcript and summarizing…</div>
+        ) : err ? (
+          <div className="py-6 text-sm text-red-500">⚠ {err}</div>
+        ) : (
+          <div className="max-h-[55vh] overflow-auto whitespace-pre-wrap text-sm leading-relaxed text-foreground">{summary || '(no summary)'}</div>
+        )}
+        <div className="flex items-center gap-3 border-t pt-3">
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={() => void load()} disabled={loading}>
+            <RefreshCw className={'h-3.5 w-3.5' + (loading ? ' animate-spin' : '')} /> Regenerate
+          </Button>
+          {via === 'fallback' && !loading && <span className="text-[11px] text-muted-foreground">basic summary — the AI summarizer was unavailable</span>}
+          <span className="ml-auto text-[11px] text-muted-foreground">out-of-band · the session isn’t touched</span>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const mkShortcutId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+
+/** The built-in shortcuts every session gets, on top of the member's saved ones. */
+const BUILTIN_SHORTCUTS: { id: string; label: string; prompt: string; title: string }[] = [
+  { id: 'check', label: 'Check now', prompt: 'Check now', title: 'Nudge the agent to run its check now' },
+  { id: 'update', label: 'Update yourself', prompt: 'Update yourself', title: 'Ask the agent to review and update itself' },
+]
+
+/** The Quick Shortcuts control in the terminal chrome: a one-click "Summary" (out-of-band) plus canned
+ *  prompts that type straight into the live session (built-ins + the member's own saved shortcuts, added
+ *  inline or on the Profile page). Injection is gated on the pane being live/attachable. */
+function QuickShortcuts({ session, attachable }: { session: Session; attachable: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [summaryOpen, setSummaryOpen] = useState(false)
+  const [custom, setCustom] = useState<PromptShortcut[]>([])
+  const [note, setNote] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [adding, setAdding] = useState(false)
+  const [draftLabel, setDraftLabel] = useState('')
+  const [draftPrompt, setDraftPrompt] = useState('')
+  const [busy, setBusy] = useState(false)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  const loadCustom = () => api.promptShortcuts().then((r) => setCustom(r.shortcuts || [])).catch(() => {})
+  useEffect(() => { if (open) loadCustom() }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Close the popover on an outside click.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => { if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false) }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [open])
+  useEffect(() => { if (!note) return; const t = setTimeout(() => setNote(null), 3000); return () => clearTimeout(t) }, [note])
+
+  const fire = async (prompt: string) => {
+    if (!attachable) { setNote({ kind: 'err', text: 'open/attach the session first' }); return }
+    setBusy(true)
+    const r = await api.injectToSession(session.id, prompt)
+    setBusy(false)
+    if (r.ok) { setNote({ kind: 'ok', text: 'Sent ✓' }); setOpen(false) }
+    else setNote({ kind: 'err', text: r.error || 'could not send' })
+  }
+  const addShortcut = async () => {
+    const label = draftLabel.trim(); const prompt = draftPrompt.trim()
+    if (!label || !prompt) return
+    setBusy(true)
+    const next = [...custom, { id: mkShortcutId(), label, prompt }]
+    const r = await api.savePromptShortcuts(next)
+    setBusy(false)
+    setCustom(r.shortcuts || next); setDraftLabel(''); setDraftPrompt(''); setAdding(false)
+  }
+  const removeShortcut = async (id: string) => {
+    const next = custom.filter((s) => s.id !== id)
+    setCustom(next) // optimistic
+    const r = await api.savePromptShortcuts(next)
+    setCustom(r.shortcuts || next)
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+        title="Quick Shortcuts — summarize this run, or fire a canned prompt into it"
+        onClick={() => setOpen((o) => !o)}
+      ><Zap className="h-3.5 w-3.5" /> Shortcuts <ChevronDown className="h-3 w-3 opacity-70" /></button>
+      {note && (
+        <div className={`absolute left-0 top-full mt-1 whitespace-nowrap rounded px-2 py-1 text-[11px] shadow ${note.kind === 'ok' ? 'bg-emerald-700 text-emerald-50' : 'bg-red-700 text-red-50'}`}>{note.text}</div>
+      )}
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-md border border-neutral-700 bg-neutral-900 p-1.5 text-neutral-200 shadow-xl">
+          {/* Summary — out of band, always available */}
+          <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-neutral-800"
+            onClick={() => { setOpen(false); setSummaryOpen(true) }} title="Summarize the whole session in a modal — the session itself is not touched">
+            <Sparkles className="h-3.5 w-3.5 shrink-0 text-sky-400" /> <span className="flex-1">Summarize this session</span>
+          </button>
+          <div className="my-1 flex items-center gap-2 px-2 text-[10px] uppercase tracking-wider text-neutral-500">
+            <span>Send to session</span><div className="h-px flex-1 bg-neutral-800" />
+          </div>
+          {!attachable && <p className="px-2 pb-1 text-[10px] text-neutral-500">Open/attach the session to send a prompt.</p>}
+          {[...BUILTIN_SHORTCUTS, ...custom].map((s) => (
+            <div key={s.id} className="group flex items-center">
+              <button className="flex flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-neutral-800 disabled:opacity-40"
+                onClick={() => void fire(s.prompt)} disabled={busy || !attachable} title={'title' in s ? (s as { title: string }).title : s.prompt}>
+                <Send className="h-3.5 w-3.5 shrink-0 text-neutral-400" /> <span className="flex-1 truncate">{s.label}</span>
+              </button>
+              {!('title' in s) && (
+                <button className="mr-1 rounded p-1 text-neutral-500 opacity-0 hover:bg-neutral-800 hover:text-red-400 group-hover:opacity-100"
+                  onClick={() => void removeShortcut(s.id)} title="remove this shortcut"><Trash2 className="h-3 w-3" /></button>
+              )}
+            </div>
+          ))}
+          {/* Add a personal shortcut inline (also editable on the Profile page) */}
+          {adding ? (
+            <div className="mt-1 space-y-1.5 border-t border-neutral-800 p-1.5">
+              <Input value={draftLabel} onChange={(e) => setDraftLabel(e.target.value)} placeholder="Label (e.g. Ship it)" maxLength={40}
+                className="h-7 border-neutral-700 bg-neutral-800 text-xs text-neutral-100 placeholder:text-neutral-500" />
+              <Textarea value={draftPrompt} onChange={(e) => setDraftPrompt(e.target.value)} placeholder="Prompt sent to the agent…" maxLength={2000}
+                className="min-h-[54px] border-neutral-700 bg-neutral-800 text-xs text-neutral-100 placeholder:text-neutral-500" />
+              <div className="flex items-center gap-2">
+                <Button size="sm" className="h-6 px-2 text-xs" onClick={() => void addShortcut()} disabled={busy || !draftLabel.trim() || !draftPrompt.trim()}>Save</Button>
+                <button className="text-[11px] text-neutral-400 hover:text-neutral-200" onClick={() => { setAdding(false); setDraftLabel(''); setDraftPrompt('') }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button className="mt-1 flex w-full items-center gap-2 rounded border-t border-neutral-800 px-2 py-1.5 text-left text-[11px] text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+              onClick={() => setAdding(true)}><Plus className="h-3.5 w-3.5" /> Add a shortcut</button>
+          )}
+        </div>
+      )}
+      <SessionSummaryModal sessionId={session.id} open={summaryOpen} onClose={() => setSummaryOpen(false)} />
+    </div>
+  )
+}
+
 /** The live terminal pane. It asks the server for the attach URL — the shared /terminal/?arg=…
  *  (uid-isolation off) or a per-member /terminal/<space>/?arg=… (on) — and derives the ttyd WebSocket
  *  endpoint from it, which our first-party <Xterm> speaks directly (no iframe). */
@@ -2031,6 +2182,7 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
           title="How to use the terminal — shortcuts & quirks"
           onClick={() => setHelp(true)}
         ><HelpCircle className="h-3.5 w-3.5" /> Help</button>
+        {session?.id && <QuickShortcuts session={session} attachable={Boolean(attachable)} />}
       </div>
       <TerminalHelpModal open={help} onClose={() => setHelp(false)} />
       {/* top-right session toolbar: browse the agent's folder + attach a file */}
@@ -4965,6 +5117,50 @@ function IdentityEditor({ member, identities, onChange }: { member: Member; iden
  *  Their avatar/name, the free-text "context" injected into every session run as them, notification
  *  preferences (moved off the bell), and their chat handles (run-as join keys). Managing OTHER people
  *  (roles, invites, access) stays on the Team page. */
+/** Manage this member's Quick Shortcuts (saved canned prompts). Used on the Profile page; the same
+ *  shortcuts also appear in every terminal's Quick Shortcuts strip. Adds, edits (label + prompt), and
+ *  removes; each change persists the full list. */
+function PromptShortcutsEditor() {
+  const [shortcuts, setShortcuts] = useState<PromptShortcut[]>([])
+  const [loaded, setLoaded] = useState(false)
+  const [label, setLabel] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { api.promptShortcuts().then((r) => { setShortcuts(r.shortcuts || []); setLoaded(true) }).catch(() => setLoaded(true)) }, [])
+  const persist = async (next: PromptShortcut[]) => {
+    setShortcuts(next); setBusy(true)
+    try { const r = await api.savePromptShortcuts(next); setShortcuts(r.shortcuts || next) } finally { setBusy(false) }
+  }
+  const add = async () => {
+    const l = label.trim(); const p = prompt.trim()
+    if (!l || !p) return
+    await persist([...shortcuts, { id: mkShortcutId(), label: l, prompt: p }])
+    setLabel(''); setPrompt('')
+  }
+  const edit = (id: string, patch: Partial<PromptShortcut>) => setShortcuts((cur) => cur.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2">
+        {loaded && shortcuts.length === 0 && <p className="text-xs text-muted-foreground">No shortcuts yet — add one below.</p>}
+        {shortcuts.map((s) => (
+          <div key={s.id} className="flex items-start gap-2 rounded-md border p-2">
+            <div className="flex-1 space-y-1.5">
+              <Input value={s.label} onChange={(e) => edit(s.id, { label: e.target.value })} onBlur={() => persist(shortcuts)} maxLength={40} placeholder="Label" className="h-7 text-xs" />
+              <Textarea value={s.prompt} onChange={(e) => edit(s.id, { prompt: e.target.value })} onBlur={() => persist(shortcuts)} maxLength={2000} className="min-h-[52px] font-mono text-xs" />
+            </div>
+            <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-500" onClick={() => void persist(shortcuts.filter((x) => x.id !== s.id))} disabled={busy} title="remove"><Trash2 className="h-4 w-4" /></Button>
+          </div>
+        ))}
+      </div>
+      <div className="space-y-1.5 rounded-md border border-dashed p-2">
+        <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={40} placeholder="New shortcut label (e.g. Ship it)" className="h-7 text-xs" />
+        <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} maxLength={2000} placeholder="Prompt sent to the agent when you click this shortcut…" className="min-h-[52px] font-mono text-xs" />
+        <Button size="sm" className="gap-1.5" onClick={() => void add()} disabled={busy || !label.trim() || !prompt.trim()}><Plus className="h-3.5 w-3.5" /> Add shortcut</Button>
+      </div>
+    </div>
+  )
+}
+
 function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
   me: Member
   prefs: NotificationPrefs
@@ -5025,6 +5221,17 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
           {ctxSaved && <span className="text-xs text-emerald-600">Saved</span>}
           <span className="ml-auto text-[11px] text-muted-foreground">{context.length.toLocaleString()}/8,000</span>
         </div>
+      </section>
+
+      {/* Quick Shortcuts — saved canned prompts for the terminal's Quick Shortcuts strip */}
+      <section className="space-y-2">
+        <div className="text-[11px] uppercase tracking-wider text-muted-foreground">My shortcuts</div>
+        <p className="text-sm text-muted-foreground">
+          Canned prompts you can fire into a live terminal session with one click, from the
+          <strong> Shortcuts</strong> menu on any terminal. Each is typed into the running agent exactly as
+          if you’d typed it — every effect is still governed.
+        </p>
+        <PromptShortcutsEditor />
       </section>
 
       {/* Notifications (moved off the bell) */}
