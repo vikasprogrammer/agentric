@@ -6,7 +6,6 @@
  *
  * A tenant's `slug` becomes its subdomain (`<slug>.<baseDomain>`), so slugs are DNS-label-safe.
  */
-import { randomBytes } from 'crypto';
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -101,9 +100,4 @@ export class TenantStore {
 
 function toRecord(r: TenantRow): TenantRecord {
   return { slug: r.slug, displayName: r.display_name, ownerEmail: r.owner_email, status: r.status, createdAt: r.created_at };
-}
-
-/** A short opaque id helper (kept here so callers don't reach for crypto directly). */
-export function randomId(prefix = ''): string {
-  return prefix + randomBytes(8).toString('hex');
 }

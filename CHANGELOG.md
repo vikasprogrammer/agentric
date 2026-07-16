@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.219.1] — 2026-07-16
+### Removed
+- **Dead `randomId` helper in the control plane.** `src/state/control.ts` exported a legacy
+  `randomId(prefix)` id generator that had zero callers since the prefixed-id migration
+  (`src/id.ts` / `newId`) took over entity id minting. Removed it and its now-unused `randomBytes`
+  import — no behavior change.
+
 ## [0.219.0] — 2026-07-16
 ### Added
 - **Episodic self-query — an agent can read its own history of past sessions, and reopen any one.** Two
