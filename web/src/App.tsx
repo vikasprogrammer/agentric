@@ -4216,7 +4216,7 @@ function ArtifactBody({ a }: { a: Artifact }) {
   )
   if (wantsText) {
     if (text === null) return <div className="text-sm text-muted-foreground">Loading…</div>
-    if (isMarkdownArt(a)) return <div className="max-w-3xl text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{text}</ReactMarkdown></div>
+    if (isMarkdownArt(a)) return <div className="w-full text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{text}</ReactMarkdown></div>
     return <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-relaxed">{text}</pre>
   }
   return (
