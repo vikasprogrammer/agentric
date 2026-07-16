@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.221.0] — 2026-07-16
+### Added
+- **Session activity trail — every object a run opened, with live status.** The per-session activity
+  panel (`GET /api/sessions/:id/activity` + the `SessionActivity` component) now answers "what is this
+  session doing / done?", not just "which primitives did it touch". Two changes: (1) **coverage** — the
+  classifier (`src/state/session-activity.ts`) gained `secrets` / `skills` / `policy` categories, so
+  `secret.put`/`secret.get`/`secret.requested`, `skill.proposed`/`skill.requested` and `policy.proposed`
+  surface as first-class trail entries instead of falling into `other`; (2) **live status** — each
+  object-bearing entry carries an `ActivityTarget` (`{kind,id}`), and the route resolves that target's
+  CURRENT state from its live store (a task's `todo→doing→done`, a KB page's `rev N`, a secret's
+  `stored`, a proposal card's `pending→approved/rejected`) and returns it as `status`/`statusTone`. The
+  console panel is now a right-docked **side panel** with an **Objects | Timeline** toggle: Objects
+  collapses the trail to one row per live object (outstanding ones first) with a status chip; Timeline is
+  the full chronological feed. It **polls while the run is alive**, so a task's status updates in place.
+  Audit stays the single spine — no new tables, no migration; adding a plane is one classifier case + one
+  resolver.
+
 ## [0.220.0] — 2026-07-16
 ### Added
 - **Chat renders Library deliverables inline.** When an agent produces a Library artifact mid-conversation

@@ -12,9 +12,17 @@
 
 export type ActivityCategory =
   | 'action' | 'operator' | 'memory' | 'knowledge' | 'tasks'
-  | 'scheduling' | 'agents' | 'approval' | 'other';
+  | 'scheduling' | 'agents' | 'approval' | 'secrets' | 'skills' | 'policy' | 'other';
 
 export type ActivityEffect = 'allow' | 'approve' | 'deny' | 'error';
+
+/** The kind of live object a trail entry opened — the key the route uses to resolve the object's
+ *  CURRENT status (audit is point-in-time; "task created" ≠ "task is now done"). `id` is whatever
+ *  uniquely locates the row in its store: a task id, a `section/slug` for KB, the key for a secret,
+ *  the skill name / secret key / policy capability for the matching proposal card. */
+export type TargetKind =
+  | 'task' | 'kb' | 'approval' | 'secret' | 'secret-request' | 'skill-proposal' | 'policy-proposal';
+export interface ActivityTarget { kind: TargetKind; id: string }
 
 /** One classified primitive-use, sans timestamp (the route stamps `ts` from the audit row). */
 export interface ActivityDescriptor {
@@ -26,6 +34,9 @@ export interface ActivityDescriptor {
   summary: string;
   /** For governed actions/approvals: how the gate classified it (allow/approve/deny) or the outcome. */
   effect?: ActivityEffect;
+  /** The live object this entry opened, if any — lets the route attach the object's CURRENT status
+   *  (a task's todo→done, a proposal's pending→approved) so the trail tracks state, not just history. */
+  target?: ActivityTarget;
 }
 
 /** Session plumbing + the paired/duplicate half of a governed action — not, on their own, a primitive
@@ -47,6 +58,7 @@ const PREFIX: ReadonlyArray<readonly [string, ActivityCategory]> = [
   ['memory.', 'memory'], ['kb.', 'knowledge'], ['task.', 'tasks'], ['agent.', 'agents'],
   ['automation.', 'scheduling'], ['approval.', 'approval'], ['gate.', 'action'], ['action.', 'action'],
   ['question.', 'operator'], ['artifact.', 'operator'],
+  ['secret.', 'secrets'], ['skill.', 'skills'], ['policy.', 'policy'],
 ];
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v));
@@ -56,6 +68,12 @@ export function clipText(v: unknown, n = 140): string {
   const t = str(v).replace(/\s+/g, ' ').trim();
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
 }
+
+/** A KB target keyed by `section/slug` — the route resolves the page's current rev / existence. */
+const kbTarget = (data: Record<string, unknown>): ActivityTarget | undefined => {
+  const section = str(data.section), slug = str(data.slug);
+  return section && slug ? { kind: 'kb', id: `${section}/${slug}` } : undefined;
+};
 
 const normEffect = (e: string): ActivityEffect | undefined =>
   e === 'allow' || e === 'approve' || e === 'deny' || e === 'error' ? e : undefined;
@@ -106,17 +124,30 @@ export function classifyActivity(type: string, data: Record<string, unknown>): A
     case 'memory.forgotten': return { category: 'memory', primitive: 'forget', summary: id() ? `#${id()}` : '' };
 
     // ── knowledge base ──
-    case 'kb.written':   return { category: 'knowledge', primitive: 'kb_write', summary: `${str(data.section)}/${str(data.slug)}${data.rev ? ` · rev ${str(data.rev)}` : ''}` };
-    case 'kb.reverted':  return { category: 'knowledge', primitive: 'kb_revert', summary: `${str(data.section)}/${str(data.slug)} → rev ${str(data.rev)}` };
-    case 'kb.deleted':   return { category: 'knowledge', primitive: 'kb_delete', summary: `${str(data.section)}/${str(data.slug)}` };
+    case 'kb.written':   return { category: 'knowledge', primitive: 'kb_write', summary: `${str(data.section)}/${str(data.slug)}${data.rev ? ` · rev ${str(data.rev)}` : ''}`, target: kbTarget(data) };
+    case 'kb.reverted':  return { category: 'knowledge', primitive: 'kb_revert', summary: `${str(data.section)}/${str(data.slug)} → rev ${str(data.rev)}`, target: kbTarget(data) };
+    case 'kb.deleted':   return { category: 'knowledge', primitive: 'kb_delete', summary: `${str(data.section)}/${str(data.slug)}`, target: kbTarget(data) };
 
     // ── tasks plane ──
-    case 'task.created':    return { category: 'tasks', primitive: 'task_create', summary: clipText(data.title) || id() };
-    case 'task.claimed':    return { category: 'tasks', primitive: 'task_claim', summary: id() };
-    case 'task.updated':    return { category: 'tasks', primitive: 'task_update', summary: `${id()} → ${str(data.status)}` };
-    case 'task.completed':  return { category: 'tasks', primitive: 'task_update', summary: `${id()} → ${str(data.status) || 'done'}`, effect: 'allow' };
-    case 'task.dispatched': return { category: 'tasks', primitive: 'task_dispatch', summary: id() };
-    case 'task.deleted':    return { category: 'tasks', primitive: 'task_delete', summary: id() };
+    case 'task.created':    return { category: 'tasks', primitive: 'task_create', summary: clipText(data.title) || id(), target: { kind: 'task', id: id() } };
+    case 'task.claimed':    return { category: 'tasks', primitive: 'task_claim', summary: id(), target: { kind: 'task', id: id() } };
+    case 'task.updated':    return { category: 'tasks', primitive: 'task_update', summary: `${id()} → ${str(data.status)}`, target: { kind: 'task', id: id() } };
+    case 'task.completed':  return { category: 'tasks', primitive: 'task_update', summary: `${id()} → ${str(data.status) || 'done'}`, effect: 'allow', target: { kind: 'task', id: id() } };
+    case 'task.dispatched': return { category: 'tasks', primitive: 'task_dispatch', summary: id(), target: { kind: 'task', id: id() } };
+    case 'task.deleted':    return { category: 'tasks', primitive: 'task_delete', summary: id(), target: { kind: 'task', id: id() } };
+
+    // ── secrets vault (shared credential handoff) ──
+    case 'secret.put':        return { category: 'secrets', primitive: 'secret_put', summary: str(data.key), target: { kind: 'secret', id: str(data.key) } };
+    case 'secret.get':        return { category: 'secrets', primitive: 'secret_get', summary: str(data.key), effect: data.found === false ? 'error' : 'allow', target: { kind: 'secret', id: str(data.key) } };
+    case 'secret.get.denied': return { category: 'secrets', primitive: 'secret_get', summary: `${str(data.key)} — ${clipText(data.reason, 90)}`.replace(/ — $/, ''), effect: 'deny' };
+    case 'secret.requested':  return { category: 'secrets', primitive: 'secret_request', summary: `${str(data.key)}${data.mode ? ` · ${str(data.mode)}` : ''}`, target: { kind: 'secret-request', id: str(data.key) } };
+
+    // ── skills (procedural memory — propose/request, an owner publishes) ──
+    case 'skill.proposed':  return { category: 'skills', primitive: 'skill_propose', summary: str(data.name), target: { kind: 'skill-proposal', id: str(data.name) } };
+    case 'skill.requested': return { category: 'skills', primitive: 'skill_request', summary: str(data.name) || str(data.skill) };
+
+    // ── policy (propose-don't-apply — an owner approves the tightening) ──
+    case 'policy.proposed': return { category: 'policy', primitive: 'policy_propose', summary: `${str(data.kind)} · ${str(data.capability)}`.replace(/^ · | · $/g, ''), target: { kind: 'policy-proposal', id: str(data.capability) } };
 
     // ── scheduling (agent-deferred self-runs) ──
     case 'automation.scheduled': return { category: 'scheduling', primitive: 'schedule', summary: `${str(data.agent)} @ ${fmtWhen(data.runAt)}`.trim() };
@@ -130,7 +161,7 @@ export function classifyActivity(type: string, data: Record<string, unknown>): A
     case 'agent.deleted':        return { category: 'agents', primitive: 'agent_delete', summary: str(data.agent) || id() };
 
     // ── approvals the agent triggered (the human resolution is folded away as noise) ──
-    case 'approval.requested':   return { category: 'approval', primitive: 'approval', summary: `${str(data.level)}${data.reason ? ` · ${clipText(data.reason, 90)}` : ''}`.replace(/^ · /, ''), effect: 'approve' };
+    case 'approval.requested':   return { category: 'approval', primitive: 'approval', summary: `${str(data.level)}${data.reason ? ` · ${clipText(data.reason, 90)}` : ''}`.replace(/^ · /, ''), effect: 'approve', target: { kind: 'approval', id: str(data.approvalId) || id() } };
 
     default: break;
   }

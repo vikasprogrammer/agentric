@@ -252,12 +252,18 @@ export interface AuditResp {
 /** One classified primitive-use in a session's activity timeline (from /api/sessions/:id/activity). */
 export interface ActivityEvent {
   ts: number
-  category: 'action' | 'operator' | 'memory' | 'knowledge' | 'tasks' | 'scheduling' | 'agents' | 'approval' | 'other'
+  category: 'action' | 'operator' | 'memory' | 'knowledge' | 'tasks' | 'scheduling' | 'agents' | 'approval' | 'secrets' | 'skills' | 'policy' | 'other'
   /** OS tool name (remember/ask/task_create…) or, for a governed effect, the capability id. */
   primitive: string
   summary: string
   /** For governed actions/approvals: how the gate classified it, or the outcome. */
   effect?: 'allow' | 'approve' | 'deny' | 'error'
+  /** The live object this entry opened, if any (a task, KB page, secret, proposal card). */
+  target?: { kind: string; id: string }
+  /** The object's CURRENT status, resolved from its live store — 'doing', 'done', 'pending', 'rev 4'… */
+  status?: string
+  /** How to tint the status chip. */
+  statusTone?: 'open' | 'done' | 'blocked' | 'denied' | 'muted'
 }
 export interface ActivitySummaryRow {
   primitive: string
