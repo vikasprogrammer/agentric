@@ -150,9 +150,9 @@ const originMeta = (kind?: Session['sourceKind']) => ORIGIN_META[kind ?? 'system
 
 /** Sortable columns of the sessions list. `updated` is the default (most recently active first); it's
  *  the omitted value in the URL, so a clean `#/sessions` shows the freshest sessions on top. */
-type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status' | 'updated'
+type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status' | 'updated' | 'cost'
 type SortDir = 'asc' | 'desc'
-const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status', 'updated']
+const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status', 'updated', 'cost']
 const DEFAULT_SORT_KEY: SessionSortKey = 'updated'
 /** Status ordering for the Status-column sort: live → done → stopped → crashed. */
 const statusRank = (s: Session): number =>
@@ -167,7 +167,17 @@ const compareSessions = (a: Session, b: Session, key: SessionSortKey): number =>
     case 'startedBy': return (a.spawnedByLabel ?? '').localeCompare(b.spawnedByLabel ?? '')
     case 'status': return statusRank(a) - statusRank(b)
     case 'updated': return a.updatedAt - b.updatedAt
+    case 'cost': return (a.costUsd ?? -1) - (b.costUsd ?? -1)
   }
+}
+
+/** Format a session's USD cost for the list — a compact `$0.42` / `$12.30`, sub-cent as `<$0.01`, and a
+ *  dim placeholder while it's still live or not yet computed. */
+const formatCost = (usd?: number): string => {
+  if (usd == null) return '—'
+  if (usd === 0) return '$0'
+  if (usd < 0.01) return '<$0.01'
+  return usd < 100 ? `$${usd.toFixed(2)}` : `$${Math.round(usd).toLocaleString()}`
 }
 
 /** The sessions-list view state (filters + sort), held in the URL hash query so it survives a
@@ -2845,6 +2855,7 @@ function SessionsPage({
               {sortHead('startedBy', 'Started by', 'w-40 shrink-0')}
               <span className="w-24 shrink-0">Mode</span>
               {sortHead('updated', 'Updated', 'w-20 shrink-0')}
+              {sortHead('cost', 'Cost', 'hidden w-16 shrink-0 justify-end lg:flex')}
               {sortHead('status', 'Status', 'w-16 shrink-0')}
             </div>
             <span className="w-32 shrink-0" aria-hidden />
@@ -2867,6 +2878,7 @@ function SessionsPage({
                 <OriginBadge s={s} members={members} className="w-40 shrink-0" />
                 <span className="flex w-24 shrink-0 items-center"><ModeBadge headless={s.headless} /></span>
                 <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
+                <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.tokens ? `${(s.tokens.input + s.tokens.output + s.tokens.cacheRead + s.tokens.cacheWrite).toLocaleString()} tokens (in ${s.tokens.input.toLocaleString()} · out ${s.tokens.output.toLocaleString()} · cache-read ${s.tokens.cacheRead.toLocaleString()} · cache-write ${s.tokens.cacheWrite.toLocaleString()})` : 'cost not yet computed'}>{formatCost(s.costUsd)}</span>
                 <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
               </button>
               {/* Human verdict — finished runs only; stays visible once rated, faint-until-hover otherwise. */}
@@ -7709,6 +7721,7 @@ function AutomationRuns({ id, onOpen }: { id: string; onOpen: (tmux: string, tit
               <Clock className="h-3 w-3 shrink-0 text-muted-foreground/50" />
               <span className="shrink-0 text-muted-foreground">{new Date(s.createdAt).toLocaleString()}</span>
               {s.spawnedByLabel && <span className="ml-auto min-w-0 truncate text-muted-foreground/60">{s.spawnedByLabel}</span>}
+              {s.costUsd != null && <span className={`${s.spawnedByLabel ? 'pl-2' : 'ml-auto'} shrink-0 tabular-nums text-muted-foreground`} title="run cost">{formatCost(s.costUsd)}</span>}
             </button>
           ))}
         </div>

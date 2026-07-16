@@ -230,6 +230,11 @@ export interface Session {
   ratedBy?: string
   ratedByLabel?: string
   ratedAt?: number
+  /** What the run cost in USD, from its transcript's token usage × model rates. Undefined while the run
+   *  is still live or before it's been computed. */
+  costUsd?: number
+  /** Token breakdown behind `costUsd` (uncached input / output / cache-read / cache-write). */
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 }
 export interface AuditEvent {
   id: number

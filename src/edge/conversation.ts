@@ -39,7 +39,7 @@ export interface Conversation {
 const claudeConfigDir = (): string => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
 /** Locate `<claudeSessionId>.jsonl` under any project dir. Filename is unique, so cwd escaping is irrelevant. */
-function findTranscript(claudeSessionId: string): string | undefined {
+export function findTranscript(claudeSessionId: string): string | undefined {
   const projects = path.join(claudeConfigDir(), 'projects');
   let dirs: string[];
   try {

@@ -763,6 +763,17 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'claimed_by', 'TEXT');    // member id who took it over (NULL = unclaimed)
   addColumn(db, 'term_sessions', 'claimed_at', 'INTEGER'); // when (epoch ms)
 
+  // What the run cost, computed from its claude transcript's per-request token `usage` × model rates
+  // (src/edge/session-cost.ts). Filled once the session reaches a terminal state — lazily on first read
+  // in listSessions, then persisted — so both the sessions list and automation-run history can surface
+  // spend without re-parsing the transcript each poll. NULL = not computed yet (still running, or no
+  // transcript). The token columns are the breakdown behind cost_usd.
+  addColumn(db, 'term_sessions', 'cost_usd', 'REAL');            // total USD (NULL = unknown/not yet computed)
+  addColumn(db, 'term_sessions', 'input_tokens', 'INTEGER');     // uncached input tokens
+  addColumn(db, 'term_sessions', 'output_tokens', 'INTEGER');    // output tokens
+  addColumn(db, 'term_sessions', 'cache_read_tokens', 'INTEGER'); // cache-read input tokens
+  addColumn(db, 'term_sessions', 'cache_write_tokens', 'INTEGER'); // cache-write input tokens
+
   // Profile picture: a small square `data:image/…;base64,…` URL. NULL → the UI shows the member's
   // initial. Members set their own from the Team page; owners/admins may set anyone's.
   addColumn(db, 'members', 'avatar', 'TEXT');

@@ -28,6 +28,7 @@ import { DEFAULT_IMAGE_COST_USD, resolveImageBackend, imageErrorInfo } from './e
 import { VendorError, retryableStatus, timedFetch, withRetry, vendorErrorInfo } from './edge/vendor-fetch';
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
 import { understandMedia } from './edge/media-understand';
+import { readSessionCost } from './edge/session-cost';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
@@ -228,6 +229,12 @@ export interface Session {
   ratedBy?: string;
   ratedByLabel?: string;
   ratedAt?: number;
+  /** What the run cost in USD, from its transcript's per-request token usage × model rates. Undefined
+   *  while the run is live or before it's been computed (transcript not yet parsed / not written). */
+  costUsd?: number;
+  /** Token breakdown behind `costUsd` (uncached input / output / cache-read / cache-write). Undefined
+   *  until cost is computed. */
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
 }
 
 export interface FeedMessage {
@@ -291,6 +298,11 @@ interface SessionRow {
   rating: string | null;
   rated_by: string | null;
   rated_at: number | null;
+  cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
 }
 interface MessageRow {
   id: string;
@@ -491,6 +503,10 @@ export class TerminalManager {
       }
     }
     const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+    // Cost is derived from the transcript once a run is terminal, then cached on the row. Backfill any
+    // still-uncosted terminal rows here (bounded per call so a first load with a large history doesn't
+    // stall parsing hundreds of transcripts — newest first, the rest catch up over subsequent polls).
+    this.backfillCosts(visible);
     const resumable = this.resumableIds();
     // One query resolves the whole list's blocked-on-human state (a pending ask/approval), instead of a
     // per-row check — so the console gets an authoritative `blocked` without re-deriving it from the feed.
@@ -506,6 +522,40 @@ export class TerminalManager {
       runAsLabel: this.runAsLabel(r.run_as),
       ratedByLabel: this.runAsLabel(r.rated_by),
     }));
+  }
+
+  /**
+   * Compute + persist USD cost for terminal rows that don't have it yet. A run's transcript is complete
+   * once it reaches a terminal state (done/stopped/crashed), so we parse it once, store the result on the
+   * row, and never re-read. Bounded per call (`MAX_COST_BACKFILL`) so the first list after a deploy with a
+   * long history amortizes the parsing across polls instead of blocking on all of it at once. Rows are
+   * newest-first (listSessions' ORDER BY), so recent sessions get costed first. Mutates the passed rows so
+   * the same listSessions response already carries the cost it just computed.
+   */
+  private backfillCosts(rows: SessionRow[]): void {
+    let budget = 20; // MAX_COST_BACKFILL — cap transcript parses per list call
+    for (const r of rows) {
+      if (budget <= 0) break;
+      if (r.cost_usd != null) continue;                 // already costed
+      if (r.status === 'running') continue;             // transcript still growing — cost at end
+      if (!r.claude_session_id) continue;               // non-claude run has no transcript to price
+      budget--;
+      let cost;
+      try {
+        cost = readSessionCost(r.claude_session_id);
+      } catch {
+        continue;                                       // transcript unreadable — retry on a later poll
+      }
+      if (!cost) continue;                              // no transcript yet
+      this.db
+        .prepare('UPDATE term_sessions SET cost_usd = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ? WHERE id = ?')
+        .run(cost.costUsd, cost.inputTokens, cost.outputTokens, cost.cacheReadTokens, cost.cacheWriteTokens, r.id);
+      r.cost_usd = cost.costUsd;
+      r.input_tokens = cost.inputTokens;
+      r.output_tokens = cost.outputTokens;
+      r.cache_read_tokens = cost.cacheReadTokens;
+      r.cache_write_tokens = cost.cacheWriteTokens;
+    }
   }
 
   /**
@@ -4025,7 +4075,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.218.0] — 2026-07-16
+### Added
+- **Per-session cost tracking, surfaced on the sessions list and automation runs.** Every claude-code
+  session now records what it cost — computed from its transcript's per-request token `usage`
+  (input / output / cache-read / cache-write, each cache tier priced at its own 5-min vs 1-hour rate)
+  × per-model sticker rates (`src/edge/session-cost.ts`). Cost is derived once a run reaches a terminal
+  state, then cached on the `term_sessions` row (new `cost_usd` + token-breakdown columns) — filled
+  lazily on first read in `listSessions` (bounded per call so a long history doesn't stall the first
+  load) and persisted, so neither the sessions list nor automation-run history re-parses the transcript
+  each poll. The console shows a sortable **Cost** column on the sessions list (with a token-breakdown
+  tooltip) and the per-run cost in an automation's run history.
+
 ## [0.217.0] — 2026-07-16
 ### Changed
 - **Agents are now always aware of the Goals & Tasks primitives**, not just when active goals happen to
