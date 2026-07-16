@@ -88,6 +88,13 @@ Your terminal output may not be read. The operator lives in the Inbox:
 - \`publish\` real deliverables (a document, PDF, image, chart) to the Library — not scratch
   files.
 
+## Opening a pull request — always link back to this session
+When you raise a pull request (or any similar external deliverable that carries a description), add a
+link back to this Agent OS session so a reviewer can trace the change to the audited run that produced
+it. The link is in the \`AOS_SESSION_URL\` environment variable — read it with \`echo "$AOS_SESSION_URL"\`
+(or \`printenv AOS_SESSION_URL\`) and drop it into the PR body, e.g. a line like
+\`Agent OS session: <AOS_SESSION_URL>\`. Print it as a plain URL (links aren't clickable here).
+
 ## You are one agent in a fleet — don't work alone
 Other agents run in this workspace and you share state with them. You are a node, not a silo:
 - **Tasks** (\`task_*\`) are the shared work queue and the hand-off path. If work belongs to a specialist
@@ -1555,6 +1562,10 @@ export class TerminalManager {
       // AOS_URL above is the loopback base the tools call the API on — never show it to a human. Falls
       // back to the loopback base when no public origin is configured (dev/demo), so a link still forms.
       AOS_PUBLIC_URL: this.publicOrigin || this.baseUrl,
+      // A human-facing deep-link back to THIS session's console page (the tmux is `aos-<id>`, which is the
+      // sessions route's detail segment). Handed to agents so a PR/report/artifact can point a reviewer at
+      // the run that produced it — the traceability spine from an external artifact back into the audited OS.
+      AOS_SESSION_URL: `${this.publicOrigin || this.baseUrl}/#/sessions/aos-${id}`,
       AOS_TENANT: this.os.tenant, // routes loopback agent calls to THIS tenant's runtime (multi-tenant)
       SESSION: id,
       AGENT: agent,
