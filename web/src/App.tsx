@@ -1844,7 +1844,7 @@ function SessionSummaryModal({ sessionId, open, onClose }: { sessionId: string; 
   useEffect(() => { if (open) void load() }, [open, sessionId]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-2xl">
         <DialogHeader><DialogTitle className="flex items-center gap-2"><Sparkles className="h-4 w-4" /> Session summary</DialogTitle></DialogHeader>
         {loading ? (
           <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground"><RefreshCw className="h-4 w-4 animate-spin" /> Reading the transcript and summarizing…</div>
