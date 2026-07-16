@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.217.0] — 2026-07-16
+### Changed
+- **Agents are now always aware of the Goals & Tasks primitives**, not just when active goals happen to
+  be injected. The always-present operating notes gain a proper mental model — **Goal → Task → this
+  session** — with the full verb set: `task_list` to check work isn't already filed before starting (not
+  just for pulling shared work), `task_create` reframed from delegation-only to also parking/​tracking
+  your own multi-step work, `task_update` to close the loop, and a dedicated **Goals** bullet
+  (`goal_list`/`goal_get` to see direction, link work with `task_create({ goalId })`, `goal_propose` a
+  new direction for a human to approve). Previously the only mention of the goal verbs lived inside the
+  dynamic active-goals injection, so an agent with goal-injection off or an empty goal list had no idea
+  goals existed as a primitive. The live active-goals section is slimmed to pure data + a pointer (its
+  mechanics now live in the always-present note), so total prompt size stays roughly flat.
+
 ## [0.216.0] — 2026-07-16
 ### Changed
 - **Stripe-style prefixed entity ids across the board.** Every referenceable persisted entity now mints a

@@ -98,10 +98,18 @@ it. The link is in the \`AOS_SESSION_URL\` environment variable — read it with
 
 ## You are one agent in a fleet — don't work alone
 Other agents run in this workspace and you share state with them. You are a node, not a silo:
-- **Tasks** (\`task_*\`) are the shared work queue and the hand-off path. If work belongs to a specialist
-  agent or is too big for this run, \`task_create\` and assign it — an agent-assigned task spawns that
-  agent as a governed run under the same accountable human. Prefer delegating specialised work over
-  doing it poorly yourself; \`task_list\` / \`task_claim\` to pull shared work.
+- **Tasks** (\`task_*\`) are the shared, durable work queue — the unit of work between "something asked"
+  and "a session ran". Before non-trivial work, \`task_list\` to check it isn't already filed or in
+  flight (don't duplicate), and \`task_claim\` to take one. \`task_create\` to file work: hand it to a
+  specialist (\`assignee: "agent:<id>", autoDispatch: true\` spawns that agent as a governed run under the
+  same accountable human), park work too big for this run, or make your own multi-step work trackable —
+  then \`task_update\` to close the loop (\`done\`, or \`blocked\` with why). Prefer delegating specialised
+  work over doing it poorly yourself; an unassigned task just waits for someone to pick it up.
+- **Goals** (\`goal_*\`) are the strategic layer your work ladders up to — **Goal → Task → this session**.
+  Goals are human-owned *direction*: \`goal_list\` / \`goal_get\` to see what the fleet is working toward,
+  steer your work to advance one, and link tasks to it with \`task_create({ goalId })\` so progress rolls
+  up. You can't activate or edit a goal, but if you spot a direction worth making explicit, \`goal_propose\`
+  a draft for a human to approve.
 - **Knowledge Base** (\`kb_*\`) is the fleet's shared, living wiki. \`kb_search\` before assuming a fact
   isn't already written down; \`kb_write\` durable facts, runbooks, and conventions that help *other*
   agents and humans. (Memory is for facts only *you* reuse; the KB is for the whole fleet.)
@@ -1794,10 +1802,8 @@ export class TerminalManager {
       if (active.length) {
         goalsSection =
           '# Company goals — the direction your work serves\n\n' +
-          'These are the active goals the whole fleet is working toward. Keep them in mind when you pick ' +
-          'up or file work: prefer tasks that advance a goal, and link work to one where it fits ' +
-          '(`goal_list` shows them live). You can `goal_propose` a new goal for a human to approve — you ' +
-          'cannot activate or edit one yourself.\n\n' +
+          'The active goals the whole fleet is working toward right now (see the Goals & Tasks note above ' +
+          'for how to link work and propose new ones). Prefer work that advances one:\n\n' +
           active
             .map((g) => `- ${g.title}${g.target ? ` — target: ${g.target}` : ''}${g.body ? `\n  ${g.body.replace(/\s+/g, ' ').trim().slice(0, 200)}` : ''}`)
             .join('\n');
