@@ -788,6 +788,16 @@ function migrate(db: Db): void {
   // Generated-media cost: the USD a generated artifact (image/video) cost to produce, so the gallery
   // can show what each deliverable spent. NULL for published (non-generated) artifacts. Nullable REAL.
   addColumn(db, 'artifacts', 'cost_usd', 'REAL');
+
+  // Sharing an artifact beyond its producer. `shared_team` (0/1) makes it visible to EVERY member of
+  // the tenant in the Library (on top of the provenance rule); `share_token`, when set, mints a public,
+  // login-free link — `/shared/<token>`, served before the member gate — that anyone with the URL can
+  // view/download. Both default off: an artifact stays scoped to its producer (canViewSpawn) until an
+  // owner/admin/producer explicitly shares it. The unique partial index makes the token an O(1) lookup
+  // key for the public route (and guarantees no two artifacts collide on a token).
+  addColumn(db, 'artifacts', 'shared_team', 'INTEGER NOT NULL DEFAULT 0');
+  addColumn(db, 'artifacts', 'share_token', 'TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_artifacts_share_token ON artifacts(share_token) WHERE share_token IS NOT NULL');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

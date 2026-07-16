@@ -11,7 +11,7 @@
  * small generated website — `kind:'site'`) is just MORE files in the same dir, served through the
  * same raw route via its `?file=` seam. No migration, no new storage shape.
  */
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Db } from './db';
@@ -31,6 +31,10 @@ export interface Artifact {
   bytes: number;
   /** USD this artifact cost to generate (image/video); undefined for published (non-generated) files. */
   costUsd?: number;
+  /** Shared with the whole tenant — every member sees it in the Library, on top of the provenance rule. */
+  sharedTeam: boolean;
+  /** When set, the artifact has a public login-free link (`/shared/<token>`). undefined = not public. */
+  shareToken?: string;
   createdAt: number;
 }
 
@@ -48,6 +52,8 @@ interface ArtifactRow {
   mime: string;
   bytes: number;
   cost_usd: number | null;
+  shared_team: number;
+  share_token: string | null;
   created_at: number;
 }
 
@@ -108,6 +114,8 @@ export class ArtifactStore {
       mime: mimeOf(filename),
       bytes: st.size,
       cost_usd: null, // published files aren't generated → no cost
+      shared_team: 0, // published private to its producer until explicitly shared
+      share_token: null,
       created_at: Date.now(),
     };
     this.insertRow(row);
@@ -118,12 +126,13 @@ export class ArtifactStore {
   private insertRow(row: ArtifactRow): void {
     this.db
       .prepare(
-        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, cost_usd, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO artifacts (id, session_id, agent, source, kind, title, description, folder, filename, rel_path, mime, bytes, cost_usd, shared_team, share_token, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         row.id, row.session_id, row.agent, row.source, row.kind, row.title, row.description,
-        row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.cost_usd, row.created_at,
+        row.folder, row.filename, row.rel_path, row.mime, row.bytes, row.cost_usd,
+        row.shared_team, row.share_token, row.created_at,
       );
   }
 
@@ -166,6 +175,8 @@ export class ArtifactStore {
       mime: mimeOf(filename),
       bytes: input.bytes.length,
       cost_usd: typeof input.costUsd === 'number' ? input.costUsd : null,
+      shared_team: 0,
+      share_token: null,
       created_at: Date.now(),
     };
     this.insertRow(row);
@@ -215,6 +226,33 @@ export class ArtifactStore {
     return { absPath: abs, mime: mimeOf(abs), filename: path.basename(abs) };
   }
 
+  /** Share (or unshare) an artifact with the whole tenant — every member then sees it in the Library. */
+  setTeamShared(id: string, shared: boolean): boolean {
+    const info = this.db.prepare('UPDATE artifacts SET shared_team = ? WHERE id = ?').run(shared ? 1 : 0, id);
+    return info.changes > 0;
+  }
+
+  /**
+   * Toggle the public login-free link. Turning it ON mints a crypto-random token (reusing the existing
+   * one if already public, so the URL is stable across re-toggles); OFF clears it (revokes the link).
+   * Returns the resulting token (null when off / artifact missing). The token is the sole credential the
+   * public `/shared/<token>` route trusts, so it must be unguessable — `randomBytes`, not `Math.random`.
+   */
+  setPublic(id: string, on: boolean): string | null {
+    const a = this.get(id);
+    if (!a) return null;
+    const token = on ? a.shareToken ?? randomBytes(18).toString('base64url') : null;
+    this.db.prepare('UPDATE artifacts SET share_token = ? WHERE id = ?').run(token, id);
+    return token;
+  }
+
+  /** Resolve an artifact by its public share token (the `/shared/<token>` lookup). undefined if none. */
+  getByToken(token: string): Artifact | undefined {
+    if (!token) return undefined;
+    const r = this.db.prepare('SELECT * FROM artifacts WHERE share_token = ?').get<ArtifactRow>(token);
+    return r ? toArtifact(r) : undefined;
+  }
+
   /** Move an artifact into a folder (metadata only — the on-disk id-dir never moves). '' = root. */
   move(id: string, folder: string): boolean {
     const info = this.db.prepare('UPDATE artifacts SET folder = ? WHERE id = ?').run(normFolder(folder), id);
@@ -246,6 +284,8 @@ function toArtifact(r: ArtifactRow): Artifact {
     mime: r.mime,
     bytes: r.bytes,
     costUsd: r.cost_usd ?? undefined,
+    sharedTeam: r.shared_team === 1,
+    shareToken: r.share_token ?? undefined,
     createdAt: r.created_at,
   };
 }
