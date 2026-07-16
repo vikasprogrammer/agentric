@@ -63,7 +63,9 @@ interface ArtifactRow {
   created_at: number;
 }
 
-export type PublishResult = { ok: true; artifact: Artifact } | { ok: false; error: string };
+export type PublishResult =
+  | { ok: true; artifact: Artifact; updated?: boolean }
+  | { ok: false; error: string };
 
 export class ArtifactStore {
   constructor(private readonly db: Db, private readonly dir?: string) {}
@@ -100,8 +102,33 @@ export class ArtifactStore {
     }
     if (!st.isFile()) return { ok: false, error: 'not a file' };
 
-    const id = randomUUID().slice(0, 8);
     const filename = path.basename(src);
+    const folder = normFolder(input.folder);
+
+    // Upsert key: one deliverable per (agent, folder, filename). Re-publishing the SAME file, from the
+    // same agent, into the same folder OVERWRITES that artifact in place rather than spawning a duplicate
+    // gallery row — the id (and hence every Library link + public `/shared/<token>`) is preserved, and its
+    // team-share/public flags survive. Only the bytes + descriptive metadata + provenance of the latest
+    // publish win; `created_at` is bumped so the refreshed deliverable surfaces at the top of the
+    // newest-first gallery. (Generated `ingest` artifacts and human `writeContent` edits are unaffected.)
+    const existing = this.findByKey(input.agent, folder, filename);
+    if (existing) {
+      const abs = path.join(this.dir, existing.id, filename);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.copyFileSync(src, abs);
+      const createdAt = Date.now();
+      this.db
+        .prepare(
+          `UPDATE artifacts SET session_id = ?, source = ?, kind = ?, title = ?, description = ?, mime = ?, bytes = ?, created_at = ? WHERE id = ?`,
+        )
+        .run(
+          input.sessionId, input.source ?? null, input.kind ?? 'file', input.title,
+          input.description ?? null, mimeOf(filename), st.size, createdAt, existing.id,
+        );
+      return { ok: true, updated: true, artifact: this.get(existing.id)! };
+    }
+
+    const id = randomUUID().slice(0, 8);
     const destDir = path.join(this.dir, id);
     fs.mkdirSync(destDir, { recursive: true });
     fs.copyFileSync(src, path.join(destDir, filename));
@@ -114,7 +141,7 @@ export class ArtifactStore {
       kind: input.kind ?? 'file',
       title: input.title,
       description: input.description ?? null,
-      folder: normFolder(input.folder),
+      folder,
       filename,
       rel_path: path.join(id, filename),
       mime: mimeOf(filename),
@@ -126,7 +153,21 @@ export class ArtifactStore {
       created_at: Date.now(),
     };
     this.insertRow(row);
-    return { ok: true, artifact: toArtifact(row) };
+    return { ok: true, updated: false, artifact: toArtifact(row) };
+  }
+
+  /**
+   * The newest artifact matching the publish upsert key `(agent, folder, filename)`, if any. Folder is
+   * the already-normalized value stored on the row. Newest-first + LIMIT 1 so that, even if pre-upsert
+   * duplicates exist, a re-publish converges by refreshing the most recent one.
+   */
+  private findByKey(agent: string, folder: string, filename: string): Artifact | undefined {
+    const r = this.db
+      .prepare(
+        'SELECT * FROM artifacts WHERE agent = ? AND folder = ? AND filename = ? ORDER BY created_at DESC LIMIT 1',
+      )
+      .get<ArtifactRow>(agent, folder, filename);
+    return r ? toArtifact(r) : undefined;
   }
 
   /** Single INSERT both publish + ingest share, so the column list lives in one place. */

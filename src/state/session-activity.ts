@@ -93,6 +93,7 @@ export function classifyActivity(type: string, data: Record<string, unknown>): A
     case 'question.asked':     return { category: 'operator', primitive: 'ask', summary: clipText(data.prompt) };
     case 'session.reported':   return { category: 'operator', primitive: 'report', summary: `${str(data.outcome) || 'done'} — ${clipText(data.summary, 110)}`.replace(/ — $/, '') };
     case 'artifact.published': return { category: 'operator', primitive: 'publish', summary: clipText(data.title) || str(data.filename) };
+    case 'artifact.updated':   return { category: 'operator', primitive: 'publish', summary: `updated — ${clipText(data.title) || str(data.filename)}` };
     case 'artifact.deleted':   return { category: 'operator', primitive: 'artifact_delete', summary: clipText(data.title) || id() };
 
     // ── memory plane ──

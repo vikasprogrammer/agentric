@@ -2953,7 +2953,7 @@ export class TerminalManager {
    * it with full provenance (the session's spawned_by → `source`), posts an 'artifact' inbox card,
    * and audits it. The file path is resolved STRICTLY under the agent's own folder by the store.
    */
-  publishArtifact(sessionId: string, input: { path: string; title?: string; description?: string; folder?: string }): { ok: boolean; id?: string; error?: string } {
+  publishArtifact(sessionId: string, input: { path: string; title?: string; description?: string; folder?: string }): { ok: boolean; id?: string; updated?: boolean; error?: string } {
     const agent = this.sessionAgent(sessionId);
     if (!agent) return { ok: false, error: 'unknown session' };
     const manifest = this.os.agents.get(agent);
@@ -2969,14 +2969,15 @@ export class TerminalManager {
     });
     if (!r.ok) return { ok: false, error: r.error };
     const a = r.artifact;
+    const updated = r.updated === true; // a re-publish that overwrote an existing (agent, folder, filename)
     // The card stashes the artifact id + meta in `args` so the inbox can deep-link into the gallery.
     this.addMessage({
-      type: 'artifact', sessionId, agent, title: `Artifact — ${agent}`, body: a.title, status: 'open',
-      source, args: { artifactId: a.id, filename: a.filename, mime: a.mime, kind: a.kind },
+      type: 'artifact', sessionId, agent, title: `Artifact ${updated ? 'updated' : 'published'} — ${agent}`, body: a.title, status: 'open',
+      source, args: { artifactId: a.id, filename: a.filename, mime: a.mime, kind: a.kind, updated },
       audienceKind: 'sessionOwner', audienceId: sessionId,
     });
-    this.audit(sessionId, agent, 'artifact.published', { id: a.id, filename: a.filename, bytes: a.bytes, mime: a.mime, title: a.title, folder: a.folder });
-    return { ok: true, id: a.id };
+    this.audit(sessionId, agent, updated ? 'artifact.updated' : 'artifact.published', { id: a.id, filename: a.filename, bytes: a.bytes, mime: a.mime, title: a.title, folder: a.folder });
+    return { ok: true, id: a.id, updated };
   }
 
   /**
@@ -3917,6 +3918,7 @@ const EPISODE_LABELS: Record<string, string> = {
   'capability.invoked': 'tool actions',
   'memory.stored': 'facts remembered',
   'artifact.published': 'artifacts published',
+  'artifact.updated': 'artifacts updated',
   'question.asked': 'questions to a human',
   'approval.requested': 'approvals requested',
 };

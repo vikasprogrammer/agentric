@@ -519,7 +519,10 @@ const TOOLS = [
       "it — a PDF, a Markdown document, an image, a chart. Pass `path` (relative to your working " +
       'folder, e.g. "report.pdf"), a short `title`, and an optional one-line `description`. The file is ' +
       'snapshotted on publish, so you can keep editing your working copy freely. An inbox notification ' +
-      'is posted automatically. Use this for real outputs the human should see — NOT for scratch files.',
+      'is posted automatically. Use this for real outputs the human should see — NOT for scratch files. ' +
+      'Re-publishing the SAME filename into the SAME folder UPDATES that deliverable in place (its id and ' +
+      'shareable link are preserved) instead of creating a duplicate — so you can refresh a living ' +
+      'deliverable by just publishing it again.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1749,11 +1752,14 @@ async function publish(args: Record<string, unknown>): Promise<string> {
       folder: args.folder ? String(args.folder) : undefined,
     }),
   });
-  const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
+  const d = (await res.json()) as { ok?: boolean; id?: string; updated?: boolean; error?: string };
   const where = args.folder ? ` under "${String(args.folder)}"` : '';
-  return d.ok
-    ? `Published "${filePath}" to the Library${where} (id ${d.id}). The operator has been notified.\nView it: ${consoleLink('artifacts', d.id)}`
-    : `Could not publish: ${d.error ?? 'unknown error'}`;
+  if (!d.ok) return `Could not publish: ${d.error ?? 'unknown error'}`;
+  // Re-publishing the same file (same folder) UPDATES that deliverable in place — same id, same link —
+  // rather than adding a duplicate. So agents can safely re-run publish to refresh a living deliverable.
+  return d.updated
+    ? `Updated the existing Library deliverable "${filePath}"${where} in place (id ${d.id}) — its link is unchanged. The operator has been notified.\nView it: ${consoleLink('artifacts', d.id)}`
+    : `Published "${filePath}" to the Library${where} (id ${d.id}). The operator has been notified.\nView it: ${consoleLink('artifacts', d.id)}`;
 }
 
 function sleep(ms: number): Promise<void> {

@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.215.0] — 2026-07-16
+### Changed
+- **Re-publishing a deliverable now updates it in place instead of creating a duplicate.** `publish` is
+  now an upsert keyed on `(agent, folder, filename)`: when an agent publishes the same file, from the
+  same folder, again, the existing artifact is overwritten — its id (and hence every Library deep-link
+  and public `/shared/<token>`), plus its team-share/public flags, are preserved; only the bytes,
+  title/description, provenance, and `created_at` (bumped so the refresh surfaces at the top) are
+  refreshed. Previously every `publish` minted a fresh id + on-disk dir + row + inbox card, so a living
+  deliverable accreted duplicate gallery entries. A different agent, folder, or filename still creates a
+  new artifact. New event `artifact.updated` (vs `artifact.published`) drives the audit trail, the inbox
+  card title, and the session activity summary; the `publish` tool now tells the agent it updated in
+  place, and its schema documents the refresh behaviour. `ArtifactStore.publish` returns `updated`.
+  (`ArtifactStore.ingest` generated artifacts and the human `writeContent` edit path are unchanged.)
+
 ## [0.214.1] — 2026-07-16
 ### Fixed
 - **Closing a session tab no longer jumps to a teammate's session.** When you closed the open tab (or
