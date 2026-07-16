@@ -2783,6 +2783,9 @@ function SessionsPage({
         </div>
         <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity}
           ops={{ members, me, onOpen, onStop, onDelete, onTransfer, onActivity: setInspect }} />
+        {/* Activity side panel — mounted here too so the Operations→Activity shortcut works from the
+            terminal-tabs view, not just the list view (this branch early-returns before the list's copy). */}
+        {inspect && <SessionActivity session={inspect} onClose={() => setInspect(null)} />}
       </div>
     )
   }

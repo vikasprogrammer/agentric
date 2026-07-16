@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.225.1] — 2026-07-16
+### Fixed
+- **Operations → Activity now works in the terminal-tabs view.** The v0.224.0 Activity shortcut set the
+  panel state via `setInspect`, but `SessionsPage` early-returns the terminal-tabs view before the
+  `{inspect && <SessionActivity>}` render, which lived only in the session-list branch — so opening a
+  session's terminal and choosing Operations → Activity did nothing. Mount the `SessionActivity` panel in
+  the terminal-view branch too, so the shortcut opens the trail from both views.
+
 ## [0.225.0] — 2026-07-16
 ### Fixed
 - **Delegation loop closes itself: the caller is woken when the delegate finishes.** Two gaps meant an
