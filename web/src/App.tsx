@@ -2382,6 +2382,7 @@ type SessionOps = {
   onStop: (id: string) => void
   onDelete: (id: string, tmux: string) => void
   onTransfer: (id: string, toMemberId: string) => void
+  onActivity: (s: Session) => void
 }
 
 /** The per-session "Operations" dropdown pinned top-right of the live terminal, next to Files. One menu
@@ -2393,7 +2394,7 @@ type SessionOps = {
  *  - Stop / Delete — halt or remove the session.
  *  Each item mirrors the gating of its tab-strip/card counterpart. */
 function OperationsMenu({ session, ops, onReload }: { session: Session; ops: SessionOps; onReload: () => void }) {
-  const { members, me, onOpen, onStop, onDelete, onTransfer } = ops
+  const { members, me, onOpen, onStop, onDelete, onTransfer, onActivity } = ops
   const canTransfer = me.role === 'owner' || me.role === 'admin' || session.runAs === me.id
   const transferTargets = canTransfer ? members.filter((m) => m.id !== session.runAs) : []
   return (
@@ -2402,13 +2403,22 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
         render={
           <button
             className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
-            title="session operations — reload, transfer, fork, stop, delete"
+            title="session operations — activity, reload, transfer, fork, stop, delete"
           >
             <Wrench className="h-3.5 w-3.5" /> Operations
           </button>
         }
       />
       <DropdownMenuContent align="end" className="min-w-[15rem]">
+        {/* Activity — open the trail side panel (objects this session opened + their live status). */}
+        <DropdownMenuItem className="gap-2 text-xs" onClick={() => onActivity(session)}>
+          <Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-500" />
+          <span className="flex flex-col">
+            <span>Activity</span>
+            <span className="text-[10px] text-muted-foreground">what this session opened · objects &amp; live status</span>
+          </span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         {session.resumable && (
           <DropdownMenuItem className="gap-2 text-xs" onClick={onReload}>
             <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
@@ -2772,7 +2782,7 @@ function SessionsPage({
           </div>
         </div>
         <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity}
-          ops={{ members, me, onOpen, onStop, onDelete, onTransfer }} />
+          ops={{ members, me, onOpen, onStop, onDelete, onTransfer, onActivity: setInspect }} />
       </div>
     )
   }
