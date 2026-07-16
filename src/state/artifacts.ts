@@ -234,6 +234,25 @@ export class ArtifactStore {
     return { absPath: abs, mime: mimeOf(abs), filename: path.basename(abs) };
   }
 
+  /**
+   * Overwrite a TEXT artifact's entry file in place with new content — human curation of a published
+   * deliverable (e.g. fixing a typo in a Markdown report). Refuses binaries (a write would corrupt them)
+   * and a missing data home. The snapshot's id-dir + filename are unchanged, so every existing link
+   * (Library, public `/shared/<token>`) keeps resolving; only the stored byte size is updated.
+   */
+  writeContent(id: string, content: string): PublishResult {
+    if (!this.dir) return { ok: false, error: 'no data home configured (artifacts disabled)' };
+    const a = this.get(id);
+    if (!a) return { ok: false, error: 'not found' };
+    if (!isTextEditable(a.mime)) return { ok: false, error: 'only text and markdown artifacts are editable' };
+    const abs = containedPath(path.join(this.dir, id), a.filename);
+    if (!abs) return { ok: false, error: 'file not found' };
+    const buf = Buffer.from(content, 'utf8');
+    fs.writeFileSync(abs, buf);
+    this.db.prepare('UPDATE artifacts SET bytes = ? WHERE id = ?').run(buf.length, id);
+    return { ok: true, artifact: { ...a, bytes: buf.length } };
+  }
+
   /** Share (or unshare) an artifact with the whole tenant — every member then sees it in the Library. */
   setTeamShared(id: string, shared: boolean): boolean {
     const info = this.db.prepare('UPDATE artifacts SET shared_team = ? WHERE id = ?').run(shared ? 1 : 0, id);
@@ -356,6 +375,12 @@ export function containedPath(root: string, rel: string): string | null {
     return null;
   }
   return within(real) ? real : null;
+}
+
+/** Whether an artifact's content may be edited in place — text-like mimes only, never a binary (an
+ *  overwrite would corrupt it). HTML counts (it's text); images/PDF/video do not. */
+export function isTextEditable(mime: string): boolean {
+  return mime.startsWith('text/') || mime === 'application/json';
 }
 
 /** Content-type by extension — self-contained so the store has no server dependency. Covers the

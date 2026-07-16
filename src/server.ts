@@ -4481,6 +4481,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.shared', data: { id: a.id, team: updated.sharedTeam, public: !!updated.shareToken } });
     return sendJson(res, 200, { ok: true, artifact: { ...updated, public: !!updated.shareToken, shareUrl: updated.shareToken ? sharedLinkFor(req, updated.shareToken) : undefined } });
   }
+  // Edit a TEXT/markdown deliverable's content in place — human curation of a published artifact. Same
+  // gate as move/delete/share (owner/admin, or the producing member). The store refuses non-text mimes.
+  // Auto-apply + audited (`artifact.edited`); the snapshot id-dir/filename are unchanged so links persist.
+  const artContentMatch = p.match(/^\/api\/artifacts\/([\w-]+)\/content$/);
+  if (method === 'PUT' && artContentMatch) {
+    const a = os.artifacts.get(artContentMatch[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!isAdmin(me) && a.source !== me.id) return sendJson(res, 403, { error: 'forbidden' });
+    const b = await readBody(req);
+    if (typeof b.content !== 'string') return sendJson(res, 400, { error: 'content (string) required' });
+    const r = os.artifacts.writeContent(a.id, b.content);
+    if (!r.ok) return sendJson(res, 400, { error: r.error });
+    os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.edited', data: { id: a.id, filename: a.filename, bytes: r.artifact.bytes, was: a.bytes } });
+    return sendJson(res, 200, { ok: true, artifact: r.artifact });
+  }
 
   // ── policy (the risk ruleset). Read: owner/admin. Edit: OWNER only — it governs what needs
   //    approval, so an admin must not be able to downgrade a red rule to bypass owner sign-off. ──
