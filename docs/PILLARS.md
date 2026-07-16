@@ -108,11 +108,10 @@ governance events.
 - **task (started)** — now carries **provenance** (`source`): manual vs `automation:<id>`.
 - **update** — agent progress notes.
 
-The OS-owned MCP server (`agentos`) carries 22 always-on tools (memory `recall`/`remember`/`revise`/
-`forget`; KB `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`; operator/inbox `ask`/`check_inbox`/
-`report`/`update`/`publish`/`library_list`; `schedule`/`unschedule`; `directory_lookup`; `list_capabilities`/
-`policy_check`) + chat-only `slack_reply`/`discord_reply`, materialised into every claude-code session.
-Canonical matrix: `docs/agent-mcp-tools.md`. Read/unread **and** dismiss are **per-member, server-backed**
+The OS-owned MCP server (`agentos`) carries 57 always-on tools + 11 conditional (chat-reply / egress /
+media, each exposed only when its env flag is set), spanning memory, KB, tasks, goals, the operator/inbox,
+skills, secrets, scheduling, agent self-editing, and app-building — materialised into every claude-code
+session. Canonical, per-tool matrix (routes + stores + governance notes): `docs/agent-mcp-tools.md`. Read/unread **and** dismiss are **per-member, server-backed**
 (a `message_state(message_id, member_id, read_at, dismissed_at)` join keyed to the viewer) — one admin
 dismissing no longer hides a row for everyone, and unread syncs across a member's devices. Plus an
 action-required count badge.
