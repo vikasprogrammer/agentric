@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -3061,11 +3061,43 @@ function ArtifactCard({ a }: { a: ChatArtifactRef }) {
   )
 }
 
+/** A KB page an agent wrote, as an inline tile deep-linking to `#/kb/<section>/<slug>`. */
+function KbCard({ p }: { p: ChatKbRef }) {
+  return (
+    <a href={navHref('kb', `${p.section}/${p.slug}`)} className="group flex max-w-[20rem] items-center gap-2.5 rounded-xl border bg-card px-3 py-2 transition hover:border-primary">
+      <BookText className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium" title={p.title}>{p.title}</span>
+        <span className="block truncate text-[11px] text-muted-foreground">{p.section}/{p.slug}</span>
+      </span>
+      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition group-hover:opacity-100" />
+    </a>
+  )
+}
+
+/** A hosted app an agent built or changed — a tile into the Apps console, plus an "Open" link to the live
+ *  app when it's published (a proposed app isn't routable yet, so it only deep-links for review). */
+function AppCard({ a }: { a: ChatAppRef }) {
+  return (
+    <div className="flex max-w-[20rem] items-center gap-2.5 rounded-xl border bg-card px-3 py-2">
+      <AgentIcon icon={a.icon} className="h-5 w-5 shrink-0 text-muted-foreground" />
+      <a href={navHref('apps', a.id)} className="group min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium group-hover:underline" title={a.name}>{a.name}</span>
+        <span className="block truncate text-[11px] text-muted-foreground">{a.published ? 'Published app' : 'Proposed — awaiting review'}</span>
+      </a>
+      {a.published
+        ? <a href={api.appUrl(a.id)} target="_blank" rel="noreferrer" className="flex shrink-0 items-center gap-1 text-[11px] font-medium text-primary hover:underline"><ExternalLink className="h-3 w-3" /> Open</a>
+        : <Package className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+    </div>
+  )
+}
+
 /** One friendly activity card ("Sent a Slack message" ✓). Terminal detail stays hidden by default. An
- *  artifact-producing activity (publish / image_generate / …) shows its deliverable(s) inline beneath. */
+ *  activity that produced a deliverable (a Library artifact, a KB page, a hosted app) shows it inline beneath. */
 function ActivityCard({ turn }: { turn: Extract<ChatTurn, { kind: 'activity' }> }) {
   const dot =
     turn.status === 'error' ? 'bg-destructive' : turn.status === 'ok' ? 'bg-emerald-500' : 'bg-amber-400 animate-pulse'
+  const hasCards = !!(turn.artifacts?.length || turn.kbPages?.length || turn.apps?.length)
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-2 pl-1 text-[12px] text-muted-foreground">
@@ -3073,9 +3105,11 @@ function ActivityCard({ turn }: { turn: Extract<ChatTurn, { kind: 'activity' }> 
         <span className="font-medium">{turn.label}</span>
         {turn.detail && <span className="truncate font-mono text-[11px] opacity-70" title={turn.detail}>{turn.detail}</span>}
       </div>
-      {turn.artifacts && turn.artifacts.length > 0 && (
+      {hasCards && (
         <div className="flex flex-wrap gap-2 pl-3.5">
-          {turn.artifacts.map((a) => <ArtifactCard key={a.id} a={a} />)}
+          {turn.artifacts?.map((a) => <ArtifactCard key={a.id} a={a} />)}
+          {turn.kbPages?.map((p) => <KbCard key={`${p.section}/${p.slug}`} p={p} />)}
+          {turn.apps?.map((a) => <AppCard key={a.id} a={a} />)}
         </div>
       )}
     </div>

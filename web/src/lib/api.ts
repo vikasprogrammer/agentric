@@ -1061,11 +1061,26 @@ export interface ChatArtifactRef {
   raw: string
 }
 
+/** A viewer-safe KB page preview attached to a chat activity (`kb_write`). Deep-links to #/kb/<section>/<slug>. */
+export interface ChatKbRef {
+  section: string
+  slug: string
+  title: string
+}
+
+/** A viewer-safe hosted-app preview attached to a chat activity (`app_create`/`app_update`). */
+export interface ChatAppRef {
+  id: string
+  name: string
+  icon?: string
+  published: boolean
+}
+
 /** One entry in the non-technical chat timeline (mirrors src/edge/conversation.ts). */
 export type ChatTurn =
   | { kind: 'user'; text: string; ts: number }
   | { kind: 'assistant'; text: string; ts: number }
-  | { kind: 'activity'; tool: string; label: string; detail?: string; status: 'running' | 'ok' | 'error'; artifactIds?: string[]; artifacts?: ChatArtifactRef[]; ts: number }
+  | { kind: 'activity'; tool: string; label: string; detail?: string; status: 'running' | 'ok' | 'error'; artifactIds?: string[]; artifacts?: ChatArtifactRef[]; kbPages?: ChatKbRef[]; apps?: ChatAppRef[]; ts: number }
 export interface ConversationResp {
   agent?: string
   turns: ChatTurn[]

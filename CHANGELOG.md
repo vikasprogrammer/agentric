@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.222.0] — 2026-07-16
+### Added
+- **Chat renders KB pages and hosted apps inline too.** Extends the inline-deliverable cards (v0.220.0)
+  beyond Library artifacts: when an agent writes a Knowledge Base page (`kb_write`) or builds/changes a
+  hosted app (`app_create`/`app_update`) mid-conversation, the Chat window now shows a titled tile for it
+  — the KB tile deep-links to `#/kb/<section>/<slug>`, the app tile to `#/apps/<id>` plus an **Open** link
+  to the live app when it's published. Unlike artifact ids (minted server-side, parsed from the tool
+  result), the KB `section`/`slug` and app `id` come straight from the tool **input**, captured
+  optimistically and dropped if the write comes back an error. The `/api/sessions/:id/conversation` route
+  resolves them into viewer-safe `ChatKbRef`/`ChatAppRef` cards (KB pages and apps are tenant-wide surfaces
+  every member can already browse; an unknown/deleted ref is dropped). Also gave those tools clearer
+  activity labels ("Updated the knowledge base", "Built an app", "Updated an app").
+
 ## [0.221.0] — 2026-07-16
 ### Added
 - **Session activity trail — every object a run opened, with live status.** The per-session activity

@@ -17,7 +17,7 @@ import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
-import { readConversation, type ChatArtifactRef } from './edge/conversation';
+import { readConversation, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { SlackSocket } from './edge/slack-socket';
@@ -2237,28 +2237,47 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
     const claudeId = tm.sessionClaudeId(id);
     const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
-    // Resolve any artifact ids an activity produced (publish / image_generate / …) into viewer-safe
-    // preview cards the chat UI renders inline — dropping ids the viewer may not see or that no longer
-    // exist. The viewer already passed canViewSession, so their own run's deliverables resolve.
+    // Resolve the deliverables an activity produced (a Library artifact, a KB page, a hosted app) into
+    // viewer-safe preview cards the chat UI renders inline — dropping anything the viewer may not see or
+    // that no longer exists. The viewer already passed canViewSession, so their own run's outputs resolve;
+    // KB pages and apps are tenant-wide surfaces every member can already browse.
     for (const t of convo.turns) {
-      if (t.kind !== 'activity' || !t.artifactIds?.length) continue;
-      const refs: ChatArtifactRef[] = [];
-      for (const aid of t.artifactIds) {
-        const a = os.artifacts.get(aid);
-        if (!a) continue;
-        if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) continue;
-        refs.push({
-          id: a.id,
-          title: a.title || a.filename,
-          kind: a.kind,
-          mime: a.mime,
-          filename: a.filename,
-          isImage: a.mime.startsWith('image/'),
-          isVideo: a.mime.startsWith('video/'),
-          raw: `/api/artifacts/${a.id}/raw`,
-        });
+      if (t.kind !== 'activity') continue;
+      if (t.artifactIds?.length) {
+        const refs: ChatArtifactRef[] = [];
+        for (const aid of t.artifactIds) {
+          const a = os.artifacts.get(aid);
+          if (!a) continue;
+          if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) continue;
+          refs.push({
+            id: a.id,
+            title: a.title || a.filename,
+            kind: a.kind,
+            mime: a.mime,
+            filename: a.filename,
+            isImage: a.mime.startsWith('image/'),
+            isVideo: a.mime.startsWith('video/'),
+            raw: `/api/artifacts/${a.id}/raw`,
+          });
+        }
+        if (refs.length) t.artifacts = refs;
       }
-      if (refs.length) t.artifacts = refs;
+      if (t.kbRefs?.length) {
+        const refs: ChatKbRef[] = [];
+        for (const r of t.kbRefs) {
+          const page = os.kb.read(os.tenant, r.section, r.slug);
+          if (page) refs.push({ section: page.section, slug: page.slug, title: page.title });
+        }
+        if (refs.length) t.kbPages = refs;
+      }
+      if (t.appIds?.length) {
+        const refs: ChatAppRef[] = [];
+        for (const aid of t.appIds) {
+          const app = os.apps.get(aid);
+          if (app) refs.push({ id: app.id, name: app.name, icon: app.icon, published: !!app.published });
+        }
+        if (refs.length) t.apps = refs;
+      }
     }
     return sendJson(res, 200, { agent, ...convo });
   }

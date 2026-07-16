@@ -30,6 +30,25 @@ export interface ChatArtifactRef {
   raw: string;
 }
 
+/** A viewer-safe reference to a Knowledge Base page an activity wrote (`kb_write`). The chat UI renders a
+ *  titled tile deep-linking to `#/kb/<section>/<slug>`. Resolved by the /conversation route from the
+ *  activity's `kbRefs`; a page the KB no longer has is dropped. */
+export interface ChatKbRef {
+  section: string;
+  slug: string;
+  title: string;
+}
+
+/** A viewer-safe reference to a hosted App an activity built or changed (`app_create` / `app_update`). The
+ *  chat UI renders a tile deep-linking to `#/apps/<id>` (and, when published, an "open" link to the live
+ *  app). Resolved by the /conversation route from the activity's `appIds`; an unknown id is dropped. */
+export interface ChatAppRef {
+  id: string;
+  name: string;
+  icon?: string;
+  published: boolean;
+}
+
 /** One entry in the human-readable timeline. */
 export type ChatTurn =
   | { kind: 'user'; text: string; ts: number }
@@ -46,9 +65,15 @@ export type ChatTurn =
        *  parsed from the tool result. The /conversation route resolves these to rich {@link
        *  ChatArtifactRef} cards the chat UI renders inline; unresolvable ids are dropped there. */
       artifactIds?: string[];
-      /** Resolved, viewer-filtered artifact previews (populated by the /conversation route from
-       *  {@link ChatArtifactRef}); absent in the raw transcript parse. */
+      /** KB page(s) this activity wrote (`kb_write`), captured from the tool INPUT (section/slug). */
+      kbRefs?: { section: string; slug: string }[];
+      /** Hosted app id(s) this activity built or changed (`app_create` / `app_update`), from the INPUT. */
+      appIds?: string[];
+      /** Resolved, viewer-filtered previews (populated by the /conversation route from {@link
+       *  ChatArtifactRef}/{@link ChatKbRef}/{@link ChatAppRef}); absent in the raw transcript parse. */
       artifacts?: ChatArtifactRef[];
+      kbPages?: ChatKbRef[];
+      apps?: ChatAppRef[];
       ts: number;
     };
 
@@ -140,8 +165,11 @@ function friendlyTool(name: string, input: Record<string, unknown>): { label: st
   if (/^slack_/.test(bare)) return { label: 'Sent a Slack message', detail: clip(input.text ?? input.message ?? input.channel) };
   if (/^discord_/.test(bare)) return { label: 'Sent a Discord message', detail: clip(input.content ?? input.message) };
   if (/^(remember|recall|revise|forget)$/.test(bare)) return { label: 'Used its memory' };
+  if (bare === 'kb_write') return { label: 'Updated the knowledge base', detail: clip(input.title ?? input.slug) };
   if (/^kb_/.test(bare)) return { label: 'Used the knowledge base', detail: clip(input.query ?? input.slug ?? input.title) };
   if (/^task_/.test(bare)) return { label: 'Updated the task board', detail: clip(input.title) };
+  if (bare === 'app_create') return { label: 'Built an app', detail: clip(input.name ?? input.id) };
+  if (bare === 'app_update') return { label: 'Updated an app', detail: clip(input.id) };
   // Artifact-producing tools: keep a distinct label so the inline artifact card reads naturally under it.
   if (bare === 'publish') return { label: 'Published to the Library', detail: clip(input.title ?? basename(input.path)) };
   if (bare === 'image_generate') return { label: 'Created an image', detail: clip(input.prompt) };
@@ -156,6 +184,22 @@ function friendlyTool(name: string, input: Record<string, unknown>): { label: st
 
 /** Bare (mcp-stripped) names of tools whose result yields Library artifact id(s) we render inline. */
 const ARTIFACT_TOOLS = new Set(['publish', 'image_generate', 'image_edit', 'video_generate']);
+
+/** From a tool_use's bare name + INPUT, derive the KB / app reference(s) that call SUCCEEDS produces — the
+ *  keys (section/slug, app id) live in the input, so unlike artifact ids we needn't parse the result text.
+ *  Attached to the activity card at tool_use time and cleared if the tool_result comes back an error. */
+function refsFromInput(bare: string, input: Record<string, unknown>): { kbRefs?: { section: string; slug: string }[]; appIds?: string[] } {
+  if (bare === 'kb_write') {
+    const section = typeof input.section === 'string' ? input.section.trim() : '';
+    const slug = typeof input.slug === 'string' ? input.slug.trim() : '';
+    if (section && slug) return { kbRefs: [{ section, slug }] };
+  }
+  if (bare === 'app_create' || bare === 'app_update') {
+    const id = typeof input.id === 'string' ? input.id.trim().toLowerCase() : '';
+    if (id) return { appIds: [id] };
+  }
+  return {};
+}
 
 /** Flatten a tool_result's `content` (string, or an array of `{type:'text',text}` blocks) to plain text. */
 function resultText(content: unknown): string {
@@ -221,18 +265,27 @@ export function readConversation(claudeSessionId: string): Conversation {
         const text = String(b.text || '').trim();
         if (text) turns.push({ kind: o.type === 'user' ? 'user' : 'assistant', text, ts });
       } else if (b.type === 'tool_use') {
-        const { label, detail } = friendlyTool(String(b.name || ''), (b.input || {}) as Record<string, unknown>);
+        const rawName = String(b.name || '');
+        const input = (b.input || {}) as Record<string, unknown>;
+        const { label, detail } = friendlyTool(rawName, input);
         activityById.set(String(b.id), turns.length);
-        turns.push({ kind: 'activity', tool: String(b.name || ''), label, detail, status: 'running', ts });
+        // KB / app refs come from the INPUT (the section/slug or app id) — attach them optimistically now;
+        // a failed tool_result clears them below so a broken write never shows a card.
+        const { kbRefs, appIds } = refsFromInput(bareName(rawName), input);
+        turns.push({ kind: 'activity', tool: rawName, label, detail, status: 'running', kbRefs, appIds, ts });
       } else if (b.type === 'tool_result') {
         const idx = activityById.get(String(b.tool_use_id));
         if (idx != null) {
           const card = turns[idx];
           if (card && card.kind === 'activity') {
             card.status = b.is_error ? 'error' : 'ok';
-            // Artifact-producing tool that succeeded → capture the Library id(s) it returned, so the
-            // route can resolve them into inline preview cards.
-            if (!b.is_error && ARTIFACT_TOOLS.has(bareName(card.tool))) {
+            if (b.is_error) {
+              // The write failed — drop the optimistic KB/app refs so no card is shown.
+              delete card.kbRefs;
+              delete card.appIds;
+            } else if (ARTIFACT_TOOLS.has(bareName(card.tool))) {
+              // Artifact-producing tool that succeeded → capture the Library id(s) it returned, so the
+              // route can resolve them into inline preview cards.
               const ids = extractArtifactIds(resultText(b.content));
               if (ids.length) card.artifactIds = ids;
             }
