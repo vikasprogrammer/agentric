@@ -204,6 +204,32 @@ revision into `agent_revisions` (`src/state/agent-revisions.ts`), so any change 
 data home (bundled examples can't be edited) and rewrites only the fields the caller supplied. A future
 tightening could classify CLAUDE.md/model self-edits through Policy for workspaces that want sign-off.
 
+### `goal_list` / `goal_get` / `goal_propose` — the strategic layer (read + propose only)
+
+Goals are the tier **above** the task board — the tenant-wide, human-owned *direction* the whole fleet
+orients to: **Goal → Task → session**. The agent surface is deliberately **read + propose only**, mirroring
+the propose-not-apply posture of `policy_propose` / `skill_propose`, because activating or editing a goal
+steers the entire fleet — a steering-wheel decision reserved for a human owner/admin (there is **no agent
+write path** to activate, edit, achieve, or abandon a goal, only to *suggest* one).
+
+- **Read** — `goal_list` (filter by `status`/`query`) surfaces the active direction so an agent can orient
+  its work toward a goal; `goal_get` returns one goal + its full activity timeline + **derived progress**
+  and the tasks linked to it. Progress is never a hand-maintained number: `GoalStore.progress` computes
+  `% = done ÷ non-cancelled linked LEAF tasks` (a task with sub-tasks is an umbrella, so only its leaves
+  count — no double-counting), so the bar can't rot. The **active** goals are also injected into every
+  agent's prompt at launch (`buildCompanyMd`, toggle Settings → `injectGoals`), so "what direction does
+  this serve" needs no round-trip — `goal_list` is just the live equivalent.
+- **Propose** — `goal_propose` drafts a `draft`-status goal (NOT active: not injected into prompts, not a
+  planner trigger — inert until a human activates it) and posts a `goal.proposed` inbox card to admins;
+  `owner` = the run-as human (delegation passthrough). Like `kb_write` / `task_create` it's **auto-apply +
+  audited** (`goal.proposed`), not gate-suspended — the draft is harmless until promoted, and the append-only
+  `goal_events` log is the safety net. Humans activate/edit/close a goal only from the console Goals page.
+
+Linkage flows the other way through the **Tasks** tools, not a goal write: an agent connects work to a goal
+with `task_create({ goalId })` / `task_update({ goalId })` (a sub-task inherits its parent's `goalId`), and
+deleting a goal **detaches** (never deletes) its linked tasks — real work outlives the direction it served.
+Full data model, the auto-planner that turns a goal into tasks, and the human console surface: `docs/goals-plan.md`.
+
 ## Remaining gaps (not yet exposed)
 
 - **Delegation / sub-agents.** Largely closed by the **Tasks** plane: an agent files a task assigned to
