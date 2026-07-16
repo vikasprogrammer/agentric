@@ -1,6 +1,6 @@
 {
   "name": "agent-os",
-  "version": "0.209.0",
+  "version": "0.210.0",
   "description": "A generic, governed operating system for running autonomous agents safely across brands. Ships with a local web console.",
   "license": "MIT",
   "type": "commonjs",
@@ -23,6 +23,8 @@
     "serve": "node dist/cli.js serve",
     "start": "node dist/cli.js serve",
     "demo": "node dist/cli.js demo",
+    "install-deps": "bash scripts/install-deps.sh",
+    "check-deps": "bash scripts/install-deps.sh --check",
     "dev": "ts-node src/cli.ts serve",
     "demo:dev": "ts-node src/demo.ts",
     "test:governance": "node scripts/governance-conformance.cjs",

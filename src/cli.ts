@@ -20,6 +20,7 @@ import { TenantStore } from './state/control';
 import { reconcileTenant } from './governance/policy-reconcile';
 import { Role } from './types';
 import { VERSION } from './version';
+import { checkDeps, installDeps, type DepsReport } from './edge/deps';
 
 // `node:sqlite` is stable enough to depend on but still emits an ExperimentalWarning on first
 // use. Swallow just that one line so the console output stays clean; surface every other warning.
@@ -56,6 +57,12 @@ async function main(): Promise<void> {
     case 'policy':
       policy(rest);
       break;
+    case 'deps':
+      deps(false);
+      break;
+    case 'install-deps':
+      deps(true);
+      break;
     case 'demo':
       await import('./demo');
       break;
@@ -79,6 +86,31 @@ async function main(): Promise<void> {
       usage();
       if (cmd && !['help', '--help', '-h'].includes(cmd)) process.exitCode = 1;
   }
+}
+
+/** Check (and optionally install) the native tools a running instance shells out to. No server needed. */
+function deps(install: boolean): void {
+  const print = (r: DepsReport): void => {
+    for (const d of r.deps) {
+      const mark = d.installed ? '✓' : d.required ? '✗' : '·';
+      const tail = d.installed ? (d.version || d.path || '') : (d.pkg ? '(missing)' : `(missing — ${d.hint || 'install manually'})`);
+      console.log(`  ${mark} ${d.label.padEnd(12)} ${tail}`);
+    }
+    console.log(r.ok ? '\nAll required dependencies are installed.' : '\nSome required dependencies are missing.');
+    if (!r.ok && r.installCommand) console.log(`Install them with:\n  ${r.installCommand}`);
+    else if (!r.ok) console.log('No supported package manager found — install the missing tools by hand (see hints above).');
+  };
+
+  if (!install) { const r = checkDeps(); print(r); process.exitCode = r.ok ? 0 : 1; return; }
+
+  const pre = checkDeps();
+  if (pre.ok && !pre.installable.length) { console.log('All required dependencies are already installed.'); return; }
+  console.log('Installing missing dependencies…\n');
+  const result = installDeps();
+  for (const s of result.steps) console.log(`${s.ok ? '✓' : '✗'} ${s.cmd}${s.out ? `\n${s.out}` : ''}`);
+  console.log('');
+  print(result.report);
+  process.exitCode = result.ok ? 0 : 1;
 }
 
 /** Team management from the box (box access ≈ owner) — the secure recovery path for login. */
@@ -284,6 +316,8 @@ function usage(): void {
   invite <email> [role] mint a magic-link to invite a teammate (role: admin | member)
   login-link <email>    print a fresh login link for an existing member (recovery)
   members               list workspace members and their roles
+  deps                   check the native tools sessions need (tmux/ttyd/claude/git)
+  install-deps           install the missing native tools via the box's package manager
   tenant <sub>          multi-tenant admin: list | create <slug> --owner <email> | remove <slug>
   policy reconcile      align agents' policyContext to the enforced ruleset (--tenant <slug> | --all; --yes to apply)
   demo                  run the scripted governance demo in the terminal

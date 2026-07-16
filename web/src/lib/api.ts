@@ -145,6 +145,42 @@ export interface SystemMetrics {
   sessions: { available: boolean; totalRss: number; sessions: { id: string; agent: string; title: string; rss: number }[] }
   error?: string
 }
+/** One native command Agent OS shells out to (GET /api/deps). */
+export interface DepStatus {
+  bin: string
+  label: string
+  purpose: string
+  required: boolean
+  /** Package name for the box's package manager; absent when installed another way (e.g. claude via npm). */
+  pkg?: string
+  /** Manual install hint, when there's no `pkg` or no package manager on the box. */
+  hint?: string
+  installed: boolean
+  path?: string
+  version?: string
+}
+/** Native-dependency report for Settings → System (GET /api/deps). */
+export interface DepsReport {
+  deps: DepStatus[]
+  /** True when every required dep is present — sessions can run. */
+  ok: boolean
+  /** Missing deps a package manager could install (drives the "Install now" button). */
+  installable: string[]
+  /** Resolved package manager, or null when the box has none (→ manual hints only). */
+  manager: 'brew' | 'apt-get' | 'dnf' | 'yum' | 'pacman' | 'zypper' | null
+  /** One-line command that installs the missing installable deps, or null when nothing's missing. */
+  installCommand: string | null
+  /** Zero-dependency bootstrap shortcut (works before a build). */
+  shortcut: string
+  platform: string
+}
+/** Result of POST /api/deps/install — per-step logs plus the re-checked report. */
+export interface DepsInstallResult {
+  ok: boolean
+  steps: { cmd: string; ok: boolean; out: string }[]
+  report: DepsReport
+  error?: string
+}
 export interface Session {
   id: string
   agent: string
@@ -1052,6 +1088,10 @@ export const api = {
   stopAllSessions: () => call<{ ok: boolean; halted?: number; error?: string }>('POST', '/api/sessions/stop-all'),
   /** Host resource snapshot for Settings → System (RAM / CPU / uptime). */
   system: () => call<SystemMetrics>('GET', '/api/system'),
+  /** Native-dependency check for Settings → System (tmux/ttyd/claude/git present?). */
+  deps: () => call<DepsReport>('GET', '/api/deps'),
+  /** Install the missing package-manager-installable deps (owner-only). Returns step logs + fresh report. */
+  installDeps: () => call<DepsInstallResult>('POST', '/api/deps/install'),
   rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
   /** Give a session a human-chosen display title (overrides the auto/AI-generated one). */
   renameSession: (id: string, title: string) => call<{ ok: boolean; error?: string; title?: string }>('POST', `/api/sessions/${id}/rename`, { title }),
