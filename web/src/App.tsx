@@ -578,9 +578,20 @@ export default function App() {
       })
       .catch(() => {})
   }, [])
+  // Chrome-less full-screen artifact viewer at `#/view/<id>` (opened in a new tab from the Library). Kept
+  // OUTSIDE the console shell + its own hash router, so it's tracked here and re-evaluated on hashchange
+  // (navigating back into the console re-renders <Console>).
+  const [hash, setHash] = useState(window.location.hash)
+  useEffect(() => {
+    const on = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', on)
+    return () => window.removeEventListener('hashchange', on)
+  }, [])
+  const viewArtifactId = hash.match(/^#\/view\/([\w-]+)/)?.[1]
 
   if (me === undefined) return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>
   if (me === null) return <LoginScreen accent={accent} />
+  if (viewArtifactId) return <FullArtifactView id={viewArtifactId} />
   return <Console me={me} />
 }
 
@@ -4228,6 +4239,64 @@ function ArtifactBody({ a }: { a: Artifact }) {
   )
 }
 
+/**
+ * Chrome-less, full-screen artifact viewer — opened in a NEW TAB from the Library's "Open" button. It
+ * bypasses the console shell (no sidebar) and reuses the SAME markdown pipeline as the inline preview,
+ * so opening a `.md` reads as formatted prose rather than the raw `text/markdown` source the browser
+ * would otherwise show. Auth-gated by {@link App} like every other view. Rendered when the hash is
+ * `#/view/<id>`; metadata comes from the artifacts list (viewer-scoped, so a not-found is also a
+ * no-access). Non-text types (image/pdf/video/html) fill the viewport natively.
+ */
+function FullArtifactView({ id }: { id: string }) {
+  const [a, setA] = useState<Artifact | null | undefined>(undefined) // undefined = loading, null = not found / no access
+  const [text, setText] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    api.artifacts()
+      .then((r) => { if (!live) return; const hit = (r.artifacts ?? []).find((x) => x.id === id) ?? null; setA(hit); document.title = hit ? hit.title : 'Artifact' })
+      .catch(() => { if (live) setA(null) })
+    return () => { live = false }
+  }, [id])
+  const raw = api.artifactRawUrl(id)
+  const wantsText = a ? (!isHtmlArt(a) && (isMarkdownArt(a) || isTextMime(a.mime))) : false
+  useEffect(() => {
+    if (!a || !wantsText) return
+    let live = true
+    fetch(raw).then((r) => r.text()).then((t) => { if (live) setText(t) }).catch(() => { if (live) setText('(could not load file)') })
+    return () => { live = false }
+  }, [a?.id])
+
+  if (a === undefined) return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>
+  if (a === null) return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Artifact not found, or you don't have access to it.</div>
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <header className="sticky top-0 z-10 flex items-center gap-3 border-b bg-background/95 px-4 py-2 backdrop-blur">
+        <ArtifactIcon a={a} className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="truncate text-sm font-medium">{a.title}</span>
+        <span className="hidden truncate font-mono text-[11px] text-muted-foreground sm:inline">{a.filename}</span>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <a href={raw} target="_blank" rel="noreferrer"><Button size="sm" variant="ghost"><ExternalLink className="mr-1 h-4 w-4" />Raw</Button></a>
+          <a href={raw} download={a.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
+        </div>
+      </header>
+      <main className="px-4 py-6">
+        {wantsText
+          ? text === null
+            ? <div className="text-sm text-muted-foreground">Loading…</div>
+            : isMarkdownArt(a)
+              ? <div className="mx-auto max-w-4xl text-sm"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{text}</ReactMarkdown></div>
+              : <pre className="mx-auto max-w-5xl overflow-x-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-relaxed">{text}</pre>
+          : isImageMime(a.mime) ? <img src={raw} alt={a.title} className="mx-auto max-w-full" />
+          : isVideoMime(a.mime) ? <video src={raw} controls className="mx-auto max-h-[88vh] w-full max-w-5xl bg-black" />
+          : isPdfMime(a.mime) ? <iframe src={raw} title={a.title} className="h-[88vh] w-full rounded border" />
+          : isHtmlArt(a) ? <iframe src={raw} title={a.title} sandbox="allow-scripts allow-popups allow-forms" className="h-[88vh] w-full rounded border bg-white" />
+          : <div className="text-center text-sm text-muted-foreground">No inline preview. <a href={raw} download={a.filename} className="text-primary underline">Download {a.filename}</a></div>}
+      </main>
+    </div>
+  )
+}
+
 /** A small live-status dot + label for a hosted app's supervisor state. */
 function AppStatusBadge({ s }: { s: AppInfo['status'] }) {
   const map: Record<AppInfo['status'], { c: string; t: string }> = {
@@ -4702,7 +4771,9 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-2">
-                    <a href={api.artifactRawUrl(selected.id)} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="secondary"><ExternalLink className="mr-1 h-4 w-4" />Open</Button></a>
+                    {/* md/text open in the rendered full-screen viewer (#/view/<id>); binary/native types
+                        (image/pdf/video/html) open their raw URL, which the browser renders full-screen itself. */}
+                    <a href={(isMarkdownArt(selected) || (isTextMime(selected.mime) && !isHtmlArt(selected))) ? `#/view/${selected.id}` : api.artifactRawUrl(selected.id)} target="_blank" rel="noopener noreferrer"><Button size="sm" variant="secondary"><ExternalLink className="mr-1 h-4 w-4" />Open</Button></a>
                     <a href={api.artifactRawUrl(selected.id)} download={selected.filename}><Button size="sm" variant="secondary"><Download className="mr-1 h-4 w-4" />Download</Button></a>
                     {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
                       <>
