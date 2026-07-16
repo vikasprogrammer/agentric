@@ -881,6 +881,55 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // existing tree instead of inventing a new folder; the artifact LIST stays own-scoped.
     return sendJson(res, 200, { artifacts, folders: os.artifacts.folders(), enabled: os.artifacts.enabled });
   }
+  // agent reads back ITS OWN past sessions (episodic self-query — "have I done this before, how did it
+  // go?"), the run-history companion to the semantic memory plane. Own-scoped server-side to the caller's
+  // agent id; metadata only (id/title/status/rating/dates), never a transcript — that's `session_open`.
+  if (method === 'GET' && p === '/api/agent/sessions') {
+    const session = url.searchParams.get('session') || '';
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 20, 1), 100);
+    const q = (url.searchParams.get('query') || '').trim().toLowerCase();
+    let mine = tm.sessionsForAgent(agent).filter((s) => s.id !== session); // exclude the current run
+    if (q) mine = mine.filter((s) => `${s.title} ${s.task}`.toLowerCase().includes(q));
+    const sessions = mine.slice(0, limit).map((s) => ({
+      id: s.id, title: s.title, task: s.task, status: s.status,
+      createdAt: s.createdAt, updatedAt: s.updatedAt, rating: s.rating, headless: s.headless, source: s.sourceKind,
+    }));
+    return sendJson(res, 200, { sessions });
+  }
+  // agent OPENS one of its own past sessions to read what happened — the friendly transcript timeline, or
+  // (summary=1) a throwaway-claude recap of the whole run. Own-scoped: the target must belong to the
+  // caller's agent (resolved via `sessionsForAgent`), else 403. Falls back to the raw pane log for a
+  // headless run that tee'd only `session-<id>.log` and has no structured transcript.
+  if (method === 'GET' && p === '/api/agent/session') {
+    const session = url.searchParams.get('session') || '';
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = url.searchParams.get('id') || '';
+    const target = tm.sessionsForAgent(agent).find((s) => s.id === id);
+    if (!target) return sendJson(res, 403, { error: 'not one of your sessions' });
+    const meta = { id: target.id, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating };
+    const claudeId = tm.sessionClaudeId(id);
+    const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
+    if (url.searchParams.get('summary') === '1') {
+      const out = await summarizeConversation(convo);
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.summarized', data: { target: id, via: out.via, found: out.found } });
+      return sendJson(res, 200, { meta, ...out });
+    }
+    // No structured transcript (a headless run tee'd only a raw pane log) → serve the tail of that.
+    let log: string | undefined;
+    if (!convo.found && os.paths) {
+      try {
+        const buf = fs.readFileSync(path.join(os.paths.connectors, `session-${id}.log`));
+        const CAP = 64 * 1024;
+        log = buf.length > CAP ? '…(earlier output truncated)\n' + buf.subarray(buf.length - CAP).toString('utf8') : buf.toString('utf8');
+      } catch { /* no log either — the run wrote nothing readable */ }
+    }
+    return sendJson(res, 200, { meta, turns: convo.turns, found: convo.found, log });
+  }
   // agent schedules a ONE-SHOT deferred run of itself (a follow-up / "check back later"). Stored as a
   // `once` automation that runs the same agent under the same run-as identity, bounded by the SCHEDULE_*
   // caps. Provenance stays the automation; shows in the console Automations page (human-cancellable).

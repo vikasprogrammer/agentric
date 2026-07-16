@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.219.0] — 2026-07-16
+### Added
+- **Episodic self-query — an agent can read its own history of past sessions, and reopen any one.** Two
+  read-only MCP tools land as the run-history companion to the (semantic) memory plane: `session_history`
+  lists the agent's OWN past sessions (id, title, status, human 👍/👎 rating, seed task — newest first,
+  optional `query` over title/task), and `session_open` reopens a chosen one to read what happened — the
+  friendly transcript **timeline** (user/assistant messages + friendly activity cards via
+  `readConversation`, tail-capped at 60 turns), or with `summary:true` a throwaway-claude **recap** of the
+  whole run. Both are **own-scoped server-side**: the loopback routes (`GET /api/agent/sessions` /
+  `GET /api/agent/session`) resolve the caller's agent from its session secret and only ever surface that
+  agent's sessions — opening another agent's run is a 403. Answers "have I done this before, and how did it
+  go?" alongside `recall`. Falls back to the raw `session-<id>.log` pane tail for a headless run with no
+  structured transcript; a summary is audited `session.summarized` under `principal: agent:<id>`.
+  (`TerminalManager.sessionsForAgent`; closes the "Episodic self-query" gap in `docs/agent-mcp-tools.md`.)
+
 ## [0.218.0] — 2026-07-16
 ### Added
 - **Per-session cost tracking, surfaced on the sessions list and automation runs.** Every claude-code

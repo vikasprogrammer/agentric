@@ -627,6 +627,17 @@ export class TerminalManager {
   }
 
   /**
+   * Every session belonging to a given agent — its OWN run history, newest first. The episodic
+   * companion to the (semantic) memory plane: "have I done this before, and how did it go?". Reuses
+   * `listSessions` so each row carries live status / rating / labels. Deliberately unscoped by a
+   * `Member` viewer — the agent-facing routes gate on the CALLER'S own agent id (an agent only ever
+   * sees its own sessions, never a sibling's), which the member-visibility rules can't express.
+   */
+  sessionsForAgent(agent: string): Session[] {
+    return this.listSessions().filter((s) => s.agent === agent);
+  }
+
+  /**
    * Session ids that have a persisted launch env (`session-<id>.env`) — i.e. an interactive session
    * the ttyd attach wrapper can resurrect via `claude --resume` (see `writeEnvFile`/`terminal/attach.sh`).
    * Headless runs write no env file, so they're absent (and correctly report `resumable:false`). One

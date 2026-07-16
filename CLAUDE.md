@@ -205,9 +205,13 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 47 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 49 always-on tools
   + 2 chat-only. Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
-  handle for revise/forget). KB: `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
+  handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
+  `session_history` lists the agent's OWN past sessions (id/title/status/rating, own-scoped, "have I done
+  this before?") and `session_open` reopens any one — the friendly transcript timeline (`readConversation`)
+  or a `summary:true` recap — gated server-side to the caller's own agent. KB:
+  `kb_search`/`kb_read`/`kb_write`/`kb_history`/`kb_revert`. Operator/inbox:
   `ask`/`check_inbox`/`report`/`update`/`notify`/`publish`/`library_list` (session cards are
   **owner-scoped** — addressed to the run's `run_as`/spawner via the `sessionOwner` audience — so the
   Inbox default `mine` view isn't flooded; `notify({to,message})` is the escape hatch to loop in ONE
