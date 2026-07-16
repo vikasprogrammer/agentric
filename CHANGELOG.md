@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.208.0] — 2026-07-16
+### Added
+- **Share a Library deliverable with the team and the web.** An artifact was previously visible only to
+  its producer (plus owner/admin) and reachable only behind the console login. The detail panel now has a
+  Share section (owner/admin, or the member whose session produced it) with two independent toggles:
+  - **Shared with workspace** — flips tenant-wide visibility; every member then sees the deliverable in
+    their Library (on top of the existing provenance rule).
+  - **Public link** — mints an unguessable, revocable `/shared/<token>` URL served **before** the member
+    gate, so anyone with the link can view/download it with no login (the same secret-in-URL model as
+    inbound `/hooks`). Toggling it off revokes the link. The URL is copy-to-clipboard (insecure-context
+    fallback for the plain-HTTP tailnet).
+  New `artifacts.shared_team`/`share_token` columns (unique partial index on the token), store methods
+  `setTeamShared`/`setPublic`/`getByToken`, `POST /api/artifacts/:id/share`, and the public
+  `GET /shared/:token` route. The public route is hardened: HTML/SVG is served under
+  `Content-Security-Policy: sandbox` (opaque origin — a shared page's scripts can't read cookies or call
+  same-origin `/api`) plus `X-Content-Type-Options: nosniff`, mirroring the console's iframe sandbox. The
+  byte-range/streaming logic is shared with the authenticated raw route. Every share change and public
+  view is audited (`artifact.shared`, `artifact.share.viewed`).
+
 ## [0.207.2] — 2026-07-15
 ### Fixed
 - **Bundled `agent-os.service` no longer hangs every interactive session on a fresh hardened box.** The

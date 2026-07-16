@@ -4466,6 +4466,12 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
     load()
   }
 
+  const share = async (a: Artifact, patch: { team?: boolean; public?: boolean }) => {
+    const r = await api.shareArtifact(a.id, patch)
+    if (r.error || !r.ok) { setHint('⚠ ' + (r.error ?? 'share failed')); return }
+    load()
+  }
+
   return (
     <div className="space-y-3">
       <p className="max-w-3xl text-sm text-muted-foreground">
@@ -4533,6 +4539,8 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                       <span>· {fmtSize(selected.bytes)}</span>
                       {selected.costUsd != null && <span>· <span title="Generation cost">{fmtCost(selected.costUsd)}</span></span>}
                       <span>· session <span className="font-mono">{selected.sessionId}</span></span>
+                      {selected.sharedTeam && <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[10px] font-normal"><Users className="h-3 w-3" />Workspace</Badge>}
+                      {selected.public && <Badge variant="outline" className="gap-1 px-1.5 py-0 text-[10px] font-normal"><Globe className="h-3 w-3" />Public</Badge>}
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-2">
@@ -4545,6 +4553,19 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
                     )}
                   </div>
                 </div>
+                {(me.role === 'owner' || me.role === 'admin' || selected.source === me.id) && (
+                  <div className="space-y-2 rounded-md border bg-muted/30 p-2.5 text-xs">
+                    <label className="flex cursor-pointer items-start gap-2">
+                      <input type="checkbox" className="mt-0.5" checked={!!selected.sharedTeam} onChange={(e) => share(selected, { team: e.target.checked })} />
+                      <span className="inline-flex items-center gap-1.5"><Users className="h-3.5 w-3.5" />Shared with workspace<span className="text-muted-foreground">— everyone on the team sees it in the Library</span></span>
+                    </label>
+                    <label className="flex cursor-pointer items-start gap-2">
+                      <input type="checkbox" className="mt-0.5" checked={!!selected.public} onChange={(e) => share(selected, { public: e.target.checked })} />
+                      <span className="inline-flex items-center gap-1.5"><Globe className="h-3.5 w-3.5" />Public link<span className="text-muted-foreground">— anyone with the URL can view, no login required</span></span>
+                    </label>
+                    {selected.shareUrl && <CopyLink link={selected.shareUrl} />}
+                  </div>
+                )}
                 <ArtifactBody a={selected} />
               </CardContent>
             </Card>

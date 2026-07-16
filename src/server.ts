@@ -532,6 +532,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, out.status, out.body);
   }
 
+  // ── public artifact share (PUBLIC — authenticated by the artifact's own unguessable token) ──────
+  // An owner/admin/producer mints a login-free link to ONE published deliverable; anyone with the URL
+  // views/downloads it. Sits BEFORE the member gate like /hooks, and is authenticated the same way — by
+  // an unguessable secret in the URL rather than a cookie. Host-scoped to this tenant (the registry has
+  // already routed us into the right runtime), so a token only resolves within its own tenant's gallery.
+  // Serves bytes inline; `?file=` selects a sibling (future multi-file `kind:'site'`).
+  const sharedMatch = p.match(/^\/shared\/([A-Za-z0-9_-]+)$/);
+  if (method === 'GET' && sharedMatch) {
+    const a = os.artifacts.getByToken(sharedMatch[1]);
+    if (!a) return end(res, 404);
+    const resolved = os.artifacts.readPath(a.id, url.searchParams.get('file') || undefined);
+    if (!resolved) return end(res, 404);
+    // Audit only the primary (non-range) fetch — media scrubbing fires many range requests for one view.
+    if (!req.headers['range']) os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: 'public', type: 'artifact.share.viewed', data: { id: a.id, file: resolved.filename } });
+    return streamArtifactFile(req, res, resolved, { sandbox: true });
+  }
+
   // ── Composio ingress (PUBLIC — verified by the Composio webhook signing secret) ───────────────
   // Composio Webhook Triggers V2 POST app events (Slack message/DM, …) here. Verify the Svix-style
   // signature, parse the event, and fire matching `composio` automations → governed agent sessions.
@@ -4347,56 +4364,30 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   //    artifacts from sessions they spawned (or an automation they created). Unlike the raw file
   //    browser this exposes only curated, published deliverables — never the whole data home.
   if (method === 'GET' && p === '/api/artifacts') {
-    const visible = os.artifacts.list().filter((a) => tm.canViewSpawn(a.source ?? null, me));
-    return sendJson(res, 200, { artifacts: visible, enabled: os.artifacts.enabled });
+    // A member sees an artifact if it's from a session they own (provenance) OR it's shared with the
+    // whole tenant. The public share TOKEN is a credential, not display data — surface it (and the
+    // resolved link) only to whoever may manage sharing (owner/admin/producer); everyone else gets a
+    // plain `public` boolean so the UI can badge it without leaking the URL.
+    const visible = os.artifacts.list().filter((a) => tm.canViewSpawn(a.source ?? null, me) || a.sharedTeam);
+    const shaped = visible.map((a) => {
+      const mine = isAdmin(me) || a.source === me.id;
+      return {
+        ...a,
+        public: !!a.shareToken,
+        shareToken: mine ? a.shareToken : undefined,
+        shareUrl: mine && a.shareToken ? sharedLinkFor(req, a.shareToken) : undefined,
+      };
+    });
+    return sendJson(res, 200, { artifacts: shaped, enabled: os.artifacts.enabled });
   }
   const artRawMatch = p.match(/^\/api\/artifacts\/([\w-]+)\/raw$/);
   if (method === 'GET' && artRawMatch) {
     const a = os.artifacts.get(artRawMatch[1]);
     if (!a) return sendJson(res, 404, { error: 'not found' });
-    if (!tm.canViewSpawn(a.source ?? null, me)) return sendJson(res, 403, { error: 'forbidden' });
+    if (!tm.canViewSpawn(a.source ?? null, me) && !a.sharedTeam) return sendJson(res, 403, { error: 'forbidden' });
     const resolved = os.artifacts.readPath(a.id, url.searchParams.get('file') || undefined);
     if (!resolved) return sendJson(res, 404, { error: 'file not found' });
-    let total: number;
-    try { total = fs.statSync(resolved.absPath).size; } catch { return sendJson(res, 404, { error: 'file not found' }); }
-    const disposition = `inline; filename="${resolved.filename.replace(/"/g, '')}"`;
-    // Honour byte-range requests — <video>/<audio> scrubbing (and Safari playback at all) depends on
-    // 206 Partial Content responses, and it keeps large downloads resumable.
-    const range = req.headers['range'];
-    const m = typeof range === 'string' ? range.match(/^bytes=(\d*)-(\d*)$/) : null;
-    if (m && (m[1] || m[2]) && total > 0) {
-      let start = m[1] ? parseInt(m[1], 10) : NaN;
-      let end = m[2] ? parseInt(m[2], 10) : NaN;
-      if (Number.isNaN(start)) { start = total - end; end = total - 1; }   // suffix range: bytes=-N
-      else if (Number.isNaN(end)) end = total - 1;                          // open range:   bytes=N-
-      if (start > end || start < 0 || start >= total) {
-        res.writeHead(416, { 'content-range': `bytes */${total}` });
-        res.end();
-        return;
-      }
-      end = Math.min(end, total - 1);
-      const stream = fs.createReadStream(resolved.absPath, { start, end });
-      stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
-      res.writeHead(206, {
-        'content-type': resolved.mime,
-        'content-disposition': disposition,
-        'content-range': `bytes ${start}-${end}/${total}`,
-        'accept-ranges': 'bytes',
-        'content-length': end - start + 1,
-      });
-      stream.pipe(res);
-      return;
-    }
-    const stream = fs.createReadStream(resolved.absPath);
-    stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
-    res.writeHead(200, {
-      'content-type': resolved.mime,
-      'content-disposition': disposition,
-      'accept-ranges': 'bytes',
-      'content-length': total,
-    });
-    stream.pipe(res);
-    return;
+    return streamArtifactFile(req, res, resolved);
   }
   const artMatch = p.match(/^\/api\/artifacts\/([\w-]+)$/);
   // Move an artifact into a folder ('' = root). Same gate as delete: owner/admin, or the member whose
@@ -4420,6 +4411,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.artifacts.remove(a.id);
     os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.deleted', data: { id: a.id, filename: a.filename } });
     return sendJson(res, 200, { ok: true });
+  }
+  // Share an artifact beyond its producer — same gate as move/delete (owner/admin, or the producing
+  // member). `team` toggles whole-tenant Library visibility; `public` mints/revokes the login-free
+  // `/shared/<token>` link. Either field is optional; only the ones present are applied. Auto-apply +
+  // audited (`artifact.shared`). Returns the updated artifact incl. the resolved public link (if any).
+  const artShareMatch = p.match(/^\/api\/artifacts\/([\w-]+)\/share$/);
+  if (method === 'POST' && artShareMatch) {
+    const a = os.artifacts.get(artShareMatch[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!isAdmin(me) && a.source !== me.id) return sendJson(res, 403, { error: 'forbidden' });
+    const b = await readBody(req);
+    if (typeof b.team === 'boolean') os.artifacts.setTeamShared(a.id, b.team);
+    if (typeof b.public === 'boolean') os.artifacts.setPublic(a.id, b.public);
+    const updated = os.artifacts.get(a.id)!;
+    os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.shared', data: { id: a.id, team: updated.sharedTeam, public: !!updated.shareToken } });
+    return sendJson(res, 200, { ok: true, artifact: { ...updated, public: !!updated.shareToken, shareUrl: updated.shareToken ? sharedLinkFor(req, updated.shareToken) : undefined } });
   }
 
   // ── policy (the risk ruleset). Read: owner/admin. Edit: OWNER only — it governs what needs
@@ -4978,6 +4985,74 @@ function hookUrlFor(req: http.IncomingMessage, id: string, secret: string): stri
   const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0];
   const host = req.headers.host || '127.0.0.1';
   return `${proto}://${host}/hooks/${id}?key=${secret}`;
+}
+
+/** The public login-free URL for an artifact's share token — same host/proto derivation as invite links. */
+function sharedLinkFor(req: http.IncomingMessage, token: string): string {
+  const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0];
+  const host = req.headers.host || '127.0.0.1';
+  return `${proto}://${host}/shared/${token}`;
+}
+
+/**
+ * Stream an artifact file to the response with inline disposition and byte-range support. Shared by the
+ * authenticated console raw route and the public `/shared/<token>` route — <video>/<audio> scrubbing
+ * (and Safari playback at all) depends on 206 Partial Content, and it keeps large downloads resumable.
+ */
+function streamArtifactFile(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  resolved: { absPath: string; mime: string; filename: string },
+  opts: { sandbox?: boolean } = {},
+): void {
+  let total: number;
+  try { total = fs.statSync(resolved.absPath).size; } catch { return sendJson(res, 404, { error: 'file not found' }); }
+  const disposition = `inline; filename="${resolved.filename.replace(/"/g, '')}"`;
+  // Public-share hardening: the file is served as a TOP-LEVEL document on the app's own origin, so an
+  // HTML/SVG artifact would otherwise run script with real same-origin privileges (cookies, /api). The
+  // console dodges this by rendering HTML in an iframe sandboxed WITHOUT allow-same-origin; we reproduce
+  // that for the public route with `Content-Security-Policy: sandbox` (an opaque origin — scripts run but
+  // can't read cookies or call same-origin APIs), plus nosniff so a mislabeled file can't be sniffed into
+  // executable HTML. Rendering of images/pdf/video/markdown/text is unaffected.
+  const extra: Record<string, string> = opts.sandbox
+    ? { 'content-security-policy': 'sandbox allow-scripts allow-popups allow-forms allow-downloads', 'x-content-type-options': 'nosniff' }
+    : {};
+  const range = req.headers['range'];
+  const m = typeof range === 'string' ? range.match(/^bytes=(\d*)-(\d*)$/) : null;
+  if (m && (m[1] || m[2]) && total > 0) {
+    let start = m[1] ? parseInt(m[1], 10) : NaN;
+    let end = m[2] ? parseInt(m[2], 10) : NaN;
+    if (Number.isNaN(start)) { start = total - end; end = total - 1; }   // suffix range: bytes=-N
+    else if (Number.isNaN(end)) end = total - 1;                          // open range:   bytes=N-
+    if (start > end || start < 0 || start >= total) {
+      res.writeHead(416, { 'content-range': `bytes */${total}` });
+      res.end();
+      return;
+    }
+    end = Math.min(end, total - 1);
+    const stream = fs.createReadStream(resolved.absPath, { start, end });
+    stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
+    res.writeHead(206, {
+      'content-type': resolved.mime,
+      'content-disposition': disposition,
+      'content-range': `bytes ${start}-${end}/${total}`,
+      'accept-ranges': 'bytes',
+      'content-length': end - start + 1,
+      ...extra,
+    });
+    stream.pipe(res);
+    return;
+  }
+  const stream = fs.createReadStream(resolved.absPath);
+  stream.on('error', () => { if (!res.headersSent) sendJson(res, 500, { error: 'read failed' }); else res.end(); });
+  res.writeHead(200, {
+    'content-type': resolved.mime,
+    'content-disposition': disposition,
+    'accept-ranges': 'bytes',
+    'content-length': total,
+    ...extra,
+  });
+  stream.pipe(res);
 }
 
 // ── auth helpers ─────────────────────────────────────────────────────────────
