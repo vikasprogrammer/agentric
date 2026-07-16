@@ -4427,6 +4427,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         ...a,
         public: !!a.shareToken,
         shareToken: mine ? a.shareToken : undefined,
+        shareExpiresAt: mine ? a.shareExpiresAt : undefined,
         shareUrl: mine && a.shareToken ? sharedLinkFor(req, a.shareToken) : undefined,
       };
     });
