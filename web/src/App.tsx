@@ -10197,6 +10197,9 @@ const ACTIVITY_STYLE: Record<ActivityEvent['category'], { icon: LucideIcon; labe
   scheduling: { icon: Clock,         label: 'Scheduling',      cls: 'text-orange-600' },
   agents:     { icon: Bot,           label: 'Agents',          cls: 'text-pink-600' },
   approval:   { icon: Shield,        label: 'Approval',        cls: 'text-yellow-600' },
+  secrets:    { icon: KeyRound,      label: 'Secrets',         cls: 'text-rose-600' },
+  skills:     { icon: Sparkles,      label: 'Skills',          cls: 'text-fuchsia-600' },
+  policy:     { icon: ScrollText,    label: 'Policy',          cls: 'text-indigo-600' },
   other:      { icon: Activity,      label: 'Other',           cls: 'text-muted-foreground' },
 }
 
@@ -10207,33 +10210,69 @@ const EFFECT_CLS: Record<NonNullable<ActivityEvent['effect']>, string> = {
   error:   'border-red-500/40 text-red-600',
 }
 
-/** A modal timeline of the agent-os primitives a session used: grouped counts + a chronological feed,
- *  read from the run's audit stream via /api/sessions/:id/activity. */
+/** Tint for the live-status chip — the object's CURRENT state, not the point-in-time effect. */
+const STATUS_TONE_CLS: Record<NonNullable<ActivityEvent['statusTone']>, string> = {
+  open:    'border-sky-500/40 text-sky-600',
+  done:    'border-emerald-500/40 text-emerald-600',
+  blocked: 'border-orange-500/40 text-orange-600',
+  denied:  'border-red-500/40 text-red-600',
+  muted:   'border-border text-muted-foreground',
+}
+
+/** A live status chip — the object's CURRENT state (todo→done, pending→approved, rev N). */
+function StatusChip({ e }: { e: ActivityEvent }) {
+  if (!e.status) return null
+  return (
+    <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${STATUS_TONE_CLS[e.statusTone ?? 'muted']}`}>{e.status}</Badge>
+  )
+}
+
+/** A right-docked side panel tracking everything a session opened and where it stands NOW — the
+ *  objects it created/touched (tasks, secrets, policy proposals, KB pages, skills) with their live
+ *  status, plus the full chronological trail. Reads /api/sessions/:id/activity, polling while the run
+ *  is alive so a task's todo→doing→done (or a proposal's pending→approved) updates in place. */
 function SessionActivity({ session, onClose }: { session: Session; onClose: () => void }) {
   const [events, setEvents] = useState<ActivityEvent[]>([])
   const [summary, setSummary] = useState<ActivitySummaryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [view, setView] = useState<'objects' | 'timeline'>('objects')
+
   useEffect(() => {
     let live = true
-    setLoading(true)
-    api.sessionActivity(session.id)
-      .then((r) => { if (!live) return; if (r.error) setError(r.error); else { setEvents(r.events ?? []); setSummary(r.summary ?? []) } })
-      .catch(() => { if (live) setError('Could not load activity') })
-      .finally(() => { if (live) setLoading(false) })
-    return () => { live = false }
-  }, [session.id])
+    const load = (initial: boolean) => {
+      if (initial) setLoading(true)
+      api.sessionActivity(session.id)
+        .then((r) => { if (!live) return; if (r.error) setError(r.error); else { setError(''); setEvents(r.events ?? []); setSummary(r.summary ?? []) } })
+        .catch(() => { if (live && initial) setError('Could not load activity') })
+        .finally(() => { if (live && initial) setLoading(false) })
+    }
+    load(true)
+    // Keep statuses fresh while the agent is still working (todo→done lands without a manual reopen).
+    const timer = session.alive ? window.setInterval(() => load(false), 4000) : undefined
+    return () => { live = false; if (timer) window.clearInterval(timer) }
+  }, [session.id, session.alive])
+
+  // Latest entry per live object — a task touched 3× collapses to its current row — so the object
+  // list and its status counts read true. Outstanding (open/blocked) float to the top.
+  const objects = useMemo(() => {
+    const byTarget = new Map<string, ActivityEvent>()
+    for (const e of events) if (e.target && e.status) byTarget.set(`${e.target.kind}:${e.target.id}`, e)
+    const rank = (e: ActivityEvent) => (e.statusTone === 'open' ? 0 : e.statusTone === 'blocked' ? 1 : e.statusTone === 'denied' ? 2 : 3)
+    return [...byTarget.values()].sort((a, b) => rank(a) - rank(b) || b.ts - a.ts)
+  }, [events])
+  const outstanding = objects.filter((o) => o.statusTone === 'open' || o.statusTone === 'blocked').length
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose() }}>
-      <DialogContent className="max-h-[85vh] w-full max-w-[calc(100%-2rem)] gap-3 overflow-hidden sm:max-w-2xl">
+      <DialogContent className="left-auto right-0 top-0 flex h-dvh max-h-dvh w-full max-w-[calc(100%-2rem)] translate-x-0 translate-y-0 flex-col gap-3 overflow-hidden rounded-none border-l sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 pr-8">
             <Activity className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="truncate">{session.title}</span>
           </DialogTitle>
           <div className="text-xs text-muted-foreground">
-            {session.agent} · <span className="font-mono">{session.id}</span> · primitives this session used
+            {session.agent} · <span className="font-mono">{session.id}</span> · what this session opened{session.alive && <span className="ml-1 text-emerald-600">· live</span>}
           </div>
         </DialogHeader>
 
@@ -10254,12 +10293,43 @@ function SessionActivity({ session, onClose }: { session: Session; onClose: () =
           </div>
         )}
 
-        {/* chronological timeline */}
+        {/* Objects | Timeline toggle */}
+        <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5 text-xs">
+          <button onClick={() => setView('objects')} className={`flex-1 rounded-md px-2 py-1 ${view === 'objects' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}>
+            Objects{objects.length > 0 && <span className="ml-1 text-muted-foreground">{objects.length}</span>}
+          </button>
+          <button onClick={() => setView('timeline')} className={`flex-1 rounded-md px-2 py-1 ${view === 'timeline' ? 'bg-background shadow-sm' : 'text-muted-foreground'}`}>
+            Timeline{events.length > 0 && <span className="ml-1 text-muted-foreground">{events.length}</span>}
+          </button>
+        </div>
+
         <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border">
           {loading ? (
             <div className="p-6 text-sm text-muted-foreground">Loading activity…</div>
           ) : error ? (
             <div className="p-6 text-sm text-destructive">{error}</div>
+          ) : view === 'objects' ? (
+            objects.length === 0 ? (
+              <div className="p-6 text-sm text-muted-foreground">
+                This session hasn't opened any tracked objects yet — tasks, secrets, policy proposals, KB
+                pages and skills show up here with their live status. Switch to Timeline for the full trail.
+              </div>
+            ) : (
+              <div className="divide-y">
+                {objects.map((e, i) => {
+                  const st = ACTIVITY_STYLE[e.category] ?? ACTIVITY_STYLE.other
+                  const Icon = st.icon
+                  return (
+                    <div key={i} className="flex items-start gap-2.5 px-3 py-2 text-xs">
+                      <span title={st.label} className="mt-0.5 shrink-0"><Icon className={`h-3.5 w-3.5 ${st.cls}`} /></span>
+                      <Badge variant="outline" className="shrink-0 px-1.5 py-0 font-mono text-[10px]">{e.primitive}</Badge>
+                      <span className="min-w-0 flex-1 break-words" title={e.summary}>{e.summary}</span>
+                      <StatusChip e={e} />
+                    </div>
+                  )
+                })}
+              </div>
+            )
           ) : events.length === 0 ? (
             <div className="p-6 text-sm text-muted-foreground">
               No governed primitives recorded for this session yet. Read-only tools (recall, searches, inbox
@@ -10272,7 +10342,7 @@ function SessionActivity({ session, onClose }: { session: Session; onClose: () =
                 const Icon = st.icon
                 return (
                   <div key={i} className="flex items-start gap-2.5 px-3 py-2 text-xs">
-                    <span className="w-16 shrink-0 pt-0.5 font-mono text-[11px] text-muted-foreground" title={new Date(e.ts).toLocaleString()}>
+                    <span className="w-14 shrink-0 pt-0.5 font-mono text-[11px] text-muted-foreground" title={new Date(e.ts).toLocaleString()}>
                       {new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                     </span>
                     <Icon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${st.cls}`} />
@@ -10281,6 +10351,7 @@ function SessionActivity({ session, onClose }: { session: Session; onClose: () =
                       <Badge variant="outline" className={`shrink-0 px-1.5 py-0 text-[10px] ${EFFECT_CLS[e.effect]}`}>{e.effect}</Badge>
                     )}
                     <span className="min-w-0 flex-1 break-words text-muted-foreground" title={e.summary}>{e.summary}</span>
+                    <StatusChip e={e} />
                   </div>
                 )
               })}
@@ -10288,7 +10359,9 @@ function SessionActivity({ session, onClose }: { session: Session; onClose: () =
           )}
         </div>
         <div className="text-[11px] text-muted-foreground">
-          {loading ? '' : `${events.length} primitive${events.length === 1 ? '' : 's'} · from the session's audit trail`}
+          {loading ? '' : view === 'objects'
+            ? `${objects.length} object${objects.length === 1 ? '' : 's'}${outstanding > 0 ? ` · ${outstanding} still open` : ''}`
+            : `${events.length} primitive${events.length === 1 ? '' : 's'} · from the session's audit trail`}
         </div>
       </DialogContent>
     </Dialog>

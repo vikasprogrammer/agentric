@@ -16,7 +16,7 @@ import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
-import { classifyActivity, clipText, ActivityCategory, ActivityEffect } from './state/session-activity';
+import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
 import { readConversation, type ChatArtifactRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
@@ -2301,7 +2301,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const rows = os.db
       .prepare('SELECT ts, type, data FROM audit_events WHERE tenant = ? AND run_id = ? ORDER BY ts ASC, id ASC')
       .all<{ ts: number; type: string; data: string }>(os.tenant, id);
-    type Row = { ts: number; category: ActivityCategory; primitive: string; summary: string; effect?: ActivityEffect };
+    type StatusTone = 'open' | 'done' | 'blocked' | 'denied' | 'muted';
+    type Row = { ts: number; category: ActivityCategory; primitive: string; summary: string; effect?: ActivityEffect; target?: ActivityTarget; status?: string; statusTone?: StatusTone };
     const events: Row[] = [];
     for (const r of rows) {
       const d = classifyActivity(r.type, safeJson(r.data));
@@ -2314,6 +2315,68 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       .all<{ ts: number; body: string }>(id);
     for (const u of ups) events.push({ ts: u.ts, category: 'operator', primitive: 'update', summary: clipText(u.body) });
     events.sort((a, b) => a.ts - b.ts);
+
+    // Attach each object-bearing entry's CURRENT status — audit is point-in-time ("task created"), so
+    // this is what turns the trail into "what is it doing/done" (a task's todo→done, a proposal's
+    // pending→approved). Resolved from the live stores; cached per target so a task touched by several
+    // events is queried once.
+    const statusCache = new Map<string, { status: string; tone: StatusTone } | null>();
+    const msgTone = (s: string): { status: string; tone: StatusTone } =>
+      s === 'approved' ? { status: 'approved', tone: 'done' }
+      : s === 'rejected' ? { status: 'rejected', tone: 'denied' }
+      : s === 'resolved' ? { status: 'resolved', tone: 'muted' }
+      : { status: 'pending', tone: 'open' };
+    // Proposal cards (secret-request / skill / policy) are `messages` rows that carry their own live
+    // status — load this session's once, indexed by the discriminator the classifier stored as target.id.
+    const skillProp = new Map<string, string>(); // skill name → status
+    const secretReq = new Map<string, string>(); // secret key → status
+    const policyProp: Array<{ cap: string; status: string }> = []; // capability → status (in order)
+    for (const m of os.db
+      .prepare("SELECT type, status, args FROM messages WHERE session_id = ? AND type IN ('secret.request','skill.proposed','policy.proposal')")
+      .all<{ type: string; status: string; args: string | null }>(id)) {
+      const a = safeJson(m.args ?? '') as Record<string, unknown>;
+      if (m.type === 'skill.proposed' && typeof a.skill === 'string') skillProp.set(a.skill, m.status);
+      else if (m.type === 'secret.request' && typeof a.key === 'string') secretReq.set(a.key, m.status);
+      else if (m.type === 'policy.proposal') {
+        const cap = (a.delta as { match?: { capability?: unknown } } | undefined)?.match?.capability;
+        if (typeof cap === 'string') policyProp.push({ cap, status: m.status });
+      }
+    }
+    const resolveStatus = (t: ActivityTarget): { status: string; tone: StatusTone } | null => {
+      const ck = `${t.kind}:${t.id}`;
+      const cached = statusCache.get(ck);
+      if (cached !== undefined) return cached;
+      let out: { status: string; tone: StatusTone } | null = null;
+      if (t.kind === 'task') {
+        const row = os.db.prepare('SELECT status FROM tasks WHERE tenant = ? AND id = ?').get<{ status: string }>(os.tenant, t.id);
+        out = !row ? { status: 'deleted', tone: 'muted' }
+          : { status: row.status, tone: row.status === 'done' ? 'done' : row.status === 'blocked' || row.status === 'cancelled' ? 'blocked' : 'open' };
+      } else if (t.kind === 'kb') {
+        const slash = t.id.indexOf('/');
+        const section = slash >= 0 ? t.id.slice(0, slash) : t.id, slug = slash >= 0 ? t.id.slice(slash + 1) : '';
+        const row = os.db.prepare('SELECT rev FROM kb_pages WHERE tenant = ? AND section = ? AND slug = ?').get<{ rev: number }>(os.tenant, section, slug);
+        out = row ? { status: `rev ${row.rev}`, tone: 'muted' } : { status: 'deleted', tone: 'muted' };
+      } else if (t.kind === 'approval') {
+        const row = os.db.prepare('SELECT status FROM approvals WHERE tenant = ? AND id = ?').get<{ status: string }>(os.tenant, t.id);
+        if (row) out = row.status === 'approved' ? { status: 'approved', tone: 'done' } : row.status === 'rejected' ? { status: 'rejected', tone: 'denied' } : { status: 'pending', tone: 'open' };
+      } else if (t.kind === 'secret') {
+        const row = os.db.prepare('SELECT 1 AS ok FROM secrets WHERE tenant = ? AND key = ? LIMIT 1').get<{ ok: number }>(os.tenant, t.id);
+        out = row ? { status: 'stored', tone: 'muted' } : { status: 'removed', tone: 'muted' };
+      } else if (t.kind === 'secret-request') {
+        const s = secretReq.get(t.id); out = s ? msgTone(s) : null;
+      } else if (t.kind === 'skill-proposal') {
+        const s = skillProp.get(t.id); out = s ? msgTone(s) : null;
+      } else if (t.kind === 'policy-proposal') {
+        const s = policyProp.find((p) => p.cap === t.id)?.status; out = s ? msgTone(s) : null;
+      }
+      statusCache.set(ck, out);
+      return out;
+    };
+    for (const e of events) {
+      if (!e.target) continue;
+      const r = resolveStatus(e.target);
+      if (r) { e.status = r.status; e.statusTone = r.tone; }
+    }
     // Grouped count summary (primitive → how many times), most-used first.
     const byPrim = new Map<string, { primitive: string; category: ActivityCategory; count: number }>();
     for (const e of events) {
