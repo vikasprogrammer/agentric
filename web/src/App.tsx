@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2 } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -598,10 +598,14 @@ export default function App() {
     return () => window.removeEventListener('hashchange', on)
   }, [])
   const viewArtifactId = hash.match(/^#\/view\/([\w-]+)/)?.[1]
+  // Chrome-less full-window single terminal at `#/term/<tmux>` — the "Pop out" affordance opens a pane
+  // on its own in a new browser tab (distraction-free, no console shell). Same auth cookie, so it just works.
+  const termTmux = hash.match(/^#\/term\/([^?]+)/)?.[1]
 
   if (me === undefined) return <div className="flex h-screen items-center justify-center text-sm text-muted-foreground">Loading…</div>
   if (me === null) return <LoginScreen accent={accent} />
   if (viewArtifactId) return <FullArtifactView id={viewArtifactId} />
+  if (termTmux) return <FullTerminalView tmux={decodeDetail(termTmux)} />
   return <Console me={me} />
 }
 
@@ -2007,8 +2011,22 @@ function QuickShortcuts({ session, attachable }: { session: Session; attachable:
 /** The live terminal pane. It asks the server for the attach URL — the shared /terminal/?arg=…
  *  (uid-isolation off) or a per-member /terminal/<space>/?arg=… (on) — and derives the ttyd WebSocket
  *  endpoint from it, which our first-party <Xterm> speaks directly (no iframe). */
-function TerminalFrame({ session, tmux, onActivity, ops }: { session?: Session; tmux: string; onActivity?: (sid: string) => void; ops?: SessionOps }) {
+function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session?: Session; tmux: string; onActivity?: (sid: string) => void; ops?: SessionOps; standalone?: boolean }) {
   const [wsUrl, setWsUrl] = useState('')
+  // Distraction-free mode: lift the terminal out of the console layout to cover the whole viewport
+  // (fixed inset-0), hiding the sidebar + tab strip so nothing but the pane is on screen. Esc exits.
+  // Never engaged in the `standalone` chrome-less popout (`#/term/<tmux>`) — that view is already bare.
+  const [zen, setZen] = useState(false)
+  useEffect(() => {
+    if (!zen) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZen(false) }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [zen])
+  // A viewed-session change tears the whole frame down (keyed on tmux), but reset defensively anyway.
+  useEffect(() => { setZen(false) }, [session?.id])
+  // Chrome-less popout of THIS pane in a fresh browser tab — a real anchor so ⌘/middle-click work too.
+  const popoutHref = session?.tmux || (!session && tmux) ? '#/term/' + encodeDetail(session?.tmux || tmux) : undefined
   const [err, setErr] = useState('')
   const [transcript, setTranscript] = useState<string | null>(null)
   // "Take over" state: claiming an unattended run doesn't relaunch it (the pane is already a live TUI) —
@@ -2084,7 +2102,7 @@ function TerminalFrame({ session, tmux, onActivity, ops }: { session?: Session; 
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!wsUrl) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div className={zen ? 'fixed inset-0 z-[60] flex flex-col bg-black' : 'relative flex min-h-0 flex-1 flex-col'}>
       {showTakeover && (
         <button onClick={takeOver} disabled={takingOver}
           className="absolute left-1/2 top-2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-sky-700 bg-neutral-900/90 px-3 py-1 text-xs text-sky-300 shadow hover:bg-sky-950 disabled:opacity-50"
@@ -2094,7 +2112,9 @@ function TerminalFrame({ session, tmux, onActivity, ops }: { session?: Session; 
       )}
       <ImageDropZone session={session} attachable={Boolean(session) && (isLive(session!) || overrideAttach)}
         onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}
-        fontSize={fontSize} setFontSize={setFontSize} ops={ops} onReload={reload}>
+        fontSize={fontSize} setFontSize={setFontSize} ops={ops} onReload={reload}
+        zen={zen} onToggleZen={standalone ? undefined : () => setZen((v) => !v)}
+        popoutHref={standalone ? undefined : popoutHref}>
         <Xterm key={nonce} wsUrl={wsUrl} fontSize={fontSize} copyOnSelect />
       </ImageDropZone>
     </div>
@@ -2107,13 +2127,18 @@ function TerminalFrame({ session, tmux, onActivity, ops }: { session?: Session; 
  *  (file paste). Each uploads the bytes; the server saves them in the agent's folder and types the path
  *  into the running claude. Now that the terminal is same-document (no iframe), drops/pastes over it
  *  bubble to our window handlers directly — no cross-document interception needed. */
-function ImageDropZone({ session, attachable, children, onActivity, fontSize, setFontSize, ops, onReload }: {
+function ImageDropZone({ session, attachable, children, onActivity, fontSize, setFontSize, ops, onReload, zen, onToggleZen, popoutHref }: {
   session?: Session; attachable?: boolean; children: ReactNode; onActivity?: () => void
   fontSize: number; setFontSize: (f: number | ((s: number) => number)) => void
   /** Lifecycle callbacks for the top-right "Operations" menu (absent → the menu is hidden). */
   ops?: SessionOps
   /** Reload the agent process in place; resolves with the API result so we can toast it. */
   onReload?: () => Promise<{ ok: boolean; error?: string }>
+  /** Distraction-free (full-viewport) state + toggle. Toggle absent → the button is hidden. */
+  zen?: boolean
+  onToggleZen?: () => void
+  /** Href to pop this pane out into a chrome-less browser tab (`#/term/<tmux>`); absent → hidden. */
+  popoutHref?: string
 }) {
   const [drag, setDrag] = useState(false)
   const [help, setHelp] = useState(false)
@@ -2225,8 +2250,27 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
         {session?.id && <QuickShortcuts session={session} attachable={Boolean(attachable)} />}
       </div>
       <TerminalHelpModal open={help} onClose={() => setHelp(false)} />
-      {/* top-right session toolbar: browse the agent's folder + attach a file */}
+      {/* top-right session toolbar: distraction-free + popout, browse the agent's folder + attach a file */}
       <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5">
+        {popoutHref && (
+          <a
+            href={popoutHref} target="_blank" rel="noreferrer"
+            className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 no-underline shadow hover:bg-neutral-700"
+            title="open this terminal on its own in a new browser tab"
+          >
+            <ExternalLink className="h-3.5 w-3.5" /> Pop out
+          </a>
+        )}
+        {onToggleZen && (
+          <button
+            onClick={onToggleZen}
+            className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+            title={zen ? 'exit distraction-free mode (Esc)' : 'distraction-free — fill the whole window with just this terminal'}
+          >
+            {zen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            {zen ? 'Exit' : 'Focus'}
+          </button>
+        )}
         {session?.agent && (
           <a
             href={navHref('files', 'agents/' + session.agent)}
@@ -4518,6 +4562,35 @@ function FullArtifactView({ id }: { id: string }) {
           : isHtmlArt(a) ? <iframe src={raw} title={a.title} sandbox="allow-scripts allow-popups allow-forms" className="h-[88vh] w-full rounded border bg-white" />
           : <div className="text-center text-sm text-muted-foreground">No inline preview. <a href={raw} download={a.filename} className="text-primary underline">Download {a.filename}</a></div>}
       </main>
+    </div>
+  )
+}
+
+/** Chrome-less, full-window single terminal at `#/term/<tmux>` — the "Pop out" target. Rendered OUTSIDE
+ *  the Console shell (no sidebar/nav/tab strip), so a pane gets a whole browser tab to itself. Reuses the
+ *  same <TerminalFrame> (with `standalone` so it drops its own popout/focus buttons), attaching by tmux;
+ *  it also fetches the session row so lifecycle bits (transcript for an ended run, file attach) light up. */
+function FullTerminalView({ tmux }: { tmux: string }) {
+  const [session, setSession] = useState<Session | null | undefined>(undefined) // undefined = loading
+  useEffect(() => {
+    let live = true
+    api.sessions()
+      .then((list) => { if (!live) return; const hit = list.find((s) => s.tmux === tmux) ?? null; setSession(hit); document.title = (hit?.title || tmux) + ' · terminal' })
+      .catch(() => { if (live) setSession(null) })
+    return () => { live = false }
+  }, [tmux])
+  if (session === undefined) return <div className="flex h-screen items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
+  return (
+    <div className="flex h-screen flex-col bg-black">
+      <div className="flex shrink-0 items-center gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-300">
+        <TerminalSquare className="h-4 w-4 shrink-0" />
+        <span className="truncate font-medium">{session?.title || tmux}</span>
+        {session && <span className="flex items-center gap-1"><span className={`h-1.5 w-1.5 rounded-full ${statusDot(session)}`} /></span>}
+        <a href="#/sessions" className="ml-auto flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-neutral-400 no-underline hover:bg-neutral-800 hover:text-neutral-200" title="back to the full console">
+          <ArrowLeft className="h-3.5 w-3.5" /> Console
+        </a>
+      </div>
+      <TerminalFrame key={tmux} session={session ?? undefined} tmux={tmux} standalone />
     </div>
   )
 }
