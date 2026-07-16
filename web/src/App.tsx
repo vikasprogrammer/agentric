@@ -2007,7 +2007,7 @@ function QuickShortcuts({ session, attachable }: { session: Session; attachable:
 /** The live terminal pane. It asks the server for the attach URL — the shared /terminal/?arg=…
  *  (uid-isolation off) or a per-member /terminal/<space>/?arg=… (on) — and derives the ttyd WebSocket
  *  endpoint from it, which our first-party <Xterm> speaks directly (no iframe). */
-function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux: string; onActivity?: (sid: string) => void }) {
+function TerminalFrame({ session, tmux, onActivity, ops }: { session?: Session; tmux: string; onActivity?: (sid: string) => void; ops?: SessionOps }) {
   const [wsUrl, setWsUrl] = useState('')
   const [err, setErr] = useState('')
   const [transcript, setTranscript] = useState<string | null>(null)
@@ -2041,6 +2041,16 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
     if (!r.ok) { setErr(r.error || 'could not take over this run'); return }
     // Claimed — the live pane keeps streaming; just hide the button and (re)attach to it cleanly.
     setTranscript(null); setOverrideAttach(true); setNonce((n) => n + 1)
+  }
+  // "Reload" (Operations menu): restart the agent process in place — the server kills the pane and leaves
+  // the session resurrectable, then bumping `nonce` remounts the terminal so it re-attaches and attach.sh
+  // relaunches via `claude --resume` (same session id), picking up any newly-connected MCP server. Returns
+  // the API result so the ImageDropZone chrome can toast success/failure.
+  const reload = async (): Promise<{ ok: boolean; error?: string }> => {
+    if (!session?.id) return { ok: false, error: 'no session' }
+    const r = await api.reloadSession(session.id)
+    if (r.ok) { setTranscript(null); setNonce((n) => n + 1) }
+    return r
   }
   useEffect(() => {
     let alive = true
@@ -2084,7 +2094,7 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
       )}
       <ImageDropZone session={session} attachable={Boolean(session) && (isLive(session!) || overrideAttach)}
         onActivity={onActivity && session?.id ? () => onActivity(session.id) : undefined}
-        fontSize={fontSize} setFontSize={setFontSize}>
+        fontSize={fontSize} setFontSize={setFontSize} ops={ops} onReload={reload}>
         <Xterm key={nonce} wsUrl={wsUrl} fontSize={fontSize} copyOnSelect />
       </ImageDropZone>
     </div>
@@ -2097,9 +2107,13 @@ function TerminalFrame({ session, tmux, onActivity }: { session?: Session; tmux:
  *  (file paste). Each uploads the bytes; the server saves them in the agent's folder and types the path
  *  into the running claude. Now that the terminal is same-document (no iframe), drops/pastes over it
  *  bubble to our window handlers directly — no cross-document interception needed. */
-function ImageDropZone({ session, attachable, children, onActivity, fontSize, setFontSize }: {
+function ImageDropZone({ session, attachable, children, onActivity, fontSize, setFontSize, ops, onReload }: {
   session?: Session; attachable?: boolean; children: ReactNode; onActivity?: () => void
   fontSize: number; setFontSize: (f: number | ((s: number) => number)) => void
+  /** Lifecycle callbacks for the top-right "Operations" menu (absent → the menu is hidden). */
+  ops?: SessionOps
+  /** Reload the agent process in place; resolves with the API result so we can toast it. */
+  onReload?: () => Promise<{ ok: boolean; error?: string }>
 }) {
   const [drag, setDrag] = useState(false)
   const [help, setHelp] = useState(false)
@@ -2222,6 +2236,18 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
             <FolderTree className="h-3.5 w-3.5" /> Files
           </a>
         )}
+        {/* Operations — the session-lifecycle menu (reload / transfer / fork / stop / delete) */}
+        {session?.id && ops && onReload && (
+          <OperationsMenu
+            session={session}
+            ops={ops}
+            onReload={async () => {
+              setToast({ kind: 'busy', text: 'reloading agent…' })
+              const r = await onReload()
+              setToast(r.ok ? { kind: 'ok', text: 'agent reloaded — MCP is reconnecting' } : { kind: 'err', text: r.error || 'reload failed' })
+            }}
+          />
+        )}
         {/* 📎 attach button — opens a file picker (any file type); always works regardless of focus */}
         <label
           className="flex cursor-pointer items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
@@ -2342,6 +2368,95 @@ function TransferMenu({ session, members, me, onTransfer, variant }: {
             <span className="truncate">{m.name}</span>
           </DropdownMenuItem>
         ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+/** The lifecycle callbacks the terminal-view "Operations" menu needs — threaded from SessionsPage down
+ *  through TerminalFrame → ImageDropZone so the menu can act on the open session. */
+type SessionOps = {
+  members: Member[]
+  me: Member
+  onOpen: (tmux: string, title: string) => void
+  onStop: (id: string) => void
+  onDelete: (id: string, tmux: string) => void
+  onTransfer: (id: string, toMemberId: string) => void
+}
+
+/** The per-session "Operations" dropdown pinned top-right of the live terminal, next to Files. One menu
+ *  for the session-lifecycle actions that were otherwise scattered across the tab strip / cards:
+ *  - Reload — restart the agent process IN PLACE (kill + `claude --resume`, same session id), the way to
+ *    pick up a newly-connected MCP server (they only spawn at claude launch). Resumable sessions only.
+ *  - Transfer — hand the run-as to another member (owner/admin or the current owner; the "share" action).
+ *  - Fork — branch a new session that inherits this conversation.
+ *  - Stop / Delete — halt or remove the session.
+ *  Each item mirrors the gating of its tab-strip/card counterpart. */
+function OperationsMenu({ session, ops, onReload }: { session: Session; ops: SessionOps; onReload: () => void }) {
+  const { members, me, onOpen, onStop, onDelete, onTransfer } = ops
+  const canTransfer = me.role === 'owner' || me.role === 'admin' || session.runAs === me.id
+  const transferTargets = canTransfer ? members.filter((m) => m.id !== session.runAs) : []
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            className="flex items-center gap-1 rounded bg-neutral-800/90 px-2 py-1 text-xs text-neutral-200 shadow hover:bg-neutral-700"
+            title="session operations — reload, transfer, fork, stop, delete"
+          >
+            <Wrench className="h-3.5 w-3.5" /> Operations
+          </button>
+        }
+      />
+      <DropdownMenuContent align="end" className="min-w-[15rem]">
+        {session.resumable && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={onReload}>
+            <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
+            <span className="flex flex-col">
+              <span>Reload</span>
+              <span className="text-[10px] text-muted-foreground">restart the agent · picks up new MCP connections</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {canFork(session) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => forkAndOpen(session, onOpen)}>
+            <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
+            <span className="flex flex-col">
+              <span>Fork</span>
+              <span className="text-[10px] text-muted-foreground">branch a new session from this conversation</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {isLive(session) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => onStop(session.id)}>
+            <Square className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
+            <span className="flex flex-col">
+              <span>Stop</span>
+              <span className="text-[10px] text-muted-foreground">halt this session's shell</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem variant="destructive" className="gap-2 text-xs" onClick={() => onDelete(session.id, session.tmux)}>
+          <Trash2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="flex flex-col">
+            <span>Delete</span>
+            <span className="text-[10px] text-muted-foreground opacity-80">remove the session + its messages/files</span>
+          </span>
+        </DropdownMenuItem>
+        {transferTargets.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <div className="px-2 py-1 text-[11px] text-muted-foreground">Transfer to…</div>
+            <div className="max-h-48 overflow-y-auto">
+              {transferTargets.map((m) => (
+                <DropdownMenuItem key={m.id} className="gap-2 text-xs" onClick={() => onTransfer(session.id, m.id)}>
+                  <MemberAvatar member={m} className="h-4 w-4 text-[9px]" />
+                  <span className="truncate">{m.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </div>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -2594,11 +2709,7 @@ function SessionsPage({
               <Terminal className="h-3 w-3" />
             </button>
           )}
-          {canFork(s) && (
-            <button className="rounded p-0.5 text-violet-400 hover:bg-neutral-600 hover:text-violet-300" onClick={() => forkAndOpen(s, onOpen)} title="fork — branch a new session that inherits this conversation (the original is left untouched)">
-              <GitBranch className="h-3 w-3" />
-            </button>
-          )}
+          {/* Fork moved to the terminal-view "Operations" menu (top-right, next to Files). */}
           {isLive(s) && (
             <button className="rounded p-0.5 text-amber-400 hover:bg-neutral-600 hover:text-amber-300" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
               <Square className="h-3 w-3" />
@@ -2660,7 +2771,8 @@ function SessionsPage({
             )}
           </div>
         </div>
-        <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity} />
+        <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity}
+          ops={{ members, me, onOpen, onStop, onDelete, onTransfer }} />
       </div>
     )
   }

@@ -3626,6 +3626,42 @@ export class TerminalManager {
   }
 
   /**
+   * Restart a resumable session's agent process IN PLACE, keeping its conversation. Kills the live pane
+   * and leaves the session resurrectable (no stop-marker) so the next terminal (re)attach relaunches it
+   * via `claude --resume <same claude id>` — the way to pick up a newly-connected MCP server (MCP servers
+   * spawn at claude launch, so a running session can't see one added mid-run). Unlike `stopSession` this
+   * writes NO 'stopped' episode and drops no resume-block, so the run stays whole: the real end-of-run
+   * episode still fires later, and the resurrected pane continues the SAME transcript. The pane dies for
+   * < 1s while the frontend remounts the terminal; status flips to 'stopped' meanwhile only to keep the
+   * crash-detector (a gone tmux on a 'running' row) from mislabelling the restart. Pending questions/
+   * approvals are cancelled — the process is going away and can't answer them. Only a claude-code session
+   * with a persisted launch env (resurrectable) can be reloaded. Caller applies the per-member gate.
+   */
+  reloadSession(sessionId: string, by: string): { ok: boolean; error?: string } {
+    const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
+    if (!r) return { ok: false, error: 'unknown session' };
+    // Reload only works for a resurrectable session — one whose persisted launch env attach.sh can
+    // `claude --resume` from. A headless run (no env) has nothing to restart into.
+    if (!this.os.paths || !fs.existsSync(path.join(this.os.paths.connectors, `session-${sessionId}.env`))) {
+      return { ok: false, error: 'this session cannot be reloaded (no resumable conversation)' };
+    }
+    const space = this.spaceFor(r.run_as ?? r.spawned_by);
+    this.captureTranscript(sessionId, space, r.tmux);
+    this.backend.kill(space, r.tmux);
+    // Park it 'stopped' so the lazy crash-detector (running row + gone tmux → crashed) doesn't fire in the
+    // sub-second window before the terminal reattaches and the resume launcher flips it back to 'running'.
+    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    this.clearNotifications(sessionId);
+    this.cancelPendingQuestions(sessionId, by);
+    this.cancelPendingApprovals(sessionId, by);
+    // Deliberate restart — the OPPOSITE of stopSession: clear any stale stop-marker so attach.sh
+    // resurrects (`claude --resume`) the moment the terminal reconnects.
+    this.allowResume(sessionId);
+    this.audit(sessionId, by, 'session.reloaded', { tmux: r.tmux });
+    return { ok: true };
+  }
+
+  /**
    * A human verdict on a finished run — 'up' (did what I wanted) / 'down' (didn't) / null (clear it).
    * The ground-truth signal that feeds the agent maturity score above self-report + task result. One
    * verdict per session (latest wins); the caller must be allowed to see the session (checked upstream).
@@ -3972,7 +4008,7 @@ function shSingleQuote(v: string): string {
  *  the paired/duplicate signals (gate.attempt pairs gate.decision; approval.resolved/auto_approved pair
  *  approval.requested) so the audit-summary counts each governed action once, not two or three times. */
 const EPISODE_NOISE = new Set([
-  'session.created', 'session.ended', 'session.reported', 'session.resumed', 'session.stopped',
+  'session.created', 'session.ended', 'session.reported', 'session.resumed', 'session.reloaded', 'session.stopped',
   'session.error', 'session.tuning', 'session.progress', 'session.notified', 'session.attachment',
   'skills.materialized', 'skills.reloaded', 'skills.error', 'connector.minted', 'connector.mint.failed',
   'connector.secret.unresolved', 'shell.secret.injected', 'shell.secret.unresolved',

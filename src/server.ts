@@ -2573,6 +2573,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     tm.allowResume(id);
     return sendJson(res, 200, { ok: true });
   }
+  // Reload a session: restart its agent process in place (kill the pane, keep the transcript) so a
+  // newly-connected MCP server is picked up — MCP servers spawn at claude launch, so a running session
+  // can't see one added mid-run. The frontend remounts the terminal right after, and attach.sh
+  // resurrects via `claude --resume <same id>`. Same per-member gate as stop/resume.
+  const reloadMatch = p.match(/^\/api\/sessions\/([\w-]+)\/reload$/);
+  if (method === 'POST' && reloadMatch) {
+    const id = reloadMatch[1];
+    if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
+    const r = tm.reloadSession(id, me.email);
+    return sendJson(res, r.ok ? 200 : 400, r);
+  }
   // Permanently delete a session (kill tmux + cascade messages/questions/files) — same gate.
   const sessMatch = p.match(/^\/api\/sessions\/([\w-]+)$/);
   if (method === 'DELETE' && sessMatch) {

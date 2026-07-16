@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.223.0] — 2026-07-16
+### Added
+- **"Operations" menu on every session terminal.** A new dropdown pinned top-right of the live terminal,
+  next to Files, gathers the session-lifecycle actions in one place: **Reload**, **Fork**, **Stop**,
+  **Delete**, and **Transfer** (hand the run-as to a teammate). **Reload** is new — it restarts the agent
+  process IN PLACE (kill the pane, then `claude --resume` the same session id) so a newly-connected MCP
+  server is picked up; MCP servers only spawn at claude launch, so a running session otherwise can't see
+  one added mid-run. The conversation is preserved and, unlike Stop, no "stopped" episode is written, so
+  the real end-of-run episode still fires. New `POST /api/sessions/:id/reload` → `TerminalManager.reloadSession`
+  (gated only for resumable claude-code sessions); the console remounts the terminal to re-attach and
+  resurrect via attach.sh. **Fork** moves here from the terminal tab-strip hover controls (still available
+  on the session cards/rows).
+
 ## [0.222.1] — 2026-07-16
 ### Fixed
 - **Session trail: `task_dispatch` no longer mis-reads as "deleted".** The `task.dispatched` audit event

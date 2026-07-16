@@ -1125,6 +1125,9 @@ export const api = {
   messages: (scope: 'mine' | 'all' = 'mine') => call<Msg[]>('GET', `/api/messages${scope === 'all' ? '?scope=all' : ''}`),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
+  /** Restart a session's agent process in place (keeps the transcript, resumes the same claude id) so a
+   *  newly-connected MCP server is picked up. The terminal must remount right after to re-attach. */
+  reloadSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/reload`),
   /** Halt every running session tenant-wide (owner/admin). Softer sibling of the kill switch. */
   stopAllSessions: () => call<{ ok: boolean; halted?: number; error?: string }>('POST', '/api/sessions/stop-all'),
   /** Host resource snapshot for Settings → System (RAM / CPU / uptime). */
