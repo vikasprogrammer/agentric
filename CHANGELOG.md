@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.214.1] — 2026-07-16
+### Fixed
+- **Closing a session tab no longer jumps to a teammate's session.** When you closed the open tab (or
+  stopped the session you were viewing), the fallback that picks the "next" tab scanned the *entire*
+  fleet list — which, for an owner/admin, includes every member's sessions — so it could open an
+  unowned session that flickers until you click one of your own tabs. Both fallbacks (`closeTab` and
+  `stopSession` in `web/src/App.tsx`) now scope the pick to sessions that are mine (spawned by or run
+  as me), mirroring the "mine"-scoped sidebar/strip.
+
 ## [0.214.0] — 2026-07-16
 ### Added
 - **Edit a text/Markdown deliverable in place in the Library.** A published artifact used to be a

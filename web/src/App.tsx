@@ -927,6 +927,8 @@ function Console({ me }: { me: Member }) {
     setMessages((ms) => ms.filter((m) => !toClear.some((c) => c.id === m.id)))
     toClear.forEach((m) => { void api.dismissMessage(m.id) })
   }
+  // A session belongs to me if I spawned it or it runs as me — the same rule that scopes the sidebar/strip.
+  const isMine = (s: Session) => s.spawnedBy === me.id || s.runAs === me.id
   const openTerminal = (tmux: string, _title?: string) => {
     // The tmux lands in the URL (`#/sessions/<tmux>`); `selected` is derived from it above.
     nav('sessions', tmux)
@@ -940,7 +942,9 @@ function Console({ me }: { me: Member }) {
   const closeTab = (tmux: string) => {
     const n = new Set(hiddenTabs); n.add(tmux); persistHiddenTabs(n)
     if (selected?.tmux === tmux) {
-      const next = sessions.find((s) => isLive(s) && s.tmux !== tmux && !n.has(s.tmux))
+      // Only fall back to a tab that is actually MINE — the switcher strip is "mine"-scoped, so for an
+      // owner/admin `sessions` is the whole fleet and an unscoped pick would jump to a teammate's session.
+      const next = sessions.find((s) => isLive(s) && isMine(s) && s.tmux !== tmux && !n.has(s.tmux))
       if (next) nav('sessions', next.tmux)
       else nav('sessions')
     }
@@ -955,7 +959,8 @@ function Console({ me }: { me: Member }) {
     // If you stopped the session you're currently viewing, don't sit on a dead terminal:
     // hop to the next open session, or fall back to the all-sessions list when none remain.
     if (stopped && selected?.tmux === stopped.tmux) {
-      const next = fresh.find((s) => isLive(s) && s.tmux !== stopped.tmux && !hiddenTabs.has(s.tmux))
+      // Same scoping as closeTab: never hop to a teammate's session (the fleet-wide list an owner sees).
+      const next = fresh.find((s) => isLive(s) && isMine(s) && s.tmux !== stopped.tmux && !hiddenTabs.has(s.tmux))
       if (next) nav('sessions', next.tmux)
       else nav('sessions')
     }
