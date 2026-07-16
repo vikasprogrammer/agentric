@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.213.0] — 2026-07-16
+### Changed
+- **"Open" on a Library deliverable renders markdown instead of showing raw source.** The Open button
+  now routes markdown/text through a chrome-less full-screen viewer at `#/view/<id>` that reuses the
+  console's markdown pipeline (remark-gfm + wiki-links), so opening a `.md` reads as formatted prose in
+  the new tab rather than the browser's raw `text/markdown` dump. Binary/native types (image/PDF/video/
+  HTML) still open their raw URL, which the browser renders full-screen itself. The viewer is auth-gated
+  like every other view and bypasses the console shell (`FullArtifactView` in `web/src/App.tsx`).
+
 ## [0.212.0] — 2026-07-16
 ### Added
 - **Agents link every PR back to their session by default.** A new `AOS_SESSION_URL` env var carries a
