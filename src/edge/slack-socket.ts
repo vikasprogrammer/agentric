@@ -30,6 +30,9 @@ export class SlackSocket {
   private generation = 0; // bumped on every (re)start so a stale socket's handlers no-op
   /** slack user id → resolved email, cached for the process to avoid hammering users.info. */
   private readonly emailCache = new Map<string, string>();
+  /** email → slack user id (or null when the address isn't in the workspace), cached for the process.
+   *  Backs the identity-map auto-link so a notification never re-queries users.lookupByEmail per send. */
+  private readonly userByEmailCache = new Map<string, string | null>();
   private lastError = '';
 
   constructor(
@@ -350,5 +353,24 @@ export class SlackSocket {
     const email = await lookupUserEmail(this.os.settings.slackBotToken(), userId);
     this.emailCache.set(userId, email);
     return email;
+  }
+
+  /**
+   * Resolve a team member's Slack user id from their email (`users.lookupByEmail`) — the discovery half
+   * of the identity-map auto-link. Both hits and misses are cached in-process, so an unlinked-and-absent
+   * member is queried at most once per process, not on every notification. Returns null when Slack isn't
+   * configured or the address isn't in the workspace. Best-effort; never throws.
+   */
+  async userIdForEmail(email: string): Promise<string | null> {
+    const key = (email || '').trim().toLowerCase();
+    if (!key) return null;
+    const token = this.os.settings.slackBotToken();
+    if (!token) return null;
+    const cached = this.userByEmailCache.get(key);
+    if (cached !== undefined) return cached;
+    const found = await lookupUserByEmail(token, key);
+    const uid = 'error' in found ? null : found.user;
+    this.userByEmailCache.set(key, uid);
+    return uid;
   }
 }

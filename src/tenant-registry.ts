@@ -314,15 +314,27 @@ export class TenantRegistry {
  * callers pass an already-resolved set (see {@link resolveRecipients}) so WHO and HOW-to-reach stay
  * separate concerns.
  */
-async function deliverDM(slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string | ((platform: ChatPlatform) => string)): Promise<number> {
+async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, os: AgentOS, recipients: Member[], text: string | ((platform: ChatPlatform) => string)): Promise<number> {
   // `text` may be a per-platform builder so a message can carry a masked deep-link, whose syntax differs
   // between Slack mrkdwn (`<url|label>`) and Discord markdown (`[label](url)`). A plain string is sent as-is.
   const render = (platform: ChatPlatform) => (typeof text === 'function' ? text(platform) : text);
   let dms = 0;
   for (const m of recipients) {
     const ids = os.team.externalIdsFor(m.id);
-    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
+    let slackId = ids.find((i) => i.provider === 'slack')?.externalId;
     const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
+    // No linked Slack handle? Discover it from the member's (verified) email via users.lookupByEmail and
+    // persist it to the identity map, so this reaches them now AND never needs the lookup again. Slack is
+    // the only platform we can auto-link — Discord exposes no email, so an unlinked Discord member stays
+    // manual (the "Complete your profile" nudge asks them to link it). Discord has no email fallback.
+    if (!slackId && m.email) {
+      const found = await slack.userIdForEmail(m.email);
+      if (found) {
+        os.team.setIdentity(m.id, 'slack', found, 'auto:slack-email');
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'identity.autolinked', data: { member: m.id, provider: 'slack', externalId: found } });
+        slackId = found;
+      }
+    }
     if (slackId && (await slack.dmUser(slackId, render('slack'))).ok) dms++;
     if (discordId && (await discord.dmUser(discordId, render('discord'))).ok) dms++;
   }
@@ -335,7 +347,7 @@ async function deliverDM(slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<Disco
  * /api/auth/request-link`). Best-effort; the caller ALSO logs the link to server.log so an owner with
  * box access can always recover even with no chat identity linked. Returns the delivered-DM count.
  */
-export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, member: Member, link: string): Promise<number> {
+export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, member: Member, link: string): Promise<number> {
   const text =
     `🔑 Your Agent OS sign-in link (valid 7 days, single use):\n${link}\n` +
     `If you didn't request this, you can ignore it — the link is harmless until it's opened.`;
@@ -350,7 +362,7 @@ export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * (`canApprove(role, level)`); `deliverDM` reaches them via the identity map. Off the gate's hot path
  * (the caller fires-and-forgets). Audited once.
  */
-export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: ApprovalNotice): Promise<void> {
+export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: ApprovalNotice): Promise<void> {
   // Route to the SAME audience the inbox card uses (approvalAudience): the session owner alone when they
   // can clear this level (an admin self-approving their own run), else the full approver tier — so we
   // stop DMing every admin about every other admin's self-approvable session.
@@ -373,7 +385,7 @@ export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * else a member who spawned it); if the run has no human owner (a pure automation), falls back to the
  * `admins` audience so the question still reaches someone. Best-effort, off the ask hot path. Audited once.
  */
-export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager, 'bindQuestionDm'>, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: QuestionNotice): Promise<void> {
+export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager, 'bindQuestionDm'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: QuestionNotice): Promise<void> {
   // A question `ask`ed to a SPECIFIC teammate DMs that member; otherwise the run's operator.
   let targets = resolveRecipients(os, notice.to ? { kind: 'member', id: notice.to } : { kind: 'sessionOwner', id: notice.sessionId });
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
@@ -401,7 +413,7 @@ export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager,
  * an owner-less (or deleted-owner) task falls back to the `admins` audience so the miss still reaches
  * someone. Best-effort, fired once per task from the scheduler sweep (the once-guard lives in the DB).
  */
-export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, task: Task): Promise<void> {
+export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, task: Task): Promise<void> {
   let targets = task.owner ? resolveRecipients(os, { kind: 'member', id: task.owner }) : [];
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
@@ -445,7 +457,7 @@ function taskCard(n: TaskNotice): { audience: Audience; title: string; event: st
  * the awaited DM) so it's durable even if the process exits right after; the DM is best-effort. Skips
  * entirely when the change warrants no card or the only recipient is the actor who made it.
  */
-export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard'>, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TaskNotice): Promise<void> {
+export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'postTaskCard'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: TaskNotice): Promise<void> {
   const card = taskCard(notice);
   if (!card) return;
   // Resolve the receiver, then drop the actor themselves — nobody needs a card for their own action.
@@ -489,7 +501,7 @@ function maybePokeCaller(autos: Automations, os: AgentOS, notice: TaskNotice): v
  * DM the admins about a proactive insight alert (the Inbox card is posted separately by the tick). The
  * intelligence layer coming to the human — a struggling agent, a capability that keeps getting rejected.
  */
-export async function notifyInsightAlert(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, alert: InsightAlert): Promise<void> {
+export async function notifyInsightAlert(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, alert: InsightAlert): Promise<void> {
   const recipients = resolveRecipients(os, { kind: 'admins' });
   if (!recipients.length) return;
   const url = consolePage(consoleOrigin, 'insights');
@@ -504,7 +516,7 @@ export async function notifyInsightAlert(os: AgentOS, slack: Pick<SlackSocket, '
  * written (addressed to that member) by {@link TerminalManager.notifyMember}; this is the out-of-band
  * push to their linked Slack/Discord. Single named recipient — never a broadcast. Best-effort, audited.
  */
-export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: MemberNotice): Promise<void> {
+export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: MemberNotice): Promise<void> {
   const targets = resolveRecipients(os, { kind: 'member', id: notice.to });
   if (!targets.length) return;
   const bell = notice.important ? '❗' : '📨';
@@ -524,7 +536,7 @@ export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
  *   instead of failing silently (the largest silent class before this).
  * Best-effort, audited.
  */
-export async function notifySessionEvent(os: AgentOS, slack: Pick<SlackSocket, 'dmUser'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: SessionEventNotice): Promise<void> {
+export async function notifySessionEvent(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: SessionEventNotice): Promise<void> {
   const owner = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId });
   const targets = notice.kind === 'crashed'
     ? (owner.length ? owner : resolveRecipients(os, { kind: 'admins' }))
