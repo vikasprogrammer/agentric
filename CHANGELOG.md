@@ -8,7 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.226.0] — 2026-07-16
+## [0.227.0] — 2026-07-17
+### Added
+- **Slack chat IDs now auto-link from a member's email.** When a notification (task assignment, approval,
+  question, session event, …) needs to DM a member who has **no linked Slack handle**, `deliverDM`
+  (`tenant-registry.ts`) now looks their Slack user up by their (verified) account email via
+  `users.lookupByEmail` (new `SlackSocket.userIdForEmail`, in-process hit/miss cache), **DMs them, and
+  persists the discovered `U…` id to the identity map** (`created_by = auto:slack-email`, audited
+  `identity.autolinked`). So the first notification reaches an unlinked-but-in-Slack member AND every
+  later run-as/DM lookup is already resolved — no manual **Team → Chat IDs** step. Slack only: Discord
+  exposes no email, so an unlinked Discord member stays manual (see below). Needs the `users:read.email`
+  bot scope (already required for the reverse run-as lookup).
+- **"Complete your profile" checklist on the Profile page.** A live, self-dismissing card at the top of
+  **Profile** derived from what the member has already filled in — profile picture, a linked chat account
+  (Slack/Discord), a connected GitHub, and their working context. Each unfinished step shows a one-line
+  why and **scroll-jumps** to the relevant section below; the card hides once all four are done. This is
+  the manual fallback for what auto-link can't cover — chiefly **Discord**, which has no email to resolve
+  from — nudging members to link it themselves so task/approval DMs reach them.
 ### Added
 - **Distraction-free terminal + "Pop out" to its own tab.** The individual terminal view gets two new
   affordances in its top-right toolbar. **Focus** (⤢) lifts the pane to a full-viewport overlay (`fixed

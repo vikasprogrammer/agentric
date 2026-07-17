@@ -5602,10 +5602,27 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
   const toggleEvent = (k: NotifyKind) => onSavePrefs({ ...prefs, events: { ...prefs.events, [k]: !prefs.events[k] } })
   const dirty = context !== savedContext
 
+  // Profile completeness — nudge the member to fill the parts we can't derive for them. Slack now
+  // auto-links from their email on the first notification, so what's left is genuinely manual: a
+  // picture, their Discord/chat handle, GitHub, and their working context. Read from already-loaded
+  // state (savedContext = the persisted value, identities = their linked handles).
+  const hasAvatar = !!me.avatar
+  const hasContext = savedContext.trim().length > 0
+  const hasGithub = identities.some((i) => i.provider === 'github')
+  const hasChat = identities.some((i) => i.provider === 'slack' || i.provider === 'discord')
+  const steps = [
+    { key: 'avatar', done: hasAvatar, label: 'Add a profile picture', hint: 'So teammates recognise you across sessions and the inbox.', to: 'pf-avatar' },
+    { key: 'chat', done: hasChat, label: 'Link a chat account (Slack / Discord)', hint: 'A message from you runs its agent as you — and task & approval DMs reach you.', to: 'pf-chat' },
+    { key: 'git', done: hasGithub, label: 'Connect your GitHub', hint: 'Agents commit and open PRs under your name, not a shared bot.', to: 'pf-git' },
+    { key: 'context', done: hasContext, label: 'Add your working context', hint: 'Standing preferences injected into every session that runs as you.', to: 'pf-context' },
+  ]
+  const doneCount = steps.filter((s) => s.done).length
+  const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+
   return (
     <div className="max-w-3xl space-y-8">
       {/* Identity */}
-      <section className="flex items-center gap-4">
+      <section id="pf-avatar" className="flex items-center gap-4 scroll-mt-4">
         <EditableAvatar member={me} canEdit sizeClass="h-16 w-16 text-xl" onChanged={onProfileChange} />
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-lg font-semibold">
@@ -5616,8 +5633,43 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
         </div>
       </section>
 
+      {/* Complete your profile — a live checklist over the sections below. Hidden once every step is done. */}
+      {doneCount < steps.length && (
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-semibold"><Sparkles className="h-4 w-4 text-sky-500" /> Complete your profile</div>
+              <span className="text-xs text-muted-foreground">{doneCount} of {steps.length} done</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${Math.round((doneCount / steps.length) * 100)}%` }} />
+            </div>
+            <div className="space-y-1">
+              {steps.map((s) => (
+                <button
+                  key={s.key}
+                  type="button"
+                  onClick={() => !s.done && jump(s.to)}
+                  disabled={s.done}
+                  className={`flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left ${s.done ? 'cursor-default opacity-60' : 'hover:bg-muted/60'}`}
+                >
+                  {s.done
+                    ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
+                    : <span className="mt-0.5 h-4 w-4 shrink-0 rounded-full border-2 border-muted-foreground/40" />}
+                  <span className="min-w-0 flex-1">
+                    <span className={`block text-sm ${s.done ? 'text-muted-foreground line-through' : 'font-medium'}`}>{s.label}</span>
+                    {!s.done && <span className="block text-xs text-muted-foreground">{s.hint}</span>}
+                  </span>
+                  {!s.done && <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />}
+                </button>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Personal context (the new feature) */}
-      <section className="space-y-2">
+      <section id="pf-context" className="space-y-2 scroll-mt-4">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">My context</div>
         <p className="text-sm text-muted-foreground">
           Free text added to the system prompt of every session that runs <strong>as you</strong> — your
@@ -5670,7 +5722,7 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
       </section>
 
       {/* Git identity — connect your own GitHub (OAuth). Reuses the same card as Connections → Mine. */}
-      <section className="space-y-2">
+      <section id="pf-git" className="space-y-2 scroll-mt-4">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">My git identity</div>
         <p className="text-sm text-muted-foreground">
           Connect your GitHub so agents running as <strong>you</strong> commit and open PRs under your name
@@ -5680,7 +5732,7 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
       </section>
 
       {/* Chat identities — own handles (self-service) */}
-      <section className="space-y-2">
+      <section id="pf-chat" className="space-y-2 scroll-mt-4">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">My chat identities</div>
         <p className="text-sm text-muted-foreground">
           Link your own Slack / Discord / email / GitHub handles so a chat message from you runs its agent
