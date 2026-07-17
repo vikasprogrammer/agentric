@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.1] — 2026-07-17
+### Fixed
+- **`agent-browser` daemon leak — sessions now clean up their own browser (root-cause fix, not a GC).**
+  The `agent-browser` skill starts a persistent headless-Chrome daemon that **double-forks (`setsid`) out
+  of the session's tmux process group**, so `tmux kill-session` at teardown never reached it and it
+  survived — burning CPU (its `swiftshader-webgl` software renderer spins helpers at ~100%) and RAM — for
+  **days**, until reboot or OOM. On the globex box this had accumulated 6 orphaned daemons (one agent
+  leaked 4) driving load average to ~25; killing them dropped it to ~1. Two changes make each session own
+  its browser lifecycle:
+  - `src/terminal.ts` (`sessionEnv`) now exports **`AGENT_BROWSER_NAMESPACE=aos-<session-id>`** (isolates
+    each session's daemon + socket + saved state) and **`AGENT_BROWSER_IDLE_TIMEOUT_MS`** (default 5 min,
+    operator-overridable — the vendor's self-shutdown, kept only as the last-resort net for the one exit a
+    trap can't catch: an un-trappable SIGKILL/OOM).
+  - `terminal/claude-launch.sh` adds an **exit trap** (`EXIT`/`HUP`/`TERM`/`INT`) that runs
+    `agent-browser close --all` — the vendor's clean shutdown — so the session tears its browser down on
+    **any trappable exit, including the SIGHUP `tmux kill-session` sends**. Scoped to the session's
+    namespace, so it can never touch another live session's browser. The launcher already stays claude's
+    parent (never `exec`s it), so the trap is live for interactive, unattended, and resident lanes.
+  Upstream-acknowledged gap (vercel-labs/agent-browser #885/#1334/#1371/#1401): the daemon has idle
+  self-shutdown but nothing cleaned up after abnormal termination — now agent-os does, at the source.
+
 ## [0.227.0] — 2026-07-17
 ### Added
 - **Slack chat IDs now auto-link from a member's email.** When a notification (task assignment, approval,
@@ -25,6 +46,7 @@ new version heading in the same commit.
   why and **scroll-jumps** to the relevant section below; the card hides once all four are done. This is
   the manual fallback for what auto-link can't cover — chiefly **Discord**, which has no email to resolve
   from — nudging members to link it themselves so task/approval DMs reach them.
+## [0.226.0] — 2026-07-16
 ### Added
 - **Distraction-free terminal + "Pop out" to its own tab.** The individual terminal view gets two new
   affordances in its top-right toolbar. **Focus** (⤢) lifts the pane to a full-viewport overlay (`fixed

@@ -35,6 +35,22 @@ red()  { printf '\033[31m%s\033[0m\n' "$1"; }
 
 cd "$AGENT_DIR" 2>/dev/null || { red "agent folder not found: $AGENT_DIR"; exec bash; }
 
+# Browser self-cleanup (root-cause fix for the agent-browser daemon leak). The `agent-browser` skill
+# starts a persistent headless-Chrome daemon that double-forks (setsid) OUT of this pane's process
+# group, so `tmux kill-session` at teardown can't reach it and it survives — burning CPU (swiftshader)
+# + RAM — until reboot/OOM. Fix: this session OWNS its browser and shuts it down when the launcher
+# exits. `close --all` is scoped to this session's AGENT_BROWSER_NAMESPACE (set per-session by the
+# server; derived from SESSION here so it's right even on the RESUME path, whose recovered env may
+# predate the var), so it can never touch another live session's browser. The signal traps make it run
+# on the SIGHUP/SIGTERM `tmux kill-session` sends (both trappable) as well as a clean exit — only an
+# un-trappable SIGKILL (OOM) slips past, and AGENT_BROWSER_IDLE_TIMEOUT_MS is the net for that.
+export AGENT_BROWSER_NAMESPACE="${AGENT_BROWSER_NAMESPACE:-aos-${SESSION:-}}"
+aos_browser_cleanup() { command -v agent-browser >/dev/null 2>&1 && agent-browser close --all >/dev/null 2>&1; return 0; }
+trap aos_browser_cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
 # Wire the gate as a project-local PreToolUse hook. claude inherits AOS_URL/SESSION/AGENT from
 # this shell's env, so the hook can reach the gateway and tag the right session. We regenerate
 # the settings each launch so the hook path is always correct (and portable across machines).

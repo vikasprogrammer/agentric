@@ -1641,6 +1641,19 @@ export class TerminalManager {
       AGENT: agent,
       TASK_B64: Buffer.from(task, 'utf8').toString('base64'),
       AOS_SECRET: secret,
+      // The `agent-browser` skill starts a persistent headless-Chrome daemon that double-forks to init and
+      // so escapes the session's tmux process group — `tmux kill-session` at teardown can't reach it, and
+      // it (plus its swiftshader Chrome, which burns CPU) survives for days until reboot/OOM. Two env knobs
+      // let the SESSION clean up after ITSELF (root cause) instead of a process-scanning GC:
+      //  • NAMESPACE per session isolates its daemon + socket + saved state, so the launcher's exit trap
+      //    (`agent-browser close --all`, terminal/claude-launch.sh) shuts down THIS session's browser on
+      //    any trappable exit — including the SIGHUP `tmux kill-session` sends — without touching another
+      //    live session's browser.
+      //  • IDLE_TIMEOUT is the last-resort net for the ONE exit the trap can't catch: an un-trappable
+      //    SIGKILL (OOM). The daemon self-exits after this many ms with no commands. Operator-overridable;
+      //    5 min is long enough not to interrupt a multi-step browse (LLM think-time between commands).
+      AGENT_BROWSER_NAMESPACE: `aos-${id}`,
+      AGENT_BROWSER_IDLE_TIMEOUT_MS: process.env.AGENT_BROWSER_IDLE_TIMEOUT_MS || '300000',
     };
     // Under the launcher, the systemd-run scope starts with a minimal PATH; seed it with the dir that
     // holds this app's node (claude is usually installed alongside it) plus the standard bins. Flag
