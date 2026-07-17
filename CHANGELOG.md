@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.2] — 2026-07-17
+### Fixed
+- **`agent-browser` cleanup now handles agents that relocate the socket dir (follow-up to 0.227.1).**
+  End-to-end testing on a real `qa` session revealed 0.227.1's exit trap was ineffective for the very
+  agents that leak: `agent-browser close --all` keys off the **socket dir**, not the namespace, and
+  several agents (`qa`/`engineer`/`site-porter`/`website-bot`) export a custom
+  **`AGENT_BROWSER_SOCKET_DIR`** to a writable per-session dir (their HOME is read-only under systemd
+  `ProtectHome`), so the trap's plain `close --all` — which only had the server's default socket dir —
+  found "No active sessions" and left the daemon running. Fix (`terminal/claude-launch.sh`): the trap
+  now finds **this session's** daemons by the `AGENT_BROWSER_NAMESPACE` env they reliably inherit,
+  **recovers each one's own `AGENT_BROWSER_SOCKET_DIR` from its `/proc` environ**, and runs `close --all`
+  scoped to it (with a `SIGTERM` straggler fallback). Still namespace-scoped, so it never touches another
+  session's browser; the plain `close --all` runs first to cover the default-socket-dir / macOS case.
+
 ## [0.227.1] — 2026-07-17
 ### Fixed
 - **`agent-browser` daemon leak — sessions now clean up their own browser (root-cause fix, not a GC).**

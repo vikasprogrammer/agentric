@@ -38,14 +38,39 @@ cd "$AGENT_DIR" 2>/dev/null || { red "agent folder not found: $AGENT_DIR"; exec 
 # Browser self-cleanup (root-cause fix for the agent-browser daemon leak). The `agent-browser` skill
 # starts a persistent headless-Chrome daemon that double-forks (setsid) OUT of this pane's process
 # group, so `tmux kill-session` at teardown can't reach it and it survives — burning CPU (swiftshader)
-# + RAM — until reboot/OOM. Fix: this session OWNS its browser and shuts it down when the launcher
-# exits. `close --all` is scoped to this session's AGENT_BROWSER_NAMESPACE (set per-session by the
-# server; derived from SESSION here so it's right even on the RESUME path, whose recovered env may
-# predate the var), so it can never touch another live session's browser. The signal traps make it run
-# on the SIGHUP/SIGTERM `tmux kill-session` sends (both trappable) as well as a clean exit — only an
-# un-trappable SIGKILL (OOM) slips past, and AGENT_BROWSER_IDLE_TIMEOUT_MS is the net for that.
+# + RAM — until reboot/OOM. Fix: this session OWNS its browser and shuts it down when the launcher exits.
+# The signal traps make cleanup run on the SIGHUP/SIGTERM `tmux kill-session` sends (both trappable) as
+# well as a clean exit — only an un-trappable SIGKILL (OOM) slips past, and AGENT_BROWSER_IDLE_TIMEOUT_MS
+# is the net for that.
+#
+# Scoping is by the per-session AGENT_BROWSER_NAMESPACE (set by the server; re-derived from SESSION here
+# so it's right on the RESUME path too). Note `agent-browser close --all` keys off the *socket dir*, not
+# the namespace — and several agents (qa/engineer/site-porter/…) relocate AGENT_BROWSER_SOCKET_DIR to a
+# writable per-session dir because their real HOME is read-only under systemd ProtectHome — so a plain
+# `close --all` here (which has the server's default socket dir, not the agent's) would miss those. So we
+# find THIS session's daemons by the namespace env they inherit, recover each one's OWN socket dir from
+# its /proc environ, and close it there (with a force-kill fallback). Namespace-scoped, so it never
+# touches another live session's browser. /proc is Linux-only; the plain close first covers the
+# default-socket-dir case (incl. macOS).
 export AGENT_BROWSER_NAMESPACE="${AGENT_BROWSER_NAMESPACE:-aos-${SESSION:-}}"
-aos_browser_cleanup() { command -v agent-browser >/dev/null 2>&1 && agent-browser close --all >/dev/null 2>&1; return 0; }
+aos_browser_cleanup() {
+  command -v agent-browser >/dev/null 2>&1 || return 0
+  local ns="${AGENT_BROWSER_NAMESPACE:-}"
+  agent-browser close --all >/dev/null 2>&1            # default-socket-dir daemons (namespace-scoped)
+  [ -n "$ns" ] || return 0
+  # Custom-socket-dir daemons (Linux): match this session's namespace, recover its socket dir, close there.
+  local pid envf sd hm
+  for pid in $(pgrep -f 'agent-browser-' 2>/dev/null); do
+    envf="/proc/$pid/environ"
+    [ -r "$envf" ] || continue
+    tr '\0' '\n' < "$envf" 2>/dev/null | grep -qx "AGENT_BROWSER_NAMESPACE=$ns" || continue
+    sd=$(tr '\0' '\n' < "$envf" 2>/dev/null | sed -n 's/^AGENT_BROWSER_SOCKET_DIR=//p' | head -1)
+    hm=$(tr '\0' '\n' < "$envf" 2>/dev/null | sed -n 's/^HOME=//p' | head -1)
+    env AGENT_BROWSER_NAMESPACE="$ns" ${sd:+AGENT_BROWSER_SOCKET_DIR="$sd"} ${hm:+HOME="$hm"} agent-browser close --all >/dev/null 2>&1
+    kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null   # straggler fallback
+  done
+  return 0
+}
 trap aos_browser_cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 143' TERM
