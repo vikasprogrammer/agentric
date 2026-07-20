@@ -227,7 +227,12 @@ export class AutomemMemoryProvider implements MemoryProvider {
         body: body ? JSON.stringify(body) : undefined,
         signal: ctrl.signal,
       });
-      if (!res.ok) throw new Error(`automem ${method} ${pathName} → ${res.status}`);
+      if (!res.ok) {
+        // Include a snippet of the response body: a 4xx (esp. a 400 validation reject) carries the
+        // reason there, and it's the only breadcrumb the `episode.error`/store-failure audit gets.
+        const detail = await res.text().catch(() => '');
+        throw new Error(`automem ${method} ${pathName} → ${res.status}${detail ? ` ${detail.slice(0, 200)}` : ''}`);
+      }
       return await res.json();
     } finally {
       clearTimeout(timer);

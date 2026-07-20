@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.229.1] — 2026-07-20
+### Fixed
+- **Memory recall reinforcement was invisible under an external backend — every mirrored memory read
+  as never-recalled forever.** All three production tenants run the `automem` backend, so recall is
+  served by automem while the OS's SQL-level machinery (prune, Dreaming, the consolidation gardener,
+  the Memory-hub "never recalled" count) reads the local `memories` **mirror** table. But
+  `MirroredMemoryProvider.recall` delegated straight to the backend and never bumped the mirror's
+  `recall_count`/`last_recalled_at` — so fleet-wide the mirror showed **100% of memories as
+  never-recalled** (235/235, 692/692, 144/144; avg recall 0). Two consequences: the Memory-hub health
+  metric was meaningless, and `maintain()`'s prune (`DELETE … WHERE recall_count = 0 AND importance <
+  keep`) would delete memories recalled hundreds of times in the real store. Recall now reinforces the
+  mirror for the returned ids (same gate as the SQLite provider — a real query with results, not a
+  blank recency listing), via a new public `SqliteMemoryProvider.reinforce(ids)`. Best-effort: a mirror
+  failure never fails a recall.
+- **`automem` request failures swallowed the response body, making the recurring `→ 400` opaque.** The
+  fleet logged 140+ `episode.error` events of the bare form `automem POST /memory → 400` with no clue
+  *why* automem rejected the write. The thrown error now appends a snippet of the response body (where a
+  4xx validation reject spells out the reason), so the store-failure/`episode.error` audit becomes
+  diagnosable.
+
 ## [0.229.0] — 2026-07-20
 ### Added
 - **Agent review requests now DM the owner/admin tier, not just the Inbox.** When an agent files a

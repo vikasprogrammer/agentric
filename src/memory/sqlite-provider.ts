@@ -162,13 +162,22 @@ export class SqliteMemoryProvider implements MemoryProvider {
     const out = recs.slice(0, limit);
     // Usage tracking for maintenance: count a memory as "used" when an actual query surfaces it (not a
     // blank recency listing), so prune can safely target the never-recalled.
-    if (q.query && out.length) {
-      const ids = out.map((r) => r.id);
-      this.db
-        .prepare(`UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`)
-        .run(Date.now(), ...ids);
-    }
+    if (q.query && out.length) this.reinforce(out.map((r) => r.id));
     return out;
+  }
+
+  /**
+   * Bump `recall_count`/`last_recalled_at` for a set of ids — the usage signal prune relies on. Called
+   * internally by `recall`, and PUBLICLY by MirroredMemoryProvider when a non-SQLite backend served the
+   * recall: without this the mirror table (which Dreaming, consolidation, prune, and the Memory-hub
+   * counts all read directly) would show every memory as never-recalled forever, so prune could delete
+   * rows recalled hundreds of times in the real backend. No-op on an empty list.
+   */
+  reinforce(ids: string[]): void {
+    if (!ids.length) return;
+    this.db
+      .prepare(`UPDATE memories SET recall_count = recall_count + 1, last_recalled_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`)
+      .run(Date.now(), ...ids);
   }
 
   async maintain(opts: MemoryMaintenance): Promise<MemoryMaintenanceResult> {

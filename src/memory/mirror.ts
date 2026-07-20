@@ -34,9 +34,21 @@ export class MirroredMemoryProvider implements MemoryProvider {
     return rec;
   }
 
-  /** Recall is the backend's job — the reason to run a non-SQLite store at all. */
-  recall(q: RecallQuery): Promise<MemoryRecord[]> {
-    return this.backend.recall(q);
+  /**
+   * Recall is the backend's job — the reason to run a non-SQLite store at all. But the reinforcement
+   * signal (recall_count/last_recalled_at) lands only in the external store, while the OS's SQL-level
+   * machinery — prune, Dreaming, consolidation, the Memory-hub counts — reads the local mirror table.
+   * So we mirror the usage bump too: reinforce the returned ids in the mirror (same gate as the sqlite
+   * provider — a real query with results, not a blank recency listing). Without this the mirror shows
+   * EVERY memory as never-recalled forever, and `maintain()`'s prune (`WHERE recall_count = 0`) could
+   * delete memories recalled hundreds of times in the backend. Best-effort: never fail a recall.
+   */
+  async recall(q: RecallQuery): Promise<MemoryRecord[]> {
+    const out = await this.backend.recall(q);
+    if (q.query && out.length) {
+      try { this.mirror.reinforce(out.map((r) => r.id)); } catch { /* mirror is best-effort */ }
+    }
+    return out;
   }
 
   async update(input: UpdateInput): Promise<MemoryRecord | null> {
