@@ -1922,7 +1922,7 @@ function ShareAgentDialog({ agent, open, onOpenChange }: { agent: AgentInfo; ope
           </div>
         )}
 
-        <DialogFooter className="flex-row items-center justify-between border-t bg-muted/40">
+        <DialogFooter className="mx-0 mb-0 flex-row items-center justify-between border-t bg-muted/40">
           <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
             {err ? <span className="text-destructive">{err}</span> : <><Users className="h-3.5 w-3.5" />{summary}</>}
           </span>
