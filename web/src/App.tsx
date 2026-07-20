@@ -856,11 +856,9 @@ function Console({ me }: { me: Member }) {
   const pinnedNav = visibleNav.filter((n) => pinned.has(n.key))
   const manageNav = visibleNav.filter((n) => !pinned.has(n.key))
 
-  // Secondary "Manage" nav is collapsed by default so the Agents list stays high; it auto-opens
-  // when you're on one of its (unpinned) pages.
-  const onManage = manageNav.some((n) => n.route === route)
-  const [manageOpen, setManageOpen] = useState(onManage)
-  useEffect(() => { if (onManage) setManageOpen(true) }, [onManage])
+  // The unpinned secondary nav now lives in a floating "Manage" flyout (ManageFlyout), which owns its
+  // own open/close state — the old inline footer expander outgrew the fixed footer once the nav hit
+  // ~16 items and fought the sessions list for space.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('aos_sidebar_collapsed') === '1')
   // Sidebar session list: ended runs collapse behind a toggle so live work stays at the top.
   const [showEndedNav, setShowEndedNav] = useState(false)
@@ -1231,34 +1229,9 @@ function Console({ me }: { me: Member }) {
           </div>
         </div>
 
-        {/* Bottom: collapsible Manage group + profile (fixed) */}
+        {/* Bottom: Manage flyout + profile (fixed) */}
         <div className="border-t p-4 pt-3">
-          <button
-            onClick={() => setManageOpen((o) => !o)}
-            className={`mb-1 flex w-full items-center gap-1.5 text-[11px] uppercase tracking-wider hover:text-foreground ${onManage && !manageOpen ? 'text-primary' : 'text-muted-foreground'}`}
-          >
-            <SlidersHorizontal className="h-3.5 w-3.5" />
-            <span className="flex-1 text-left">Manage</span>
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${manageOpen ? '' : '-rotate-90'}`} />
-          </button>
-          {manageOpen && (
-            <nav className="mb-1 space-y-1">
-              {manageNav.map((n) => (
-                <NavItem key={n.key} icon={n.icon} label={n.label} beta={n.beta} active={route === n.route} href={navHref(n.route)} onClick={() => nav(n.route)} pinned={false} onTogglePin={() => togglePin(n.key)} />
-              ))}
-              <a
-                href={FEEDBACK_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground no-underline hover:bg-muted"
-                title="Report a bug or request a feature on GitHub"
-              >
-                <Bug className="h-4 w-4" />
-                <span className="flex-1 text-left">Feedback</span>
-                <ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
-              </a>
-            </nav>
-          )}
+          <ManageFlyout items={manageNav} onTogglePin={togglePin} route={route} nav={nav} />
 
           <Separator className="my-3" />
           <div className="flex items-center justify-between">
@@ -1542,6 +1515,104 @@ function NavItem({ icon, label, active, badge, beta, href, onClick, pinned, onTo
           {pinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
         </button>
       )}
+    </div>
+  )
+}
+
+/** The sidebar's "Manage" flyout: a floating, grouped, two-column panel of every secondary nav item
+ *  that isn't pinned to Main. Replaces the old inline footer expander, which grew past the fixed
+ *  footer's height once the nav list reached ~16 items and started fighting the sessions list for
+ *  space (the "weird scrolling"). Opens upward on click, splits Workspace vs Admin, caps its own
+ *  height with an internal scroll, and closes on outside-click / Escape / navigation. */
+function ManageFlyout({ items, onTogglePin, route, nav }: {
+  items: NavMeta[]
+  onTogglePin: (key: string) => void
+  route: Route
+  nav: (r: Route, detail?: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  // Tint the trigger when you're viewing one of the (unpinned) Manage pages but the panel is closed,
+  // so the footer still signals "you are here" the way the old expander's active state did.
+  const onManage = items.some((n) => n.route === route)
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey) }
+  }, [open])
+  const groups = [
+    { title: 'Workspace', list: items.filter((n) => !n.adminOnly) },
+    { title: 'Admin', list: items.filter((n) => n.adminOnly) },
+  ]
+  const go = (r: Route) => { setOpen(false); nav(r) }
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`flex w-full items-center gap-1.5 text-[11px] uppercase tracking-wider hover:text-foreground ${onManage && !open ? 'text-primary' : 'text-muted-foreground'}`}
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5" />
+        <span className="flex-1 text-left">Manage</span>
+        <ChevronRight className={`h-3.5 w-3.5 transition-transform ${open ? '-rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 z-40 mb-2 max-h-[62vh] w-[300px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border bg-background p-2 shadow-lg animate-in fade-in slide-in-from-bottom-1">
+          {groups.map(({ title, list }) => list.length === 0 ? null : (
+            <div key={title} className="mb-2 last:mb-0">
+              <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{title}</div>
+              <div className="grid grid-cols-2 gap-1">
+                {list.map((n) => (
+                  <ManageFlyoutItem key={n.key} item={n} active={route === n.route} onGo={() => go(n.route)} onTogglePin={() => onTogglePin(n.key)} />
+                ))}
+              </div>
+            </div>
+          ))}
+          <Separator className="my-2" />
+          <a
+            href={FEEDBACK_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-foreground no-underline hover:bg-muted"
+            title="Report a bug or request a feature on GitHub"
+          >
+            <Bug className="h-4 w-4 shrink-0" />
+            <span className="flex-1 text-left">Feedback</span>
+            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          </a>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** One cell of the Manage flyout grid: a compact nav link with a hover-only "pin to Main" button.
+ *  Pinning leaves the panel open so several items can be promoted in a row (the item just leaves the
+ *  grid once it lands in Main). */
+function ManageFlyoutItem({ item, active, onGo, onTogglePin }: { item: NavMeta; active: boolean; onGo: () => void; onTogglePin: () => void }) {
+  return (
+    <div className="group/mi relative">
+      <a
+        href={navHref(item.route)}
+        onClick={onNavClick(onGo)}
+        className={`flex items-center gap-2 rounded-md py-1.5 pl-2 pr-6 text-[13px] no-underline hover:bg-muted ${active ? 'bg-muted font-medium text-primary' : 'text-foreground'}`}
+        title={item.label}
+      >
+        <span className="shrink-0">{item.icon}</span>
+        <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+        {item.beta ? <span className="shrink-0 rounded bg-primary/10 px-1 py-0 text-[8px] font-semibold uppercase tracking-wide text-primary group-hover/mi:invisible">β</span> : null}
+      </a>
+      <button
+        type="button"
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onTogglePin() }}
+        className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/mi:opacity-100"
+        title={`Pin ${item.label} to Main`}
+        aria-label={`Pin ${item.label} to Main`}
+      >
+        <Pin className="h-3 w-3" />
+      </button>
     </div>
   )
 }

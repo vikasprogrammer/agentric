@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.228.0] — 2026-07-20
+### Changed
+- **Manage nav is now a grouped flyout instead of an inline footer expander.** The pinnable secondary
+  nav had grown to ~16 items; expanding "Manage" inline overflowed the sidebar's *fixed* footer, which
+  has no scroll of its own, so the list fought the sessions area above it and the profile row below it
+  (the "weird scrolling"). Clicking **Manage** now opens a floating panel above the button, splitting the
+  unpinned items into **Workspace** / **Admin** groups in a compact two-column grid, capped at 62vh with
+  its own internal scroll, and closing on outside-click / Escape / navigation. Per-item "pin to Main"
+  (hover) is preserved; the footer stays a constant height regardless of how many nav items exist.
+  (`ManageFlyout`/`ManageFlyoutItem` in `web/src/App.tsx`.)
+
 ## [0.227.5] — 2026-07-20
 ### Fixed
 - **Collapsed sidebar showed no notifications.** The 48px rail dropped every signal the expanded
