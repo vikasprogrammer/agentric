@@ -14,7 +14,7 @@ import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { AgentOS, loadAgentOS, readRootConfig, RootConfig } from './kernel';
 import { exampleCapabilities } from './capabilities/examples';
-import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice } from './terminal';
+import { TerminalManager, ApprovalNotice, QuestionNotice, MemberNotice, SessionEventNotice, ReviewNotice } from './terminal';
 import { Automations } from './edge/automations';
 import { AppSupervisor } from './edge/app-supervisor';
 import { InsightAlert } from './edge/alerts';
@@ -274,6 +274,10 @@ export class TenantRegistry {
     // Agent → teammate: when an agent uses the `notify` tool, the inbox card is written inline (addressed
     // to the target member); this sink DMs that member on their linked Slack/Discord too.
     tm.setMemberNotifier((notice) => { void notifyMember(os, slack, discord, notice); });
+    // Agent review requests → chat: when an agent files a credential/skill/host/policy request or proposal
+    // for owner/admin review, DM the admin tier (the inbox card is written inline by postReviewCard). The
+    // review-side twin of the approval/question DMs — before this a pending request only sat in the inbox.
+    tm.setReviewNotifier((notice) => { void notifyReview(os, slack, discord, consoleOrigin, notice); });
     // Session lifecycle → chat: when one of a member's sessions starts waiting / finishes / crashes, DM
     // the run's owner IF they opted into `dm` notifications (default off — the inbox bell already covers
     // it). The complete/waiting/crashed twin of the always-on approval/question DMs above.
@@ -523,6 +527,37 @@ export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
   const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\nOpen the Agent OS console → Inbox.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'member.notified', data: { to: notice.to, important: notice.important, dms } });
+}
+
+/** Per-{@link ReviewNotice} DM presentation: the icon + the console page the review lands on. All the
+ *  cards live in the Inbox, but each has a natural home in Settings where the human acts on it (grant a
+ *  secret, publish a skill/host, approve a policy change), so the deep-link points there. */
+const REVIEW_PRESENTATION: Record<ReviewNotice['kind'], { icon: string; page: string }> = {
+  'secret.request': { icon: '🔑', page: 'settings/secrets' },
+  'skill.proposed': { icon: '🧩', page: 'skills' },
+  'skill.request': { icon: '🧩', page: 'skills' },
+  'host.proposed': { icon: '🌐', page: 'connectors' },
+  'policy.proposal': { icon: '🛡️', page: 'settings/policy' },
+};
+
+/**
+ * DM the owner/admin tier about an agent's request/proposal awaiting review (a credential, skill, host, or
+ * policy change) — the review-side twin of {@link notifyApprovers}/{@link notifyMember}. The inbox card is
+ * already written (addressed to `admins`) by {@link TerminalManager.postReviewCard}; this is the out-of-band
+ * push so a pending request reaches a human instead of only sitting in the inbox until someone opens
+ * Settings. Targets the `admins` audience via {@link resolveRecipients}. Best-effort, audited once.
+ */
+export async function notifyReview(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: ReviewNotice): Promise<void> {
+  const recipients = resolveRecipients(os, { kind: 'admins' });
+  if (!recipients.length) return;
+  const { icon, page } = REVIEW_PRESENTATION[notice.kind];
+  const url = consolePage(consoleOrigin, page);
+  const text = (p: ChatPlatform) =>
+    `${icon} ${notice.title} (agent ${notice.agent})` +
+    (notice.summary && notice.summary !== notice.title ? `\n${notice.summary}` : '') +
+    `\nReview it in the ${chatLink(p, url, 'Agent OS console')}.`;
+  const dms = await deliverDM(slack, discord, os, recipients, text);
+  os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'review.notified', data: { kind: notice.kind, agent: notice.agent, recipients: recipients.length, dms } });
 }
 
 /**

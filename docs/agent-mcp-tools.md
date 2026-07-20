@@ -134,6 +134,20 @@ on their linked Slack/Discord (`TerminalManager.setMemberNotifier` → `notifyMe
 It is **one named recipient only** — there is deliberately no team-wide broadcast — and it's
 allow+audit (`member.notified`), no policy gate, same posture as `slack_send`.
 
+### Review requests → the admin tier gets DMed (one centralized path)
+
+The "agent asks a human to approve X" family — `secret_request` (both *provide* and *access* modes),
+`skill_propose`, `skill_request`, `host_propose`, `policy_propose` — all post an **owner/admin-addressed
+review card** (`admins` audience) AND fire an out-of-band **Slack/Discord DM to the admins**, so a
+pending request reaches a person instead of sitting unseen until someone opens Settings. This is the
+review-side twin of the approval/question/task notifiers. All of them route through **one** helper —
+`TerminalManager.postReviewCard` (writes the card + fires the `reviewNotifier` in a single place) —
+wired in `src/tenant-registry.ts` to `notifyReview`, which resolves the `admins` audience via
+`resolveRecipients` and `deliverDM`s a message carrying the card's title + a deep-link to the relevant
+console page (Secrets / Skills / Connections / Policy). Best-effort + audited once (`review.notified`);
+the card is always written even if the push fails. Add a new review type by giving `postReviewCard` a
+new `kind` and an entry in `REVIEW_PRESENTATION` — no per-tool notification wiring.
+
 ### `secret_request` — ask a human about a credential KEY (no paste)
 
 When an agent needs a credential, it `secret_request`s the KEY (with a reason) rather than asking a

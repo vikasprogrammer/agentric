@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.229.0] — 2026-07-20
+### Added
+- **Agent review requests now DM the owner/admin tier, not just the Inbox.** When an agent files a
+  `secret_request` (both *provide* — enter a new value — and *access* — grant an existing but
+  scoped-away key), a `skill_propose`/`skill_request`, a `host_propose`, or a `policy_propose`, the
+  review card landed in the Inbox but **nobody was ever pinged** — the request sat unseen until an
+  owner happened to open Settings. These now fire an out-of-band Slack/Discord DM to the admins,
+  reaching parity with how approvals, questions, and task events already surface. The DM carries the
+  card's own title + a deep-link to the right console page (Secrets / Skills / Connections / Policy).
+### Changed
+- **Centralised the whole "agent asks a human to approve X" family onto one path.** Every review
+  request/proposal used to call `addMessage` directly (which wrote the card but fired no notifier);
+  they now route through one `TerminalManager.postReviewCard` helper + a single `reviewNotifier` sink
+  (wired in `tenant-registry.ts` to `notifyReview`), so the inbox card and the DM are emitted in ONE
+  place — the review-side twin of the approval/question/member notifiers. New audit event
+  `review.notified`. (`src/terminal.ts`, `src/tenant-registry.ts`; `npm run test:review`.)
+
 ## [0.228.0] — 2026-07-20
 ### Changed
 - **Manage nav is now a grouped flyout instead of an inline footer expander.** The pinnable secondary

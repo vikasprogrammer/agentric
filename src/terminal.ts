@@ -376,6 +376,22 @@ export interface MemberNotice {
   important: boolean;
 }
 
+/** What the review-notifier sink receives when an agent files something for owner/admin REVIEW — a
+ *  credential request (`secret_request`), a skill proposal/install request (`skill_propose`/`skill_request`),
+ *  a host proposal (`host_propose`), or a policy proposal (`policy_propose`). One out-of-band push for the
+ *  whole "agent asks a human to approve X" family, the review-side twin of the approval/question notifiers:
+ *  before this the review CARD landed in the inbox but nobody was ever pinged, so a request could sit unseen
+ *  until an owner happened to open Settings. The registry DMs the `admins` tier — the audience every one of
+ *  these cards is already addressed to. `kind` is the card type (drives the DM icon + deep-link); `title`
+ *  and `summary` are the card's own heading/body reused verbatim. */
+export interface ReviewNotice {
+  sessionId: string;
+  agent: string;
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal';
+  title: string;
+  summary: string;
+}
+
 /** What the session-event notifier sink receives when one of a member's own sessions changes state — it
  *  began (a delegated/unattended run), started waiting on them, finished, or crashed. The registry DMs the
  *  run's owner (its `run_as`, else the console member who spawned it) on Slack/Discord IF that member opted
@@ -426,6 +442,12 @@ export class TerminalManager {
    *  registry DMs the target member on their linked Slack/Discord (the inbox card is written inline). */
   private memberNotifier?: (notice: MemberNotice) => void;
   setMemberNotifier(fn: (notice: MemberNotice) => void): void { this.memberNotifier = fn; }
+  /** Optional sink notified when an agent files a request/proposal for owner/admin review (secret / skill /
+   *  host / policy). The one out-of-band push shared by every `postReviewCard` caller so a pending request
+   *  DMs the admin tier instead of only sitting in the inbox. Set by the registry once the chat sockets
+   *  exist; absent = no push (the review card is always written regardless). */
+  private reviewNotifier?: (notice: ReviewNotice) => void;
+  setReviewNotifier(fn: (notice: ReviewNotice) => void): void { this.reviewNotifier = fn; }
   /** Optional sink notified when one of a member's sessions starts waiting / finishes / crashes, so the
    *  registry can DM the run's owner out-of-band (gated on their `dm` preference). Set by the registry
    *  once the chat sockets exist; absent = no push (the inbox card is always written regardless). */
@@ -2425,6 +2447,27 @@ export class TerminalManager {
     });
   }
 
+  /**
+   * Post an owner/admin-addressed REVIEW card and fire the review notifier — the one path shared by every
+   * "agent asks a human to approve X" request/proposal (`secret_request`, `skill_propose`, `skill_request`,
+   * `host_propose`, `policy_propose`). Each of those used to call {@link addMessage} directly, which wrote
+   * the inbox card but never pinged anyone, so a pending request sat unseen until an owner opened Settings.
+   * Centralising them here means the card is written (durable, `admins` audience) AND the out-of-band DM
+   * fires in ONE place — parity with how approvals/questions/tasks already reach a human. The notifier is
+   * advisory: a failed push never wedges the request.
+   */
+  private postReviewCard(input: { type: ReviewNotice['kind']; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string }): void {
+    this.addMessage({
+      type: input.type, sessionId: input.sessionId, agent: input.agent,
+      title: input.title, body: input.body, status: 'open',
+      ...(input.args ? { args: input.args } : {}),
+      // Providing/publishing/granting is an owner/admin act — address the review card to the admin tier.
+      audienceKind: 'admins',
+    });
+    try { this.reviewNotifier?.({ sessionId: input.sessionId, agent: input.agent, kind: input.type, title: input.title, summary: input.summary ?? input.body }); }
+    catch { /* out-of-band push is advisory — never let it wedge the request */ }
+  }
+
   /** An agent proposed (or edited) a hosted App — post a review card so an owner/admin publishes it.
    *  Addressed to admins; the card's `slug` deep-links the console Apps page. See docs/apps-plan.md §6. */
   postAppCard(input: { slug: string; agent: string; title: string; body: string; audience?: Audience }): void {
@@ -2702,15 +2745,11 @@ export class TerminalManager {
   proposeSkill(sessionId: string, agent: string, input: { name: string; description: string; body: string; rationale?: string }): { ok: boolean; skill?: string; error?: string } {
     try {
       const s = this.os.skills.propose({ name: input.name, description: input.description, body: input.body, rationale: input.rationale, agent, session: sessionId });
-      this.addMessage({
+      this.postReviewCard({
         type: 'skill.proposed', sessionId, agent,
         title: `Skill proposed — ${s.name}`,
         body: (input.description || s.description || `A new skill "${s.name}" is ready for review.`).trim(),
-        status: 'open',
         args: { skill: s.name, ...(input.rationale ? { rationale: input.rationale } : {}) },
-        // Publishing a skill is an owner/admin act — address the review card to the admin tier so it
-        // lands in exactly their inbox (not the running agent's session owner).
-        audienceKind: 'admins',
       });
       this.audit(sessionId, agent, 'skill.proposed', { name: s.name, description: s.description, rationale: input.rationale });
       return { ok: true, skill: s.name };
@@ -2732,14 +2771,11 @@ export class TerminalManager {
         agent: `agent:${agent}`,
         rationale: input.rationale,
       });
-      this.addMessage({
+      this.postReviewCard({
         type: 'host.proposed', sessionId, agent,
         title: `Host proposed — ${h.name}`,
         body: `${agent} proposes reaching ${h.match} (${h.protocol}). ${input.rationale ? 'Why: ' + input.rationale : ''}`.trim(),
-        status: 'open',
         args: { host: h.id, match: h.match, protocol: h.protocol, ...(input.rationale ? { rationale: input.rationale } : {}) },
-        // Publishing a host is an owner/admin act — address the review card to the admin tier.
-        audienceKind: 'admins',
       });
       this.audit(sessionId, agent, 'host.proposed', { host: h.id, match: h.match, protocol: h.protocol, rationale: input.rationale });
       return { ok: true, host: h.id };
@@ -2797,14 +2833,11 @@ export class TerminalManager {
       .all<{ args: string | null }>()
       .some((r) => { try { const a = JSON.parse(r.args || '{}'); return a.skill === name && (a.source || 'catalog') === source; } catch { return false; } });
     if (open) return { ok: true, status: 'duplicate' };
-    this.addMessage({
+    this.postReviewCard({
       type: 'skill.request', sessionId, agent,
       title: `Skill requested — ${name}`,
       body: (input.rationale?.trim() || description || `${agent} wants the "${name}" skill installed${remote ? ` from ${source}` : ''}.`).trim(),
-      status: 'open',
       args: { skill: name, source, ...(path ? { path } : {}), ...(input.rationale ? { rationale: input.rationale } : {}) },
-      // Installing a skill is an owner/admin act — address the review card to the admin tier.
-      audienceKind: 'admins',
     });
     this.audit(sessionId, agent, 'skill.requested', { name, source, rationale: input.rationale });
     return { ok: true, status: 'requested' };
@@ -2870,14 +2903,11 @@ export class TerminalManager {
     const defaultBody = mode === 'access'
       ? `${agent} is requesting access to the existing credential "${k}".`
       : `${agent} needs the credential "${k}" to continue.`;
-    this.addMessage({
+    this.postReviewCard({
       type: 'secret.request', sessionId, agent,
       title: mode === 'access' ? `Secret access requested — ${k}` : `Secret requested — ${k}`,
       body: (reasoning?.trim() || defaultBody).trim(),
-      status: 'open',
       args: { key: k, mode, ...(reasoning ? { reasoning } : {}) },
-      // Providing/granting a credential is an owner/admin act — address the card to the admin tier.
-      audienceKind: 'admins',
     });
     this.audit(sessionId, agent, 'secret.requested', { key: k, mode, reasoning });
     return { ok: true, status: 'requested', mode };
@@ -2941,15 +2971,14 @@ export class TerminalManager {
       return { ok: false, error: 'an identical proposal from you is already awaiting review' };
     }
     const label = delta.match.capability + (delta.match.when ? ` when ${delta.match.when.arg}` : '');
-    this.addMessage({
+    this.postReviewCard({
       type: 'policy.proposal', sessionId, agent,
       title: `Policy change proposed — ${label}`,
       body: (rationale?.trim() || `${agent} proposes a ${delta.kind} change to "${label}".`) + (preview ? `\n\n${preview}` : ''),
-      status: 'open',
       args: { delta, preview, ...(rationale ? { rationale } : {}) },
-      // Applying a policy change is an OWNER act — address to the admin tier so it lands in their inbox
-      // (the approve route itself is owner-only; admins see it for oversight).
-      audienceKind: 'admins',
+      // Applying a policy change is an OWNER act; the card addresses the admin tier so it lands in their
+      // inbox (the approve route itself is owner-only; admins see it for oversight).
+      summary: rationale?.trim() || `${agent} proposes a ${delta.kind} change to "${label}".`,
     });
     this.audit(sessionId, agent, 'policy.proposed', { kind: delta.kind, capability: delta.match.capability, when: delta.match.when, outcome: delta.outcome, preview, rationale });
     return { ok: true, preview };
