@@ -347,6 +347,7 @@ interface SessionRow {
   active_ms: number | null;
   turns: number | null;
   tool_calls: number | null;
+  archived_at?: number | null;
   gov_actions: number | null;
   gov_approvals: number | null;
   gov_denied: number | null;
@@ -637,7 +638,9 @@ export class TerminalManager {
    * regular member sees only sessions they spawned, plus sessions fired by an automation they created.
    */
   listSessions(viewer?: Member): Session[] {
-    const rows = this.db.prepare('SELECT * FROM term_sessions ORDER BY created_at DESC').all<SessionRow>();
+    // Archived sessions are hidden from the list (reversible soft-archive via the Insights declutter tile);
+    // their rows survive for every by-id reference (task-reconcile, audit, cost).
+    const rows = this.db.prepare('SELECT * FROM term_sessions WHERE archived_at IS NULL ORDER BY created_at DESC').all<SessionRow>();
     // Lazy liveness: a row stays 'running' until its tmux session is gone. A running row whose pane
     // vanished with NO end signal (no `report`/`markEnded`/`stopSession`) died abruptly — kill/OOM/
     // reboot — so it's a `crashed`, not a clean end. Grace-period new rows (tmux may not have finished
@@ -677,6 +680,22 @@ export class TerminalManager {
       runAsLabel: this.runAsLabel(r.run_as),
       ratedByLabel: this.runAsLabel(r.rated_by),
     }));
+  }
+
+  /** The soft-archived sessions (hidden from `listSessions`) — for the "show archived / restore" view.
+   *  Same viewer-visibility rule as the live list; no liveness/cost work (they're terminal + settled). */
+  listArchivedSessions(viewer?: Member): Session[] {
+    const rows = this.db.prepare('SELECT * FROM term_sessions WHERE archived_at IS NOT NULL ORDER BY archived_at DESC').all<SessionRow>();
+    const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+    return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as), sourceKind: this.sourceKind(r.spawned_by), runAsLabel: this.runAsLabel(r.run_as), ratedByLabel: this.runAsLabel(r.rated_by) }));
+  }
+  /** Soft-archive a session — hide it from the list, keep the row + transcript (reversible). */
+  archiveSession(id: string, now = Date.now()): boolean {
+    return this.db.prepare('UPDATE term_sessions SET archived_at = ? WHERE id = ? AND archived_at IS NULL').run(now, id).changes > 0;
+  }
+  /** Restore a soft-archived session back into the list. */
+  unarchiveSession(id: string): boolean {
+    return this.db.prepare('UPDATE term_sessions SET archived_at = NULL WHERE id = ?').run(id).changes > 0;
   }
 
   /**

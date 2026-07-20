@@ -14,7 +14,7 @@ import type { Insights } from './insights';
 const DAY = 24 * 3_600_000;
 type Db = AgentOS['db'];
 
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library';
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library' | 'sessions';
 export interface ImprovementTile {
   domain: ImprovementDomain;
   count: number;                 // opportunities found (0 = nothing to improve)
@@ -111,6 +111,18 @@ export function buildImprovements(os: AgentOS, insights: Insights, now = Date.no
     title: libDead + libStale ? `${libDead + libStale} artifact${libDead + libStale === 1 ? '' : 's'} to declutter` : 'Library is tidy',
     detail: libDead + libStale ? `${libDead} orphaned (run gone, never shared — archivable), ${libStale} old &amp; private — review the gallery.` : 'No orphaned or long-stale artifacts.',
     actionLabel: 'Open Library', href: '#/artifacts',
+  });
+
+  // 9) Sessions — declutter the run history: old cleanly-done runs (archivable) + old failed/stopped runs
+  // (review). Never counts blocked-on-a-human or recent runs. See src/edge/session-tidy.ts.
+  const notBlocked = "id NOT IN (SELECT run_id FROM questions WHERE status = 'pending') AND id NOT IN (SELECT run_id FROM approvals WHERE status = 'pending')";
+  const sessDead = num(db, `SELECT count(*) AS n FROM term_sessions WHERE archived_at IS NULL AND status = 'done' AND created_at < ? AND ${notBlocked}`, now - 14 * DAY);
+  const sessStale = num(db, `SELECT count(*) AS n FROM term_sessions WHERE archived_at IS NULL AND status IN ('stopped','crashed') AND created_at < ? AND ${notBlocked}`, now - 14 * DAY);
+  tiles.push({
+    domain: 'sessions', count: sessDead + sessStale,
+    title: sessDead + sessStale ? `${sessDead + sessStale} old session${sessDead + sessStale === 1 ? '' : 's'} to archive` : 'Session list is tidy',
+    detail: sessDead + sessStale ? `${sessDead} cleanly done 14d+ ago (archivable), ${sessStale} stopped/crashed — review before hiding.` : 'No old settled sessions.',
+    actionLabel: 'Open Sessions', href: '#/sessions',
   });
 
   return tiles;

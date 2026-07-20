@@ -876,6 +876,10 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'effort', 'TEXT');            // low | medium | high | …
   addColumn(db, 'term_sessions', 'blocked_ms', 'INTEGER');     // total human-wait (approvals + questions)
   addColumn(db, 'term_sessions', 'artifacts', 'INTEGER');      // deliverables published by the run
+  // Soft-archive for the Sessions-list declutter (Insights): an archived session is hidden from the
+  // list but its row + transcript survive, so archiving is reversible (unarchive) AND keeps every
+  // reference intact — task-reconcile's `tasks.last_session_id` join, audit, cost. NULL = live.
+  addColumn(db, 'term_sessions', 'archived_at', 'INTEGER');
 
   // Stale-prompt escalation: a once-per-item marker so the scheduler's re-nudge sweep DMs the approver /
   // operator EXACTLY ONCE when an approval or question has sat pending past the threshold, and never

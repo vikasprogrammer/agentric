@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -3054,6 +3054,11 @@ function SessionsPage({
 }) {
   const [view, setView] = useState<'grid' | 'list'>(() => (localStorage.getItem('aos_sessions_view') === 'list' ? 'list' : 'grid'))
   const setMode = (v: 'grid' | 'list') => { localStorage.setItem('aos_sessions_view', v); setView(v) }
+  const [archived, setArchived] = useState<Session[]>([])   // soft-archived runs (Insights declutter)
+  const [showArchived, setShowArchived] = useState(false)
+  const loadArchived = () => api.sessions(true).then((r) => setArchived(Array.isArray(r) ? r : [])).catch(() => {})
+  useEffect(() => { loadArchived() }, [])
+  const restoreSession = async (id: string) => { const r = await api.unarchiveSession(id); if (!r.error) loadArchived() }
   // Terminal switcher bar: live tabs stay pinned; ended (stopped/done/crashed) ones collapse behind a
   // toggle so the bar doesn't accrete every past run. The open session always shows even if it ended.
   const [showEnded, setShowEnded] = useState(false)
@@ -3353,6 +3358,25 @@ function SessionsPage({
   }
   return (
     <div className="space-y-3">
+      {archived.length > 0 && (
+        <div className="rounded-lg border bg-muted/20 p-2 text-xs">
+          <button onClick={() => setShowArchived((v) => !v)} className="flex items-center gap-1.5 font-medium text-muted-foreground hover:text-foreground">
+            <Package className="h-3.5 w-3.5" />{archived.length} archived {showArchived ? '▾' : '▸'}
+          </button>
+          {showArchived && (
+            <ul className="mt-2 space-y-1">
+              {archived.slice(0, 50).map((s) => (
+                <li key={s.id} className="flex items-center gap-2">
+                  <span className="truncate text-muted-foreground">{s.title}</span>
+                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{s.agent} · {s.status}</span>
+                  <button onClick={() => restoreSession(s.id)} className="shrink-0 text-[11px] text-primary underline underline-offset-2">Restore</button>
+                </li>
+              ))}
+              {archived.length > 50 && <li className="text-[10px] text-muted-foreground">+{archived.length - 50} more…</li>}
+            </ul>
+          )}
+        </div>
+      )}
       {/* header: select-all + count (or bulk toolbar) · grid/list view toggle */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -10487,6 +10511,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [kbTidy, setKbTidy] = useState<KbTidyPlan | null>(null)
   const [taskRec, setTaskRec] = useState<TaskReconcilePlan | null>(null)
   const [libTidy, setLibTidy] = useState<LibraryTidyPlan | null>(null)
+  const [sessTidy, setSessTidy] = useState<SessionTidyPlan | null>(null)
   const [stuckGoals, setStuckGoals] = useState<StuckGoal[]>([])
   const [goalsOpen, setGoalsOpen] = useState(false)
   const [troubledAutos, setTroubledAutos] = useState<TroubledAutomation[]>([])
@@ -10597,6 +10622,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
     setDxHint(r.error ? `⚠ ${r.error}` : `Archived ${r.archived ?? 0} artifact${r.archived === 1 ? '' : 's'} — restore any from the Library.`)
     setTimeout(() => setDxHint(''), 6000); refresh()
   }
+  const previewSessionTidy = async () => {
+    setCleanupBusy(true); const r = await api.sessionTidyPreview(); setCleanupBusy(false)
+    if (r.error || !r.plan) return setDxHint(`⚠ ${r.error ?? 'could not build a plan'}`)
+    setSessTidy(r.plan)
+  }
+  const applySessionTidy = async () => {
+    setCleanupBusy(true); const r = await api.sessionTidyApply(); setCleanupBusy(false); setSessTidy(null)
+    setDxHint(r.error ? `⚠ ${r.error}` : `Archived ${r.archived ?? 0} session${r.archived === 1 ? '' : 's'} — restore any from Sessions.`)
+    setTimeout(() => setDxHint(''), 6000); refresh()
+  }
   const previewCleanup = async () => {
     setCleanupBusy(true); const r = await api.memoryCleanupPreview(); setCleanupBusy(false)
     if (r.error || !r.plan) return setDxHint(`⚠ ${r.error ?? 'could not build a plan'}`)
@@ -10704,6 +10739,13 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                 <button key={t.domain} onClick={previewLibraryTidy} disabled={cleanupBusy} className={`${cls} disabled:opacity-50`}>
                   {inner}
                   <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview declutter →'}</div>
+                </button>
+              )
+              // Sessions tile is generative: preview old settled runs; apply soft-archives the done ones.
+              if (t.domain === 'sessions' && t.count > 0) return (
+                <button key={t.domain} onClick={previewSessionTidy} disabled={cleanupBusy} className={`${cls} disabled:opacity-50`}>
+                  {inner}
+                  <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview archive →'}</div>
                 </button>
               )
               // Goals tile: expand the stuck goals in place, each with a "plan" that spawns the strategist.
@@ -10862,6 +10904,38 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                     </ul>
                   )}
                   <div className="mt-1 text-[10px] text-muted-foreground">These still belong to a live run — keep, share, or delete them by hand in <a href="#/artifacts" className="underline">Library</a>.</div>
+                </div>
+              </div>
+            </div>
+          )}
+          {sessTidy && (
+            <div className="mt-3 rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="font-medium">Session archive preview <span className="font-normal text-muted-foreground">— archiving hides them (restore from Sessions)</span></div>
+                <div className="flex items-center gap-2">
+                  <button onClick={applySessionTidy} disabled={cleanupBusy || sessTidy.dead.total === 0} className="rounded bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700 disabled:opacity-50">{cleanupBusy ? 'archiving…' : `Archive ${sessTidy.dead.total} done`}</button>
+                  <button onClick={() => setSessTidy(null)} className="text-[11px] text-muted-foreground underline underline-offset-2">Cancel</button>
+                </div>
+              </div>
+              <div className="mt-2 grid gap-3 md:grid-cols-2">
+                <div>
+                  <div className="mb-1 font-medium">Archive — {sessTidy.dead.total} done <span className="font-normal text-muted-foreground">(cleanly finished, {sessTidy.deadAfterDays}d+ old)</span></div>
+                  {sessTidy.dead.total === 0 ? <div className="text-muted-foreground">nothing to archive</div> : (
+                    <ul className="space-y-0.5">
+                      {sessTidy.dead.sample.map((s) => <li key={s.id} className="truncate text-muted-foreground"><span className="text-foreground">{s.title}</span> · {s.agent} · {s.ageDays}d</li>)}
+                      {sessTidy.dead.total > sessTidy.dead.sample.length && <li className="text-muted-foreground">+{sessTidy.dead.total - sessTidy.dead.sample.length} more…</li>}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-1 font-medium">Review — {sessTidy.stale.total} stopped/crashed</div>
+                  {sessTidy.stale.total === 0 ? <div className="text-muted-foreground">nothing failed</div> : (
+                    <ul className="space-y-0.5">
+                      {sessTidy.stale.sample.map((s) => <li key={s.id} className="truncate text-muted-foreground"><span className="text-foreground">{s.title}</span> · <span className={s.status === 'crashed' ? 'text-red-600' : ''}>{s.status}</span> · {s.ageDays}d</li>)}
+                      {sessTidy.stale.total > sessTidy.stale.sample.length && <li className="text-muted-foreground">+{sessTidy.stale.total - sessTidy.stale.sample.length} more…</li>}
+                    </ul>
+                  )}
+                  <div className="mt-1 text-[10px] text-muted-foreground">A failed run may be worth a look — review in <a href="#/sessions" className="underline">Sessions</a> before hiding by hand.</div>
                 </div>
               </div>
             </div>

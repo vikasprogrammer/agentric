@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.248.0] — 2026-07-20
+### Added
+- **Insights can now declutter the Sessions list — a 9th improvement tile.** The run history grows
+  without bound (every dispatched task, chat reply, and cron fire leaves a terminal session row), burying
+  the handful that still matter. The new **Sessions** tile soft-archives the clutter: **done** runs 14+
+  days old are archivable (the run is over); **stopped/crashed** old runs are surfaced for review (a
+  failure may be worth a look before it's hidden), never auto-archived. It **never** touches running,
+  blocked-on-a-human (pending ask/approval), or recent sessions. Archiving is a soft `archived_at` — the
+  row **and transcript survive**, so it's reversible AND every by-id reference stays intact (task
+  reconcile's `last_session_id` join, audit, cost); the Sessions list grows a **"N archived · Restore"**
+  section and `POST /api/sessions/:id/unarchive` restores. Preview → "Archive N done" mirrors the other
+  declutter tiles. `src/edge/session-tidy.ts` + `GET`/`POST /api/insights/sessions/tidy` +
+  `GET /api/sessions?archived=1`; audited `sessions.tidied` / `session.unarchived`. Completes the
+  consolidation/declutter set (memory · KB · library · sessions).
+
 ## [0.247.1] — 2026-07-20
 ### Fixed
 - **A dispatched task with a long acceptance criterion no longer fails to launch.** Task dispatch put the

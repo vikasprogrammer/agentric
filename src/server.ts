@@ -36,6 +36,7 @@ import { SkillScout, SCOUT_ID } from './edge/skill-scout';
 import { planKbTidy, applyKbTidy } from './edge/kb-tidy';
 import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
 import { planLibraryTidy, applyLibraryTidy } from './edge/library-tidy';
+import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -2291,7 +2292,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
 
   // ── terminal-native sessions ────────────────────────────────────────────────
-  if (method === 'GET' && p === '/api/sessions') return sendJson(res, 200, tm.listSessions(me));
+  // `?archived=1` returns the soft-archived set (the Sessions "show archived / restore" view); default is live.
+  if (method === 'GET' && p === '/api/sessions') return sendJson(res, 200, url.searchParams.get('archived') === '1' ? tm.listArchivedSessions(me) : tm.listSessions(me));
   if (method === 'POST' && p === '/api/sessions') {
     const b = await readBody(req);
     const agent = String(b.agent || '').trim();
@@ -2529,6 +2531,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 502, { error: e instanceof Error ? e.message : String(e) });
     }
+  }
+  // Restore a soft-archived session back into the list (the reverse of the Insights sessions declutter).
+  const sessUnarchiveMatch = p.match(/^\/api\/sessions\/([\w-]+)\/unarchive$/);
+  if (method === 'POST' && sessUnarchiveMatch) {
+    const id = sessUnarchiveMatch[1];
+    if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed' });
+    const ok = tm.unarchiveSession(id);
+    if (ok) os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.unarchived', data: { id } });
+    return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not found or not archived' });
   }
   const sayMatch = p.match(/^\/api\/sessions\/([\w-]+)\/say$/);
   if (method === 'POST' && sayMatch) {
@@ -3241,6 +3252,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planLibraryTidy(os) });
     const r = applyLibraryTidy(os, me.email);
+    return sendJson(res, 200, { ok: true, ...r });
+  }
+  // Sessions domain "declutter": preview old settled sessions, then apply SOFT-ARCHIVES the cleanly-done
+  // ones (hidden from the list, transcript retained — restore from Sessions). Reversible, audited.
+  if (p === '/api/insights/sessions/tidy' && (method === 'GET' || method === 'POST')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planSessionTidy(os) });
+    const r = applySessionTidy(os, tm, me.email);
     return sendJson(res, 200, { ok: true, ...r });
   }
   // Skills domain "generate the fix": spawn the skill-scout to mine recent successful fleet runs for a

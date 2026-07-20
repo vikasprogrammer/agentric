@@ -399,7 +399,7 @@ export interface AgentScore { agent: string; runs: number; success: number; fail
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library'
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library' | 'sessions'
 export interface ImprovementTile { domain: ImprovementDomain; count: number; title: string; detail: string; actionLabel: string; href: string }
 export interface CleanupPruneItem { id: string; agent: string; snippet: string; ageDays: number; importance: number | null }
 export interface CleanupMergeGroup { agent: string; keepSnippet: string; drop: number }
@@ -410,6 +410,8 @@ export interface TaskDriftItem { id: string; title: string; assignee: string | n
 export interface TaskReconcilePlan { finished: { total: number; sample: TaskDriftItem[] }; stalled: { total: number; sample: TaskDriftItem[] } }
 export interface LibraryTidyItem { id: string; title: string; kind: string; agent: string; ageDays: number; bytes: number }
 export interface LibraryTidyPlan { deadAfterDays: number; staleAfterDays: number; dead: { total: number; bytes: number; sample: LibraryTidyItem[] }; stale: { total: number; sample: LibraryTidyItem[] } }
+export interface SessionTidyItem { id: string; title: string; agent: string; status: string; outcome: string | null; ageDays: number }
+export interface SessionTidyPlan { deadAfterDays: number; dead: { total: number; sample: SessionTidyItem[] }; stale: { total: number; sample: SessionTidyItem[] } }
 export interface StuckGoal { id: string; title: string; days: number }
 export interface TroubledAutomation { id: string; name: string; type: string; reason: 'errored' | 'idle'; detail: string }
 export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
@@ -1171,7 +1173,10 @@ export const api = {
   applyUpdate: () => call<UpdateApplyResult>('POST', '/api/update/apply'),
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
   restart: () => call<RestartResult>('POST', '/api/restart'),
-  sessions: () => call<Session[]>('GET', '/api/sessions'),
+  sessions: (archived?: boolean) => call<Session[]>('GET', '/api/sessions' + (archived ? '?archived=1' : '')),
+  unarchiveSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/unarchive`),
+  sessionTidyPreview: () => call<{ ok: boolean; plan?: SessionTidyPlan; error?: string }>('GET', '/api/insights/sessions/tidy'),
+  sessionTidyApply: () => call<{ ok: boolean; archived?: number; error?: string }>('POST', '/api/insights/sessions/tidy'),
   /** Inbox feed. `scope='all'` is the owner/admin oversight view (every session's cards); the default
    *  `mine` is the personal feed — only cards addressed to you, so overseers aren't flooded. */
   messages: (scope: 'mine' | 'all' = 'mine') => call<Msg[]>('GET', `/api/messages${scope === 'all' ? '?scope=all' : ''}`),
