@@ -235,6 +235,23 @@ export interface Session {
   costUsd?: number
   /** Token breakdown behind `costUsd` (uncached input / output / cache-read / cache-write). */
   tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  /** What the AGENT said happened, from its end-of-session `report` — 'success' | 'failure' | 'partial'
+   *  | 'unknown' | … Orthogonal to `status`, which only says how the process ended: a `done` run can
+   *  carry a `failure` outcome, and `unknown` on a finished run means nobody closed the loop. */
+  outcome?: string
+  /** The report's one-line summary — the "what came of it" behind `outcome`. */
+  summary?: string
+  /** ENGAGED milliseconds from the transcript, idle gaps excluded. The honest run duration — wall-clock
+   *  (`updatedAt - createdAt`) isn't, since an interactive session idles between turns for hours. */
+  activeMs?: number
+  /** Real user prompts in the conversation (1 for a one-shot headless run, many for a steered one). */
+  turns?: number
+  /** Tool calls the agent issued — the true activity volume (`insights.actions` counts only the subset
+   *  of effects the gate mediates, which is 0 for a run that never touched a governed capability). */
+  toolCalls?: number
+  /** Governance fingerprint: governed effects, human gates hit, denials, errors. Live rows carry the
+   *  running tally; terminal rows the final stamped one. */
+  insights?: { actions: number; approvals: number; denied: number; errors: number }
 }
 export interface AuditEvent {
   id: number

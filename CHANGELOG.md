@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.232.0] — 2026-07-20
+### Added
+- **Session insights in the sessions list — result, engaged duration, and an activity fingerprint.**
+  The list could only say a run was `done`, which means the process exited, not that the work landed.
+  Every row (and grid card) now carries: **Result** — the agent's own verdict from its end-of-session
+  `report` (`success`/`failure`/`partial`), with the summary as a tooltip and as the card's one-liner;
+  a finished run that never reported reads **"no report"**, since nobody closing the loop is itself a
+  finding. **Took** — ENGAGED time read from the transcript with idle gaps excluded, because wall-clock
+  is not a usable duration (an interactive session idles between turns, so a 7-minute run routinely
+  spans 13 hours of `updated_at - created_at`). **Activity** — tool calls, approvals needed, denials
+  and errors, with tool calls leading since governed actions only count the subset the gate mediates.
+  Both new columns are sortable. Timing and volume fall out of the same transcript walk that already
+  prices a run; outcome and the governance counts are indexed lookups on the audit stream. Everything
+  stamps once when a run goes terminal and is never recomputed — live rows re-tally each poll, and a
+  pruned transcript stamps zeros instead of being re-probed on every list call forever.
+
 ## [0.231.1] — 2026-07-20
 ### Removed
 - **Reverted the agent learning-`velocity` metric (0.231.0).** Reverted because it was shipped a step

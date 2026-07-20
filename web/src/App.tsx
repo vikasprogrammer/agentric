@@ -56,6 +56,62 @@ const statusDot = (s: Session): string =>
  *  `done` interactive session still running) reads "live" so the label never contradicts a green dot. */
 const statusLabel = (s: Session): string => (isLive(s) && s.status !== 'running' ? 'live' : s.status)
 
+/** The RESULT word: what the agent said came of the run, falling back to how the process ended. `done`
+ *  only means "the process exited" — it's the outcome that says whether the work landed, so once a run
+ *  has reported its own verdict that's what the list shows. A finished run with no report reads
+ *  `no report`: nobody closed the loop, which is a finding, not a blank. */
+const resultLabel = (s: Session): string => {
+  if (isLive(s)) return statusLabel(s)
+  if (s.status === 'crashed' || s.status === 'stopped') return s.status
+  if (!s.outcome) return s.status              // not stamped yet — fall back to the process view
+  if (s.outcome === 'unknown') return 'no report'
+  return s.outcome
+}
+
+/** Colour for the result word — green only when the agent actually claims success, red on failure or a
+ *  crash, amber for partial/stopped, and dim for "it ended but said nothing". */
+const resultTone = (s: Session): string => {
+  if (isLive(s)) return 'text-emerald-600'
+  if (s.status === 'crashed') return 'text-red-600'
+  const o = s.outcome
+  if (o === 'success') return 'text-emerald-600'
+  if (o === 'failure' || o === 'error') return 'text-red-600'
+  if (o === 'partial' || s.status === 'stopped') return 'text-amber-600'
+  return 'text-muted-foreground'
+}
+
+/** Compact engaged duration — `45s` / `6m` / `1h 20m`. Undefined (still live, or not yet stamped)
+ *  renders as a dim placeholder, matching how cost reads before it's computed. */
+const formatDuration = (ms?: number): string => {
+  // 0 is the "transcript is gone, nothing to measure" stamp (see backfillCosts) — read it as unknown,
+  // not as an instantaneous run.
+  if (!ms) return '—'
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m}m`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+/** The run's activity fingerprint: how much it did, how often it needed a human, what got refused.
+ *  Tool calls lead because they're the volume that's always there — governed actions are only the
+ *  subset the gate mediates, so a real run can legitimately show 0. Zero-valued chips are dropped so
+ *  the common case stays quiet and an approval/denial actually catches the eye. */
+function SessionInsights({ s, className = '' }: { s: Session; className?: string }) {
+  const g = s.insights
+  const chips: Array<{ key: string; text: string; cls: string; title: string }> = []
+  if (s.toolCalls != null) chips.push({ key: 'tools', text: `${s.toolCalls}⚙`, cls: 'text-muted-foreground', title: `${s.toolCalls} tool calls${s.turns != null ? ` · ${s.turns} turn${s.turns === 1 ? '' : 's'}` : ''}` })
+  if (g?.approvals) chips.push({ key: 'appr', text: `${g.approvals}✋`, cls: 'text-sky-600', title: `${g.approvals} approval${g.approvals === 1 ? '' : 's'} needed a human` })
+  if (g?.denied) chips.push({ key: 'deny', text: `${g.denied}⛔`, cls: 'text-red-600', title: `${g.denied} action${g.denied === 1 ? '' : 's'} denied by policy or rejected` })
+  if (g?.errors) chips.push({ key: 'err', text: `${g.errors}⚠`, cls: 'text-amber-600', title: `${g.errors} error${g.errors === 1 ? '' : 's'}` })
+  if (!chips.length) return <span className={`text-xs text-muted-foreground/50 ${className}`}>—</span>
+  return (
+    <span className={`flex items-center gap-1.5 text-xs tabular-nums ${className}`}>
+      {chips.map((c) => <span key={c.key} className={c.cls} title={c.title}>{c.text}</span>)}
+    </span>
+  )
+}
+
 /** A stopped/ended/crashed interactive session that can be resurrected in place: re-opening its
  *  terminal runs `claude --resume` (via terminal/attach.sh), picking the conversation back up. Shown
  *  as a Resume affordance. Requires a persisted launch env (`resumable`) and no live pane — a live
@@ -150,9 +206,9 @@ const originMeta = (kind?: Session['sourceKind']) => ORIGIN_META[kind ?? 'system
 
 /** Sortable columns of the sessions list. `updated` is the default (most recently active first); it's
  *  the omitted value in the URL, so a clean `#/sessions` shows the freshest sessions on top. */
-type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status' | 'updated' | 'cost'
+type SessionSortKey = 'created' | 'title' | 'agent' | 'id' | 'startedBy' | 'status' | 'updated' | 'cost' | 'duration'
 type SortDir = 'asc' | 'desc'
-const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status', 'updated', 'cost']
+const SESSION_SORT_KEYS: SessionSortKey[] = ['created', 'title', 'agent', 'id', 'startedBy', 'status', 'updated', 'cost', 'duration']
 const DEFAULT_SORT_KEY: SessionSortKey = 'updated'
 /** Status ordering for the Status-column sort: live → done → stopped → crashed. */
 const statusRank = (s: Session): number =>
@@ -168,6 +224,7 @@ const compareSessions = (a: Session, b: Session, key: SessionSortKey): number =>
     case 'status': return statusRank(a) - statusRank(b)
     case 'updated': return a.updatedAt - b.updatedAt
     case 'cost': return (a.costUsd ?? -1) - (b.costUsd ?? -1)
+    case 'duration': return (a.activeMs ?? -1) - (b.activeMs ?? -1)
   }
 }
 
@@ -3132,8 +3189,19 @@ function SessionsPage({
                   {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 </div>
                 <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-                  <span className="truncate">{s.agent} · {statusLabel(s)} · <span className="font-mono">{s.id}</span></span>
+                  <span className="truncate"><span className={resultTone(s)}>{resultLabel(s)}</span> · {s.agent} · <span className="font-mono">{s.id}</span></span>
                   <ModeBadge headless={s.headless} />
+                </div>
+                {/* The agent's own one-line verdict — the card's "what came of it" line. Clamped to two
+                    lines so a long summary can't stretch the grid. Skipped when the title was DERIVED
+                    from this summary (titleFromSummary), which would otherwise print it twice. */}
+                {s.summary && !s.summary.startsWith(s.title.replace(/…$/, '').trim()) && (
+                  <div className="mt-1 line-clamp-2 text-xs text-muted-foreground/80" title={s.summary}>{s.summary}</div>
+                )}
+                <div className="mt-1 flex items-center gap-2 text-[11px] tabular-nums text-muted-foreground">
+                  {s.activeMs != null && <span title={`${formatDuration(s.activeMs)} of engaged work — idle gaps excluded`}>{formatDuration(s.activeMs)}</span>}
+                  <SessionInsights s={s} className="text-[11px]" />
+                  {s.costUsd != null && <span title="run cost">{formatCost(s.costUsd)}</span>}
                 </div>
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <OriginBadge s={s} members={members} />
@@ -3187,12 +3255,14 @@ function SessionsPage({
               <span className="h-2 w-2 shrink-0" aria-hidden />
               {sortHead('title', 'Session', 'min-w-0 flex-1')}
               {sortHead('agent', 'Agent', 'hidden w-32 shrink-0 sm:flex')}
-              {sortHead('id', 'ID', 'hidden w-20 shrink-0 md:flex')}
-              {sortHead('startedBy', 'Started by', 'w-40 shrink-0')}
+              {sortHead('id', 'ID', 'hidden w-20 shrink-0 xl:flex')}
+              {sortHead('startedBy', 'Started by', 'w-32 shrink-0')}
               <span className="w-24 shrink-0">Mode</span>
               {sortHead('updated', 'Updated', 'w-20 shrink-0')}
+              {sortHead('duration', 'Took', 'hidden w-16 shrink-0 justify-end lg:flex')}
+              <span className="hidden w-20 shrink-0 xl:block">Activity</span>
               {sortHead('cost', 'Cost', 'hidden w-16 shrink-0 justify-end lg:flex')}
-              {sortHead('status', 'Status', 'w-16 shrink-0')}
+              {sortHead('status', 'Result', 'w-20 shrink-0')}
             </div>
             <span className="w-32 shrink-0" aria-hidden />
           </div>
@@ -3210,12 +3280,18 @@ function SessionsPage({
                 <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
                 {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{s.agent}</span>
-                <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground md:block" title={s.id}>{s.id}</span>
-                <OriginBadge s={s} members={members} className="w-40 shrink-0" />
+                <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground xl:block" title={s.id}>{s.id}</span>
+                <OriginBadge s={s} members={members} className="w-32 shrink-0" />
                 <span className="flex w-24 shrink-0 items-center"><ModeBadge headless={s.headless} /></span>
                 <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
+                {/* Engaged time, not wall-clock — the tooltip spells out the difference, which is often
+                    hours for an interactive session that sat idle between turns. */}
+                <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
+                <SessionInsights s={s} className="hidden w-20 shrink-0 xl:flex" />
                 <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.tokens ? `${(s.tokens.input + s.tokens.output + s.tokens.cacheRead + s.tokens.cacheWrite).toLocaleString()} tokens (in ${s.tokens.input.toLocaleString()} · out ${s.tokens.output.toLocaleString()} · cache-read ${s.tokens.cacheRead.toLocaleString()} · cache-write ${s.tokens.cacheWrite.toLocaleString()})` : 'cost not yet computed'}>{formatCost(s.costUsd)}</span>
-                <span className="w-16 shrink-0 text-xs text-muted-foreground">{statusLabel(s)}</span>
+                {/* Result = the agent's own verdict, falling back to the process status. The summary
+                    rides along as the tooltip so "what came of it" is one hover away. */}
+                <span className={`w-20 shrink-0 truncate text-xs ${resultTone(s)}`} title={s.summary ? `${statusLabel(s)} · ${s.summary}` : statusLabel(s)}>{resultLabel(s)}</span>
               </button>
               {/* Human verdict — finished runs only; stays visible once rated, faint-until-hover otherwise. */}
               <div className={`shrink-0 transition-opacity ${!isLive(s) ? (s.rating ? '' : 'opacity-40 group-hover:opacity-100') : 'invisible'}`}>

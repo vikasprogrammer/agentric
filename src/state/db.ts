@@ -821,6 +821,26 @@ function migrate(db: Db): void {
   // world-reachable forever. Set when the link is minted; the public route rejects an expired token
   // immediately and the scheduler sweep clears it from the row. NULL = no public link (nothing to expire).
   addColumn(db, 'artifacts', 'share_expires_at', 'INTEGER');
+
+  // Session insights — what a finished run actually did, so the sessions list can say more than
+  // "done" (which only means the process exited). All are stamped ONCE when the run reaches a terminal
+  // state and never recomputed; NULL = not yet stamped.
+  //  · outcome/report_summary — the agent's OWN verdict, from its end-of-session `report`
+  //    (`session.reported` audit event). 'unknown' when a run ended without reporting, which is itself
+  //    the signal that nobody closed the loop. Distinct from `status`.
+  //  · active_ms / turns / tool_calls — the run's shape, from the same transcript walk that prices it
+  //    (src/edge/session-cost.ts). `active_ms` is ENGAGED time, not wall-clock.
+  //  · gov_* — the governance fingerprint, counted off this run's audit stream. `gov_approvals IS NULL`
+  //    is the "not yet stamped" marker for all four (a run with no governed activity stamps zeros).
+  addColumn(db, 'term_sessions', 'outcome', 'TEXT');           // success | failure | partial | unknown | …
+  addColumn(db, 'term_sessions', 'report_summary', 'TEXT');    // the report's one-line summary
+  addColumn(db, 'term_sessions', 'active_ms', 'INTEGER');      // engaged time (idle gaps excluded)
+  addColumn(db, 'term_sessions', 'turns', 'INTEGER');          // real user prompts (not tool_results)
+  addColumn(db, 'term_sessions', 'tool_calls', 'INTEGER');     // tool_use blocks the agent issued
+  addColumn(db, 'term_sessions', 'gov_actions', 'INTEGER');    // gate.decision — governed effects
+  addColumn(db, 'term_sessions', 'gov_approvals', 'INTEGER');  // approval.requested — human gates hit
+  addColumn(db, 'term_sessions', 'gov_denied', 'INTEGER');     // policy denials + rejected approvals
+  addColumn(db, 'term_sessions', 'gov_errors', 'INTEGER');     // episode/session errors
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

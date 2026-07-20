@@ -235,6 +235,27 @@ export interface Session {
   /** Token breakdown behind `costUsd` (uncached input / output / cache-read / cache-write). Undefined
    *  until cost is computed. */
   tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  /** What the AGENT said happened, from its end-of-session `report` — 'success' | 'failure' | 'partial'
+   *  | 'unknown' | … Orthogonal to `status`, which only says how the PROCESS ended: a `done` session can
+   *  carry a `failure` outcome, and an `unknown` outcome on a finished run means nobody closed the loop.
+   *  Undefined while the run is live or before it's been stamped. */
+  outcome?: string;
+  /** The report's one-line summary — the human-readable "what came of it" behind {@link outcome}. */
+  summary?: string;
+  /** ENGAGED milliseconds, from the transcript (idle gaps excluded) — the honest answer to "how long
+   *  did this take". Wall-clock (`updatedAt - createdAt`) is not: an interactive session idles between
+   *  turns, so it routinely spans hours or days of nothing. Undefined until stamped. */
+  activeMs?: number;
+  /** Real user prompts in the conversation (1 for a one-shot headless run, many for a steered one). */
+  turns?: number;
+  /** Tool calls the agent issued — the true activity volume, unlike `insights.actions` which counts
+   *  only the subset of effects the gate mediates. */
+  toolCalls?: number;
+  /** The governance fingerprint of the run, counted off its audit stream: `actions` = governed effects
+   *  (gate.decision), `approvals` = human gates hit, `denied` = policy denials + rejected approvals,
+   *  `errors` = session/episode errors. Live rows carry the running tally; terminal rows the stamped
+   *  final one. Definitions mirror `episodeSalience`, which grades the same signals for memory. */
+  insights?: { actions: number; approvals: number; denied: number; errors: number };
 }
 
 export interface FeedMessage {
@@ -303,6 +324,15 @@ interface SessionRow {
   output_tokens: number | null;
   cache_read_tokens: number | null;
   cache_write_tokens: number | null;
+  outcome: string | null;
+  report_summary: string | null;
+  active_ms: number | null;
+  turns: number | null;
+  tool_calls: number | null;
+  gov_actions: number | null;
+  gov_approvals: number | null;
+  gov_denied: number | null;
+  gov_errors: number | null;
 }
 interface MessageRow {
   id: string;
@@ -529,6 +559,9 @@ export class TerminalManager {
     // still-uncosted terminal rows here (bounded per call so a first load with a large history doesn't
     // stall parsing hundreds of transcripts — newest first, the rest catch up over subsequent polls).
     this.backfillCosts(visible);
+    // Outcome + governance counts: cheap indexed lookups off the audit stream (unlike cost, which parses
+    // a transcript), so this isn't budgeted — terminal rows are stamped once, live rows re-tallied.
+    this.stampInsights(visible);
     const resumable = this.resumableIds();
     // One query resolves the whole list's blocked-on-human state (a pending ask/approval), instead of a
     // per-row check — so the console gets an authoritative `blocked` without re-deriving it from the feed.
@@ -547,7 +580,8 @@ export class TerminalManager {
   }
 
   /**
-   * Compute + persist USD cost for terminal rows that don't have it yet. A run's transcript is complete
+   * Compute + persist USD cost — and the run's SHAPE (engaged time / turns / tool calls, which come out
+   * of the same walk) — for terminal rows that don't have it yet. A run's transcript is complete
    * once it reaches a terminal state (done/stopped/crashed), so we parse it once, store the result on the
    * row, and never re-read. Bounded per call (`MAX_COST_BACKFILL`) so the first list after a deploy with a
    * long history amortizes the parsing across polls instead of blocking on all of it at once. Rows are
@@ -558,9 +592,9 @@ export class TerminalManager {
     let budget = 20; // MAX_COST_BACKFILL — cap transcript parses per list call
     for (const r of rows) {
       if (budget <= 0) break;
-      if (r.cost_usd != null) continue;                 // already costed
-      if (r.status === 'running') continue;             // transcript still growing — cost at end
-      if (!r.claude_session_id) continue;               // non-claude run has no transcript to price
+      if (r.cost_usd != null && r.active_ms != null) continue; // already fully derived
+      if (r.status === 'running') continue;             // transcript still growing — derive at end
+      if (!r.claude_session_id) continue;               // non-claude run has no transcript to read
       budget--;
       let cost;
       try {
@@ -568,15 +602,92 @@ export class TerminalManager {
       } catch {
         continue;                                       // transcript unreadable — retry on a later poll
       }
-      if (!cost) continue;                              // no transcript yet
+      if (!cost) {
+        // No transcript. For an unpriced row that's "not written yet" — retry on a later poll. But a row
+        // that's ALREADY priced and lands here has had its transcript pruned since; we were only after
+        // its shape, so stamp zeros rather than re-probe a file that's never coming back (which would
+        // otherwise eat this budget on every poll forever and starve genuinely new rows).
+        if (r.cost_usd != null) {
+          this.db.prepare('UPDATE term_sessions SET active_ms = 0, turns = 0, tool_calls = 0 WHERE id = ?').run(r.id);
+          r.active_ms = 0;
+          r.turns = 0;
+          r.tool_calls = 0;
+        }
+        continue;
+      }
       this.db
-        .prepare('UPDATE term_sessions SET cost_usd = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ? WHERE id = ?')
-        .run(cost.costUsd, cost.inputTokens, cost.outputTokens, cost.cacheReadTokens, cost.cacheWriteTokens, r.id);
+        .prepare('UPDATE term_sessions SET cost_usd = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, active_ms = ?, turns = ?, tool_calls = ? WHERE id = ?')
+        .run(cost.costUsd, cost.inputTokens, cost.outputTokens, cost.cacheReadTokens, cost.cacheWriteTokens, cost.activeMs, cost.turns, cost.toolCalls, r.id);
       r.cost_usd = cost.costUsd;
       r.input_tokens = cost.inputTokens;
       r.output_tokens = cost.outputTokens;
       r.cache_read_tokens = cost.cacheReadTokens;
       r.cache_write_tokens = cost.cacheWriteTokens;
+      r.active_ms = cost.activeMs;
+      r.turns = cost.turns;
+      r.tool_calls = cost.toolCalls;
+    }
+  }
+
+  /**
+   * Stamp each row's OUTCOME (the agent's own verdict) and GOVERNANCE FINGERPRINT (what the run did
+   * through the gate) — the two things the sessions list can't say from `status` alone.
+   *
+   * Both derive from the run's audit stream, an indexed point lookup per row (`idx_audit_run`). A
+   * TERMINAL run's stream is complete, so it's computed once and persisted; a LIVE run is recomputed
+   * each call (its tally is still moving) and never written. Counting mirrors `episodeSalience`, which
+   * grades the same signals for memory — one vocabulary for "what happened in this run". The one
+   * deliberate divergence: `errors` counts only `session.error` (the run itself failing), not
+   * `episode.error`, which is the OS failing to WRITE the episode memory afterwards — housekeeping the
+   * agent had no part in, and which would otherwise brand a clean run as errored. Salience still weighs
+   * both, since an internal failure IS worth remembering; the list is about the run's own work.
+   *
+   * A finished run that never reported stamps `outcome = 'unknown'` rather than staying NULL, so it
+   * isn't re-derived on every poll forever — and so the list can show that nobody closed the loop.
+   * Mutates the rows in place, so the same response carries what it just computed.
+   */
+  private stampInsights(rows: SessionRow[]): void {
+    for (const r of rows) {
+      const live = r.status === 'running';
+      if (!live && r.gov_approvals != null) continue; // already stamped, and it can no longer change
+
+      const counts = this.db.prepare(`SELECT
+          SUM(type = 'gate.decision') AS actions,
+          SUM(type = 'approval.requested') AS approvals,
+          SUM(type = 'gate.decision' AND data LIKE '%"effect":"deny"%') AS gateDenied,
+          SUM(type = 'approval.resolved' AND data LIKE '%"approved":false%') AS rejected,
+          SUM(type = 'session.error') AS errors
+        FROM audit_events WHERE run_id = ?`)
+        .get<{ actions: number | null; approvals: number | null; gateDenied: number | null; rejected: number | null; errors: number | null }>(r.id);
+      const actions = counts?.actions ?? 0;
+      const approvals = counts?.approvals ?? 0;
+      const denied = (counts?.gateDenied ?? 0) + (counts?.rejected ?? 0);
+      const errors = counts?.errors ?? 0;
+
+      // The agent's own end-of-session verdict. Latest wins — a resumed run can report more than once.
+      const report = this.db
+        .prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.reported' ORDER BY ts DESC LIMIT 1")
+        .get<{ data: string }>(r.id);
+      let outcome = live ? null : 'unknown';
+      let summary: string | null = null;
+      if (report) {
+        try {
+          const d = JSON.parse(report.data) as { outcome?: string; summary?: string };
+          if (d.outcome) outcome = d.outcome;
+          if (d.summary) summary = d.summary.trim() || null;
+        } catch { /* malformed audit payload — fall back to 'unknown' */ }
+      }
+
+      r.gov_actions = actions;
+      r.gov_approvals = approvals;
+      r.gov_denied = denied;
+      r.gov_errors = errors;
+      r.outcome = outcome;
+      r.report_summary = summary;
+      if (live) continue; // still moving — surface it, but don't freeze it onto the row
+      this.db
+        .prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ? WHERE id = ?')
+        .run(actions, approvals, denied, errors, outcome, summary, r.id);
     }
   }
 
@@ -4171,7 +4282,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {
