@@ -31,6 +31,10 @@ const MEMORY_KEY = 'memory_config'; // the live memory backend (JSON MemoryConfi
 const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active external backend became active — the stable orphan horizon for migration
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
 const SUBAGENT_DEFAULT_KEY = 'subagent_default'; // fleet-wide sub-agent posture: 'all' (default) | 'none'
+const SESSION_METRICS_KEY = 'session_metrics'; // sessions-list money column: 'cost' | 'tokens' | 'both'
+
+/** What the sessions list shows in its money column: dollar cost, token total, or both. */
+export type SessionMetrics = 'cost' | 'tokens' | 'both';
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
@@ -416,6 +420,24 @@ export class SettingsStore {
   setSubagentDefault(mode: 'all' | 'none', by?: string): 'all' | 'none' {
     this.set(SUBAGENT_DEFAULT_KEY, mode === 'none' ? 'none' : 'all', by);
     return this.subagentDefault();
+  }
+
+  // ── Sessions-list display preference ───────────────────────────────────────────
+  // Which money figure the sessions list shows per run: the dollar cost, the token total, or both.
+  // Workspace-wide (a viewing preference, not per-member) so a whole team sees the same columns.
+  // Defaults to 'both' — the behaviour before this setting existed.
+
+  /** The sessions-list money column preference; 'both' when unset or invalid. */
+  sessionMetrics(): SessionMetrics {
+    const v = this.getRow(SESSION_METRICS_KEY)?.value;
+    return v === 'cost' || v === 'tokens' || v === 'both' ? v : 'both';
+  }
+
+  /** Persist the sessions-list money column preference. Invalid input is coerced to 'both'. */
+  setSessionMetrics(value: string, by?: string): SessionMetrics {
+    const v: SessionMetrics = value === 'cost' || value === 'tokens' ? value : 'both';
+    this.set(SESSION_METRICS_KEY, v, by);
+    return v;
   }
 
   // ── UI branding ──────────────────────────────────────────────────────────────────

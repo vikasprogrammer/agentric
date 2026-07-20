@@ -1960,6 +1960,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // OS-owned orientation appended to every claude-code agent's system prompt (after Company
       // context). Surfaced read-only in Settings → System so operators can see what the fleet is told.
       operatingNotes: AGENT_OS_OPERATING_NOTES,
+      // Workspace-wide sessions-list display preference (cost / tokens / both). Read once on app load.
+      sessionMetrics: os.settings.sessionMetrics(),
     });
   }
 
@@ -3610,6 +3612,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.settings.setSubagentDefault(mode, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.subagentDefault.updated', data: { mode } });
     return sendJson(res, 200, { ok: true, mode });
+  }
+
+  // ── sessions-list money column (cost / tokens / both) — a workspace-wide viewing preference ──
+  if (method === 'PUT' && p === '/api/settings/session-metrics') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as { value?: string };
+    const sessionMetrics = os.settings.setSessionMetrics(String(b?.value ?? ''), me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.sessionMetrics.updated', data: { value: sessionMetrics } });
+    return sendJson(res, 200, { ok: true, sessionMetrics });
   }
 
   // ── whole-box concurrency cap (docs/concurrency-cap-plan.md Phase 1) ──

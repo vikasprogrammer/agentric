@@ -13,7 +13,7 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
-import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { docPages } from '@/docs'
@@ -278,6 +278,16 @@ const formatTokens = (t?: Session['tokens']): string => {
   if (n < 1_000_000) return `${Math.round(n / 1000)}k`
   return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`
 }
+/** Column heading for the money cell under the workspace `metrics` preference. */
+const metricsHeader = (m: SessionMetrics): string => (m === 'cost' ? 'Cost' : m === 'tokens' ? 'Tokens' : 'Cost · tokens')
+/** The money cell's text for a run under the workspace `metrics` preference: cost, tokens, or both. A
+ *  React fragment so the token figure can stay dimmer than the dollars when both show. */
+const MetricsValue = ({ s, m }: { s: Session; m: SessionMetrics }): ReactNode => {
+  if (m === 'tokens') return <>{formatTokens(s.tokens)}</>
+  if (m === 'cost') return <>{formatCost(s.costUsd)}</>
+  return <>{formatCost(s.costUsd)}{s.tokens && <span className="ml-1 text-[10px] text-muted-foreground/60">{formatTokens(s.tokens)}</span>}</>
+}
+
 /** The full four-way token breakdown, for a `title` tooltip. */
 const tokenBreakdown = (t?: Session['tokens']): string =>
   t ? `${totalTokens(t)!.toLocaleString()} tokens (in ${t.input.toLocaleString()} · out ${t.output.toLocaleString()} · cache-read ${t.cacheRead.toLocaleString()} · cache-write ${t.cacheWrite.toLocaleString()})` : 'not yet computed'
@@ -1443,7 +1453,7 @@ function Console({ me }: { me: Member }) {
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
-          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
+          {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
@@ -1462,7 +1472,7 @@ function Console({ me }: { me: Member }) {
           {route === 'artifacts' && <ArtifactsPage me={me} permalink={detail} nav={nav} />}
           {route === 'audit' && <AuditPage />}
           {route === 'docs' && <DocsPage selected={detail} onSelect={(slug) => nav('docs', slug)} />}
-          {route === 'settings' && <SettingsPage me={me} state={state} tab={detail} onTab={(t) => nav('settings', t)} />}
+          {route === 'settings' && <SettingsPage me={me} state={state} tab={detail} onTab={(t) => nav('settings', t)} onStateChange={refreshState} />}
           {route === 'agent' && editAgent && <AgentPage agentId={editAgent} agents={state?.agents ?? []} onSaved={refreshState} />}
         </div>
       </main>
@@ -2080,14 +2090,26 @@ function OriginBadge({ s, members = [], className = '' }: { s: Session; members?
 /** The run mode of a session — headless (`claude -p`, ran to completion and exited) vs interactive (an
  *  attachable TUI a human can watch and steer). A compact colored pill, shown alongside the origin so
  *  the list makes both axes — who started it AND how it runs — legible at a glance. */
-function ModeBadge({ headless, className = '' }: { headless?: boolean; className?: string }) {
-  return headless ? (
-    <span title="headless — ran `claude -p` non-interactively and exited when done" className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20 ${className}`}>
-      <Zap className="h-2.5 w-2.5 shrink-0" /> Headless
-    </span>
-  ) : (
-    <span title="interactive — an attachable TUI you can watch and steer" className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-500/20 ${className}`}>
-      <Terminal className="h-2.5 w-2.5 shrink-0" /> Interactive
+/** The run's launch mode. `iconOnly` drops the label to a single tinted glyph (still tooltip'd) — used
+ *  in the dense sessions list where a full pill costs too much width; cards keep the labelled form. */
+function ModeBadge({ headless, className = '', iconOnly = false }: { headless?: boolean; className?: string; iconOnly?: boolean }) {
+  const title = headless
+    ? 'headless — an unattended run that closes itself at turn-end'
+    : 'interactive — an attachable TUI you can watch and steer'
+  const tint = headless
+    ? 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20'
+    : 'bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-400 dark:ring-sky-500/20'
+  const Icon = headless ? Zap : Terminal
+  if (iconOnly) {
+    return (
+      <span title={title} className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded ring-1 ${tint} ${className}`}>
+        <Icon className="h-3 w-3 shrink-0" />
+      </span>
+    )
+  }
+  return (
+    <span title={title} className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ${tint} ${className}`}>
+      <Icon className="h-2.5 w-2.5 shrink-0" /> {headless ? 'Headless' : 'Interactive'}
     </span>
   )
 }
@@ -2657,30 +2679,67 @@ function EditableSessionTitle({ title, onRename }: { title: string; onRename: (t
   )
 }
 
-// Hand a session to another owner — reassign its run-as (the accountable human). Visible only to an
-// owner/admin or the session's current owner (mirrors the server gate); lists every other member. The
-// `variant` matches the two Sessions views: a labeled button (grid) vs. a bare icon (list row).
-function TransferMenu({ session, members, me, onTransfer, variant }: {
-  session: Session; members: Member[]; me: Member; onTransfer: (id: string, to: string) => void; variant: 'label' | 'icon'
+/** The per-row "⋯" actions dropdown for the sessions list + grid cards. One compact trigger replaces the
+ *  cluster of hover icon-buttons (which forced a wide fixed cell / overlay) — icon + label items, gated
+ *  exactly like their old button counterparts, and the natural home for future per-session actions. */
+function RowActionsMenu({ session: s, members, me, onOpen, onStop, onDelete, onTransfer, onActivity, className = '' }: {
+  session: Session; members: Member[]; me: Member
+  onOpen: (tmux: string, title: string) => void
+  onStop: (id: string) => void
+  onDelete: (id: string, tmux: string) => void
+  onTransfer: (id: string, to: string) => void
+  onActivity: (s: Session) => void
+  className?: string
 }) {
-  if (me.role !== 'owner' && me.role !== 'admin' && session.runAs !== me.id) return null
-  const targets = members.filter((m) => m.id !== session.runAs)
-  if (targets.length === 0) return null
+  const canTransfer = me.role === 'owner' || me.role === 'admin' || s.runAs === me.id
+  const transferTargets = canTransfer ? members.filter((m) => m.id !== s.runAs) : []
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        render={variant === 'label'
-          ? <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs" title="transfer — hand this session to another owner"><Users className="h-3 w-3" /> Transfer</Button>
-          : <Button size="icon" variant="ghost" className="h-7 w-7" title="transfer — hand this session to another owner"><Users className="h-3.5 w-3.5" /></Button>}
+        render={<Button size="icon" variant="ghost" className={`h-7 w-7 text-muted-foreground ${className}`} title="session actions"><MoreHorizontal className="h-4 w-4" /></Button>}
       />
-      <DropdownMenuContent align="end" className="max-h-64 overflow-y-auto">
-        <div className="px-2 py-1 text-[11px] text-muted-foreground">Transfer to…</div>
-        {targets.map((m) => (
-          <DropdownMenuItem key={m.id} className="gap-2 text-xs" onClick={() => onTransfer(session.id, m.id)}>
-            <MemberAvatar member={m} className="h-4 w-4 text-[9px]" />
-            <span className="truncate">{m.name}</span>
+      <DropdownMenuContent align="end" className="min-w-[13rem]">
+        {canResume(s) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => resumeAndOpen(s, onOpen)}>
+            <Play className="h-3.5 w-3.5 shrink-0 text-emerald-500" /> <span>Resume</span>
           </DropdownMenuItem>
-        ))}
+        )}
+        {canGoInteractive(s) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => takeOverAndOpen(s, onOpen)}>
+            <Terminal className="h-3.5 w-3.5 shrink-0 text-sky-500" /> <span>Take over</span>
+          </DropdownMenuItem>
+        )}
+        {canFork(s) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => forkAndOpen(s, onOpen)}>
+            <GitBranch className="h-3.5 w-3.5 shrink-0 text-violet-500" /> <span>Fork</span>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem className="gap-2 text-xs" onClick={() => onActivity(s)}>
+          <Activity className="h-3.5 w-3.5 shrink-0 text-sky-500" /> <span>Activity</span>
+        </DropdownMenuItem>
+        {isLive(s) && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => onStop(s.id)}>
+            <Square className="h-3.5 w-3.5 shrink-0 text-amber-500" /> <span>Stop</span>
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" className="gap-2 text-xs" onClick={() => onDelete(s.id, s.tmux)}>
+          <Trash2 className="h-3.5 w-3.5 shrink-0" /> <span>Delete</span>
+        </DropdownMenuItem>
+        {transferTargets.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <div className="px-2 py-1 text-[11px] text-muted-foreground">Transfer to…</div>
+            <div className="max-h-48 overflow-y-auto">
+              {transferTargets.map((m) => (
+                <DropdownMenuItem key={m.id} className="gap-2 text-xs" onClick={() => onTransfer(s.id, m.id)}>
+                  <MemberAvatar member={m} className="h-4 w-4 text-[9px]" />
+                  <span className="truncate">{m.name}</span>
+                </DropdownMenuItem>
+              ))}
+            </div>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -2786,13 +2845,15 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
 }
 
 function SessionsPage({
-  me, members, sessions, waiting, selected, hiddenTabs, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onTransfer, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
+  me, members, sessions, waiting, selected, hiddenTabs, metrics, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onTransfer, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
   me: Member
   members: Member[]
   sessions: Session[]
   waiting: Set<string>
   selected: Selected
+  /** Workspace preference for the money column: dollar cost, token total, or both. */
+  metrics: SessionMetrics
   /** tmuxes the user closed from the tab strip — hidden there, session stays alive. */
   hiddenTabs: Set<string>
   /** Hide a tab from the strip without stopping its session (reopen from All sessions). */
@@ -3246,7 +3307,7 @@ function SessionsPage({
                 <div className="mt-1 flex items-center gap-2 text-[11px] tabular-nums text-muted-foreground">
                   {s.activeMs != null && <span title={`${formatDuration(s.activeMs)} of engaged work — idle gaps excluded`}>{formatDuration(s.activeMs)}</span>}
                   <SessionInsights s={s} className="text-[11px]" />
-                  {s.costUsd != null && <span title={tokenBreakdown(s.tokens)}>{formatCost(s.costUsd)}<span className="text-muted-foreground/60"> · {formatTokens(s.tokens)} tok</span></span>}
+                  {(s.costUsd != null || (metrics === 'tokens' && s.tokens)) && <span title={tokenBreakdown(s.tokens)}><MetricsValue s={s} m={metrics} /></span>}
                 </div>
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <OriginBadge s={s} members={members} />
@@ -3259,6 +3320,8 @@ function SessionsPage({
                   <RunRating session={s} onRate={onRate} />
                 </div>
               )}
+              {/* Primary action (Resume / Take over) stays a labelled button for discoverability; the
+                  rest live in the same "⋯" dropdown the list uses. */}
               <div className="mt-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
                   <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="reopen and continue this session (claude --resume)">
@@ -3270,23 +3333,7 @@ function SessionsPage({
                     <Terminal className="h-3 w-3" /> Take over
                   </Button>
                 )}
-                {canFork(s) && (
-                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-violet-600" onClick={() => forkAndOpen(s, onOpen)} title="fork — branch a new session that inherits this conversation (the original is left untouched)">
-                    <GitBranch className="h-3 w-3" /> Fork
-                  </Button>
-                )}
-                {isLive(s) && (
-                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-amber-600" onClick={() => onStop(s.id)} title="kill this session's shell">
-                    <X className="h-3 w-3" /> Stop
-                  </Button>
-                )}
-                <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs" onClick={() => setInspect(s)} title="which agent-os primitives this session used">
-                  <Activity className="h-3 w-3" /> Activity
-                </Button>
-                <TransferMenu session={s} members={members} me={me} onTransfer={onTransfer} variant="label" />
-                <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-destructive" onClick={() => onDelete(s.id, s.tmux)} title="delete session + its messages/files">
-                  <Trash2 className="h-3 w-3" /> Delete
-                </Button>
+                <RowActionsMenu session={s} members={members} me={me} onOpen={onOpen} onStop={onStop} onDelete={onDelete} onTransfer={onTransfer} onActivity={setInspect} />
               </div>
             </div>
           ))}
@@ -3306,14 +3353,14 @@ function SessionsPage({
               {sortHead('agent', 'Agent', 'hidden w-28 shrink-0 xl:flex')}
               {sortHead('id', 'ID', 'hidden w-20 shrink-0 2xl:flex')}
               {sortHead('startedBy', 'Started by', 'w-28 shrink-0')}
-              <span className="w-24 shrink-0">Mode</span>
+              <span className="w-8 shrink-0 text-center" title="mode">Run</span>
               {sortHead('updated', 'Updated', 'w-16 shrink-0')}
               {sortHead('duration', 'Took', 'hidden w-14 shrink-0 justify-end xl:flex')}
               <span className="hidden w-32 shrink-0 2xl:block">Activity</span>
-              {sortHead('cost', 'Cost · tokens', 'hidden w-24 shrink-0 justify-end lg:flex')}
+              {sortHead('cost', metricsHeader(metrics), `hidden ${metrics === 'both' ? 'w-24' : 'w-16'} shrink-0 justify-end lg:flex`)}
               {sortHead('status', 'Result', 'w-16 shrink-0')}
             </div>
-            <span className="w-16 shrink-0" aria-hidden />
+            <span className="w-20 shrink-0" aria-hidden />
           </div>
           {shown.map((s) => (
             <div key={s.id} className={`group relative flex items-center gap-3 px-3 py-2 hover:bg-muted ${sel.has(s.id) ? 'bg-muted' : ''}`}>
@@ -3331,57 +3378,28 @@ function SessionsPage({
                 <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground xl:block">{s.agent}</span>
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground 2xl:block" title={s.id}>{s.id}</span>
                 <OriginBadge s={s} members={members} className="w-28 shrink-0" />
-                <span className="flex w-24 shrink-0 items-center"><ModeBadge headless={s.headless} /></span>
+                <span className="flex w-8 shrink-0 justify-center"><ModeBadge headless={s.headless} iconOnly /></span>
                 <span className="w-16 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 {/* Engaged time, not wall-clock — the tooltip spells out the difference, which is often
                     hours for an interactive session that sat idle between turns. */}
                 <span className="hidden w-14 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground xl:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
                 <SessionInsights s={s} className="hidden w-32 shrink-0 overflow-hidden 2xl:flex" />
-                {/* Cost with its token total alongside — the tokens are the number behind the dollars, so
-                    they share the cell (dim) rather than claim a column that would crush the title. */}
-                <span className="hidden w-24 shrink-0 items-baseline justify-end gap-1 text-right text-xs tabular-nums text-muted-foreground lg:flex" title={s.tokens ? tokenBreakdown(s.tokens) : 'cost not yet computed'}>
-                  {formatCost(s.costUsd)}{s.tokens && <span className="text-[10px] text-muted-foreground/60">{formatTokens(s.tokens)}</span>}
+                {/* Money column follows the workspace preference: cost, tokens, or both (tokens dim). */}
+                <span className={`hidden ${metrics === 'both' ? 'w-24' : 'w-16'} shrink-0 items-baseline justify-end text-right text-xs tabular-nums text-muted-foreground lg:flex`} title={s.tokens ? tokenBreakdown(s.tokens) : 'not yet computed'}>
+                  <MetricsValue s={s} m={metrics} />
                 </span>
                 {/* Result = the agent's own verdict, falling back to the process status. The summary
                     rides along as the tooltip so "what came of it" is one hover away. */}
                 <span className={`w-16 shrink-0 truncate text-xs ${resultTone(s)}`} title={s.summary ? `${statusLabel(s)} · ${s.summary}` : statusLabel(s)}>{resultLabel(s)}</span>
               </button>
-              {/* Human verdict — finished runs only; stays visible once rated, faint-until-hover otherwise.
-                  Fixed-width so it lines up under the header's trailing spacer. */}
-              <div className={`flex w-16 shrink-0 justify-end transition-opacity ${!isLive(s) ? (s.rating ? '' : 'opacity-40 group-hover:opacity-100') : 'invisible'}`}>
-                {!isLive(s) && <RunRating session={s} onRate={onRate} />}
-              </div>
-              {/* Row actions OVERLAY on hover — positioned absolutely so they reserve no layout width
-                  (a fixed w-40 cell here was what crushed the title on laptop-width screens). The muted
-                  pill matches the row's hover background so it reads as sitting on the row. */}
-              <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-md bg-muted px-1 opacity-0 shadow-sm ring-1 ring-border transition-opacity group-hover:opacity-100">
-                {canResume(s) && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="resume — reopen and continue this session (claude --resume)">
-                    <Play className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-                {canGoInteractive(s) && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — attach to this live run and steer it; nothing is interrupted">
-                    <Terminal className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-                {canFork(s) && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-violet-600" onClick={() => forkAndOpen(s, onOpen)} title="fork — branch a new session that inherits this conversation (the original is left untouched)">
-                    <GitBranch className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-                {isLive(s) && (
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-amber-600" onClick={() => onStop(s.id)} title="stop — kill this session's shell">
-                    <Square className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-                <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setInspect(s)} title="activity — which agent-os primitives this session used">
-                  <Activity className="h-3.5 w-3.5" />
-                </Button>
-                <TransferMenu session={s} members={members} me={me} onTransfer={onTransfer} variant="icon" />
-                <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" onClick={() => onDelete(s.id, s.tmux)} title="delete session + its messages/files">
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+              {/* Trailing cell (fixed w-16, matches the header spacer): the human verdict (finished runs)
+                  plus the "⋯" actions dropdown. The dropdown replaced a row of hover icon-buttons — one
+                  trigger, no wide reserved cell, and room to grow. */}
+              <div className="flex w-20 shrink-0 items-center justify-end gap-0.5">
+                <div className={`transition-opacity ${!isLive(s) ? (s.rating ? '' : 'opacity-0 group-hover:opacity-100') : 'hidden'}`}>
+                  {!isLive(s) && <RunRating session={s} onRate={onRate} />}
+                </div>
+                <RowActionsMenu session={s} members={members} me={me} onOpen={onOpen} onStop={onStop} onDelete={onDelete} onTransfer={onTransfer} onActivity={setInspect} className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100" />
               </div>
             </div>
           ))}
@@ -11078,7 +11096,7 @@ const SETTINGS_TABS: SettingsTab[] = ['company', 'runtime', 'theme', 'secrets', 
 
 // The active sub-tab is a URL detail (`#/settings/<tab>`) so a refresh / shared link lands on the same
 // tab. `tab` is the raw detail from the router; `onTab` writes it back into the hash.
-function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: StateResp | null; tab: string; onTab: (t: SettingsTab) => void }) {
+function SettingsPage({ me, state, tab: tabParam, onTab, onStateChange }: { me: Member; state: StateResp | null; tab: string; onTab: (t: SettingsTab) => void; onStateChange: () => void }) {
   const tab: SettingsTab = (SETTINGS_TABS as string[]).includes(tabParam) ? (tabParam as SettingsTab) : 'company'
   const setTab = onTab
   if (me.role !== 'owner' && me.role !== 'admin') return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
@@ -11097,7 +11115,7 @@ function SettingsPage({ me, state, tab: tabParam, onTab }: { me: Member; state: 
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
           : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /></div>
-          : tab === 'theme' ? <ThemeSettings me={me} state={state} />
+          : tab === 'theme' ? <ThemeSettings me={me} state={state} onStateChange={onStateChange} />
           : tab === 'secrets' ? <SecretsSettings me={me} agents={state?.agents ?? []} />
           : tab === 'memory' ? <MemorySettings me={me} />
           : tab === 'governance' ? <GovernanceSettings me={me} />
@@ -13200,7 +13218,7 @@ function CompanySettings({ me }: { me: Member }) {
 
 /** Settings → Theme — the per-tenant accent colour + favicon badge, so several tenants running in
  *  parallel are distinguishable at a glance (sidebar strip, browser-tab favicon, login screen). */
-function ThemeSettings({ me, state }: { me: Member; state: StateResp | null }) {
+function ThemeSettings({ me, state, onStateChange }: { me: Member; state: StateResp | null; onStateChange: () => void }) {
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const [accent, setAccent] = useState('')      // '' = no accent (default theme)
   const [badge, setBadge] = useState('')
@@ -13208,6 +13226,18 @@ function ThemeSettings({ me, state }: { me: Member; state: StateResp | null }) {
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  // Sessions-list money column preference (workspace-wide). Seed from the loaded app state; a save
+  // refetches state so the open sessions list re-renders with the new column immediately.
+  const [metrics, setMetrics] = useState<SessionMetrics>(state?.sessionMetrics ?? 'both')
+  const [metricsHint, setMetricsHint] = useState('')
+  useEffect(() => { setMetrics(state?.sessionMetrics ?? 'both') }, [state?.sessionMetrics])
+  const saveMetrics = async (v: SessionMetrics) => {
+    setMetrics(v); setMetricsHint('')
+    const r = await api.saveSessionMetrics(v)
+    if (r.error) return setMetricsHint('⚠ ' + r.error)
+    setMetricsHint('saved'); setTimeout(() => setMetricsHint(''), 1500)
+    onStateChange()
+  }
 
   useEffect(() => {
     api.branding().then((b) => {
@@ -13310,6 +13340,25 @@ function ThemeSettings({ me, state }: { me: Member; state: StateResp | null }) {
               </span>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Sessions-list display preference — workspace-wide (everyone sees the same money column). */}
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div className="text-sm font-semibold">Sessions list</div>
+          <Field label="Money column" help="What the sessions list shows per run — the dollar cost, the token total, or both. Applies for everyone in this workspace.">
+            <div className="flex gap-1 rounded-md border p-0.5">
+              {(['cost', 'tokens', 'both'] as SessionMetrics[]).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => saveMetrics(v)}
+                  className={`rounded px-3 py-1 text-xs font-medium capitalize transition-colors ${metrics === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+                >{v === 'both' ? 'Cost + tokens' : v}</button>
+              ))}
+            </div>
+          </Field>
+          {metricsHint && <span className="font-mono text-xs text-muted-foreground">{metricsHint}</span>}
         </CardContent>
       </Card>
     </div>

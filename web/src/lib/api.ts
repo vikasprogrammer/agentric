@@ -95,7 +95,11 @@ export interface StateResp {
   capabilities: { id: string; description: string; defaultRisk: string }[]
   /** OS-owned operating notes appended to every claude-code agent's system prompt. Read-only. */
   operatingNotes?: string
+  /** Workspace-wide sessions-list money column preference: dollar cost, token total, or both. */
+  sessionMetrics?: SessionMetrics
 }
+/** What the sessions list shows in its money column — a workspace-wide viewing preference. */
+export type SessionMetrics = 'cost' | 'tokens' | 'both'
 /** Self-update status — the deploy is a git checkout, so this reflects "is the box behind origin?". */
 export interface UpdateStatus {
   current: string
@@ -1361,6 +1365,7 @@ export const api = {
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
   subagentDefault: () => call<{ mode: 'all' | 'none'; error?: string }>('GET', '/api/settings/subagent-default'),
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
+  saveSessionMetrics: (value: SessionMetrics) => call<{ ok: boolean; sessionMetrics?: SessionMetrics; error?: string }>('PUT', '/api/settings/session-metrics', { value }),
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
   saveConcurrency: (body: { value?: number | null; idleHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number }>('PUT', '/api/settings/concurrency', body),
 

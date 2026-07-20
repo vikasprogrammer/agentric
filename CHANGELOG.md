@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.240.0] — 2026-07-20
+### Changed
+- **Sessions list: row actions moved into a "⋯" dropdown, mode shown as a single icon, and the money
+  column is now workspace-configurable.** The per-row lifecycle actions (Resume, Take over, Fork,
+  Activity, Stop, Delete, Transfer) collapse from a row of hover icon-buttons into one compact icon
+  dropdown — less width, and the natural place to add future per-session actions. The launch **mode** is
+  now an icon-only badge (a tinted terminal/bolt glyph, still tooltip'd) instead of a full "Interactive"
+  /"Headless" pill, reclaiming width for the session title. And a new **Settings → Theme → Sessions
+  list** control chooses what the money column shows — **Cost**, **Tokens**, or **Cost + tokens** —
+  workspace-wide (persisted server-side, in `/api/state`), so a whole team sees the same view. Grid
+  cards follow the same money preference; their primary action (Resume/Take over) stays a labelled
+  button with the rest in the shared dropdown.
+
 ## [0.239.0] — 2026-07-20
 ### Changed
 - **Sub-agents are now available fleet-wide by default, with a per-agent opt-out.** Previously an agent
