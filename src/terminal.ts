@@ -41,6 +41,11 @@ const VIDEO_INCALL_POLL_MS = 10_000;       // …10s apart (~30s max block, with
 // (so `agentAskStatus` fails the caller out). A grace so a just-spawned run — whose tmux may not yet
 // register — isn't misjudged; the caller polls every 3s and real answers take far longer than this.
 const ASK_AGENT_GRACE_MS = 20_000;
+// Stale-prompt escalation window (see TerminalManager.escalateStalePrompts). A pending approval / `ask`
+// question older than MIN gets ONE reminder DM; the MAX floor keeps the first sweep from re-nudging
+// long-abandoned rows in a burst (and, past MAX, a still-pending prompt is treated as dead, not nagged).
+const STALE_PROMPT_MIN_MS = 3 * 60 * 60_000;   // 3h pending → re-nudge the approver/operator once
+const STALE_PROMPT_MAX_MS = 3 * 24 * 60 * 60_000; // ignore anything pending longer than 3 days
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
@@ -500,6 +505,49 @@ export class TerminalManager {
    *  a blocking `ask` pings the run-as member out-of-band instead of sitting unseen. */
   private questionNotifier?: (notice: QuestionNotice) => void;
   setQuestionNotifier(fn: (notice: QuestionNotice) => void): void { this.questionNotifier = fn; }
+
+  /**
+   * Re-nudge stale human-in-the-loop prompts: an approval or `ask` question that has sat pending past
+   * {@link STALE_PROMPT_MIN_MS} (and is younger than {@link STALE_PROMPT_MAX_MS}) gets its out-of-band
+   * DM fired a SECOND time — via the SAME {@link approvalNotifier}/{@link questionNotifier} the original
+   * ask used, so the reminder re-binds the reply-to-decide DM channel and reaches the same audience.
+   * Exactly once per item (a durable `escalated_at` marker, like the overdue-task sweep), so a restart
+   * never re-alarms and the max-age floor stops the first sweep from bursting on historically-abandoned
+   * rows. Only prompts whose session is still `running` are nudged — a dead run's orphaned gate is moot.
+   * Driven by the scheduler tick (see {@link Automations.setStalePromptSweeper}); best-effort, never throws.
+   */
+  escalateStalePrompts(now: number): void {
+    const min = Number(process.env.AOS_STALE_PROMPT_MIN_MS) || STALE_PROMPT_MIN_MS;
+    const max = Number(process.env.AOS_STALE_PROMPT_MAX_MS) || STALE_PROMPT_MAX_MS;
+    const isRunning = (runId: string): boolean =>
+      this.db.prepare("SELECT 1 FROM term_sessions WHERE id = ? AND status = 'running' LIMIT 1").get(runId) != null;
+    // Approvals — the store owns the age/marker query; we add the liveness filter + rebuild the notice
+    // (approval rows don't carry the agent name or riskClass, so derive both here).
+    for (const a of this.os.approvals.staleForEscalation(min, max, now, this.os.tenant)) {
+      if (!isRunning(a.runId)) continue;
+      if (!this.os.approvals.markEscalated(a.id, now)) continue;
+      const agent = this.db.prepare('SELECT agent FROM term_sessions WHERE id = ?').get<{ agent: string }>(a.runId)?.agent ?? 'agent';
+      try {
+        this.approvalNotifier?.({ approvalId: a.id, sessionId: a.runId, agent, capability: a.attempt.capabilityId, level: a.level, riskClass: riskClassForLevel(a.level), reason: a.reason });
+      } catch { /* notifications are advisory */ }
+      this.audit(a.runId, agent, 'approval.escalated', { approvalId: a.id, level: a.level, capability: a.attempt.capabilityId, ageMs: now - a.createdAt });
+    }
+    // Questions — this table lives here, so query it directly for the same window + one-time marker.
+    const minCreated = now - max, maxCreated = now - min;
+    const stale = this.db
+      .prepare("SELECT id, run_id, agent, prompt, audience_id, created_at FROM questions WHERE status = 'pending' AND escalated_at IS NULL AND created_at <= ? AND created_at >= ? ORDER BY created_at")
+      .all<{ id: string; run_id: string; agent: string; prompt: string; audience_id: string | null; created_at: number }>(maxCreated, minCreated);
+    for (const q of stale) {
+      if (!isRunning(q.run_id)) continue;
+      const marked = this.db.prepare("UPDATE questions SET escalated_at = ? WHERE id = ? AND escalated_at IS NULL AND status = 'pending'").run(now, q.id);
+      if (marked.changes === 0) continue;
+      try {
+        this.questionNotifier?.({ questionId: q.id, sessionId: q.run_id, agent: q.agent, prompt: q.prompt, to: q.audience_id ?? undefined });
+      } catch { /* notifications are advisory */ }
+      this.audit(q.run_id, q.agent, 'question.escalated', { questionId: q.id, ageMs: now - q.created_at });
+    }
+  }
+
   /** Optional sink that mirrors an inbox-worthy event (completion, question, approval) back to the
    *  Slack/Discord thread a chat-triggered session is bound to, so the human who pinged the agent in
    *  chat sees the outcome there instead of having to switch to the console. No-op for non-chat runs

@@ -872,6 +872,13 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'effort', 'TEXT');            // low | medium | high | …
   addColumn(db, 'term_sessions', 'blocked_ms', 'INTEGER');     // total human-wait (approvals + questions)
   addColumn(db, 'term_sessions', 'artifacts', 'INTEGER');      // deliverables published by the run
+
+  // Stale-prompt escalation: a once-per-item marker so the scheduler's re-nudge sweep DMs the approver /
+  // operator EXACTLY ONCE when an approval or question has sat pending past the threshold, and never
+  // re-alarms across restarts (same discipline as `markOverdueNotified` on tasks). NULL = not yet
+  // re-nudged; a timestamp = we already sent the reminder. A resolved/answered row is skipped by status.
+  addColumn(db, 'approvals', 'escalated_at', 'INTEGER');       // when the stale-approval reminder fired
+  addColumn(db, 'questions', 'escalated_at', 'INTEGER');       // when the stale-question reminder fired
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

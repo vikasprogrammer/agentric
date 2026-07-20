@@ -262,6 +262,11 @@ export class TenantRegistry {
     // Deadline notifications: when a task passes its due date, DM its owner (the human it runs as) once,
     // so a missed deadline surfaces off the board. Owner-less → owner/admins. Mirrors the question path.
     autos.setOverdueNotifier((task) => { void notifyTaskOverdue(os, slack, discord, consoleOrigin, task); });
+    // Stale-prompt escalation: each scheduler tick, re-nudge approvals/questions that have blocked an
+    // agent past the threshold — reusing the same approval/question notifiers wired above so the reminder
+    // re-binds the reply-to-decide DM. One reminder per item (durable marker); off the tenant registry
+    // because it needs the TerminalManager that owns the questions table + the approval notice path.
+    autos.setStalePromptSweeper((now) => { tm.escalateStalePrompts(now); });
     // Task lifecycle → Inbox: a create/assign/status change lands an audience-addressed inbox card for
     // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
     // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.

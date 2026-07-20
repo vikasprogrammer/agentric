@@ -311,6 +311,11 @@ export class Automations {
   private overdueNotifier?: (task: Task) => void;
   setOverdueNotifier(fn: (task: Task) => void): void { this.overdueNotifier = fn; }
 
+  /** Best-effort sweep run each tick that re-nudges stale pending approvals/questions (wired in the
+   *  tenant registry to `TerminalManager.escalateStalePrompts`). Given the tick's `now` in epoch ms. */
+  private stalePromptSweeper?: (now: number) => void;
+  setStalePromptSweeper(fn: (now: number) => void): void { this.stalePromptSweeper = fn; }
+
   // ── CRUD ───────────────────────────────────────────────────────────────────────
   list(): Automation[] {
     return this.db.prepare('SELECT * FROM automations ORDER BY created_at').all<AutomationRow>().map(toAutomation);
@@ -932,6 +937,9 @@ export class Automations {
     this.sweepOverdue(now);
     this.sweepStuckGoals(now);
     this.sweepExpiredShares(now);
+    // Re-nudge stale human-in-the-loop prompts (approvals/questions blocking an agent) so a missed ask
+    // doesn't strand the run forever. Wrapped so a bad row can't take down the scheduler.
+    try { this.stalePromptSweeper?.(now.getTime()); } catch { /* best-effort, never kills the tick */ }
   }
 
   /**

@@ -358,6 +358,13 @@ export interface Approvals {
    *  whether a pending request was actually cancelled. */
   cancel(id: string, by: string): boolean;
   pending(tenant?: string): ApprovalRequest[];
+  /** Pending approvals that have sat past the escalation threshold and haven't been re-nudged yet — the
+   *  source for the scheduler's stale-prompt reminder sweep. `minAgeMs`/`maxAgeMs` bound the window (older
+   *  than min so a fresh gate isn't nagged; younger than max so an ancient/abandoned one isn't re-alarmed
+   *  in a burst on the first sweep). Oldest first. */
+  staleForEscalation(minAgeMs: number, maxAgeMs: number, now: number, tenant?: string): ApprovalRequest[];
+  /** Stamp an approval's one-time escalation marker; true only the FIRST time, so the reminder fires once. */
+  markEscalated(id: string, now: number): boolean;
 }
 
 export interface Identity {

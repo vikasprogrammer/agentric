@@ -67,6 +67,27 @@ export class InMemoryApprovals implements Approvals {
       (r) => r.status === 'pending' && (!tenant || r.tenant === tenant),
     );
   }
+
+  private escalated = new Set<string>();
+
+  staleForEscalation(minAgeMs: number, maxAgeMs: number, now: number, tenant?: string): ApprovalRequest[] {
+    return [...this.items.values()]
+      .filter(
+        (r) =>
+          r.status === 'pending' &&
+          (!tenant || r.tenant === tenant) &&
+          !this.escalated.has(r.id) &&
+          now - r.createdAt >= minAgeMs &&
+          now - r.createdAt <= maxAgeMs,
+      )
+      .sort((a, b) => a.createdAt - b.createdAt);
+  }
+
+  markEscalated(id: string, _now: number): boolean {
+    if (this.escalated.has(id)) return false;
+    this.escalated.add(id);
+    return true;
+  }
 }
 
 interface ApprovalRow {
@@ -171,5 +192,25 @@ export class SqliteApprovals implements Approvals {
       ? this.db.prepare("SELECT * FROM approvals WHERE status = 'pending' AND tenant = ? ORDER BY created_at").all<ApprovalRow>(tenant)
       : this.db.prepare("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at").all<ApprovalRow>();
     return rows.map(toRequest);
+  }
+
+  staleForEscalation(minAgeMs: number, maxAgeMs: number, now: number, tenant?: string): ApprovalRequest[] {
+    const maxCreated = now - minAgeMs; // created at/before this = old enough to nag
+    const minCreated = now - maxAgeMs; // created at/after this = recent enough to still care
+    const rows = tenant
+      ? this.db
+          .prepare("SELECT * FROM approvals WHERE status = 'pending' AND escalated_at IS NULL AND tenant = ? AND created_at <= ? AND created_at >= ? ORDER BY created_at")
+          .all<ApprovalRow>(tenant, maxCreated, minCreated)
+      : this.db
+          .prepare("SELECT * FROM approvals WHERE status = 'pending' AND escalated_at IS NULL AND created_at <= ? AND created_at >= ? ORDER BY created_at")
+          .all<ApprovalRow>(maxCreated, minCreated);
+    return rows.map(toRequest);
+  }
+
+  markEscalated(id: string, now: number): boolean {
+    // Only stamp a still-pending, not-yet-escalated row, so a race with a resolve/second-sweep can't
+    // double-fire the reminder. `changes` is >0 only when THIS call won the stamp.
+    const res = this.db.prepare("UPDATE approvals SET escalated_at = ? WHERE id = ? AND escalated_at IS NULL AND status = 'pending'").run(now, id);
+    return res.changes > 0;
   }
 }

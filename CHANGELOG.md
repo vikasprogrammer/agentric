@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.242.0] — 2026-07-20
+### Added
+- **Stale human-in-the-loop prompts now get re-nudged once, so a missed ask doesn't strand an agent
+  forever.** Fleet-usage mining across all three tenants showed the biggest governance friction isn't a
+  bad rule — it's *abandonment*: agents that raise an approval gate or `ask` a question and are never
+  answered (globex alone: 24 approvals + 32 questions sitting pending; every tenant had unanswered
+  questions). Only overdue **tasks** had a reminder sweep; approvals/questions had a single ask-time DM
+  and then silence. Now the scheduler tick runs `TerminalManager.escalateStalePrompts`: an approval or
+  question that has blocked a **still-running** session past a threshold (`AOS_STALE_PROMPT_MIN_MS`,
+  default 3h) gets its out-of-band DM fired a **second time** — through the *same* approval/question
+  notifiers, so the reminder re-binds the reply-to-decide/answer DM channel and reaches the same
+  audience. Fires **exactly once per item** (durable `escalated_at` marker on `approvals`/`questions`,
+  like the overdue-task guard, so a restart never re-alarms), skips prompts older than
+  `AOS_STALE_PROMPT_MAX_MS` (default 3 days — a long-abandoned gate is treated as dead, and the floor
+  stops the first sweep bursting on history) and prompts whose session already ended. Audited
+  `approval.escalated` / `question.escalated`. Wired in the tenant registry
+  (`Automations.setStalePromptSweeper`) reusing the existing notifier path.
+
 ## [0.241.0] — 2026-07-20
 ### Added
 - **Agents page now shows a per-agent "N Automations" shortcut.** When a claude-code agent has one or
