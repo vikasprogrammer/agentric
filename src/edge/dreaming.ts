@@ -61,10 +61,25 @@ const TOPIC_CAP = 300;                          // hard cap on stored topic keys
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
-  'slack', 'discord', 'chat', 'check', 'checked', 'report', 'reported', 'completed', 'complete', 'summary', 'daily', 'sent', 'posted', 'update', 'updated', 'dashboard', 'message', 'notified', 'agent', 'agents', 'human', 'review', 'reviewed', 'ended', 'started', 'verified', 'read']);
+  'slack', 'discord', 'chat', 'check', 'checked', 'report', 'reported', 'completed', 'complete', 'summary', 'daily', 'sent', 'posted', 'update', 'updated', 'dashboard', 'message', 'notified', 'agent', 'agents', 'human', 'review', 'reviewed', 'ended', 'started', 'verified', 'read',
+  // Conversational filler from natural-language task prompts — a Task line is a human sentence ("lets check
+  // the latest emails …"), so instruction/filler words outrank the real noun. Fleet data showed "working,
+  // recent, lets, latest" topping "frequently works on"; drop them so the actual subject surfaces.
+  'lets', 'please', 'want', 'wants', 'wanted', 'like', 'would', 'give', 'tell', 'know', 'here', 'there', 'what', 'which', 'where', 'whether', 'still', 'back', 'next', 'first', 'last', 'good', 'great', 'thing', 'things', 'stuff', 'working', 'work', 'going', 'getting', 'recent', 'recently', 'latest', 'today', 'yesterday', 'tomorrow', 'current', 'currently', 'again', 'once', 'above', 'below', 'help', 'lets', 'able', 'sure', 'okay', 'yeah', 'issue', 'issues', 'problem', 'problems', 'thanks', 'quick', 'quickly']);
 
 export class DreamingEngine {
   constructor(private readonly os: AgentOS) {}
+
+  /** Team-member name tokens to exclude from topic extraction — each member's name split into ≥4-char
+   *  words (matching `topicCounts`'s tokenizer), lowercased. So "Vikas Singhal" asking about pods doesn't
+   *  make "vikas"/"singhal" read as things the fleet works ON. Rebuilt per pass (cheap; roster is small). */
+  private memberNameStop(): Set<string> {
+    const stop = new Set<string>();
+    for (const m of this.os.team.listMembers()) {
+      for (const w of (m.name || '').toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? []) stop.add(w);
+    }
+    return stop;
+  }
 
   /** Serialize passes per tenant (M1). A manual "Review now" and the scheduler tick both call `dream()`,
    *  which does read-modify-write on `dreaming_state` with an `await` in the middle — concurrently they'd
@@ -154,7 +169,7 @@ export class DreamingEngine {
       else if (f.type === 'session.error') win.errors++; // L3: real run errors, not memory-store (`episode.error`) failures
       else if (parse(f.data).approved === false) win.rejected++;
     }
-    const winTopics = topicCounts(episodes);
+    const winTopics = topicCounts(episodes, this.memberNameStop());
 
     // H2: advance the watermark to the newest ts we actually consumed (never `until`), so anything that
     // landed between that ts and now is picked up next pass instead of falling into a gap.
@@ -245,14 +260,16 @@ function parse(s: string): Record<string, unknown> {
   try { return JSON.parse(s) as Record<string, unknown>; } catch { return {}; }
 }
 
-/** Count topic keywords across the window's episode task/summary lines. */
-function topicCounts(episodes: EpisodeRow[]): [string, number][] {
+/** Count topic keywords across the window's episode task/summary lines. `nameStop` holds team-member
+ *  name tokens (built per-pass from the roster) — a person's name describes WHO asked, not WHAT the fleet
+ *  works on, so "the fleet frequently works on … vikas, singhal" is noise; drop them alongside STOP. */
+function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new Set()): [string, number][] {
   const counts = new Map<string, number>();
   for (const e of episodes) {
     const line = (e.content.split('\n').map((l) => l.trim()).find((l) => l) ?? '').replace(/^Task:\s*/i, '');
     const seen = new Set<string>();
     for (const w of line.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? []) {
-      if (STOP.has(w) || seen.has(w)) continue; // once per episode
+      if (STOP.has(w) || nameStop.has(w) || seen.has(w)) continue; // once per episode
       seen.add(w);
       counts.set(w, (counts.get(w) ?? 0) + 1);
     }

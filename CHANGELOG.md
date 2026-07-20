@@ -8,7 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.243.2] — 2026-07-20
+## [0.243.3] — 2026-07-20
+### Fixed
+- **Self-learning "recurring topics" no longer surfaces conversational filler or people's names.** Live
+  Insights guidance read *"the fleet frequently works on: check, working, recent, emails, influencers"* —
+  a Task line is a human sentence ("lets check the latest emails…"), so instruction/filler words
+  ("lets", "working", "recent", "latest", "today", …) and the asker's own name ("vikas", "singhal")
+  outranked the real subject. Expanded the topic-extraction stop-list with those fillers, and now exclude
+  **team-member name tokens** (built per pass from the roster) — a person's name says WHO asked, not WHAT
+  the fleet works on. `dreaming.ts` topic extraction only; the guidance/recommendation copy is unchanged.
 ### Fixed
 - **The Agents-page "N Automations" shortcut now counts only standing automations, not spent one-shots.**
   A `once` automation that an agent scheduled and that has already fired (`lastFiredAt` set) is inert — it
