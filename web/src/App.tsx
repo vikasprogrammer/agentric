@@ -620,6 +620,28 @@ function WaitingBell({ className = 'h-3.5 w-3.5', tone = 'text-indigo-600' }: { 
   )
 }
 
+/** Corner pip for the COLLAPSED sidebar rail. The expanded sidebar carries its signals as text
+ *  badges next to each label; at 48px wide there's no room for those, so the same counts ride the
+ *  icon itself — without this, collapsing the sidebar silently hides every pending approval, every
+ *  live run and every "Claude is waiting on you". `count === 0` renders nothing. */
+function RailBadge({ count, tone, title }: { count: number; tone: string; title: string }) {
+  if (!count) return null
+  return (
+    <span
+      title={title}
+      className={`pointer-events-none absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none ${tone}`}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  )
+}
+
+/** A plain "there's something unread here" dot for the collapsed rail — used when a surface has news
+ *  but nothing that needs a decision, so it doesn't shout with a count. */
+function RailDot({ tone = 'bg-primary', title }: { tone?: string; title: string }) {
+  return <span title={title} className={`pointer-events-none absolute right-0.5 top-0.5 h-2 w-2 rounded-full ${tone}`} />
+}
+
 /**
  * Self-update notice — polls `/api/update` (a cached `git fetch` behind the scenes) and, when the
  * checkout is behind origin, shows a pill in the sidebar. Clicking opens a panel with the changelog
@@ -1079,6 +1101,10 @@ function Console({ me }: { me: Member }) {
   // Sidebar split: live sessions always show; the open one shows even if ended; the rest of the ended
   // ones hide behind the "N ended" toggle so a pile of past runs doesn't push live work off-screen.
   const navLive = mySessions.filter(isLive)
+  // Signals the collapsed rail surfaces (the expanded sidebar shows them per-row / per-label):
+  // how many of MY sessions are blocked on me, and whether the Inbox has anything unread at all.
+  const waitingMine = mySessions.filter((s) => waiting.has(s.id)).length
+  const unreadInbox = messages.filter((m) => !m.read).length
   const navEnded = mySessions.filter((s) => !isLive(s))
   const selectedEndedNav = navEnded.find((s) => s.tmux === selected?.tmux)
   const collapsibleNav = navEnded.filter((s) => s.tmux !== selected?.tmux)
@@ -1122,12 +1148,23 @@ function Console({ me }: { me: Member }) {
           <div className="mt-1 text-base" title={state?.tenantName || state?.tenant || 'Agent OS'}>⚙️</div>
           <nav className="mt-2 flex flex-col items-center gap-1">
             {me.role === 'owner' && <Button render={<a href={navHref('overview')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'overview' ? 'text-primary' : 'text-muted-foreground'}`} title="Overview" onClick={onNavClick(() => nav('overview'))}><LayoutGrid className="h-4 w-4" /></Button>}
-            <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title="Inbox" onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
+            <span className="relative">
+              <Button render={<a href={navHref('inbox')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'inbox' ? 'text-primary' : 'text-muted-foreground'}`} title={pendingApprovals ? `Inbox — ${pendingApprovals} needs you` : 'Inbox'} onClick={onNavClick(() => nav('inbox'))}><InboxIcon className="h-4 w-4" /></Button>
+              {pendingApprovals > 0
+                ? <RailBadge count={pendingApprovals} tone="bg-amber-500 text-white" title={`${pendingApprovals} item${pendingApprovals === 1 ? '' : 's'} need your decision`} />
+                : unreadInbox > 0 ? <RailDot title={`${unreadInbox} unread`} /> : null}
+            </span>
             <Button render={<a href={navHref('agents')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'agents' || route === 'agent' ? 'text-primary' : 'text-muted-foreground'}`} title="Agents" onClick={onNavClick(() => nav('agents'))}><Bot className="h-4 w-4" /></Button>
             {pinnedNav.map((n) => (
               <Button key={n.key} render={<a href={navHref(n.route)} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === n.route ? 'text-primary' : 'text-muted-foreground'}`} title={n.label} onClick={onNavClick(() => nav(n.route))}>{n.icon}</Button>
             ))}
-            <Button render={<a href={navHref('sessions')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title="Sessions" onClick={onNavClick(() => nav('sessions'))}><TerminalSquare className="h-4 w-4" /></Button>
+            <span className="relative">
+              <Button render={<a href={navHref('sessions')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'sessions' ? 'text-primary' : 'text-muted-foreground'}`} title={waitingMine ? `Sessions — ${waitingMine} waiting on you` : runningSessions ? `Sessions — ${runningSessions} running` : 'Sessions'} onClick={onNavClick(() => nav('sessions'))}><TerminalSquare className="h-4 w-4" /></Button>
+              {/* A session blocked on the human outranks the live-run count — that's the one that needs you. */}
+              {waitingMine > 0
+                ? <RailBadge count={waitingMine} tone="bg-indigo-600 text-white" title={`${waitingMine} session${waitingMine === 1 ? '' : 's'} waiting for your input`} />
+                : <RailBadge count={runningSessions} tone="bg-emerald-500 text-white" title={`${runningSessions} session${runningSessions === 1 ? '' : 's'} running`} />}
+            </span>
           </nav>
         </aside>
       )}

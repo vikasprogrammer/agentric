@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.5] — 2026-07-20
+### Fixed
+- **Collapsed sidebar showed no notifications.** The 48px rail dropped every signal the expanded
+  sidebar carries — pending approvals, live runs, "Claude is waiting on you" — so collapsing it hid
+  the fact that anything needed you. The rail's Inbox and Sessions icons now carry corner pips: an
+  amber count for items awaiting your decision (a plain dot when there's unread-but-nothing-to-decide),
+  and on Sessions an indigo count of your sessions blocked on you, falling back to the emerald
+  running-run count.
+
 ## [0.227.4] — 2026-07-20
 ### Documentation
 - **Deploy runbook: the "blank browser terminal / `/terminal/ws → 403`" nginx gotcha.** Documented a
