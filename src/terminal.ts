@@ -1764,12 +1764,15 @@ export class TerminalManager {
 
     // (2) DONE-ORPHAN + unattended-straggler backstop — the safety net for markTurnIdle. Two ways a run leaks
     // a live pane:
-    //   (a) DONE ORPHAN — the run ended via `report`, which flips the row to 'done' while its interactive TUI
-    //       pane is still live; a done run should hold NO pane, ever, regardless of idle time. This bites BOTH
-    //       lanes: an unattended run whose Stop beacon never landed, AND — the common one — an INTERACTIVE
-    //       (`headless=0`) member/chat run, for which markTurnIdle bails (non-headless) and the idle-interactive
-    //       sweep (3) only touches 'running' rows, so a report-ended one is caught by neither. So we sweep
-    //       done-orphans of EITHER lane here. Only detectable when we can poll liveness (see below).
+    //   (a) DONE ORPHAN — an UNATTENDED (chat/automation/task/ask) run that ended via `report`, which flips
+    //       the row to 'done' while its interactive TUI pane is still live; such a run has no human owning its
+    //       lifecycle, so a done row should hold NO pane — reap on sight. This catches an unattended run whose
+    //       Stop beacon never landed. **Excluded here: a MEMBER's own console session** (`headless=0`,
+    //       `spawned_by` = a bare member id, no `chat:`/`automation:`/`task:`/`ask:` colon). The human opened
+    //       that TUI and owns its lifecycle — calling `report` is a status signal, not "kill my terminal" — so
+    //       reaping it seconds later yanks a live pane out from under an active user ("my headed session got
+    //       killed on its own"). The idle-interactive janitor (sweep 3) reclaims it on the long timeout instead.
+    //       Only detectable when we can poll liveness (see below).
     //   (b) IDLE STRAGGLER — an UNATTENDED (`headless=1`) run still 'running' with a turn-end beacon seen
     //       (`last_activity` set) and idle past the timeout: the classic lost-Stop-beacon / attach-then-detach
     //       case. (Interactive stragglers are sweep (3)'s job, on the longer interactive timeout.)
@@ -1780,10 +1783,16 @@ export class TerminalManager {
     // back to the classic time-based rule for RUNNING rows only (never blind-sweep a 'done' row, or we'd
     // re-teardown it every tick with no way to know its pane already died). Uses the single `alive` poll
     // taken at the top of the sweep.
-    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, last_activity FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
-      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; last_activity: number | null }>();
+    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null }>();
     for (const r of unattended) {
       try {
+        // A MEMBER's own interactive console session is never a done-orphan: the human owns its lifecycle,
+        // so its agent calling `report` (which flips the row to 'done') must not cost it its live pane. Its
+        // spawn provenance is a bare member id (no colon), unlike chat:/automation:/task:/ask: runs. Leave it
+        // to the idle-interactive janitor (sweep 3); reaping it here yanks the TUI out from under an active
+        // user seconds after the agent reports. Unattended-lane done runs fall through and are reaped below.
+        if (r.status === 'done' && !r.headless && r.spawned_by && !r.spawned_by.includes(':')) continue;
         if (alive) {
           if (!alive.has(r.tmux)) continue;                          // pane already gone — nothing to reap
           // a 'running' straggler is only idle-reaped once it has seen a turn-end beacon AND gone quiet past the
@@ -1800,31 +1809,37 @@ export class TerminalManager {
       } catch { /* one bad row must not stop the sweep */ }
     }
 
-    // (3) idle INTERACTIVE (member) sessions. A member's own attachable session holds a `claude` process
-    // too, but — unlike a resident chat (sweep 1) or an unattended run (turn-end / sweep 2) — nothing ever
-    // reaps it. A forgotten, detached one lingers for DAYS, wasting RAM and (now that the cap is on)
-    // permanently hogging a concurrency-cap slot so scheduled work starves. Reap one idle past the
-    // configurable timeout (Settings, default 48 h) with NO client attached and no pending human block; it
-    // stays Resumable (a deliberate console re-open clears `blockResume`), so this is a janitor, not a
-    // guillotine. Skip claimed take-overs — a human owns that lifecycle. `0` disables. Uses
-    // COALESCE(last_activity, created_at): a member session rarely stamps last_activity, so age is the
-    // fallback clock. Runs regardless of `aliveNames()` (kill is harmless on an already-dead pane).
+    // (3) idle INTERACTIVE (member) sessions — running OR done. A member's own attachable session holds a
+    // `claude` process too, but — unlike a resident chat (sweep 1) or an unattended run (turn-end / sweep 2) —
+    // nothing else reaps it. It's the ONLY reaper for a member's `done` session now that sweep 2 leaves those
+    // to the human (a report-ended member run keeps its live TUI so a follow-up still works). A forgotten,
+    // detached one lingers for DAYS, wasting RAM and (now that the cap is on) permanently hogging a
+    // concurrency-cap slot so scheduled work starves. Reap one idle past the configurable timeout (Settings,
+    // default 48 h) with NO client attached and no pending human block; it stays Resumable (a deliberate
+    // console re-open clears `blockResume`), so this is a janitor, not a guillotine. Skip claimed take-overs —
+    // a human owns that lifecycle. `0` disables. Uses COALESCE(last_activity, created_at): a member session
+    // rarely stamps last_activity, so age is the fallback clock.
     const idleHours = this.os.settings.interactiveIdleTimeoutHours();
     if (idleHours > 0) {
       const idleCutoff = Date.now() - idleHours * 3600_000;
-      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE headless = 0 AND resident = 0 AND claimed_by IS NULL AND status = 'running' AND COALESCE(last_activity, created_at) < ?")
-        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(idleCutoff);
+      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status FROM term_sessions WHERE headless = 0 AND resident = 0 AND claimed_by IS NULL AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ?")
+        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string }>(idleCutoff);
       for (const r of stale) {
         try {
+          // A reaped 'running' row flips to 'stopped' and drops out of the query next tick; a 'done' row keeps
+          // its status (below), so skip one whose pane is already gone to avoid re-killing / re-auditing it
+          // every tick. Only applies when we can poll liveness (local backend); null → fall through as before.
+          if (r.status === 'done' && alive && !alive.has(r.tmux)) continue;
           const space = this.spaceFor(r.run_as ?? r.spawned_by);
           if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
           if (this.hasPendingHumanBlock(r.id)) continue;               // blocked on a person — leave it
           this.backend.kill(space, r.tmux);
-          this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+          // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.
+          this.db.prepare("UPDATE term_sessions SET status = ?, updated_at = ? WHERE id = ?").run(r.status === 'done' ? 'done' : 'stopped', Date.now(), r.id);
           this.cancelPendingQuestions(r.id, 'system');
           this.cancelPendingApprovals(r.id, 'system');
-          this.blockResume(r.id); // stay stopped against a ttyd auto-reconnect; a deliberate Resume clears it
-          this.audit(r.id, r.agent, 'session.reaped', { reason: 'idle-interactive', idleHours });
+          this.blockResume(r.id); // stay reaped against a ttyd auto-reconnect; a deliberate Resume clears it
+          this.audit(r.id, r.agent, 'session.reaped', { reason: 'idle-interactive', idleHours, status: r.status });
         } catch { /* one bad row must not stop the sweep */ }
       }
     }
