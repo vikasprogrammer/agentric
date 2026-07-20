@@ -572,7 +572,10 @@ export class Automations {
     // A headless task with acceptance criteria runs under a `/goal` convergence condition (when the
     // installed claude supports it); interactive tasks keep the plain prompt (a human drives those).
     const goalMode = t.mode !== 'interactive' && !!t.criteria && claudeSupportsGoal();
-    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner);
+    // A delegator can pin the dispatched session's model / reasoning effort (e.g. a cheap background
+    // sweep, or max effort for a hard task); undefined fields fall back to the agent + workspace default.
+    const tuning = (t.model || t.effort) ? { model: t.model, effort: t.effort } : undefined;
+    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, undefined, false, tuning);
     this.os.tasks.markDispatched(t.id, s.id);
     this.os.audit.append({
       ts: Date.now(),

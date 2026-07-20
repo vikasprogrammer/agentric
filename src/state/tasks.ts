@@ -25,7 +25,7 @@ import { Task, TaskAttachment, TaskCreateInput, TaskEvent, TaskQuery, TaskStatus
 interface TaskRow {
   id: string; tenant: string; title: string; body: string; status: string; priority: number;
   labels: string; assignee: string | null; owner: string | null; parent_id: string | null;
-  mode: string; auto_dispatch: number; goal_id: string | null; criteria: string | null;
+  mode: string; model: string | null; effort: string | null; auto_dispatch: number; goal_id: string | null; criteria: string | null;
   caller_agent: string | null; caller_claude_id: string | null; poke_on_done: number;
   due_at: number | null; attempts: number; last_session_id: string | null;
   created_by: string; created_at: number; updated_at: number; updated_by: string;
@@ -82,6 +82,8 @@ export class TaskStore {
     const labels = input.labels ?? [];
     const priority = clampPriority(input.priority);
     const mode = input.mode === 'interactive' ? 'interactive' : 'headless';
+    const model = input.model?.trim() || null;
+    const effort = input.effort?.trim() || null;
     // A sub-task inherits its parent's goal when it doesn't name one — so a strategist's umbrella + its
     // sub-tasks all roll up to the same goal without the agent stamping goalId on every child.
     let goalId = input.goalId ?? null;
@@ -91,14 +93,14 @@ export class TaskStore {
     }
     this.db
       .prepare(`INSERT INTO tasks
-        (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, auto_dispatch,
+        (id, tenant, title, body, status, priority, labels, assignee, owner, parent_id, mode, model, effort, auto_dispatch,
          goal_id, criteria, caller_agent, caller_claude_id, poke_on_done, due_at, attempts, last_session_id,
          created_by, created_at, updated_at, updated_by)
-        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`)
+        VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?)`)
       .run(
         id, input.tenant, input.title.trim() || 'Untitled task', input.body ?? '', priority,
         JSON.stringify(labels), input.assignee ?? null, input.owner ?? null, input.parentId ?? null,
-        mode, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
+        mode, model, effort, input.autoDispatch ? 1 : 0, goalId, oneLine(input.criteria),
         input.callerAgent ?? null, input.callerClaudeId ?? null, input.pokeOnDone ? 1 : 0,
         input.dueAt ?? null, input.createdBy, now, now, input.createdBy,
       );
@@ -532,7 +534,9 @@ function toTask(r: TaskRow): Task {
     id: r.id, tenant: r.tenant, title: r.title, body: r.body, status: r.status as TaskStatus,
     priority: r.priority, labels: JSON.parse(r.labels) as string[], assignee: r.assignee ?? undefined,
     owner: r.owner ?? undefined, parentId: r.parent_id ?? undefined,
-    mode: r.mode === 'interactive' ? 'interactive' : 'headless', autoDispatch: r.auto_dispatch === 1,
+    mode: r.mode === 'interactive' ? 'interactive' : 'headless',
+    model: r.model ?? undefined, effort: (r.effort ?? undefined) as Task['effort'],
+    autoDispatch: r.auto_dispatch === 1,
     goalId: r.goal_id ?? undefined, criteria: r.criteria ?? undefined,
     callerAgent: r.caller_agent ?? undefined, callerClaudeId: r.caller_claude_id ?? undefined,
     pokeOnDone: r.poke_on_done === 1,

@@ -1427,6 +1427,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // wake (and waking your own transcript from its own delegate would loop), so we drop the self-poke.
     const pokeOnDone = (b.pokeOnDone === true || b.pokeOnDone === 'true')
       && !!assignee && assignee.startsWith('agent:') && assignee !== `agent:${agent}`;
+    // Per-task runtime tuning — the delegator may pin the dispatched session's model / reasoning effort
+    // (validated the same way agent manifests are: unknown effort/permissionMode is rejected, model is
+    // free-form). We only carry model+effort onto the task (permissionMode is interactive-only and a
+    // task dispatch runs the unattended lane, so it wouldn't apply).
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
+    if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
     try {
       // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
@@ -1438,6 +1444,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         labels: Array.isArray(b.labels) ? b.labels.map(String) : undefined,
         parentId: typeof b.parentId === 'string' ? b.parentId : undefined,
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
+        model: tuning.model,
+        effort: tuning.effort,
         autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true',
         goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,

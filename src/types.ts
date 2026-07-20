@@ -708,6 +708,8 @@ export interface Task {
   owner?: string; // member id → run_as of the dispatched session; undefined → company identity
   parentId?: string;
   mode: 'headless' | 'interactive'; // how a dispatched session runs (default headless: work-to-completion)
+  model?: string; // override the assignee agent's model for the dispatched session (undefined → agent/workspace default)
+  effort?: Effort; // override the assignee agent's reasoning effort for the dispatched session
   autoDispatch: boolean;
   goalId?: string; // the strategic Goal this task advances (Slice 2 linkage)
   criteria?: string; // single-line acceptance condition; drives a headless run under a `/goal` on dispatch
@@ -757,6 +759,8 @@ export interface TaskCreateInput {
   labels?: string[];
   parentId?: string;
   mode?: 'headless' | 'interactive';
+  model?: string; // override the dispatched session's model (validated via sanitizeRuntimeTuning at the API edge)
+  effort?: Effort; // override the dispatched session's reasoning effort
   autoDispatch?: boolean;
   goalId?: string; // link to a strategic Goal (Slice 2)
   criteria?: string; // single-line acceptance condition → `/goal` convergence on a headless dispatch
@@ -1183,15 +1187,15 @@ export function sanitizeSvgIcon(input: string): string | undefined {
   return /^<svg[\s\S]*<\/svg\s*>$/i.test(s) ? s : undefined;
 }
 
-/** Resolve the effective tuning for a launch: each field is the agent's own value, else the
- *  workspace default, else undefined (CLI default) — except `permissionMode`, whose floor is `auto`
- *  (the interactive lane always runs with a mode; the built-in default is `auto`, not the CLI's own).
- *  Pure — used by the terminal launcher. */
-export function resolveRuntimeTuning(agent: RuntimeTuning, defaults: RuntimeTuning): RuntimeTuning {
+/** Resolve the effective tuning for a launch: each field is the per-launch `override` (e.g. a task's
+ *  own model/effort), else the agent's own value, else the workspace default, else undefined (CLI
+ *  default) — except `permissionMode`, whose floor is `auto` (the interactive lane always runs with a
+ *  mode; the built-in default is `auto`, not the CLI's own). Pure — used by the terminal launcher. */
+export function resolveRuntimeTuning(agent: RuntimeTuning, defaults: RuntimeTuning, override?: RuntimeTuning): RuntimeTuning {
   return {
-    model: agent.model ?? defaults.model,
-    effort: agent.effort ?? defaults.effort,
-    permissionMode: agent.permissionMode ?? defaults.permissionMode ?? 'auto',
+    model: override?.model ?? agent.model ?? defaults.model,
+    effort: override?.effort ?? agent.effort ?? defaults.effort,
+    permissionMode: override?.permissionMode ?? agent.permissionMode ?? defaults.permissionMode ?? 'auto',
   };
 }
 

@@ -884,6 +884,8 @@ const TOOLS = [
         dependsOn: { type: 'array', items: { type: 'string' }, description: 'Task ids this task is BLOCKED BY — it will not dispatch until they are all done. To encode a pipeline: file the earlier steps first, capture their ids from the results, and pass them here so this step waits for them.' },
         autoDispatch: { type: 'boolean', description: 'If true and assigned to an agent, the board auto-spawns a session to work it. Default false.' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'How a dispatched session runs: "headless" (default — works to completion then exits) or "interactive" (an attachable TUI a human drives).' },
+        model: { type: 'string', description: 'Override the model the DISPATCHED session runs on (e.g. a small/cheap model for a routine background sweep, a stronger one for hard work). Omit to use the assignee agent\'s own model / the workspace default.' },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Override the reasoning effort of the DISPATCHED session — "low" for cheap mechanical work, up to "max" for the hardest tasks. Especially useful when delegating background work at a different cost/quality tier than your own. Omit to inherit the assignee agent / workspace default.' },
         due: { type: 'string', description: 'Optional soft deadline as an ISO date, e.g. "2026-07-15" or "2026-07-15T17:00:00Z".' },
         wait: { type: 'boolean', description: 'If true, block until this task finishes and return its result (synchronous delegation). Implies autoDispatch. Only meaningful when assigned to an agent. Default false: file it and return immediately.' },
         timeoutSeconds: { type: 'number', minimum: 10, maximum: 21600, description: 'When wait is true, max seconds to block before returning "still running" (default ~15 min headless / 1h interactive).' },
@@ -2129,6 +2131,9 @@ async function taskCreate(args: Record<string, unknown>): Promise<string> {
       autoDispatch: args.autoDispatch === true || waiting || pokeOnDone,
       pokeOnDone,
       mode: args.mode === 'interactive' ? 'interactive' : undefined,
+      // Per-task tuning for the DISPATCHED session (validated server-side); undefined → agent/workspace default.
+      model: typeof args.model === 'string' && args.model.trim() ? args.model.trim() : undefined,
+      effort: typeof args.effort === 'string' && args.effort.trim() ? args.effort.trim() : undefined,
       dueAt: parseDue(args.due),
     }),
   });
