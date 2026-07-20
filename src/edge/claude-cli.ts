@@ -42,6 +42,11 @@ export function claudeSupportsGoal(): boolean {
   return v ? atLeastVersion(v, [2, 1, 139]) : false;
 }
 
+/** The `claude` CLI rejects a `/goal` condition longer than this many characters
+ *  ("Goal condition is limited to 4000 characters"). Callers must not emit a `/goal`
+ *  above it — fall back to embedding the criteria in the prompt body instead. */
+export const GOAL_MAX_CHARS = 4000;
+
 /** Whether the installed `claude` supports `/reload-skills` (v2.1.152+) — used for same-session skill
  *  delivery: after a skill is materialised into a live session's watched `.claude/skills`, we inject
  *  `/reload-skills` to force a re-scan + re-surface descriptions. On an older binary we skip the inject

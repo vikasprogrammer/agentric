@@ -268,15 +268,23 @@ const GOAL_AUTOPLAN_MAX_PER_TICK = Number(process.env.AOS_GOAL_AUTOPLAN_MAX_PER_
  * drives the session across turns until the criteria hold (autonomous convergence; spiked viable, see
  * goals-plan.md §C). `task_update(done)` stays the OS system-of-record, folded into the same turn so the
  * goal clearing and the task closing are atomic; the existing attempt-ceiling/guard net covers a miss.
+ *
+ * The `claude` CLI hard-rejects a `/goal` condition over `GOAL_MAX_CHARS` (it errors and the run never
+ * starts). An overlong `criteria` therefore falls back to plain mode with the acceptance condition
+ * embedded in the prompt body — the run still knows what "done" means, it just isn't evaluator-driven.
  */
 export function buildTaskPrompt(t: { id: string; title: string; body: string; criteria?: string }, opts: { goalMode?: boolean } = {}): string {
-  const converging = !!(opts.goalMode && t.criteria);
+  const goalFits = !!t.criteria && t.criteria.length <= GOAL_MAX_CHARS;
+  const converging = !!(opts.goalMode && goalFits);
+  // Criteria we want to honour but can't route through `/goal` (too long) still belongs in the prompt.
+  const embedCriteria = !!t.criteria && !converging;
   const close = converging
     ? `When you have satisfied the goal above, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }) in that same turn.\n`
     : `When finished, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }).\n`;
   const base =
     `You are working task ${t.id}: ${t.title}\n\n` +
     `${t.body || '(no description provided)'}\n\n` +
+    (embedCriteria ? `Acceptance criteria (the definition of done): ${t.criteria}\n\n` : '') +
     close +
     `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n` +
     `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`;
@@ -285,7 +293,7 @@ export function buildTaskPrompt(t: { id: string; title: string; body: string; cr
 
 // `/goal` CLI support (v2.1.139+) is probed + cached in the shared claude-cli module; imported for use
 // here and re-exported so existing importers (tests) keep their import path. See goals-plan.md §C.
-import { claudeSupportsGoal } from './claude-cli';
+import { claudeSupportsGoal, GOAL_MAX_CHARS } from './claude-cli';
 export { claudeSupportsGoal };
 
 /** RAM-derived default concurrency cap: ~1 session per 1.5 GB of host memory, floored at 3. Adapts to the

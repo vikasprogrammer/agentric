@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.247.1] — 2026-07-20
+### Fixed
+- **A dispatched task with a long acceptance criterion no longer fails to launch.** Task dispatch put the
+  task's single-line `criteria` on line 1 as `/goal <criteria>`, but the `claude` CLI hard-rejects any
+  `/goal` condition over 4000 characters ("Goal condition is limited to 4000 characters"), so the run
+  never started. `buildTaskPrompt` now falls back gracefully when the criteria exceeds the ceiling
+  (`GOAL_MAX_CHARS` in `src/edge/claude-cli.ts`): it drops `/goal` mode and embeds the full criteria in
+  the prompt body as an "Acceptance criteria (the definition of done)" section — the run still knows what
+  done means, it just isn't evaluator-driven. Short criteria keep the `/goal` convergence treatment. The
+  same guard covers the `ask_agent`-with-goal delegation path in `src/terminal.ts`.
+
 ## [0.247.0] — 2026-07-20
 ### Added
 - **Insights can now declutter the Library — an 8th improvement tile.** The artifacts gallery accumulates

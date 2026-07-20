@@ -23,7 +23,7 @@ import { JsonPolicyEngine, PolicyDelta, applyProposal, describeProposal } from '
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { SkillSummary, CatalogSkill } from './governance/skills';
 import { browseRepo, RemoteCatalog } from './governance/skill-registry';
-import { claudeSupportsReloadSkills, claudeSupportsGoal } from './edge/claude-cli';
+import { claudeSupportsReloadSkills, claudeSupportsGoal, GOAL_MAX_CHARS } from './edge/claude-cli';
 import { DEFAULT_IMAGE_COST_USD, resolveImageBackend, imageErrorInfo } from './edge/image-gen';
 import { VendorError, retryableStatus, timedFetch, withRetry, vendorErrorInfo } from './edge/vendor-fetch';
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
@@ -3001,7 +3001,9 @@ export class TerminalManager {
     // `answer` tool); run-as passes the accountable human through. Headless one-off — reaped at turn end.
     // A `goal` (when the installed claude supports `/goal`) opens the prompt under a convergence condition
     // so the delegate works to the objective before answering — the taskless "delegate with a goal" path.
-    const goalMode = !!(goal && goal.trim()) && claudeSupportsGoal();
+    // Over-limit goals would make the `claude` CLI hard-reject the run ("Goal condition is limited to
+    // 4000 characters"); fall back to a plain prompt (question still carries the objective) rather than fail.
+    const goalMode = !!(goal && goal.trim() && goal.trim().length <= GOAL_MAX_CHARS) && claudeSupportsGoal();
     const s = this.createSession(target, `Ask ← ${callerAgent}`, buildAskAgentPrompt(id, callerAgent, question, goalMode ? goal!.trim() : undefined), `ask:${callerAgent}`, true, undefined, undefined, runAs);
     this.db.prepare('UPDATE agent_asks SET delegate_run_id = ? WHERE id = ?').run(s.id, id);
     this.audit(callerSession, callerAgent, 'agent.asked', { askId: id, target, delegate: s.id, runAs: runAs ?? null });
