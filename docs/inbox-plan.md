@@ -166,6 +166,21 @@ for oversight (`GET /api/messages?scope=all`, gated by `inboxScope`). (3) The **
 agent loops in ONE named teammate (inbox card addressed to them + DM) when a run concerns someone other
 than its owner. Console: an **My activity / All** toggle on the Inbox (owner/admin only).
 
+### 4.12 Approvals could be pinged but not *decided* over chat — ✅ SHIPPED (v0.232.0)
+The approval DM (§4.1's twin) was one-way: it told approvers to open the web Inbox to approve/reject —
+only agent `ask` questions could be answered by replying to the DM (`answerQuestionFromChat` +
+`question_dms`). **Fixed:** the symmetric approval path. `notifyApprovers` binds each approval to every
+approver's DM channel in a new `approval_dms` table (keyed per approver, so a multi-approver broadcast
+is unambiguous), and the DM now reads *"Reply 'approve' or 'deny' to decide."* An inbound Slack/Discord
+DM reply is matched to the newest still-pending bound approval by `TerminalManager.decideApprovalFromChat`,
+which reads the reply as an intent (`parseApprovalIntent` — conservative first-token/emoji match;
+ambiguous text prompts for a clear yes/no rather than guessing), **re-checks `canApprove(role, level)`**
+(defense in depth — a role downgrade since the DM yields `forbidden`), and settles the same gate the
+console does — audited `approval.decided.viaDm`. Checked before the question path in both sockets;
+unknown senders fall through to chat. Races the console cleanly (`resolve` no-ops once decided). Note:
+only a **DM** reply decides — a reply in a mirrored *thread* still routes to `continueThread` (typed into
+the live agent), matching the question path.
+
 ### 4.9 Agent can't be *pushed* an answer — ⏳ LATER
 An agent only learns its question was answered by polling `ask` or remembering to `check_inbox`. No push,
 no "N new replies since last check" cursor. Partially mitigated by `check_inbox`. **Plan:** an inbox
@@ -223,6 +238,7 @@ always-rule for owner sign-off (mirrors `skill_propose`).
 | **1** | Question DMs · chat loop · per-member read/dismiss | ✅ v0.39.0 |
 | **Always approve** | Learn a policy `allow` from an approval card (§4.4/§5) | ✅ v0.40.0 |
 | **Recipient routing** | Global `Audience`/`resolveRecipients` + explicit-audience cards + Tasks→Inbox (§4.10) | ✅ v0.63.1/v0.64.0 |
+| **Approval round-trip** | Approve/reject a gated action by replying to the Slack/Discord DM (§4.12) | ✅ v0.232.0 |
 | **2** | Server-side `ask` timeout/expiry · stale-item reminders + escalation | ⏳ |
 | **3** | `since`-cursor + SSE push · feed filter/search/grouping · optimistic UI | ⏳ |
 | **later** | Push answers to the agent · inbox cursor | ⏳ |

@@ -247,7 +247,7 @@ export class TenantRegistry {
     void discord.start();
     // Chat approval notifications (M5): when a risky action lands an approval card, DM whoever can
     // approve it — via their linked Slack/Discord account (identity map). Best-effort, off the hot path.
-    tm.setApprovalNotifier((notice) => { void notifyApprovers(os, slack, discord, consoleOrigin, notice); });
+    tm.setApprovalNotifier((notice) => { void notifyApprovers(os, tm, slack, discord, consoleOrigin, notice); });
     // Question notifications: when an agent asks the human a question, DM the person the run acts for so
     // a blocking `ask` doesn't sit unseen until it times out — the question-side twin of the above.
     tm.setQuestionNotifier((notice) => { void notifyQuestionAsked(os, tm, slack, discord, consoleOrigin, notice); });
@@ -366,19 +366,28 @@ export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmU
  * (`canApprove(role, level)`); `deliverDM` reaches them via the identity map. Off the gate's hot path
  * (the caller fires-and-forgets). Audited once.
  */
-export async function notifyApprovers(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: ApprovalNotice): Promise<void> {
+export async function notifyApprovers(os: AgentOS, tm: Pick<TerminalManager, 'bindApprovalDm'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: ApprovalNotice): Promise<void> {
   // Route to the SAME audience the inbox card uses (approvalAudience): the session owner alone when they
   // can clear this level (an admin self-approving their own run), else the full approver tier — so we
   // stop DMing every admin about every other admin's self-approvable session.
   const approvers = resolveRecipients(os, approvalAudience(os, notice.sessionId, notice.level));
   if (!approvers.length) return;
+  // Bind the approval to each approver's DM channel so they can resolve it by REPLYING "approve"/"deny"
+  // to the DM — the reply is matched back to this approval on inbound (TerminalManager.decideApprovalFromChat).
+  for (const a of approvers) {
+    const ids = os.team.externalIdsFor(a.id);
+    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
+    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
+    if (slackId) tm.bindApprovalDm(notice.approvalId, 'slack', slackId, a.id);
+    if (discordId) tm.bindApprovalDm(notice.approvalId, 'discord', discordId, a.id);
+  }
   // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
   const dot = notice.riskClass === 'red' ? '🔴' : '🟡';
   const inbox = consolePage(consoleOrigin, 'inbox');
   const text = (p: ChatPlatform) =>
     `${dot} ${notice.riskClass.toUpperCase()} approval needed — \`${notice.capability}\` (${notice.level}) requested by agent ${notice.agent}.` +
     (notice.reason ? `\nwhy: ${notice.reason}` : '') +
-    `\nOpen the ${chatLink(p, inbox, 'Agent OS Inbox')} to approve or reject.`;
+    `\n*Reply "approve" or "deny"* to decide, or open the ${chatLink(p, inbox, 'Agent OS Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, approvers, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'approval.notified', data: { capability: notice.capability, level: notice.level, approvers: approvers.length, dms } });
 }

@@ -193,6 +193,24 @@ export class SlackSocket {
     const isDm = ev.channelType === 'im' || ev.channelType === 'mpim';
     if (ev.eventType !== 'app_mention' && !isDm) return;
 
+    // Inline approve/deny: a DM reply from someone with a pending approval we sent them resolves the gate
+    // directly (no trip to the web Inbox) — the approval-side twin of the question path below. Only for
+    // DMs (where the approval ping was sent). Checked first: while an approval is pending, a "yes"/"no"
+    // in this DM is a decision, not chat. `null` → nothing bound, fall through to the question/chat router.
+    if (isDm) {
+      const decided = this.autos.decideApprovalFromChat('slack', ev.user, text);
+      if (decided) {
+        if (decided.status === 'decided') {
+          void this.dmUser(ev.user, decided.approved ? `✅ Approved — \`${decided.capability}\` will proceed.` : `🚫 Rejected — \`${decided.capability}\` was blocked.`);
+        } else if (decided.status === 'unclear') {
+          void this.dmUser(ev.user, `I couldn't tell if that's a yes or no — reply *approve* or *deny* to decide the pending request.`);
+        } else {
+          void this.dmUser(ev.user, `You're no longer able to approve that request.`);
+        }
+        return;
+      }
+    }
+
     // Inline answer: a DM reply from someone with a pending `ask_human` question answers it directly (no
     // trip to the web Inbox). Only for DMs — that's where the question was sent. If nothing pending is
     // bound to this sender, fall through to the normal chat router (an ordinary DM is just a chat).
