@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.243.4] — 2026-07-20
+### Fixed
+- **Share-agent dialog footer no longer bleeds outside the rounded card.** The footer (the "Runnable
+  by …" summary + Done button) used shadcn `DialogFooter`'s default `-mx-4 -mb-4` negative margins,
+  which assume the dialog body has `p-4` padding to absorb them — but the Share dialog sets `p-0` on
+  `DialogContent` (its header/body/footer own their padding), so the bar hung ~16px past the popup's
+  left/right/bottom edges as a detached-looking strip. Neutralised with `mx-0 mb-0` so it sits flush
+  inside the rounded container.
+
 ## [0.243.3] — 2026-07-20
 ### Fixed
 - **Self-learning "recurring topics" no longer surfaces conversational filler or people's names.** Live
