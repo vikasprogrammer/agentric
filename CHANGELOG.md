@@ -8,21 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.231.1] — 2026-07-20
+### Removed
+- **Reverted the agent learning-`velocity` metric (0.231.0).** Reverted because it was shipped a step
+  ahead of its need: nothing consumed the field yet (the value was entirely in the planned
+  prompt-injection / consolidation-routing follow-ups), and a read of the live fleet showed only 3 of
+  ~21 agents have enough runs (≥14) to leave the `unproven` band — the rest are a long tail of
+  low-volume agents. An un-consumed metric that fires for a handful of agents is surface area, not a
+  feature. The idea stands and the approach was sound; it should return **with its consumer**, not
+  before. `AgentStats` is back to maturity-only.
+
 ## [0.231.0] — 2026-07-20
 ### Added
-- **Agents now have a learning *velocity*, not just a maturity.** `AgentStats` gains a `velocity` block
-  (`src/state/agent-stats.ts`) answering "is this agent getting better, plateaued, or regressing?" —
-  the time-derivative maturity alone can't give (maturity folds in `volumeConfidence`, which only ever
-  climbs with run count, so its slope reads "improving" for an agent that's merely busy). Velocity is
-  the derivative of the **volume-free competence core** `autonomy × (1 − denialRate)`, windowed by
-  **run count** (last 10 runs vs the 10 before — quiet ≠ stalled): `recent`/`prior`/`delta`, an
-  `outcomeDelta` ground-truth cross-check (windowed successRate), and a `repeatFriction` count — denied
-  capabilities that recur across windows, i.e. the "same wall twice" signal that lessons aren't
-  sticking. A sticky `unproven` band (needs ≥4 runs each side) keeps a green agent from being labelled
-  cooling on noise; otherwise `warming`/`steady`/`cooling`. Pure read-side aggregate — one per-run map
-  folded inside loops that already run, zero schema change — and surfaced automatically on
-  `GET /api/agents/:id/stats` and `/api/agents/stats`. Next: inject the band into the agent's own prompt
-  (calibrate initiative to track record) and route consolidation/Dreaming at plateaued agents.
+- **Agent learning velocity.** _(Reverted in 0.231.1 — shipped ahead of a consumer; see above.)_
 
 ## [0.230.0] — 2026-07-20
 ### Added
