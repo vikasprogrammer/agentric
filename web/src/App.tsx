@@ -8997,7 +8997,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
 
 /** Per-agent model / effort / permission + starter prompts editor — rewrites agent.json; applies on
  *  the next session (prompts take effect immediately on the spawn card after the state refreshes). */
-function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () => void }) {
+function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents: AgentInfo[]; onSaved?: () => void }) {
   const [tuning, setTuning] = useState<RuntimeTuning>({})
   const [saved, setSaved] = useState<RuntimeTuning>({})
   const [description, setDescription] = useState('')
@@ -9010,6 +9010,8 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
   const [savedIcon, setSavedIcon] = useState<string | undefined>(undefined)
   const [secrets, setSecrets] = useState('')
   const [savedSecrets, setSavedSecrets] = useState('')
+  const [subagents, setSubagents] = useState<string[]>([])
+  const [savedSubagents, setSavedSubagents] = useState<string[]>([])
   const [netMode, setNetMode] = useState<'open' | 'allowlist'>('open')
   const [savedNetMode, setSavedNetMode] = useState<'open' | 'allowlist'>('open')
   const [busy, setBusy] = useState(false)
@@ -9023,18 +9025,19 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
       const p = (r.examplePrompts ?? []).join('\n')
       const c = r.category ?? ''
       const s = (r.shellSecrets ?? []).join(' ')
+      const sub = r.usableSubagents ?? []
       const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setNetMode(nm); setSavedNetMode(nm)
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setNetMode(nm); setSavedNetMode(nm)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || netMode !== savedNetMode
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || netMode !== savedNetMode
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
     const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
-    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, netMode, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     const t: RuntimeTuning = { model: r.model, effort: r.effort }
@@ -9042,8 +9045,9 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
     const p = (r.examplePrompts ?? []).join('\n')
     const c = r.category ?? ''
     const s = (r.shellSecrets ?? []).join(' ')
+    const sub = r.usableSubagents ?? []
     const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -9072,6 +9076,33 @@ function AgentTuningCard({ agentId, onSaved }: { agentId: string; onSaved?: () =
           <label className="text-xs font-medium">Shell secrets</label>
           <Input value={secrets} onChange={(e) => setSecrets(e.target.value)} className="font-mono text-sm" placeholder="e.g. GH_TOKEN  (space/comma separated env-var names)" />
           <p className="text-[11px] text-muted-foreground">Vault keys exported as env vars into this agent's shell (so CLIs like <span className="font-mono">gh</span> authenticate). Store the value in <span className="font-medium">Settings → Secrets</span> (key = the name here; set its principal to <span className="font-mono">{agentId}</span> for a per-agent value, or leave tenant-wide). Resolved at launch, audited per key.</p>
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Sub-agents</label>
+          {(() => {
+            const teammates = agents.filter((a) => a.runtime === 'claude-code' && a.id !== agentId)
+            if (!teammates.length) return <p className="text-[11px] text-muted-foreground">No other claude-code agents to delegate to yet.</p>
+            const toggle = (id: string) => setSubagents((cur) => cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id])
+            return (
+              <div className="flex flex-wrap gap-1.5">
+                {teammates.map((a) => {
+                  const on = subagents.includes(a.id)
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => toggle(a.id)}
+                      title={a.description}
+                      className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${on ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background text-muted-foreground hover:text-foreground'}`}
+                    >
+                      {a.id}
+                    </button>
+                  )
+                })}
+              </div>
+            )
+          })()}
+          <p className="text-[11px] text-muted-foreground">Teammates this agent may spawn as native in-process <span className="font-medium">sub-agents</span> (Claude Code's <span className="font-mono">Agent</span> tool) to hand off a slice of its own turn — the lightweight counterpart to delegating a <a href="#/tasks" className="underline hover:text-foreground">task</a>. Every sub-agent action is still gated (under this agent's identity + budget); their toolset is capped to read/search, gated shell/file edits, and memory recall — no egress, secrets, or publishing.</p>
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">Host access mode</label>
@@ -9219,7 +9250,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
         <span className="font-mono text-xs"> recall</span>/<span className="font-mono text-xs">remember</span>). Applied on the agent's next session.
       </p>
       <AgentTrustCard agentId={agentId} />
-      {info?.runtime === 'claude-code' && <AgentTuningCard key={revBump} agentId={agentId} onSaved={onSaved} />}
+      {info?.runtime === 'claude-code' && <AgentTuningCard key={revBump} agentId={agentId} agents={agents} onSaved={onSaved} />}
       <Card>
         <CardContent className="space-y-3 p-4">
           {!loaded && !hint ? (
