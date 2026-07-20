@@ -278,7 +278,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -461,9 +461,22 @@ export interface MemberNotice {
 export interface ReviewNotice {
   sessionId: string;
   agent: string;
-  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal';
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed';
   title: string;
   summary: string;
+}
+
+/** The spec an agent proposes for a new automation — the subset of `AddAutomationInput` an agent may
+ *  suggest. It rides in the `automation.proposed` review-card args and is fed to `Automations.add` only
+ *  once a human approves (so an unapproved automation is never created and can never fire). */
+export interface ProposedAutomation {
+  agentId: string;
+  name: string;
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord';
+  schedule?: string;
+  filter?: string;
+  task: string;
+  mode?: 'headless' | 'interactive';
 }
 
 /** What the session-event notifier sink receives when one of a member's own sessions changes state — it
@@ -3356,6 +3369,66 @@ export class TerminalManager {
         return { id: r.id, agent: r.agent, delta: a.delta as PolicyDelta, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
       })
       .filter((p) => p.delta);
+  }
+
+  /**
+   * An agent proposes a NEW automation for a human to approve — the automations twin of `proposePolicy`.
+   * Nothing is created here (an unapproved automation must not fire): the full spec lives in the review
+   * card's args, and the approve route calls `Automations.add` only once an owner/admin signs off. Same
+   * queue-cap + identical-spec dedupe as the other propose lanes. Cron validity is checked at approve
+   * time (by `add`), so a bad expression fails loudly for the human rather than being silently created.
+   */
+  proposeAutomation(sessionId: string, agent: string, spec: ProposedAutomation, rationale?: string): { ok: boolean; preview?: string; error?: string } {
+    const agentId = (spec.agentId || agent).trim();
+    if (!this.os.agents.has(agentId)) return { ok: false, error: `unknown agent "${agentId}"` };
+    const name = (spec.name || '').trim();
+    const task = (spec.task || '').trim();
+    if (!name) return { ok: false, error: 'a name is required' };
+    if (!task) return { ok: false, error: 'a task template is required' };
+    const type = (['cron', 'webhook', 'composio', 'slack', 'discord'] as const).includes(spec.type as never) ? spec.type : 'cron';
+    if (type === 'cron' && !(spec.schedule || '').trim()) return { ok: false, error: 'a cron automation needs a schedule (5-field cron expression)' };
+    const clean: ProposedAutomation = { agentId, name, type, task, ...(spec.schedule ? { schedule: String(spec.schedule).trim() } : {}), ...(spec.filter ? { filter: String(spec.filter).trim() } : {}), ...(spec.mode === 'headless' || spec.mode === 'interactive' ? { mode: spec.mode } : {}) };
+    // Cap the queue + dedupe an identical open proposal from this agent (mirrors proposePolicy).
+    const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
+    if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
+    const specKey = JSON.stringify(clean);
+    if (open.some((o) => { try { return JSON.stringify((JSON.parse(o.args || '{}') as { spec?: unknown }).spec) === specKey; } catch { return false; } })) {
+      return { ok: false, error: 'an identical automation proposal from you is already awaiting review' };
+    }
+    const preview = `${type}${clean.schedule ? ` \`${clean.schedule}\`` : ''} → runs \`${agentId}\`: ${task.slice(0, 80)}${task.length > 80 ? '…' : ''}`;
+    this.postReviewCard({
+      type: 'automation.proposed', sessionId, agent,
+      title: `Automation proposed — ${name}`,
+      body: (rationale?.trim() || `${agent} proposes a ${type} automation "${name}".`) + `\n\n${preview}`,
+      args: { spec: clean, preview, ...(rationale ? { rationale } : {}) },
+      summary: rationale?.trim() || `${agent} proposes a ${type} automation "${name}".`,
+    });
+    this.audit(sessionId, agent, 'automation.proposed', { name, type, agentId, schedule: clean.schedule });
+    return { ok: true, preview };
+  }
+
+  /** The proposed-automation review card by id (its spec + status) — for the approve/reject routes. */
+  automationProposalCard(id: string): { agent: string; spec: ProposedAutomation; rationale?: string; preview?: string; status: string } | undefined {
+    const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'automation.proposed'`).get<{ agent: string; args: string | null; status: string }>(id);
+    if (!row) return undefined;
+    let a: Record<string, unknown> = {};
+    try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+    if (!a.spec) return undefined;
+    return { agent: row.agent, spec: a.spec as ProposedAutomation, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+  }
+  setAutomationProposalStatus(id: string, status: 'approved' | 'rejected'): void {
+    this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'automation.proposed'`).run(status, id);
+  }
+  openAutomationProposals(): { id: string; agent: string; spec: ProposedAutomation; rationale?: string; preview?: string; createdAt: number }[] {
+    return this.db
+      .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'automation.proposed' AND status = 'open' ORDER BY created_at DESC`)
+      .all<{ id: string; agent: string; args: string | null; created_at: number }>()
+      .map((r) => {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
+        return { id: r.id, agent: r.agent, spec: a.spec as ProposedAutomation, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+      })
+      .filter((p) => p.spec);
   }
 
   /** Agent posts a mid-task progress update to the Inbox feed. Unlike the (now removed) spawn/stop/exit

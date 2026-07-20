@@ -15,7 +15,7 @@ import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } fr
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
-import { TerminalManager, AGENT_OS_OPERATING_NOTES } from './terminal';
+import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
 import { readConversation, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
@@ -697,6 +697,28 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       : undefined;
     const delta = { kind: kind as never, match: { capability, ...(when ? { when } : {}) }, ...(outcome ? { outcome } : {}) };
     const out = tm.proposePolicy(session, agent, delta, b.rationale != null ? String(b.rationale) : undefined);
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
+
+  // Agent proposes a NEW automation for a human to approve — the automations twin of policy/propose.
+  // Nothing is created until an owner/admin approves (POST /api/automations/proposals/:id/approve); the
+  // spec lives in the review card. Pre-auth loopback, session-secret gated.
+  if (method === 'POST' && p === '/api/agent/automation/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const spec = {
+      agentId: b.agentId != null ? String(b.agentId) : '',
+      name: String(b.name || ''),
+      type: (['cron', 'webhook', 'composio', 'slack', 'discord'].includes(String(b.type)) ? String(b.type) : 'cron') as ProposedAutomation['type'],
+      schedule: b.schedule != null ? String(b.schedule) : undefined,
+      filter: b.filter != null ? String(b.filter) : undefined,
+      task: String(b.task || ''),
+      mode: (b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined) as ProposedAutomation['mode'],
+    };
+    const out = tm.proposeAutomation(session, agent, spec, b.rationale != null ? String(b.rationale) : undefined);
     return sendJson(res, out.ok ? 200 : 400, out);
   }
 
@@ -2170,6 +2192,42 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     } catch (e) {
       return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
     }
+  }
+  // Agent-proposed automations awaiting human sign-off (the automations twin of /api/policy/proposals).
+  if (method === 'GET' && p === '/api/automations/proposals') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { proposals: tm.openAutomationProposals() });
+  }
+  const autoPropApprove = p.match(/^\/api\/automations\/proposals\/([\w.-]+)\/approve$/);
+  if (method === 'POST' && autoPropApprove) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required — creating an automation is an admin act' });
+    const card = tm.automationProposalCard(autoPropApprove[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such automation proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    try {
+      const created = autos.add({
+        agentId: card.spec.agentId, name: card.spec.name, type: card.spec.type,
+        mode: card.spec.mode, schedule: card.spec.schedule, filter: card.spec.filter,
+        task: card.spec.task, createdBy: me.id,
+      });
+      tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.approved', data: { by: me.email, agent: card.agent, id: created.id, name: created.name, type: created.type } });
+      return sendJson(res, 200, { ok: true, automation: automationView(created, req, true) });
+    } catch (e) {
+      // A bad cron / unknown agent surfaces to the human here (validated by `add`); the proposal stays open.
+      return sendJson(res, 400, { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const autoPropReject = p.match(/^\/api\/automations\/proposals\/([\w.-]+)\/reject$/);
+  if (method === 'POST' && autoPropReject) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const card = tm.automationProposalCard(autoPropReject[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such automation proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    const b = await readBody(req);
+    tm.setAutomationProposalStatus(autoPropReject[1], 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.rejected', data: { by: me.email, agent: card.agent, name: card.spec.name, note: b.note ? String(b.note) : undefined } });
+    return sendJson(res, 200, { ok: true });
   }
   const autoRun = p.match(/^\/api\/automations\/([\w-]+)\/run$/);
   if (method === 'POST' && autoRun) {

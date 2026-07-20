@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -4412,6 +4412,11 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     Icon = Server; iconCls = 'text-violet-600'; highlight = true
     verb = 'proposed a host'; detail = m.body
     badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Connections</Badge>
+  } else if (m.type === 'automation.proposed') {
+    Icon = Zap; iconCls = 'text-violet-600'; highlight = m.status === 'open'
+    const resolved = m.status === 'approved' ? 'approved' : m.status === 'rejected' ? 'rejected' : ''
+    verb = 'proposed an automation'; detail = m.body
+    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Automations'}</Badge>
   } else if (m.type === 'goal.proposed') {
     Icon = Target; iconCls = 'text-indigo-600'; highlight = true
     verb = 'proposed a goal'; detail = m.body
@@ -8112,6 +8117,45 @@ function triggerSummary(a: Automation): string {
   }
 }
 
+/** Owner/admin review of agent-proposed automations — approve (creates + enables it) or reject. Mirrors
+ *  PolicyProposalsPanel; hidden entirely when there are no open proposals. */
+function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; onChanged: () => void }) {
+  const [proposals, setProposals] = useState<AutomationProposal[]>([])
+  const [busy, setBusy] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => { api.automationProposals().then((r) => setProposals(r.proposals ?? [])).catch(() => {}) }
+  useEffect(load, [])
+  const agentName = (id: string) => agents.find((a) => a.id === id)?.id || id
+  const approve = async (id: string) => { setBusy(id); setHint(''); const r = await api.approveAutomationProposal(id); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load(); onChanged() }
+  const reject = async (id: string) => { setBusy(id); setHint(''); const r = await api.rejectAutomationProposal(id); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load() }
+  if (!proposals.length) return null
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted-foreground"><Sparkles className="h-3.5 w-3.5" />Proposed by agents · {proposals.length}</div>
+      <div className="space-y-2">
+        {proposals.map((pr) => (
+          <Card key={pr.id} className="border-amber-200">
+            <CardContent className="space-y-2 p-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{pr.spec.type}</Badge>
+                <span className="text-sm font-medium">{pr.spec.name}</span>
+                <span className="text-[11px] text-muted-foreground">runs <span className="font-mono">{agentName(pr.spec.agentId)}</span> · by <span className="font-mono">{pr.agent}</span>{pr.createdAt ? ` · ${timeAgo(pr.createdAt)}` : ''}</span>
+              </div>
+              {pr.preview && <div className="rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
+              {pr.rationale && <p className="text-[11px] italic text-muted-foreground">“{pr.rationale}”</p>}
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled={!!busy} onClick={() => approve(pr.id)}>Approve &amp; enable</Button>
+                <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => reject(pr.id)}>Reject</Button>
+                {hint && busy === '' && <span className="text-[11px] text-amber-600">{hint}</span>}
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { me: Member; agents: AgentInfo[]; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; agentFilter?: string }) {
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
@@ -8211,6 +8255,8 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { m
 
   return (
     <div className="max-w-4xl space-y-6">
+      {/* Agent-proposed automations awaiting sign-off — the automations twin of the Policy "Agent proposals". */}
+      {(me.role === 'owner' || me.role === 'admin') && <AutomationProposalsPanel agents={agents} onChanged={load} />}
       {/* "Run now" asks headless vs interactive for this one-off run, without touching the saved default. */}
       <Dialog open={!!runPrompt} onOpenChange={(o) => { if (!o) setRunPrompt(null) }}>
         <DialogContent className="max-w-md">

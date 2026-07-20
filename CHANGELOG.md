@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.245.0] — 2026-07-20
+### Added
+- **Agents can now PROPOSE a new automation for a human to approve — a fourth propose lane.** Alongside
+  `skill_propose`/`policy_propose`/`host_propose`, a new agent tool **`automation_propose`** lets an agent
+  that notices recurring work (a daily report, a periodic audit, a reaction to an inbound event) suggest a
+  scheduled/triggered automation instead of only running when asked. It's a **draft**: nothing is created
+  and nothing can ever fire until an owner/admin approves it — the spec rides in an `automation.proposed`
+  review card (mirrors the policy-proposal pattern; no DB migration), and only on approve does
+  `Automations.add` create + enable it (cron validity checked at approve time). Same 10-deep queue cap +
+  identical-spec dedupe as the other lanes. Owner/admin approve/reject at **Automations → "Proposed by
+  agents"** (`GET /api/automations/proposals`, `POST …/:id/approve|reject`), with an inbox review card + DM.
+  Audited `automation.proposed` / `automation.proposal.approved` / `automation.proposal.rejected`.
+
 ## [0.244.0] — 2026-07-20
 ### Added
 - **Stale self-learning guidance is no longer served (or injected) as if current.** When the reflect

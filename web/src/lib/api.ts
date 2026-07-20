@@ -590,7 +590,7 @@ export interface AddGoalReq {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed'
   sessionId: string
   agent: string
   title: string
@@ -663,6 +663,16 @@ export interface Automation {
   /** Member id the fired session acts as — binds THAT member's connectors/Composio (e.g. personal
    *  ClickUp) instead of the company fallback. Empty/absent = company identity. */
   runAs?: string
+}
+/** An agent-proposed automation awaiting owner/admin approval — the spec lives in the review card until
+ *  approved (then it's created via Automations.add). Mirrors PolicyProposal. */
+export interface AutomationProposal {
+  id: string
+  agent: string
+  spec: { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode }
+  rationale?: string
+  preview?: string
+  createdAt: number
 }
 export interface AddAutomationReq {
   agentId: string
@@ -1266,6 +1276,9 @@ export const api = {
   /** Fire an automation once now. `mode` overrides its saved default for this run only (headless =
    *  fire-and-forget, interactive = watch/steer the live TUI); omit to keep the automation's own mode. */
   runAutomation: (id: string, mode?: 'interactive' | 'headless') => call<{ ok: boolean; sessionId?: string; reason?: string; error?: string }>('POST', `/api/automations/${id}/run`, mode ? { mode } : {}),
+  automationProposals: () => call<{ proposals: AutomationProposal[]; error?: string }>('GET', '/api/automations/proposals'),
+  approveAutomationProposal: (id: string) => call<{ ok: boolean; automation?: Automation; error?: string }>('POST', `/api/automations/proposals/${id}/approve`),
+  rejectAutomationProposal: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/automations/proposals/${id}/reject`),
   automationRuns: (id: string) => call<{ runs: Session[]; error?: string }>('GET', `/api/automations/${id}/runs`),
 
   memory: (agent: string, q = '', limit = 50, scope: 'all' | 'agent' | 'tenant' = 'all') =>

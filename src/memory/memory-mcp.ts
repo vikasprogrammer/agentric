@@ -625,6 +625,34 @@ const TOOLS = [
     },
   },
   {
+    name: 'automation_propose',
+    description:
+      'Propose a new AUTOMATION for a human to approve — a recurring/triggered job that spawns an agent ' +
+      'session unattended. Use this when you notice work that SHOULD run on a schedule or a trigger rather ' +
+      'than only when someone remembers to ask (a daily report, a periodic audit, a reaction to an inbound ' +
+      'event). Your proposal is a DRAFT: nothing is created and NOTHING will ever fire until an owner/admin ' +
+      'approves it (an inbox card notifies them) — so you cannot silently schedule yourself. Give a short ' +
+      '`name`, the `task` (the prompt the spawned session receives), and the trigger: for `type:"cron"` ' +
+      '(the default) a 5-field `schedule` (e.g. "0 9 * * 1-5" = 9am weekdays); for webhook/composio/slack/' +
+      'discord an optional `filter`. `agentId` defaults to you (the proposing agent). Always include a ' +
+      '`rationale` — the approver reads it to decide.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'A short human label for the automation (e.g. "Daily marketing briefing").' },
+        task: { type: 'string', description: 'The task template — the prompt the spawned session runs each time it fires.' },
+        type: { type: 'string', enum: ['cron', 'webhook', 'composio', 'slack', 'discord'], description: 'Trigger type. Default: cron (time-based).' },
+        schedule: { type: 'string', description: 'For type:"cron" — a 5-field cron expression (min hour dom mon dow), e.g. "0 9 * * 1-5".' },
+        filter: { type: 'string', description: 'For event triggers — composio trigger slug, or slack/discord event type or channel id ("" = any).' },
+        agentId: { type: 'string', description: 'Which agent the automation runs. Defaults to you (the proposing agent).' },
+        mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless (unattended, default for event triggers) or interactive.' },
+        rationale: { type: 'string', description: 'Why this automation is worth running — the approver reads this to decide.' },
+      },
+      required: ['name', 'task'],
+    },
+  },
+  {
     name: 'skill_find',
     description:
       'Discover installable SKILLS — the reusable playbooks packaged for this workspace. Returns your ' +
@@ -1676,6 +1704,29 @@ async function policyPropose(args: Record<string, unknown>): Promise<string> {
   return d.ok
     ? `Policy change proposed${d.preview ? ` (${d.preview})` : ''} — it's in the owner's inbox for review. NOTHING changes until an owner approves it. Proposals may only tighten guardrails, never loosen them. Once approved, the change hot-reloads and applies LIVE to every running session at its next gated action — no restart or respawn needed (unlike an MCP tool-schema change, which a live session only picks up when it respawns).`
     : `Could not propose the policy change: ${d.error ?? 'unknown error'}`;
+}
+
+async function automationPropose(args: Record<string, unknown>): Promise<string> {
+  const name = String(args.name ?? '').trim();
+  const task = String(args.task ?? '').trim();
+  if (!name || !task) return 'automation_propose needs a name and a task (the prompt the automation runs).';
+  const res = await fetch(AOS_URL + '/api/agent/automation/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION, agent: AGENT, name, task,
+      type: args.type ? String(args.type) : undefined,
+      schedule: args.schedule ? String(args.schedule) : undefined,
+      filter: args.filter ? String(args.filter) : undefined,
+      agentId: args.agentId ? String(args.agentId) : undefined,
+      mode: args.mode ? String(args.mode) : undefined,
+      rationale: args.rationale ? String(args.rationale) : undefined,
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
+  return d.ok
+    ? `Automation proposed${d.preview ? ` (${d.preview})` : ''} — it's a DRAFT in the owner/admin inbox for review. It is NOT created and will never fire until a human approves it.`
+    : `Could not propose the automation: ${d.error ?? 'unknown error'}`;
 }
 
 async function hostPropose(args: Record<string, unknown>): Promise<string> {
@@ -2733,6 +2784,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
         : name === 'policy_propose' ? await policyPropose(args)
+        : name === 'automation_propose' ? await automationPropose(args)
         : name === 'host_propose' ? await hostPropose(args)
         : name === 'skill_find' ? await skillFind(args)
         : name === 'skill_request' ? await skillRequest(args)

@@ -552,6 +552,7 @@ const REVIEW_PRESENTATION: Record<ReviewNotice['kind'], { icon: string; page: st
   'skill.request': { icon: '🧩', page: 'skills' },
   'host.proposed': { icon: '🌐', page: 'connectors' },
   'policy.proposal': { icon: '🛡️', page: 'settings/policy' },
+  'automation.proposed': { icon: '⚡', page: 'automations' },
 };
 
 /**
