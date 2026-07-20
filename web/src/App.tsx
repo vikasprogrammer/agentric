@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2 } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -1451,7 +1451,7 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
-          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} />}
+          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
@@ -1460,7 +1460,7 @@ function Console({ me }: { me: Member }) {
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
-          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
+          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} agentFilter={detail} />}
           {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
@@ -1794,7 +1794,7 @@ function ManageFlyoutItem({ item, active, onGo, onTogglePin }: { item: NavMeta; 
  *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
  *  just scoped to the chosen agent instead of a grid of cards. */
 function AgentsPage({
-  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh,
+  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh, nav,
 }: {
   me: Member
   agents: AgentInfo[]
@@ -1808,6 +1808,7 @@ function AgentsPage({
   onRescan: () => Promise<void>
   onImport: (file: File) => Promise<void>
   onRefresh: () => Promise<void>
+  nav: (r: Route, detail?: string) => void
 }) {
   const canEdit = me.role === 'owner' || me.role === 'admin'
   const [rescanning, setRescanning] = useState(false)
@@ -1833,6 +1834,20 @@ function AgentsPage({
   useEffect(() => {
     let ok = true
     api.agentStatsAll().then((r) => { if (ok) setMaturity(Object.fromEntries(r.stats.map((s) => [s.agentId, s]))) }).catch(() => {})
+    return () => { ok = false }
+  }, [])
+
+  // Per-agent automation counts — powers the "N Automations" shortcut in the composer header that
+  // jumps to the Automations page pre-filtered to this agent.
+  const [autoCounts, setAutoCounts] = useState<Record<string, number>>({})
+  useEffect(() => {
+    let ok = true
+    api.automations().then((r) => {
+      if (!ok) return
+      const counts: Record<string, number> = {}
+      for (const a of r.automations ?? []) counts[a.agentId] = (counts[a.agentId] ?? 0) + 1
+      setAutoCounts(counts)
+    }).catch(() => {})
     return () => { ok = false }
   }, [])
 
@@ -1918,6 +1933,16 @@ function AgentsPage({
         <RuntimeBadge runtime={agent.runtime} />
         {agent.builtIn && <BuiltInBadge />}
         <div className="ml-auto flex items-center gap-1">
+          {(autoCounts[agent.id] ?? 0) > 0 && (
+            <Button
+              render={<a href={navHref('automations', agent.id)} />}
+              size="sm" variant="outline" className="h-8 shrink-0 gap-1 px-2 text-xs text-muted-foreground"
+              onClick={onNavClick(() => nav('automations', agent.id))}
+              title={`view this agent’s automations`}
+            >
+              <Zap className="h-3.5 w-3.5" /> {autoCounts[agent.id]} {autoCounts[agent.id] === 1 ? 'Automation' : 'Automations'}
+            </Button>
+          )}
           {canEdit && agent.runtime === 'claude-code' && (
             <Button render={<a href={navHref('agent', agent.id)} />} size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={onNavClick(() => onEdit(agent.id))} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
               <SlidersHorizontal className="h-4 w-4" />
@@ -7985,7 +8010,7 @@ function triggerSummary(a: Automation): string {
   }
 }
 
-function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; agents: AgentInfo[]; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
+function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { me: Member; agents: AgentInfo[]; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; agentFilter?: string }) {
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
@@ -8012,6 +8037,8 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
   useEffect(() => { load() }, [])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   useEffect(() => { if (!agentId && agents[0]) setAgentId(agents[0].id) }, [agents, agentId])
+  // Arriving pre-filtered to one agent → default a new automation to that agent (while not editing).
+  useEffect(() => { if (agentFilter && agents.some((a) => a.id === agentFilter) && !editId) setAgentId(agentFilter) }, [agentFilter]) // eslint-disable-line react-hooks/exhaustive-deps
   // The form mounts at the top of the section, but Edit buttons live on cards further down — scroll the
   // form into view when it opens (or when switching which automation is being edited) so it isn't missed.
   useEffect(() => { if (showForm) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, [showForm, editId])
@@ -8069,11 +8096,15 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
 
   if (!items) return <div className="text-sm text-muted-foreground">Loading…</div>
 
+  // When arriving from an agent's "N Automations" shortcut, scope the list to just that agent.
+  const filterAgent = agentFilter && agents.some((a) => a.id === agentFilter) ? agentFilter : ''
+  const shown = filterAgent ? items.filter((a) => a.agentId === filterAgent) : items
+
   // A one-shot (`once`, scheduled via the agent `schedule` tool) that has already fired will never run
   // again — split those out so a page full of spent runs doesn't bury the live automations.
   const isSpent = (a: Automation) => a.type === 'once' && !!a.lastFiredAt
-  const active = items.filter((a) => !isSpent(a))
-  const spent = items.filter(isSpent)
+  const active = shown.filter((a) => !isSpent(a))
+  const spent = shown.filter(isSpent)
   const clearSpent = async () => { setBusy('spent'); for (const a of spent) await api.deleteAutomation(a.id); await load(); setBusy('') }
 
   return (
@@ -8112,6 +8143,14 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav }: { me: Member; ag
         message</strong> (the company bot @-mentioned or DMed → run an agent, as the member who sent it). Each firing spawns a normal
         session — its task lands in the Inbox and any risky action still waits for approval.
       </p>
+
+      {filterAgent && (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+          <span>Showing automations for <strong>{filterAgent}</strong></span>
+          <a href={navHref('automations')} onClick={onNavClick(() => nav('automations'))} className="ml-auto text-xs text-muted-foreground underline hover:text-foreground">Show all</a>
+        </div>
+      )}
 
       <section>
         <div className="mb-2 flex items-center justify-between gap-2">

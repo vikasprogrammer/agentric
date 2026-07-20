@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.241.0] — 2026-07-20
+### Added
+- **Agents page now shows a per-agent "N Automations" shortcut.** When a claude-code agent has one or
+  more automations wired to it, its task composer header shows an outlined **⚡ N Automations** button
+  that jumps to the Automations page pre-filtered to just that agent (a filter banner with **Show all**
+  clears it, and opening the New-automation form there defaults to that agent). Makes the automations
+  attached to an agent discoverable from where you run it, instead of hunting the full Automations list.
+
 ## [0.240.0] — 2026-07-20
 ### Changed
 - **Sessions list: row actions moved into a "⋯" dropdown, mode shown as a single icon, and the money
