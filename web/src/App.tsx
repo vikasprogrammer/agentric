@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -10461,6 +10461,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [cleanup, setCleanup] = useState<MemoryCleanupPlan | null>(null)
   const [cleanupBusy, setCleanupBusy] = useState(false)
   const [kbTidy, setKbTidy] = useState<KbTidyPlan | null>(null)
+  const [taskRec, setTaskRec] = useState<TaskReconcilePlan | null>(null)
   const [stuckGoals, setStuckGoals] = useState<StuckGoal[]>([])
   const [goalsOpen, setGoalsOpen] = useState(false)
   const [troubledAutos, setTroubledAutos] = useState<TroubledAutomation[]>([])
@@ -10549,6 +10550,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const applyKbTidy = async () => {
     setCleanupBusy(true); const r = await api.kbTidyApply(); setCleanupBusy(false); setKbTidy(null)
     setDxHint(r.error ? `⚠ ${r.error}` : `Archived ${r.archived ?? 0} dead page${r.archived === 1 ? '' : 's'} — recoverable from page history.`)
+    setTimeout(() => setDxHint(''), 6000); refresh()
+  }
+  const previewTaskReconcile = async () => {
+    setCleanupBusy(true); const r = await api.taskReconcilePreview(); setCleanupBusy(false)
+    if (r.error || !r.plan) return setDxHint(`⚠ ${r.error ?? 'could not build a plan'}`)
+    setTaskRec(r.plan)
+  }
+  const applyTaskReconcile = async () => {
+    setCleanupBusy(true); const r = await api.taskReconcileApply(); setCleanupBusy(false); setTaskRec(null)
+    setDxHint(r.error ? `⚠ ${r.error}` : `Closed ${r.closed ?? 0} finished task${r.closed === 1 ? '' : 's'} — reopen any from the board if needed.`)
     setTimeout(() => setDxHint(''), 6000); refresh()
   }
   const previewCleanup = async () => {
@@ -10646,6 +10657,13 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                   <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview tidy →'}</div>
                 </button>
               )
+              // Tasks tile is generative: preview drifted tasks; apply closes the finished-but-open ones.
+              if (t.domain === 'tasks' && t.count > 0) return (
+                <button key={t.domain} onClick={previewTaskReconcile} disabled={cleanupBusy} className={`${cls} disabled:opacity-50`}>
+                  {inner}
+                  <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview reconcile →'}</div>
+                </button>
+              )
               // Goals tile: expand the stuck goals in place, each with a "plan" that spawns the strategist.
               if (t.domain === 'goals' && t.count > 0) return (
                 <button key={t.domain} onClick={() => setGoalsOpen((v) => !v)} className={`${cls}`}>
@@ -10738,6 +10756,38 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                     </ul>
                   )}
                   <div className="mt-1 text-[10px] text-muted-foreground">Stale pages were useful once — refresh or archive them by hand in <a href="#/kb" className="underline">Knowledge</a>.</div>
+                </div>
+              </div>
+            </div>
+          )}
+          {taskRec && (
+            <div className="mt-3 rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="font-medium">Task reconcile preview <span className="font-normal text-muted-foreground">— closing is reversible (reopen from the board)</span></div>
+                <div className="flex items-center gap-2">
+                  <button onClick={applyTaskReconcile} disabled={cleanupBusy || taskRec.finished.total === 0} className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-50">{cleanupBusy ? 'closing…' : `Close ${taskRec.finished.total} finished`}</button>
+                  <button onClick={() => setTaskRec(null)} className="text-[11px] text-muted-foreground underline underline-offset-2">Cancel</button>
+                </div>
+              </div>
+              <div className="mt-2 grid gap-3 md:grid-cols-2">
+                <div>
+                  <div className="mb-1 font-medium">Close — {taskRec.finished.total} finished <span className="font-normal text-muted-foreground">(run succeeded, left open)</span></div>
+                  {taskRec.finished.total === 0 ? <div className="text-muted-foreground">nothing to close</div> : (
+                    <ul className="space-y-0.5">
+                      {taskRec.finished.sample.map((t) => <li key={t.id} className="truncate text-muted-foreground"><a href="#/tasks" className="text-foreground underline underline-offset-2">{t.title}</a> · done {t.endedDaysAgo}d ago</li>)}
+                      {taskRec.finished.total > taskRec.finished.sample.length && <li className="text-muted-foreground">+{taskRec.finished.total - taskRec.finished.sample.length} more…</li>}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-1 font-medium">Review — {taskRec.stalled.total} stalled <span className="font-normal text-muted-foreground">(run failed/died)</span></div>
+                  {taskRec.stalled.total === 0 ? <div className="text-muted-foreground">nothing stalled</div> : (
+                    <ul className="space-y-0.5">
+                      {taskRec.stalled.sample.map((t) => <li key={t.id} className="truncate text-muted-foreground"><a href="#/tasks" className="text-foreground underline underline-offset-2">{t.title}</a> · {t.outcome} {t.endedDaysAgo}d ago</li>)}
+                      {taskRec.stalled.total > taskRec.stalled.sample.length && <li className="text-muted-foreground">+{taskRec.stalled.total - taskRec.stalled.sample.length} more…</li>}
+                    </ul>
+                  )}
+                  <div className="mt-1 text-[10px] text-muted-foreground">Stalled tasks need a human call — re-dispatch, reassign, or block them in <a href="#/tasks" className="underline">Tasks</a>.</div>
                 </div>
               </div>
             </div>

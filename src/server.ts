@@ -34,6 +34,7 @@ import { Improver, proposalSlug, IMPROVER_ID } from './edge/improver';
 import { planMemoryCleanup, applyMemoryCleanup, cleanupOpts } from './edge/memory-cleanup';
 import { SkillScout, SCOUT_ID } from './edge/skill-scout';
 import { planKbTidy, applyKbTidy } from './edge/kb-tidy';
+import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -3223,6 +3224,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planKbTidy(os) });
     const r = applyKbTidy(os, me.email);
+    return sendJson(res, 200, { ok: true, ...r });
+  }
+  // Tasks domain "reconcile against reality": preview drifted tasks (finished-but-open + stalled), then
+  // apply CLOSES only the finished set (run succeeded, agent never closed it) — reversible, audited.
+  if (p === '/api/insights/tasks/reconcile' && (method === 'GET' || method === 'POST')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planTaskReconcile(os) });
+    const r = applyTaskReconcile(os, me.email);
     return sendJson(res, 200, { ok: true, ...r });
   }
   // Skills domain "generate the fix": spawn the skill-scout to mine recent successful fleet runs for a

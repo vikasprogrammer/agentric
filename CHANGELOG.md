@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.246.0] — 2026-07-20
+### Added
+- **Insights now reconciles the Tasks board against what sessions actually did — a 7th improvement tile.**
+  Once a task is dispatched to an agent, the board drifts from reality in two ways that nothing surfaced:
+  the run FINISHES SUCCESSFULLY but the agent forgets to `task_update(done)` (a completed task sits in
+  `doing` forever), or the run DIES and strands the task in `doing`. The new **Tasks** tile joins each
+  non-terminal task to its dispatched session (`tasks.last_session_id` → `term_sessions.status/outcome`)
+  and splits the drift: **finished** (run succeeded, left open — safely **auto-closable**, reversible) vs
+  **stalled** (run failed/died — surfaced for review, never auto-touched). Preview → "Close N finished"
+  mirrors the KB-tidy/Memory-cleanup generative tiles; a 10-min settle grace avoids reconciling a run
+  whose agent is about to close it. Pure over the DB, no LLM. `src/edge/task-reconcile.ts` +
+  `GET`/`POST /api/insights/tasks/reconcile`; closes are audited `task.reconciled` and logged as a task
+  event. Goals are already covered by the stuck-goal detector, so this is the tasks half of "reconcile
+  the plan against reality".
+
 ## [0.245.0] — 2026-07-20
 ### Added
 - **Agents can now PROPOSE a new automation for a human to approve — a fourth propose lane.** Alongside

@@ -14,7 +14,7 @@ import type { Insights } from './insights';
 const DAY = 24 * 3_600_000;
 type Db = AgentOS['db'];
 
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations';
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks';
 export interface ImprovementTile {
   domain: ImprovementDomain;
   count: number;                 // opportunities found (0 = nothing to improve)
@@ -89,6 +89,18 @@ export function buildImprovements(os: AgentOS, insights: Insights, now = Date.no
     title: failing + idle ? `${failing + idle} automation${failing + idle === 1 ? '' : 's'} need attention` : 'Automations are healthy',
     detail: failing + idle ? `${failing} whose last run errored, ${idle} enabled but quiet for 14+ days — fix or retire them.` : 'No failing or idle automations.',
     actionLabel: 'Open Automations', href: '#/automations',
+  });
+
+  // 7) Tasks — reconcile the board against reality: dispatched runs that finished but left the task open,
+  // or died and stranded it in `doing`. See src/edge/task-reconcile.ts (the settle-grace lives there).
+  const tSettle = now - 10 * 60_000;
+  const tFinished = num(db, "SELECT count(*) AS n FROM tasks t JOIN term_sessions s ON s.id = t.last_session_id WHERE t.status = 'doing' AND s.status != 'running' AND s.created_at < ? AND LOWER(COALESCE(s.outcome, CASE WHEN s.status = 'done' THEN 'success' ELSE s.status END)) = 'success'", tSettle);
+  const tStalled = num(db, "SELECT count(*) AS n FROM tasks t JOIN term_sessions s ON s.id = t.last_session_id WHERE t.status = 'doing' AND s.status != 'running' AND s.created_at < ? AND LOWER(COALESCE(s.outcome, CASE WHEN s.status = 'done' THEN 'success' ELSE s.status END)) != 'success'", tSettle);
+  tiles.push({
+    domain: 'tasks', count: tFinished + tStalled,
+    title: tFinished + tStalled ? `${tFinished + tStalled} task${tFinished + tStalled === 1 ? '' : 's'} to reconcile` : 'Task board is in sync',
+    detail: tFinished + tStalled ? `${tFinished} finished but still open (auto-closable), ${tStalled} stalled after a failed run — review the board.` : 'Every dispatched task matches its run.',
+    actionLabel: 'Open Tasks', href: '#/tasks',
   });
 
   return tiles;

@@ -397,13 +397,15 @@ export interface AgentScore { agent: string; runs: number; success: number; fail
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations'
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks'
 export interface ImprovementTile { domain: ImprovementDomain; count: number; title: string; detail: string; actionLabel: string; href: string }
 export interface CleanupPruneItem { id: string; agent: string; snippet: string; ageDays: number; importance: number | null }
 export interface CleanupMergeGroup { agent: string; keepSnippet: string; drop: number }
 export interface MemoryCleanupPlan { opts: { pruneAfterDays: number; keepImportance: number; dedupeThreshold?: number }; prune: { total: number; sample: CleanupPruneItem[] }; merge: { groups: number; drops: number; sample: CleanupMergeGroup[] } }
 export interface KbTidyItem { id: string; section: string; slug: string; title: string; ageDays: number; lastReadDays: number | null }
 export interface KbTidyPlan { deadAfterDays: number; staleAfterDays: number; dead: { total: number; sample: KbTidyItem[] }; stale: { total: number; sample: KbTidyItem[] } }
+export interface TaskDriftItem { id: string; title: string; assignee: string | null; owner: string | null; sessionId: string; sessionStatus: string; outcome: string; endedDaysAgo: number }
+export interface TaskReconcilePlan { finished: { total: number; sample: TaskDriftItem[] }; stalled: { total: number; sample: TaskDriftItem[] } }
 export interface StuckGoal { id: string; title: string; days: number }
 export interface TroubledAutomation { id: string; name: string; type: string; reason: 'errored' | 'idle'; detail: string }
 export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
@@ -1358,6 +1360,8 @@ export const api = {
   // KB domain: preview which dead pages would be archived (no mutation), then apply (soft remove, revertable).
   kbTidyPreview: () => call<{ ok: boolean; plan?: KbTidyPlan; error?: string }>('GET', '/api/insights/kb/tidy'),
   kbTidyApply: () => call<{ ok: boolean; archived?: number; error?: string }>('POST', '/api/insights/kb/tidy'),
+  taskReconcilePreview: () => call<{ ok: boolean; plan?: TaskReconcilePlan; error?: string }>('GET', '/api/insights/tasks/reconcile'),
+  taskReconcileApply: () => call<{ ok: boolean; closed?: number; error?: string }>('POST', '/api/insights/tasks/reconcile'),
 
   createAgent: (input: { id: string; description: string; category?: string; claudeMd: string; examplePrompts?: string[]; shellSecrets?: string[]; icon?: string } & RuntimeTuning) => call<{ ok: boolean; id?: string; error?: string }>('POST', '/api/agents', input),
   deleteAgent: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/agents/${encodeURIComponent(id)}`),
