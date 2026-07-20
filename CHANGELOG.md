@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.239.0] — 2026-07-20
+### Changed
+- **Sub-agents are now available fleet-wide by default, with a per-agent opt-out.** Previously an agent
+  could spawn a teammate as a native sub-agent (0.234.0) only if its `usableSubagents` list named it —
+  invisible until configured. Now a new workspace setting **`subagentDefault`** (`'all'` default |
+  `'none'`, Settings → Agents/Runtime) governs the posture: under `'all'`, every claude-code agent may
+  spawn every *willing* teammate with no per-agent config. `usableSubagents` becomes a **narrowing
+  override** (pick specific teammates), and a new per-agent manifest flag **`spawnableAsSubagent`**
+  (default `true`) is the **absolute opt-out** — set it `false` to mark an agent *internal* and it is
+  never materialised into anyone else's `.claude/agents/`, even if another agent lists it explicitly
+  (for governance-sensitive personas — trust & safety, a destructive migrator — you don't want run
+  under someone else's identity + budget). Membership is decided by `resolveSubagents`
+  (`src/edge/subagents.ts`): eligible = a different, claude-code, non-opted-out teammate; explicit list
+  narrows; else the default posture applies. The gateway invariant is unchanged — every sub-agent
+  effect is still gated under the parent's principal + budget with the capped toolset. Wired through the
+  agent config route (`spawnableAsSubagent`) and a new `GET`/`PUT /api/settings/subagent-default`, with
+  a workspace select on Settings → Runtime defaults and an "others may spawn this agent" checkbox on the
+  agent page. See `docs/subagents-plan.md`.
+
 ## [0.238.1] — 2026-07-20
 ### Fixed
 - **Sessions list columns no longer collapse the title / overlap on laptop-width screens.** The tier-1/2

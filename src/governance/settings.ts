@@ -30,6 +30,7 @@ const VIDEO_MODEL_KEY = 'video_default_model'; // workspace default video model 
 const MEMORY_KEY = 'memory_config'; // the live memory backend (JSON MemoryConfig; overrides the file default)
 const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active external backend became active — the stable orphan horizon for migration
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
+const SUBAGENT_DEFAULT_KEY = 'subagent_default'; // fleet-wide sub-agent posture: 'all' (default) | 'none'
 const DREAMING_KEY = 'dreaming_every_hours'; // self-learning cadence in hours; 0/unset = off
 const GOALS_INJECT_KEY = 'goals_inject'; // whether active goals ride in every agent's prompt (default on)
 const GOALS_AUTOPLAN_KEY = 'goals_autoplan'; // whether the scheduler auto-plans stuck goals (default OFF — opt-in)
@@ -402,6 +403,19 @@ export class SettingsStore {
   setRuntimeDefaults(tuning: RuntimeTuning, by?: string): RuntimeTuning {
     this.set(RUNTIME_DEFAULTS_KEY, JSON.stringify(tuning), by);
     return this.runtimeDefaults();
+  }
+
+  /** Fleet-wide sub-agent posture. `'all'` (default): every claude-code agent may spawn every WILLING
+   *  teammate (those not opted out via `spawnableAsSubagent:false`) as a native sub-agent, unless it
+   *  narrows the set with its own `usableSubagents` list. `'none'`: an agent spawns only the teammates
+   *  it explicitly lists. Read at each launch by the sub-agent materialiser. See docs/subagents-plan.md. */
+  subagentDefault(): 'all' | 'none' {
+    return this.getRow(SUBAGENT_DEFAULT_KEY)?.value === 'none' ? 'none' : 'all';
+  }
+
+  setSubagentDefault(mode: 'all' | 'none', by?: string): 'all' | 'none' {
+    this.set(SUBAGENT_DEFAULT_KEY, mode === 'none' ? 'none' : 'all', by);
+    return this.subagentDefault();
   }
 
   // ── UI branding ──────────────────────────────────────────────────────────────────

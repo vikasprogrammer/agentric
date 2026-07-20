@@ -1,6 +1,23 @@
 # Fleet agents as native sub-agents
 
-**Status:** shipped v0.232.0 (materialisation + gate attribution + config route). UI opt-in editor: TODO.
+**Status:** shipped — materialisation + gate attribution + config route (0.234.0), console picker
+(0.237.0), **fleet-wide default `all` + per-agent opt-out** (0.239.0).
+
+## Posture (0.239.0)
+
+Sub-agents are on by default. Which teammates a given parent spawns is decided by `resolveSubagents`
+(`src/edge/subagents.ts`) from three inputs:
+
+1. **`subagentDefault`** — a workspace setting (`'all'` default | `'none'`), Settings → Runtime defaults.
+   `'all'`: a parent with no explicit list spawns every *eligible* teammate. `'none'`: it spawns only
+   what it lists.
+2. **`usableSubagents`** (per parent) — a **narrowing override**. Non-empty ⇒ exactly those teammates,
+   whatever the default.
+3. **`spawnableAsSubagent`** (per delegate, default `true`) — the **absolute opt-out**. `false` = the
+   agent is *internal*: never materialised into anyone's `.claude/agents/`, even if explicitly listed.
+
+Eligible = a different agent, `claude-code` runtime, not opted out. The opt-out wins over an explicit
+list on purpose — an internal marker is a hard "don't spawn me", not a soft default.
 
 ## The idea
 
@@ -40,10 +57,10 @@ path. What changes is only *topology and attribution*:
 
 ## The two guardrails
 
-1. **`usableSubagents` allow-list** (per parent manifest). Empty/undefined ⇒ the agent spawns no fleet
-   sub-agents. Self-references, unknown ids, and non-`claude-code` teammates are ignored at
-   materialisation time. Owner/admin-only to set (the agent config route); a self-editing agent can't
-   widen its own reach.
+1. **Membership** (see Posture above): the `subagentDefault` workspace posture, the parent's
+   `usableSubagents` narrowing list, and each delegate's `spawnableAsSubagent` opt-out. Self-references,
+   unknown ids, and non-`claude-code` teammates are always ignored. All three are owner/admin-only (the
+   agent config route + the settings route); a self-editing agent can't widen its own reach.
 2. **Capped toolset** (`SUBAGENT_DEFAULT_TOOLS` in `src/edge/subagents.ts`), written into each
    sub-agent's `tools:` frontmatter: read/search + gated `Bash`/`Edit`/`Write` + memory *recall*.
    Deliberately **excludes** proactive egress (`slack_send`/`discord_send`), the secrets tools,
@@ -66,9 +83,7 @@ path. What changes is only *topology and attribution*:
 
 ## Follow-ups
 
-- **Console editor.** The config route round-trips `usableSubagents`, but the agent settings UI has no
-  picker yet — today you set it by editing `agent.json` (or via `PUT /api/agents/:id/config`). Add a
-  multi-select of fleet teammates.
+- ~~**Console editor.**~~ Done (0.237.0 picker + 0.239.0 opt-out/default toggle).
 - **Per-parent tool scoping.** One global default toolset today. A parent (or a per-delegate entry)
   could narrow it further.
 - **Nesting visibility.** `agent_id` is captured in audit but the console doesn't yet render a sub-run

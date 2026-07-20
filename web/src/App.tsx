@@ -9040,6 +9040,8 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
   const [savedSecrets, setSavedSecrets] = useState('')
   const [subagents, setSubagents] = useState<string[]>([])
   const [savedSubagents, setSavedSubagents] = useState<string[]>([])
+  const [spawnable, setSpawnable] = useState(true)
+  const [savedSpawnable, setSavedSpawnable] = useState(true)
   const [netMode, setNetMode] = useState<'open' | 'allowlist'>('open')
   const [savedNetMode, setSavedNetMode] = useState<'open' | 'allowlist'>('open')
   const [busy, setBusy] = useState(false)
@@ -9054,18 +9056,19 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
       const c = r.category ?? ''
       const s = (r.shellSecrets ?? []).join(' ')
       const sub = r.usableSubagents ?? []
+      const sp = r.spawnableAsSubagent !== false
       const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setNetMode(nm); setSavedNetMode(nm)
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setNetMode(nm); setSavedNetMode(nm)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || netMode !== savedNetMode
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || netMode !== savedNetMode
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
     const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
-    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, netMode, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, spawnableAsSubagent: spawnable, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     const t: RuntimeTuning = { model: r.model, effort: r.effort }
@@ -9074,8 +9077,9 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     const c = r.category ?? ''
     const s = (r.shellSecrets ?? []).join(' ')
     const sub = r.usableSubagents ?? []
+    const sp = r.spawnableAsSubagent !== false
     const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -9106,7 +9110,7 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
           <p className="text-[11px] text-muted-foreground">Vault keys exported as env vars into this agent's shell (so CLIs like <span className="font-mono">gh</span> authenticate). Store the value in <span className="font-medium">Settings → Secrets</span> (key = the name here; set its principal to <span className="font-mono">{agentId}</span> for a per-agent value, or leave tenant-wide). Resolved at launch, audited per key.</p>
         </div>
         <div className="space-y-1">
-          <label className="text-xs font-medium">Sub-agents</label>
+          <label className="text-xs font-medium">Sub-agents it can spawn</label>
           {(() => {
             const teammates = agents.filter((a) => a.runtime === 'claude-code' && a.id !== agentId)
             if (!teammates.length) return <p className="text-[11px] text-muted-foreground">No other claude-code agents to delegate to yet.</p>
@@ -9130,7 +9134,14 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
               </div>
             )
           })()}
-          <p className="text-[11px] text-muted-foreground">Teammates this agent may spawn as native in-process <span className="font-medium">sub-agents</span> (Claude Code's <span className="font-mono">Agent</span> tool) to hand off a slice of its own turn — the lightweight counterpart to delegating a <a href="#/tasks" className="underline hover:text-foreground">task</a>. Every sub-agent action is still gated (under this agent's identity + budget); their toolset is capped to read/search, gated shell/file edits, and memory recall — no egress, secrets, or publishing.</p>
+          <p className="text-[11px] text-muted-foreground">Teammates this agent may spawn as native in-process <span className="font-medium">sub-agents</span> (Claude Code's <span className="font-mono">Agent</span> tool) to hand off a slice of its own turn — the lightweight counterpart to delegating a <a href="#/tasks" className="underline hover:text-foreground">task</a>. <span className="font-medium">Leave all off</span> to follow the workspace default (<a href="#/settings" className="underline hover:text-foreground">Settings → Agents</a>): when that's <span className="font-mono">All</span>, this agent can spawn every willing teammate; picking any here <span className="font-medium">narrows</span> it to exactly those. Every sub-agent action is still gated (under this agent's identity + budget); their toolset is capped to read/search, gated shell/file edits, and memory recall — no egress, secrets, or publishing.</p>
+        </div>
+        <div className="space-y-1">
+          <label className="flex items-center gap-2 text-xs font-medium">
+            <input type="checkbox" checked={spawnable} onChange={(e) => setSpawnable(e.target.checked)} className="h-3.5 w-3.5" />
+            Other agents may spawn <span className="font-mono">{agentId}</span> as a sub-agent
+          </label>
+          <p className="text-[11px] text-muted-foreground">On by default. Uncheck to mark this agent <span className="font-medium">internal</span> — it's never materialised into anyone else's sub-agents (even if they list it explicitly), so no run can adopt its persona under a different identity + budget. Use for governance-sensitive agents (trust &amp; safety, a destructive migrator).</p>
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">Host access mode</label>
@@ -11895,6 +11906,8 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
   const [tuning, setTuning] = useState<RuntimeTuning>({})
   const [saved, setSaved] = useState<RuntimeTuning>({})
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
+  const [subMode, setSubMode] = useState<'all' | 'none'>('all')
+  const [subHint, setSubHint] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -11905,7 +11918,15 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
       const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
       setTuning(t); setSaved(t); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
     }).catch(() => {})
+    api.subagentDefault().then((r) => { if (!r.error) setSubMode(r.mode) }).catch(() => {})
   }, [])
+
+  const saveSubMode = async (mode: 'all' | 'none') => {
+    setSubMode(mode); setSubHint('')
+    const r = await api.saveSubagentDefault(mode)
+    if (r.error) return setSubHint('⚠ ' + r.error)
+    setSubHint('saved'); setTimeout(() => setSubHint(''), 2000)
+  }
 
   const dirty = JSON.stringify(tuning) !== JSON.stringify(saved)
   const save = async () => {
@@ -11931,6 +11952,22 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save defaults' : 'Saved'}</Button>
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
+        </div>
+        <div className="space-y-1 border-t pt-4">
+          <label className="text-sm font-medium">Sub-agents</label>
+          <p className="text-sm text-muted-foreground">
+            Whether an agent may spawn its teammates as native in-process <span className="font-medium">sub-agents</span> (Claude Code's{' '}
+            <span className="font-mono text-xs">Agent</span> tool) to hand off part of its own turn. Every sub-agent action is still gated,
+            under the parent's identity + budget, with a capped toolset. An agent can be marked <span className="font-medium">internal</span>{' '}
+            (not spawnable) on its own page; a parent can narrow to specific teammates there too.
+          </p>
+          <div className="flex items-center gap-3 pt-1">
+            <select value={subMode} onChange={(e) => saveSubMode(e.target.value === 'none' ? 'none' : 'all')} disabled={!canEdit} className="rounded-md border bg-background px-2 py-1.5 text-sm">
+              <option value="all">All — every agent can spawn any willing teammate (default)</option>
+              <option value="none">None — only teammates an agent explicitly lists</option>
+            </select>
+            {subHint && <span className="font-mono text-xs text-muted-foreground">{subHint}</span>}
+          </div>
         </div>
       </CardContent>
     </Card>

@@ -966,6 +966,13 @@ export interface AgentManifest extends RuntimeTuning {
    *  egress/secret tools. Undefined/empty → this agent spawns no fleet sub-agents. Self-references and
    *  non-claude-code / unknown ids are ignored. See docs/subagents-plan.md. */
   usableSubagents?: string[];
+  /** Consent to being spawned as another agent's native sub-agent (Lever: `usableSubagents`). Default
+   *  `true`. Set `false` to mark this agent **internal** — it is NEVER materialised into any other
+   *  agent's `.claude/agents/`, so no one can adopt its persona as a sub-agent, regardless of the
+   *  fleet-wide `subagentDefault` posture OR another agent's explicit `usableSubagents` list (the
+   *  opt-out is absolute — a hard "don't spawn me"). Use for governance-sensitive personas (trust &
+   *  safety, a destructive migrator) you don't want silently run under someone else's identity/budget. */
+  spawnableAsSubagent?: boolean;
   /** The agent's visual icon. Either a built-in library id (a lucide icon name like `"Bot"`) or a raw
    *  custom `<svg>…</svg>` markup string the user uploaded. Undefined → the console falls back to a
    *  default glyph. Purely cosmetic. Rendered in an `<img>` so inline SVG can't execute scripts. */
