@@ -480,6 +480,8 @@ function migrate(db: Db): void {
       owner         TEXT,                           -- member id the dispatched session runs AS (run_as); NULL = company
       parent_id     TEXT,                           -- sub-task parent (nullable)
       mode          TEXT NOT NULL DEFAULT 'headless',-- how a dispatched session runs: headless | interactive
+      model         TEXT,                           -- override the dispatched session's model (NULL = agent/workspace default)
+      effort        TEXT,                           -- override the dispatched session's reasoning effort (low…max)
       auto_dispatch INTEGER NOT NULL DEFAULT 0,     -- 1 = the tick may spawn a session for it
       due_at        INTEGER,                        -- optional soft deadline (epoch ms)
       attempts      INTEGER NOT NULL DEFAULT 0,     -- dispatch attempts (backoff / give-up guard)
@@ -732,6 +734,12 @@ function migrate(db: Db): void {
   // How a dispatched task session runs (headless work-to-completion vs. an attachable interactive TUI).
   // Older `tasks` rows (created before this column) default to today's behavior: headless.
   addColumn(db, 'tasks', 'mode', "TEXT NOT NULL DEFAULT 'headless'");
+
+  // Per-task runtime tuning: a delegator can pin the model / reasoning effort of the dispatched
+  // session (e.g. a cheap background sweep on a small model, a hard task on max effort), overriding
+  // the assignee agent's manifest + the workspace default. Nullable — older rows fall back as before.
+  addColumn(db, 'tasks', 'model', 'TEXT');
+  addColumn(db, 'tasks', 'effort', 'TEXT');
 
   // Slice 2 — link a task up to the strategic Goal it advances (nullable; older rows have none), and an
   // optional single-line acceptance `criteria` that, when set on a headless task, drives its dispatched

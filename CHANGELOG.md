@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.230.0] — 2026-07-20
+### Added
+- **Delegate a task at a chosen model / effort tier.** `task_create` now takes optional `model` and
+  `effort` (low…max) that pin the runtime tuning of the *dispatched* session — the highest-priority
+  layer over the assignee agent's manifest and the workspace default
+  (`resolveRuntimeTuning(agent, defaults, taskOverride)`). So an agent handing off background work can
+  run it on a small/cheap model, or force `max` effort for a hard task, without touching the delegate
+  agent's own configuration. Validated at the API edge with `sanitizeRuntimeTuning` (unknown effort
+  rejected; model free-form), stored on the task (`tasks.model`/`tasks.effort`), and threaded through
+  `dispatchTask` → `createSession` → `launchClaudeCode` as a per-launch tuning override. Nullable —
+  omit either field to inherit as before.
+
 ## [0.227.8] — 2026-07-20
 ### Fixed
 - **Insight-alert cards in the Inbox had no useful action — clicking "Open" landed on a dead session

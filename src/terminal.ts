@@ -15,7 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
@@ -1096,7 +1096,7 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
-  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false): Session {
+  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning): Session {
     const id = newId('session');
     const tmux = `aos-${id}`;
     // The claude conversation this run drives. A fresh run mints a new id (pinned via `--session-id`);
@@ -1152,7 +1152,7 @@ export class TerminalManager {
     }
 
     if (runtime === 'claude-code' && manifest?.dir) {
-      this.launchClaudeCode({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, headless, resident, resume: !!resumeClaudeId, claudeSessionId });
+      this.launchClaudeCode({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, headless, resident, resume: !!resumeClaudeId, claudeSessionId, tuning });
     } else {
       this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env: this.sessionEnv(id, agent, task, secret), argv: ['bash', this.runner] });
     }
@@ -1213,6 +1213,9 @@ export class TerminalManager {
     id: string; agent: string; task: string; secret: string;
     actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean;
     headless: boolean; resident: boolean; resume: boolean; claudeSessionId: string;
+    // Per-launch tuning override (highest priority over the agent manifest + workspace default) — e.g. a
+    // delegated task pinning the model/effort of its dispatched session. Undefined → resolve as before.
+    tuning?: RuntimeTuning;
     // Fork: branch this NEW session (claudeSessionId) off an existing conversation (forkFrom). The
     // launcher's FORK_FROM branch runs `claude --resume <forkFrom> --fork-session --session-id
     // <claudeSessionId>` on first launch; a reattach (resume:true) resumes the fork's own branch.
@@ -1244,11 +1247,11 @@ export class TerminalManager {
     // we don't wrap the shell in Seatbelt/bubblewrap. Real OS containment is the Linux uid-isolation path.
     // Per-agent model / effort / permission-mode fall back to the workspace default; the launcher maps
     // them onto `--model`/`--effort`/`--permission-mode` (permission-mode on the interactive lane only).
-    const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults());
+    const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults(), o.tuning);
     if (tuning.model) env.CLAUDE_MODEL = tuning.model;
     if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
     if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
-    this.audit(o.id, o.agent, 'session.tuning', { model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode });
+    this.audit(o.id, o.agent, 'session.tuning', { model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, override: o.tuning ?? null });
     // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
     // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
     // follow-up or a console reconnect) instead of starting fresh.
