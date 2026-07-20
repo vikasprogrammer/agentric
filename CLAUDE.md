@@ -437,6 +437,22 @@ in `src/types.ts` and `TeamStore.canRun()`.
   `map $http_upgrade $connection_upgrade { default upgrade; "" close; }` + `proxy_set_header Connection
   $connection_upgrade;` so plain requests get `Connection: close`. Symptom is deceptive: `curl` straight
   to `127.0.0.1:3010` (and a raw `nc` HTTP/1.1 request) both return 200, only the nginx hop 502s.
+- **nginx gotcha that bit umbrella again (2026-07-16) — a literal backslash before every `$variable`.**
+  If the site config was generated through a shell heredoc/`sed` that escaped the `$` and the backslash
+  leaked onto disk (`proxy_set_header Host \$host;`, `Upgrade \$http_upgrade;`, …), nginx emits the value
+  **with a leading backslash** — `Host: \aos.example.com` — and a bogus non-empty `Upgrade: \` on EVERY
+  request (empty `$http_upgrade` still yields `\`). The Node app tolerates the malformed `Host` so the
+  console loads normally, but **ttyd/libwebsockets strictly validates it and 403s the WebSocket
+  handshake**, so ONLY the browser terminal breaks: it renders **blank** and the access log shows
+  `GET /terminal/ws → 403`, while sessions otherwise spawn fine (live tmux pane, working API — a spawn
+  bug that isn't one). Nail it by tcpdumping the nginx→ttyd hop
+  (`tcpdump -i lo -A 'tcp port 3011'`): healthy shows `Host: aos.example.com`, broken shows
+  `Host: \aos.example.com` — the header-value backslash is the only diff (direct `curl` to ttyd with a
+  clean Host = 200, through nginx = 403). Fix = strip them: `sudo sed -i 's/\\$/$/g' <site.conf>` (leaves
+  a legit no-backslash `$connection_upgrade` from the conf.d map untouched), `nginx -t`, `reload`. Verify
+  `/terminal/`+cookie → 200, no-cookie → 401, WS handshake (`Upgrade` + `Sec-WebSocket-Protocol: tty`) →
+  101. Was isolated to umbrella (that one config was hand-written differently); jump-server + initech
+  configs were clean.
 - **Hardened-unit gotcha — `ReadWritePaths=` dirs must pre-exist.** Under `ProtectHome=read-only` the
   unit fails to start with `status=226/NAMESPACE` (`Failed to set up mount namespacing: <path>: No such
   file or directory`) if any carve-out path is missing. On a fresh box `~/.config`/`~/.cache`/`~/.claude`

@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.4] — 2026-07-20
+### Documentation
+- **Deploy runbook: the "blank browser terminal / `/terminal/ws → 403`" nginx gotcha.** Documented a
+  config artifact that hit umbrella — a literal backslash before every `$variable` in `proxy_set_header`
+  (a leaked shell-heredoc escape, e.g. `Host \$host;`) makes nginx send `Host: \example.com` and a bogus
+  non-empty `Upgrade: \` on every request. The Node app tolerates it so the console loads, but
+  ttyd/libwebsockets 403s the WebSocket handshake — so only the browser terminal breaks (blank), while
+  sessions otherwise spawn fine. Added diagnosis (tcpdump the nginx→ttyd hop) and the one-line fix
+  (`sed -i 's/\\$/$/g'` + reload) to `README.md` and `CLAUDE.md`.
+
 ## [0.227.3] — 2026-07-17
 ### Fixed
 - **Cron automations now honor `run_as` — personal Composio/connectors are injected.** The scheduler

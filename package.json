@@ -1,6 +1,6 @@
 {
   "name": "agent-os",
-  "version": "0.227.3",
+  "version": "0.227.4",
   "description": "A generic, governed operating system for running autonomous agents safely across brands. Ships with a local web console.",
   "license": "MIT",
   "type": "commonjs",
