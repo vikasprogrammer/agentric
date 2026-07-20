@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -5469,9 +5469,13 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
   const [agentFilter, setAgentFilter] = useState('')
   const [folder, setFolder] = useState('')
   const [hint, setHint] = useState('')
+  const [archived, setArchived] = useState<Artifact[]>([])   // the soft-archived set (Insights declutter)
+  const [showArchived, setShowArchived] = useState(false)
 
   const load = () => api.artifacts().then((r) => { setArtifacts(r.artifacts ?? []); setEnabled(r.enabled !== false) })
-  useEffect(() => { load() }, [])
+  const loadArchived = () => api.artifacts(true).then((r) => setArchived(r.artifacts ?? [])).catch(() => {})
+  useEffect(() => { load(); loadArchived() }, [])
+  const unarchive = async (id: string) => { const r = await api.unarchiveArtifact(id); if (r.error) return setHint('⚠ ' + r.error); loadArchived(); load() }
 
   // The URL is the source of truth for the open artifact: `#/artifacts/<id>` deep-links to one
   // deliverable (shareable, back/forward, and the Inbox 'artifact' card links straight here).
@@ -5532,6 +5536,26 @@ function ArtifactsPage({ me, permalink, nav }: { me: Member; permalink: string; 
         publish time. {me.role === 'member' ? 'You see deliverables from sessions you started.' : 'Owners and admins see every deliverable.'}
         {!enabled && <span className="text-amber-600"> (no data home configured — publishing is disabled)</span>}
       </p>
+
+      {archived.length > 0 && (
+        <div className="rounded-lg border bg-muted/20 p-2 text-xs">
+          <button onClick={() => setShowArchived((v) => !v)} className="flex items-center gap-1.5 font-medium text-muted-foreground hover:text-foreground">
+            <Package className="h-3.5 w-3.5" />{archived.length} archived {showArchived ? '▾' : '▸'}
+          </button>
+          {showArchived && (
+            <ul className="mt-2 space-y-1">
+              {archived.map((a) => (
+                <li key={a.id} className="flex items-center gap-2">
+                  <ArtifactIcon a={a} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate text-muted-foreground">{a.title}</span>
+                  <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">{a.agent}</span>
+                  <button onClick={() => unarchive(a.id)} className="shrink-0 text-[11px] text-primary underline underline-offset-2">Restore</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       {agents.length > 1 && (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -10462,6 +10486,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [cleanupBusy, setCleanupBusy] = useState(false)
   const [kbTidy, setKbTidy] = useState<KbTidyPlan | null>(null)
   const [taskRec, setTaskRec] = useState<TaskReconcilePlan | null>(null)
+  const [libTidy, setLibTidy] = useState<LibraryTidyPlan | null>(null)
   const [stuckGoals, setStuckGoals] = useState<StuckGoal[]>([])
   const [goalsOpen, setGoalsOpen] = useState(false)
   const [troubledAutos, setTroubledAutos] = useState<TroubledAutomation[]>([])
@@ -10560,6 +10585,16 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const applyTaskReconcile = async () => {
     setCleanupBusy(true); const r = await api.taskReconcileApply(); setCleanupBusy(false); setTaskRec(null)
     setDxHint(r.error ? `⚠ ${r.error}` : `Closed ${r.closed ?? 0} finished task${r.closed === 1 ? '' : 's'} — reopen any from the board if needed.`)
+    setTimeout(() => setDxHint(''), 6000); refresh()
+  }
+  const previewLibraryTidy = async () => {
+    setCleanupBusy(true); const r = await api.libraryTidyPreview(); setCleanupBusy(false)
+    if (r.error || !r.plan) return setDxHint(`⚠ ${r.error ?? 'could not build a plan'}`)
+    setLibTidy(r.plan)
+  }
+  const applyLibraryTidy = async () => {
+    setCleanupBusy(true); const r = await api.libraryTidyApply(); setCleanupBusy(false); setLibTidy(null)
+    setDxHint(r.error ? `⚠ ${r.error}` : `Archived ${r.archived ?? 0} artifact${r.archived === 1 ? '' : 's'} — restore any from the Library.`)
     setTimeout(() => setDxHint(''), 6000); refresh()
   }
   const previewCleanup = async () => {
@@ -10662,6 +10697,13 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                 <button key={t.domain} onClick={previewTaskReconcile} disabled={cleanupBusy} className={`${cls} disabled:opacity-50`}>
                   {inner}
                   <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview reconcile →'}</div>
+                </button>
+              )
+              // Library tile is generative: preview orphaned artifacts; apply soft-archives them (restorable).
+              if (t.domain === 'library' && t.count > 0) return (
+                <button key={t.domain} onClick={previewLibraryTidy} disabled={cleanupBusy} className={`${cls} disabled:opacity-50`}>
+                  {inner}
+                  <div className="mt-2 text-[11px] font-medium text-primary">{cleanupBusy ? 'building preview…' : 'Preview declutter →'}</div>
                 </button>
               )
               // Goals tile: expand the stuck goals in place, each with a "plan" that spawns the strategist.
@@ -10788,6 +10830,38 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                     </ul>
                   )}
                   <div className="mt-1 text-[10px] text-muted-foreground">Stalled tasks need a human call — re-dispatch, reassign, or block them in <a href="#/tasks" className="underline">Tasks</a>.</div>
+                </div>
+              </div>
+            </div>
+          )}
+          {libTidy && (
+            <div className="mt-3 rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="font-medium">Library declutter preview <span className="font-normal text-muted-foreground">— archiving is soft (restore from the Library)</span></div>
+                <div className="flex items-center gap-2">
+                  <button onClick={applyLibraryTidy} disabled={cleanupBusy || libTidy.dead.total === 0} className="rounded bg-red-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-red-700 disabled:opacity-50">{cleanupBusy ? 'archiving…' : `Archive ${libTidy.dead.total}${libTidy.dead.bytes ? ` · ${fmtBytes(libTidy.dead.bytes)}` : ''}`}</button>
+                  <button onClick={() => setLibTidy(null)} className="text-[11px] text-muted-foreground underline underline-offset-2">Cancel</button>
+                </div>
+              </div>
+              <div className="mt-2 grid gap-3 md:grid-cols-2">
+                <div>
+                  <div className="mb-1 font-medium">Archive — {libTidy.dead.total} orphaned <span className="font-normal text-muted-foreground">(run gone, never shared, {libTidy.deadAfterDays}d+ old)</span></div>
+                  {libTidy.dead.total === 0 ? <div className="text-muted-foreground">nothing orphaned to archive</div> : (
+                    <ul className="space-y-0.5">
+                      {libTidy.dead.sample.map((a) => <li key={a.id} className="truncate text-muted-foreground"><span className="text-foreground">{a.title}</span> · {a.kind} · {a.ageDays}d · {fmtBytes(a.bytes)}</li>)}
+                      {libTidy.dead.total > libTidy.dead.sample.length && <li className="text-muted-foreground">+{libTidy.dead.total - libTidy.dead.sample.length} more…</li>}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <div className="mb-1 font-medium">Review — {libTidy.stale.total} old &amp; private <span className="font-normal text-muted-foreground">(unshared {libTidy.staleAfterDays}d+)</span></div>
+                  {libTidy.stale.total === 0 ? <div className="text-muted-foreground">nothing stale</div> : (
+                    <ul className="space-y-0.5">
+                      {libTidy.stale.sample.map((a) => <li key={a.id} className="truncate text-muted-foreground"><a href="#/artifacts" className="text-foreground underline underline-offset-2">{a.title}</a> · {a.ageDays}d</li>)}
+                      {libTidy.stale.total > libTidy.stale.sample.length && <li className="text-muted-foreground">+{libTidy.stale.total - libTidy.stale.sample.length} more…</li>}
+                    </ul>
+                  )}
+                  <div className="mt-1 text-[10px] text-muted-foreground">These still belong to a live run — keep, share, or delete them by hand in <a href="#/artifacts" className="underline">Library</a>.</div>
                 </div>
               </div>
             </div>

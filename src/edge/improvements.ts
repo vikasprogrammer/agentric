@@ -14,7 +14,7 @@ import type { Insights } from './insights';
 const DAY = 24 * 3_600_000;
 type Db = AgentOS['db'];
 
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks';
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library';
 export interface ImprovementTile {
   domain: ImprovementDomain;
   count: number;                 // opportunities found (0 = nothing to improve)
@@ -101,6 +101,16 @@ export function buildImprovements(os: AgentOS, insights: Insights, now = Date.no
     title: tFinished + tStalled ? `${tFinished + tStalled} task${tFinished + tStalled === 1 ? '' : 's'} to reconcile` : 'Task board is in sync',
     detail: tFinished + tStalled ? `${tFinished} finished but still open (auto-closable), ${tStalled} stalled after a failed run — review the board.` : 'Every dispatched task matches its run.',
     actionLabel: 'Open Tasks', href: '#/tasks',
+  });
+
+  // 8) Library — declutter orphaned/never-shared artifacts (soft-archive, reversible). See library-tidy.ts.
+  const libDead = num(db, "SELECT count(*) AS n FROM artifacts WHERE archived_at IS NULL AND shared_team = 0 AND share_token IS NULL AND session_id NOT IN (SELECT id FROM term_sessions) AND created_at < ?", now - 30 * DAY);
+  const libStale = num(db, "SELECT count(*) AS n FROM artifacts WHERE archived_at IS NULL AND shared_team = 0 AND share_token IS NULL AND session_id IN (SELECT id FROM term_sessions) AND created_at < ?", now - 60 * DAY);
+  tiles.push({
+    domain: 'library', count: libDead + libStale,
+    title: libDead + libStale ? `${libDead + libStale} artifact${libDead + libStale === 1 ? '' : 's'} to declutter` : 'Library is tidy',
+    detail: libDead + libStale ? `${libDead} orphaned (run gone, never shared — archivable), ${libStale} old &amp; private — review the gallery.` : 'No orphaned or long-stale artifacts.',
+    actionLabel: 'Open Library', href: '#/artifacts',
   });
 
   return tiles;

@@ -838,6 +838,10 @@ function migrate(db: Db): void {
   // world-reachable forever. Set when the link is minted; the public route rejects an expired token
   // immediately and the scheduler sweep clears it from the row. NULL = no public link (nothing to expire).
   addColumn(db, 'artifacts', 'share_expires_at', 'INTEGER');
+  // Soft-archive for Library declutter: an archived artifact is hidden from the gallery but its row +
+  // files survive, so archiving is fully reversible (unarchive). NULL = live. (The Insights Library tile
+  // archives orphaned/never-shared clutter; a human can always restore it.)
+  addColumn(db, 'artifacts', 'archived_at', 'INTEGER');
 
   // Session insights — what a finished run actually did, so the sessions list can say more than
   // "done" (which only means the process exited). All are stamped ONCE when the run reaches a terminal

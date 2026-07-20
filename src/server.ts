@@ -35,6 +35,7 @@ import { planMemoryCleanup, applyMemoryCleanup, cleanupOpts } from './edge/memor
 import { SkillScout, SCOUT_ID } from './edge/skill-scout';
 import { planKbTidy, applyKbTidy } from './edge/kb-tidy';
 import { planTaskReconcile, applyTaskReconcile } from './edge/task-reconcile';
+import { planLibraryTidy, applyLibraryTidy } from './edge/library-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
@@ -3234,6 +3235,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const r = applyTaskReconcile(os, me.email);
     return sendJson(res, 200, { ok: true, ...r });
   }
+  // Library domain "declutter": preview orphaned/never-shared artifacts, then apply SOFT-ARCHIVES the
+  // dead set (hidden from the gallery, files retained — restore from Library). Reversible, audited.
+  if (p === '/api/insights/library/tidy' && (method === 'GET' || method === 'POST')) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    if (method === 'GET') return sendJson(res, 200, { ok: true, plan: planLibraryTidy(os) });
+    const r = applyLibraryTidy(os, me.email);
+    return sendJson(res, 200, { ok: true, ...r });
+  }
   // Skills domain "generate the fix": spawn the skill-scout to mine recent successful fleet runs for a
   // recurring procedure and draft it as a skill via skill_propose — lands on the existing proposed-skill
   // review queue (published from the Skills page); no new apply surface.
@@ -4718,7 +4727,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // whole tenant. The public share TOKEN is a credential, not display data — surface it (and the
     // resolved link) only to whoever may manage sharing (owner/admin/producer); everyone else gets a
     // plain `public` boolean so the UI can badge it without leaking the URL.
-    const visible = os.artifacts.list().filter((a) => tm.canViewSpawn(a.source ?? null, me) || a.sharedTeam);
+    // `?archived=1` returns the soft-archived set (the Library "show archived / restore" view); default is live.
+    const source = url.searchParams.get('archived') === '1' ? os.artifacts.listArchived() : os.artifacts.list();
+    const visible = source.filter((a) => tm.canViewSpawn(a.source ?? null, me) || a.sharedTeam);
     const shaped = visible.map((a) => {
       const mine = isAdmin(me) || a.source === me.id;
       return {
@@ -4761,6 +4772,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me) && a.source !== me.id) return sendJson(res, 403, { error: 'forbidden' });
     os.artifacts.remove(a.id);
     os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.deleted', data: { id: a.id, filename: a.filename } });
+    return sendJson(res, 200, { ok: true });
+  }
+  // Restore a soft-archived artifact back into the Library (the reverse of the Insights declutter apply).
+  const artUnarchive = p.match(/^\/api\/artifacts\/([\w-]+)\/unarchive$/);
+  if (method === 'POST' && artUnarchive) {
+    const a = os.artifacts.get(artUnarchive[1]);
+    if (!a) return sendJson(res, 404, { error: 'not found' });
+    if (!isAdmin(me) && a.source !== me.id) return sendJson(res, 403, { error: 'forbidden' });
+    os.artifacts.unarchive(a.id);
+    os.audit.append({ ts: Date.now(), runId: a.sessionId, tenant: os.tenant, principal: me.email, type: 'artifact.unarchived', data: { id: a.id } });
     return sendJson(res, 200, { ok: true });
   }
   // Share an artifact beyond its producer — same gate as move/delete (owner/admin, or the producing

@@ -359,6 +359,8 @@ export interface Artifact {
   /** The resolved public URL (`/shared/<token>`) — present only when `shareToken` is. */
   shareUrl?: string
   createdAt: number
+  /** Epoch ms when soft-archived (only present in the `?archived=1` view). */
+  archivedAt?: number
 }
 
 export interface KbPage {
@@ -397,7 +399,7 @@ export interface AgentScore { agent: string; runs: number; success: number; fail
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks'
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library'
 export interface ImprovementTile { domain: ImprovementDomain; count: number; title: string; detail: string; actionLabel: string; href: string }
 export interface CleanupPruneItem { id: string; agent: string; snippet: string; ageDays: number; importance: number | null }
 export interface CleanupMergeGroup { agent: string; keepSnippet: string; drop: number }
@@ -406,6 +408,8 @@ export interface KbTidyItem { id: string; section: string; slug: string; title: 
 export interface KbTidyPlan { deadAfterDays: number; staleAfterDays: number; dead: { total: number; sample: KbTidyItem[] }; stale: { total: number; sample: KbTidyItem[] } }
 export interface TaskDriftItem { id: string; title: string; assignee: string | null; owner: string | null; sessionId: string; sessionStatus: string; outcome: string; endedDaysAgo: number }
 export interface TaskReconcilePlan { finished: { total: number; sample: TaskDriftItem[] }; stalled: { total: number; sample: TaskDriftItem[] } }
+export interface LibraryTidyItem { id: string; title: string; kind: string; agent: string; ageDays: number; bytes: number }
+export interface LibraryTidyPlan { deadAfterDays: number; staleAfterDays: number; dead: { total: number; bytes: number; sample: LibraryTidyItem[] }; stale: { total: number; sample: LibraryTidyItem[] } }
 export interface StuckGoal { id: string; title: string; days: number }
 export interface TroubledAutomation { id: string; name: string; type: string; reason: 'errored' | 'idle'; detail: string }
 export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
@@ -1508,8 +1512,11 @@ export const api = {
     },
   },
 
-  artifacts: () => call<{ artifacts: Artifact[]; enabled: boolean }>('GET', '/api/artifacts'),
+  artifacts: (archived?: boolean) => call<{ artifacts: Artifact[]; enabled: boolean }>('GET', '/api/artifacts' + (archived ? '?archived=1' : '')),
   deleteArtifact: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', '/api/artifacts/' + id),
+  unarchiveArtifact: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/artifacts/${id}/unarchive`),
+  libraryTidyPreview: () => call<{ ok: boolean; plan?: LibraryTidyPlan; error?: string }>('GET', '/api/insights/library/tidy'),
+  libraryTidyApply: () => call<{ ok: boolean; archived?: number; error?: string }>('POST', '/api/insights/library/tidy'),
   moveArtifact: (id: string, folder: string) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('PATCH', '/api/artifacts/' + id, { folder }),
   /** Share an artifact with the tenant (`team`) and/or mint/revoke its public link (`public`). */
   shareArtifact: (id: string, body: { team?: boolean; public?: boolean }) => call<{ ok: boolean; artifact?: Artifact; error?: string }>('POST', `/api/artifacts/${id}/share`, body),

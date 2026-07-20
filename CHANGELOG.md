@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.247.0] — 2026-07-20
+### Added
+- **Insights can now declutter the Library — an 8th improvement tile.** The artifacts gallery accumulates
+  throwaway output (a generated test image, a scratch file, a one-off render from a run that's since been
+  deleted) with nothing to prune it. The new **Library** tile detects clutter and soft-archives it: the
+  **dead** set — **orphaned** (produced by a session that no longer exists) AND never shared (no team
+  share, no public link) AND 30+ days old — is safely archivable (an artifact whose run is gone and nobody
+  ever shared is throwaway by definition); **old-but-still-owned** private artifacts are surfaced for
+  manual review, never auto-touched. Archiving is a **soft `archived_at`** (row + files retained, hidden
+  from the gallery) so it's fully reversible — the Library grows a collapsible **"N archived · Restore"**
+  section, and `POST /api/artifacts/:id/unarchive` restores. Preview → "Archive N" mirrors the KB-tidy /
+  task-reconcile generative tiles. `src/edge/library-tidy.ts` + `GET`/`POST /api/insights/library/tidy` +
+  `GET /api/artifacts?archived=1`; audited `library.tidied` / `artifact.unarchived`.
+
 ## [0.246.0] — 2026-07-20
 ### Added
 - **Insights now reconciles the Tasks board against what sessions actually did — a 7th improvement tile.**

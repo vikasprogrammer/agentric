@@ -42,6 +42,8 @@ export interface Artifact {
   /** Epoch ms when the public link auto-revokes (mint time + {@link PUBLIC_SHARE_TTL_MS}). */
   shareExpiresAt?: number;
   createdAt: number;
+  /** Epoch ms when soft-archived (hidden from the Library, files retained). undefined = live. */
+  archivedAt?: number;
 }
 
 interface ArtifactRow {
@@ -62,6 +64,7 @@ interface ArtifactRow {
   share_token: string | null;
   share_expires_at: number | null;
   created_at: number;
+  archived_at?: number | null; // absent on freshly-built row literals (new artifacts are live)
 }
 
 export type PublishResult =
@@ -236,9 +239,26 @@ export class ArtifactStore {
   /** All artifacts, newest first. The server filters by viewer (inbox visibility rule). */
   list(): Artifact[] {
     return this.db
-      .prepare('SELECT * FROM artifacts ORDER BY created_at DESC')
+      .prepare('SELECT * FROM artifacts WHERE archived_at IS NULL ORDER BY created_at DESC')
       .all<ArtifactRow>()
       .map(toArtifact);
+  }
+
+  /** Soft-archived artifacts (hidden from the Library) — for the "show archived / restore" affordance. */
+  listArchived(): Artifact[] {
+    return this.db
+      .prepare('SELECT * FROM artifacts WHERE archived_at IS NOT NULL ORDER BY archived_at DESC')
+      .all<ArtifactRow>()
+      .map(toArtifact);
+  }
+
+  /** Soft-archive an artifact — hide it from the gallery, keep the row + files (reversible). */
+  archive(id: string, now = Date.now()): boolean {
+    return this.db.prepare('UPDATE artifacts SET archived_at = ? WHERE id = ? AND archived_at IS NULL').run(now, id).changes > 0;
+  }
+  /** Restore a soft-archived artifact back into the Library. */
+  unarchive(id: string): boolean {
+    return this.db.prepare('UPDATE artifacts SET archived_at = NULL WHERE id = ?').run(id).changes > 0;
   }
 
   /** Distinct non-empty folder paths in use (for agent discovery — file into the existing tree
@@ -381,6 +401,7 @@ function toArtifact(r: ArtifactRow): Artifact {
     shareToken: r.share_token ?? undefined,
     shareExpiresAt: r.share_expires_at ?? undefined,
     createdAt: r.created_at,
+    archivedAt: r.archived_at ?? undefined,
   };
 }
 
