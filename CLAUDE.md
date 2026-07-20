@@ -462,10 +462,17 @@ in `src/types.ts` and `TeamStore.canRun()`.
   seeding `hasTrustDialogAccepted` into **`~/.claude.json`** — a file in the HOME ROOT, written via
   atomic temp-file + rename, so it needs the home **directory** writable, not just `~/.claude`. With
   `ProtectHome=read-only` + `ReadWritePaths=…/.claude` (the sub-dir only), that write fails and is
-  swallowed by the seeder's `|| true`, so trust is never recorded and every **interactive** run parks
-  forever on "Do you trust the files in this folder?" (headless dodges it via
-  `--dangerously-skip-permissions`). **Deceptive symptom:** the session row is `running` and the tmux
-  pane is alive, `capture-pane` shows the trust prompt. **Fix:** make the service user's home writable
+  swallowed by the seeder's `|| true`, so trust is never recorded and every run — **interactive AND
+  unattended alike** — parks forever on "Do you trust the files in this folder?". (Correction, verified
+  2026-07-20: `--dangerously-skip-permissions` does NOT dodge this — it suppresses per-tool permission
+  PROMPTS, not the folder-trust dialog; only the `~/.claude.json` pre-seed does. The pre-attachable
+  `claude -p` headless lane sidestepped it because print-mode never shows the dialog, but the current
+  UNATTENDED lane is an attachable interactive TUI, so a failed seed hangs it exactly like interactive.
+  Same seed also silently misses when the home is a **symlink** — macOS `os.tmpdir()` returns
+  `/var/folders/…`, a link to `/private/var/…`: Claude opens the workspace by its REAL path, so the trust
+  key must be seeded under the real path (`realpathSync` the home) or the dialog still fires. This bites
+  in-process test harnesses on scratch homes; prod homes are real paths.) **Deceptive symptom:** the
+  session row is `running` and the tmux pane is alive, `capture-pane` shows the trust prompt. **Fix:** make the service user's home writable
   (`ReadWritePaths=/home/<svc>`) and re-lock persistence vectors (`ReadOnlyPaths=/home/<svc>/.ssh`),
   keeping `ProtectSystem=strict`. The bundled `agent-os.service` now ships this pattern.
 

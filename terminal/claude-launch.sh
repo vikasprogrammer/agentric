@@ -155,10 +155,16 @@ cat > .claude/aos-settings.json <<JSON
 JSON
 
 # Pre-accept the workspace-TRUST dialog for this agent folder. Freshly-created agent folders have
-# never been trusted, so an INTERACTIVE claude would open with "Do you trust the files in this
-# folder?" (headless already dodges it via --dangerously-skip-permissions). Trust is stored
-# per-directory in ~/.claude.json under projects["<dir>"].hasTrustDialogAccepted; seed it so the
-# dialog never fires. Keyed off the REAL $HOME of whatever user/lane runs this (local or uid-isolated).
+# never been trusted, so claude would open with "Do you trust the files in this folder?" — and BOTH
+# lanes need this seed to dodge it. (--dangerously-skip-permissions does NOT dodge the trust dialog;
+# it only suppresses per-tool permission PROMPTS. The pre-attachable `claude -p` headless lane
+# sidestepped the dialog because print-mode never shows it, but the current UNATTENDED lane is an
+# attachable interactive TUI, so a missing seed hangs it exactly like interactive — verified 2026-07-20.)
+# Trust is stored per-directory in ~/.claude.json under projects["<dir>"].hasTrustDialogAccepted; seed
+# it so the dialog never fires. The key MUST be the path claude actually opens: if $AGENT_DIR is a
+# symlink (e.g. a macOS scratch home under /var → /private/var), claude resolves it to the real path,
+# so seed under the realpath or the dialog still fires. Keyed off the REAL $HOME of whatever user/lane
+# runs this (local or uid-isolated).
 # Idempotent (only writes on first launch of each agent), atomic (temp+rename), and never fatal —
 # a failure here must not block the session. NOTE: this only bypasses the one-time TRUST gate; the
 # PreToolUse gate hook + deny rules above still govern every effect, so security posture is unchanged.
