@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.7] — 2026-07-20
+### Fixed
+- **Live notifications went stale in an already-open tab — the inbox only updated after a page reload,
+  and the tab-title 🔔 badge / per-session "waiting" bells stopped lighting up.** The whole console's
+  live feed rides one 1.5s `setInterval` that refills sessions + messages; everything (tab badge,
+  waiting bells, sidebar counts) derives from those. Two flaws froze it: (1) the two fetches ran
+  sequentially and unguarded, so a single transient failure of the first (`api.sessions()`) blocked
+  the message refresh; and (2) browsers throttle/freeze `setInterval` in a backgrounded tab — exactly
+  when the tab badge matters most. The poll now runs both fetches independently (`Promise.allSettled`,
+  ignoring non-array error payloads so a blip can't clobber good state) and re-polls immediately on
+  tab `focus`/`visibilitychange`, so switching back to the console shows current state at once.
+
 ## [0.227.6] — 2026-07-20
 ### Fixed
 - **Collapsed sidebar hid the "Update available" pill too.** The self-update notice only rendered in
