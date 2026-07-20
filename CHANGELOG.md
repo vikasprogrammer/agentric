@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.237.0] — 2026-07-20
+### Added
+- **Console UI to pick an agent's sub-agents.** The agent settings (Runtime tuning) card now renders a
+  toggle-chip multi-select of fleet teammates under a new **Sub-agents** field — the missing UI for
+  `usableSubagents` (0.234.0), which until now was only settable by editing `agent.json` or `PUT`ing the
+  config route. Lists every other claude-code agent (self + mock agents excluded), round-trips through
+  the existing `GET`/`PUT /api/agents/:id/config` (already `usableSubagents`-aware), and stays
+  owner/admin-gated like the rest of that card. Explains the guarantee inline: sub-agent actions are
+  still gated under this agent's identity + budget, toolset capped to read/search + gated shell/file
+  edits + memory recall. Web-only (`web/src/App.tsx`, `web/src/lib/api.ts`) — no server change.
+
 ## [0.236.0] — 2026-07-20
 ### Added
 - **Tier-2 session insights — runtime tuning, human-wait latency, and deliverables on every row.**
