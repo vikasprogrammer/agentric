@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.243.2] — 2026-07-20
+### Fixed
+- **The Agents-page "N Automations" shortcut now counts only standing automations, not spent one-shots.**
+  A `once` automation that an agent scheduled and that has already fired (`lastFiredAt` set) is inert — it
+  lives in the collapsed "spent" section of the Automations page. The composer-header count was including
+  those, overstating the number; it now excludes them, matching what the filtered page actually shows.
+
 ## [0.243.1] — 2026-07-20
 ### Fixed
 - **A member's own interactive ("headed") console session no longer gets killed out from under them
