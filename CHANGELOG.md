@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.233.0] — 2026-07-20
+### Added
+- **Approve or reject a gated action straight from the Slack/Discord DM — the approval round-trip.**
+  Until now the approval ping was one-way: the DM told approvers to open the web Inbox to decide.
+  Approvals now close the loop the way `ask` questions already did. When an approval is raised,
+  `notifyApprovers` (`src/tenant-registry.ts`) binds it to each approver's DM channel in a new
+  `approval_dms` table (the twin of `question_dms`), and the DM now reads *"Reply 'approve' or 'deny' to
+  decide."* An inbound DM reply is matched back to the newest still-pending approval bound to that sender
+  by `TerminalManager.decideApprovalFromChat` (`src/terminal.ts`): it reads the reply as an approve/deny
+  intent (`parseApprovalIntent` — first-token/emoji match, conservative — ambiguous text prompts for a
+  clear yes/no instead of guessing on a governance decision), **re-checks the replier can still clear that
+  level** (`canApprove`, defense in depth), and settles the same gate the console resolves — attributed to
+  their member email, audited `approval.decided.viaDm`. The Slack/Discord socket DM handlers check this
+  before the question path; unknown senders fall through to chat unchanged. Purely additive — the console
+  approve/reject flow is untouched. Multi-approver safe (the binding is keyed per approver) and races with
+  the console cleanly (`resolve` no-ops once decided).
+
 ## [0.232.0] — 2026-07-20
 ### Added
 - **Session insights in the sessions list — result, engaged duration, and an activity fingerprint.**

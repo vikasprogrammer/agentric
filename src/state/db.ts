@@ -248,6 +248,23 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_question_dms_lookup ON question_dms (provider, external_id, created_at);
 
+    -- The approval-side twin of question_dms: binds an approval card to the Slack/Discord DM we sent
+    -- whoever can approve it, so a human can APPROVE/REJECT by REPLYING in that DM (not just via the web
+    -- Inbox). Written when the approval is DM'd (one row per approver × provider); read on an inbound DM:
+    -- the sender's external id → the newest still-pending bound approval, whose reply text (approve/deny)
+    -- resolves the gate. Keyed (approval_id, provider, external_id) so several approvers can each be bound;
+    -- an approval drops out of the match once it's no longer pending (join on approvals.status), no cleanup.
+    CREATE TABLE IF NOT EXISTS approval_dms (
+      approval_id TEXT NOT NULL,
+      tenant      TEXT NOT NULL,
+      provider    TEXT NOT NULL,          -- 'slack' | 'discord'
+      external_id TEXT NOT NULL,          -- the approver's Slack/Discord user id (the DM sender on reply)
+      member_id   TEXT,                   -- the member we DM'd (for the resolved-by attribution)
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (approval_id, provider, external_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_approval_dms_lookup ON approval_dms (provider, external_id, created_at);
+
     -- The deliverables gallery: artifacts agents explicitly publish (a PDF/Markdown/image now;
     -- a multi-file site/app later). Each row is a snapshot copied into <home>/artifacts/<id>/.
     -- Carries full provenance (session + agent + source) — the SAME shape as the messages table, so

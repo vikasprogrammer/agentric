@@ -785,6 +785,17 @@ export class Automations {
     return this.tm.answerQuestionFromChat(provider, externalId, text);
   }
 
+  /**
+   * Inbound DM that might be resolving a pending approval: if the sender has a still-pending approval we
+   * DM'd them, read the reply as an approve/deny and settle the gate. The approval-side twin of
+   * {@link answerQuestionFromChat}. `null` → nothing bound (fall through to the question/chat router);
+   * `unclear`/`forbidden` → bound but the socket should nudge instead of falling through. The socket posts
+   * the ack. See {@link TerminalManager.decideApprovalFromChat}.
+   */
+  decideApprovalFromChat(provider: 'slack' | 'discord', externalId: string, text: string) {
+    return this.tm.decideApprovalFromChat(provider, externalId, text);
+  }
+
   /** Strip a leading `/agent` router prefix (only when it names a known agent) and any `<@…>` mention
    *  tokens from a follow-up before it's typed into a live claude — so a re-mention doesn't land as a
    *  slash command. Returns the cleaned message (never undefined). */

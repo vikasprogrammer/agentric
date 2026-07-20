@@ -373,12 +373,34 @@ interface MessageRow {
 
 /** What the approval-notifier sink receives when a risky action lands an approval card. */
 export interface ApprovalNotice {
+  /** The pending approval's id — the notifier binds it to the DM(s) it sends so a reply (approve/deny)
+   *  can resolve the gate, the approval-side twin of {@link QuestionNotice.questionId}. */
+  approvalId: string;
   sessionId: string;
   agent: string;
   capability: string;
   level: ApprovalLevel;
   riskClass: 'yellow' | 'red';
   reason?: string;
+}
+
+/**
+ * Read a Slack/Discord DM reply as an approve / deny decision for a pending approval. Deliberately
+ * conservative: matches on the FIRST token (so "approve", "yes go ahead", "👍" ⇒ approve; "deny",
+ * "no", "reject it", "👎" ⇒ deny) or a whole-message emoji, and returns `null` for anything ambiguous
+ * so the caller prompts for a clear yes/no rather than guessing wrong on a governance decision.
+ */
+export function parseApprovalIntent(text: string): 'approve' | 'deny' | null {
+  const t = (text || '').trim().toLowerCase().replace(/[.!,]+$/, '');
+  if (!t) return null;
+  const first = t.split(/\s+/)[0];
+  const APPROVE = new Set(['approve', 'approved', 'approves', 'yes', 'y', 'yeah', 'yep', 'yup', 'ok', 'okay', 'k', 'sure', 'go', 'allow', 'allowed', 'lgtm', 'accept', 'accepted', '👍', '✅', '👌']);
+  const DENY = new Set(['deny', 'denied', 'reject', 'rejected', 'no', 'n', 'nope', 'nah', 'block', 'blocked', 'stop', 'decline', 'declined', '👎', '❌', '🚫']);
+  if (APPROVE.has(t) || APPROVE.has(first)) return 'approve';
+  if (DENY.has(t) || DENY.has(first)) return 'deny';
+  if (/[👍✅👌]/u.test(t)) return 'approve';
+  if (/[👎❌🚫]/u.test(t)) return 'deny';
+  return null;
 }
 
 /** What the question-notifier sink receives when an agent asks the human a question — so an out-of-band
@@ -2302,7 +2324,7 @@ export class TerminalManager {
     });
     this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability });
     // Out-of-band ping (Slack/Discord DM to whoever can approve) — best-effort, never blocks the gate.
-    try { this.approvalNotifier?.({ sessionId, agent, capability, level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* notifications are advisory */ }
+    try { this.approvalNotifier?.({ approvalId: req.id, sessionId, agent, capability, level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* notifications are advisory */ }
     // If the run was triggered from chat, surface the gate in that thread too (the approver DM reaches
     // the approver; this reaches everyone watching the thread). No-op for non-chat runs.
     const dot = decision.riskClass === 'red' ? '🔴' : '🟡';
@@ -2372,7 +2394,7 @@ export class TerminalManager {
           audienceId: audienceIdOf(aud),
         });
         this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability: 'secret.put' });
-        try { this.approvalNotifier?.({ sessionId, agent, capability: 'secret.put', level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* advisory */ }
+        try { this.approvalNotifier?.({ approvalId: req.id, sessionId, agent, capability: 'secret.put', level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* advisory */ }
         const approved = await settle;
         this.audit(sessionId, agent, 'approval.resolved', { approvalId: req.id, approved });
         if (!approved) return { status: 'denied', detail: `approval rejected (${decision.level})` };
@@ -2680,6 +2702,57 @@ export class TerminalManager {
   /** The session id a question belongs to (for audit attribution on the DM-answer path). */
   private questionRunId(questionId: string): string | undefined {
     return this.db.prepare('SELECT run_id FROM questions WHERE id = ?').get<{ run_id: string }>(questionId)?.run_id;
+  }
+
+  /** Bind a pending approval to a Slack/Discord DM recipient, so a reply in that DM can resolve it — the
+   *  approval-side twin of {@link bindQuestionDm}. Called by the approval notifier once per approver ×
+   *  provider it DM'd. Keyed on (approval, provider, external_id) so several approvers can each be bound. */
+  bindApprovalDm(approvalId: string, provider: 'slack' | 'discord', externalId: string, memberId?: string): void {
+    if (!approvalId || !externalId) return;
+    this.db
+      .prepare('INSERT OR REPLACE INTO approval_dms (approval_id, tenant, provider, external_id, member_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(approvalId, this.os.tenant, provider, externalId, memberId ?? null, Date.now());
+  }
+
+  /**
+   * Resolve a pending approval from an inbound Slack/Discord DM reply — the approval-side twin of
+   * {@link answerQuestionFromChat}. Matches the sender to the newest still-pending approval we DM'd them,
+   * reads their reply as an approve/deny intent, re-checks they may clear that level (`canApprove`), and
+   * settles the gate (attributed to their member email — same as the web route). Returns:
+   *  - `null`               — nothing pending is bound to this sender ⇒ the caller falls through to the
+   *                           question/chat router (an ordinary DM is just a chat).
+   *  - `{ status:'unclear' }`   — a pending approval IS bound but the reply isn't a clear yes/no ⇒ the
+   *                           caller asks them to reply "approve"/"deny" (does NOT fall through — we know
+   *                           they're mid-approval, so treating it as fresh chat would be wrong).
+   *  - `{ status:'forbidden' }` — bound, but the sender can no longer approve this level (role changed).
+   *  - `{ status:'decided', … }` — the gate was settled; `approved` + `capability` for the ack.
+   */
+  decideApprovalFromChat(provider: 'slack' | 'discord', externalId: string, text: string):
+    | { status: 'decided'; approved: boolean; capability: string }
+    | { status: 'unclear' }
+    | { status: 'forbidden' }
+    | null {
+    if (!externalId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT ad.approval_id AS aid, a.run_id AS runId, a.capability AS capability, a.level AS level
+           FROM approval_dms ad JOIN approvals a ON a.id = ad.approval_id
+          WHERE ad.provider = ? AND ad.external_id = ? AND a.status = 'pending'
+          ORDER BY ad.created_at DESC LIMIT 1`,
+      )
+      .get<{ aid: string; runId: string; capability: string; level: ApprovalLevel }>(provider, externalId);
+    if (!row) return null;
+    // A pending approval is bound to this sender — read their reply as a decision.
+    const intent = parseApprovalIntent(text);
+    if (!intent) return { status: 'unclear' };
+    // Defense in depth: the binding implies they were in the approver audience, but re-check they may
+    // still clear this level before settling (mirrors the web route's canApprove gate).
+    const member = this.os.team.memberByExternalId(provider, externalId);
+    if (!member || !this.os.team.canApprove(member, row.level)) return { status: 'forbidden' };
+    const approved = intent === 'approve';
+    this.os.approvals.resolve(row.aid, approved, member.email); // no-op if already decided (console race)
+    this.audit(row.runId, member.email, 'approval.decided.viaDm', { approvalId: row.aid, approved, provider });
+    return { status: 'decided', approved, capability: row.capability };
   }
 
   /**
