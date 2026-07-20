@@ -49,6 +49,7 @@ const STALE_PROMPT_MAX_MS = 3 * 24 * 60 * 60_000; // ignore anything pending lon
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
+import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
 
@@ -2040,7 +2041,15 @@ export class TerminalManager {
     }
     // Close the self-learning loop: the Dreamer's distilled guidance rides in every agent's prompt, so
     // the fleet's accumulated experience shapes each new session. Toggleable in Settings → Self-learning.
-    const learned = this.os.settings.applyLearnings() ? this.os.settings.learnedGuidance().trim() : '';
+    // Guarded by freshness: if the reflect loop has stalled (or is off) and the last pass is stale, we
+    // STOP injecting the frozen snapshot — better no guidance than 2-week-old "recent" guidance presented
+    // as current on every run (the Insights page banners the same staleness via `guidanceStale`).
+    const lastPassTs = this.os.settings.applyLearnings()
+      ? this.db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>()?.t ?? undefined
+      : undefined;
+    const learned = this.os.settings.applyLearnings() && !guidanceStale(lastPassTs, this.os.settings.dreamingEveryHours())
+      ? this.os.settings.learnedGuidance().trim()
+      : '';
     // The fleet roster — WHO this agent can delegate to. Injected so "hand off to the right agent" is
     // answerable straight from the prompt without a discovery round-trip (`list_agents` is the live
     // equivalent). Excludes self and mock agents, so it only lists peers this agent can actually dispatch.

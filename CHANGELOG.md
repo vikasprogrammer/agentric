@@ -8,7 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.243.4] — 2026-07-20
+## [0.244.0] — 2026-07-20
+### Added
+- **Stale self-learning guidance is no longer served (or injected) as if current.** When the reflect
+  loop is off or has fallen behind, the last distilled guidance snapshot used to keep riding in every
+  agent's prompt and showing on the Insights page indefinitely — a 2-week-old "recent success rate is
+  28%" presented as live. New `guidanceStale` guard (2× the cadence, or a 7-day floor when the cadence
+  is off): past that age the guidance **stops being injected** into agent prompts (`buildCompanyMd`), and
+  the Insights page shows a **"these insights are stale — Review now"** banner (`GET /api/dreaming` now
+  returns a `stale` flag). Better no guidance than frozen guidance.
+### Fixed
+- **Self-learning "recurring topics" is sturdier against noise.** On top of the filler/name stop-list
+  (0.243.3), a word must now recur across **≥3 distinct episodes** to headline the "the fleet frequently
+  works on…" line, so a handful of near-identical test runs can't promote scaffolding words — and the
+  stop-list gained the imperative leftovers those step-by-step test prompts leave behind ("stop",
+  "exactly", "step", "only", "test", "tool", …). `dreaming.ts` topic extraction only.
 ### Fixed
 - **Share-agent dialog footer no longer bleeds outside the rounded card.** The footer (the "Runnable
   by …" summary + Done button) used shadcn `DialogFooter`'s default `-mx-4 -mb-4` negative margins,

@@ -23,7 +23,7 @@ import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle 
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { AppSupervisor } from './edge/app-supervisor';
-import { DreamingEngine, recommendationResolved } from './edge/dreaming';
+import { DreamingEngine, recommendationResolved, guidanceStale } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
@@ -3075,6 +3075,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const dreamInsights = buildInsights(os);
     return sendJson(res, 200, {
       everyHours: os.settings.dreamingEveryHours(), lastDreamedAt: last?.t ?? undefined,
+      // `stale` = the last pass is too old for the cadence (or the loop is off), so the guidance below is
+      // no longer being injected into agents and the UI should flag it as needing a fresh Reflect (G-stale).
+      stale: guidanceStale(last?.t ?? undefined, os.settings.dreamingEveryHours()),
       applyLearnings: os.settings.applyLearnings(), guidance: os.settings.learnedGuidance(), recommendations: openRecs, state, alertsEnabled: os.settings.insightsAlertsEnabled(),
       measurement: measureLearning(os), // "Is it working?" — success-rate trend + per-intervention before/after (G1)
       insights: dreamInsights, improvements: buildImprovements(os, dreamInsights), // scorecard + friction + improvement tiles

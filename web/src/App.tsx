@@ -10401,6 +10401,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const [everyHours, setEveryHours] = useState('0')
   const [last, setLast] = useState<number | undefined>(undefined)
+  const [stale, setStale] = useState(false)
   const [apply, setApply] = useState(true)
   const [guidance, setGuidance] = useState('')
   const [recs, setRecs] = useState<Recommendation[]>([])
@@ -10428,7 +10429,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
   const [preview, setPreview] = useState<DigestModel | null>(null)
 
   const refresh = () => {
-    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setImprovements(r.improvements ?? []); setProposals(r.proposals ?? []); setStuckGoals(r.stuckGoals ?? []); setTroubledAutos(r.troubledAutomations ?? []); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
+    api.dreaming().then((r) => { if (r.error) return; setEveryHours(String(r.everyHours ?? 0)); setLast(r.lastDreamedAt); setStale(r.stale === true); setApply(r.applyLearnings !== false); setGuidance(r.guidance ?? ''); setRecs(r.recommendations ?? []); setState(r.state ?? null); setMeasure(r.measurement ?? null); setInsights(r.insights ?? null); setImprovements(r.improvements ?? []); setProposals(r.proposals ?? []); setStuckGoals(r.stuckGoals ?? []); setTroubledAutos(r.troubledAutomations ?? []); setAlertsOn(r.alertsEnabled !== false); if (r.digest) setDigest(r.digest) }).catch(() => {})
     api.digestToday().then((r) => { if (!r.error) setPreview(r) }).catch(() => {})
   }
   const saveDigest = async (patch: Partial<DigestConfig>) => {
@@ -10559,6 +10560,13 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
           <Button size="sm" variant="outline" onClick={runNow} disabled={busy} className="ml-auto"><Sparkles className="mr-1 h-3.5 w-3.5" />Review now</Button>
         </div>
         {result && <div className="rounded-md border bg-muted/40 p-2 text-xs">{result}</div>}
+        {stale && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+            <span>These insights are <strong>stale</strong>{last ? <> — last reviewed {agoLabel(last)}</> : ''}. {everyN > 0 ? 'Auto-review has fallen behind.' : 'Auto-review is off.'} Guidance is no longer being applied to agents until you refresh.</span>
+            <Button size="sm" variant="outline" onClick={runNow} disabled={busy} className="ml-auto h-7"><Sparkles className="mr-1 h-3.5 w-3.5" />Review now</Button>
+          </div>
+        )}
       </div>
 
       {/* Improvement tiles — one per OS domain, opportunities first. Full width above the masonry. */}

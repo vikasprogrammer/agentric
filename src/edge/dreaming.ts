@@ -58,6 +58,10 @@ const RECENT_PASSES = 7;                       // window for guidance/recommenda
 const TOPIC_HALFLIFE_MS = 21 * 24 * 3_600_000; // a topic's weight halves every 3 weeks since last seen (recency-favouring, so current work outranks an old burst)
 const TOPIC_MAX_AGE_MS = 90 * 24 * 3_600_000;  // drop a topic entirely if unseen this long
 const TOPIC_CAP = 300;                          // hard cap on stored topic keys (keep the top by recency-weight)
+// A word only counts as something "the fleet frequently works on" once it has recurred across at least
+// this many distinct episodes (topicCounts counts once per episode, so `count` = distinct-episode hits).
+// Stops a one-off word — or a handful of near-identical test runs — from headlining the guidance line.
+const MIN_TOPIC_COUNT = 3;
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
@@ -65,7 +69,10 @@ const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'th
   // Conversational filler from natural-language task prompts — a Task line is a human sentence ("lets check
   // the latest emails …"), so instruction/filler words outrank the real noun. Fleet data showed "working,
   // recent, lets, latest" topping "frequently works on"; drop them so the actual subject surfaces.
-  'lets', 'please', 'want', 'wants', 'wanted', 'like', 'would', 'give', 'tell', 'know', 'here', 'there', 'what', 'which', 'where', 'whether', 'still', 'back', 'next', 'first', 'last', 'good', 'great', 'thing', 'things', 'stuff', 'working', 'work', 'going', 'getting', 'recent', 'recently', 'latest', 'today', 'yesterday', 'tomorrow', 'current', 'currently', 'again', 'once', 'above', 'below', 'help', 'lets', 'able', 'sure', 'okay', 'yeah', 'issue', 'issues', 'problem', 'problems', 'thanks', 'quick', 'quickly']);
+  'lets', 'please', 'want', 'wants', 'wanted', 'like', 'would', 'give', 'tell', 'know', 'here', 'there', 'what', 'which', 'where', 'whether', 'still', 'back', 'next', 'first', 'last', 'good', 'great', 'thing', 'things', 'stuff', 'working', 'work', 'going', 'getting', 'recent', 'recently', 'latest', 'today', 'yesterday', 'tomorrow', 'current', 'currently', 'again', 'once', 'above', 'below', 'help', 'lets', 'able', 'sure', 'okay', 'yeah', 'issue', 'issues', 'problem', 'problems', 'thanks', 'quick', 'quickly',
+  // Imperative scaffolding from step-by-step test/QA prompts ("Test the … tools end-to-end, then STOP. Do
+  // ONLY these steps … EXACTLY") — describes how a run was scripted, not a subject the fleet works on.
+  'stop', 'exactly', 'step', 'steps', 'only', 'test', 'tests', 'tool', 'tools', 'end', 'ping', 'pls', 'else', 'anything', 'everything', 'something', 'nothing']);
 
 export class DreamingEngine {
   constructor(private readonly os: AgentOS) {}
@@ -218,7 +225,7 @@ export class DreamingEngine {
     try {
       const t = state.totals;
       const rate = t.sessions ? Math.round((t.success / t.sessions) * 100) : 0;
-      const topTopics = topTopicList(state.topics, 6).map(([k]) => k).join(', ') || '—';
+      const topTopics = topTopicList(state.topics, 6).filter(([, v]) => v.count >= MIN_TOPIC_COUNT).map(([k]) => k).join(', ') || '—';
       const summary = `Fleet self-learning (pass ${state.passes}, since ${new Date(state.firstPass).toISOString().slice(0, 10)}): ${t.sessions} sessions, ${rate}% success. Recurring topics: ${topTopics}. Friction so far: ${t.rejected} approvals rejected, ${t.budgetStops} budget stops, ${t.errors} errors. Details: [[${DREAM_SECTION}/${DREAM_SLUG}]].`;
       const rec = await this.os.memory.store({ tenant: this.os.tenant, agentId: 'dreamer', content: summary, tags: ['dreaming', 'learned'], type: 'Insight', importance: 0.6, scope: 'tenant', metadata: { passes: state.passes, window, sessions: win.sessions } });
       insightId = rec.id;
@@ -315,6 +322,23 @@ function recentTally(s: DreamState): { sessions: number; success: number; reject
   return r;
 }
 
+// Cadence is OFF (everyHours 0) → learned guidance goes stale after this long unrefreshed. When a cadence
+// IS set, staleness is 2× that interval (one missed cycle is fine; two means reflection has stalled).
+const GUIDANCE_STALE_OFF_MS = 7 * 24 * 3_600_000;
+
+/**
+ * Whether the distilled learned guidance is too old to still present as "what's been recurring". Guards
+ * both the prompt injection and the Insights UI so a stalled/disabled reflect loop stops re-serving a
+ * frozen snapshot as if it were current (the "old insights reported again and again" failure). `never
+ * run` → not stale (there's no guidance to serve anyway); a real last-pass ts is compared to 2× the
+ * cadence, or a 7-day floor when the cadence is off. Pure.
+ */
+export function guidanceStale(lastDreamedAtMs: number | undefined | null, everyHours: number, now = Date.now()): boolean {
+  if (!lastDreamedAtMs) return false;
+  const maxAgeMs = everyHours > 0 ? everyHours * 3_600_000 * 2 : GUIDANCE_STALE_OFF_MS;
+  return now - lastDreamedAtMs > maxAgeMs;
+}
+
 /**
  * Distil the cumulative state into a few **actionable imperatives** for agents — the behavioral output
  * (vs. renderPage's descriptive stats). Kept short: it rides in EVERY agent's system prompt. Returns ''
@@ -324,7 +348,7 @@ export function deriveGuidance(s: DreamState): string {
   const t = recentTally(s); // H4: recent window, not lifetime totals — so subsided friction stops nagging
   const lines: string[] = [];
   lines.push('Before non-trivial work, `recall` your memory and `kb_search` the knowledge base — the fleet may have already solved this; build on it rather than redoing it.');
-  const topics = topTopicList(s.topics, 5).map(([k]) => k);
+  const topics = topTopicList(s.topics, 5).filter(([, v]) => v.count >= MIN_TOPIC_COUNT).map(([k]) => k);
   if (topics.length >= 2) lines.push(`The fleet frequently works on: ${topics.join(', ')}. For these, read the KB runbook first (kb_read) and update it (kb_write) when you learn something new.`);
   if (t.rejected >= 2) lines.push('Recent actions were rejected at human approval — `policy_check` before risky effects, and never retry an action a human already rejected.');
   if (t.budgetStops >= 1) lines.push('Budget limits have been hit — scope work tightly, avoid broad scans / long loops, and `ask` rather than burn budget guessing.');
