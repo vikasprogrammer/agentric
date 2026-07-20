@@ -858,6 +858,20 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'gov_approvals', 'INTEGER');  // approval.requested — human gates hit
   addColumn(db, 'term_sessions', 'gov_denied', 'INTEGER');     // policy denials + rejected approvals
   addColumn(db, 'term_sessions', 'gov_errors', 'INTEGER');     // episode/session errors
+
+  // Session insights, tier 2 — the run's context + its human-latency cost. Same stamping discipline as
+  // the tier-1 columns above (once at terminal, live rows re-derived per poll).
+  //  · model/effort — the runtime tuning the run launched with (from its `session.tuning` audit event),
+  //    so "which model / how hard did it think" reads next to cost now that both are per-task overridable.
+  //    NULL = the run left that lane on the workspace default (nothing to show).
+  //  · blocked_ms — total time the run sat BLOCKED on a human: approval gates (paired
+  //    `approval.requested`→`approval.resolved` audit spans) + `ask` questions (`answered_at - created_at`).
+  //    The governed-OS latency nothing else surfaces. `gov_approvals IS NULL` still marks "not stamped".
+  //  · artifacts — how many deliverables the run published (rows in `artifacts` for this session).
+  addColumn(db, 'term_sessions', 'model', 'TEXT');             // e.g. claude-opus-4-8
+  addColumn(db, 'term_sessions', 'effort', 'TEXT');            // low | medium | high | …
+  addColumn(db, 'term_sessions', 'blocked_ms', 'INTEGER');     // total human-wait (approvals + questions)
+  addColumn(db, 'term_sessions', 'artifacts', 'INTEGER');      // deliverables published by the run
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

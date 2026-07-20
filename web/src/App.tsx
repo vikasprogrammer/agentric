@@ -105,20 +105,37 @@ const formatDuration = (ms?: number): string => {
   return `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
-/** The run's activity fingerprint: how much it did, how often it needed a human, what got refused.
- *  Tool calls lead because they're the volume that's always there — governed actions are only the
- *  subset the gate mediates, so a real run can legitimately show 0. Zero-valued chips are dropped so
- *  the common case stays quiet and an approval/denial actually catches the eye. */
+/** Friendly model name — strip the `claude-` prefix and the trailing version so `claude-opus-4-8`
+ *  reads `opus`. Unknown ids fall back to the id minus the prefix. */
+const modelShort = (model?: string): string => {
+  if (!model) return ''
+  const m = model.replace(/^claude-/, '')
+  const fam = m.match(/^(opus|sonnet|haiku|fable|mythos)/)
+  return fam ? fam[1] : m
+}
+/** The run's launch tuning as one compact label, e.g. `opus·high` / `opus` / `high`. Empty when the
+ *  run left both lanes on the workspace default (nothing to show). */
+const tuningLabel = (s: Session): string => [modelShort(s.model), s.effort].filter(Boolean).join('·')
+
+/** The run's fingerprint: what it launched with, how much it did, how often it needed a human, what got
+ *  refused, and what it left behind. The tuning tag leads (context), then tool calls (the volume that's
+ *  always there — governed actions only count the gate-mediated subset, legitimately 0 for many runs),
+ *  then the friction/output chips. Zero-valued chips are dropped so the common case stays quiet and an
+ *  approval/denial/artifact actually catches the eye. */
 function SessionInsights({ s, className = '' }: { s: Session; className?: string }) {
   const g = s.insights
+  const tuning = tuningLabel(s)
   const chips: Array<{ key: string; text: string; cls: string; title: string }> = []
   if (s.toolCalls != null) chips.push({ key: 'tools', text: `${s.toolCalls}⚙`, cls: 'text-muted-foreground', title: `${s.toolCalls} tool calls${s.turns != null ? ` · ${s.turns} turn${s.turns === 1 ? '' : 's'}` : ''}` })
-  if (g?.approvals) chips.push({ key: 'appr', text: `${g.approvals}✋`, cls: 'text-sky-600', title: `${g.approvals} approval${g.approvals === 1 ? '' : 's'} needed a human` })
+  if (g?.approvals) chips.push({ key: 'appr', text: `${g.approvals}✋`, cls: 'text-sky-600', title: `${g.approvals} approval${g.approvals === 1 ? '' : 's'} needed a human${s.blockedMs ? ` · waited ${formatDuration(s.blockedMs)} on people` : ''}` })
+  if (s.blockedMs != null && s.blockedMs >= 1000) chips.push({ key: 'blk', text: `${formatDuration(s.blockedMs)}⏳`, cls: 'text-amber-600', title: `blocked ${formatDuration(s.blockedMs)} waiting on a human (approvals + questions)` })
   if (g?.denied) chips.push({ key: 'deny', text: `${g.denied}⛔`, cls: 'text-red-600', title: `${g.denied} action${g.denied === 1 ? '' : 's'} denied by policy or rejected` })
   if (g?.errors) chips.push({ key: 'err', text: `${g.errors}⚠`, cls: 'text-amber-600', title: `${g.errors} error${g.errors === 1 ? '' : 's'}` })
-  if (!chips.length) return <span className={`text-xs text-muted-foreground/50 ${className}`}>—</span>
+  if (s.artifacts) chips.push({ key: 'art', text: `${s.artifacts}📎`, cls: 'text-violet-600', title: `${s.artifacts} deliverable${s.artifacts === 1 ? '' : 's'} published to the Library` })
+  if (!tuning && !chips.length) return <span className={`text-xs text-muted-foreground/50 ${className}`}>—</span>
   return (
     <span className={`flex items-center gap-1.5 text-xs tabular-nums ${className}`}>
+      {tuning && <span className="rounded bg-muted px-1 text-[10px] font-medium not-italic text-muted-foreground" title={`ran on ${s.model ?? 'default model'}${s.effort ? ` at ${s.effort} effort` : ''}`}>{tuning}</span>}
       {chips.map((c) => <span key={c.key} className={c.cls} title={c.title}>{c.text}</span>)}
     </span>
   )
@@ -3272,7 +3289,7 @@ function SessionsPage({
               <span className="w-24 shrink-0">Mode</span>
               {sortHead('updated', 'Updated', 'w-20 shrink-0')}
               {sortHead('duration', 'Took', 'hidden w-16 shrink-0 justify-end lg:flex')}
-              <span className="hidden w-20 shrink-0 xl:block">Activity</span>
+              <span className="hidden w-36 shrink-0 xl:block">Activity</span>
               {sortHead('cost', 'Cost', 'hidden w-16 shrink-0 justify-end lg:flex')}
               {sortHead('status', 'Result', 'w-20 shrink-0')}
             </div>
@@ -3299,7 +3316,7 @@ function SessionsPage({
                 {/* Engaged time, not wall-clock — the tooltip spells out the difference, which is often
                     hours for an interactive session that sat idle between turns. */}
                 <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
-                <SessionInsights s={s} className="hidden w-20 shrink-0 xl:flex" />
+                <SessionInsights s={s} className="hidden w-36 shrink-0 overflow-hidden xl:flex" />
                 <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.tokens ? `${(s.tokens.input + s.tokens.output + s.tokens.cacheRead + s.tokens.cacheWrite).toLocaleString()} tokens (in ${s.tokens.input.toLocaleString()} · out ${s.tokens.output.toLocaleString()} · cache-read ${s.tokens.cacheRead.toLocaleString()} · cache-write ${s.tokens.cacheWrite.toLocaleString()})` : 'cost not yet computed'}>{formatCost(s.costUsd)}</span>
                 {/* Result = the agent's own verdict, falling back to the process status. The summary
                     rides along as the tooltip so "what came of it" is one hover away. */}

@@ -257,6 +257,17 @@ export interface Session {
    *  `errors` = session/episode errors. Live rows carry the running tally; terminal rows the stamped
    *  final one. Definitions mirror `episodeSalience`, which grades the same signals for memory. */
   insights?: { actions: number; approvals: number; denied: number; errors: number };
+  /** The runtime tuning the run launched with — the model id and reasoning effort (`session.tuning`).
+   *  Undefined for whichever lane the run left on the workspace default. Surfaced now that both are
+   *  per-task overridable, so "what ran this, how hard" reads next to what it cost. */
+  model?: string;
+  effort?: string;
+  /** Total milliseconds the run sat BLOCKED on a human — approval gates plus `ask` questions. The
+   *  governed-OS latency no other field captures; a big number next to a small `activeMs` is a run that
+   *  mostly waited on people. Undefined until stamped; 0 when it never blocked. */
+  blockedMs?: number;
+  /** How many deliverables the run published to the Library (`artifacts` rows). Undefined until stamped. */
+  artifacts?: number;
 }
 
 export interface FeedMessage {
@@ -334,6 +345,10 @@ interface SessionRow {
   gov_approvals: number | null;
   gov_denied: number | null;
   gov_errors: number | null;
+  model: string | null;
+  effort: string | null;
+  blocked_ms: number | null;
+  artifacts: number | null;
 }
 interface MessageRow {
   id: string;
@@ -653,8 +668,9 @@ export class TerminalManager {
   }
 
   /**
-   * Stamp each row's OUTCOME (the agent's own verdict) and GOVERNANCE FINGERPRINT (what the run did
-   * through the gate) — the two things the sessions list can't say from `status` alone.
+   * Stamp each row's OUTCOME (the agent's own verdict), GOVERNANCE FINGERPRINT (what the run did
+   * through the gate), and CONTEXT (runtime tuning, human-wait latency, deliverables) — the things the
+   * sessions list can't say from `status` alone.
    *
    * Both derive from the run's audit stream, an indexed point lookup per row (`idx_audit_run`). A
    * TERMINAL run's stream is complete, so it's computed once and persisted; a LIVE run is recomputed
@@ -672,7 +688,10 @@ export class TerminalManager {
   private stampInsights(rows: SessionRow[]): void {
     for (const r of rows) {
       const live = r.status === 'running';
-      if (!live && r.gov_approvals != null) continue; // already stamped, and it can no longer change
+      // Fully stamped = both tiers present (`artifacts` is the tier-2 marker, like `gov_approvals` for
+      // tier-1). A row stamped by an older build carries the gov_* set but NULL tier-2 columns, so it
+      // re-stamps once to fill them, then this guard retires it. Terminal state can no longer change.
+      if (!live && r.gov_approvals != null && r.artifacts != null) continue;
 
       const counts = this.db.prepare(`SELECT
           SUM(type = 'gate.decision') AS actions,
@@ -701,16 +720,58 @@ export class TerminalManager {
         } catch { /* malformed audit payload — fall back to 'unknown' */ }
       }
 
+      // Runtime tuning the run launched with (set once at launch — present even while live).
+      const tuning = this.db
+        .prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'session.tuning' ORDER BY ts DESC LIMIT 1")
+        .get<{ data: string }>(r.id);
+      let model: string | null = null;
+      let effort: string | null = null;
+      if (tuning) {
+        try {
+          const d = JSON.parse(tuning.data) as { model?: string; effort?: string };
+          model = d.model ?? null;
+          effort = d.effort ?? null;
+        } catch { /* malformed — leave both null */ }
+      }
+
+      // Human-wait: `ask` questions (own table carries the answered timestamp) + approval gates (no
+      // resolved_at column, so pair the audit spans by approvalId). Only closed waits count — a still-
+      // pending block hasn't cost a measurable duration yet, and this run is terminal by here anyway.
+      const qWait = this.db
+        .prepare('SELECT COALESCE(SUM(answered_at - created_at), 0) AS ms FROM questions WHERE run_id = ? AND answered_at IS NOT NULL')
+        .get<{ ms: number }>(r.id)?.ms ?? 0;
+      const apEvents = this.db
+        .prepare("SELECT ts, type, data FROM audit_events WHERE run_id = ? AND type IN ('approval.requested', 'approval.resolved') ORDER BY ts ASC")
+        .all<{ ts: number; type: string; data: string }>(r.id);
+      const requestedAt = new Map<string, number>();
+      let apWait = 0;
+      for (const e of apEvents) {
+        let id: string | undefined;
+        try { id = (JSON.parse(e.data) as { approvalId?: string }).approvalId; } catch { /* skip */ }
+        if (!id) continue;
+        if (e.type === 'approval.requested') requestedAt.set(id, e.ts);
+        else { const t0 = requestedAt.get(id); if (t0 != null) { apWait += Math.max(0, e.ts - t0); requestedAt.delete(id); } }
+      }
+      const blockedMs = qWait + apWait;
+
+      const artifacts = this.db
+        .prepare('SELECT COUNT(*) AS n FROM artifacts WHERE session_id = ?')
+        .get<{ n: number }>(r.id)?.n ?? 0;
+
       r.gov_actions = actions;
       r.gov_approvals = approvals;
       r.gov_denied = denied;
       r.gov_errors = errors;
       r.outcome = outcome;
       r.report_summary = summary;
+      r.model = model;
+      r.effort = effort;
+      r.blocked_ms = blockedMs;
+      r.artifacts = artifacts;
       if (live) continue; // still moving — surface it, but don't freeze it onto the row
       this.db
-        .prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ? WHERE id = ?')
-        .run(actions, approvals, denied, errors, outcome, summary, r.id);
+        .prepare('UPDATE term_sessions SET gov_actions = ?, gov_approvals = ?, gov_denied = ?, gov_errors = ?, outcome = ?, report_summary = ?, model = ?, effort = ?, blocked_ms = ?, artifacts = ? WHERE id = ?')
+        .run(actions, approvals, denied, errors, outcome, summary, model, effort, blockedMs, artifacts, r.id);
     }
   }
 
@@ -4378,7 +4439,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {

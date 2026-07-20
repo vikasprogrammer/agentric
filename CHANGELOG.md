@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.236.0] — 2026-07-20
+### Added
+- **Tier-2 session insights — runtime tuning, human-wait latency, and deliverables on every row.**
+  Extends the result/duration/activity columns (0.232.0) with four more signals, all derived from
+  data the OS already records and stamped once when a run goes terminal (live rows re-derived per
+  poll). **model · effort** — the runtime tuning the run launched with (from its `session.tuning`
+  audit event), a muted pill leading the activity cluster, so "what ran this, how hard" reads next to
+  cost now that both lanes are per-task overridable. **Blocked-on-human time** — a ⏳ chip totalling
+  how long the run sat waiting on a person: approval gates (paired `approval.requested`→`resolved`
+  audit spans, since the approvals table keeps no resolved timestamp) plus `ask` questions; the
+  governed-OS latency nothing else surfaced, and a big value next to a small engaged time is a run
+  that mostly waited on people. **Artifacts published** — a 📎 chip counting the Library deliverables
+  the run produced. The stamp guard now retires a row only when both tiers are present, so rows
+  stamped by the 0.232.0 build re-stamp once to backfill the new columns rather than being skipped.
+
 ## [0.235.0] — 2026-07-20
 ### Changed
 - **The session status dot now reflects the state that needs you, not just "live vs not".** The little

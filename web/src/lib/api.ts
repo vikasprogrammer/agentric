@@ -252,6 +252,17 @@ export interface Session {
   /** Governance fingerprint: governed effects, human gates hit, denials, errors. Live rows carry the
    *  running tally; terminal rows the final stamped one. */
   insights?: { actions: number; approvals: number; denied: number; errors: number }
+  /** Runtime tuning the run launched with — model id + reasoning effort (`session.tuning`). Undefined
+   *  for whichever lane took the workspace default. Shown next to cost now that both are per-task
+   *  overridable. */
+  model?: string
+  effort?: string
+  /** Total ms the run sat BLOCKED on a human — approval gates + `ask` questions. The governed-OS
+   *  latency nothing else surfaces; large next to a small `activeMs` = a run that mostly waited on
+   *  people. Undefined until stamped; 0 when it never blocked. */
+  blockedMs?: number
+  /** Deliverables the run published to the Library (`artifacts` rows). Undefined until stamped. */
+  artifacts?: number
 }
 export interface AuditEvent {
   id: number
