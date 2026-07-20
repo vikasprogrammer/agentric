@@ -97,6 +97,20 @@ between the platforms is entirely in how the process supervisor treats that surv
   > proxy_set_header   Connection $connection_upgrade;   # NOT a bare "upgrade"
   > ```
 
+  > **nginx gotcha — no literal backslash before `$variable` in `proxy_set_header`.** If the config was
+  > generated through a shell heredoc/`sed` that escaped the `$` (`\$host`, `\$http_upgrade`, …) and the
+  > backslash leaked onto disk, nginx emits the value *with a leading backslash* — `Host: \example.com`,
+  > and a bogus non-empty `Upgrade: \` on **every** request (empty `$http_upgrade` still yields `\`). The
+  > Node app tolerates the malformed `Host`, so the console loads fine — but ttyd/libwebsockets strictly
+  > validates it and returns **403** on the WebSocket handshake, so **only the browser terminal breaks**:
+  > it renders blank and the access log shows `GET /terminal/ws → 403` while sessions otherwise spawn
+  > normally (a live tmux pane, working API). Diagnose by tcpdumping the nginx→ttyd hop
+  > (`tcpdump -i lo -A 'tcp port <ttyd-port>'`) — a healthy request shows `Host: example.com`, the broken
+  > one `Host: \example.com`. Fix: strip the backslashes — `sed -i 's/\\$/$/g' <site.conf>` (leaves a
+  > legit no-backslash `$connection_upgrade` untouched), `nginx -t`, `systemctl reload nginx`. Verify:
+  > `/terminal/`+cookie → 200, no-cookie → 401, and the WS handshake (`Upgrade` +
+  > `Sec-WebSocket-Protocol: tty`) → 101.
+
   > **systemd gotcha — every `ReadWritePaths=` dir must already exist.** Under `ProtectHome=read-only`
   > the unit carves out writable paths (the data home, the checkout, `~/.claude`, …); if any listed path
   > is missing on disk the service refuses to start with `status=226/NAMESPACE`
