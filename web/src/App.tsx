@@ -45,16 +45,28 @@ const canApprove = (role: Role, level: 'head' | 'owner'): boolean =>
  *  for the green dot: an interactive session that reported `done` but keeps an attachable pane is live. */
 const isLive = (s: Session): boolean => Boolean(s.alive) || s.status === 'running'
 
-/** Status dot colour for a session: live=emerald, done=muted, stopped=amber, crashed=red. */
+/** Status dot for a session — the at-a-glance lifecycle signal, priority-ordered so the state that
+ *  most needs a human wins:
+ *   • blocked  → amber, PULSING  — live but waiting on you (a pending `ask` or approval gate). The one
+ *                                  you must act on, so it's the only animated dot.
+ *   • live     → emerald         — working. FILLED for your own interactive run; a HOLLOW ring for an
+ *                                  unattended (headless) run, so "the fleet is doing this on its own"
+ *                                  reads differently from "I'm driving this" without a second colour.
+ *   • stopped  → amber (static)  — halted by a human/reaper.
+ *   • crashed  → red             — pane died with no end signal.
+ *   • done     → muted           — finished cleanly (and any unknown legacy value). */
 const statusDot = (s: Session): string =>
-  isLive(s) ? 'bg-emerald-500'
+  s.blocked ? 'bg-amber-400 animate-pulse'
+    : isLive(s) ? (s.headless ? 'border border-emerald-500' : 'bg-emerald-500')
     : s.status === 'stopped' ? 'bg-amber-500'
     : s.status === 'crashed' ? 'bg-red-500'
     : 'bg-muted-foreground/40' // done (and any unknown legacy value)
 
-/** The status word shown next to the dot. A live pane whose stored status is a terminal state (a
- *  `done` interactive session still running) reads "live" so the label never contradicts a green dot. */
-const statusLabel = (s: Session): string => (isLive(s) && s.status !== 'running' ? 'live' : s.status)
+/** The status word shown next to the dot. `blocked` reads "waiting" (it needs a human); a live pane
+ *  whose stored status is a terminal state (a `done` interactive session still running) reads "live"
+ *  so the label never contradicts the dot. */
+const statusLabel = (s: Session): string =>
+  s.blocked ? 'waiting' : isLive(s) && s.status !== 'running' ? 'live' : s.status
 
 /** The RESULT word: what the agent said came of the run, falling back to how the process ended. `done`
  *  only means "the process exited" — it's the outcome that says whether the work landed, so once a run

@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.235.0] — 2026-07-20
+### Changed
+- **The session status dot now reflects the state that needs you, not just "live vs not".** The little
+  dot on every session row (`statusDot` in `web/src/App.tsx`) used to have four colours — emerald=live,
+  amber=stopped, red=crashed, muted=done — so a run sitting on a pending approval or `ask` looked
+  identical to one happily working. It now surfaces the two derived flags the server already computes
+  (`Session.blocked`/`headless`) with a priority-ordered mapping: **blocked wins** and shows an
+  amber **pulsing** dot (the only animated one — the state you must act on); a live run is emerald,
+  **filled** for your own interactive session and a **hollow ring** for an unattended (headless) run, so
+  "the fleet is doing this on its own" reads differently from "I'm driving this" without spending a
+  second colour; stopped/crashed/done are unchanged. `statusLabel` reads "waiting" for a blocked run so
+  the word next to the dot never contradicts it. Purely presentational — no data model or API change.
+
 ## [0.234.0] — 2026-07-20
 ### Added
 - **An agent can spawn fleet teammates as native in-process sub-agents.** A parent agent's manifest
