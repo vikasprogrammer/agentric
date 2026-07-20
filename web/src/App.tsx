@@ -1979,14 +1979,19 @@ function AgentsPage({
   }, [])
 
   // Per-agent automation counts — powers the "N Automations" shortcut in the composer header that
-  // jumps to the Automations page pre-filtered to this agent.
+  // jumps to the Automations page pre-filtered to this agent. Count only the standing automations, not
+  // spent one-shots (a `once` run scheduled by the agent that has already fired) — those live in the
+  // collapsed "spent" section of the Automations page, so counting them would overstate the shortcut.
   const [autoCounts, setAutoCounts] = useState<Record<string, number>>({})
   useEffect(() => {
     let ok = true
     api.automations().then((r) => {
       if (!ok) return
       const counts: Record<string, number> = {}
-      for (const a of r.automations ?? []) counts[a.agentId] = (counts[a.agentId] ?? 0) + 1
+      for (const a of r.automations ?? []) {
+        if (a.type === 'once' && a.lastFiredAt) continue // spent one-shot — never runs again
+        counts[a.agentId] = (counts[a.agentId] ?? 0) + 1
+      }
       setAutoCounts(counts)
     }).catch(() => {})
     return () => { ok = false }
