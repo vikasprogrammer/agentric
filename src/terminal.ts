@@ -15,7 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
@@ -43,6 +43,7 @@ const VIDEO_INCALL_POLL_MS = 10_000;       // …10s apart (~30s max block, with
 const ASK_AGENT_GRACE_MS = 20_000;
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
+import { materializeSubagents } from './edge/subagents';
 import { GithubIdentity } from './edge/github-identity';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
 
@@ -1365,6 +1366,7 @@ export class TerminalManager {
     const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer);
     const companyMd = this.buildCompanyMd(o.agent, o.actingMember);
     this.materializeSkills(o.id, o.agent, manifest.dir);
+    this.materializeSubagents(o.id, o.agent, manifest);
     // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
     // human can take one over mid-run by simply attaching (no kill, no resume). The launcher's UNATTENDED
     // lane runs interactive + `--dangerously-skip-permissions` (the gate hook still governs every effect),
@@ -2162,6 +2164,21 @@ export class TerminalManager {
   }
 
   /**
+   * Sync the agent's opted-in `usableSubagents` fleet teammates into `<dir>/.claude/agents/*.md` so the
+   * launched claude can spawn them as native in-process sub-agents (the `Agent`/Task tool). The gate
+   * hook still governs every effect a sub-agent has (tagged with its `agent_type`); this just exposes
+   * the teammate personas. Best-effort — a failure must never block a session launch.
+   */
+  private materializeSubagents(sessionId: string, agent: string, manifest: AgentManifest): void {
+    try {
+      const names = materializeSubagents(path.join(manifest.dir!, '.claude'), manifest, this.os.agents);
+      if (names.length) this.audit(sessionId, agent, 'subagents.materialized', { count: names.length, subagents: names });
+    } catch (e) {
+      this.audit(sessionId, agent, 'subagents.error', { error: String(e) });
+    }
+  }
+
+  /**
    * Phase 3 same-session skill delivery. After a skill is installed for `agent` (an approved
    * `skill_request`), push it into that agent's LIVE interactive sessions instead of waiting for their
    * next launch: re-materialise the library into the agent's watched `.claude/skills` (so the new skill
@@ -2230,7 +2247,12 @@ export class TerminalManager {
 
   /** The gate. Same policy brain as the console — allow flows, ask → inbox approval (auto-cleared for
    *  an attended approver), never → deny. Args are enriched into facts first (the single classifier). */
-  gate(sessionId: string, agent: string, capability: string, rawArgs: Record<string, unknown>, reasoning: string): GateResult {
+  gate(sessionId: string, agent: string, capability: string, rawArgs: Record<string, unknown>, reasoning: string, subagent?: { type?: string; id?: string }): GateResult {
+    // A native Claude Code sub-agent (the `Agent`/Task tool) runs IN this session's process, so its
+    // tool calls arrive here under the SAME session/principal/budget — Claude Code just tags the hook
+    // input with `agent_type`/`agent_id`. Carry that through into the audit trail so a governed effect
+    // is attributable to which sub-agent produced it, without inventing a separate governed session.
+    const sub = subagent?.type ? { subagent: subagent.type, subagentId: subagent.id } : undefined;
     // Workspace emergency stop — deny every action before classifying anything.
     if (this.os.settings.killSwitch().engaged) {
       this.audit(sessionId, agent, 'gate.killswitch', { capability });
@@ -2283,8 +2305,8 @@ export class TerminalManager {
     if (hostGrants && (capability === 'net.connect' || capability === 'ssh.exec')) {
       decision = stricterDecision(decision, hostGovernanceDecision(capability, args));
     }
-    this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning });
-    this.audit(sessionId, agent, 'gate.decision', { capability, decision });
+    this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning, ...sub });
+    this.audit(sessionId, agent, 'gate.decision', { capability, decision, ...sub });
 
     if (decision.effect === 'allow') return { decision: 'allow' };
     if (decision.effect === 'deny') return { decision: 'deny' };
@@ -4243,7 +4265,8 @@ function shSingleQuote(v: string): string {
 const EPISODE_NOISE = new Set([
   'session.created', 'session.ended', 'session.reported', 'session.resumed', 'session.reloaded', 'session.stopped',
   'session.error', 'session.tuning', 'session.progress', 'session.notified', 'session.attachment',
-  'skills.materialized', 'skills.reloaded', 'skills.error', 'connector.minted', 'connector.mint.failed',
+  'skills.materialized', 'skills.reloaded', 'skills.error', 'subagents.materialized', 'subagents.error',
+  'connector.minted', 'connector.mint.failed',
   'connector.secret.unresolved', 'shell.secret.injected', 'shell.secret.unresolved',
   'gate.attempt', 'gate.killswitch', 'approval.resolved',
   'approval.auto_approved', 'episode.stored', 'episode.error',

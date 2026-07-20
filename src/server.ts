@@ -47,7 +47,7 @@ import { JsonPolicyEngine, PolicyDocument, applyProposal, validatePolicyDocument
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, TaskStatus, GoalStatus } from './types';
+import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
@@ -582,12 +582,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const sessionId = String(b.sessionId || '');
     if (!tm.hasSession(sessionId)) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(sessionId)) return sendJson(res, 403, { error: 'bad session secret' });
+    // A native Claude Code sub-agent's tool call carries `agent_type`/`agent_id` on the PreToolUse hook
+    // input (the gate hook forwards them). Present ⇒ this governed effect came from a sub-agent of the
+    // session; thread it into the audit trail. Absent for a normal top-level tool call.
+    const subagent = b.subagentType ? { type: String(b.subagentType), id: b.subagentId ? String(b.subagentId) : undefined } : undefined;
     const result = tm.gate(
       sessionId,
       String(b.agent || ''),
       String(b.capability || ''),
       (b.args && typeof b.args === 'object') ? b.args : {},
       String(b.reasoning || ''),
+      subagent,
     );
     return sendJson(res, 200, result);
   }
@@ -3518,7 +3523,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
@@ -3530,6 +3535,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // everything else.
     const prompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
     const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
+    // Which fleet teammates this agent may spawn as native sub-agents. Amplification-sensitive but not a
+    // governance bypass (every sub-agent effect is still gated), so it rides the owner/admin config route
+    // like shellSecrets. A self-editing agent can't reach here to widen its own reach.
+    const usableSubagents = 'usableSubagents' in b ? sanitizeUsableSubagents(b.usableSubagents) : ag.usableSubagents;
     // netMode is governance-sensitive (only owner/admin reach this route; a self-editing agent CANNOT
     // change it). 'allowlist' locks the agent to its granted hosts; anything else → 'open'. Undefined
     // ('open') is left off the manifest to keep it clean.
@@ -3537,7 +3546,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
