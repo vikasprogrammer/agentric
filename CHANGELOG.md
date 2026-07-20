@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.243.1] — 2026-07-20
+### Fixed
+- **A member's own interactive ("headed") console session no longer gets killed out from under them
+  when its agent calls `report`.** Many fleet agents end a run by calling the `report` tool, which flips
+  the session row to `done` mid-turn. The 60-second idle sweep's **done-orphan** backstop (`reapIdleSessions`
+  sweep 2) then treated *any* unclaimed non-resident `done` row as an orphaned pane and reaped it on sight —
+  including a member-spawned interactive session the human was actively using. Result: you'd open a headed
+  session, the agent would finish and `report`, and within a minute the live TUI was torn down
+  (`session.reaped reason=done-orphan`) even though nobody had walked away. The done-orphan reap is now
+  scoped to genuinely **unattended-lane** runs (chat/automation/task/ask provenance — a colon in
+  `spawned_by`); a member's own interactive session (bare member-id `spawned_by`, `headless=0`) is left to
+  the **idle-interactive janitor** (sweep 3) instead, which now also reclaims a member's `done` session but
+  only after the long idle timeout (Settings → default 48h) and with its `done` outcome preserved. So a
+  headed session stays live for follow-ups and is only reclaimed once truly idle.
+
 ## [0.243.0] — 2026-07-20
 ### Changed
 - **Agent access ("who can run this agent") moved from the Team page to the Agents page**, next to the
