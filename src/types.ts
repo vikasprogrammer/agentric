@@ -956,6 +956,16 @@ export interface AgentManifest extends RuntimeTuning {
    *  shell.exec; only internal-looking or explicitly-listed hosts are governed. `'allowlist'` (lockdown):
    *  ANY detected egress to a host not in this agent's grants pauses/denies. Undefined → 'open'. */
   netMode?: 'open' | 'allowlist';
+  /** Opt-in list of OTHER fleet agent ids this agent may spawn as **native Claude Code sub-agents**
+   *  (the built-in `Agent`/Task tool). At launch each named agent's manifest + persona (its CLAUDE.md)
+   *  is materialised into this agent's `.claude/agents/<id>.md`, so the running claude can delegate a
+   *  slice of its OWN turn to a teammate in-process (sub-second, no separate governed session) — the
+   *  lightweight counterpart to `task_dispatch`. Every effect the sub-agent has still passes the
+   *  PreToolUse gate hook (attributed to THIS session's principal + budget, tagged with the sub-agent's
+   *  `agent_type`), and the sub-agent's toolset is capped to {@link SUBAGENT_DEFAULT_TOOLS} — never the
+   *  egress/secret tools. Undefined/empty → this agent spawns no fleet sub-agents. Self-references and
+   *  non-claude-code / unknown ids are ignored. See docs/subagents-plan.md. */
+  usableSubagents?: string[];
   /** The agent's visual icon. Either a built-in library id (a lucide icon name like `"Bot"`) or a raw
    *  custom `<svg>…</svg>` markup string the user uploaded. Undefined → the console falls back to a
    *  default glyph. Purely cosmetic. Rendered in an `<img>` so inline SVG can't execute scripts. */
@@ -1142,6 +1152,29 @@ export function sanitizeShellSecrets(input: unknown): string[] | undefined {
     seen.add(k);
     out.push(k);
     if (out.length >= 32) break;
+  }
+  return out.length ? out : undefined;
+}
+
+/** Normalize a `usableSubagents` payload (API body or config file): coerce to an array of well-formed
+ *  agent ids (the fleet-teammate ids this agent may spawn as native sub-agents), dedupe order-preserving,
+ *  cap the list at 16. Existence / claude-code / self-reference filtering happens at materialisation time
+ *  against the live fleet, so this only enforces the id SHAPE. Undefined when empty → no manifest key. */
+export function sanitizeUsableSubagents(input: unknown): string[] | undefined {
+  const raw = Array.isArray(input)
+    ? input
+    : typeof input === 'string'
+      ? input.split(/[\s,]+/) // accept a comma/space/newline-separated string from a UI field too
+      : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== 'string') continue;
+    const id = x.trim().toLowerCase();
+    if (!/^[a-z][a-z0-9-]{1,39}$/.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    if (out.length >= 16) break;
   }
   return out.length ? out : undefined;
 }

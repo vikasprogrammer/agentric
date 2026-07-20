@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.234.0] — 2026-07-20
+### Added
+- **An agent can spawn fleet teammates as native in-process sub-agents.** A parent agent's manifest
+  gains `usableSubagents: string[]` — an opt-in list of OTHER fleet agent ids it may invoke through
+  Claude Code's built-in `Agent`/Task tool. At launch each named teammate's manifest + persona (its
+  `CLAUDE.md`) is materialised into the parent's `.claude/agents/<id>.md` (`src/edge/subagents.ts`,
+  mirroring how the skills library syncs into `.claude/skills` — idempotent, refreshes only our managed
+  files via an `.aos-managed.json` index, preserves hand-authored ones). The running claude can then
+  delegate a slice of its OWN turn to a teammate in-process (sub-second, no separate governed session) —
+  the lightweight counterpart to `task_dispatch`, which stays the path for delegating to a *separately
+  accountable* citizen. **The gateway invariant holds:** a native sub-agent runs in the parent's
+  process, so the PreToolUse gate hook fires for its tool calls too — every effect is still classified/
+  approved/budgeted/audited, under the parent session's principal + budget. Claude Code tags the hook
+  input with `agent_type`/`agent_id`; `terminal/gate-hook.sh` forwards them (via a U+001F field
+  separator — a tab would collapse the empty fields of a normal top-level call) and `gate()` stamps
+  `gate.attempt`/`gate.decision` with `subagent`/`subagentId`, so the audit trail attributes a governed
+  effect to which sub-agent produced it. The sub-agent's toolset is capped to a conservative allow-list
+  (`SUBAGENT_DEFAULT_TOOLS`: read/search + gated Bash/Edit/Write + memory recall) — never proactive
+  egress, the vault, `publish`, or the operator/inbox surface. Settable from the owner/admin agent
+  config route (`GET`/`PUT /api/agents/:id/config`, `sanitizeUsableSubagents`); a self-editing agent
+  cannot widen its own reach. See `docs/subagents-plan.md`.
+
 ## [0.233.0] — 2026-07-20
 ### Added
 - **Approve or reject a gated action straight from the Slack/Discord DM — the approval round-trip.**

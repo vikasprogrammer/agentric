@@ -36,7 +36,13 @@ emit() {
 # the FULL tool_input to the server, which enriches it into facts (case-insensitive, argument-aware —
 # it sees the SQL inside db_query/execute_php, the dollar amount, the delete count) and classifies.
 # Tab-separated so the JSON input survives `read` on one line (JSON.stringify escapes tabs/newlines).
-IFS=$'\t' read -r TOOL INPUT <<<"$(printf '%s' "$EVENT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const e=JSON.parse(d||"{}");process.stdout.write((e.tool_name||"")+"\t"+JSON.stringify(e.tool_input||{}))})')"
+# `agent_type`/`agent_id` are present ONLY when this tool call comes from a native sub-agent (the
+# Agent/Task tool). We forward them so the server can attribute the governed effect to which sub-agent
+# produced it. The fields are separated by U+001F (unit separator), NOT a tab: a tab is IFS-whitespace,
+# so `read` would COLLAPSE the empty agent_type/agent_id fields of a normal top-level call and shove the
+# JSON into the wrong variable. U+001F is non-whitespace (no collapsing, empty fields preserved) and can
+# never appear literally in INPUT because JSON.stringify escapes all control chars < 0x20.
+IFS=$'\x1f' read -r TOOL SUBTYPE SUBID INPUT <<<"$(printf '%s' "$EVENT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const e=JSON.parse(d||"{}");const S="\x1f";process.stdout.write([e.tool_name||"",e.agent_type||"",e.agent_id||"",JSON.stringify(e.tool_input||{})].join(S))})')"
 
 # The OS-owned tools (memory recall/remember, ask/report, policy preview) are internal and never
 # touch the outside world, so they bypass the gate entirely.
@@ -58,7 +64,7 @@ case "$TOOL" in
   *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
 esac
 
-payload=$(node -e 'const[s,a,cap,t,inp]=process.argv.slice(1);let input={};try{input=JSON.parse(inp||"{}")}catch(e){};console.log(JSON.stringify({sessionId:s,agent:a,capability:cap,args:{tool:t,input},reasoning:"claude PreToolUse: "+t}))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$INPUT")
+payload=$(node -e 'const[s,a,cap,t,inp,st,si]=process.argv.slice(1);let input={};try{input=JSON.parse(inp||"{}")}catch(e){};const o={sessionId:s,agent:a,capability:cap,args:{tool:t,input},reasoning:"claude PreToolUse: "+t};if(st){o.subagentType=st;if(si)o.subagentId=si;}console.log(JSON.stringify(o))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$INPUT" "$SUBTYPE" "$SUBID")
 
 # FAIL-CLOSED classify. Retry the gate until it returns a usable decision; a transient failure (server
 # restart, network blip, the documented stale-server 401/404 window) must NEVER fall through to "allow".
