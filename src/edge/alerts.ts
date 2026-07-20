@@ -14,7 +14,17 @@ import { measureLearning } from './measurement';
 
 const COOLDOWN_MS = 3 * 24 * 3_600_000; // don't re-alert the same key within 3 days
 
-export interface InsightAlert { key: string; severity: 'high' | 'medium'; title: string; body: string }
+export interface InsightAlert {
+  key: string;
+  severity: 'high' | 'medium';
+  title: string;
+  body: string;
+  /** Where the card's action should take the human — an in-app route (+ optional sub-detail) rather than
+   *  a session. Insight cards back NO session, so without this the console links "Open" to a phantom
+   *  `insight:<key>` session id → a dead terminal. */
+  route: string;
+  detail?: string;
+}
 
 /** Detect the conditions worth a human's attention right now (pure — no dedup, no side effects). */
 export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
@@ -29,6 +39,7 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
       severity: 'high',
       title: `Fleet success rate dropped ${Math.abs(m.deltaPp)} points`,
       body: `Success fell to ${m.recent.rate}% this week (${m.recent.n} runs) from ${m.prior.rate}% the week before. Check the Insights page for which agents regressed.`,
+      route: 'insights',
     });
   }
 
@@ -42,6 +53,7 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
         severity: 'high',
         title: `${a.agent} is failing (${a.rate}% success)`,
         body: `${a.agent} succeeded on only ${a.rate}% of ${a.runs} work runs in the last ${ins.windowDays} days (${a.failed} failed). Open Insights and "Diagnose" it to see the root cause.`,
+        route: 'insights',
       });
     }
     // Crashing = the process/pane keeps dying (infra: too heavy / OOM / timeout) — a different fix than
@@ -52,6 +64,7 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
         severity: 'high',
         title: `${a.agent}'s runs keep crashing`,
         body: `${a.crashed} of ${a.agent}'s runs crashed in the last ${ins.windowDays} days — the process died mid-run (usually too-heavy work, OOM, or a timeout), not a task failure. Scope its tasks smaller, or give it more headroom.`,
+        route: 'insights',
       });
     }
   }
@@ -64,6 +77,8 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
         severity: 'medium',
         title: `"${r.capability}" keeps getting rejected`,
         body: `${r.count} approvals for \`${r.capability}\` were rejected. If it should never run, deny it outright in Policy; if it's fine, auto-allow it — either way agents stop wasting runs asking.`,
+        route: 'settings',
+        detail: 'policy',
       });
     }
   }
@@ -76,6 +91,7 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
       severity: 'medium',
       title: `${ins.friction.pendingApprovals} approvals waiting on a human`,
       body: `${ins.friction.pendingApprovals} approvals are pending (oldest ${oldestH}h). Agents are blocked until someone resolves them — see the Inbox.`,
+      route: 'inbox',
     });
   }
 

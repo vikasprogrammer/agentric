@@ -569,6 +569,19 @@ function onNavClick(go: () => void) {
   }
 }
 
+/** An **insight-alert** card (posted by the intelligence layer via `postInsightAlert`) backs NO session —
+ *  its `sessionId` is the sentinel `insight:<key>`. So it must deep-link to the page that acts on it
+ *  (Insights / Policy / Inbox) via `args.route`/`args.detail`, never to `#/sessions/aos-insight:<key>`,
+ *  which resolves to no session and lands on a dead terminal. Returns the target, or null for an ordinary
+ *  session-backed notification. Legacy cards (predating the routed args) fall back to the Insights page. */
+function insightTarget(m: Msg): { route: Route; detail?: string; label: string } | null {
+  if (m.type !== 'notification' || !m.sessionId?.startsWith('insight:')) return null
+  const a = (m.args ?? {}) as { route?: string; detail?: string }
+  const route = (ROUTES as string[]).includes(a.route ?? '') ? (a.route as Route) : 'insights'
+  const label = a.detail === 'policy' ? 'Policy' : ROUTE_TITLES[route] ?? 'Insights'
+  return { route, detail: a.detail, label }
+}
+
 export default function App() {
   // undefined = checking, null = not logged in (show Login), Member = authed.
   const [me, setMe] = useState<Member | null | undefined>(undefined)
@@ -1101,6 +1114,9 @@ function Console({ me }: { me: Member }) {
       setMessages((ms) => ms.map((x) => (x.id === m.id ? { ...x, read: true } : x)))
       void api.markRead(m.id)
     }
+    // A proactive insight alert backs no session — route it to the page that acts on it, not a terminal.
+    const ins = insightTarget(m)
+    if (ins) { nav(ins.route, ins.detail); return }
     const kind = notifyKindOf(m)
     const sess = sessions.find((s) => s.id === m.sessionId)
     if ((kind === 'waiting' || kind === 'completed' || kind === 'crashed') && sess) openTerminal(sess.tmux)
@@ -3902,18 +3918,22 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
   const time = <span className="shrink-0 pt-0.5 text-[11px] tabular-nums text-muted-foreground">{timeAgo(m.createdAt)}</span>
 
-  // ── Notification (Claude is waiting on you — permission prompt / idle input) ──
+  // ── Notification — either "Claude is waiting on you" (session-backed) or a proactive insight alert
+  //    (session-less; deep-links to the page that acts on it, never to a phantom session terminal). ──
   if (m.type === 'notification') {
+    const ins = insightTarget(m)
     return (
       <div className="flex items-start gap-2.5 rounded-lg border border-indigo-300 bg-indigo-50/40 px-3 py-2.5">
-        <Bell className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
+        {ins ? <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" /> : <Bell className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />}
         <div className="min-w-0 flex-1">
-          <MsgHeading m={m}><span className="shrink-0 text-indigo-600">· waiting for you</span></MsgHeading>
+          <MsgHeading m={m}><span className="shrink-0 text-indigo-600">{ins ? '· insight' : '· waiting for you'}</span></MsgHeading>
           <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground"><InlineLinks text={m.body} /></div>
         </div>
         {time}
         <div className="flex shrink-0 gap-1">
-          <Button render={<a href={navHref('sessions', 'aos-' + m.sessionId)} />} size="sm" className="h-7 px-2.5 text-xs" onClick={onNavClick(open)}>Open</Button>
+          {ins
+            ? <Button render={<a href={navHref(ins.route, ins.detail)} />} size="sm" className="h-7 px-2.5 text-xs">View {ins.label}</Button>
+            : <Button render={<a href={navHref('sessions', 'aos-' + m.sessionId)} />} size="sm" className="h-7 px-2.5 text-xs" onClick={onNavClick(open)}>Open</Button>}
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onDismiss(m.id)}>Dismiss</Button>
         </div>
       </div>

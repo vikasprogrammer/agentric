@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.8] — 2026-07-20
+### Fixed
+- **Insight-alert cards in the Inbox had no useful action — clicking "Open" landed on a dead session
+  terminal.** The intelligence layer posts proactive alerts (a struggling agent, a capability that keeps
+  getting rejected, approvals piling up) as session-less `notification` cards keyed `insight:<key>`. The
+  console's `ActionItem` renderer treated every `notification` as "Claude is waiting in a session" and
+  hardcoded its button to `#/sessions/aos-insight:<key>` — a tmux name no session ever has, so the
+  session lookup returned null and the user got an empty/dead terminal. Alerts now carry a real in-app
+  target (`args.route`/`args.detail`): success-drop / struggling-agent / crashing-agent → **Insights**,
+  a rejected capability → **Settings › Policy**, pending approvals → **Inbox**. The card renders a
+  lightbulb "insight" style with a **View <page>** button that deep-links there (both the Inbox card and
+  the notification-bell/toast click path), and legacy cards with no route fall back to the Insights page.
+
 ## [0.227.7] — 2026-07-20
 ### Fixed
 - **Live notifications went stale in an already-open tab — the inbox only updated after a page reload,

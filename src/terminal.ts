@@ -2424,11 +2424,15 @@ export class TerminalManager {
 
   /** Post a proactive **insight alert** to the admins' Inbox — a session-less `notification` card the
    *  intelligence layer raises when something warrants attention (a struggling agent, recurring rejections).
-   *  Keyed by `insight:<key>` so it's a stable, de-dupable row. */
-  postInsightAlert(input: { key: string; title: string; body: string; severity: string }): void {
+   *  Keyed by `insight:<key>` so it's a stable, de-dupable row. `args.route`/`args.detail` deep-link the
+   *  card to the page that acts on it (Insights / Policy / Inbox) — the card backs NO session, so without
+   *  a route the console would link "Open" to the phantom `insight:<key>` session id and land on a dead
+   *  terminal. */
+  postInsightAlert(input: { key: string; title: string; body: string; severity: string; route: string; detail?: string }): void {
     this.addMessage({
       type: 'notification', sessionId: `insight:${input.key}`, agent: 'insights', title: input.title,
-      body: input.body, status: 'open', args: { key: input.key, severity: input.severity },
+      body: input.body, status: 'open',
+      args: { key: input.key, severity: input.severity, route: input.route, detail: input.detail },
       audienceKind: 'admins',
     });
   }
