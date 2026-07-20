@@ -3523,7 +3523,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
@@ -3539,6 +3539,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // governance bypass (every sub-agent effect is still gated), so it rides the owner/admin config route
     // like shellSecrets. A self-editing agent can't reach here to widen its own reach.
     const usableSubagents = 'usableSubagents' in b ? sanitizeUsableSubagents(b.usableSubagents) : ag.usableSubagents;
+    // Consent to being spawned as a sub-agent (default true → drop the key; false → internal, never
+    // materialised into anyone's `.claude/agents`, even an explicit list). Owner/admin-only, like netMode.
+    const spawnableAsSubagent = 'spawnableAsSubagent' in b ? (b.spawnableAsSubagent === false ? false : undefined) : ag.spawnableAsSubagent;
     // netMode is governance-sensitive (only owner/admin reach this route; a self-editing agent CANNOT
     // change it). 'allowlist' locks the agent to its granted hosts; anything else → 'open'. Undefined
     // ('open') is left off the manifest to keep it clean.
@@ -3546,7 +3549,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
@@ -3592,6 +3595,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const saved = os.settings.setRuntimeDefaults(tuning, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.runtimeDefaults.updated', data: { ...tuning } });
     return sendJson(res, 200, { ok: true, ...saved });
+  }
+
+  // ── fleet-wide sub-agent posture ('all' | 'none') — owner/admin only ──
+  //    'all' (default): every agent may spawn every willing teammate as a native sub-agent; 'none':
+  //    only teammates an agent explicitly lists in usableSubagents. Applies at each session launch.
+  if (method === 'GET' && p === '/api/settings/subagent-default') {
+    return sendJson(res, 200, { mode: os.settings.subagentDefault() });
+  }
+  if (method === 'PUT' && p === '/api/settings/subagent-default') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const mode = b.mode === 'none' ? 'none' : 'all';
+    os.settings.setSubagentDefault(mode, me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.subagentDefault.updated', data: { mode } });
+    return sendJson(res, 200, { ok: true, mode });
   }
 
   // ── whole-box concurrency cap (docs/concurrency-cap-plan.md Phase 1) ──

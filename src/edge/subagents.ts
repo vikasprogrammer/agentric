@@ -90,27 +90,48 @@ function readPersona(delegate: AgentManifest): string {
 }
 
 /**
- * Sync the parent agent's `usableSubagents` into `<claudeDir>/agents/*.md`. Returns the delegate ids
+ * Decide which fleet teammates a parent may spawn as sub-agents, given the fleet-wide posture:
+ *  - A teammate must be **eligible**: a different agent, `claude-code` runtime, and NOT opted out
+ *    (`spawnableAsSubagent !== false`). The opt-out is absolute — an internal agent is excluded even
+ *    if a parent lists it explicitly.
+ *  - If the parent declares a non-empty `usableSubagents`, that's a **narrowing override**: exactly the
+ *    listed (and eligible) teammates, whatever the default.
+ *  - Otherwise the default posture applies: `'all'` ⇒ every eligible teammate; `'none'` ⇒ none.
+ */
+export function resolveSubagents(
+  parent: AgentManifest,
+  fleet: Map<string, AgentManifest>,
+  defaultMode: 'all' | 'none',
+): AgentManifest[] {
+  const eligible = (m: AgentManifest | undefined): m is AgentManifest =>
+    !!m && m.id !== parent.id && m.runtime === 'claude-code' && m.spawnableAsSubagent !== false;
+  const explicit = parent.usableSubagents ?? [];
+  if (explicit.length) return explicit.map((id) => fleet.get(id)).filter(eligible);
+  return defaultMode === 'all' ? [...fleet.values()].filter(eligible) : [];
+}
+
+/**
+ * Sync the parent agent's sub-agents into `<claudeDir>/agents/*.md`. Returns the delegate ids
  * actually written. Idempotent and safe to call every launch:
  *  - the `.claude/agents` dir is always ensured (Claude only watches a dir that existed at startup);
  *  - files we previously managed but no longer should (removed from the list / gone from the fleet)
  *    are deleted, tracked via the `.aos-managed.json` index;
  *  - hand-authored `.md` files not in our index are never touched;
- *  - a self-reference, an unknown id, or a non-claude-code teammate is skipped.
+ *  - membership is decided by {@link resolveSubagents} (fleet-wide `defaultMode` + the parent's
+ *    `usableSubagents` override + each teammate's `spawnableAsSubagent` opt-out).
  * Best-effort by contract: the caller wraps this so a failure never blocks a session launch.
  */
 export function materializeSubagents(
   claudeDir: string,
   parent: AgentManifest,
   fleet: Map<string, AgentManifest>,
+  defaultMode: 'all' | 'none' = 'all',
   tools: readonly string[] = SUBAGENT_DEFAULT_TOOLS,
 ): string[] {
   const agentsDir = path.join(claudeDir, 'agents');
   fs.mkdirSync(agentsDir, { recursive: true });
 
-  const wanted = (parent.usableSubagents ?? [])
-    .map((id) => fleet.get(id))
-    .filter((m): m is AgentManifest => !!m && m.id !== parent.id && m.runtime === 'claude-code');
+  const wanted = resolveSubagents(parent, fleet, defaultMode);
 
   // Remove files we managed last time but shouldn't now (deselected or vanished from the fleet).
   const prev = readIndex(agentsDir);

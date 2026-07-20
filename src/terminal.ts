@@ -2232,7 +2232,7 @@ export class TerminalManager {
    */
   private materializeSubagents(sessionId: string, agent: string, manifest: AgentManifest): void {
     try {
-      const names = materializeSubagents(path.join(manifest.dir!, '.claude'), manifest, this.os.agents);
+      const names = materializeSubagents(path.join(manifest.dir!, '.claude'), manifest, this.os.agents, this.os.settings.subagentDefault());
       if (names.length) this.audit(sessionId, agent, 'subagents.materialized', { count: names.length, subagents: names });
     } catch (e) {
       this.audit(sessionId, agent, 'subagents.error', { error: String(e) });
