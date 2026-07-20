@@ -1,18 +1,18 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -1793,6 +1793,146 @@ function ManageFlyoutItem({ item, active, onGo, onTogglePin }: { item: NavMeta; 
  *  type a task, hit Run to spawn a live session. Owner/admin can tune the selected agent's
  *  Settings (CLAUDE.md + runtime), delete it, or create a new one — all the catalog actions,
  *  just scoped to the chosen agent instead of a grid of cards. */
+/** A compact iOS-style on/off switch — the per-row control in the Share dialog. */
+function MiniSwitch({ on, disabled, onClick, label }: { on: boolean; disabled?: boolean; onClick: () => void; label?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/40 ${on ? 'bg-primary' : 'bg-muted-foreground/25'} ${disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}
+    >
+      <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${on ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+    </button>
+  )
+}
+
+/** "Share agent" — pick which teammates can run this agent. Moved here from the Team page so access
+ *  lives next to the agent it governs. Owners & admins always run every agent (shown as read-only);
+ *  members are granted per-agent, or opened to everyone via the "All members" switch. Edits persist
+ *  optimistically through PUT /api/team/assignments/:id (admin-gated server-side). */
+function ShareAgentDialog({ agent, open, onOpenChange }: { agent: AgentInfo; open: boolean; onOpenChange: (o: boolean) => void }) {
+  const [members, setMembers] = useState<Member[] | null>(null)
+  const [access, setAccess] = useState<AgentAccess>({ allowedRoles: [], allowedMembers: [] })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setMembers(null); setErr('')
+    api.team().then((d) => {
+      setMembers(d.members)
+      setAccess(d.assignments[agent.id] ?? { allowedRoles: [], allowedMembers: [] })
+    }).catch(() => setErr('Could not load the team.'))
+  }, [open, agent.id])
+
+  const persist = async (next: AgentAccess) => {
+    const prev = access
+    setAccess(next); setBusy(true); setErr('') // optimistic
+    const r = await api.setAssignment(agent.id, next).catch(() => null)
+    setBusy(false)
+    if (!r || ('error' in (r as { error?: string }) && (r as { error?: string }).error)) { setAccess(prev); setErr('Save failed — check your access.'); return }
+    if ('assignment' in r && r.assignment) setAccess(r.assignment)
+  }
+
+  const allMembers = access.allowedRoles.includes('member')
+  const toggleAll = () => persist({ ...access, allowedRoles: allMembers ? access.allowedRoles.filter((r) => r !== 'member') : [...access.allowedRoles, 'member'] })
+  const toggleMember = (mid: string) => persist({ ...access, allowedMembers: access.allowedMembers.includes(mid) ? access.allowedMembers.filter((x) => x !== mid) : [...access.allowedMembers, mid] })
+
+  const privileged = (members ?? []).filter((m) => m.role !== 'member')
+  const plain = (members ?? []).filter((m) => m.role === 'member')
+  const grantedCount = allMembers ? plain.length : plain.filter((m) => access.allowedMembers.includes(m.id)).length
+
+  // A one-line, human summary of who can run this agent.
+  const summary = (() => {
+    const parts: string[] = []
+    if (privileged.length) parts.push(`${privileged.length} owner/admin`)
+    if (allMembers) parts.push('all members')
+    else if (grantedCount) parts.push(`${grantedCount} member${grantedCount > 1 ? 's' : ''}`)
+    return parts.length ? `Runnable by ${parts.join(' · ')}` : 'Only owners & admins can run this'
+  })()
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md gap-0 p-0 sm:max-w-md">
+        <DialogHeader className="flex-row items-center gap-3 border-b p-4">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted"><AgentIcon icon={agent.icon} className="h-4.5 w-4.5 text-foreground/70" /></span>
+          <div className="min-w-0">
+            <DialogTitle className="flex items-center gap-1.5 truncate"><Share2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />Share {agent.id}</DialogTitle>
+            <DialogDescription className="mt-0.5 text-xs">Choose who on your team can run this agent.</DialogDescription>
+          </div>
+        </DialogHeader>
+
+        {members === null ? (
+          <div className="p-8 text-center text-sm text-muted-foreground">Loading…</div>
+        ) : (
+          <div className="max-h-[60vh] space-y-4 overflow-y-auto p-4">
+            {/* All members — the "open to everyone" master switch */}
+            <div className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${allMembers ? 'border-primary/40 bg-primary/5' : ''}`}>
+              <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${allMembers ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                {allMembers ? <Globe className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">All members</div>
+                <div className="text-xs text-muted-foreground">{allMembers ? 'Everyone on the team can run this agent.' : 'Only the people you pick below.'}</div>
+              </div>
+              <MiniSwitch on={allMembers} disabled={busy} onClick={toggleAll} label="Open to all members" />
+            </div>
+
+            {/* Individually-grantable members */}
+            {plain.length > 0 ? (
+              <div className="space-y-1">
+                <div className="px-1 text-[11px] uppercase tracking-wider text-muted-foreground">Members</div>
+                {plain.map((m) => {
+                  const on = allMembers || access.allowedMembers.includes(m.id)
+                  return (
+                    <div key={m.id} className={`flex items-center gap-2.5 rounded-md px-2 py-1.5 ${allMembers ? 'opacity-60' : 'hover:bg-muted/50'}`}>
+                      <MemberAvatar member={m} className="h-7 w-7 text-[11px]" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm">{m.name}</div>
+                        <div className="truncate text-[11px] text-muted-foreground">{m.email}</div>
+                      </div>
+                      <MiniSwitch on={on} disabled={busy || allMembers} onClick={() => toggleMember(m.id)} label={`Let ${m.name} run this agent`} />
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed px-3 py-2 text-[11px] text-muted-foreground">No members yet — invite teammates from the Team page.</div>
+            )}
+
+            {/* Owners & admins — always have access, shown read-only */}
+            {privileged.length > 0 && (
+              <div className="space-y-1">
+                <div className="px-1 text-[11px] uppercase tracking-wider text-muted-foreground">Always has access</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {privileged.map((m) => (
+                    <span key={m.id} title={`${m.role}s run every agent`} className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 py-0.5 pl-0.5 pr-2 text-xs">
+                      <MemberAvatar member={m} className="h-5 w-5 text-[9px]" />
+                      <span className="truncate">{m.name}</span>
+                      <RoleBadge role={m.role} />
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <DialogFooter className="flex-row items-center justify-between border-t bg-muted/40">
+          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            {err ? <span className="text-destructive">{err}</span> : <><Users className="h-3.5 w-3.5" />{summary}</>}
+          </span>
+          <Button size="sm" onClick={() => onOpenChange(false)}>Done</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function AgentsPage({
   me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh, nav,
 }: {
@@ -1826,6 +1966,7 @@ function AgentsPage({
   const [task, setTask] = useState('')
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const [view, setView] = useState<AgentsView>(() => (localStorage.getItem(AGENTS_VIEW_KEY) === 'grid' ? 'grid' : 'split'))
   const setViewPersist = (v: AgentsView) => { setView(v); localStorage.setItem(AGENTS_VIEW_KEY, v) }
   const [query, setQuery] = useState('')
@@ -1943,6 +2084,11 @@ function AgentsPage({
               <Zap className="h-3.5 w-3.5" /> {autoCounts[agent.id]} {autoCounts[agent.id] === 1 ? 'Automation' : 'Automations'}
             </Button>
           )}
+          {canEdit && (
+            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={() => setShareOpen(true)} title="share — pick which teammates can run this agent">
+              <Share2 className="h-4 w-4" />
+            </Button>
+          )}
           {canEdit && agent.runtime === 'claude-code' && (
             <Button render={<a href={navHref('agent', agent.id)} />} size="icon" variant="ghost" className="h-8 w-8 shrink-0 text-muted-foreground" onClick={onNavClick(() => onEdit(agent.id))} title="agent settings — runtime tuning, starter prompts, CLAUDE.md">
               <SlidersHorizontal className="h-4 w-4" />
@@ -2018,6 +2164,9 @@ function AgentsPage({
 
       {/* the agent library — a modal opened by the Library button in the toolbar above */}
       {canEdit && <AgentLibrary open={libraryOpen} onOpenChange={setLibraryOpen} onInstalled={onRefresh} />}
+
+      {/* share — pick which teammates can run the selected agent (opened from the composer header) */}
+      {canEdit && agent && <ShareAgentDialog agent={agent} open={shareOpen} onOpenChange={setShareOpen} />}
 
       {/* search — only worth showing once the fleet is more than a glance */}
       {agents.length > 6 && (
@@ -6119,31 +6268,7 @@ function TeamPage({ me, onProfileChange }: { me: Member; onProfileChange: () => 
   const changeRole = async (id: string, r: Role) => { await api.setRole(id, r); load() }
   const remove = async (id: string) => { await api.removeMember(id); load() }
 
-  const access = (agentId: string) => data!.assignments[agentId] ?? { allowedRoles: [], allowedMembers: [] }
-  const toggleRole = async (agentId: string, r: Role) => {
-    const cur = access(agentId)
-    const allowedRoles = cur.allowedRoles.includes(r) ? cur.allowedRoles.filter((x) => x !== r) : [...cur.allowedRoles, r]
-    await api.setAssignment(agentId, { allowedRoles, allowedMembers: cur.allowedMembers }); load()
-  }
-  const toggleMember = async (agentId: string, mid: string) => {
-    const cur = access(agentId)
-    const allowedMembers = cur.allowedMembers.includes(mid) ? cur.allowedMembers.filter((x) => x !== mid) : [...cur.allowedMembers, mid]
-    await api.setAssignment(agentId, { allowedRoles: cur.allowedRoles, allowedMembers }); load()
-  }
-
   if (!data) return <div className="text-sm text-muted-foreground">Loading…</div>
-  const plainMembers = data.members.filter((m) => m.role === 'member')
-  const fullAccessCount = data.members.filter((m) => m.role !== 'member').length
-
-  // A one-line, human summary of who can run an agent, given its access row.
-  const accessSummary = (agentId: string): string => {
-    const acc = access(agentId)
-    const parts: string[] = []
-    if (fullAccessCount > 0) parts.push(`${fullAccessCount} owner/admin`)
-    if (acc.allowedRoles.includes('member')) parts.push('all members')
-    else if (acc.allowedMembers.length) parts.push(`${acc.allowedMembers.length} member${acc.allowedMembers.length > 1 ? 's' : ''}`)
-    return parts.length ? `Runnable by ${parts.join(' · ')}` : 'Only owners & admins can run this'
-  }
 
   return (
     <div className="max-w-4xl space-y-8">
@@ -6251,46 +6376,18 @@ function TeamPage({ me, onProfileChange }: { me: Member; onProfileChange: () => 
         </section>
       )}
 
-      {/* Agent access */}
-      {isAdmin && (
+      {/* Agent access moved to the Agents page — each agent's Share button (owner/admin) governs who
+          can run it, right next to the agent it controls. */}
+      {isAdmin && data.agents.length > 0 && (
         <section>
           <div className="mb-2 text-[11px] uppercase tracking-wider text-muted-foreground">Agent access</div>
-          <p className="mb-3 text-xs text-muted-foreground">
-            Owners &amp; admins can run every agent. Grant <strong>members</strong> access per agent — toggle
-            <span className="mx-1 rounded bg-muted px-1 py-0.5 font-medium text-foreground">All members</span>
-            to open it to everyone, or pick people individually.
-          </p>
-          {data.agents.length === 0 && <div className="text-xs text-muted-foreground">No agents yet.</div>}
-          <div className="space-y-2">
-            {data.agents.map((a) => {
-              const acc = access(a.id)
-              const allMembers = acc.allowedRoles.includes('member')
-              return (
-                <Card key={a.id}>
-                  <CardContent className="space-y-2.5 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="flex items-center gap-1.5 text-sm font-medium"><AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />{a.id}<RuntimeBadge runtime={a.runtime} /></span>
-                      <span className="text-[11px] text-muted-foreground">{accessSummary(a.id)}</span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <Chip on={allMembers} onClick={() => toggleRole(a.id, 'member')}>All members</Chip>
-                      <span className="mx-0.5 h-4 w-px bg-border" />
-                      {/* Owners/admins always have access — shown as static, non-toggle pills. */}
-                      {data.members.filter((m) => m.role !== 'member').map((m) => (
-                        <span key={m.id} title={`${m.role}s run every agent`} className="inline-flex items-center gap-1 rounded-full border border-dashed border-muted-foreground/30 px-2.5 py-0.5 text-xs text-muted-foreground">
-                          <Check className="h-3 w-3" />{m.name}
-                        </span>
-                      ))}
-                      {/* Plain members — individually assignable (or covered by "All members"). */}
-                      {plainMembers.map((m) => (
-                        <Chip key={m.id} on={allMembers || acc.allowedMembers.includes(m.id)} onClick={() => toggleMember(a.id, m.id)}>{m.name}</Chip>
-                      ))}
-                      {plainMembers.length === 0 && <span className="text-[11px] text-muted-foreground">No members to assign yet — invite one above.</span>}
-                    </div>
-                  </CardContent>
-                </Card>
-              )
-            })}
+          <div className="flex items-start gap-2.5 rounded-lg border border-dashed bg-muted/20 p-3 text-xs text-muted-foreground">
+            <Share2 className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              Who can run each agent now lives on the <a href={navHref('agents')} className="font-medium text-foreground underline">Agents</a> page —
+              open an agent and use its <span className="inline-flex items-center gap-0.5 font-medium text-foreground"><Share2 className="h-3 w-3" />Share</span> button.
+              Owners &amp; admins can always run every agent.
+            </p>
           </div>
         </section>
       )}
@@ -13717,13 +13814,3 @@ function OutcomeSelect({ value, onChange, disabled }: { value: Outcome; onChange
   )
 }
 
-function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`rounded-full border px-2.5 py-0.5 text-xs transition-colors ${on ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/30 text-muted-foreground hover:bg-muted'}`}
-    >
-      {children}
-    </button>
-  )
-}
