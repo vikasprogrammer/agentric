@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.238.1] — 2026-07-20
+### Fixed
+- **Sessions list columns no longer collapse the title / overlap on laptop-width screens.** The tier-1/2
+  insight columns (Took, Activity, wider Cost·tokens) plus the always-reserved `w-40` row-action block
+  pushed the total fixed width past the row below ~1700px, squeezing the flex Session title to zero so
+  data drifted out from under its headers. Fixed two ways: the hover row-actions now overlay absolutely
+  (reserving no layout width) instead of a fixed cell, and the columns widen with the viewport — always
+  Session/Started/Mode/Updated/Result, `lg` adds Cost·tokens, `xl` adds Agent+Took, `2xl` adds
+  ID+Activity — with a title floor so it never disappears. The trailing spacer now matches the row's
+  rating cell, so every column lines up under its header at all widths.
+
 ## [0.238.0] — 2026-07-20
 ### Changed
 - **Token totals now sit next to cost in the sessions list.** The per-run token count (uncached input +

@@ -3293,26 +3293,30 @@ function SessionsPage({
         </div>
       ) : (
         <div className="divide-y overflow-hidden rounded-lg border">
-          {/* column headings — click to sort; each mirrors its row column's width/visibility classes */}
+          {/* column headings — click to sort; each mirrors its row column's width/visibility classes.
+              Column set widens with the viewport so the flex title never gets squeezed to zero:
+              always → Session/Started/Mode/Updated/Result; lg adds Cost; xl adds Agent+Took; 2xl adds
+              ID+Activity. The trailing spacer matches the row's inline rating cell (the hover actions
+              overlay absolutely, so they reserve no width). */}
           <div className="flex items-center gap-3 bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             <span className="h-3.5 w-3.5 shrink-0" aria-hidden />
             <div className="flex min-w-0 flex-1 items-center gap-3">
               <span className="h-2 w-2 shrink-0" aria-hidden />
-              {sortHead('title', 'Session', 'min-w-0 flex-1')}
-              {sortHead('agent', 'Agent', 'hidden w-32 shrink-0 sm:flex')}
-              {sortHead('id', 'ID', 'hidden w-20 shrink-0 xl:flex')}
-              {sortHead('startedBy', 'Started by', 'w-32 shrink-0')}
+              {sortHead('title', 'Session', 'min-w-[7rem] flex-1')}
+              {sortHead('agent', 'Agent', 'hidden w-28 shrink-0 xl:flex')}
+              {sortHead('id', 'ID', 'hidden w-20 shrink-0 2xl:flex')}
+              {sortHead('startedBy', 'Started by', 'w-28 shrink-0')}
               <span className="w-24 shrink-0">Mode</span>
-              {sortHead('updated', 'Updated', 'w-20 shrink-0')}
-              {sortHead('duration', 'Took', 'hidden w-16 shrink-0 justify-end lg:flex')}
-              <span className="hidden w-36 shrink-0 xl:block">Activity</span>
+              {sortHead('updated', 'Updated', 'w-16 shrink-0')}
+              {sortHead('duration', 'Took', 'hidden w-14 shrink-0 justify-end xl:flex')}
+              <span className="hidden w-32 shrink-0 2xl:block">Activity</span>
               {sortHead('cost', 'Cost · tokens', 'hidden w-24 shrink-0 justify-end lg:flex')}
-              {sortHead('status', 'Result', 'w-20 shrink-0')}
+              {sortHead('status', 'Result', 'w-16 shrink-0')}
             </div>
-            <span className="w-32 shrink-0" aria-hidden />
+            <span className="w-16 shrink-0" aria-hidden />
           </div>
           {shown.map((s) => (
-            <div key={s.id} className={`group flex items-center gap-3 px-3 py-2 hover:bg-muted ${sel.has(s.id) ? 'bg-muted' : ''}`}>
+            <div key={s.id} className={`group relative flex items-center gap-3 px-3 py-2 hover:bg-muted ${sel.has(s.id) ? 'bg-muted' : ''}`}>
               <input
                 type="checkbox"
                 checked={sel.has(s.id)}
@@ -3322,17 +3326,17 @@ function SessionsPage({
               />
               <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
                 <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot(s)}`} />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{s.title}</span>
-                {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
-                <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{s.agent}</span>
-                <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground xl:block" title={s.id}>{s.id}</span>
-                <OriginBadge s={s} members={members} className="w-32 shrink-0" />
+                <span className="min-w-[7rem] flex-1 truncate text-sm font-medium">{s.title}</span>
+                {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5 shrink-0" />}
+                <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground xl:block">{s.agent}</span>
+                <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground 2xl:block" title={s.id}>{s.id}</span>
+                <OriginBadge s={s} members={members} className="w-28 shrink-0" />
                 <span className="flex w-24 shrink-0 items-center"><ModeBadge headless={s.headless} /></span>
-                <span className="w-20 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
+                <span className="w-16 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 {/* Engaged time, not wall-clock — the tooltip spells out the difference, which is often
                     hours for an interactive session that sat idle between turns. */}
-                <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
-                <SessionInsights s={s} className="hidden w-36 shrink-0 overflow-hidden xl:flex" />
+                <span className="hidden w-14 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground xl:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
+                <SessionInsights s={s} className="hidden w-32 shrink-0 overflow-hidden 2xl:flex" />
                 {/* Cost with its token total alongside — the tokens are the number behind the dollars, so
                     they share the cell (dim) rather than claim a column that would crush the title. */}
                 <span className="hidden w-24 shrink-0 items-baseline justify-end gap-1 text-right text-xs tabular-nums text-muted-foreground lg:flex" title={s.tokens ? tokenBreakdown(s.tokens) : 'cost not yet computed'}>
@@ -3340,13 +3344,17 @@ function SessionsPage({
                 </span>
                 {/* Result = the agent's own verdict, falling back to the process status. The summary
                     rides along as the tooltip so "what came of it" is one hover away. */}
-                <span className={`w-20 shrink-0 truncate text-xs ${resultTone(s)}`} title={s.summary ? `${statusLabel(s)} · ${s.summary}` : statusLabel(s)}>{resultLabel(s)}</span>
+                <span className={`w-16 shrink-0 truncate text-xs ${resultTone(s)}`} title={s.summary ? `${statusLabel(s)} · ${s.summary}` : statusLabel(s)}>{resultLabel(s)}</span>
               </button>
-              {/* Human verdict — finished runs only; stays visible once rated, faint-until-hover otherwise. */}
-              <div className={`shrink-0 transition-opacity ${!isLive(s) ? (s.rating ? '' : 'opacity-40 group-hover:opacity-100') : 'invisible'}`}>
+              {/* Human verdict — finished runs only; stays visible once rated, faint-until-hover otherwise.
+                  Fixed-width so it lines up under the header's trailing spacer. */}
+              <div className={`flex w-16 shrink-0 justify-end transition-opacity ${!isLive(s) ? (s.rating ? '' : 'opacity-40 group-hover:opacity-100') : 'invisible'}`}>
                 {!isLive(s) && <RunRating session={s} onRate={onRate} />}
               </div>
-              <div className="flex w-40 shrink-0 items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+              {/* Row actions OVERLAY on hover — positioned absolutely so they reserve no layout width
+                  (a fixed w-40 cell here was what crushed the title on laptop-width screens). The muted
+                  pill matches the row's hover background so it reads as sitting on the row. */}
+              <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded-md bg-muted px-1 opacity-0 shadow-sm ring-1 ring-border transition-opacity group-hover:opacity-100">
                 {canResume(s) && (
                   <Button size="icon" variant="ghost" className="h-7 w-7 text-emerald-600" onClick={() => resumeAndOpen(s, onOpen)} title="resume — reopen and continue this session (claude --resume)">
                     <Play className="h-3.5 w-3.5" />
