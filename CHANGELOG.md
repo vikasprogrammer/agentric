@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.243.0] — 2026-07-20
+### Changed
+- **Agent access ("who can run this agent") moved from the Team page to the Agents page**, next to the
+  agent it governs. Each agent's composer header now carries a **Share** button (owner/admin) that opens
+  a focused, Google-Docs-style **Share dialog**: an "All members" master switch (globe/lock affordance)
+  to open the agent to everyone, per-member toggle switches for individual grants, and a read-only
+  "Always has access" row for owners/admins (who can always run every agent). Edits persist optimistically
+  through the unchanged `PUT /api/team/assignments/:id`, and a live footer summarises who can run it.
+  Unlike the old Team surface (claude-code gear only), Share is available for **every agent regardless of
+  runtime**. The Team page keeps a short pointer to the new location. No server/API changes.
+
 ## [0.242.0] — 2026-07-20
 ### Added
 - **Stale human-in-the-loop prompts now get re-nudged once, so a missed ask doesn't strand an agent
