@@ -266,6 +266,22 @@ const formatCost = (usd?: number): string => {
   return usd < 100 ? `$${usd.toFixed(2)}` : `$${Math.round(usd).toLocaleString()}`
 }
 
+/** Total tokens across a run (uncached input + output + cache read + cache write), the number behind
+ *  the cost — compact `340k` / `1.2M`, dim placeholder before cost is computed. Cache reads dominate a
+ *  long agent run, so the raw total is huge; the tooltip keeps the four-way breakdown. */
+const totalTokens = (t?: Session['tokens']): number | undefined =>
+  t ? t.input + t.output + t.cacheRead + t.cacheWrite : undefined
+const formatTokens = (t?: Session['tokens']): string => {
+  const n = totalTokens(t)
+  if (n == null) return '—'
+  if (n < 1000) return `${n}`
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`
+  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`
+}
+/** The full four-way token breakdown, for a `title` tooltip. */
+const tokenBreakdown = (t?: Session['tokens']): string =>
+  t ? `${totalTokens(t)!.toLocaleString()} tokens (in ${t.input.toLocaleString()} · out ${t.output.toLocaleString()} · cache-read ${t.cacheRead.toLocaleString()} · cache-write ${t.cacheWrite.toLocaleString()})` : 'not yet computed'
+
 /** The sessions-list view state (filters + sort), held in the URL hash query so it survives a
  *  refresh / deep-link, AND mirrored to localStorage so it survives navigating away and back via the
  *  sidebar's "Sessions" link (which routes to a bare `#/sessions` with no query). */
@@ -3230,7 +3246,7 @@ function SessionsPage({
                 <div className="mt-1 flex items-center gap-2 text-[11px] tabular-nums text-muted-foreground">
                   {s.activeMs != null && <span title={`${formatDuration(s.activeMs)} of engaged work — idle gaps excluded`}>{formatDuration(s.activeMs)}</span>}
                   <SessionInsights s={s} className="text-[11px]" />
-                  {s.costUsd != null && <span title="run cost">{formatCost(s.costUsd)}</span>}
+                  {s.costUsd != null && <span title={tokenBreakdown(s.tokens)}>{formatCost(s.costUsd)}<span className="text-muted-foreground/60"> · {formatTokens(s.tokens)} tok</span></span>}
                 </div>
                 <div className="mt-1 flex items-center justify-between gap-2">
                   <OriginBadge s={s} members={members} />
@@ -3290,7 +3306,7 @@ function SessionsPage({
               {sortHead('updated', 'Updated', 'w-20 shrink-0')}
               {sortHead('duration', 'Took', 'hidden w-16 shrink-0 justify-end lg:flex')}
               <span className="hidden w-36 shrink-0 xl:block">Activity</span>
-              {sortHead('cost', 'Cost', 'hidden w-16 shrink-0 justify-end lg:flex')}
+              {sortHead('cost', 'Cost · tokens', 'hidden w-24 shrink-0 justify-end lg:flex')}
               {sortHead('status', 'Result', 'w-20 shrink-0')}
             </div>
             <span className="w-32 shrink-0" aria-hidden />
@@ -3317,7 +3333,11 @@ function SessionsPage({
                     hours for an interactive session that sat idle between turns. */}
                 <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
                 <SessionInsights s={s} className="hidden w-36 shrink-0 overflow-hidden xl:flex" />
-                <span className="hidden w-16 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground lg:block" title={s.tokens ? `${(s.tokens.input + s.tokens.output + s.tokens.cacheRead + s.tokens.cacheWrite).toLocaleString()} tokens (in ${s.tokens.input.toLocaleString()} · out ${s.tokens.output.toLocaleString()} · cache-read ${s.tokens.cacheRead.toLocaleString()} · cache-write ${s.tokens.cacheWrite.toLocaleString()})` : 'cost not yet computed'}>{formatCost(s.costUsd)}</span>
+                {/* Cost with its token total alongside — the tokens are the number behind the dollars, so
+                    they share the cell (dim) rather than claim a column that would crush the title. */}
+                <span className="hidden w-24 shrink-0 items-baseline justify-end gap-1 text-right text-xs tabular-nums text-muted-foreground lg:flex" title={s.tokens ? tokenBreakdown(s.tokens) : 'cost not yet computed'}>
+                  {formatCost(s.costUsd)}{s.tokens && <span className="text-[10px] text-muted-foreground/60">{formatTokens(s.tokens)}</span>}
+                </span>
                 {/* Result = the agent's own verdict, falling back to the process status. The summary
                     rides along as the tooltip so "what came of it" is one hover away. */}
                 <span className={`w-20 shrink-0 truncate text-xs ${resultTone(s)}`} title={s.summary ? `${statusLabel(s)} · ${s.summary}` : statusLabel(s)}>{resultLabel(s)}</span>

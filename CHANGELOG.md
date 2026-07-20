@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.238.0] — 2026-07-20
+### Changed
+- **Token totals now sit next to cost in the sessions list.** The per-run token count (uncached input +
+  output + cache read + cache write) was tooltip-only behind cost; it now shows as a dim compact figure
+  (`12M`, `340k`) right beside the dollar amount — in the list's `Cost · tokens` column and on each grid
+  card (`$22.53 · 12M tok`) — with the four-way breakdown still on hover. It shares the cost cell rather
+  than taking a column of its own, so the session title keeps its width.
+
 ## [0.237.0] — 2026-07-20
 ### Added
 - **Console UI to pick an agent's sub-agents.** The agent settings (Runtime tuning) card now renders a
