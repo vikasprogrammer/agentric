@@ -648,7 +648,7 @@ function RailDot({ tone = 'bg-primary', title }: { tone?: string; title: string 
  * preview and, for the owner, an "Update & restart" button that pulls + rebuilds + bounces the box;
  * the panel then waits for `/health` to report the new version and reloads the console.
  */
-function UpdateNotice() {
+function UpdateNotice({ compact = false }: { compact?: boolean } = {}) {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [open, setOpen] = useState(false)
   const [applying, setApplying] = useState(false)
@@ -685,14 +685,31 @@ function UpdateNotice() {
 
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        className="mt-1.5 flex w-full items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-left text-[11px] font-medium text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20"
-        title={`Update available: v${status.latest} (${status.behind} commit${status.behind === 1 ? '' : 's'} behind)`}
-      >
-        <Download className="h-3 w-3 shrink-0" />
-        <span className="truncate">Update available · v{status.latest}</span>
-      </button>
+      {compact ? (
+        // Collapsed-rail trigger: the pill has no room, so an amber icon button with a pulsing pip
+        // carries the same "update available" signal and opens the same dialog.
+        <span className="relative">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 text-amber-600 dark:text-amber-400"
+            onClick={() => setOpen(true)}
+            title={`Update available: v${status.latest} (${status.behind} commit${status.behind === 1 ? '' : 's'} behind)`}
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+          <RailDot tone="bg-amber-500" title={`Update available · v${status.latest}`} />
+        </span>
+      ) : (
+        <button
+          onClick={() => setOpen(true)}
+          className="mt-1.5 flex w-full items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1 text-left text-[11px] font-medium text-amber-700 ring-1 ring-amber-200 hover:bg-amber-100 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20"
+          title={`Update available: v${status.latest} (${status.behind} commit${status.behind === 1 ? '' : 's'} behind)`}
+        >
+          <Download className="h-3 w-3 shrink-0" />
+          <span className="truncate">Update available · v{status.latest}</span>
+        </button>
+      )}
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => !applying && !restarting && setOpen(false)}>
@@ -1164,6 +1181,8 @@ function Console({ me }: { me: Member }) {
                 : <RailBadge count={runningSessions} tone="bg-emerald-500 text-white" title={`${runningSessions} session${runningSessions === 1 ? '' : 's'} running`} />}
             </span>
           </nav>
+          {/* Pinned to the bottom of the rail (renders nothing unless the checkout is behind origin). */}
+          <div className="mt-auto"><UpdateNotice compact /></div>
         </aside>
       )}
       <aside className={`${sidebarCollapsed ? 'hidden' : 'flex'} w-72 shrink-0 flex-col border-r bg-background`}>

@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.227.6] — 2026-07-20
+### Fixed
+- **Collapsed sidebar hid the "Update available" pill too.** The self-update notice only rendered in
+  the expanded sidebar, so a collapsed rail gave no sign the box was behind origin. The rail now shows
+  an amber download icon (with a pip) at its foot when an update is available, opening the same
+  update-and-restart dialog.
+
 ## [0.229.1] — 2026-07-20
 ### Fixed
 - **Memory recall reinforcement was invisible under an external backend — every mirrored memory read
