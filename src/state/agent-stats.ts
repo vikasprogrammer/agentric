@@ -31,6 +31,11 @@ import { Db } from './db';
 /** Smoothing constant for volume confidence: at K runs, confidence is 0.5. */
 const CONFIDENCE_K = 8;
 
+/** Learning-velocity windowing (all in RUNS, not wall-clock — a quiet agent isn't a stalled one). */
+const VELOCITY_WINDOW = 10; // runs per bucket; matches the "recent activity" grain of volumeConfidence
+const VELOCITY_MIN = 4;     // need this many runs EACH side before we'll name a trend (else 'unproven')
+const TREND_EPS = 0.05;     // dead-band so run-to-run noise doesn't flip warming/cooling
+
 export interface AgentStats {
   agentId: string;
   runs: { total: number; running: number; done: number; stopped: number; crashed: number };
@@ -63,6 +68,35 @@ export interface AgentStats {
   volumeConfidence: number;  // 0..1
   maturity: number;          // 0..1 — the headline trust score
   confidence: 'none' | 'low' | 'medium' | 'high';
+  /** Direction-of-travel: is maturity's underlying competence rising, flat, or falling? */
+  velocity: AgentVelocity;
+}
+
+/**
+ * Learning velocity — is this agent getting BETTER, plateaued, or regressing?
+ *
+ * Maturity answers "trust it to run alone right now"; velocity answers "which way is it moving". It's
+ * the derivative of the volume-FREE competence core (autonomy × (1 − denialRate)) — deliberately NOT of
+ * `maturity`, which folds in volumeConfidence and therefore only ever rises as runs accrue, so its slope
+ * would read "improving" for an agent that's merely busy. Windowed by run count (see the constants).
+ */
+export interface AgentVelocity {
+  /** Runs in the trailing (recent) window — the sample behind `recent`. 0..VELOCITY_WINDOW. */
+  window: number;
+  /** Competence = autonomy × (1 − denialRate) over the recent window. null → window empty. */
+  recent: number | null;
+  /** Same competence over the window BEFORE that — the baseline `recent` is measured against. */
+  prior: number | null;
+  /** recent − prior. >0 improving · <0 regressing · ~0 plateaued · null when either side is empty. */
+  delta: number | null;
+  /** Ground-truth cross-check: recent successRate − prior successRate (decided runs only). */
+  outcomeDelta: number | null;
+  /** Denial signatures (the denied capability) that recur in the recent window after already appearing
+   *  earlier — the "same wall twice" count. High = lessons aren't sticking. */
+  repeatFriction: number;
+  /** Band for prompt injection / dashboards. warming=improving · steady=plateaued · cooling=regressing
+   *  · unproven=too little windowed signal to judge. */
+  trend: 'warming' | 'steady' | 'cooling' | 'unproven';
 }
 
 interface SessionRow { id: string; agent: string; status: string; spawned_by: string | null; created_at: number; updated_at: number | null; rating: string | null; }
@@ -85,10 +119,63 @@ function blank(agentId: string): AgentStats {
     volumeConfidence: 0,
     maturity: 0,
     confidence: 'none',
+    velocity: { window: 0, recent: null, prior: null, delta: null, outcomeDelta: null, repeatFriction: 0, trend: 'unproven' },
   };
 }
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
+
+/** Per-run facts, bucketed so the whole-history aggregates can be re-folded over a recent window. */
+interface RunFacts {
+  agent: string;
+  at: number;                          // created_at → the sort key for windowing
+  governed: number;
+  humanGated: number;
+  denied: boolean;
+  denialSigs: Set<string>;             // denied capabilities — the "which wall" of a friction event
+  outcome: 'success' | 'failure' | null; // filled in step 5; decided runs only (inconclusive → null)
+}
+
+/** Competence over a slice — the SAME shape as headline maturity, MINUS volumeConfidence (which only
+ *  climbs with run count and would pollute a derivative). null when the slice is empty. */
+function windowCompetence(runs: RunFacts[]): number | null {
+  if (runs.length === 0) return null;
+  let gov = 0, gated = 0, denied = 0;
+  for (const r of runs) { gov += r.governed; gated += r.humanGated; if (r.denied) denied++; }
+  const autonomy = gov > 0 ? clamp01((gov - gated) / gov) : 1; // parity with the whole-history default
+  const denialRate = clamp01(denied / runs.length);
+  return clamp01(autonomy * (1 - denialRate));
+}
+
+/** Ground-truth companion to competence: success / (success+failure) over decided runs in the slice. */
+function windowSuccessRate(runs: RunFacts[]): number | null {
+  const decided = runs.filter((r) => r.outcome);
+  return decided.length ? decided.filter((r) => r.outcome === 'success').length / decided.length : null;
+}
+
+/** Fold a per-agent, oldest→newest run list into its velocity: recent window vs the window before it. */
+function computeVelocity(mine: RunFacts[]): AgentVelocity {
+  const recent = mine.slice(-VELOCITY_WINDOW);
+  const prior = mine.slice(-2 * VELOCITY_WINDOW, -VELOCITY_WINDOW);
+  const rc = windowCompetence(recent), pc = windowCompetence(prior);
+  const delta = rc !== null && pc !== null ? rc - pc : null;
+  const rs = windowSuccessRate(recent), ps = windowSuccessRate(prior);
+  // "same wall twice": a denial signature in the recent window that was already seen earlier.
+  const priorSigs = new Set(prior.flatMap((r) => [...r.denialSigs]));
+  const repeatFriction = recent.reduce(
+    (n, r) => n + [...r.denialSigs].filter((sig) => priorSigs.has(sig)).length, 0);
+  const enough = recent.length >= VELOCITY_MIN && prior.length >= VELOCITY_MIN;
+  const trend: AgentVelocity['trend'] =
+    !enough || delta === null ? 'unproven'
+    : delta > TREND_EPS ? 'warming'
+    : delta < -TREND_EPS ? 'cooling'
+    : 'steady';
+  return {
+    window: recent.length, recent: rc, prior: pc, delta,
+    outcomeDelta: rs !== null && ps !== null ? rs - ps : null,
+    repeatFriction, trend,
+  };
+}
 
 /**
  * Compute per-agent maturity stats over the whole workspace history.
@@ -111,10 +198,12 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
   const agentOf = new Map<string, string>();      // session id → agent
   const spawnedByOf = new Map<string, string | null>();
   const statusOf = new Map<string, string>();
+  const perRun = new Map<string, RunFacts>();     // session id → windowable per-run facts (for velocity)
   for (const r of sessions) {
     agentOf.set(r.id, r.agent);
     spawnedByOf.set(r.id, r.spawned_by);
     statusOf.set(r.id, r.status);
+    perRun.set(r.id, { agent: r.agent, at: r.created_at, governed: 0, humanGated: 0, denied: false, denialSigs: new Set(), outcome: null });
     const s = get(r.agent);
     s.runs.total++;
     if (r.rating === 'up') s.rated.up++;
@@ -159,23 +248,25 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
     const agent = agentOf.get(ev.run_id);
     if (!agent) continue; // an audit row whose session we can't resolve (e.g. '-' housekeeping) — skip
     const s = get(agent);
+    const run = perRun.get(ev.run_id); // same run, windowable mirror of the aggregate tallies below
     let d: Record<string, unknown> = {};
     try { d = JSON.parse(ev.data) as Record<string, unknown>; } catch { /* keep {} */ }
+    const cap = typeof d.capability === 'string' ? d.capability : 'unknown';
     switch (ev.type) {
-      case 'gate.attempt': s.actions.governed++; break;
-      case 'approval.requested': s.actions.humanGated++; break;
+      case 'gate.attempt': s.actions.governed++; if (run) run.governed++; break;
+      case 'approval.requested': s.actions.humanGated++; if (run) run.humanGated++; break;
       case 'approval.auto_approved': s.actions.autoApproved++; break;
       case 'approval.resolved':
-        if (d.approved === false) { s.actions.rejected++; deniedRunSet.add(ev.run_id); }
+        if (d.approved === false) { s.actions.rejected++; deniedRunSet.add(ev.run_id); if (run) { run.denied = true; run.denialSigs.add(`reject:${cap}`); } }
         break;
       case 'gate.decision': {
         const eff = (d.decision as { effect?: string } | undefined)?.effect;
-        if (eff === 'deny') { s.actions.denied++; deniedRunSet.add(ev.run_id); }
+        if (eff === 'deny') { s.actions.denied++; deniedRunSet.add(ev.run_id); if (run) { run.denied = true; run.denialSigs.add(`deny:${cap}`); } }
         break;
       }
-      case 'gate.killswitch': s.actions.killswitch++; deniedRunSet.add(ev.run_id); break;
+      case 'gate.killswitch': s.actions.killswitch++; deniedRunSet.add(ev.run_id); if (run) { run.denied = true; run.denialSigs.add('killswitch'); } break;
       case 'session.error': s.actions.errors++; break;
-      case 'budget.exceeded': s.actions.budgetStops++; deniedRunSet.add(ev.run_id); break;
+      case 'budget.exceeded': s.actions.budgetStops++; deniedRunSet.add(ev.run_id); if (run) { run.denied = true; run.denialSigs.add('budget'); } break;
       case 'question.asked': s.questions++; break;
     }
   }
@@ -189,12 +280,18 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
     const sb = spawnedByOf.get(r.id) ?? null;
     const taskStat = sb && sb.startsWith('task:') ? taskStatus.get(sb.slice('task:'.length)) : undefined;
     // 1. A human's explicit verdict is ground truth — it trumps the governed heuristics below.
-    if (r.rating === 'up') s.outcomes.success++;
-    else if (r.rating === 'down') s.outcomes.failure++;
+    let verdict: 'success' | 'failure' | null;
+    if (r.rating === 'up') verdict = 'success';
+    else if (r.rating === 'down') verdict = 'failure';
     // 2. Otherwise fall back to the governed rule.
-    else if (crashed || denied || self === 'failure' || taskStat === 'blocked') s.outcomes.failure++;
-    else if (taskStat === 'done' || (self === 'success' && !denied && r.status === 'done')) s.outcomes.success++;
+    else if (crashed || denied || self === 'failure' || taskStat === 'blocked') verdict = 'failure';
+    else if (taskStat === 'done' || (self === 'success' && !denied && r.status === 'done')) verdict = 'success';
+    else verdict = null;
+    if (verdict === 'success') s.outcomes.success++;
+    else if (verdict === 'failure') s.outcomes.failure++;
     else s.outcomes.inconclusive++;
+    const run = perRun.get(r.id);
+    if (run) run.outcome = verdict; // feeds windowSuccessRate — the ground-truth arm of velocity
   }
 
   for (const s of by.values()) {
@@ -205,6 +302,14 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
     if (agent) get(agent).deniedRuns++;
   }
 
+  // Group runs by agent, oldest→newest, so velocity can window the trailing slices.
+  const runsByAgent = new Map<string, RunFacts[]>();
+  for (const run of perRun.values()) {
+    const list = runsByAgent.get(run.agent);
+    if (list) list.push(run); else runsByAgent.set(run.agent, [run]);
+  }
+  for (const list of runsByAgent.values()) list.sort((a, b) => a.at - b.at);
+
   for (const s of by.values()) {
     const runs = s.runs.total;
     s.autonomy = s.actions.governed > 0 ? clamp01((s.actions.governed - s.actions.humanGated) / s.actions.governed) : 1;
@@ -214,6 +319,7 @@ export function computeAgentStats(db: Db, agentIds?: string[]): AgentStats[] {
     s.successRate = decided > 0 ? s.outcomes.success / decided : null;
     s.maturity = clamp01(s.autonomy * (1 - s.denialRate) * s.volumeConfidence);
     s.confidence = runs === 0 ? 'none' : runs < 10 ? 'low' : runs < 40 ? 'medium' : 'high';
+    s.velocity = computeVelocity(runsByAgent.get(s.agentId) ?? []);
   }
 
   return [...by.values()].sort((a, b) => b.maturity - a.maturity || b.runs.total - a.runs.total);
