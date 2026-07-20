@@ -886,13 +886,37 @@ function Console({ me }: { me: Member }) {
   }, [])
 
   useEffect(() => {
+    let alive = true
+    // Live feed for the whole console: sessions + the inbox. Both the tab-title 🔔 badge and every
+    // per-session "waiting" bell derive purely from these two arrays, so this poll is the ONLY thing
+    // keeping them fresh — there's no SSE/socket fallback. Guardrails:
+    //  • run the two fetches in parallel and independently (allSettled) — a transient failure of one
+    //    must never block the other. A sequential `await sessions(); await messages()` froze the whole
+    //    feed for the rest of the session if the first call ever rejected (a 401/5xx blip through the
+    //    tailscale/nginx hop), which read as "notifications only show after a page reload".
+    //  • ignore a non-array payload — an error tick returns `{error}`, not a list; don't clobber good
+    //    state with garbage.
     const poll = async () => {
-      setSessions(await api.sessions())
-      setMessages(await api.messages())
+      const [s, m] = await Promise.allSettled([api.sessions(), api.messages()])
+      if (!alive) return
+      if (s.status === 'fulfilled' && Array.isArray(s.value)) setSessions(s.value)
+      if (m.status === 'fulfilled' && Array.isArray(m.value)) setMessages(m.value)
     }
     poll()
     const t = setInterval(poll, 1500)
-    return () => clearInterval(t)
+    // Browsers throttle (and eventually freeze) setInterval in a backgrounded tab — exactly when the
+    // tab-title badge / waiting bells matter most, since you're looking at another tab. Re-poll the
+    // instant the tab regains visibility or focus so coming back to the console shows current state
+    // immediately, instead of waiting on a throttled tick (or needing a reload).
+    const wake = () => { if (document.visibilityState === 'visible') poll() }
+    document.addEventListener('visibilitychange', wake)
+    window.addEventListener('focus', wake)
+    return () => {
+      alive = false
+      clearInterval(t)
+      document.removeEventListener('visibilitychange', wake)
+      window.removeEventListener('focus', wake)
+    }
   }, [])
 
   // Browser-tab badge: a 🔔 + the bell's unread count (waiting + completions + crashes + approvals +
