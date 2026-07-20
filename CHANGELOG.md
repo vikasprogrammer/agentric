@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.231.0] — 2026-07-20
+### Added
+- **Agents now have a learning *velocity*, not just a maturity.** `AgentStats` gains a `velocity` block
+  (`src/state/agent-stats.ts`) answering "is this agent getting better, plateaued, or regressing?" —
+  the time-derivative maturity alone can't give (maturity folds in `volumeConfidence`, which only ever
+  climbs with run count, so its slope reads "improving" for an agent that's merely busy). Velocity is
+  the derivative of the **volume-free competence core** `autonomy × (1 − denialRate)`, windowed by
+  **run count** (last 10 runs vs the 10 before — quiet ≠ stalled): `recent`/`prior`/`delta`, an
+  `outcomeDelta` ground-truth cross-check (windowed successRate), and a `repeatFriction` count — denied
+  capabilities that recur across windows, i.e. the "same wall twice" signal that lessons aren't
+  sticking. A sticky `unproven` band (needs ≥4 runs each side) keeps a green agent from being labelled
+  cooling on noise; otherwise `warming`/`steady`/`cooling`. Pure read-side aggregate — one per-run map
+  folded inside loops that already run, zero schema change — and surfaced automatically on
+  `GET /api/agents/:id/stats` and `/api/agents/stats`. Next: inject the band into the agent's own prompt
+  (calibrate initiative to track record) and route consolidation/Dreaming at plateaued agents.
+
 ## [0.230.0] — 2026-07-20
 ### Added
 - **Delegate a task at a chosen model / effort tier.** `task_create` now takes optional `model` and
