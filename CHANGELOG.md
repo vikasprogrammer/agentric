@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.255.0] — 2026-07-21
+### Added
+- **Take over an ENDED headless run.** "Take over" now works on a headless session that already exited
+  (an automation/cron/task/chat turn that ran to `done`/`stopped`/`crashed`), not just a still-live one.
+  The unified take-over (`POST /api/sessions/:id/interactive` → `TerminalManager.takeoverRun`) attaches to
+  the streaming pane when the run is live, and otherwise **resurrects it in place** — `claude --resume` the
+  same transcript as a claimed, non-resident interactive TUI (writes the launch env so it becomes resumable
+  and reattachable from there on, marks it sticky so the reapers leave it alone). The human lands straight
+  in the resumed conversation to steer it. Requires a claude-code runtime and a pinned claude session id
+  (headless runs persist one via `--session-id`); a run with no conversation to resume returns a clear
+  error. The console now offers "Take over" on any unattended run — live OR ended — with a state-aware
+  tooltip. `web/src/App.tsx` (`canGoInteractive`/`takeOverTip`), `src/terminal.ts`, `src/server.ts`.
+
 ## [0.254.0] — 2026-07-21
 ### Added
 - **Cockpit intent layer + Chat/Terminal launch choice (auto-router Phase 2).** Cockpit no longer always

@@ -1719,6 +1719,48 @@ export class TerminalManager {
   }
 
   /**
+   * Take over a run REGARDLESS of whether it is still live — the unified "Take over" entry point the
+   * console's take-over action hits. Two cases, one call:
+   *  - LIVE → delegate to {@link claimSession}: nothing to relaunch, just mark it claimed and the caller
+   *    attaches to the still-streaming pane.
+   *  - ENDED/STOPPED/CRASHED HEADLESS run (an unattended automation/task/cron/chat turn that already
+   *    exited — no live pane, no persisted launch env, so it is NOT `resumable`) → RESURRECT it in place:
+   *    `claude --resume` the SAME transcript as a claimed, non-resident interactive TUI, seeded with no
+   *    prompt (drop the human straight into a steerable claude). Writes the launch env (so ttyd can attach
+   *    + later reattach → it becomes `resumable` from here on) and marks it claimed/sticky (non-resident +
+   *    claimed → the reapers all skip it, only the long idle-interactive janitor reclaims it). The caller
+   *    then opens the terminal on `aos-<id>` and lands in the resumed conversation.
+   * Returns an error only for an unknown / non-claude-code run, or a dead run with no conversation to
+   * resume (a headless run that never got a pinned claude session id — nothing to `--resume`).
+   */
+  takeoverRun(sessionId: string, by: string): { ok: boolean; error?: string } {
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    if (!row) return { ok: false, error: 'unknown session' };
+    const manifest = this.os.agents.get(row.agent);
+    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be taken over' };
+    // A turn is still generating → attach to the live pane, no relaunch (identical to a live take-over).
+    if (this.isAlive(sessionId)) return this.claimSession(sessionId, by);
+    // Dead → resurrect the transcript. Needs the pinned claude session id to `--resume` from.
+    if (!row.claude_session_id) return { ok: false, error: 'this run has no conversation to resume yet' };
+    this.allowResume(sessionId);
+    // Mirror claimSession's end-state (headless→0, running, claimed/sticky) but non-resident, so the run
+    // is owned by the human and reaped only by the long idle-interactive janitor — never the chat-idle or
+    // turn-end reapers. Then actually relaunch claude (unlike the live path, there is a dead pane here).
+    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, resident = 0, claimed_by = ?, claimed_at = ?, last_activity = ?, updated_at = ? WHERE id = ?")
+      .run(by, Date.now(), Date.now(), Date.now(), sessionId);
+    const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
+    const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'takeover-resume' });
+    this.launchClaudeCode({
+      id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
+      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      headless: false, resident: false, resume: true, claudeSessionId: row.claude_session_id,
+    });
+    return { ok: true };
+  }
+
+  /**
    * Take a native-console CHAT session over into the Terminal. A chat session is headless per-turn (no
    * persisted launch env, and between turns its pane is gone), so unlike {@link claimSession} we can't
    * always just attach. Two cases:

@@ -2752,15 +2752,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
     return sendJson(res, 200, { ok: tm.stopSession(id, me.email) });
   }
-  // Take over an unattended run: CLAIM its live TUI so the caller can attach and steer — no kill, no
-  // resume, nothing interrupted (the run is already an attachable interactive session). Marks it sticky so
-  // it isn't auto-closed at turn-end. The frontend opens ttyd right after. Same per-member gate as stop.
+  // Take over a run: if it's still LIVE, CLAIM its TUI and attach — no kill, no resume, nothing
+  // interrupted. If it ENDED/STOPPED as a headless run, RESURRECT it in place (`claude --resume` the same
+  // transcript) as a claimed interactive TUI. Either way it's marked sticky so it isn't auto-closed at
+  // turn-end; the frontend opens ttyd right after. Same per-member gate as stop.
   const interactiveMatch = p.match(/^\/api\/sessions\/([\w-]+)\/interactive$/);
   if (method === 'POST' && interactiveMatch) {
     const id = interactiveMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to manage this session' });
-    const r = tm.claimSession(id, me.email);
+    const r = tm.takeoverRun(id, me.email);
     return sendJson(res, r.ok ? 200 : 400, r);
   }
   // Fork a session: branch it into a NEW independent session that inherits the parent's full conversation
