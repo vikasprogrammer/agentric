@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.251.2] — 2026-07-21
+### Fixed
+- **`agent.update.proposed` inbox card now deep-links to the target agent's page, and its review card
+  sits at the top of that page.** Following v0.250.0, an owner who got the "proposed an edit to X" inbox
+  notification had no way to reach the review UI — clicking the card fell through to the proposer's
+  session terminal, and even on the right page the "Proposed edits from other agents" card was buried
+  below the tuning + CLAUDE.md editor. The inbox card now routes to `#/agent/<target>` (click and
+  new-tab both), and the proposals card renders at the **top** of the agent page (mirroring the
+  PolicyEditor's atop-the-editor review queue), so the deep-link lands the owner right on the pending
+  approval. `web/src/App.tsx`.
+
 ## [0.251.1] — 2026-07-21
 ### Fixed
 - **Long memories are no longer silently dropped by the automem backend.** automem hard-rejects any
