@@ -618,14 +618,24 @@ export interface RouterConfig {
   /** Master switch. Unset → follows `chatRouterEnabled` (auto-route rides on the `/agent` front door).
    *  Explicit `false` keeps the classic name-only router with no inference. */
   enabled?: boolean;
-  /** Absolute floor a top candidate must clear to count as a match. Below it → help list. Default 0.5. */
+  /** Viability floor (0..1 confidence) a candidate must clear to be considered at all. Below it → help
+   *  list. Default 0.22. */
   minScore?: number;
-  /** Relative gap `(top-second)/top` the winner must clear to route SILENTLY. Below it → disambiguate.
-   *  Default 0.3. */
+  /** How strong the top candidate must be (0..1 confidence) to route SILENTLY. Viable but below this →
+   *  ask the human. This is what keeps a weak-but-relatively-ahead match from silently mis-routing.
+   *  Default 0.5. */
+  routeConfidence?: number;
+  /** Relative gap `(top-second)/top` (on the RAW score) the winner must ALSO clear to route silently.
+   *  Below it → disambiguate. Default 0.15. */
   margin?: number;
+  /** The router's OWN embedder for the semantic blend (cosine of message vs. agent profile). Falls back
+   *  to the memory backend's local embedder (`memory.sqlite.embeddings`) when omitted — set this to route
+   *  semantically on a tenant whose memory backend is automem/libsql (no local `Embedder`). Omit both →
+   *  keyword-only. */
+  embeddings?: EmbeddingsConfig;
   /** Optional cheap chat model for the near-tie tie-break (OpenAI-compatible `/chat/completions`).
-   *  `url`/`apiKey` default to the configured memory embedder's endpoint when omitted. No model → no
-   *  LLM tie-break (near-ties just disambiguate). */
+   *  `url`/`apiKey` default to the resolved embedder's endpoint when omitted. No model → no LLM tie-break
+   *  (near-ties just disambiguate). */
   llm?: { model: string; url?: string; apiKey?: string };
 }
 
