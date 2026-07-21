@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -4441,6 +4441,12 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     const resolved = m.status === 'approved' ? 'approved' : m.status === 'rejected' ? 'rejected' : ''
     verb = 'proposed an automation'; detail = m.body
     badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Automations'}</Badge>
+  } else if (m.type === 'agent.update.proposed') {
+    Icon = Pencil; iconCls = 'text-violet-600'; highlight = m.status === 'open'
+    const resolved = m.status === 'approved' ? 'applied' : m.status === 'rejected' ? 'rejected' : ''
+    const tgt = (m.args as { target?: string } | undefined)?.target
+    verb = tgt ? `proposed an edit to ${tgt}` : 'proposed an agent edit'; detail = m.body
+    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Agents'}</Badge>
   } else if (m.type === 'goal.proposed') {
     Icon = Target; iconCls = 'text-indigo-600'; highlight = true
     verb = 'proposed a goal'; detail = m.body
@@ -9563,6 +9569,7 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
           )}
         </CardContent>
       </Card>
+      {info?.runtime === 'claude-code' && <AgentUpdateProposalsCard agentId={agentId} onApplied={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
       {info?.runtime === 'claude-code' && <AgentRevisionsCard agentId={agentId} onReverted={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
     </div>
   )
@@ -9571,6 +9578,77 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
 /** Revision history for an agent's listing + CLAUDE.md — the human rollback for a self-editing agent.
  *  Every edit (by the agent via agent_update, or a human here) snapshots a full version; revert restores
  *  one and records a new revision, so nothing is ever lost. */
+/** Owner-only review queue for cross-agent edit proposals targeting THIS agent (agent_propose_update).
+ *  Non-owners get a 403 from the API → the card renders nothing. Approving applies the field delta and
+ *  snapshots a revision (visible in the Revision history card below); rejecting discards it. */
+function AgentUpdateProposalsCard({ agentId, onApplied }: { agentId: string; onApplied: () => void }) {
+  const [props, setProps] = useState<AgentUpdateProposal[] | null>(null)
+  const [current, setCurrent] = useState('')      // current CLAUDE.md, for before→after on claudeMd edits
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [busy, setBusy] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => api.agentUpdateProposals(agentId).then((r) => setProps(r.error ? [] : (r.proposals ?? []))).catch(() => setProps([]))
+  useEffect(() => { setProps(null); setHint(''); setExpanded(null); load(); api.agentClaude(agentId).then((r) => setCurrent(r.content ?? '')).catch(() => {}) }, [agentId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const act = async (id: string, approve: boolean) => {
+    if (approve && !window.confirm(`Apply this edit to ${agentId}?\n\nIt rewrites the agent's listing/CLAUDE.md and records a revision (revertable below). The change applies on the agent's next session.`)) return
+    setBusy(id); setHint('')
+    const r = approve ? await api.approveAgentUpdateProposal(id) : await api.rejectAgentUpdateProposal(id)
+    setBusy('')
+    if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
+    setHint(approve ? 'applied — see Revision history' : 'rejected')
+    load(); if (approve) { onApplied(); api.agentClaude(agentId).then((x) => setCurrent(x.content ?? '')).catch(() => {}) }
+    setTimeout(() => setHint(''), 3000)
+  }
+  if (!props || props.length === 0) return null // silent for non-owners and when nothing is pending
+  const FIELD_LABEL: Record<string, string> = { description: 'description', claudeMd: 'CLAUDE.md (system prompt)', category: 'category', model: 'model', effort: 'effort', icon: 'icon', examplePrompts: 'starter prompts' }
+  return (
+    <Card className="border-violet-300 bg-violet-50/40">
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs font-medium text-violet-800"><Pencil className="h-3.5 w-3.5" /> Proposed edits from other agents ({props.length})</div>
+          {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
+        </div>
+        {props.map((pr) => {
+          const keys = Object.keys(pr.fields)
+          const isExp = expanded === pr.id
+          return (
+            <div key={pr.id} className="space-y-2 rounded border border-violet-200 bg-background p-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Bot className="h-3 w-3 shrink-0" /><span className="font-medium text-foreground">{pr.agent}</span>
+                <span>· {new Date(pr.createdAt).toLocaleString()}</span>
+              </div>
+              {pr.rationale && <div className="text-sm">{pr.rationale}</div>}
+              <div className="flex flex-wrap gap-1">
+                {keys.map((k) => <Badge key={k} variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{FIELD_LABEL[k] ?? k}</Badge>)}
+              </div>
+              {/* Non-CLAUDE.md fields: show the proposed value inline. */}
+              {keys.filter((k) => k !== 'claudeMd').map((k) => (
+                <div key={k} className="text-xs"><span className="text-muted-foreground">{FIELD_LABEL[k] ?? k}: </span><span className="font-mono">{k === 'examplePrompts' ? (pr.fields.examplePrompts ?? []).join(' · ') : String((pr.fields as Record<string, unknown>)[k] ?? '') || '(cleared)'}</span></div>
+              ))}
+              {/* CLAUDE.md: the risky one — full before→after, collapsed by default. */}
+              {'claudeMd' in pr.fields && (
+                <div className="text-xs">
+                  <button className="text-violet-700 underline" onClick={() => setExpanded(isExp ? null : pr.id)}>{isExp ? 'Hide' : 'Show'} CLAUDE.md before → after</button>
+                  {isExp && (
+                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-2">
+                      <div><div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Current</div><pre className="max-h-64 overflow-auto rounded bg-muted p-2 font-mono text-[11px] whitespace-pre-wrap">{current || '(empty)'}</pre></div>
+                      <div><div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Proposed</div><pre className="max-h-64 overflow-auto rounded bg-muted p-2 font-mono text-[11px] whitespace-pre-wrap">{pr.fields.claudeMd || '(empty)'}</pre></div>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="flex items-center gap-2 pt-1">
+                <Button size="sm" disabled={!!busy} onClick={() => act(pr.id, true)}>Approve & apply</Button>
+                <Button size="sm" variant="outline" disabled={!!busy} onClick={() => act(pr.id, false)}>Reject</Button>
+              </div>
+            </div>
+          )
+        })}
+      </CardContent>
+    </Card>
+  )
+}
+
 function AgentRevisionsCard({ agentId, onReverted }: { agentId: string; onReverted: () => void }) {
   const [revs, setRevs] = useState<AgentRevision[] | null>(null)
   const [open, setOpen] = useState(false)

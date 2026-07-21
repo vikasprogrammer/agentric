@@ -598,7 +598,7 @@ export interface AddGoalReq {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed'
   sessionId: string
   agent: string
   title: string
@@ -678,6 +678,17 @@ export interface AutomationProposal {
   id: string
   agent: string
   spec: { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode }
+  rationale?: string
+  preview?: string
+  createdAt: number
+}
+/** An agent-proposed edit to ANOTHER agent's listing / CLAUDE.md, awaiting owner sign-off. `fields` holds
+ *  only the changed keys (the delta); `claudeMd`, when present, is the full replacement system prompt. */
+export interface AgentUpdateProposal {
+  id: string
+  agent: string          // the proposing agent
+  target: string         // the agent to be edited
+  fields: { description?: string; claudeMd?: string; category?: string; model?: string; effort?: string; icon?: string; examplePrompts?: string[] }
   rationale?: string
   preview?: string
   createdAt: number
@@ -1290,6 +1301,9 @@ export const api = {
   automationProposals: () => call<{ proposals: AutomationProposal[]; error?: string }>('GET', '/api/automations/proposals'),
   approveAutomationProposal: (id: string) => call<{ ok: boolean; automation?: Automation; error?: string }>('POST', `/api/automations/proposals/${id}/approve`),
   rejectAutomationProposal: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/automations/proposals/${id}/reject`),
+  agentUpdateProposals: (target?: string) => call<{ proposals: AgentUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/agents/proposals' + (target ? '?target=' + encodeURIComponent(target) : '')),
+  approveAgentUpdateProposal: (id: string) => call<{ ok: boolean; target?: string; rev?: number; error?: string }>('POST', `/api/agents/proposals/${id}/approve`),
+  rejectAgentUpdateProposal: (id: string, note?: string) => call<{ ok: boolean; error?: string }>('POST', `/api/agents/proposals/${id}/reject`, { note }),
   automationRuns: (id: string) => call<{ runs: Session[]; error?: string }>('GET', `/api/automations/${id}/runs`),
 
   memory: (agent: string, q = '', limit = 50, scope: 'all' | 'agent' | 'tenant' = 'all') =>
