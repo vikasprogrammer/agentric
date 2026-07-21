@@ -65,13 +65,23 @@ Reuse existing columns; add two nullable ones (non-destructive `ALTER TABLE`):
    else:
        no-op                               # human is watching, or blocked on an ask → keep alive
    ```
-3. **Take over** — `goInteractive` is replaced by `claimSession(id, by)`:
+3. **Take over** — `goInteractive` is replaced by `takeoverRun(id, by)`, which handles BOTH states:
    ```
-   UPDATE term_sessions SET headless=0, claimed_by=?, claimed_at=? WHERE id=?
-   audit 'session.claimed'   # NO kill, NO relaunch — the live TUI keeps streaming
+   live → claimSession(id, by):
+     UPDATE term_sessions SET headless=0, claimed_by=?, claimed_at=? WHERE id=?
+     audit 'session.claimed'   # NO kill, NO relaunch — the live TUI keeps streaming
+   ended headless (no pane) → resurrect in place:
+     UPDATE term_sessions SET status='running', headless=0, resident=0, claimed_by=?, … WHERE id=?
+     audit 'session.claimed' {via:'takeover-resume'}
+     launchClaudeCode({ resume:true, claudeSessionId, headless:false, resident:false })  # claude --resume
    ```
-   `POST /api/sessions/:id/interactive` calls `claimSession`; the frontend then opens ttyd exactly as
-   before. The user lands in the live pane, mid-work, and can type.
+   `POST /api/sessions/:id/interactive` calls `takeoverRun`; the frontend then opens ttyd exactly as
+   before. For a live run the user lands in the streaming pane mid-work; for an ended headless run they
+   land in the freshly-`--resume`d conversation (needs a pinned claude session id — a headless run with no
+   conversation to resume returns an error). Writing the launch env on the resurrect path makes the run
+   `resumable`/reattachable from there on; non-resident + claimed means only the long idle-interactive
+   janitor can reclaim it. The frontend offers "Take over" on any unattended run — live OR ended
+   (`canGoInteractive` = `!resumable && !claimedBy && (isLive || forkable)`).
 4. **Backstop reaper** — `reapIdleResidents` generalizes to `reapIdleSessions`: still reaps resident chats
    on idle-timeout, and additionally reaps any `immediate` session that is idle with **no client
    attached** (covers a missed Stop beacon, or a human who attached then detached without a further turn).
@@ -112,9 +122,9 @@ reaper honor `claimed_by`, so a claimed session is never reaped regardless of at
   wiring; pane capture.
 - `terminal/stop-hook.sh` — **new**, turn-end beacon → `/api/turn-idle`.
 - `src/edge/session-backend.ts` — `hasClient()` on both backends.
-- `src/terminal.ts` — `launchClaudeCode` routing; `markTurnIdle`; `claimSession` (replaces
+- `src/terminal.ts` — `launchClaudeCode` routing; `markTurnIdle`; `takeoverRun`/`claimSession` (replaces
   `goInteractive`); `reapIdleResidents` → `reapIdleSessions`; capture-pane on teardown.
-- `src/server.ts` — `POST /api/turn-idle`; repoint `/api/sessions/:id/interactive` → `claimSession`.
+- `src/server.ts` — `POST /api/turn-idle`; repoint `/api/sessions/:id/interactive` → `takeoverRun`.
 - `src/state/db.ts` — `claimed_by` / `claimed_at` columns.
 - `web/src/App.tsx` — copy/tooltip updates; optional "taken over by X" badge.
 

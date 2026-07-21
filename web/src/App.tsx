@@ -155,15 +155,24 @@ const resumeAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void
   void api.resumeSession(s.id).finally(() => onOpen(s.tmux, s.agent + ' · ' + s.id))
 }
 
-/** An unattended run (automation/cron/chat/task) is now an ATTACHABLE interactive TUI (not `claude -p`),
- *  so while it's LIVE you can "take over" — claim it and attach to the still-streaming pane with nothing
- *  interrupted. Offered only while live: a finished run has no pane to attach to (you view its transcript
- *  instead). Interactive runs already have a live/Resume path, so they never show this. */
+/** An unattended run (automation/cron/chat/task) can be "taken over" — pulled into an attachable
+ *  interactive TUI a human watches and steers. Two flavours, one affordance:
+ *   • LIVE  → claim the still-streaming pane and attach (nothing interrupted).
+ *   • ENDED headless run → resurrect it in place (`claude --resume` the same transcript) and attach.
+ *  Offered whenever the run is unattended (`!resumable` — an interactive run already has its own
+ *  live/Resume path), not already claimed, and either still live OR has a conversation to resume
+ *  (`forkable` ⇒ a pinned claude session id exists). */
 const canGoInteractive = (s: Session): boolean =>
-  !s.resumable && !s.claimedBy && isLive(s)
+  !s.resumable && !s.claimedBy && (isLive(s) || Boolean(s.forkable))
 
-/** Take over an unattended run: CLAIM it server-side (no kill, no resume — nothing interrupted), THEN
- *  open/focus its terminal so the user lands in the live, attachable TUI it was already running in. */
+/** Tooltip for the take-over affordance — states which flavour applies for THIS run. */
+const takeOverTip = (s: Session): string =>
+  isLive(s)
+    ? 'take over — attach to this live run and steer it; nothing is interrupted'
+    : 'take over — resume this ended run (claude --resume) and steer it in the terminal'
+
+/** Take over an unattended run — CLAIM it live, or resurrect it if it already ended — server-side, THEN
+ *  open/focus its terminal so the user lands in the attachable TUI (streaming, or freshly resumed). */
 const takeOverAndOpen = (s: Session, onOpen: (tmux: string, title: string) => void): void => {
   void api.goInteractive(s.id).finally(() => onOpen(s.tmux, s.agent + ' · ' + s.id))
 }
@@ -2887,7 +2896,7 @@ function RowActionsMenu({ session: s, members, me, onOpen, onStop, onDelete, onT
           </DropdownMenuItem>
         )}
         {canGoInteractive(s) && (
-          <DropdownMenuItem className="gap-2 text-xs" onClick={() => takeOverAndOpen(s, onOpen)}>
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => takeOverAndOpen(s, onOpen)} title={takeOverTip(s)}>
             <Terminal className="h-3.5 w-3.5 shrink-0 text-sky-500" /> <span>Take over</span>
           </DropdownMenuItem>
         )}
@@ -3276,7 +3285,7 @@ function SessionsPage({
             </button>
           )}
           {canGoInteractive(s) && (
-            <button className="rounded p-0.5 text-sky-400 hover:bg-neutral-600 hover:text-sky-300" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — attach to this live run and steer it; nothing is interrupted">
+            <button className="rounded p-0.5 text-sky-400 hover:bg-neutral-600 hover:text-sky-300" onClick={() => takeOverAndOpen(s, onOpen)} title={takeOverTip(s)}>
               <Terminal className="h-3 w-3" />
             </button>
           )}
@@ -3535,7 +3544,7 @@ function SessionsPage({
                   </Button>
                 )}
                 {canGoInteractive(s) && (
-                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title="take over — attach to this live run and steer it; nothing is interrupted">
+                  <Button size="sm" variant="ghost" className="h-6 gap-1 px-2 text-xs text-sky-600" onClick={() => takeOverAndOpen(s, onOpen)} title={takeOverTip(s)}>
                     <Terminal className="h-3 w-3" /> Take over
                   </Button>
                 )}
