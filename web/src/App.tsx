@@ -979,8 +979,9 @@ function Console({ me }: { me: Member }) {
       ? { tmux: detail, title: sessions.find((s) => s.tmux === detail)?.title ?? detail }
       : null
   // The agent being edited is a URL detail (`#/agent/<id>`) so the editor survives a refresh instead
-  // of falling back to a blank page.
-  const editAgent = route === 'agent' ? detail : ''
+  // of falling back to a blank page. `#/agent/<id>/edit` is an accepted alias for the same page (agent
+  // ids never contain a slash, so a trailing `/edit` segment is unambiguous) — strip it to the bare id.
+  const editAgent = route === 'agent' ? detail.replace(/\/edit$/, '') : ''
 
   // Per-member pinned nav: which secondary items sit up in Main vs. under Manage. Seeded from the
   // navPins that rode in on /api/auth/me (null → the default layout), toggled optimistically and

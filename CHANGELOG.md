@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.252.2] — 2026-07-21
+### Added
+- **`#/agent/<id>/edit` is now an accepted alias for the agent page.** The agent detail/editor lives at
+  `#/agent/<id>`; a trailing `/edit` segment now resolves to the same page (agent ids never contain a
+  slash, so it's unambiguous), so an explicit edit URL can be linked or bookmarked. `web/src/App.tsx`.
+
 ## [0.252.1] — 2026-07-21
 ### Fixed
 - **Auto-router: semantic matching now works on any memory backend, and confident routes stop
