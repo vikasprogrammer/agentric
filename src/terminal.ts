@@ -2208,7 +2208,36 @@ export class TerminalManager {
             .join('\n');
       }
     }
-    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, goalsSection, fleet, team, preamble, learned]
+    // Code-review steer — the fleet-wide policy for how an agent reviews a diff / PR before it opens or
+    // merges one. Owner-editable in Settings → Company; when unset we inject a sensible DEFAULT so it's a
+    // real standard from day one (existing tenants included — it rides the prompt, not a tenant seed). The
+    // default steers toward a cheap cross-model second opinion and explicitly AWAY from any paid/cloud
+    // review, and only names the `glm-review` skill concretely when this workspace actually has it
+    // installed (so the guidance never dangles where it isn't).
+    const customReview = this.os.settings.company().reviewMd.trim();
+    let codeReview = '';
+    if (customReview) {
+      codeReview = `# Code review — how this workspace reviews changes\n\n${customReview}`;
+    } else {
+      const hasGlm = (() => {
+        try { return !!this.os.skills.get('glm-review'); } catch { return false; }
+      })();
+      const secondOpinion = hasGlm
+        ? 'run the **`glm-review`** skill for a fast cross-model second opinion (a cheap, independent ' +
+          'reviewer that catches what one model misses), then reconcile its points against the code'
+        : 'get a second opinion from a cheaper/independent reviewer where one is available, then reconcile ' +
+          'its points against the code';
+      codeReview =
+        '# Code review — how this workspace reviews changes\n\n' +
+        'Before you open or merge a pull request, review your own diff. ' +
+        `First, ${secondOpinion}. ` +
+        'Do NOT trigger a paid or cloud-billed review (e.g. `/code-review ultra`) on your own initiative — ' +
+        'it costs money and a human decides when it is worth it. A local review (the host\'s own ' +
+        '`/code-review` with no argument, or a cross-model pass) is free and is the default. Treat any ' +
+        'review as a second opinion, not a verdict: verify each point against the code before acting, and ' +
+        'remember every change you make still passes through the gateway.';
+    }
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned]
       .filter(Boolean)
       .join('\n\n');
   }

@@ -13637,11 +13637,19 @@ function CompanySettings({ me }: { me: Member }) {
   const [meta, setMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  // Code-review policy — a separate document from the company context, injected into every agent's
+  // prompt. Blank = the built-in default (steer to a cheap cross-model review, never the paid cloud one).
+  const [review, setReview] = useState('')
+  const [reviewSaved, setReviewSaved] = useState('')
+  const [reviewMeta, setReviewMeta] = useState<{ updatedAt?: number; updatedBy?: string }>({})
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [reviewHint, setReviewHint] = useState('')
 
   useEffect(() => {
     api.settings().then((s) => {
       if (s.error) return setHint('⚠ ' + s.error)
       setMd(s.companyMd ?? ''); setSaved(s.companyMd ?? ''); setMeta({ updatedAt: s.updatedAt, updatedBy: s.updatedBy })
+      setReview(s.reviewMd ?? ''); setReviewSaved(s.reviewMd ?? ''); setReviewMeta({ updatedAt: s.reviewUpdatedAt, updatedBy: s.reviewUpdatedBy })
     }).catch(() => {})
   }, [])
 
@@ -13655,39 +13663,88 @@ function CompanySettings({ me }: { me: Member }) {
     setTimeout(() => setHint(''), 1500)
   }
 
+  const reviewDirty = review !== reviewSaved
+  const saveReview = async () => {
+    setReviewBusy(true); setReviewHint('')
+    const r = await api.saveReview(review)
+    setReviewBusy(false)
+    if (r.error) return setReviewHint('⚠ ' + r.error)
+    setReviewSaved(review); setReviewMeta({ updatedAt: r.reviewUpdatedAt, updatedBy: r.reviewUpdatedBy }); setReviewHint('saved')
+    setTimeout(() => setReviewHint(''), 1500)
+  }
+
   if (!isAdmin) return <div className="text-sm text-muted-foreground">Owner or admin access required.</div>
 
   return (
-    <div className="max-w-3xl space-y-4">
-      <p className="text-sm text-muted-foreground">
-        The <strong>Company context</strong> is one shared document — voice, facts, conventions, links, how this
-        workspace works — appended to the system prompt of <strong>every claude-code agent</strong> you spawn. Edit it
-        once here instead of repeating it in each agent's CLAUDE.md. (Leave it blank to inject nothing.)
-      </p>
+    <div className="max-w-3xl space-y-6">
+      <div className="space-y-4">
+        <p className="text-sm text-muted-foreground">
+          The <strong>Company context</strong> is one shared document — voice, facts, conventions, links, how this
+          workspace works — appended to the system prompt of <strong>every claude-code agent</strong> you spawn. Edit it
+          once here instead of repeating it in each agent's CLAUDE.md. (Leave it blank to inject nothing.)
+        </p>
 
-      <Card>
-        <CardContent className="space-y-3 p-4">
-          <Field label="Company context (markdown)">
-            <Textarea
-              value={md}
-              onChange={(e) => setMd(e.target.value)}
-              className="min-h-[320px] font-mono text-xs leading-relaxed"
-              placeholder={'# Acme Inc.\n\n## Voice\nConcise, friendly, no emoji in customer-facing copy.\n\n## Facts\n- Support hours: 9–5 ET, Mon–Fri\n- Billing runs on Stripe\n\n## Conventions\n- Recall relevant context before non-trivial work; remember durable decisions, fixes, and gotchas.'}
-            />
-          </Field>
-          <div className="flex items-center gap-3">
-            <Button onClick={save} disabled={busy || !dirty}>
-              {dirty ? 'Save' : 'Saved'}
-            </Button>
-            {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
-            {meta.updatedAt && (
-              <span className="ml-auto text-[11px] text-muted-foreground">
-                last updated {new Date(meta.updatedAt).toLocaleString()}{meta.updatedBy ? ` by ${meta.updatedBy}` : ''}
-              </span>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <Field label="Company context (markdown)">
+              <Textarea
+                value={md}
+                onChange={(e) => setMd(e.target.value)}
+                className="min-h-[320px] font-mono text-xs leading-relaxed"
+                placeholder={'# Acme Inc.\n\n## Voice\nConcise, friendly, no emoji in customer-facing copy.\n\n## Facts\n- Support hours: 9–5 ET, Mon–Fri\n- Billing runs on Stripe\n\n## Conventions\n- Recall relevant context before non-trivial work; remember durable decisions, fixes, and gotchas.'}
+              />
+            </Field>
+            <div className="flex items-center gap-3">
+              <Button onClick={save} disabled={busy || !dirty}>
+                {dirty ? 'Save' : 'Saved'}
+              </Button>
+              {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+              {meta.updatedAt && (
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  last updated {new Date(meta.updatedAt).toLocaleString()}{meta.updatedBy ? ` by ${meta.updatedBy}` : ''}
+                </span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold">Code review policy</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            How the fleet reviews a diff or PR — injected into every agent's prompt as its own steer.
+            <strong> Leave it blank</strong> and agents get the built-in default: prefer a cheap cross-model
+            second opinion (the <code>glm-review</code> skill when installed) and <strong>never</strong> trigger a
+            paid/cloud review like <code>/code-review ultra</code> on their own. Override it here to set your own
+            standard.
+          </p>
+        </div>
+
+        <Card>
+          <CardContent className="space-y-3 p-4">
+            <Field label="Code review policy (markdown)">
+              <Textarea
+                value={review}
+                onChange={(e) => setReview(e.target.value)}
+                className="min-h-[220px] font-mono text-xs leading-relaxed"
+                placeholder={'# Code review\n\nBefore opening or merging a PR:\n- Run the `glm-review` skill for a cross-model second opinion, then reconcile.\n- Do NOT run a paid/cloud review (e.g. `/code-review ultra`) unless a human asks.\n- Treat any review as a second opinion, not a verdict — verify each point against the code.'}
+              />
+            </Field>
+            <div className="flex items-center gap-3">
+              <Button onClick={saveReview} disabled={reviewBusy || !reviewDirty}>
+                {reviewDirty ? 'Save' : 'Saved'}
+              </Button>
+              {reviewHint && <span className="font-mono text-xs text-muted-foreground">{reviewHint}</span>}
+              {reviewMeta.updatedAt && (
+                <span className="ml-auto text-[11px] text-muted-foreground">
+                  last updated {new Date(reviewMeta.updatedAt).toLocaleString()}{reviewMeta.updatedBy ? ` by ${reviewMeta.updatedBy}` : ''}
+                </span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   )
 }

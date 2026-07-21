@@ -13,6 +13,7 @@ import { Db } from '../state/db';
 import { Branding, EnrichPattern, MemoryConfig, Recommendation, RouterConfig, RuntimeTuning, sanitizeBranding, sanitizeRuntimeTuning } from '../types';
 
 const COMPANY_KEY = 'company_md';
+const REVIEW_KEY = 'code_review_md'; // the fleet-wide code-review policy (how agents review a diff/PR)
 const COMPOSIO_KEY = 'composio_api_key';
 const COMPOSIO_WEBHOOK_KEY = 'composio_webhook_secret';
 const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connections:write)
@@ -85,8 +86,18 @@ export interface KillSwitchState {
 export interface CompanySettings {
   /** The company-wide markdown context. Empty string when unset. */
   companyMd: string;
+  /**
+   * The fleet-wide **code-review policy** — how agents should review a diff / PR (which tool, cost
+   * posture, what to check). Empty string when unset; `buildCompanyMd` then injects a sensible default
+   * instead. A separate document from `companyMd` so it can carry its own guidance without bloating the
+   * general context, and be edited/cleared independently.
+   */
+  reviewMd: string;
   updatedAt?: number;
   updatedBy?: string;
+  /** Last-touched metadata for the review policy specifically (independent of the company doc). */
+  reviewUpdatedAt?: number;
+  reviewUpdatedBy?: string;
 }
 
 interface SettingRow {
@@ -111,14 +122,28 @@ export class SettingsStore {
       .run(key, value, Date.now(), by ?? null);
   }
 
-  /** The Company context document + who last touched it. */
+  /** The Company context document + the code-review policy + who last touched each. */
   company(): CompanySettings {
     const row = this.getRow(COMPANY_KEY);
-    return { companyMd: row?.value ?? '', updatedAt: row?.updated_at, updatedBy: row?.updated_by ?? undefined };
+    const review = this.getRow(REVIEW_KEY);
+    return {
+      companyMd: row?.value ?? '',
+      updatedAt: row?.updated_at,
+      updatedBy: row?.updated_by ?? undefined,
+      reviewMd: review?.value ?? '',
+      reviewUpdatedAt: review?.updated_at,
+      reviewUpdatedBy: review?.updated_by ?? undefined,
+    };
   }
 
   setCompany(md: string, by?: string): CompanySettings {
     this.set(COMPANY_KEY, md, by);
+    return this.company();
+  }
+
+  /** The fleet-wide code-review policy ('' = fall back to the built-in default in `buildCompanyMd`). */
+  setReview(md: string, by?: string): CompanySettings {
+    this.set(REVIEW_KEY, md, by);
     return this.company();
   }
 

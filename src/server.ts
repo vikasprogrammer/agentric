@@ -3952,6 +3952,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const updated = os.settings.setCompany(String(b.companyMd ?? ''), me.email);
     return sendJson(res, 200, { ok: true, ...updated });
   }
+  if (method === 'PUT' && p === '/api/settings/review') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req);
+    const updated = os.settings.setReview(String(b.reviewMd ?? ''), me.email);
+    return sendJson(res, 200, { ok: true, ...updated });
+  }
 
   // ── integration credentials (Composio now; Slack app etc. later) — instance-wide secrets ──
   if (method === 'GET' && p === '/api/settings/integrations') {

@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.252.0] — 2026-07-21
+### Added
+- **Code review policy — a first-class, fleet-wide steer for how agents review a diff/PR.** Settings →
+  Company now has a dedicated **Code review policy** document (its own `code_review_md` setting +
+  `PUT /api/settings/review`), injected into every claude-code agent's prompt as its own section by
+  `buildCompanyMd`. Left blank, it emits a **built-in default**: prefer a cheap cross-model second
+  opinion (the `glm-review` skill, named concretely only when the workspace has it installed) and
+  **never** trigger a paid/cloud-billed review such as `/code-review ultra` on the agent's own
+  initiative — a free local review is the default. The steer rides the prompt, so it reaches existing
+  tenants immediately (no tenant re-seed). Owners can override the default with their own standard.
+- **`glm-review` is now a bundled skill.** The fast cross-model (z.ai GLM) diff/PR review previously
+  living only in the globex tenant ships in the software's skill catalog (`config/skills/glm-review`),
+  so every tenant can one-click install it from Skills. Requires `ZAI_API_KEY` in the agent's shell
+  (assign it in Settings → Secrets).
+
 ## [0.251.2] — 2026-07-21
 ### Fixed
 - **`agent.update.proposed` inbox card now deep-links to the target agent's page, and its review card
