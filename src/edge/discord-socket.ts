@@ -280,7 +280,7 @@ export class DiscordSocket {
       if ('id' in th) { channel = th.id; replyRef = undefined; }
     }
 
-    const result = this.autos.fireDiscord(
+    const result = await this.autos.fireDiscord(
       {
         eventType: ev.eventType,
         // Bind the THREAD (when we made one) so `discord_reply` posts back into it. Inside a thread we

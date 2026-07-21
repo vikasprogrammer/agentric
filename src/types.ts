@@ -608,6 +608,27 @@ export interface LibsqlMemoryConfig {
 }
 
 /** An OpenAI-compatible or Ollama embeddings endpoint used to vectorize memory content + queries. */
+/**
+ * Auto-router tuning (Settings → Chat; stored as JSON under `router_config`). The router infers the
+ * best-fit agent for an unaddressed chat/ticket message — see src/edge/router.ts. All fields optional;
+ * sane defaults live in the router. A wrong SILENT route is the only bad outcome, so the thresholds
+ * govern when to route silently vs. ask the human to disambiguate.
+ */
+export interface RouterConfig {
+  /** Master switch. Unset → follows `chatRouterEnabled` (auto-route rides on the `/agent` front door).
+   *  Explicit `false` keeps the classic name-only router with no inference. */
+  enabled?: boolean;
+  /** Absolute floor a top candidate must clear to count as a match. Below it → help list. Default 0.5. */
+  minScore?: number;
+  /** Relative gap `(top-second)/top` the winner must clear to route SILENTLY. Below it → disambiguate.
+   *  Default 0.3. */
+  margin?: number;
+  /** Optional cheap chat model for the near-tie tie-break (OpenAI-compatible `/chat/completions`).
+   *  `url`/`apiKey` default to the configured memory embedder's endpoint when omitted. No model → no
+   *  LLM tie-break (near-ties just disambiguate). */
+  llm?: { model: string; url?: string; apiKey?: string };
+}
+
 export interface EmbeddingsConfig {
   /** 'openai' (OpenAI-compatible `/v1/embeddings`) or 'ollama' (local `/api/embed`). Default 'openai'. */
   provider?: 'openai' | 'ollama';
