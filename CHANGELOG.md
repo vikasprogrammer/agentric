@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.253.0] — 2026-07-21
+### Added
+- **Cockpit — the natural-language front door in the web console (auto-router Phase 1).** A new primary
+  nav tab (default-pinned): one big box where a member types what they need in plain words and the
+  auto-router — the *same* inference the Slack/Discord chat front door uses (`chooseAgent`) — picks the
+  best-fit agent and drops them straight into a chat with it, no agent-picker required. Fail-safe, mirrored
+  in the UI: a confident match shows the **suggested** agent (with a % match + a *semantic*/*AI-picked*
+  provenance hint) plus any runner-up as one-click alternatives; a near-tie shows a **"which one?"**
+  shortlist; nothing-matched offers the **runnable fleet** to pick from. Picking dispatches via the
+  existing `/api/chat/start` (reusing the whole Chat conversation view + governance — provenance
+  `chat:<member>`, run-as the member, gate hook), so Cockpit is a thin router front-end, not a new engine.
+  New read-only, member-scoped `POST /api/router/preview` (only offers agents the member `canRun`; dispatch
+  re-enforces it). This is the surface the "launch agents / ask about agent-os / invoke primitives" vision
+  builds on. `src/server.ts` (`/api/router/preview`), `web/src/App.tsx` (`CockpitPage`), `web/src/lib/api.ts`
+  (`routerPreview` + `RouterPreviewResp`).
+
 ## [0.252.2] — 2026-07-21
 ### Added
 - **`#/agent/<id>/edit` is now an accepted alias for the agent page.** The agent detail/editor lives at
