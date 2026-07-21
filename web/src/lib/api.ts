@@ -399,7 +399,7 @@ export interface AgentScore { agent: string; runs: number; success: number; fail
 export interface RejectedCapability { capability: string; count: number }
 export interface FrictionMap { rejections: RejectedCapability[]; pendingApprovals: number; oldestPendingAgeMs: number | null }
 export interface Insights { windowDays: number; agents: AgentScore[]; friction: FrictionMap }
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library' | 'sessions'
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library' | 'sessions' | 'idle-agents'
 export interface ImprovementTile { domain: ImprovementDomain; count: number; title: string; detail: string; actionLabel: string; href: string }
 export interface CleanupPruneItem { id: string; agent: string; snippet: string; ageDays: number; importance: number | null }
 export interface CleanupMergeGroup { agent: string; keepSnippet: string; drop: number }

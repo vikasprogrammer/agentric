@@ -10,11 +10,23 @@
  */
 import type { AgentOS } from '../kernel';
 import type { Insights } from './insights';
+import { BUILTIN_SEED_IDS } from './agent-catalog';
+import { CONSOLIDATOR_ID } from './consolidation';
+import { ANALYST_ID } from './diagnosis';
+import { IMPROVER_ID } from './improver';
+import { SCOUT_ID } from './skill-scout';
+import { STRATEGIST_ID } from './strategist';
+
+// The agents Agent OS provisions itself — never a "retire" candidate, however idle (they're on-demand
+// helpers: the consolidator/scout/strategist/… only run when the self-learning loop needs them). Mirrors
+// the `BUILT_IN_AGENT_IDS` set the server uses to mark agents read-only.
+const BUILT_IN_AGENTS = new Set<string>([...BUILTIN_SEED_IDS, CONSOLIDATOR_ID, SCOUT_ID, STRATEGIST_ID, IMPROVER_ID, ANALYST_ID]);
+const AGENT_IDLE_DAYS = 30;   // ran before but not in this long → idle (a retire candidate)
 
 const DAY = 24 * 3_600_000;
 type Db = AgentOS['db'];
 
-export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library' | 'sessions';
+export type ImprovementDomain = 'agents' | 'kb' | 'goals' | 'skills' | 'memory' | 'automations' | 'tasks' | 'library' | 'sessions' | 'idle-agents';
 export interface ImprovementTile {
   domain: ImprovementDomain;
   count: number;                 // opportunities found (0 = nothing to improve)
@@ -123,6 +135,23 @@ export function buildImprovements(os: AgentOS, insights: Insights, now = Date.no
     title: sessDead + sessStale ? `${sessDead + sessStale} old session${sessDead + sessStale === 1 ? '' : 's'} to archive` : 'Session list is tidy',
     detail: sessDead + sessStale ? `${sessDead} cleanly done 14d+ ago (archivable), ${sessStale} stopped/crashed — review before hiding.` : 'No old settled sessions.',
     actionLabel: 'Open Sessions', href: '#/sessions',
+  });
+
+  // 10) Idle agents — user-created claude-code agents that RAN before but have gone quiet (no run in
+  // 30+ days). Retiring an agent is destructive (and its automations/assignments would need handling),
+  // so this is DETECT + NAVIGATE only — surface the candidates and let a human decide on the Agents page.
+  // "Ran before" (in the map) is the age proxy — it avoids flagging a brand-new, never-run agent — and
+  // never flags the OS's own built-in helpers (on-demand by design).
+  const lastRun = new Map(db.prepare("SELECT agent, MAX(created_at) AS m FROM term_sessions GROUP BY agent").all<{ agent: string; m: number }>().map((r) => [r.agent, r.m]));
+  const idleAgents = [...os.agents.values()].filter((a) => {
+    const last = lastRun.get(a.id);
+    return a.runtime === 'claude-code' && !BUILT_IN_AGENTS.has(a.id) && last != null && last < now - AGENT_IDLE_DAYS * DAY;
+  });
+  tiles.push({
+    domain: 'idle-agents', count: idleAgents.length,
+    title: idleAgents.length ? `${idleAgents.length} idle agent${idleAgents.length === 1 ? '' : 's'}` : 'No idle agents',
+    detail: idleAgents.length ? `No run in ${AGENT_IDLE_DAYS}+ days: ${idleAgents.slice(0, 3).map((a) => a.id).join(', ')}${idleAgents.length > 3 ? '…' : ''}. Retire the ones you no longer need to keep the roster focused.` : 'Every agent has run recently.',
+    actionLabel: 'Review agents', href: '#/agents',
   });
 
   return tiles;

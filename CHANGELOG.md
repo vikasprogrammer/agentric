@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.249.0] — 2026-07-21
+### Added
+- **Insights now surfaces idle agents to retire — a 10th improvement tile.** A user-created agent that
+  ran before but has gone quiet (no run in 30+ days) clutters the roster and the spawn picker. The new
+  **idle-agents** tile detects them off `MAX(created_at)` per agent and points to the Agents page. It
+  never flags the OS's own built-in helpers (consolidator / skill-scout / strategist / … — on-demand by
+  design) or a brand-new agent that has simply never run (the "ran before" check is the age proxy).
+  Detect + navigate only — retiring an agent is destructive and its automations/assignments would need
+  handling, so the human makes the call (no auto-delete). `src/edge/improvements.ts`; rides the existing
+  `GET /api/insights` tile grid (now 10 tiles: agents · kb · goals · skills · memory · automations ·
+  tasks · library · sessions · idle-agents).
+  - *Deferred, by design:* a destructive `agent_merge` primitive (fold two redundant agents into one) —
+    it needs an explicit decision on what happens to the merged agent's sessions/tasks/automations/memory,
+    so it's left for a human to green-light separately rather than shipped autonomously.
+
 ## [0.248.0] — 2026-07-20
 ### Added
 - **Insights can now declutter the Sessions list — a 9th improvement tile.** The run history grows
