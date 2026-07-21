@@ -948,6 +948,9 @@ export interface CompanySettings {
   companyMd: string
   updatedAt?: number
   updatedBy?: string
+  reviewMd: string
+  reviewUpdatedAt?: number
+  reviewUpdatedBy?: string
   error?: string
 }
 
@@ -1434,6 +1437,7 @@ export const api = {
 
   settings: () => call<CompanySettings>('GET', '/api/settings'),
   saveCompany: (companyMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/company', { companyMd }),
+  saveReview: (reviewMd: string) => call<CompanySettings & { ok: boolean; error?: string }>('PUT', '/api/settings/review', { reviewMd }),
   connections: () => call<ConnectionsResp>('GET', '/api/connections'),
   integrationsOverview: () => call<IntegrationsOverview>('GET', '/api/integrations/overview'),
   composioToolkits: () => call<{ toolkits: { slug: string; name: string }[]; error?: string }>('GET', '/api/composio/toolkits'),
