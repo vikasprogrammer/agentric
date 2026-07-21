@@ -205,7 +205,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 57 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 58 always-on tools
   + 11 conditional (chat-reply / egress / media, each exposed only when its env flag is set; full list
   in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
@@ -264,8 +264,12 @@ Key modules:
   (build + self-improve): `agent_create` (spin up a new governed teammate) and the **self-only**
   `agent_update`/`agent_history`/`agent_revert` — an agent refines its OWN listing (description, starter
   prompts, tuning) + CLAUDE.md system prompt and can roll back a bad self-edit; every change snapshots a
-  reversible revision (`src/state/agent-revisions.ts`, the KB-style rollback backbone; no agent can edit
-  another agent). Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
+  reversible revision (`src/state/agent-revisions.ts`, the KB-style rollback backbone). To edit ANOTHER
+  agent, `agent_propose_update` is the **gated** cross-agent path (propose-don't-apply): it writes nothing,
+  posts an owner-addressed `agent.update.proposed` card, and applies only when an **owner who can run the
+  target** approves (`POST /api/agents/proposals/:id/approve` → the same self-edit apply + revision snapshot,
+  author = approver) — an admin can't approve, since rewriting another agent's prompt is a privilege-bearing
+  side effect. Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
   guardrail proposes a **TIGHTEN-ONLY** ruleset change (`tighten` a rule stricter, `reorder` a conditional
   rule above the unconditional allows — the first-match ordering fix, or `add` a new `ask`/`never`
   guardrail). `applyProposal` (`src/governance/policy.ts`) refuses any loosening (by construction + an

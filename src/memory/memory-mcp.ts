@@ -1124,12 +1124,13 @@ const TOOLS = [
       'description, category, model, effort, example prompts, or icon). This is how you self-improve: when ' +
       "you notice a recurring gap in your instructions or a better way to describe what you do, refine it " +
       'here. Takes effect on your next session. Every edit is snapshotted — inspect them with agent_history ' +
-      'and undo with agent_revert. You can only edit yourself (the id defaults to you); a human edits others.',
+      'and undo with agent_revert. You can only edit yourself (the id defaults to you); to edit ANOTHER ' +
+      'agent, use agent_propose_update (an owner approves it).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        id: { type: 'string', description: 'Optional — defaults to you. Must be your own id; you cannot edit another agent.' },
+        id: { type: 'string', description: 'Optional — defaults to you. Must be your own id; to edit another agent use agent_propose_update.' },
         description: { type: 'string', description: 'New one-line description of what you do.' },
         claudeMd: { type: 'string', description: "Replacement CLAUDE.md (your full system prompt). Send the complete new text, not a diff." },
         category: { type: 'string', description: 'New grouping label (empty string clears it → Uncategorized).' },
@@ -1138,6 +1139,32 @@ const TOOLS = [
         examplePrompts: { type: 'array', items: { type: 'string' }, description: 'Replacement starter prompts shown on your spawn card.' },
         icon: { type: 'string', description: 'New lucide icon name (or raw <svg>).' },
       },
+    },
+  },
+  {
+    name: 'agent_propose_update',
+    description:
+      "Propose an edit to ANOTHER agent's listing or CLAUDE.md system prompt — the gated counterpart to " +
+      'agent_update (which only edits you). You CANNOT change another agent directly: this posts a review ' +
+      'card to an owner and changes nothing until they approve. Pass only the fields to change, plus a ' +
+      'rationale the owner will read. Use it when you spot a concrete, well-justified improvement to a ' +
+      'teammate agent (a stale instruction, a missing convention, a better description). The target must be ' +
+      'a user-created claude-code agent (not a bundled example), and must not be you.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The agent to edit (required; must differ from you).' },
+        rationale: { type: 'string', description: 'Why this change is worth making — shown to the approving owner (required).' },
+        description: { type: 'string', description: 'New one-line description of what the target does.' },
+        claudeMd: { type: 'string', description: "Replacement CLAUDE.md (the target's full system prompt). Send the complete new text, not a diff — the owner sees a full before→after." },
+        category: { type: 'string', description: 'New grouping label (empty string clears it → Uncategorized).' },
+        model: { type: 'string', description: 'Model override (empty string clears → inherit the workspace default).' },
+        effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning-effort override.' },
+        examplePrompts: { type: 'array', items: { type: 'string' }, description: "Replacement starter prompts on the target's spawn card." },
+        icon: { type: 'string', description: 'New lucide icon name (or raw <svg>).' },
+      },
+      required: ['id', 'rationale'],
     },
   },
   {
@@ -2340,6 +2367,27 @@ async function agentUpdate(args: Record<string, unknown>): Promise<string> {
   return `Updated your listing "${id}"${d.rev ? ` (saved as rev ${d.rev} — revert with agent_revert)` : ''}. The next session you run will use it.`;
 }
 
+async function agentProposeUpdate(args: Record<string, unknown>): Promise<string> {
+  // Cross-agent + gated: propose an edit to ANOTHER agent. Nothing changes until an owner approves the card.
+  const id = String(args.id ?? '').trim().toLowerCase();
+  if (!id) return 'agent_propose_update needs id — the agent you want to edit.';
+  if (!String(args.rationale ?? '').trim()) return 'agent_propose_update needs a rationale — the owner sees it on the review card.';
+  const body: Record<string, unknown> = { session: SESSION, id, rationale: String(args.rationale) };
+  for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
+    if (args[k] !== undefined) body[k] = String(args[k]);
+  }
+  if (Array.isArray(args.examplePrompts)) body.examplePrompts = args.examplePrompts.map(String);
+  const res = await fetch(AOS_URL + '/api/agent/agent/propose', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
+  return d.ok
+    ? `Proposed an edit to "${id}"${d.preview ? ` (${d.preview})` : ''} — it's in an owner's inbox for review. NOTHING changes until an owner who can run "${id}" approves it; the target picks it up on its next session once applied.`
+    : `Could not propose the edit: ${d.error ?? 'unknown error'}`;
+}
+
 async function agentHistory(): Promise<string> {
   const res = await fetch(AOS_URL + '/api/agents/history', {
     method: 'POST',
@@ -2822,6 +2870,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'goal_propose' ? await goalPropose(args)
         : name === 'agent_create' ? await agentCreate(args)
         : name === 'agent_update' ? await agentUpdate(args)
+        : name === 'agent_propose_update' ? await agentProposeUpdate(args)
         : name === 'agent_history' ? await agentHistory()
         : name === 'agent_revert' ? await agentRevert(args)
         : name === 'app_create' ? await appCreate(args)

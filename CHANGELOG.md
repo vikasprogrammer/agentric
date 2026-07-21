@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.250.0] — 2026-07-21
+### Added
+- **Agents can now propose edits to *other* agents — gated, never applied unattended (`agent_propose_update`).**
+  The self-only `agent_update` stays as-is (an agent edits its own listing/CLAUDE.md, no approval). The new
+  tool is its cross-agent counterpart, kept deliberately *gated* rather than a widening of `agent_update`:
+  rewriting another agent's system prompt is a side effect on a different principal (a lateral-privilege /
+  prompt-injection vector), so it follows the propose-don't-apply pattern of `policy_propose` /
+  `automation_propose`. The agent's call writes **nothing** — it posts an owner-addressed
+  `agent.update.proposed` review card carrying the field delta + rationale. Application is **owner-only, and
+  the owner must be able to run the target** (`os.team.canRun`) — an admin cannot approve. On approval the
+  server runs the same apply path as the self-edit route (sanitizers + disk write + `AgentRevisions.commit`,
+  author = the approving owner, summary naming the proposer), so it's accountable to both parties and
+  one-click revertable in the existing Revision history panel. Guards mirror `agent_update` (user-home
+  claude-code targets only, never self) plus a 10-open queue cap and identical-delta dedupe. Console: an
+  owner-only **"Proposed edits from other agents"** card on the agent page with a full CLAUDE.md before→after;
+  an inbox card links there. `src/memory/memory-mcp.ts` (`agent_propose_update`), `src/terminal.ts`
+  (`proposeAgentUpdate` + card store), `src/server.ts` (`/api/agent/agent/propose`, `/api/agents/proposals`
+  + `:id/approve`/`reject`), `web/src/App.tsx`. Audited `agent.update.proposed` /
+  `agent.update.proposal.approved` / `agent.update.proposal.rejected`. See `docs/agent-mcp-tools.md`.
+
 ## [0.249.0] — 2026-07-21
 ### Added
 - **Insights now surfaces idle agents to retire — a 10th improvement tile.** A user-created agent that

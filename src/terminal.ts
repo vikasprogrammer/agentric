@@ -278,7 +278,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed';
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -462,7 +462,7 @@ export interface MemberNotice {
 export interface ReviewNotice {
   sessionId: string;
   agent: string;
-  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed';
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
   title: string;
   summary: string;
 }
@@ -3450,6 +3450,78 @@ export class TerminalManager {
         return { id: r.id, agent: r.agent, spec: a.spec as ProposedAutomation, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
       })
       .filter((p) => p.spec);
+  }
+
+  /**
+   * An agent PROPOSES an edit to ANOTHER agent's listing / CLAUDE.md — the cross-agent, gated sibling of
+   * the self-only `agent_update`. Nothing is written here (an unapproved prompt edit must not take effect):
+   * the field delta lives in the review card's args, and the approve route applies it only once an OWNER
+   * who can run the target signs off. Validates the target the SAME way the self-edit route does
+   * (claude-code only, under the user-agents root, not a bundled example), so an agent can't propose edits
+   * to something a human couldn't edit either. Same queue-cap + identical-delta dedupe as the other propose
+   * lanes; `id === proposer` is refused (that's what `agent_update` is for).
+   */
+  proposeAgentUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; preview?: string; error?: string } {
+    const target = String(body.id ?? '').trim().toLowerCase();
+    if (!target) return { ok: false, error: 'id (the agent to edit) is required' };
+    if (target === proposer) return { ok: false, error: 'use agent_update to edit your own listing' };
+    if (!String(body.rationale ?? '').trim()) return { ok: false, error: 'a rationale is required — the approver sees it on the card' };
+    if (!this.os.paths) return { ok: false, error: 'editing agents requires a data home' };
+    const ag = this.os.agents.get(target);
+    if (!ag?.dir) return { ok: false, error: `unknown agent "${target}"` };
+    if (ag.runtime !== 'claude-code') return { ok: false, error: 'only claude-code agents can be edited' };
+    const userRoot = path.resolve(this.os.paths.userAgents) + path.sep;
+    if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return { ok: false, error: 'built-in agents cannot be edited' };
+    // Only the fields actually present become the delta; store them verbatim on the card for the approve route.
+    const fields: Record<string, unknown> = {};
+    for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
+      if (k in body) fields[k] = String(body[k] ?? '');
+    }
+    if ('examplePrompts' in body && Array.isArray(body.examplePrompts)) fields.examplePrompts = body.examplePrompts.map(String);
+    if (!Object.keys(fields).length) return { ok: false, error: 'nothing to change — pass at least one field (description, claudeMd, category, model, effort, icon, examplePrompts)' };
+    // Cap the queue + dedupe an identical open proposal from this agent for this target (mirrors proposeAutomation).
+    const open = this.db.prepare(`SELECT args FROM messages WHERE type = 'agent.update.proposed' AND status = 'open' AND agent = ?`).all<{ args: string | null }>(proposer);
+    if (open.length >= 10) return { ok: false, error: 'you already have 10 open edit proposals awaiting review — wait for a human to act on them first' };
+    const deltaKey = JSON.stringify({ target, fields });
+    if (open.some((o) => { try { const a = JSON.parse(o.args || '{}') as { target?: string; fields?: unknown }; return JSON.stringify({ target: a.target, fields: a.fields }) === deltaKey; } catch { return false; } })) {
+      return { ok: false, error: 'an identical edit proposal from you is already awaiting review' };
+    }
+    const rationale = String(body.rationale).trim();
+    const preview = Object.keys(fields).map((k) => (k === 'claudeMd' ? 'CLAUDE.md (system prompt)' : k)).join(', ');
+    this.postReviewCard({
+      type: 'agent.update.proposed', sessionId, agent: proposer,
+      title: `Edit proposed for ${target}`,
+      body: `${rationale}\n\nChanges to \`${target}\`: ${preview}`,
+      args: { target, fields, rationale, preview },
+      summary: `${proposer} proposes editing ${target} (${preview})`,
+    });
+    this.audit(sessionId, proposer, 'agent.update.proposed', { target, fields: Object.keys(fields) });
+    return { ok: true, preview };
+  }
+
+  /** The proposed agent-edit review card by id (its target + field delta + status) — for the approve/reject routes. */
+  agentUpdateProposalCard(id: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; status: string } | undefined {
+    const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'agent.update.proposed'`).get<{ agent: string; args: string | null; status: string }>(id);
+    if (!row) return undefined;
+    let a: Record<string, unknown> = {};
+    try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+    if (!a.target || !a.fields) return undefined;
+    return { id, agent: row.agent, target: String(a.target), fields: a.fields as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+  }
+  setAgentUpdateProposalStatus(id: string, status: 'approved' | 'rejected'): void {
+    this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'agent.update.proposed'`).run(status, id);
+  }
+  /** Open agent-edit proposals (all targets, or just one when `target` is given) — for the console review list. */
+  openAgentUpdateProposals(target?: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; createdAt: number }[] {
+    return this.db
+      .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'agent.update.proposed' AND status = 'open' ORDER BY created_at DESC`)
+      .all<{ id: string; agent: string; args: string | null; created_at: number }>()
+      .map((r) => {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
+        return { id: r.id, agent: r.agent, target: String(a.target ?? ''), fields: (a.fields ?? {}) as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+      })
+      .filter((p) => p.target && (!target || p.target === target.trim().toLowerCase()));
   }
 
   /** Agent posts a mid-task progress update to the Inbox feed. Unlike the (now removed) spawn/stop/exit

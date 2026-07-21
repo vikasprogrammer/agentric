@@ -54,6 +54,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `goal_propose` | `POST /api/goals/propose` | `GoalStore.create` (status `draft`) + `TerminalManager.postGoalCard` | W | drafts a NOT-YET-ACTIVE goal + posts a `goal.proposed` inbox card to admins; owner = run-as; auto-apply + audited `goal.proposed`. Agents READ + PROPOSE only — activating/editing a goal is a human owner/admin console action (no agent write path) |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
 | `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; snapshots a revision; audited `agent.config.updated` |
+| `agent_propose_update` | `POST /api/agent/agent/propose` | `TerminalManager.proposeAgentUpdate` | W(gated) | **cross-agent, propose-don't-apply** — proposes an edit to ANOTHER agent's listing/CLAUDE.md; writes nothing, posts an owner-addressed `agent.update.proposed` review card; applied only when an **owner who can run the target** approves (`POST /api/agents/proposals/:id/approve`, then the self-edit apply + `AgentRevisions.commit`, author = approver); user-home claude-code targets only; 10-open cap + identical-delta dedupe; audited `agent.update.proposed` / `agent.update.proposal.approved`/`rejected` |
 | `agent_history` | `POST /api/agents/history` | `AgentRevisions.list` | R | the caller's own listing revisions (rev/author/summary/date), newest first |
 | `agent_revert` | `POST /api/agents/revert` | `AgentRevisions` + `AgentOS.registerAgent` | W | **self-only**; restores a prior revision (description/prompts/tuning/CLAUDE.md), records the revert as a new revision; audited `agent.config.reverted` |
 | `app_create` | `POST /api/apps/create` | `AppStore.scaffold` | W | builds a hosted app (single-file `server.js` for v1) under `<home>/apps/<slug>/`; lands **proposed** (`published:false`, inert until a human publishes); posts an `app.proposed` review card; audited `app.created` |
@@ -78,7 +79,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `video_generate` | `POST /api/agent/video/generate` | `TerminalManager.generateVideo` → `VideoBackend` + `VideoJobStore` + `ArtifactStore.ingest` | W | text→video (async). Governed as capability `video.generate` with `amountUsd`=per-second×duration estimate (money-cap rule applies), then SUBMITS to the vendor (fal.ai default / Atlas alt, `resolveVideoBackend`) and persists an opaque job handle to `video_jobs`. Renders take minutes: a brief in-call poll catches the fast case, else returns `{status:'rendering', jobId}`; the **Automations-tick poller** (`pollVideoJobs`) finishes it — downloads the mp4, `ingest`s it (`kind:'video'`, folder `generated-videos`) + an owner inbox card, audits `video.generated` (cost = estimate; video is per-second, rarely in-band). Only when `VIDEO_GEN=1` (fal/Atlas key set) |
 | `video_understand` | `POST /api/agent/video/understand` | `TerminalManager.understandVideo` → `VideoBackend` (multimodal) | W | WATCH a video and return a TEXT answer (video→text) — Claude can't see video natively; also handles a still with `kind:"image"`. `video` = a Library artifact id, a working-folder file, or an http(s) URL; optional `prompt` for what to find out ("summarise", "transcribe on-screen text"). No artifact produced. Governed as capability `video.understand` (`amountUsd` estimate, money-cap rule); audited `video.understood`. Only when `VIDEO_UNDERSTAND=1` (set when an **Atlas** multimodal key is configured) |
 
-57 always-on tools + 11 conditional (the conditional ones — `answer`, `slack_reply`/`discord_reply`,
+58 always-on tools + 11 conditional (the conditional ones — `answer`, `slack_reply`/`discord_reply`,
 `slack_send`/`slack_dm`, `discord_send`/`discord_dm`, `image_generate`/`image_edit`, `video_generate`,
 `video_understand` — are exposed only when their env flag is set, i.e. the run is chat-triggered or the
 backend/integration is configured). Read-only tools carry `annotations.readOnlyHint`; `forget`
@@ -203,7 +204,7 @@ scheduler `tick()` fires it once when due, then disables it. Recurring (cron) sc
 human-only. A future tightening could classify `schedule` through Policy for workspaces that want
 sign-off on deferred runs.
 
-### `agent_create` / `agent_update` / `agent_history` / `agent_revert` — governance model
+### `agent_create` / `agent_update` / `agent_propose_update` / `agent_history` / `agent_revert` — governance model
 
 `agent_create` is the **agent-author's** build tool (the default *System* agent provisioned by
 `src/edge/agent-author.ts`), though — like the Tasks tools — it's the general **delegation surface**
@@ -223,6 +224,21 @@ revision into `agent_revisions` (`src/state/agent-revisions.ts`), so any change 
 **agent page → Revision history** panel is the human rollback. `agent_update` only touches agents under the
 data home (bundled examples can't be edited) and rewrites only the fields the caller supplied. A future
 tightening could classify CLAUDE.md/model self-edits through Policy for workspaces that want sign-off.
+
+`agent_propose_update` is the **cross-agent** counterpart, deliberately kept *gated* rather than an open
+widening of `agent_update`. Rewriting **another** agent's system prompt is a genuine side effect on a
+different principal — a lateral-privilege / prompt-injection vector if left ungated (agents don't share a
+trust level; the target may hold different `shellSecrets`/assignments) — so it follows the **propose-don't-apply**
+pattern of `policy_propose` / `automation_propose`: the agent's loopback call writes **nothing**, it only
+posts an owner-addressed `agent.update.proposed` card carrying the field delta + rationale. Application is
+**owner-only, and the owner must be able to run the target** (`os.team.canRun`; owners run everything, so
+this also future-proofs a narrower run model) — an admin cannot approve. On approval the server runs the
+**same** apply path as the self-edit route (sanitizers + disk write + `AgentRevisions.commit`, author = the
+approving owner, summary naming the proposer), so accountability captures both parties and the result is
+one-click revertable in the same Revision history panel. Same target guards as `agent_update` (user-home
+claude-code agents only, never `id === self`), plus a 10-open queue cap and identical-delta dedupe. The
+console surfaces open proposals on the **agent page → "Proposed edits from other agents"** card (owner-only,
+with a full CLAUDE.md before→after).
 
 ### `goal_list` / `goal_get` / `goal_propose` — the strategic layer (read + propose only)
 

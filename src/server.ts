@@ -725,6 +725,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, out.ok ? 200 : 400, out);
   }
 
+  // Agent PROPOSES an edit to ANOTHER agent's listing / CLAUDE.md (`agent_propose_update`) — the gated,
+  // cross-agent sibling of the self-only `agent_update`. Nothing is written here; a valid proposal posts an
+  // owner-addressed 'agent.update.proposed' card and applies NOTHING until an OWNER who can run the target
+  // approves. Pre-auth loopback, session-secret gated (proposer resolved from the session row, not the body).
+  if (method === 'POST' && p === '/api/agent/agent/propose') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const proposer = tm.sessionAgent(session);
+    if (!proposer) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const out = tm.proposeAgentUpdate(session, proposer, b);
+    return sendJson(res, out.ok ? 200 : 400, out);
+  }
+
   // ── Secrets vault, agent-facing (loopback, session-scoped) — the A2A credential-handoff path ──
   // Shared-scope model: writes land tenant-wide (`*`) so any agent can read them; the value NEVER
   // touches audit/approval-card/policy args (see TerminalManager.putSecret/getSecret). `put` is
@@ -2230,6 +2244,60 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     tm.setAutomationProposalStatus(autoPropReject[1], 'rejected');
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.rejected', data: { by: me.email, agent: card.agent, name: card.spec.name, note: b.note ? String(b.note) : undefined } });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Agent-proposed edits to OTHER agents' listings / CLAUDE.md, awaiting human sign-off (the agents twin of
+  // /api/automations/proposals). Rewriting another agent's system prompt is a privilege-bearing act — the
+  // approve gate is OWNER-only AND the owner must be able to run the target (owners run everything, so this
+  // is belt-and-suspenders that also future-proofs a narrower run model). Nothing is applied until approve.
+  if (method === 'GET' && p === '/api/agents/proposals') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const target = url.searchParams.get('target') || undefined;
+    return sendJson(res, 200, { proposals: tm.openAgentUpdateProposals(target), canApprove: true });
+  }
+  const agUpdApprove = p.match(/^\/api\/agents\/proposals\/([\w.-]+)\/approve$/);
+  if (method === 'POST' && agUpdApprove) {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required — editing another agent\'s prompt is an owner act' });
+    if (!os.paths) return sendJson(res, 200, { ok: false, error: 'editing agents requires a data home' });
+    const card = tm.agentUpdateProposalCard(agUpdApprove[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such agent-edit proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    if (!os.team.canRun(me, card.target)) return sendJson(res, 403, { error: `you cannot run "${card.target}", so you cannot approve edits to it` });
+    const ag = os.agents.get(card.target);
+    if (!ag?.dir) { tm.setAgentUpdateProposalStatus(card.id, 'rejected'); return sendJson(res, 200, { ok: false, error: `target agent "${card.target}" no longer exists` }); }
+    if (ag.runtime !== 'claude-code') return sendJson(res, 200, { ok: false, error: 'only claude-code agents can be edited' });
+    const userRoot = path.resolve(os.paths.userAgents) + path.sep;
+    if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
+    const f = card.fields; // the proposed field delta (only present keys are applied — same shape as the self-edit body)
+    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in f ? f.model : ag.model, effort: 'effort' in f ? f.effort : ag.effort });
+    if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
+    const before = readAgentSnapshot(ag);
+    const description = 'description' in f ? String(f.description ?? '').trim() : ag.description;
+    const category = 'category' in f ? sanitizeCategory(f.category) : ag.category;
+    const icon = 'icon' in f ? sanitizeIcon(f.icon) : ag.icon;
+    const examplePrompts = 'examplePrompts' in f ? sanitizeExamplePrompts(f.examplePrompts) : ag.examplePrompts;
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, category, icon, examplePrompts };
+    const { dir: _dir, ...onDisk } = next;
+    fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
+    if ('claudeMd' in f) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(f.claudeMd ?? ''));
+    os.registerAgent(next);
+    const after = manifestToSnapshot(next, 'claudeMd' in f ? String(f.claudeMd ?? '') : before.claudeMd);
+    // Author = the approving owner; the summary preserves who proposed it, so the revision log names both parties.
+    const rev = os.agentRevisions.commit(os.tenant, card.target, before, after, `proposed by ${card.agent}, approved by ${me.email}`, me.email);
+    tm.setAgentUpdateProposalStatus(card.id, 'approved');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.update.proposal.approved', data: { target: card.target, proposer: card.agent, by: me.email, fields: Object.keys(f), claudeMd: 'claudeMd' in f, rev } });
+    return sendJson(res, 200, { ok: true, target: card.target, rev });
+  }
+  const agUpdReject = p.match(/^\/api\/agents\/proposals\/([\w.-]+)\/reject$/);
+  if (method === 'POST' && agUpdReject) {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const card = tm.agentUpdateProposalCard(agUpdReject[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such agent-edit proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    const b = await readBody(req);
+    tm.setAgentUpdateProposalStatus(card.id, 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.update.proposal.rejected', data: { by: me.email, agent: card.agent, target: card.target, note: b.note ? String(b.note) : undefined } });
     return sendJson(res, 200, { ok: true });
   }
   const autoRun = p.match(/^\/api\/automations\/([\w-]+)\/run$/);
