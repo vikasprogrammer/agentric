@@ -8,7 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.251.0] — 2026-07-21
+## [0.251.1] — 2026-07-21
+### Fixed
+- **Long memories are no longer silently dropped by the automem backend.** automem hard-rejects any
+  content over 2000 chars (`POST /memory → 400 "Content exceeds maximum length"`), and end-of-session
+  **episodes** routinely run longer (3–9k chars) — so the store THREW and the memory was lost from BOTH
+  automem AND the local mirror (the mirror only copies a record the backend *returns*). A 7-day fleet
+  review found this dropping **22–46% of episodes** (globex 141/165 = 46%), starving the self-learning
+  loop of its richest input. The automem provider now **truncates content to fit** (1980-char cap + a
+  `… [truncated]` marker) on both `store` and `update`, and returns the fitted content so the local
+  mirror matches what the backend holds. Memory is truncated-and-kept, never rejected-and-lost.
 ### Added
 - **Automatic agent routing — a chat/ticket message reaches the right agent without anyone naming one.**
   The `/agent` chat router already made the whole fleet reachable, but only if the sender knew the agent and

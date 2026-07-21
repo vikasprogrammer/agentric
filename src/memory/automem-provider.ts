@@ -20,6 +20,16 @@
 import { DeleteInput, MemoryProvider, MemoryRecord, MemoryScope, RecallQuery, StoreInput, UpdateInput } from '../types';
 
 const TIMEOUT_MS = 8000;
+// automem hard-rejects content over 2000 chars (`POST /memory → 400 "Content exceeds maximum length"`).
+// Episodes (end-of-session recaps) routinely run longer — 3-9k chars — so without this cap the store
+// THROWS and the memory is lost from BOTH automem and the local mirror (the mirror only copies a record
+// the backend RETURNED). Truncate to fit with a marker so the memory survives (head-kept: the task /
+// outcome / summary lead an episode; the tail is event detail). A small margin under 2000 absorbs any
+// server-side counting difference.
+const MAX_CONTENT = 1980;
+function fitContent(content: string): string {
+  return content.length <= MAX_CONTENT ? content : content.slice(0, MAX_CONTENT - 15).trimEnd() + '\n… [truncated]';
+}
 /** Marks a tenant-shared memory in the single collection: recall for `scope:'tenant'` matches on it. */
 const SHARED_TAG = 'scope:tenant';
 
@@ -44,8 +54,11 @@ export class AutomemMemoryProvider implements MemoryProvider {
     const tags = [...(input.tags ?? []), ...this.ns(input.agentId, input.tenant)];
     if (scope === 'tenant') tags.push(SHARED_TAG);
     const ts = Date.now();
+    // Fit the backend's length limit so a long memory is truncated-and-kept, never rejected-and-lost.
+    // Store the SAME fitted content on the returned record so the local mirror matches what automem holds.
+    const content = fitContent(input.content);
     const body = {
-      content: input.content,
+      content,
       tags,
       type: input.type,
       importance: input.importance,
@@ -57,7 +70,7 @@ export class AutomemMemoryProvider implements MemoryProvider {
       id: String((res as { memory_id?: string }).memory_id ?? ''),
       tenant: input.tenant,
       agentId: input.agentId,
-      content: input.content,
+      content,
       tags,
       type: input.type,
       importance: input.importance,
@@ -123,7 +136,7 @@ export class AutomemMemoryProvider implements MemoryProvider {
     const existing = await this.fetchOwned(input.id, input.agentId, input.tenant, input.admin);
     if (!existing) return null;
     const body: Record<string, unknown> = {};
-    if (input.content !== undefined) body.content = input.content;
+    if (input.content !== undefined) body.content = fitContent(input.content);
     if (input.type !== undefined) body.type = input.type;
     if (input.importance !== undefined) body.importance = input.importance;
     if (input.tags !== undefined) {
@@ -136,7 +149,7 @@ export class AutomemMemoryProvider implements MemoryProvider {
     if (Object.keys(body).length) await this.req('PATCH', `/memory/${input.id}`, undefined, body);
     return {
       ...existing,
-      content: input.content ?? existing.content,
+      content: input.content !== undefined ? fitContent(input.content) : existing.content,
       tags: (body.tags as string[] | undefined) ?? existing.tags,
       type: input.type ?? existing.type,
       importance: input.importance ?? existing.importance,
