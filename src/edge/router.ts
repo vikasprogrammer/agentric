@@ -24,6 +24,7 @@
  */
 import { AgentManifest, EmbeddingsConfig, RouterConfig } from '../types';
 import { AgentOS } from '../kernel';
+import { resolveLlm, chatComplete } from './llm';
 
 export interface RouterCandidate {
   agentId: string;
@@ -182,7 +183,7 @@ export async function chooseAgent(os: AgentOS, text: string): Promise<RouteDecis
 
   // Near-tie → try the LLM tie-break before bothering the human. A clear pick routes; unsure → disambiguate.
   if (decision.kind === 'disambiguate' && cfg.llm?.model) {
-    const pick = await llmTieBreak(os, cfg, text, decision.candidates, agents);
+    const pick = await llmTieBreak(os, text, decision.candidates, agents);
     if (pick) {
       const c = decision.candidates.find((x) => x.agentId === pick);
       if (c) return { kind: 'route', agentId: c.agentId, score: c.score, runnerUp: decision.candidates.find((x) => x.agentId !== pick), method: 'llm' };
@@ -228,16 +229,12 @@ async function tryEmbeddingBlend(
 
 async function llmTieBreak(
   os: AgentOS,
-  cfg: RouterConfig,
   text: string,
   candidates: RouterCandidate[],
   agents: AgentManifest[],
 ): Promise<string | null> {
-  const emb = resolveEmbeddings(os, cfg);
-  const url = (cfg.llm?.url || emb?.url || '').replace(/\/$/, '');
-  const apiKey = cfg.llm?.apiKey || emb?.apiKey;
-  const model = cfg.llm?.model;
-  if (!url || !model) return null;
+  const llm = resolveLlm(os);
+  if (!llm) return null;
   const roster = candidates
     .map((c) => {
       const a = agents.find((x) => x.id === c.agentId);
@@ -248,23 +245,9 @@ async function llmTieBreak(
     'You route an incoming message to exactly one agent. Reply with ONLY the agent id from the list, ' +
     'or the single word UNSURE if none clearly fits. No punctuation, no explanation.';
   const user = `Agents:\n${roster}\n\nMessage:\n${text.slice(0, 1500)}\n\nBest agent id:`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const res = await fetch(`${url}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
-      body: JSON.stringify({ model, temperature: 0, max_tokens: 24, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const raw = (json.choices?.[0]?.message?.content || '').trim().replace(/[^A-Za-z0-9_-]/g, '');
-    const hit = candidates.find((c) => c.agentId === raw);
-    return hit ? hit.agentId : null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
+  const out = await chatComplete(llm, [{ role: 'system', content: sys }, { role: 'user', content: user }], { maxTokens: 24, timeoutMs: 8000 });
+  if (!out) return null;
+  const raw = out.replace(/[^A-Za-z0-9_-]/g, '');
+  const hit = candidates.find((c) => c.agentId === raw);
+  return hit ? hit.agentId : null;
 }

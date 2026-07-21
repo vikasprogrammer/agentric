@@ -1458,7 +1458,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
-          {route === 'cockpit' && <CockpitPage onOpenChat={(id) => nav('chat', id)} />}
+          {route === 'cockpit' && <CockpitPage onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
@@ -3832,42 +3832,57 @@ function prettyAgent(id: string): string {
   return id.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-/** Cockpit — the natural-language front door. Type what you need; the auto-router (the same inference the
- *  Slack/Discord chat front door uses) picks the best-fit agent, and you drop straight into a chat with it.
- *  Phase 1: route → dispatch → hand off to the Chat conversation view. Later phases (answer questions about
- *  agent-os, invoke OS primitives directly) build on this same box. */
-function CockpitPage({ onOpenChat }: {
+/** Cockpit — the natural-language front door. Type what you need; the intent layer decides:
+ *   - work   → the auto-router picks the best-fit agent; you launch it in **Chat or Terminal**.
+ *   - ask    → a question about the workspace is answered **inline** (no session).
+ *   - action → "schedule…/create a task…" deep-links into that primitive's surface.
+ *  Every "work" dispatch still runs through the governed chat/terminal spawn (run-as you, gate hook). */
+function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
   onOpenChat: (id: string) => void
+  onOpenTerminal: (tmux: string, title?: string) => void
+  nav: (r: Route, detail?: string) => void
 }) {
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState<RouterPreviewResp | null>(null)
   const [err, setErr] = useState('')
+  // How a routed agent launches — remembered across submits.
+  const [mode, setMode] = useState<'chat' | 'terminal'>(() => (localStorage.getItem('cockpitLaunch') === 'terminal' ? 'terminal' : 'chat'))
+  const setLaunch = (m: 'chat' | 'terminal') => { setMode(m); localStorage.setItem('cockpitLaunch', m) }
 
-  const runPreview = async () => {
+  const runPreview = async (force?: 'work') => {
     const text = draft.trim()
     if (!text || busy) return
     setBusy(true); setErr(''); setPreview(null)
-    const r = await api.routerPreview(text)
+    const r = await api.routerPreview(text, force)
     setBusy(false)
     if (r.error) { setErr(r.error); return }
     setPreview(r)
   }
 
-  // Dispatch: spawn a chat with the chosen agent using the original message, then open the conversation.
+  // Dispatch the chosen agent in the selected launch mode, using the ORIGINAL message as its task.
   const dispatch = async (agentId: string) => {
     const text = draft.trim()
     if (!text || busy) return
     setBusy(true); setErr('')
-    const r = await api.startChat(agentId, text)
-    setBusy(false)
-    if (r.error || !r.id) { setErr(r.error || 'could not start the chat'); return }
-    onOpenChat(r.id)
+    if (mode === 'terminal') {
+      const r = await api.run(agentId, text)
+      setBusy(false)
+      if (r.error || !r.tmux) { setErr(r.error || 'could not start the session'); return }
+      onOpenTerminal(r.tmux, `${prettyAgent(agentId)} · ${r.id}`)
+    } else {
+      const r = await api.startChat(agentId, text)
+      setBusy(false)
+      if (r.error || !r.id) { setErr(r.error || 'could not start the chat'); return }
+      onOpenChat(r.id)
+    }
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runPreview() }
   }
+
+  const isWork = !preview?.intent || preview.intent === 'work'
 
   const card = (c: RouterCard, opts?: { primary?: boolean }) => (
     <button
@@ -3893,7 +3908,7 @@ function CockpitPage({ onOpenChat }: {
       <div className="text-center">
         <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-xl bg-primary/10"><Gauge className="h-6 w-6 text-primary" /></div>
         <h2 className="text-lg font-semibold">What do you need?</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Describe it in your own words — I'll route you to the right agent. No need to pick one.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Describe it in plain words — I'll route you to the right agent, answer a question, or point you to the right place.</p>
       </div>
 
       <div className="rounded-xl border bg-card p-2 shadow-sm">
@@ -3902,13 +3917,13 @@ function CockpitPage({ onOpenChat }: {
           value={draft}
           onChange={(e) => { setDraft(e.target.value); if (preview) setPreview(null) }}
           onKeyDown={onKeyDown}
-          placeholder="e.g. my pod is throwing a 500 after a plugin update — or — draft a reply to this refund request"
+          placeholder="e.g. my pod is throwing a 500 after a plugin update — or — which agents are idle? — or — schedule the churn report every morning"
           className="min-h-[96px] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
         />
         <div className="flex items-center justify-between px-1 pb-1">
-          <span className="text-[11px] text-muted-foreground">Enter to route · Shift+Enter for a new line</span>
-          <Button size="sm" disabled={busy || !draft.trim()} onClick={runPreview}>
-            {busy ? 'Routing…' : 'Route'}<Send className="ml-1.5 h-3.5 w-3.5" />
+          <span className="text-[11px] text-muted-foreground">Enter to send · Shift+Enter for a new line</span>
+          <Button size="sm" disabled={busy || !draft.trim()} onClick={() => runPreview()}>
+            {busy ? 'Thinking…' : 'Go'}<Send className="ml-1.5 h-3.5 w-3.5" />
           </Button>
         </div>
       </div>
@@ -3917,44 +3932,86 @@ function CockpitPage({ onOpenChat }: {
 
       {preview && (
         <div className="flex flex-col gap-3">
-          {preview.kind === 'route' && preview.suggested && (
-            <>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
-                <span>Best match{preview.method === 'llm' ? ' (AI-picked)' : preview.method === 'embedding' ? ' (semantic)' : ''} — press to start, or choose another below.</span>
-              </div>
-              {card(preview.suggested, { primary: true })}
-              {preview.candidates.length > 0 && (
-                <div className="flex flex-col gap-2">
-                  <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Or</span>
-                  {preview.candidates.map((c) => card(c))}
+          {/* ASK — answered inline from the workspace context; no session spawned. */}
+          {preview.intent === 'ask' && preview.answer && (
+            <div className="rounded-xl border bg-card p-4">
+              <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /><span>Answered from your workspace</span></div>
+              <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.answer}</ReactMarkdown></div>
+              <button onClick={() => runPreview('work')} className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline">Not what you meant? Route to an agent instead →</button>
+            </div>
+          )}
+
+          {/* ACTION — deep-link into the primitive's surface; execution stays human-driven. */}
+          {preview.intent === 'action' && preview.surface && (
+            <div className="rounded-xl border bg-card p-4">
+              <div className="flex items-start gap-3">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10">{preview.surface === 'automations' ? <Zap className="h-4.5 w-4.5 text-primary" /> : <ListChecks className="h-4.5 w-4.5 text-primary" />}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium">This looks like {preview.surface === 'automations' ? 'scheduling an automation' : 'creating a task'}.</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">Open the {preview.surface === 'automations' ? 'Automations' : 'Tasks'} page to set it up — or have an agent do it for you.</div>
                 </div>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button size="sm" onClick={() => nav(preview.surface === 'automations' ? 'automations' : 'tasks')}>Open {preview.surface === 'automations' ? 'Automations' : 'Tasks'}</Button>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => runPreview('work')}>Have an agent do it</Button>
+              </div>
+            </div>
+          )}
+
+          {/* WORK — route to an agent, launched in the chosen mode (Chat or Terminal). */}
+          {isWork && (
+            <>
+              {preview.askFallback && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">That looked like a question about your workspace. Configure an LLM in <button className="underline underline-offset-2" onClick={() => nav('settings')}>Settings</button> to answer those here directly — for now, an agent can help:</div>
               )}
-            </>
-          )}
-          {preview.kind === 'disambiguate' && (
-            <>
-              <div className="text-sm text-muted-foreground">A few agents could take this — which one?</div>
-              {preview.candidates.map((c) => card(c))}
-            </>
-          )}
-          {preview.kind === 'none' && (
-            <>
-              <div className="text-sm text-muted-foreground">I couldn't confidently match an agent. Pick one to start:</div>
-              <div className="max-h-[46vh] overflow-y-auto rounded-lg border">
-                <div className="flex flex-col divide-y">
-                  {preview.candidates.length === 0 && <div className="p-3 text-sm text-muted-foreground">No agents you can run yet.</div>}
-                  {preview.candidates.map((c) => (
-                    <button key={c.id} onClick={() => dispatch(c.id)} disabled={busy} className="flex items-start gap-3 p-3 text-left hover:bg-muted/60 disabled:opacity-60">
-                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-muted"><AgentIcon icon={c.icon} className="h-4 w-4 text-foreground/70" /></span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block font-medium">{prettyAgent(c.id)}</span>
-                        {c.description && <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{c.description}</span>}
-                      </span>
-                    </button>
-                  ))}
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">Launch in</span>
+                <div className="inline-flex rounded-lg border p-0.5">
+                  <button onClick={() => setLaunch('chat')} className={`flex items-center gap-1 rounded-md px-2 py-1 ${mode === 'chat' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><MessageSquare className="h-3.5 w-3.5" />Chat</button>
+                  <button onClick={() => setLaunch('terminal')} className={`flex items-center gap-1 rounded-md px-2 py-1 ${mode === 'terminal' ? 'bg-muted font-medium' : 'text-muted-foreground'}`}><TerminalSquare className="h-3.5 w-3.5" />Terminal</button>
                 </div>
               </div>
+
+              {preview.kind === 'route' && preview.suggested && (
+                <>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                    <span>Best match{preview.method === 'llm' ? ' (AI-picked)' : preview.method === 'embedding' ? ' (semantic)' : ''} — press to start in {mode}, or choose another.</span>
+                  </div>
+                  {card(preview.suggested, { primary: true })}
+                  {preview.candidates.length > 0 && (
+                    <div className="flex flex-col gap-2">
+                      <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Or</span>
+                      {preview.candidates.map((c) => card(c))}
+                    </div>
+                  )}
+                </>
+              )}
+              {preview.kind === 'disambiguate' && (
+                <>
+                  <div className="text-sm text-muted-foreground">A few agents could take this — which one?</div>
+                  {preview.candidates.map((c) => card(c))}
+                </>
+              )}
+              {preview.kind === 'none' && (
+                <>
+                  <div className="text-sm text-muted-foreground">I couldn't confidently match an agent. Pick one to start:</div>
+                  <div className="max-h-[46vh] overflow-y-auto rounded-lg border">
+                    <div className="flex flex-col divide-y">
+                      {preview.candidates.length === 0 && <div className="p-3 text-sm text-muted-foreground">No agents you can run yet.</div>}
+                      {preview.candidates.map((c) => (
+                        <button key={c.id} onClick={() => dispatch(c.id)} disabled={busy} className="flex items-start gap-3 p-3 text-left hover:bg-muted/60 disabled:opacity-60">
+                          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-muted"><AgentIcon icon={c.icon} className="h-4 w-4 text-foreground/70" /></span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block font-medium">{prettyAgent(c.id)}</span>
+                            {c.description && <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{c.description}</span>}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>

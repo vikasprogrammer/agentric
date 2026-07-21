@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.254.0] — 2026-07-21
+### Added
+- **Cockpit intent layer + Chat/Terminal launch choice (auto-router Phase 2).** Cockpit no longer always
+  spawns a session — a deterministic, LLM-free classifier (`src/edge/intent.ts`) first decides *what kind*
+  of ask a message is and does the right thing:
+  - **work** → the auto-router picks the best-fit agent, and you choose **Chat or Terminal** to launch it
+    (a remembered toggle; Terminal spawns the attachable TUI via `/api/sessions`, Chat via `/api/chat/start`
+    — both run-as you, both gated). This is the "let me pick where it opens" ask.
+  - **ask** (a question *about* the workspace — "which agents are idle?", "how many tasks are open?") →
+    answered **inline, no session**, by an LLM constrained to a compact live-workspace context
+    (`cockpitWorkspaceContext`: agents + session/task/automation counts + KB sections — the only ground it
+    may answer from). Degrades gracefully to routing when no LLM is configured, with a Settings hint.
+  - **action** ("schedule the churn report every morning", "create a task to…") → a safe **deep-link** into
+    that primitive's surface (Automations/Tasks), or "have an agent do it" — no ungoverned auto-execution
+    (that's Phase 3's governed meta-agent).
+  Classification is fail-safe (default `work`; a `force:'work'` escape hatch on every ask/action result).
+  New: `src/edge/intent.ts`, `src/edge/llm.ts` (shared OpenAI-compatible chat helper — the router's near-tie
+  tie-break now reuses it too), extended `POST /api/router/preview` (intent + inline `answer`/`surface`),
+  `web/src/App.tsx` (`CockpitPage` intents + launch toggle). Same governance throughout — the classifier
+  only decides routing; every spawned effect still passes the gate hook.
+
 ## [0.253.0] — 2026-07-21
 ### Added
 - **Cockpit — the natural-language front door in the web console (auto-router Phase 1).** A new primary

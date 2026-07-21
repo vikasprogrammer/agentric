@@ -21,6 +21,8 @@ import { readConversation, type ChatArtifactRef, type ChatKbRef, type ChatAppRef
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { chooseAgent } from './edge/router';
+import { classifyIntent } from './edge/intent';
+import { resolveLlm, chatComplete } from './edge/llm';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -211,6 +213,30 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
  *  `deletable` = lives under the data home (user-created), so it can be removed; the bundled
  *  examples that ship with the software are read-only. `builtIn` = one of the agents Agent OS
  *  provisions itself, so the console can label it as shipped-with-the-software vs. user-authored. */
+/** A compact, factual snapshot of the workspace for the Cockpit `ask` tier — the ONLY ground the LLM
+ *  may answer from. Kept small (agents + live counts + KB sections) and derived live, so answers reflect
+ *  the real fleet, not a hallucination. Member-scoped where it matters (sessions the viewer can see). */
+function cockpitWorkspaceContext(os: AgentOS, tm: TerminalManager, autos: Automations, me: Member): string {
+  const agents = [...os.agents.values()].filter((a) => a.runtime === 'claude-code');
+  const agentLines = agents.map((a) => `  - ${a.id}: ${(a.description || '').replace(/\s+/g, ' ').slice(0, 140)}`).join('\n');
+  const sessions = tm.listSessions(me);
+  const live = sessions.filter((s) => s.alive).length;
+  const waiting = sessions.filter((s) => s.blocked).length;
+  const tc = os.tasks.counts(os.tenant);
+  const autoList = autos.list();
+  const autoOn = autoList.filter((a) => a.enabled);
+  const autoNames = autoOn.slice(0, 20).map((a) => a.name).join(', ');
+  const sections = os.kb.sections(os.tenant);
+  return [
+    `Workspace: ${os.tenantName} (tenant ${os.tenant}).`,
+    `Agents (${agents.length}):\n${agentLines || '  (none)'}`,
+    `Sessions: ${sessions.length} total, ${live} running, ${waiting} blocked/waiting on a human.`,
+    `Tasks: ${tc.todo} todo, ${tc.doing} in progress, ${tc.blocked} blocked, ${tc.done} done.`,
+    `Automations: ${autoList.length} total, ${autoOn.length} enabled${autoNames ? ` (${autoNames})` : ''}.`,
+    `Knowledge Base sections: ${sections.join(', ') || '(none)'}.`,
+  ].join('\n');
+}
+
 function terminalAgents(os: AgentOS): { id: string; description: string; category?: string; runtime: string; deletable: boolean; builtIn: boolean; model?: string; effort?: string; examplePrompts?: string[]; icon?: string }[] {
   const userRoot = os.paths ? path.resolve(os.paths.userAgents) + path.sep : null;
   return [...os.agents.values()].map((a) => ({
@@ -2391,11 +2417,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
   }
 
-  // Cockpit: preview which agent a free-text message would route to, WITHOUT spawning anything. The
-  // caller shows the suggestion (or the disambiguation shortlist / the runnable fleet) and dispatches
-  // via /api/chat/start once the human picks. Read-only, member-scoped: only agents THIS member can run
-  // are offered (the auto-router scores the whole fleet; we filter the result to the runnable set, and
-  // /api/chat/start re-enforces canRun on dispatch). Same inference the Slack/Discord front door uses.
+  // Cockpit front door: classify the message's INTENT, then do the right thing WITHOUT spawning anything
+  // until the human commits. `work` → route to an agent (the caller then dispatches to Chat or Terminal);
+  // `ask` → answer inline from a compact workspace context (LLM; degrades to `work` when unconfigured);
+  // `action` → deep-link into the matching primitive surface (Automations/Tasks) — execution stays
+  // human-driven. Read-only + member-scoped: only agents THIS member can run are offered; dispatch
+  // (/api/sessions or /api/chat/start) re-enforces canRun. `force:'work'` skips classification (the
+  // caller's "route to an agent anyway" escape hatch from an ask/action result).
   if (method === 'POST' && p === '/api/router/preview') {
     const b = await readBody(req);
     const text = String(b.text || '').trim();
@@ -2406,21 +2434,41 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return { id, description: a?.description || '', category: a?.category, icon: a?.icon, score };
     };
     const fleet = () =>
-      [...os.agents.values()]
-        .filter((a) => a.runtime === 'claude-code' && runnable(a.id))
-        .map((a) => card(a.id));
-    const decision = await chooseAgent(os, text);
-    if (decision.kind === 'route' && runnable(decision.agentId)) {
-      const alts = [decision.runnerUp?.agentId].filter((x): x is string => !!x && runnable(x));
-      return sendJson(res, 200, { kind: 'route', method: decision.method, suggested: card(decision.agentId, decision.score), candidates: alts.map((id) => card(id)) });
+      [...os.agents.values()].filter((a) => a.runtime === 'claude-code' && runnable(a.id)).map((a) => card(a.id));
+    // The `work` responder: the agent-routing decision, filtered to what this member can run.
+    const respondWork = async (askFallback?: boolean) => {
+      const decision = await chooseAgent(os, text);
+      const base = { intent: 'work' as const, askFallback: askFallback || undefined };
+      if (decision.kind === 'route' && runnable(decision.agentId)) {
+        const alts = [decision.runnerUp?.agentId].filter((x): x is string => !!x && runnable(x));
+        return sendJson(res, 200, { ...base, kind: 'route', method: decision.method, suggested: card(decision.agentId, decision.score), candidates: alts.map((id) => card(id)) });
+      }
+      if (decision.kind === 'disambiguate') {
+        const list = decision.candidates.filter((c) => runnable(c.agentId));
+        if (list.length >= 2) return sendJson(res, 200, { ...base, kind: 'disambiguate', candidates: list.map((c) => card(c.agentId, c.score)) });
+        if (list.length === 1) return sendJson(res, 200, { ...base, kind: 'route', method: 'keyword', suggested: card(list[0].agentId, list[0].score), candidates: [] });
+      }
+      return sendJson(res, 200, { ...base, kind: 'none', candidates: fleet() });
+    };
+
+    const intent = b.force === 'work' ? { intent: 'work' as const } : classifyIntent(text);
+
+    if (intent.intent === 'action' && intent.surface) {
+      return sendJson(res, 200, { intent: 'action', surface: intent.surface });
     }
-    if (decision.kind === 'disambiguate') {
-      const list = decision.candidates.filter((c) => runnable(c.agentId));
-      if (list.length >= 2) return sendJson(res, 200, { kind: 'disambiguate', candidates: list.map((c) => card(c.agentId, c.score)) });
-      if (list.length === 1) return sendJson(res, 200, { kind: 'route', method: 'keyword', suggested: card(list[0].agentId, list[0].score), candidates: [] });
+
+    if (intent.intent === 'ask') {
+      const llm = resolveLlm(os);
+      if (!llm) return respondWork(true); // no LLM → route to an agent, but flag why (Settings hint)
+      const answer = await chatComplete(llm, [
+        { role: 'system', content: 'You are the assistant for this Agent OS workspace. Answer the question ONLY from the CONTEXT below — the live state of this workspace. Be concise (2–5 sentences). If the answer is not in the context, say you do not have that information and suggest the relevant console page. Never invent agents, numbers, or names.' },
+        { role: 'user', content: `CONTEXT:\n${cockpitWorkspaceContext(os, tm, autos, me)}\n\nQUESTION: ${text}` },
+      ], { maxTokens: 500, timeoutMs: 15000 });
+      if (!answer) return respondWork(true); // LLM failed → don't dead-end; route instead
+      return sendJson(res, 200, { intent: 'ask', answer });
     }
-    // none, or nothing runnable in the shortlist → let the human pick from the agents they can run.
-    return sendJson(res, 200, { kind: 'none', candidates: fleet() });
+
+    return respondWork();
   }
   // Read the friendly conversation timeline for a session (poll this like the rest of the console).
   const convoMatch = p.match(/^\/api\/sessions\/([\w-]+)\/conversation$/);
