@@ -20,6 +20,7 @@ import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityT
 import { readConversation, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
+import { chooseAgent } from './edge/router';
 import { SlackSocket } from './edge/slack-socket';
 import { DiscordSocket } from './edge/discord-socket';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -2388,6 +2389,38 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // no warm pane to race/reap, and `alive` stays honest. See TerminalManager.chatSend.
     const s = tm.createSession(agent, chatTitle(message, agent), message, `chat:${me.id}`, true, undefined, undefined, me.id, undefined, false);
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
+  }
+
+  // Cockpit: preview which agent a free-text message would route to, WITHOUT spawning anything. The
+  // caller shows the suggestion (or the disambiguation shortlist / the runnable fleet) and dispatches
+  // via /api/chat/start once the human picks. Read-only, member-scoped: only agents THIS member can run
+  // are offered (the auto-router scores the whole fleet; we filter the result to the runnable set, and
+  // /api/chat/start re-enforces canRun on dispatch). Same inference the Slack/Discord front door uses.
+  if (method === 'POST' && p === '/api/router/preview') {
+    const b = await readBody(req);
+    const text = String(b.text || '').trim();
+    if (!text) return sendJson(res, 400, { error: 'text is required' });
+    const runnable = (id: string) => os.team.canRun(me, id);
+    const card = (id: string, score?: number) => {
+      const a = os.agents.get(id);
+      return { id, description: a?.description || '', category: a?.category, icon: a?.icon, score };
+    };
+    const fleet = () =>
+      [...os.agents.values()]
+        .filter((a) => a.runtime === 'claude-code' && runnable(a.id))
+        .map((a) => card(a.id));
+    const decision = await chooseAgent(os, text);
+    if (decision.kind === 'route' && runnable(decision.agentId)) {
+      const alts = [decision.runnerUp?.agentId].filter((x): x is string => !!x && runnable(x));
+      return sendJson(res, 200, { kind: 'route', method: decision.method, suggested: card(decision.agentId, decision.score), candidates: alts.map((id) => card(id)) });
+    }
+    if (decision.kind === 'disambiguate') {
+      const list = decision.candidates.filter((c) => runnable(c.agentId));
+      if (list.length >= 2) return sendJson(res, 200, { kind: 'disambiguate', candidates: list.map((c) => card(c.agentId, c.score)) });
+      if (list.length === 1) return sendJson(res, 200, { kind: 'route', method: 'keyword', suggested: card(list[0].agentId, list[0].score), candidates: [] });
+    }
+    // none, or nothing runnable in the shortlist → let the human pick from the agents they can run.
+    return sendJson(res, 200, { kind: 'none', candidates: fleet() });
   }
   // Read the friendly conversation timeline for a session (poll this like the rest of the console).
   const convoMatch = p.match(/^\/api\/sessions\/([\w-]+)\/conversation$/);

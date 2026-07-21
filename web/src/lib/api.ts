@@ -1156,6 +1156,25 @@ export interface ConversationResp {
   error?: string
 }
 
+/** One routed-to agent option in a Cockpit preview. */
+export interface RouterCard {
+  id: string
+  description: string
+  category?: string
+  icon?: string
+  /** 0..1 routing confidence (present for the suggested pick / ranked candidates). */
+  score?: number
+}
+export interface RouterPreviewResp {
+  /** `route` → confident single pick in `suggested`; `disambiguate` → choose from `candidates`;
+   *  `none` → nothing matched, `candidates` is the runnable fleet to pick from. */
+  kind: 'route' | 'disambiguate' | 'none'
+  method?: 'keyword' | 'embedding' | 'llm'
+  suggested?: RouterCard
+  candidates: RouterCard[]
+  error?: string
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -1231,6 +1250,10 @@ export const api = {
   /** Start a chat with an agent — spawns a warm resident session. Returns its id. */
   startChat: (agent: string, message: string) =>
     call<{ id?: string; tmux?: string; error?: string }>('POST', '/api/chat/start', { agent, message }),
+  /** Cockpit: preview which agent a message routes to (no spawn). `route` → one suggested agent (+ any
+   *  runner-up); `disambiguate` → a shortlist to choose from; `none` → the runnable fleet to pick from. */
+  routerPreview: (text: string) =>
+    call<RouterPreviewResp>('POST', '/api/router/preview', { text }),
   /** Send the human's next turn into a chat session — a clean headless resume run. `busy` = a prior
    *  turn is still generating (keep the draft, resend shortly). */
   reply: (id: string, message: string) =>

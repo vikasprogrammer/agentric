@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -22,13 +22,13 @@ import { Xterm } from './Xterm'
 // Terminal font-size bounds (shared by TerminalFrame's state and the ImageDropZone stepper).
 const TERM_FONT_MIN = 8, TERM_FONT_MAX = 40
 
-type Route = 'overview' | 'inbox' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
+type Route = 'overview' | 'inbox' | 'cockpit' | 'chat' | 'sessions' | 'agents' | 'new-agent' | 'connectors' | 'team' | 'automations' | 'goals' | 'tasks' | 'memory' | 'insights' | 'kb' | 'skills' | 'apps' | 'files' | 'artifacts' | 'settings' | 'audit' | 'agent' | 'docs' | 'profile'
 // The full set of pages, used by the hash router to validate the URL on load. Keep in sync with Route.
-const ROUTES: Route[] = ['overview', 'inbox', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
+const ROUTES: Route[] = ['overview', 'inbox', 'cockpit', 'chat', 'sessions', 'agents', 'new-agent', 'connectors', 'team', 'automations', 'goals', 'tasks', 'memory', 'insights', 'kb', 'skills', 'apps', 'files', 'artifacts', 'settings', 'audit', 'agent', 'docs', 'profile']
 // The single source of truth for a page's human name — used for the header <h1> AND the browser-tab
 // title, so both always agree. The `agent` detail page appends the agent id at the call site.
 const ROUTE_TITLES: Record<Route, string> = {
-  overview: 'Overview', inbox: 'Inbox', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
+  overview: 'Overview', inbox: 'Inbox', cockpit: 'Cockpit', chat: 'Chat', sessions: 'Sessions', agents: 'Agents',
   'new-agent': 'New agent', agent: 'Agent', connectors: 'Connections', team: 'Team',
   automations: 'Automations', goals: 'Goals', tasks: 'Tasks', memory: 'Memory', insights: 'Insights',
   kb: 'Knowledge Base', skills: 'Skills', apps: 'Apps', files: 'Files', artifacts: 'Library', audit: 'Audit log',
@@ -908,9 +908,10 @@ function UpdateNotice({ compact = false }: { compact?: boolean } = {}) {
  *  this list; Sessions is the middle switcher; Feedback is an external link. `route` drives active
  *  state; `adminOnly` hides the item entirely from members who can't view that page (so they can't pin
  *  what they can't see). Order here is the canonical order items render in, whether in Main or Manage. */
-type NavKey = 'chat' | 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'insights' | 'skills' | 'apps' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
+type NavKey = 'cockpit' | 'chat' | 'goals' | 'tasks' | 'artifacts' | 'automations' | 'kb' | 'memory' | 'insights' | 'skills' | 'apps' | 'connectors' | 'team' | 'files' | 'audit' | 'settings' | 'docs'
 interface NavMeta { key: NavKey; route: Route; label: string; icon: ReactNode; adminOnly?: boolean; beta?: boolean }
 const PINNABLE_NAV: NavMeta[] = [
+  { key: 'cockpit',     route: 'cockpit',     label: 'Cockpit',     icon: <Gauge className="h-4 w-4" />, beta: true },
   { key: 'chat',        route: 'chat',        label: 'Chat',        icon: <MessageSquare className="h-4 w-4" />, beta: true },
   { key: 'goals',       route: 'goals',       label: 'Goals',       icon: <Target className="h-4 w-4" /> },
   { key: 'tasks',       route: 'tasks',       label: 'Tasks',       icon: <ListChecks className="h-4 w-4" /> },
@@ -930,7 +931,7 @@ const PINNABLE_NAV: NavMeta[] = [
 ]
 /** The default pin layout applied when a member has never customized (navPins === null): the three
  *  workspace surfaces that used to be hardwired into Main. Everything else starts under Manage. */
-const DEFAULT_PINNED_NAV: NavKey[] = ['goals', 'tasks', 'artifacts']
+const DEFAULT_PINNED_NAV: NavKey[] = ['cockpit', 'goals', 'tasks', 'artifacts']
 
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
@@ -1457,6 +1458,7 @@ function Console({ me }: { me: Member }) {
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
+          {route === 'cockpit' && <CockpitPage onOpenChat={(id) => nav('chat', id)} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
@@ -3821,6 +3823,142 @@ function ChatBubble({ turn, agentIcon }: { turn: Extract<ChatTurn, { kind: 'user
           <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-pre:my-1"><ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown></div>
         )}
       </div>
+    </div>
+  )
+}
+
+/** Prettify an agent id for a heading: `pod-troubleshooter` → `Pod Troubleshooter`. */
+function prettyAgent(id: string): string {
+  return id.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+/** Cockpit — the natural-language front door. Type what you need; the auto-router (the same inference the
+ *  Slack/Discord chat front door uses) picks the best-fit agent, and you drop straight into a chat with it.
+ *  Phase 1: route → dispatch → hand off to the Chat conversation view. Later phases (answer questions about
+ *  agent-os, invoke OS primitives directly) build on this same box. */
+function CockpitPage({ onOpenChat }: {
+  onOpenChat: (id: string) => void
+}) {
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<RouterPreviewResp | null>(null)
+  const [err, setErr] = useState('')
+
+  const runPreview = async () => {
+    const text = draft.trim()
+    if (!text || busy) return
+    setBusy(true); setErr(''); setPreview(null)
+    const r = await api.routerPreview(text)
+    setBusy(false)
+    if (r.error) { setErr(r.error); return }
+    setPreview(r)
+  }
+
+  // Dispatch: spawn a chat with the chosen agent using the original message, then open the conversation.
+  const dispatch = async (agentId: string) => {
+    const text = draft.trim()
+    if (!text || busy) return
+    setBusy(true); setErr('')
+    const r = await api.startChat(agentId, text)
+    setBusy(false)
+    if (r.error || !r.id) { setErr(r.error || 'could not start the chat'); return }
+    onOpenChat(r.id)
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runPreview() }
+  }
+
+  const card = (c: RouterCard, opts?: { primary?: boolean }) => (
+    <button
+      key={c.id}
+      onClick={() => dispatch(c.id)}
+      disabled={busy}
+      className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors disabled:opacity-60 ${opts?.primary ? 'border-primary/40 bg-primary/5 hover:bg-primary/10' : 'hover:bg-muted/60'}`}
+    >
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted"><AgentIcon icon={c.icon} className="h-4.5 w-4.5 text-foreground/70" /></span>
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2">
+          <span className="font-medium">{prettyAgent(c.id)}</span>
+          {typeof c.score === 'number' && <span className="text-[11px] text-muted-foreground">{Math.round(c.score * 100)}% match</span>}
+        </span>
+        {c.description && <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{c.description}</span>}
+      </span>
+      <Send className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+    </button>
+  )
+
+  return (
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 py-8">
+      <div className="text-center">
+        <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-xl bg-primary/10"><Gauge className="h-6 w-6 text-primary" /></div>
+        <h2 className="text-lg font-semibold">What do you need?</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Describe it in your own words — I'll route you to the right agent. No need to pick one.</p>
+      </div>
+
+      <div className="rounded-xl border bg-card p-2 shadow-sm">
+        <Textarea
+          autoFocus
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); if (preview) setPreview(null) }}
+          onKeyDown={onKeyDown}
+          placeholder="e.g. my pod is throwing a 500 after a plugin update — or — draft a reply to this refund request"
+          className="min-h-[96px] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+        />
+        <div className="flex items-center justify-between px-1 pb-1">
+          <span className="text-[11px] text-muted-foreground">Enter to route · Shift+Enter for a new line</span>
+          <Button size="sm" disabled={busy || !draft.trim()} onClick={runPreview}>
+            {busy ? 'Routing…' : 'Route'}<Send className="ml-1.5 h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
+
+      {err && <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">{err}</div>}
+
+      {preview && (
+        <div className="flex flex-col gap-3">
+          {preview.kind === 'route' && preview.suggested && (
+            <>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                <span>Best match{preview.method === 'llm' ? ' (AI-picked)' : preview.method === 'embedding' ? ' (semantic)' : ''} — press to start, or choose another below.</span>
+              </div>
+              {card(preview.suggested, { primary: true })}
+              {preview.candidates.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] uppercase tracking-wider text-muted-foreground">Or</span>
+                  {preview.candidates.map((c) => card(c))}
+                </div>
+              )}
+            </>
+          )}
+          {preview.kind === 'disambiguate' && (
+            <>
+              <div className="text-sm text-muted-foreground">A few agents could take this — which one?</div>
+              {preview.candidates.map((c) => card(c))}
+            </>
+          )}
+          {preview.kind === 'none' && (
+            <>
+              <div className="text-sm text-muted-foreground">I couldn't confidently match an agent. Pick one to start:</div>
+              <div className="max-h-[46vh] overflow-y-auto rounded-lg border">
+                <div className="flex flex-col divide-y">
+                  {preview.candidates.length === 0 && <div className="p-3 text-sm text-muted-foreground">No agents you can run yet.</div>}
+                  {preview.candidates.map((c) => (
+                    <button key={c.id} onClick={() => dispatch(c.id)} disabled={busy} className="flex items-start gap-3 p-3 text-left hover:bg-muted/60 disabled:opacity-60">
+                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-muted"><AgentIcon icon={c.icon} className="h-4 w-4 text-foreground/70" /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium">{prettyAgent(c.id)}</span>
+                        {c.description && <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{c.description}</span>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   )
 }
