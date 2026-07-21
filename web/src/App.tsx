@@ -4380,16 +4380,19 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
  *  gallery); the timestamp swaps to a dismiss button on hover. */
 function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenGoal, onDismiss, unread }: { m: Msg; members?: Member[]; onOpen: (tmux: string, title: string) => void; onOpenArtifact?: (id: string) => void; onOpenTask?: (id: string) => void; onOpenGoal?: (id: string) => void; onDismiss?: (id: string) => void; unread?: boolean }) {
   const open = () => onOpen('aos-' + m.sessionId, m.agent + ' · ' + m.sessionId)
-  const meta = (m.args ?? {}) as { artifactId?: string; filename?: string; taskId?: string; goalId?: string; event?: string }
+  const meta = (m.args ?? {}) as { artifactId?: string; filename?: string; taskId?: string; goalId?: string; event?: string; target?: string }
   const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
   // A 'task' card has no session — it deep-links to the board (its taskId), not a terminal.
   const goTask = m.type === 'task' && meta.taskId && onOpenTask ? () => onOpenTask(meta.taskId!) : null
   // A 'goal.proposed' card deep-links to the Goals page for that goal (no session).
   const goGoal = m.type === 'goal.proposed' && meta.goalId && onOpenGoal ? () => onOpenGoal(meta.goalId!) : null
-  const rowAction = goArtifact ?? goTask ?? goGoal ?? open
+  // An 'agent.update.proposed' card deep-links to the TARGET agent's page, where the owner review
+  // card lives — not the proposer's session terminal. Hash routing, so setting the hash routes in place.
+  const goAgentEdit = m.type === 'agent.update.proposed' && meta.target ? () => { window.location.hash = navHref('agent', meta.target!) } : null
+  const rowAction = goArtifact ?? goTask ?? goGoal ?? goAgentEdit ?? open
   // The new-tab target mirrors the click action — each deep-links fully (artifact by id, task by
-  // id, goal by id, else the session terminal).
-  const rowHref = goArtifact ? navHref('artifacts', meta.artifactId!) : goTask ? navHref('tasks', meta.taskId!) : goGoal ? navHref('goals', meta.goalId!) : navHref('sessions', 'aos-' + m.sessionId)
+  // id, goal by id, agent edit by target, else the session terminal).
+  const rowHref = goArtifact ? navHref('artifacts', meta.artifactId!) : goTask ? navHref('tasks', meta.taskId!) : goGoal ? navHref('goals', meta.goalId!) : goAgentEdit ? navHref('agent', meta.target!) : navHref('sessions', 'aos-' + m.sessionId)
 
   let Icon = Clock
   let iconCls = 'text-muted-foreground'
@@ -9541,6 +9544,9 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
           </Button>
         )}
       </div>
+      {/* Pending cross-agent edit proposals sit at the TOP so an owner arriving from the inbox deep-link
+          sees the review queue first (mirrors the PolicyEditor's atop-the-editor review pattern). */}
+      {info?.runtime === 'claude-code' && <AgentUpdateProposalsCard agentId={agentId} onApplied={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
       <p className="text-sm text-muted-foreground">
         <span className="font-medium text-foreground">{agentId}</span>
         {info && <RuntimeBadge runtime={info.runtime} />} — this agent's <span className="font-mono text-xs">CLAUDE.md</span> is its
@@ -9569,7 +9575,6 @@ function AgentPage({ agentId, agents, onSaved }: { agentId: string; agents: Agen
           )}
         </CardContent>
       </Card>
-      {info?.runtime === 'claude-code' && <AgentUpdateProposalsCard agentId={agentId} onApplied={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
       {info?.runtime === 'claude-code' && <AgentRevisionsCard agentId={agentId} onReverted={() => { setRevBump((n) => n + 1); onSaved?.() }} />}
     </div>
   )
