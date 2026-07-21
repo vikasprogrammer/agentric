@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.252.1] — 2026-07-21
+### Fixed
+- **Auto-router: semantic matching now works on any memory backend, and confident routes stop
+  collapsing into "ask".** Two issues surfaced dogfooding the router over the real northwind fleet.
+  (1) The embedding blend + LLM tie-break only read `memory.sqlite.embeddings`, so a tenant on the
+  `automem`/`libsql` backend (whose embeddings aren't a local `Embedder`) got **keyword-only** routing —
+  and terse agent descriptions (`pod-troubleshooter`: *"Checks why a pod has errored out"*) starve keyword
+  matching, so real support intents ("I want a refund, I was double charged" → the billing/support agent)
+  scored 0 and fell to the help list. Added a **router-owned** `router_config.embeddings` (+ the `llm`
+  endpoint/key falls back to it), so semantic routing works regardless of the memory backend; verified
+  end-to-end that "refund/double charged" now reaches the support agent via cosine when keyword scores 0.
+  (2) Scores are now on a stable **0..1 confidence** via *smooth* saturation (`raw/(raw+K)`) instead of a
+  hard clamp — the clamp pinned every strong candidate to 1.0, so two strong-but-different agents tied and
+  a clear winner became a disambiguation. Decisions use a **three-band** model: a viability floor
+  (`minScore`), a **route-confidence** gate (`routeConfidence`, new — a weak-but-relatively-ahead match now
+  *asks* instead of silently mis-routing), and the top-vs-second **margin judged on the raw score** (where
+  the true separation survives saturation). Also caches per-agent profile vectors (keyed by embedder +
+  agent + profile hash), so steady-state routing is **one** embed call (the message), not one-per-agent.
+  `src/edge/router.ts`, `src/types.ts` (`RouterConfig.embeddings`/`routeConfidence`).
+
 ## [0.252.0] — 2026-07-21
 ### Added
 - **Code review policy — a first-class, fleet-wide steer for how agents review a diff/PR.** Settings →
