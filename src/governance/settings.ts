@@ -10,7 +10,7 @@
  * so adding more instance-level settings later is just another key.
  */
 import { Db } from '../state/db';
-import { Branding, EnrichPattern, MemoryConfig, Recommendation, RuntimeTuning, sanitizeBranding, sanitizeRuntimeTuning } from '../types';
+import { Branding, EnrichPattern, MemoryConfig, Recommendation, RouterConfig, RuntimeTuning, sanitizeBranding, sanitizeRuntimeTuning } from '../types';
 
 const COMPANY_KEY = 'company_md';
 const COMPOSIO_KEY = 'composio_api_key';
@@ -67,6 +67,7 @@ export const DEFAULT_GOVERNANCE_THRESHOLDS: GovernanceThresholds = { moneyCapUsd
 
 const EMAIL_ORG_DOMAINS_KEY = 'email_org_domains'; // internal email domains (JSON string[]); email.send to these is green
 const CHAT_ROUTER_KEY = 'chat_router_enabled'; // generic Slack/Discord `/agent` router fallback ('off' disables)
+const ROUTER_CONFIG_KEY = 'router_config'; // auto-router tuning (JSON RouterConfig): enabled/minScore/margin/llm
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
 const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
@@ -737,6 +738,31 @@ export class SettingsStore {
   setChatRouterEnabled(on: boolean, by?: string): boolean {
     this.set(CHAT_ROUTER_KEY, on ? 'on' : 'off', by);
     return this.chatRouterEnabled();
+  }
+
+  /** Auto-router config: when an unaddressed chat/ticket message matches no automation and no explicit
+   *  `/agent` prefix, infer the best-fit agent (see src/edge/router.ts). Stored as JSON; `{}` when
+   *  unset → all defaults. `enabled` unset → follows the `/agent` chat-router switch above. */
+  routerConfig(): RouterConfig {
+    const raw = this.getRow(ROUTER_CONFIG_KEY)?.value;
+    if (!raw) return {};
+    try {
+      return JSON.parse(raw) as RouterConfig;
+    } catch {
+      return {};
+    }
+  }
+
+  setRouterConfig(cfg: RouterConfig, by?: string): RouterConfig {
+    this.set(ROUTER_CONFIG_KEY, JSON.stringify(cfg ?? {}), by);
+    return this.routerConfig();
+  }
+
+  /** Whether automatic agent-routing is on: explicit `router_config.enabled`, else it rides on the
+   *  `/agent` chat-router master switch (so the front door and its inference default on together). */
+  autoRouteEnabled(): boolean {
+    const c = this.routerConfig();
+    return c.enabled ?? this.chatRouterEnabled();
   }
 
   /** How long a resident (warm) Slack/Discord thread session is kept alive after its last turn before

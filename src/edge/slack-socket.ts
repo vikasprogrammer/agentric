@@ -227,7 +227,7 @@ export class SlackSocket {
       }
     }
 
-    const result = this.autos.fireSlack(
+    const result = await this.autos.fireSlack(
       {
         eventType: ev.eventType,
         channel: ev.channel,

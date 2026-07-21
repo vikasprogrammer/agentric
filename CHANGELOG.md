@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.251.0] — 2026-07-21
+### Added
+- **Automatic agent routing — a chat/ticket message reaches the right agent without anyone naming one.**
+  The `/agent` chat router already made the whole fleet reachable, but only if the sender knew the agent and
+  prefixed `/name`; an unaddressed message just got a help list. The new router (`src/edge/router.ts`,
+  `chooseAgent`) *infers* the best-fit claude-code agent from the message itself — useful for Slack/Discord
+  (and, via the same shared front door, support-ticket triage) where you want to start an agent but not pick
+  one. Matching is **deterministic first** — idf-weighted token overlap over each agent's `id + description +
+  examplePrompts`, so rare-to-the-fleet terms ("billing", "kubernetes") discriminate and fleet-common terms
+  contribute ~0 — with two opt-in upgrades that only run when configured: an **embedding blend** (reuses the
+  Settings → Memory embedder; cosine(message, agent-profile) min-max blended with the keyword score) and an
+  **LLM tie-break** on a near-tie (cheap OpenAI-compatible `/chat/completions`, endpoint/key default to the
+  memory embedder's). The design **fails safe**: a clear winner routes silently, a near-tie or weak match asks
+  the human to **disambiguate** ("reply with a number"), and nothing-scored falls back to the classic help
+  list — a wrong *silent* route is the only bad outcome and it's gated behind a score margin. Explicit `/name`
+  still short-circuits inference. Disambiguation is stateful per thread (an in-memory shortlist keyed by
+  channel+thread; the reply routes the **original** request to the chosen agent). Routing carries no
+  privilege — it only picks an id; the spawn stays fully governed (provenance `chat:<agent>`, run-as the
+  sender, gate hook). Every route is audited `chat.routed` with `routedBy` (`explicit`/`auto`/`auto-llm`/
+  `auto-disambiguated`) + score + runner-up, so mis-routes are measurable. Wired into `fireSlack`/`fireDiscord`
+  via a shared `routeUnmatched` handler. Config: `router_config` (JSON `RouterConfig` — `enabled`/`minScore`/
+  `margin`/`llm`); `autoRouteEnabled()` defaults on, riding the `/agent` chat-router master switch.
+  `src/edge/router.ts` (new), `src/edge/automations.ts`, `src/governance/settings.ts`, `src/types.ts`.
+
 ## [0.250.0] — 2026-07-21
 ### Added
 - **Agents can now propose edits to *other* agents — gated, never applied unattended (`agent_propose_update`).**

@@ -17,6 +17,7 @@ import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
 import { Task } from '../types';
+import { chooseAgent, RouterCandidate } from './router';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
 // Supports: * , a-b , */n , a-b/n , lists. dow 0-7 (7 ≡ 0 = Sunday).
@@ -619,14 +620,22 @@ export class Automations {
   }
 
   /**
-   * Spawn a one-off chat run for an explicitly-addressed agent (the `/name` router) — no automation row.
-   * Same governance path as fire(): provenance `chat:<agent>`, run-as the sender, reply bound to the
-   * thread, every effect still gated. Audited as `chat.routed`.
+   * Spawn a one-off chat run for a routed agent (explicit `/name`, auto-inference, or a resolved
+   * disambiguation) — no automation row. Same governance path as fire(): provenance `chat:<agent>`,
+   * run-as the sender, reply bound to the thread, every effect still gated. Audited as `chat.routed`,
+   * tagged with HOW it was routed (`route.by` + score + runner-up) so mis-routes are measurable.
    */
   private spawnChatAgent(
     agentId: string,
     task: string,
-    opts: { runAs?: string; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; title?: string; resident?: boolean },
+    opts: {
+      runAs?: string;
+      slack?: { channel: string; threadTs: string };
+      discord?: { channel: string; messageId: string };
+      title?: string;
+      resident?: boolean;
+      route?: { by: 'explicit' | 'auto' | 'auto-llm' | 'auto-disambiguated'; score?: number; runnerUp?: string };
+    },
   ): FireResult {
     // `resident` (Slack chat) → a warm interactive session (headless off) kept alive for fast follow-ups;
     // otherwise the classic one-shot headless run. `title` is the meaningful, message-derived label.
@@ -640,9 +649,119 @@ export class Automations {
       tenant: this.os.tenant,
       principal: opts.runAs ? `member:${opts.runAs}` : 'chat',
       type: 'chat.routed',
-      data: { agent: agentId, runAs: opts.runAs ?? null, channel: opts.slack?.channel ?? opts.discord?.channel ?? null, resident: !!opts.resident },
+      data: {
+        agent: agentId,
+        runAs: opts.runAs ?? null,
+        channel: opts.slack?.channel ?? opts.discord?.channel ?? null,
+        resident: !!opts.resident,
+        routedBy: opts.route?.by ?? 'explicit',
+        score: opts.route?.score ?? null,
+        runnerUp: opts.route?.runnerUp ?? null,
+      },
     });
     return { ok: true, sessionId: s.id, tmux: s.tmux };
+  }
+
+  // ── auto-router: pending disambiguation (in-memory, per thread) ──────────────────
+  // When the router is uncertain it asks the human ("did you mean A or B?"). The reply arrives as a
+  // fresh thread message with NO session bound yet, so we stash the shortlist + the ORIGINAL request
+  // here keyed by thread; the next message in that thread resolves the choice and routes the original
+  // task. In-memory (like the approval decision waiter) — a restart just makes the human re-ask.
+  private pendingRoute = new Map<string, { candidates: string[]; text: string; extra: string; runAs?: string; expires: number }>();
+  private static readonly PENDING_TTL_MS = 15 * 60 * 1000;
+
+  private putPending(key: string, v: { candidates: string[]; text: string; extra: string; runAs?: string }): void {
+    const now = Date.now();
+    for (const [k, p] of this.pendingRoute) if (p.expires <= now) this.pendingRoute.delete(k); // opportunistic prune
+    this.pendingRoute.set(key, { ...v, expires: now + Automations.PENDING_TTL_MS });
+  }
+  private takePending(key: string): { candidates: string[]; text: string; extra: string; runAs?: string } | undefined {
+    const p = this.pendingRoute.get(key);
+    if (!p) return undefined;
+    this.pendingRoute.delete(key);
+    return p.expires > Date.now() ? p : undefined;
+  }
+
+  /** Interpret a disambiguation reply against the offered shortlist: a 1-based number, or an agent id /
+   *  name token appearing in the text. `undefined` → unresolved (treat the message as a fresh route). */
+  private matchDisambiguation(text: string, candidates: string[]): string | undefined {
+    const t = (text || '').toLowerCase().replace(/<@[^>]+>/g, '').trim();
+    const num = t.match(/(?:^|\s)([1-9])(?:\s|$|[.)])/);
+    if (num) {
+      const i = Number(num[1]) - 1;
+      if (i >= 0 && i < candidates.length) return candidates[i];
+    }
+    for (const id of candidates) {
+      if (t.includes(id.toLowerCase())) return id;
+      if (id.toLowerCase().split(/[-_]+/).some((tok) => tok.length >= 3 && t.includes(tok))) return id;
+    }
+    return undefined;
+  }
+
+  private disambiguationPrompt(candidates: RouterCandidate[]): string {
+    const lines = candidates.map((c, i) => {
+      const a = this.os.agents.get(c.agentId);
+      const desc = a?.description ? ` — ${a.description.split('\n')[0].slice(0, 120)}` : '';
+      return `${i + 1}. \`/${c.agentId}\`${desc}`;
+    });
+    return `I'm not sure which agent fits — reply with a number (or the name):\n${lines.join('\n')}`;
+  }
+
+  /**
+   * The shared front door for a chat message that matched no automation: resolve a pending
+   * disambiguation, else honour an explicit `/name`, else auto-route (route silently / ask to
+   * disambiguate / fall back to the help list). Used by both fireSlack and fireDiscord. `key` scopes
+   * the pending-disambiguation store to the thread (Slack: channel+thread; Discord: channel).
+   */
+  private async routeUnmatched(opts: {
+    key: string;
+    text: string;
+    extra: string;
+    runAs?: string;
+    slack?: { channel: string; threadTs: string };
+    discord?: { channel: string; messageId: string };
+  }): Promise<{ sessions: string[]; reply?: string }> {
+    const sessions: string[] = [];
+    const spawn = (agentId: string, task: string, route: NonNullable<Parameters<Automations['spawnChatAgent']>[2]['route']>, text: string, runAs?: string) => {
+      const r = this.spawnChatAgent(agentId, task, { runAs, slack: opts.slack, discord: opts.discord, title: chatTitle(text, agentId), resident: true, route });
+      if (r.ok) sessions.push(r.sessionId);
+    };
+
+    // 1) A reply to a disambiguation we asked in this thread → route the ORIGINAL request to the choice.
+    const pend = this.takePending(opts.key);
+    if (pend) {
+      const chosen = this.matchDisambiguation(opts.text, pend.candidates);
+      if (chosen) {
+        spawn(chosen, pend.extra, { by: 'auto-disambiguated' }, pend.text, pend.runAs ?? opts.runAs);
+        return { sessions };
+      }
+      // Unresolved reply → fall through and treat this message as a fresh routing attempt.
+    }
+
+    // The whole chat front door off → nothing to do (no help list either).
+    if (!this.os.settings.chatRouterEnabled()) return { sessions };
+
+    // 2) Explicit `/name` always wins over inference.
+    const explicit = this.routeChat(opts.text);
+    if (explicit.agentId) {
+      spawn(explicit.agentId, opts.extra, { by: 'explicit' }, opts.text, opts.runAs);
+      return { sessions };
+    }
+
+    // 3) Auto-route (when enabled). Fails safe: confident → route; uncertain → ask; nothing → help list.
+    if (this.os.settings.autoRouteEnabled()) {
+      const decision = await chooseAgent(this.os, opts.text);
+      if (decision.kind === 'route') {
+        spawn(decision.agentId, opts.extra, { by: decision.method === 'llm' ? 'auto-llm' : 'auto', score: decision.score, runnerUp: decision.runnerUp?.agentId }, opts.text, opts.runAs);
+        return { sessions };
+      }
+      if (decision.kind === 'disambiguate') {
+        this.putPending(opts.key, { candidates: decision.candidates.map((c) => c.agentId), text: opts.text, extra: opts.extra, runAs: opts.runAs });
+        return { sessions, reply: this.disambiguationPrompt(decision.candidates) };
+      }
+      // decision.kind === 'none' → fall back to the classic help list.
+    }
+    return { sessions, reply: explicit.help };
   }
 
   /** Inbound webhook: validate id + key, append the payload to the task, fire (guarded). */
@@ -687,10 +806,10 @@ export class Automations {
    * (resolved from the Slack user's email upstream) runs the session AS that member — per-member tools
    * + inbox; absent → the company identity. Event-driven, so no pile-up guard. Returns sessions started.
    */
-  fireSlack(
+  async fireSlack(
     event: { eventType: string; channel: string; threadTs: string; user: string; actorLabel: string; text: string; raw: unknown },
     runAsMember?: string,
-  ): { fired: number; sessions: string[]; reply?: string } {
+  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
     const sessions: string[] = [];
     const extra =
       `Triggered from Slack by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}` +
@@ -706,17 +825,19 @@ export class Automations {
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs } });
       if (r.ok) sessions.push(r.sessionId);
     }
-    // No specific automation matched → the generic `/agent` router (if enabled) makes the whole fleet
-    // reachable without one. A named agent runs; an unaddressed/unknown name gets a help list to post back.
+    // No specific automation matched → the shared chat front door: resolve a pending disambiguation,
+    // honour an explicit `/name`, else auto-route (route / ask / help list) — reachable fleet-wide.
     let reply: string | undefined;
-    if (sessions.length === 0 && this.os.settings.chatRouterEnabled()) {
-      const routed = this.routeChat(event.text);
-      if (routed.agentId) {
-        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, slack: { channel: event.channel, threadTs: event.threadTs }, title: chatTitle(event.text, routed.agentId), resident: true });
-        if (r.ok) sessions.push(r.sessionId);
-      } else {
-        reply = routed.help;
-      }
+    if (sessions.length === 0) {
+      const r = await this.routeUnmatched({
+        key: `slack:${event.channel}:${event.threadTs || event.channel}`,
+        text: event.text,
+        extra,
+        runAs: runAsMember,
+        slack: { channel: event.channel, threadTs: event.threadTs },
+      });
+      sessions.push(...r.sessions);
+      reply = r.reply;
     }
     return { fired: sessions.length, sessions, reply };
   }
@@ -825,10 +946,10 @@ export class Automations {
    * channel ('' / '*' = any). `runAsMember` runs the session AS that member; absent → the company
    * identity (the current default for Discord — see DiscordSocket.resolveMember). No pile-up guard.
    */
-  fireDiscord(
+  async fireDiscord(
     event: { eventType: string; channel: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown },
     runAsMember?: string,
-  ): { fired: number; sessions: string[]; reply?: string } {
+  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
     const sessions: string[] = [];
     const extra =
       `Triggered from Discord by ${event.actorLabel} (${event.eventType}) in channel ${event.channel}.\n` +
@@ -843,16 +964,19 @@ export class Automations {
       const r = this.fire(a, { guard: false, extra, runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId } });
       if (r.ok) sessions.push(r.sessionId);
     }
-    // No specific automation matched → the generic `/agent` router (if enabled). See fireSlack.
+    // No specific automation matched → the shared chat front door (auto-route / disambiguate / help).
+    // See fireSlack. Discord threads are keyed by channel id (the socket binds the branched thread).
     let reply: string | undefined;
-    if (sessions.length === 0 && this.os.settings.chatRouterEnabled()) {
-      const routed = this.routeChat(event.text);
-      if (routed.agentId) {
-        const r = this.spawnChatAgent(routed.agentId, extra, { runAs: runAsMember, discord: { channel: event.channel, messageId: event.messageId }, title: chatTitle(event.text, routed.agentId), resident: true });
-        if (r.ok) sessions.push(r.sessionId);
-      } else {
-        reply = routed.help;
-      }
+    if (sessions.length === 0) {
+      const r = await this.routeUnmatched({
+        key: `discord:${event.channel}`,
+        text: event.text,
+        extra,
+        runAs: runAsMember,
+        discord: { channel: event.channel, messageId: event.messageId },
+      });
+      sessions.push(...r.sessions);
+      reply = r.reply;
     }
     return { fired: sessions.length, sessions, reply };
   }
