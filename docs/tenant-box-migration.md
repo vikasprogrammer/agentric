@@ -37,6 +37,9 @@ stays put. The tenant's state is:
 - **AutoMem data** — the tenant's Qdrant collection + FalkorDB graph (if the memory backend is AutoMem).
 - **⚠ Claude transcripts** — `~/.claude/projects/` (NOT in the data home; needed for session *resume*).
   Easy to forget; see §5.
+- **⚠ Claude folder-trust keys** — `~/.claude.json` `projects[...].hasTrustDialogAccepted` (§4).
+- **⚠ Runtime toolchain + SSH/jump-host access** — deps agents shell out to (PHP/composer, …) and the
+  fleet SSH access the old box had (§6). Neither is in the data home.
 
 ---
 
@@ -50,7 +53,11 @@ stays put. The tenant's state is:
 3. **Decide the memory backend** — keep AutoMem (replicate + copy the graph/collection) or switch to
    built-in sqlite. Keeping AutoMem = byte-identical recall.
 4. **Lower the DNS TTL** on the public hostname to ~60s **now**, so the eventual cutover propagates fast.
-5. **Disable unattended auto-reboot on the new box** (it bit us — a kernel upgrade rebooted mid-setup):
+5. **Inventory the old box's NON-agent-os runtime deps.** Agents shell out to tools the base install
+   doesn't include — on the globex box the `iwp`/`clickup-manager` tooling needs **PHP + composer**
+   (`php -v`, `php -m`, `which composer` on the old box). Note the versions/extensions so §2 installs a
+   match; a missing runtime silently fails only the agents that use it ("this runtime has no php").
+6. **Disable unattended auto-reboot on the new box** (it bit us — a kernel upgrade rebooted mid-setup):
    ```
    echo 'Unattended-Upgrade::Automatic-Reboot "false";' | sudo tee /etc/apt/apt.conf.d/99-no-auto-reboot
    sudo systemctl stop unattended-upgrades
@@ -135,6 +142,21 @@ find agents -type f \( -path '*/.claude/*' -o -name 'CLAUDE.md' -o -name 'agent.
   | while read f; do sed -i 's#/home/OLDUSER/#/home/NEWUSER/#g' "$f"; done
 ```
 
+**Also port the Claude folder-trust keys** — `~/.claude.json` (outside the data home) stores per-folder
+trust under `projects["<abs-agent-dir>"].hasTrustDialogAccepted`. Copied verbatim, all keys point at the
+old path, so **every agent open shows "Do you trust this folder?"**. Re-key them and ensure every current
+agent dir is trusted:
+
+```bash
+node -e 'const fs=require("fs"),p=process.env.HOME+"/.claude.json",c=JSON.parse(fs.readFileSync(p,"utf8"));
+c.projects=c.projects||{};
+for(const k of Object.keys(c.projects)) if(k.startsWith("/home/OLDUSER/")){
+  const n=k.replace("/home/OLDUSER/","/home/NEWUSER/"); c.projects[n]={...c.projects[n],...c.projects[k]};
+  c.projects[n].hasTrustDialogAccepted=true; }
+const t=p+".tmp"; fs.writeFileSync(t,JSON.stringify(c,null,2),{mode:0o600}); fs.renameSync(t,p);'
+```
+Needs the home root writable (see the `ProtectHome` gotcha in §7) so the seed + Claude's own writes persist.
+
 See §6 bugs #1/#2 — these baked paths are the underlying defect.
 
 ---
@@ -161,7 +183,35 @@ Verify: for a stopped session, `session-<id>.env` has the new `AGENT_DIR` **and*
 
 ---
 
-## 6. Post-cutover cleanup & rollback
+## 6. Phase 3 — Runtime toolchain + SSH/jump-host access
+
+Things agents rely on that live **outside** agent-os and the data home:
+
+**Runtime toolchain** — install the deps you inventoried in §1.5 to match the old box, e.g.:
+```bash
+sudo apt-get install -y php-cli php-curl php-mbstring php-xml php-mysql php-sqlite3 php-xsl composer
+```
+Agent secrets these tools need (API tokens) already travel in the DB vault via the agent's `shellSecrets`
+and are injected at launch — no extra step.
+
+**SSH / jump-host access** — if the old box was a jump host into a fleet (dev/staging/prod), the new box
+needs the same reach. **Do NOT copy the old box's private `id_rsa`** — that doubles the blast radius of a
+key that's root everywhere, and it's unrevocable per-box. Instead:
+1. Enumerate the fleet: `grep -rhoE 'root@[a-z0-9.-]+|ssh +root@[0-9.]+' <old agent CLAUDE.md + ~/agents/*/>`;
+   confirm reach with `ssh root@<h> hostname` from the old box. (On the globex box this found staging×2,
+   dev3, dev, cloudapp, newstaging, **and 3 production servers** — production is a deliberate opt-in.)
+2. Give the new box **its own** keypair (`ssh-keygen -t ed25519`); it stays on the new box.
+3. From the old box (which still has root on each), append the new box's **public** key to each host's
+   `/root/.ssh/authorized_keys` (idempotent, match on the key material).
+4. Pre-populate the new box's `~/.ssh/known_hosts` (`ssh-keyscan`) — the hardened unit makes `~/.ssh`
+   read-only, so agents can't add hosts at runtime; unknown hosts fail.
+5. Test `ssh root@<h> hostname` **from the new box** (as the service user) for each.
+
+⚠ Probing a host with wrong usernames trips its **fail2ban** and bans your *source* IP for a cooldown —
+so a host you enrolled may briefly time out from the box that did the probing. Use clean single
+connections; retry after the ban clears.
+
+## 7. Post-cutover cleanup & rollback
 
 - **Old box safety:** `sudo systemctl disable agent-os-<tenant>` (stopped **and** disabled — else a
   reboot revives it and opens a *duplicate* Slack socket against the live tokens). Leave the data intact.
@@ -170,7 +220,7 @@ Verify: for a stopped session, `session-<id>.env` has the new `AGENT_DIR` **and*
 - **Rollback:** flip DNS back + `systemctl enable --now agent-os-<tenant>` on the old box. Nothing on the
   old box was mutated, so rollback is instant. Keep the old box untouched for a few days.
 
-## 7. Gotchas checklist
+## 8. Gotchas checklist
 
 - **`ProtectHome=read-only` hangs every session on the trust dialog.** The launcher seeds
   `~/.claude.json` (home **root**) via temp+rename → needs the home *directory* writable, not just
@@ -179,16 +229,24 @@ Verify: for a stopped session, `session-<id>.env` has the new `AGENT_DIR` **and*
 - **`secret.key` is load-bearing** — copy it (perms `600`) or the whole vault fails closed.
 - **Match Node major exactly** (`node:sqlite` needs 22+); point the unit `PATH`/`ExecStart` at the nvm binary.
 - **rsync source dirs beginning with `-`** are read as flags — prefix `./`.
+- **`KillMode=process` leaves orphaned agent sessions.** Stopping the old unit kills only the node PID;
+  the tmux server + live `claude` panes keep running (some mid-Slack-request → double-posts). After
+  cutover, kill them explicitly: `tmux -S <home>/tmux.sock kill-server`, then `pkill -f '<old checkout
+  path>'` for the double-forked stragglers — matching the checkout path spares the user's own `claude`.
+- **Never copy the box's private `id_rsa` to enroll the new box** (§6) — own keypair + push the pubkey.
+- **fail2ban bans the probing IP** when you SSH with wrong usernames — enroll with clean connections.
 - **Concurrency cap:** the derived default scales with RAM (`max(3, floor(GB/1.5))`), so a big box
   auto-derives a high cap. Pin `AOS_MAX_CONCURRENT_SESSIONS` conservatively at first, tune up later.
 - **Verify, don't assume:** memory `.env` token length, `integrity_check`, Slack `:443` socket, HTTPS by
   IP pre-DNS, 401-not-404 on `/api/*`.
 
-## 8. Bugs this runbook is a workaround for (fix upstream)
+## 9. Bugs this runbook is a workaround for (fix upstream)
 
 1. **🔴 `aos-settings.json` gate-hook permission globs are absolute** → protections silently no-op after a
    home move. Derive from the live home / realpath in the gate hook.
 2. **🟠 Persisted `session-*.env` / `.mcp.json` bake absolute `AGENT_DIR`/paths** → stopped sessions
    un-resumable after any home move. Persist home-relative; reconstruct at resume.
-3. **🟠 Claude transcripts live outside the data home** → "copy the data home" silently drops resume
-   history. Document, and ideally relocate transcripts under the home or ship an export/import helper.
+3. **🟠 Lots of resumable/operational state lives OUTSIDE the data home** — Claude transcripts
+   (`~/.claude/projects`), folder-trust keys (`~/.claude.json`), the SSH identity + `known_hosts`, and the
+   runtime toolchain. "Copy the data home" silently drops all of it. Document the full portable-state set,
+   and ideally ship a migration/backup command that captures it.
