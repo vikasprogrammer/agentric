@@ -5457,6 +5457,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
     return sendJson(res, 200, { ok: true, ruleAdded: result.added, note: result.added ? undefined : `“${cap}” is already always-allowed` });
   }
+  // "Trust host & allow": approve THIS attempt AND add a durable org HOST grant (posture `allow`) for
+  // the target host, so future reaches to it pass the gate without a card — the phase-2 answer to the
+  // fleet's #1 friction (nearly all approvals are "host not yet trusted"). Adding an allow-posture grant
+  // durably loosens the gate for the whole fleet, so like "always approve" it is OWNER-ONLY (an admin can
+  // still approve once). The host + protocol come from the enriched attempt args the gate captured. The
+  // never-tier still binds (a destructive `ssh box 'rm -rf /'` is denied by the engine regardless of host
+  // trust). Audited `host.trusted`.
+  const trustHostMatch = p.match(/^\/api\/approvals\/([\w-]+)\/trust-host$/);
+  if (method === 'POST' && trustHostMatch) {
+    const ap = os.approvals.get(trustHostMatch[1]);
+    if (!ap) return sendJson(res, 404, { error: 'approval not found' });
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required — trusting a host loosens the gate durably' });
+    const a = ap.attempt.args as Record<string, unknown>;
+    const host = typeof a.host === 'string' ? a.host : '';
+    if (!host) return sendJson(res, 400, { error: 'this approval has no identified host to trust' });
+    const proto = a.netProtocol === 'ssh' || a.netProtocol === 'http' || a.netProtocol === 'postgres' ? a.netProtocol : 'any';
+    // Approve the waiting run regardless of whether the durable grant lands.
+    os.approvals.resolve(trustHostMatch[1], true, me.email);
+    // Idempotent: if an enabled allow grant already matches this exact host, don't add a duplicate row.
+    const already = os.hosts.list().some((h) => h.enabled && !h.proposed && h.posture === 'allow' && h.match === host);
+    if (already) return sendJson(res, 200, { ok: true, trusted: false, note: `“${host}” is already trusted` });
+    os.hosts.add({ name: host, match: host, protocol: proto, posture: 'allow', scope: 'org' });
+    os.audit.append({ ts: Date.now(), runId: ap.runId, tenant: os.tenant, principal: me.email, type: 'host.trusted', data: { host, protocol: proto, from: 'inbox.trust_host' } });
+    return sendJson(res, 200, { ok: true, trusted: true, host });
+  }
   const apMatch = p.match(/^\/api\/approvals\/([\w-]+)$/);
   if (method === 'POST' && apMatch) {
     const ap = os.approvals.get(apMatch[1]);
