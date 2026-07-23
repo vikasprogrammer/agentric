@@ -203,9 +203,16 @@ Things agents rely on that live **outside** agent-os and the data home:
 **Runtime toolchain** — install the deps you inventoried in §1.5 to match the old box, e.g.:
 ```bash
 sudo apt-get install -y php-cli php-curl php-mbstring php-xml php-mysql php-sqlite3 php-xsl composer
+# gh (GitHub CLI) — agents shell out to it for PRs; install from the official apt repo, not snap
+sudo mkdir -p -m755 /etc/apt/keyrings
+wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+sudo apt-get update && sudo apt-get install -y gh
 ```
-Agent secrets these tools need (API tokens) already travel in the DB vault via the agent's `shellSecrets`
-and are injected at launch — no extra step.
+Agent secrets these tools need (API tokens) already travel in the DB vault and are injected at launch — no
+extra step. Note `gh` auth does **not** come from `data/gh.env` (that's a commented template); `GH_TOKEN`
+is injected from the **vault** at launch — the run-as member's linked `github_user` OAuth token, falling
+back to the tenant-wide `github_bot_token`. The binary is all you install; the token rides along.
 
 **SSH / jump-host access** — if the old box was a jump host into a fleet (dev/staging/prod), the new box
 needs the same reach. **Do NOT copy the old box's private `id_rsa`** — that doubles the blast radius of a
@@ -219,6 +226,17 @@ key that's root everywhere, and it's unrevocable per-box. Instead:
 4. Pre-populate the new box's `~/.ssh/known_hosts` (`ssh-keyscan`) — the hardened unit makes `~/.ssh`
    read-only, so agents can't add hosts at runtime; unknown hosts fail.
 5. Test `ssh root@<h> hostname` **from the new box** (as the service user) for each.
+6. **Per-app users, not just `root`.** Agents often SSH as a *non-root app user* (`dev3`, `runcloud`,
+   Hestia per-site users, …), and `root@` enrollment doesn't cover those — you'll see agents keep getting
+   "Permission denied (publickey)" as a *recurring* block. For each needed account, add the same pubkey to
+   **that user's** `authorized_keys` (via root you already have), with correct ownership/perms or `sshd`
+   StrictModes rejects it:
+   ```bash
+   ssh root@<h> 'H=$(getent passwd <user>|cut -d: -f6); install -d -m700 -o <user> -g <user> $H/.ssh;
+     touch $H/.ssh/authorized_keys; grep -q "<KEYMATERIAL>" $H/.ssh/authorized_keys || echo "<PUBKEY>" >> $H/.ssh/authorized_keys;
+     chown <user>:<user> $H/.ssh/authorized_keys; chmod 600 $H/.ssh/authorized_keys'
+   ```
+   Ask which app users the agents actually use and enroll them all up front, or this recurs one blocker at a time.
 
 ⚠ Probing a host with wrong usernames trips its **fail2ban** and bans your *source* IP for a cooldown —
 so a host you enrolled may briefly time out from the box that did the probing. Use clean single
