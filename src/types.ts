@@ -281,6 +281,55 @@ export function riskClassForLevel(level: ApprovalLevel): 'yellow' | 'red' {
   return level === 'owner' ? 'red' : 'yellow';
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Decision Brief — the human-legible account of a gated effect (docs/decision-brief-layer-plan.md).
+//
+// One structured artifact, computed once at gate time next to `classify()`, that every governance
+// consumer reads: the approval CARD body, the AUDIT narrative, and (later) the behavioural-failure
+// detector + a richer policy match surface. It replaces "here is the raw tool JSON" with "here is what
+// the agent is trying to do, on what, and why the gate cares". Deterministic — no LLM on the hot path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The coarse kind of action, for icon/wording. Derived from the capability + enriched facts. */
+export type ActionVerb =
+  | 'read' | 'write' | 'delete' | 'execute' | 'network' | 'deploy'
+  | 'pay' | 'send' | 'grant' | 'other';
+
+/** What the action acts ON — the object a human actually cares about (a host, a path, an amount). */
+export interface BriefTarget {
+  kind: 'file' | 'host' | 'db' | 'resource' | 'money' | 'recipient' | 'command' | 'unknown';
+  /** Human label: "deploy.yml", "198.51.100.42 (ssh)", "$42.00", "3 rows". */
+  label: string;
+  /** When kind === 'host' — the bare egress host, the handle host-trust learning keys on (phase 2). */
+  host?: string;
+  /** For a file write, whether the target is outside the agent's own folder. */
+  outsideWorkdir?: boolean;
+  /** deleteCount / recipients / affected rows, when known. */
+  count?: number;
+  amountUsd?: number;
+}
+
+/** A human-legible account of a single gated effect. Every field is computable from the enriched
+ *  attempt + decision — no I/O, no model call. See {@link ActionAttempt}, {@link Decision}. */
+export interface DecisionBrief {
+  /** One line: "Run a deploy-status check against Globex/docs on GitHub." */
+  headline: string;
+  verb: ActionVerb;
+  target: BriefTarget;
+  /** Why the gate cares (or didn't): "target host is not yet trusted", "writes to a production path". */
+  rationale: string;
+  riskClass: RiskClass;
+  /** What a human most likely wants. `trust-host` (phase 2) turns a recurring host ask into a one-time
+   *  trust decision; today the briefer only emits allow/approve/deny. */
+  suggestedAction: 'allow' | 'approve' | 'trust-host' | 'deny';
+  /** Stable, arg-normalised fingerprint of the action SHAPE (verb + capability + target family), NOT the
+   *  exact bytes — the key the failure plane (phase 3) counts on to detect a loop. */
+  signature: string;
+  /** Optional raw facts for the card's "raw" drill-down / power users. Omitted when the facts already
+   *  travel alongside the brief (e.g. embedded in a message's `args`). */
+  facts?: Record<string, unknown>;
+}
+
 export interface CapabilityResult {
   ok: boolean;
   data?: unknown;

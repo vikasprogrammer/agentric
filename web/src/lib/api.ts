@@ -596,6 +596,18 @@ export interface AddGoalReq {
   dueAt?: number
 }
 
+/** A human-legible account of a gated effect, computed server-side (src/governance/briefer.ts) and
+ *  carried inside an approval card's `args` as `args.brief`. Mirrors `DecisionBrief` in src/types.ts. */
+export interface Brief {
+  headline: string
+  verb: string
+  target: { kind: string; label: string; host?: string; outsideWorkdir?: boolean; count?: number; amountUsd?: number }
+  rationale: string
+  riskClass: 'green' | 'yellow' | 'red' | 'deny'
+  suggestedAction: 'allow' | 'approve' | 'trust-host' | 'deny'
+  signature: string
+}
+
 export interface Msg {
   id: string
   type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed'
