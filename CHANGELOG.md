@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.257.0] — 2026-07-23
+### Added
+- **Decision briefs on approval cards + the audit trail (phase 1 of the unified decision-brief layer).**
+  A gated effect no longer shows the raw `{tool,input}` JSON blob on its Inbox approval card. The gate now
+  computes a **`DecisionBrief`** once, next to `classify()` — a human-legible account of the effect:
+  a **headline** (for a shell call, Claude's own one-line command description), the **target** it acts on
+  (host `198.51.100.42 (ssh)`, file `deploy.yml`, `$42.00`, `3 rows`), a humanised **why** (e.g. "The
+  target host isn't on the trusted list yet" instead of "host could not be identified"), a risk badge, and
+  a stable action **signature**. The console renders this as the card body (raw facts demoted to a
+  collapsed "raw" disclosure); the brief also rides on the `gate.decision` / `approval.requested` audit
+  rows, making the audit trail legible, and enriches the Slack/Discord approval mirror. New pure
+  `src/governance/briefer.ts` (sibling of the enricher — facts in, story out; no I/O, no model call),
+  wired into both the live gate (`TerminalManager.gate`) and the in-process gateway. Backward-compatible:
+  cards without a brief fall back to the previous rendering. Groundwork for host-trust learning (phase 2)
+  and the behavioural-failure plane (phase 3). See `docs/decision-brief-layer-plan.md`.
+
 ## [0.256.0] — 2026-07-23
 ### Added
 - **Upcoming automations on the Overview.** The owner Overview page now surfaces an **"Upcoming"** card

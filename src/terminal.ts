@@ -17,6 +17,7 @@ import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
 import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
+import { briefFor } from './governance/briefer';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { JsonPolicyEngine, PolicyDelta, applyProposal, describeProposal } from './governance/policy';
@@ -2541,8 +2542,12 @@ export class TerminalManager {
     if (hostGrants && (capability === 'net.connect' || capability === 'ssh.exec')) {
       decision = stricterDecision(decision, hostGovernanceDecision(capability, args));
     }
+    // The DECISION BRIEF — one human-legible account of this effect (docs/decision-brief-layer-plan.md).
+    // Computed once here, next to classify(); it rides on the gate.decision audit row (making the audit
+    // trail legible instead of a wall of {tool,input}) and, for a gated action, on the approval card.
+    const brief = briefFor(capability, args, decision);
     this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning, ...sub });
-    this.audit(sessionId, agent, 'gate.decision', { capability, decision, ...sub });
+    this.audit(sessionId, agent, 'gate.decision', { capability, decision, brief, ...sub });
 
     if (decision.effect === 'allow') return { decision: 'allow' };
     if (decision.effect === 'deny') return { decision: 'deny' };
@@ -2575,19 +2580,21 @@ export class TerminalManager {
       status: 'pending',
       approvalId: req.id,
       capability,
-      args,
+      // The brief rides inside the card's args so the console renders a legible summary instead of the
+      // raw {tool,input} blob; the raw facts remain (the card demotes them to a "raw" drill-down).
+      args: { ...args, brief },
       level: decision.level,
       audienceKind: aud.kind,
       audienceId: audienceIdOf(aud),
     });
-    this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability });
+    this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability, brief });
     // Out-of-band ping (Slack/Discord DM to whoever can approve) — best-effort, never blocks the gate.
     try { this.approvalNotifier?.({ approvalId: req.id, sessionId, agent, capability, level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* notifications are advisory */ }
     // If the run was triggered from chat, surface the gate in that thread too (the approver DM reaches
     // the approver; this reaches everyone watching the thread). No-op for non-chat runs.
     const dot = decision.riskClass === 'red' ? '🔴' : '🟡';
     const inboxLink = consolePage(this.publicOrigin, 'inbox');
-    try { this.chatMirror?.(sessionId, (p) => `${dot} ${agent} needs approval — \`${capability}\` (${decision.riskClass.toUpperCase()} · ${decision.level}).\n_why: ${decision.reason}_\nOpen the ${chatLink(p, inboxLink, 'Agent OS Inbox')} to approve or reject.`); } catch { /* advisory */ }
+    try { this.chatMirror?.(sessionId, (p) => `${dot} ${agent} needs approval — ${brief.headline}\n\`${capability}\` (${decision.riskClass.toUpperCase()} · ${decision.level}) — _${brief.rationale}_\nOpen the ${chatLink(p, inboxLink, 'Agent OS Inbox')} to approve or reject.`); } catch { /* advisory */ }
 
     // The message + gate status are derived from the approvals table at read time, so all this
     // waiter has to do is leave an audit trail. (It won't fire across a restart — that's fine.)

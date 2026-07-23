@@ -13,7 +13,7 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
-import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { docPages } from '@/docs'
@@ -4469,6 +4469,60 @@ const OUTCOME_STYLE: Record<string, { cls: string; label: string }> = {
   unknown: { cls: 'border-neutral-300 text-neutral-600', label: 'ended' },
 }
 
+/** Icon glyph for a brief's action verb — a quick visual cue for what kind of effect this is. */
+const VERB_GLYPH: Record<string, string> = {
+  read: '📖', write: '✏️', delete: '🗑️', execute: '⚙️', network: '🌐',
+  deploy: '🚀', pay: '💳', send: '✉️', grant: '🔑', other: '•',
+}
+
+/** The body of an approval card. Leads with the DECISION BRIEF (headline · target · why) computed
+ *  server-side (src/governance/briefer.ts, carried in `args.brief`) instead of a raw {tool,input} blob.
+ *  The raw facts are preserved under a collapsed "raw" disclosure. Pre-brief cards (older rows, other
+ *  request types) fall back to the legacy title + policyReason + raw-JSON rendering. */
+function ApprovalBrief({ m }: { m: Msg }) {
+  const brief = (m.args as { brief?: Brief } | undefined)?.brief
+  // Strip the nested brief back out of args for the raw view, so it isn't shown twice.
+  const rawArgs = (() => {
+    const a = m.args
+    if (a && typeof a === 'object') {
+      const rest: Record<string, unknown> = { ...(a as Record<string, unknown>) }
+      delete rest.brief
+      return rest
+    }
+    return a ?? {}
+  })()
+  if (!brief) {
+    // Legacy / non-briefed card — keep the original rendering.
+    return (
+      <>
+        <div className="mt-1 break-words text-sm font-medium">{m.title}</div>
+        {m.policyReason && <div className="mt-0.5 break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {m.policyReason}</div>}
+        <div className="mt-1 break-all font-mono text-[10px] text-muted-foreground/80">{JSON.stringify(m.args ?? {})}</div>
+      </>
+    )
+  }
+  return (
+    <>
+      <div className="mt-1 flex items-start gap-1.5 text-sm font-medium">
+        <span className="shrink-0" title={brief.verb}>{VERB_GLYPH[brief.verb] ?? '•'}</span>
+        <span className="break-words">{brief.headline}</span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+        <Badge variant="outline" className="max-w-full px-1.5 py-0 text-[10px] font-normal">
+          {brief.target.kind}: <span className="ml-1 font-mono">{brief.target.label}</span>
+        </Badge>
+        {brief.target.outsideWorkdir && <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">outside folder</Badge>}
+        <span className="font-mono text-[10px] text-muted-foreground/70">{m.capability}</span>
+      </div>
+      {brief.rationale && <div className="mt-1 break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {brief.rationale}</div>}
+      <details className="mt-1">
+        <summary className="cursor-pointer text-[10px] text-muted-foreground/70 hover:text-muted-foreground">raw</summary>
+        <div className="mt-0.5 break-all font-mono text-[10px] text-muted-foreground/80">{JSON.stringify(rawArgs)}</div>
+      </details>
+    </>
+  )
+}
+
 /** An action-required item (approval · question · waiting-notification) — a compact, coloured card with
  *  its controls inline. Pending only; once resolved the item drops into the read-only Activity feed. */
 function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: (tmux: string, title: string) => void; onDismiss: (id: string) => void }) {
@@ -4523,10 +4577,8 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
                 ? <Badge variant="destructive" className="px-1.5 py-0 text-[10px]">🔴 RED · {approverLabel} approval</Badge>
                 : <Badge className="border-amber-300 bg-amber-100 px-1.5 py-0 text-[10px] text-amber-900 hover:bg-amber-100">🟡 YELLOW · {approverLabel} approval</Badge>}
             </MsgHeading>
-            <div className="mt-1 break-words text-sm font-medium">{m.title}</div>
-            {m.policyReason && <div className="mt-0.5 break-words text-xs text-muted-foreground"><span className="text-amber-700">why:</span> {m.policyReason}</div>}
-            {m.body && <div className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground"><InlineLinks text={m.body} /></div>}
-            <div className="mt-1 break-all font-mono text-[10px] text-muted-foreground/80">{JSON.stringify(m.args ?? {})}</div>
+            <ApprovalBrief m={m} />
+            {m.body && <div className="mt-1 whitespace-pre-line break-words text-xs text-muted-foreground"><InlineLinks text={m.body} /></div>}
           </div>
           {time}
         </div>
