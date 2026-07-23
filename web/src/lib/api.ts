@@ -1292,6 +1292,9 @@ export const api = {
   resolve: (id: string, approved: boolean) => call<{ ok: boolean; error?: string }>('POST', '/api/approvals/' + id, { approved }),
   /** Approve this attempt AND add a persistent policy `allow` rule for its capability (owner-only). */
   alwaysApprove: (id: string) => call<{ ok: boolean; ruleAdded?: boolean; note?: string; error?: string }>('POST', `/api/approvals/${id}/always`),
+  /** Approve this attempt AND add a durable org host grant (posture allow) for its target host, so
+   *  future reaches to it pass the gate without a card. Owner-only. */
+  trustHost: (id: string) => call<{ ok: boolean; trusted?: boolean; host?: string; note?: string; error?: string }>('POST', `/api/approvals/${id}/trust-host`),
   answerQuestion: (id: string, answer: string) => call<{ ok: boolean; error?: string }>('POST', '/api/questions/' + id, { answer }),
   /** Dismiss a pending question without answering (cancels it; unblocks a still-live agent's `ask`). */
   cancelQuestion: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/questions/${id}/cancel`),

@@ -4567,6 +4567,17 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
       if (r.error) { setBusy(false); alert(r.error) }          // 403/404 — not resolved; leave the card
       else if (r.ruleAdded === false && r.note) alert(`Approved once — ${r.note}`)  // resolved, rule not added
     }
+    // Phase-2 host trust: for a "host not yet trusted" approval, offer a durable, NARROW "trust this host"
+    // grant (posture allow) — better than "Always", which would allow the whole net.connect/ssh.exec
+    // capability. Owner-only (loosens the gate durably). Shown only when the brief identifies a host.
+    const briefOf = (m.args as { brief?: Brief } | undefined)?.brief
+    const trustHost = briefOf?.suggestedAction === 'trust-host' ? briefOf.target.host : undefined
+    const trust = async () => {
+      setBusy(true)
+      const r = await api.trustHost(m.approvalId!)
+      if (r.error) { setBusy(false); alert(r.error) }
+      else if (r.trusted === false && r.note) alert(`Approved once — ${r.note}`)
+    }
     return (
       <div className="rounded-lg border border-amber-300 bg-amber-50/40 px-3 py-2.5">
         <div className="flex items-start gap-2.5">
@@ -4587,7 +4598,9 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
             <>
               <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => resolve(true)}><Check className="mr-1 h-3.5 w-3.5" />Approve</Button>
               {me.role === 'owner' && (
-                <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={always} title={`Approve this and stop asking — adds an "allow ${m.capability ?? ''}" rule to policy`}><Shield className="mr-1 h-3.5 w-3.5" />Always</Button>
+                trustHost
+                  ? <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={trust} title={`Trust ${trustHost} and stop asking — adds an "allow" host grant for it (this host only)`}><Shield className="mr-1 h-3.5 w-3.5" />Trust host</Button>
+                  : <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={always} title={`Approve this and stop asking — adds an "allow ${m.capability ?? ''}" rule to policy`}><Shield className="mr-1 h-3.5 w-3.5" />Always</Button>
               )}
               <Button size="sm" variant="destructive" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => resolve(false)}><X className="mr-1 h-3.5 w-3.5" />Reject</Button>
             </>

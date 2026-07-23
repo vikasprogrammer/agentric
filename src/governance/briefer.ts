@@ -170,8 +170,12 @@ export function briefFor(capability: string, args: Record<string, unknown>, deci
   const target = targetFor(capability, args, input);
   const headline = headlineFor(capability, args, input, verb, target);
   const rationale = rationaleFor(decision, args, target);
+  // For a host approval we can offer a durable "trust this host" resolution (phase 2) instead of a
+  // one-off approve — only when the target host is actually known (else there's nothing to trust).
   const suggestedAction: DecisionBrief['suggestedAction'] =
-    decision.effect === 'deny' ? 'deny' : decision.effect === 'approve' ? 'approve' : 'allow';
+    decision.effect === 'deny' ? 'deny'
+      : decision.effect === 'approve' ? (target.kind === 'host' && target.host ? 'trust-host' : 'approve')
+      : 'allow';
   const signature = signatureFor(capability, verb, target, args, input);
   return { headline, verb, target, rationale, riskClass: decision.riskClass, suggestedAction, signature };
 }

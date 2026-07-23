@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.258.0] — 2026-07-23
+### Added
+- **Host-trust learning — "Trust host" on an approval card (phase 2 of the decision-brief layer).**
+  The fleet study found that nearly all human-in-the-loop friction is host identification — an agent
+  reaches a legitimate new host (a deploy target, `curl` to its own site, `ssh` to an infra box) and the
+  gate escalates "host is not a granted connection", the owner approves, and the *same host escalates
+  again next run*. Now, when the decision brief identifies a host, the owner sees a **"Trust host"**
+  button (`POST /api/approvals/:id/trust-host`): it approves this attempt AND adds a durable org host
+  grant (`posture: allow`, scoped to that exact host + protocol) so future reaches pass the gate without
+  a card. Owner-only (it loosens the gate durably, like "always approve"); it replaces the too-broad
+  "Always" button for host approvals (Always would allow the entire `net.connect`/`ssh.exec` capability —
+  trust is scoped to the one host). Idempotent (already-trusted → approve once + note); the never-tier
+  still binds, so `ssh box 'rm -rf /'` stays denied regardless of host trust. Verified end-to-end:
+  `approve(host not granted) → allow` after trusting. Audited `host.trusted`. See
+  `docs/decision-brief-layer-plan.md` §7.
+
 ## [0.257.0] — 2026-07-23
 ### Added
 - **Decision briefs on approval cards + the audit trail (phase 1 of the unified decision-brief layer).**

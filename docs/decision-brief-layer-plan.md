@@ -184,7 +184,17 @@ Server plumbing: `approvals` row already stores `args` + `reason` (`src/governan
 `ApprovalRow`). Add a nullable `brief` column (JSON) via a `src/state/db.ts` migration; `toRequest`
 hydrates it; the inbox card API (`/api/inbox` / messages) passes `brief` through to the client `Msg`.
 
-## 7. Consumer 3: host-trust learning (kills most escalations)
+## 7. Consumer 3: host-trust learning (kills most escalations) — ✅ SHIPPED (phase 2, v0.258.0)
+
+Implemented as `POST /api/approvals/:id/trust-host` + a **"Trust host"** button on the card (owner-only,
+shown when `brief.suggestedAction === 'trust-host'`). It resolves the approval AND adds a durable org
+`HostStore` grant (`posture: 'allow'`, `match` = the exact target host, protocol from the enriched
+`netProtocol`), so `computeHostFacts` → `hostGovernanceDecision` returns `allow` on the next reach.
+Idempotent (an existing allow grant → approve-once + note); the never-tier still binds
+(`ssh box 'rm -rf /'` stays denied). Verified end-to-end: `approve(host not granted) → allow` after
+trust. It deliberately REPLACES the too-broad "Always" for host cards (Always would allow the whole
+`net.connect`/`ssh.exec` capability; trust is scoped to the one host). Original design below.
+
 
 Evidence §2: the dominant escalation is "host not yet trusted". Today an owner approves it and the
 *same host escalates again next run*. With the brief we can close the loop:
@@ -280,8 +290,8 @@ Design consequences, now load-bearing:
    `approvals.brief` column + migration, `BriefCard` in the console, brief in audit rows. Ship behind
    nothing — pure improvement, backward-compatible (missing brief → today's rendering). This alone
    fixes the owner's complaint and makes the 62%-never-recalled audit legible.
-2. **Host-trust button.** `suggestedAction: 'trust-host'` + the "Trust host & allow" action reusing
-   `HostGrant` + the always-approve append. Biggest friction cut.
+2. ✅ **Host-trust button (SHIPPED v0.258.0).** `suggestedAction: 'trust-host'` + the "Trust host"
+   action adding an allow-posture `HostStore` grant. Biggest friction cut. See §7.
 3. **`instruct` verb + loop detector.** The single most unambiguous behavioural detector, plus the
    soft-steer verb. Small, self-contained.
 4. **Runaway / drift / hallucination detectors + Dreaming feedback.** The full reliability plane and
