@@ -18,6 +18,7 @@ import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './con
 import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval } from './governance/enricher';
 import { briefFor } from './governance/briefer';
+import { ReliabilityMonitor } from './edge/reliability';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { JsonPolicyEngine, PolicyDelta, applyProposal, describeProposal } from './governance/policy';
@@ -318,7 +319,7 @@ export interface FeedMessage {
 }
 
 type GateStatus = 'pending' | 'allow' | 'deny';
-type GateResult = { decision: 'allow' | 'deny' | 'pending'; gateId?: string };
+type GateResult = { decision: 'allow' | 'deny' | 'pending'; gateId?: string; note?: string };
 
 interface SessionRow {
   id: string;
@@ -513,6 +514,10 @@ export class TerminalManager {
   private readonly uidIsolation = process.env.AOS_UID_ISOLATION === '1';
   /** Idle grace before a member's uid/ttyd is reclaimed once they have no running sessions (A5). */
   private readonly idleGraceMs = Number(process.env.AOS_IDLE_GRACE_MS) || 15 * 60_000;
+  /** Online behavioural-failure watch (phase 3): detects a no-progress LOOP within a run and nudges the
+   *  agent via an `instruct` (allow + advisory note). In-memory per session. Off when AOS_RELIABILITY=0. */
+  private readonly reliability = new ReliabilityMonitor();
+  private readonly reliabilityOn = process.env.AOS_RELIABILITY !== '0';
   /** Optional sink notified when an approval card lands, so an out-of-band channel (Slack/Discord DM)
    *  can ping the approver. Set by the registry once the chat sockets exist; absent = no notifications. */
   private approvalNotifier?: (notice: ApprovalNotice) => void;
@@ -2549,7 +2554,20 @@ export class TerminalManager {
     this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning, ...sub });
     this.audit(sessionId, agent, 'gate.decision', { capability, decision, brief, ...sub });
 
-    if (decision.effect === 'allow') return { decision: 'allow' };
+    if (decision.effect === 'allow') {
+      // Behavioural-failure watch (phase 3): the effect is allowed, but if it completes a no-progress
+      // LOOP we let it through WITH an advisory note — an `instruct` (allow + additionalContext) that
+      // nudges the agent to break the loop. Soft by design: the model may ignore it. Sub-agent calls
+      // don't carry a distinct run to loop within, so watch only top-level effects.
+      if (this.reliabilityOn && !sub) {
+        const sig = this.reliability.observe(sessionId, capability, args, brief.headline, Date.now());
+        if (sig) {
+          this.audit(sessionId, agent, 'reliability.loop', { capability, signature: brief.signature, count: sig.count });
+          return { decision: 'allow', note: sig.note };
+        }
+      }
+      return { decision: 'allow' };
+    }
     if (decision.effect === 'deny') return { decision: 'deny' };
 
     // Context-aware `ask` (governance P5): if an attended human who can approve this level started the
@@ -4166,6 +4184,7 @@ export class TerminalManager {
       try { this.chatMirror?.(sessionId, (p) => `☑️ ${s.agent} finished — the session ended.\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
     }
     this.audit(sessionId, s.agent, 'session.ended', {});
+    this.reliability.forget(sessionId); // drop the loop-detector streak state for this run
   }
 
   /** A stopped/ended session was reconnected and is live again — the ttyd attach wrapper resurrected

@@ -227,8 +227,10 @@ verbs plus one new soft verb:
 
 - **`instruct`** (new, soft) — allow the effect but inject a corrective note into the agent's next
   context. Neither blocks nor pages a human. This is the one decision verb agent-os lacks today (we
-  have allow / approve / deny); Failproof's `instruct()` is the idea worth borrowing. Add it to
-  `Decision` as `{ effect: 'instruct'; riskClass: 'green'; reason: string; note: string }`.
+  have allow / approve / deny); Failproof's `instruct()` is the idea worth borrowing. **As shipped
+  (v0.259.0) it is NOT a new `Decision` variant** — the policy verdict stays `allow`, and the note is an
+  overlay the gate returns (`GateResult.note`) so nothing in `classify`/the gateway changes. Realising it
+  as a Decision remains an option if a future consumer needs the policy engine itself to emit it.
 - **escalate** — on repeat after an `instruct`, promote to the existing `approve` (human) or, for a
   hard runaway, `TerminalManager.stopSession` (the same halt the console kill button performs).
 
@@ -292,8 +294,15 @@ Design consequences, now load-bearing:
    fixes the owner's complaint and makes the 62%-never-recalled audit legible.
 2. ✅ **Host-trust button (SHIPPED v0.258.0).** `suggestedAction: 'trust-host'` + the "Trust host"
    action adding an allow-posture `HostStore` grant. Biggest friction cut. See §7.
-3. **`instruct` verb + loop detector.** The single most unambiguous behavioural detector, plus the
-   soft-steer verb. Small, self-contained.
+3. ✅ **`instruct` verb + loop detector (SHIPPED v0.259.0).** Realised as **allow + an advisory `note`**
+   at the gate-return boundary — NOT a new `Decision` variant (keeps `classify`/the gateway untouched).
+   `src/edge/reliability.ts` (`ReliabilityMonitor`) watches each run's allowed effects and, on a
+   no-progress loop (same normalised action ≥5× in a 5-min window), returns a branded, non-coercive note;
+   `TerminalManager.gate` returns `{decision:'allow', note}`, `/api/gate` passes it through, and
+   `gate-hook.sh` emits `allow` + `additionalContext` (the one channel the spike proved reaches the
+   model, §8a). Loop key folds digit runs so a `?v=$RANDOM` cache-buster / timestamp doesn't hide a real
+   poll loop, while distinct commands never accumulate. Audited `reliability.loop`; off via
+   `AOS_RELIABILITY=0`. See §8/§8a.
 4. **Runaway / drift / hallucination detectors + Dreaming feedback.** The full reliability plane and
    a console "reliability" surface.
 
