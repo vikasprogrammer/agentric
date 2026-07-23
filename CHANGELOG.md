@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.256.0] — 2026-07-23
+### Added
+- **Upcoming automations on the Overview.** The owner Overview page now surfaces an **"Upcoming"** card
+  in the right rail: the scheduled automations queued to fire next (enabled crons + pending one-shots),
+  soonest first, each with the agent icon, trigger summary, and a live "in 3h" / "in 2d" countdown.
+  Runs firing before end-of-day are highlighted and counted ("N scheduled today"); the countdown's
+  tooltip shows the exact time in the server timezone. Event-only triggers (webhook/Slack/Discord) and
+  disabled crons have no next-fire time, so they naturally drop out. Reads the `nextRunAt` already
+  computed per automation by `/api/automations` — presentation only, no new server surface.
+
 ## [0.255.0] — 2026-07-21
 ### Added
 - **Take over an ENDED headless run.** "Take over" now works on a headless session that already exited
