@@ -32,6 +32,15 @@ emit() {
   exit 0
 }
 
+# Emit an ALLOW that also injects an advisory note into the model's next context — the `instruct` verb
+# (phase 3). `additionalContext` is the ONE PreToolUse field verified to reach the model on an allow
+# (docs/decision-brief-layer-plan.md §8a); permissionDecisionReason on allow is audit-only. $1 = reason,
+# $2 = note. Used for a reliability nudge (e.g. a detected loop) — soft; the model may ignore it.
+emit_allow_note() {
+  node -e 'const[r,c]=process.argv.slice(1);console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",permissionDecisionReason:r,additionalContext:c}}))' "$1" "$2"
+  exit 0
+}
+
 # This hook is now DUMB TRANSPORT (governance PR #2): it only routes the tool to a capability and ships
 # the FULL tool_input to the server, which enriches it into facts (case-insensitive, argument-aware —
 # it sees the SQL inside db_query/execute_php, the dollar amount, the delete count) and classifies.
@@ -73,8 +82,10 @@ while :; do
   resp=$(curl -s --max-time 10 -X POST "$AOS_URL/api/gate" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" -d "$payload")
   dec=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.decision||"")})')
   gid=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.gateId||"")})')
+  # An `instruct`: the gate allowed the effect but attached an advisory note (e.g. a detected loop).
+  note=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");process.stdout.write(o.note||"")})')
   case "$dec" in
-    allow) emit allow "Agent OS: allowed by policy." ;;
+    allow) if [ -n "$note" ]; then emit_allow_note "Agent OS: allowed by policy." "$note"; else emit allow "Agent OS: allowed by policy."; fi ;;
     deny)  emit deny "Agent OS policy: denied — this action is blocked (irreversible or not permitted)." ;;
     pending) break ;;
     *) echo "Agent OS: gate unreachable — blocking this action until it responds…" >&2; sleep 2 ;;

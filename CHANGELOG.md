@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.259.0] — 2026-07-23
+### Added
+- **Loop detection + the `instruct` verb (phase 3 of the decision-brief layer — the behavioural-failure
+  plane).** Agent OS now watches a RUN for failure patterns across effects, not just individual effects.
+  The first detector catches a **no-progress loop** — the same action repeated ≥5× in a 5-minute window.
+  On a loop the gate lets the effect through but attaches an advisory **`instruct`**: an `allow` that also
+  injects a note into the agent's next context (via the PreToolUse hook's `additionalContext` — the one
+  channel verified to reach the model; `permissionDecisionReason` on allow is audit-only). The note is
+  branded, non-coercive advisory copy ("this is about the 5× near-identical action… if you're stuck, try
+  a different approach or `ask` a human") — the framing a spike showed the model heeds rather than flagging
+  as prompt-injection. It's a **nudge, not a control**: the model may ignore it; anything that must stop an
+  effect still routes through deny/approve. New `src/edge/reliability.ts` (`ReliabilityMonitor`,
+  in-memory per session); the loop key folds digit runs so a `?v=$RANDOM` cache-buster or timestamp
+  doesn't mask a real poll loop, while distinct commands never accumulate. Realised as an `allow` + a
+  `GateResult.note` overlay — **not** a new policy `Decision` variant, so `classify`/the gateway are
+  untouched. Audited `reliability.loop`; disable with `AOS_RELIABILITY=0`. See
+  `docs/decision-brief-layer-plan.md` §8/§8a.
+
 ## [0.258.0] — 2026-07-23
 ### Added
 - **Host-trust learning — "Trust host" on an approval card (phase 2 of the decision-brief layer).**
