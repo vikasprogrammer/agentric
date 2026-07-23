@@ -1465,7 +1465,7 @@ function Console({ me }: { me: Member }) {
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
-          {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} onOpen={openTerminal} nav={nav} />}
+          {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'cockpit' && <CockpitPage onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
@@ -7146,9 +7146,9 @@ const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00
 /** Owner-only home. What the fleet is doing right now (live sessions + who's accountable for each) and
  *  which agents are earning trust. Pure-props: it reads the sessions/messages the Console already polls
  *  and the fleet maturity map, so it live-updates on the 1.5s tick with no fetch of its own. */
-function OverviewPage({ me, sessions, members, agents, maturity, onOpen, nav }: {
+function OverviewPage({ me, sessions, members, agents, maturity, serverTz, onOpen, nav }: {
   me: Member; sessions: Session[]; members: Member[]; agents: AgentInfo[]
-  maturity: Record<string, AgentStats>; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void
+  maturity: Record<string, AgentStats>; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void
 }) {
   // A run is "blocked" when it's waiting on a human (a pending ask/approval). Read straight off the
   // server-authoritative `s.blocked` flag now, rather than re-deriving it from the message feed.
@@ -7172,6 +7172,20 @@ function OverviewPage({ me, sessions, members, agents, maturity, onOpen, nav }: 
     load(); const t = setInterval(load, 15000)
     return () => { ok = false; clearInterval(t) }
   }, [])
+  // Scheduled automations that carry a known next-fire time (enabled crons + pending one-shots), soonest
+  // first — the "what's queued to run" companion to the live "Working now" list. Event triggers
+  // (webhook/slack/discord) have no nextRunAt, so they naturally drop out; disabled crons too.
+  const [autos, setAutos] = useState<Automation[]>([])
+  useEffect(() => {
+    let ok = true
+    const load = () => api.automations().then((r) => { if (ok) setAutos(r.automations ?? []) }).catch(() => {})
+    load(); const t = setInterval(load, 30000)
+    return () => { ok = false; clearInterval(t) }
+  }, [])
+  const upcoming = useMemo(() => autos.filter((a) => a.nextRunAt).sort((a, b) => a.nextRunAt! - b.nextRunAt!).slice(0, 6), [autos])
+  const endOfToday = useMemo(() => { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime() }, [])
+  const dueToday = useMemo(() => autos.filter((a) => a.nextRunAt && a.nextRunAt <= endOfToday).length, [autos, endOfToday])
+
   const ONLINE_MS = 3 * 60 * 1000
   const seenAt = (id: string) => presence.lastSeen[id]
   const isOnline = (id: string) => { const ls = seenAt(id); return !!ls && presence.now - ls < ONLINE_MS }
@@ -7348,6 +7362,33 @@ function OverviewPage({ me, sessions, members, agents, maturity, onOpen, nav }: 
                 <span className="w-7 shrink-0 text-right text-[13px] font-bold tabular-nums">{Math.round(s.maturity * 100)}</span>
               </div>
             ))}
+          </CardContent></Card>
+
+          {/* Upcoming — scheduled automations queued to fire next, soonest first (today highlighted). */}
+          <Card><CardContent className="p-0">
+            <div className="flex items-center gap-2 border-b px-4 py-3">
+              <CalendarClock className="h-4 w-4 text-muted-foreground" />
+              <div><div className="text-[13.5px] font-semibold">Upcoming</div><div className="text-[11.5px] text-muted-foreground">{dueToday > 0 ? `${dueToday} scheduled today` : 'scheduled runs'}</div></div>
+              <a href={navHref('automations')} onClick={(e) => { e.preventDefault(); nav('automations') }} className="ml-auto text-[11.5px] font-semibold text-primary no-underline">Automations →</a>
+            </div>
+            {upcoming.length === 0 ? (
+              <div className="px-4 py-8 text-center text-[12.5px] text-muted-foreground">Nothing scheduled to run.</div>
+            ) : upcoming.map((a) => {
+              const soon = a.nextRunAt! <= endOfToday
+              const TI = triggerIcon(a.type)
+              return (
+                <button key={a.id} onClick={() => nav('automations', a.agentId)} className="flex w-full items-center gap-2.5 border-t px-4 py-2.5 text-left first:border-t-0 hover:bg-muted/40">
+                  <AgentIcon icon={iconOf(a.agentId)} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[12.5px] font-semibold">{a.name}</div>
+                    <div className="flex items-center gap-1 truncate text-[10.5px] text-muted-foreground"><TI className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{triggerSummary(a)}</span></div>
+                  </div>
+                  <span className={`shrink-0 text-[11px] font-semibold tabular-nums ${soon ? 'text-emerald-600 dark:text-emerald-500' : 'text-muted-foreground'}`} title={serverTz ? `${fmtInServerTz(a.nextRunAt!, serverTz)} (${serverTz})` : new Date(a.nextRunAt!).toLocaleString()}>
+                    {timeUntil(a.nextRunAt!)}
+                  </span>
+                </button>
+              )
+            })}
           </CardContent></Card>
         </div>
       </div>
