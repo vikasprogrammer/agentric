@@ -136,11 +136,24 @@ checked-out repos):
 cd $DATA_HOME
 # per-session files: session-*.env (AGENT_DIR/MCP_CONFIG/HOOK/COMPANY_FILE), *.mcp.json, *.company.md
 for f in $(grep -rlI '/home/OLDUSER' connectors/); do sed -i 's#/home/OLDUSER/#/home/NEWUSER/#g' "$f"; done
-# agent .claude configs + CLAUDE.md + aos-settings.json (gate-hook permission globs!) — exclude repos/node_modules
-find agents -type f \( -path '*/.claude/*' -o -name 'CLAUDE.md' -o -name 'agent.json' \) \
-  ! -path '*/node_modules/*' ! -path '*/repos/*' -print0 | xargs -0 grep -lI '/home/OLDUSER' \
+# ALL agent-os-generated text (agent .claude configs incl aos-settings gate-hook globs, CLAUDE.md,
+# deliverables, AND the skills LIBRARY source under skills/ — see note) — exclude checked-out code/logs
+find . -type f ! -path '*/node_modules/*' ! -path '*/repos/*' ! -path '*/work/*' ! -path '*/.git/*' \
+  ! -name '*.log' ! -name '*.jsonl' -print0 | xargs -0 grep -lI '/home/OLDUSER' \
   | while read f; do sed -i 's#/home/OLDUSER/#/home/NEWUSER/#g' "$f"; done
+
+# ⚠ SYMLINKS — sed CANNOT fix these (a link's target isn't file content). Find + repoint each:
+find "$HOME" -type l -lname '/home/OLDUSER/*' 2>/dev/null | while read l; do
+  ln -sfn "$(readlink "$l" | sed 's#/home/OLDUSER/#/home/NEWUSER/#')" "$l"; done
 ```
+
+⚠ **Two traps here that the naive `sed agents/` sweep misses:**
+- **The skills LIBRARY source** (`<home>/skills/<name>/SKILL.md`) re-materialises into every agent's
+  `.claude/skills/` on launch. If you only fix the *materialised copies* under `agents/`, a stale
+  `cd /home/OLDUSER/…` in the source reappears next launch — agents then loop "the path is
+  /home/OLDUSER but we're under /home/NEWUSER". Rewrite the **source**, not just the copies.
+- **Symlinks with absolute targets** (e.g. a CLI linked into an agent folder) survive `sed` untouched
+  and dangle — hit repeatedly by whichever agents use them.
 
 **Also port the Claude folder-trust keys** — `~/.claude.json` (outside the data home) stores per-folder
 trust under `projects["<abs-agent-dir>"].hasTrustDialogAccepted`. Copied verbatim, all keys point at the
