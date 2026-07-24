@@ -7495,11 +7495,15 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [q, setQ] = useState('')
   // Selection is URL-driven (#/tasks/<id>) so a task detail is a shareable permalink — pasting it opens
   // the modal automatically. Opening a card just navigates; closing clears the detail segment.
-  const selId = taskId || null
+  // The hash detail is `<taskId>` or `<taskId>/<tab>` (tab ∈ discussion|description|session) — so the open
+  // task AND its room tab are deep-linked (refresh/share lands on the right tab).
+  const [routeTaskId, routeTab] = (taskId || '').split('/')
+  const selId = routeTaskId || null
+  const roomTab: 'discussion' | 'description' | 'session' = routeTab === 'description' || routeTab === 'session' ? routeTab : 'discussion'
   const openTask = (id: string) => nav('tasks', id)
+  const openTaskTab = (id: string, tab: 'discussion' | 'description' | 'session') => nav('tasks', tab === 'discussion' ? id : `${id}/${tab}`)
   const closeTask = () => { setEditing(false); nav('tasks') }
   const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; discussion: TaskTimelineEntry[]; unread: number } | null>(null)
-  const [roomTab, setRoomTab] = useState<'discussion' | 'description' | 'session'>('discussion')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // view + filters
@@ -7611,7 +7615,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 }) })
   }, [selId, tasks, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false); setRoomTab('discussion') }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
 
   // Client-side filtering over the (≤500) board — cheap, and keeps the lens shareable via UI state.
   const labelsPresent = [...new Set((tasks ?? []).flatMap((t) => t.labels))].sort()
@@ -7921,8 +7925,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     const parts = discussions[t.id]?.participants ?? []
     const live = liveOf(t)
     const sessTmux = live?.tmux || (t.lastSessionId ? 'aos-' + t.lastSessionId : '')
+    const activeTab: 'discussion' | 'description' | 'session' = roomTab === 'session' && !sessTmux ? 'discussion' : roomTab
     const roomTab_btn = (id: 'discussion' | 'description' | 'session', label: ReactNode) => (
-      <button onClick={() => setRoomTab(id)} className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${roomTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</button>
+      <a href={navHref('tasks', id === 'discussion' ? t.id : `${t.id}/${id}`)} onClick={onNavClick(() => openTaskTab(t.id, id))} className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium no-underline transition-colors ${activeTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</a>
     )
     return (
       <div className="flex h-[calc(100vh-5.5rem)] flex-col overflow-hidden rounded-lg border bg-background">
@@ -7944,15 +7949,15 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
               {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />Session{live && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />}</>)}
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              {roomTab === 'discussion' && <div className="h-full px-4 pt-3"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} /></div>}
-              {roomTab === 'description' && (
+              {activeTab === 'discussion' && <div className="h-full px-4 pt-3"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} /></div>}
+              {activeTab === 'description' && (
                 <div className="h-full overflow-y-auto p-4">
                   {t.body
                     ? <div className="break-words text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{t.body}</ReactMarkdown></div>
                     : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description. <button className="text-primary underline" onClick={() => setEditing(true)}>Add one</button></div>}
                 </div>
               )}
-              {roomTab === 'session' && sessTmux && <div className="flex h-full min-h-0 flex-col"><TerminalFrame session={live ?? undefined} tmux={sessTmux} standalone /></div>}
+              {activeTab === 'session' && sessTmux && <div className="flex h-full min-h-0 flex-col"><TerminalFrame session={live ?? undefined} tmux={sessTmux} standalone /></div>}
             </div>
           </div>
           <div className="overflow-y-auto bg-muted/20 p-4">

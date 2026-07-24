@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.264.2] — 2026-07-24
+### Changed
+- **Task room tabs are deep-linked in the URL.** The hash detail becomes `<taskId>/<tab>`
+  (`discussion` | `description` | `session`), so refreshing or sharing a task URL lands on the right tab.
+  The tabs are real links and the active tab derives from the URL (a `/session` link on a task with no
+  session falls back to Discussion).
+
 ## [0.264.1] — 2026-07-24
 ### Fixed
 - **The embedded Session terminal now fills the Session tab.** `TerminalFrame` is `flex-1`/`min-h-0` and
