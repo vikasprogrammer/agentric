@@ -335,7 +335,57 @@ Each phase is independently valuable and independently shippable.
 - **Backfill.** Do we render briefs for historical audit rows (recompute from stored args) or only
   forward? Forward-only is simpler and enough for the complaint.
 
-## 12. Related
+## 12. The blocked-card surface (phase 4 — scoping)
+
+**Motivation (from a fleet audit of globex, 2026-07-24).** A hard `deny` (never-tier) is a *silent
+wall*: the agent's tool call fails with a terse reason, and — unlike an approval — there is **no card,
+no notification, no human visibility**. That audit found **129 denials in 14 days, ~67% false
+positives** (scratch `rm -rf`, and `prodBuild` firing on doc content) that *no one ever saw*. Approvals
+get a card and are ~97% cleared; denials get nothing. The v0.260.0 enricher fix removed those specific
+false positives, but the structural blind spot remains: **we only learn a deny rule is wrong by manually
+mining the audit log.** The decision brief already makes the *approve* side legible; this extends the
+same legibility to the *deny* side.
+
+**Goal.** Make hard denials visible and mineable so an owner spots a false-deny pattern (or confirms a
+block was right) without trawling `audit_events` — ideally the system surfaces "`prodBuild` denied 23×
+this week, all docs-bot" on its own.
+
+**Design — reuse the brief, don't invent a second brain.**
+
+- **Blocked card on deny.** When `TerminalManager.gate` returns `deny`, post a `type:'blocked'` inbox
+  message addressed to `admins` (via `resolveRecipients`), carrying the **decision brief**
+  (headline · target · humanised why) + capability + the denying rule's reason. Informational, not a
+  waiter — the effect already didn't happen.
+- **Dedup / rate-limit (critical).** A looping agent retries the same denied call many times, so cards
+  MUST collapse by `(agent, brief.signature)` into one row with a **count + last-seen** (digest style),
+  updated on repeat within a window — never one card per deny. This reuses the phase-3 `signature`.
+- **A "Blocked" console view** — recent denials grouped by rule/signature with counts and the brief,
+  the highest-value / lowest-risk piece: pure visibility, no new loosening mechanism. It would have
+  surfaced both false-positive families automatically.
+- **Novel-signature notification** — DM an owner only the FIRST time a deny *signature* appears
+  (rate-limited), not every deny.
+
+**Phasing.**
+
+1. **Phase 4a — visibility only (low-risk, high-value).** The grouped "Blocked" view + a deduped digest
+   card on novel deny-signatures + audit already has the data. No loosening path. This alone closes the
+   "nobody sees false denies" gap.
+2. **Phase 4b — actionable loosening (governed, careful).** A "this deny was a false positive" flow.
+   Note the **ordering constraint**: the policy engine inserts `allow` rules *after* every `never`, so a
+   never always wins — you **cannot** override a false deny with an allow-append (unlike "always
+   approve"). So loosening must be either (a) an **enricher narrowing** (the right fix for the
+   content-vs-intent family — exactly what v0.260.0 did by hand), or (b) a genuine, owner-only,
+   audited rule edit / new *exception* concept. Because loosening a never-tier is privilege-bearing,
+   this routes through a `policy_propose`-style review, never an in-place toggle.
+
+**Non-goals.** Retroactively un-blocking the failed call (the effect already didn't happen — at most an
+automation/task can be re-triggered). Any *automatic* loosening — a human always decides.
+
+**Open questions.** Dedup window + card-refresh cadence; whether the "Blocked" view lives under Audit or
+as its own nav; and the exception mechanism for 4b (enricher-narrowing vs a first-class policy exception,
+given never-wins ordering).
+
+## 13. Related
 
 - `docs/governance-model.md` — the classify/enrich split this extends.
 - `src/governance/enricher.ts` — the fact engine `briefer.ts` sits on top of.
