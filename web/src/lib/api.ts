@@ -60,6 +60,8 @@ export interface Concurrency {
   alive: number
   /** Auto-close a detached member session idle past this many hours (0 = off; default 48). */
   idleHours: number
+  /** Hard runtime ceiling (hours) for a headless/unattended run — the stuck-mid-turn backstop (0 = off; default 24). */
+  unattendedMaxHours: number
 }
 
 export interface AgentInfo {
@@ -1477,7 +1479,7 @@ export const api = {
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
   saveSessionMetrics: (value: SessionMetrics) => call<{ ok: boolean; sessionMetrics?: SessionMetrics; error?: string }>('PUT', '/api/settings/session-metrics', { value }),
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
-  saveConcurrency: (body: { value?: number | null; idleHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number }>('PUT', '/api/settings/concurrency', body),
+  saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),
 
   governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
   saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),

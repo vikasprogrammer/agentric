@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.266.0] — 2026-07-24
+### Added
+- **Hard max-runtime backstop for headless/unattended runs — the stuck-mid-turn session leak.** An
+  automation/task/chat run is an attachable interactive TUI torn down at turn-end by the Stop beacon; if it
+  hangs mid-turn it never beacons, so `last_activity` stays NULL and the idle-straggler sweep (which requires
+  a beacon) never touches it, and the idle-interactive janitor skips it (headless). Such a run lingered for
+  **days** holding a ~500 MB `claude` process + a concurrency-cap slot — observed on globex as unattended
+  runs stuck at 60 h+, a primary driver of the box's memory pressure. New sweep reaps a headless run purely on
+  wall-clock age once it exceeds the ceiling (**Settings → Runtime → "Force-close headless runs after"**,
+  default **24 h**, `0` = off; clamped 1 h–30 d), regardless of the beacon — cancelling any dangling
+  question/approval and staying Resumable. Guards preserved: never reaps a pane a human is attached to, and
+  **headed (interactive member) sessions are never cut mid-work** — they keep the separate idle-based janitor,
+  which only closes a *detached* one. Audited `session.reaped` `reason:'max-runtime'`.
+
 ## [0.265.3] — 2026-07-24
 ### Fixed
 - **Inbox/session polling no longer degrades on data-heavy tenants.** The console polls `/api/messages`
