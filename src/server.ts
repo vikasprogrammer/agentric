@@ -3121,6 +3121,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const taskComment = p.match(/^\/api\/tasks\/([\w-]+)\/comment$/);
   const taskMessages = p.match(/^\/api\/tasks\/([\w-]+)\/messages$/);
   const taskRead = p.match(/^\/api\/tasks\/([\w-]+)\/read$/);
+  const taskMention = p.match(/^\/api\/tasks\/mention\/([\w-]+)$/);
   const taskDispatch = p.match(/^\/api\/tasks\/([\w-]+)\/dispatch$/);
   const taskAttachments = p.match(/^\/api\/tasks\/([\w-]+)\/attachments$/);
   const taskAttachmentRaw = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)\/raw$/);
@@ -3135,7 +3136,27 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, {
       ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id),
       discussion: tm.discussionTimeline(found.task.id), unread: tm.discussionUnread(found.task.id, me),
+      choices: tm.taskMentionChoices(found.task.id),
     });
+  }
+  // Resolve a non-owner-agent mention choice: 'answer' (quick out-of-band answer), 'session' (start a
+  // governed session on the task), or 'dismiss'. Any member (like a task edit).
+  if (taskMention && method === 'POST') {
+    const b = await readBody(req);
+    const action = String(b.action || '');
+    const c = tm.getMentionChoice(taskMention[1]);
+    if (!c || c.status !== 'open') return sendJson(res, 404, { error: 'choice not found or already resolved' });
+    if (action === 'answer') {
+      autos.quickAnswer(c.taskId, c.agentId, c.message, me.id);
+      tm.closeMentionChoice(taskMention[1], 'answered');
+    } else if (action === 'session') {
+      autos.continueTaskThread(c.taskId, me.name || me.email, c.message, c.agentId, me.id);
+      tm.closeMentionChoice(taskMention[1], 'answered');
+    } else if (action === 'dismiss') {
+      tm.closeMentionChoice(taskMention[1], 'rejected');
+    } else return sendJson(res, 400, { error: 'unknown action' });
+    os.audit.append({ ts: Date.now(), runId: `task:${c.taskId}`, tenant: os.tenant, principal: me.email, type: 'task.mention.resolved', data: { agent: c.agentId, action } });
+    return sendJson(res, 200, { ok: true });
   }
   // Post a message into a task's Discussion (any member). Parses @mentions → an @member gets an addressed
   // Inbox card + DM, an @agent is resumed/spawned on the task. Quiet otherwise (not in the Inbox feed).

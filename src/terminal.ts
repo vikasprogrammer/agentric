@@ -283,7 +283,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'task.chat' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
+  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -1281,7 +1281,7 @@ export class TerminalManager {
          LEFT JOIN questions q ON m.question_id = q.id
          LEFT JOIN term_sessions ts ON m.session_id = ts.id
          LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
-         WHERE m.dismissed_at IS NULL AND ms.dismissed_at IS NULL AND m.type != 'task.chat'
+         WHERE m.dismissed_at IS NULL AND ms.dismissed_at IS NULL AND m.type NOT IN ('task.chat', 'task.mention')
          ORDER BY m.created_at DESC`,
       )
       .all<MessageRow>(viewerId);
@@ -2971,6 +2971,45 @@ export class TerminalManager {
       if (r.read_at === null && r.source !== viewer.id) e.unread++;
     }
     return out;
+  }
+
+  /** Record a pending "how should @agent respond?" choice when a NON-owner agent is @mentioned — the
+   *  human picks Quick answer vs New session (see docs/task-rooms-plan.md). Stored as a `task.mention`
+   *  message (Discussion-only, out of the Inbox feed); returns its id. `human` = the member to address. */
+  postMentionChoice(taskId: string, agentId: string, text: string, human: string): string {
+    return this.addMessage({
+      type: 'task.mention', sessionId: `task:${taskId}`, agent: agentId,
+      title: `How should @${agentId} respond?`, body: text, status: 'open',
+      args: { taskId, agentId }, audienceKind: human ? 'member' : 'admins', audienceId: human || undefined,
+    });
+  }
+
+  /** The open mention-choices on a task (surfaced as a banner in the Discussion). */
+  taskMentionChoices(taskId: string): { id: string; agentId: string; message: string }[] {
+    return this.db
+      .prepare("SELECT id, agent, body FROM messages WHERE session_id = ? AND type = 'task.mention' AND status = 'open' ORDER BY created_at ASC")
+      .all<{ id: string; agent: string; body: string }>(`task:${taskId}`)
+      .map((r) => ({ id: r.id, agentId: r.agent, message: r.body }));
+  }
+
+  /** Read one mention-choice (for the resolve route). */
+  getMentionChoice(msgId: string): { taskId: string; agentId: string; message: string; status: string } | null {
+    const r = this.db.prepare("SELECT body, status, args FROM messages WHERE id = ? AND type = 'task.mention'").get<{ body: string; status: string; args: string | null }>(msgId);
+    if (!r) return null;
+    let a: { taskId?: string; agentId?: string } = {};
+    try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* ignore */ }
+    return { taskId: a.taskId ?? '', agentId: a.agentId ?? '', message: r.body, status: r.status };
+  }
+
+  /** Resolve a mention-choice (answered / rejected). */
+  closeMentionChoice(msgId: string, status: 'answered' | 'rejected'): void {
+    this.db.prepare("UPDATE messages SET status = ? WHERE id = ? AND type = 'task.mention'").run(status, msgId);
+  }
+
+  /** The newest pending `ask_human` question on a session, if any — so a human's plain Discussion reply
+   *  can answer it (Feature: a reply feeds the live session only when a question is open). */
+  pendingQuestionFor(sessionId: string): string | undefined {
+    return this.db.prepare("SELECT id FROM questions WHERE run_id = ? AND status = 'pending' ORDER BY created_at DESC LIMIT 1").get<{ id: string }>(sessionId)?.id;
   }
 
   /** Mark a task's Discussion read for a member (per-member upsert over its `task.chat` rows). */

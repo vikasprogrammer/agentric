@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.265.0] — 2026-07-24
+### Changed
+- **@mentioning a non-owner agent now asks first (quick answer vs. new session).** Pulling in an agent that
+  isn't already working the task no longer silently spawns a session. Instead the Discussion shows a choice:
+  - **Quick answer** — an ephemeral, out-of-band delegate (`ask:<taskId>`, headless, *not* bound to the
+    task) reads the task + discussion and posts a concise answer via `task_say`, then exits.
+  - **New session** — starts the governed session on the task (the previous behaviour).
+  Mentioning the agent that's *already* on the task still just continues its own session.
+- **A human's plain reply answers a pending question on the task's live session.** When an agent asked a
+  question (`ask_human`) and its session is live on the task, a human reply in the Discussion is fed to the
+  agent as the answer — replies only feed the session when a question is actually open.
+
 ## [0.264.4] — 2026-07-24
 ### Added
 - **@mention autocomplete in the task Discussion composer.** Typing `@` opens a suggestion menu

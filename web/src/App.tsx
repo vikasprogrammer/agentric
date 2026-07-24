@@ -7503,7 +7503,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const openTask = (id: string) => nav('tasks', id)
   const openTaskTab = (id: string, tab: 'discussion' | 'description' | 'session') => nav('tasks', tab === 'discussion' ? id : `${id}/${tab}`)
   const closeTask = () => { setEditing(false); nav('tasks') }
-  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; discussion: TaskTimelineEntry[]; unread: number } | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // view + filters
@@ -7613,7 +7613,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 }) })
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) })
   }, [selId, tasks, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
 
@@ -7684,10 +7684,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
     setEditing(false); setBusy(false)
     await load()
-    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 })
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] })
   }
   // Re-pull the open task's detail (events + attachments + dependency edges) after a mutation that doesn't move columns.
-  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 }) }
+  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -7949,7 +7949,23 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
               {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />Session{live && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />}</>)}
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-              {activeTab === 'discussion' && <div className="h-full px-4 pt-3"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} /></div>}
+              {activeTab === 'discussion' && (
+                <div className="flex h-full flex-col px-4 pt-3">
+                  {detail.choices.length > 0 && (
+                    <div className="mb-2 shrink-0 space-y-2">
+                      {detail.choices.map((c) => (
+                        <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-[13px]">
+                          <span className="min-w-0 flex-1">Pull in <b className="text-sky-600">@{c.agentId}</b> — quick answer, or a full session on this task?</span>
+                          <Button size="xs" disabled={busy} onClick={async () => { setBusy(true); await api.resolveTaskMention(c.id, 'answer'); await refreshDetail(t.id); setBusy(false) }}>Quick answer</Button>
+                          <Button size="xs" variant="outline" disabled={busy} onClick={async () => { setBusy(true); await api.resolveTaskMention(c.id, 'session'); await refreshDetail(t.id); setBusy(false) }}>New session</Button>
+                          <button title="dismiss" disabled={busy} onClick={async () => { setBusy(true); await api.resolveTaskMention(c.id, 'dismiss'); await refreshDetail(t.id); setBusy(false) }} className="text-muted-foreground hover:text-foreground disabled:opacity-50"><X className="h-3.5 w-3.5" /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="min-h-0 flex-1"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} /></div>
+                </div>
+              )}
               {activeTab === 'description' && (
                 <div className="h-full overflow-y-auto p-4">
                   {t.body

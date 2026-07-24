@@ -886,8 +886,17 @@ export class Automations {
     for (const tok of mentions) {
       if (this.os.agents.has(tok)) {
         if (input.agent && tok === input.agent) continue; // don't pull an agent into its own message
-        const r = this.continueTaskThread(input.taskId, authorLabel, body, tok, input.runAs ?? t.owner ?? undefined);
-        agentRuns.push({ agent: tok, status: r.status, sessionId: r.sessionId });
+        // Continue the agent ALREADY on this task (its own live/resumable session); otherwise it's a
+        // NON-owner agent — don't spawn silently, ask the human (Quick answer vs New session).
+        const boundAgent = t.lastSessionId ? this.tm.sessionAgent(t.lastSessionId) : undefined;
+        if (boundAgent === tok) {
+          const r = this.continueTaskThread(input.taskId, authorLabel, body, tok, input.runAs ?? t.owner ?? undefined);
+          agentRuns.push({ agent: tok, status: r.status, sessionId: r.sessionId });
+        } else {
+          const human = input.author.includes(':') ? (t.owner ?? '') : input.author;
+          this.tm.postMentionChoice(input.taskId, tok, body, human);
+          agentRuns.push({ agent: tok, status: 'asked' });
+        }
         continue;
       }
       const m = this.tm.memberForMention(tok);
@@ -896,7 +905,29 @@ export class Automations {
         mentionedMembers.push(m.id);
       }
     }
+    // A human's plain reply answers a pending question on the task's live session (feeds it to the agent).
+    if (!input.agent && t.lastSessionId && this.tm.isAlive(t.lastSessionId)) {
+      const qid = this.tm.pendingQuestionFor(t.lastSessionId);
+      if (qid) this.tm.answerQuestion(qid, body, this.os.team.getMember(input.author)?.email ?? input.author);
+    }
     return { ok: true, entry, mentionedMembers, agentRuns };
+  }
+
+  /**
+   * A QUICK, out-of-band answer from a non-owner agent (the "Answer" choice on an @mention) — an ephemeral
+   * headless delegate (provenance `ask:<taskId>`, NOT bound to the task) that reads the task + discussion,
+   * posts a concise answer via `task_say`, and exits. It does NOT take over the task (no `markDispatched`).
+   */
+  quickAnswer(taskId: string, agentId: string, text: string, runAsMember?: string): { ok: boolean; sessionId?: string; reason?: string } {
+    const t = this.os.tasks.get(taskId);
+    if (!t) return { ok: false, reason: 'task not found' };
+    if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown agent: ${agentId}` };
+    const prompt = `You've been asked for a QUICK ANSWER on task ${t.id} ("${t.title}") — you are NOT taking over the task, just answering a question.\n\n` +
+      `Read it first with task_get({ id: "${t.id}" }) — it carries the full discussion for context. A teammate asked:\n\n${text}\n\n` +
+      `Post a concise, direct answer with task_say({ id: "${t.id}", message: "…" }), then stop. Do not start doing the work.`;
+    const s = this.tm.createSession(agentId, `Answer · ${t.title}`, prompt, `ask:${t.id}`, true, undefined, undefined, t.owner, undefined, false);
+    this.os.audit.append({ ts: Date.now(), runId: s.id, tenant: this.os.tenant, principal: runAsMember ? `member:${runAsMember}` : 'system', type: 'task.mention.answer', data: { taskId, agent: agentId, session: s.id } });
+    return { ok: true, sessionId: s.id };
   }
 
   /**
