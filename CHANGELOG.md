@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.265.1] — 2026-07-24
+### Fixed
+- **Task room sidebar no longer overlaps/cramps its Status/Assignee/Goal/Criteria controls.** Select
+  triggers were `w-fit`/`whitespace-nowrap` (long goal titles / agent names blew out the control), and a
+  viewport-based `sm:grid-cols-2` forced two selects into the ~320px sidebar. Triggers are now
+  `w-full`/`min-w-0` (the value line-clamps) and the narrow room sidebar stacks fields single-column (the
+  wider inline/Focus panel keeps two columns).
+
 ## [0.265.0] — 2026-07-24
 ### Changed
 - **@mentioning a non-owner agent now asks first (quick answer vs. new session).** Pulling in an agent that
