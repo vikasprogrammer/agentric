@@ -63,19 +63,24 @@ export class ClickupIngress {
     if (self && comment.userId && comment.userId === self) return { ok: true, status: 'own comment' };
 
     const text = comment.text || '';
+    // ⚠ EVERY comment on a covered task fires this webhook, and a ClickUp task's comment section is a
+    // SHARED space (not a dedicated bot thread like a Slack thread). So ONLY a comment addressed to an
+    // agent (`/agentname …`) acts — a plain comment is ignored, never delivered into a bound session.
+    // This matches the old agent-orch behaviour (a `/command` each turn); the loop-guard above already
+    // drops our own bot comments. Gate FIRST, before continuity.
+    if (!/^\s*\/[A-Za-z0-9]/.test(text)) return { ok: true, status: 'not a command' };
+
     const member = comment.userEmail ? this.os.team.getMemberByEmail(comment.userEmail) : undefined;
     const runAs = member?.id;
     const actorLabel = member?.name || comment.userEmail || 'a ClickUp user';
 
-    // 1) Continuity: a follow-up on a task already bound to a live/resumable session continues it.
+    // 1) Continuity: a follow-up `/command` on a task already bound to a live/resumable session resumes it.
     const cont = this.autos.continueClickupThread({ taskId, actorLabel, text, raw }, runAs);
     if (cont.status !== 'none') {
       return { ok: true, status: cont.status, sessions: cont.sessionId ? [cont.sessionId] : [] };
     }
 
-    // 2) Fresh: only a `/command` comment routes (else every unrelated comment would spawn/help-spam).
-    if (!/^\s*\/[A-Za-z0-9]/.test(text)) return { ok: true, status: 'not a command' };
-
+    // 2) Fresh: route the `/agentname` to the shared chat front door.
     const r = await this.autos.fireClickup(
       { taskId, commentId: comment.id, text, taskUrl: taskUrl(taskId), actorLabel, raw },
       runAs,

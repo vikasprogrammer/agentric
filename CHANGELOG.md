@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.261.2] — 2026-07-24
+### Changed
+- **ClickUp ingress hardening (every comment hits the webhook).** A ClickUp task's comment section is a
+  shared space and the Automation fires on *every* comment, so the dispatcher now **gates on `/agentname`
+  first** — a plain comment is ignored, never delivered into a session bound to that task (only a
+  `/command` acts, matching the old agent-orch behaviour + the bot-comment loop-guard). The task prompt
+  now mirrors the jump-server orchestrator's `/ceoagent`: **fetch the full ClickUp task details first**
+  (the description holds the real content — customer email/`Cx:` fields, issue details, links) before
+  acting, then reply via `clickup_reply`, commenting on the existing task (no duplicate). Console + docs
+  show ClickUp's real `task_id={id}` merge-field syntax (was `{{task.id}}`). Invocations surface on the
+  **Sessions** page ("Chat · <agent> · as <member>") + `trigger.clickup`/`chat.routed`/`clickup.reply` in **Audit**.
+
 ## [0.261.1] — 2026-07-24
 ### Fixed
 - **Dispatch no longer hard-rejects a `/goal` when the criteria fits but the whole prompt doesn't.**
@@ -23,7 +35,7 @@ new version heading in the same commit.
 ## [0.261.0] — 2026-07-24
 ### Added
 - **Native ClickUp ingress (comment → agent).** A ClickUp Automation ("comment posted" → `POST
-  /hooks/clickup?key=…&task_id={{task.id}}`) now reaches any agent from a task comment:
+  /hooks/clickup?key=…&task_id={id}`) now reaches any agent from a task comment:
   `/agent-name your request` spawns a governed session that works the task and posts its answer back as a
   comment; follow-up comments **continue the same conversation** (a `clickup_threads` task→session binding
   + `--resume`, the exact twin of `slack_threads`). This is the direct in-platform replacement for the old

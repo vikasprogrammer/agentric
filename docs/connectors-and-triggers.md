@@ -197,7 +197,7 @@ invite URL is built automatically (no pasting the application id).
 
 **Native ClickUp ingress (webhook, v0.260.0).** The webhook-source twin of the Slack/Discord chat path,
 for the one channel that is genuinely a webhook rather than a socket. A ClickUp Automation ("comment
-posted" → `POST /hooks/clickup?key=…&task_id={{task.id}}`) drives it: the route
+posted" → `POST /hooks/clickup?key=…&task_id={id}`) drives it: the route
 (`server.ts`, in the PUBLIC block beside `/triggers/composio`) authenticates the `?key=` against the
 workspace ClickUp webhook secret, then `ClickupIngress.dispatch` (`src/edge/clickup-ingress.ts`) fetches
 the latest comment via the API (the Automation payload has no text), **loop-guards** its own bot

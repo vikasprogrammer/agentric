@@ -936,9 +936,15 @@ export class Automations {
     const bind = { taskId: event.taskId, commentId: event.commentId };
     const extra =
       `Triggered from ClickUp by ${event.actorLabel} on task ${event.taskId} (${event.taskUrl}).\n` +
-      `Comment:\n${event.text}\n\n` +
-      `When you're done, call the \`clickup_reply\` tool with your answer — it posts back as a comment on ` +
-      `this exact task (you don't need a task id). Keep it concise; ClickUp comments are plain text.\n\n` +
+      `Comment (the user's request):\n${event.text}\n\n` +
+      `Do this IN ORDER:\n` +
+      `1. FIRST fetch the FULL task details for context — the ClickUp task DESCRIPTION holds the real ` +
+      `content (customer email / "Cx:" fields, issue details, links, stack traces), not just this comment. ` +
+      `Use your ClickUp tooling / the ClickUp API on task ${event.taskId}.\n` +
+      `2. Do the work the comment asks, honouring your CLAUDE.md workflow + all guardrails.\n` +
+      `3. Post your result back by calling the \`clickup_reply\` tool — it comments on THIS exact task ` +
+      `(you don't pass a task id). ClickUp comments are plain text (no markdown). Keep it concise.\n` +
+      `This task already exists and IS your tracking task — comment on it; do NOT create a new/duplicate task.\n\n` +
       `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
     for (const a of this.list()) {
       if (!a.enabled || a.type !== 'clickup') continue;

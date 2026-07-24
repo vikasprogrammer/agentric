@@ -13707,10 +13707,10 @@ function IntegrationsSettings({ me }: { me: Member }) {
               <div className="text-xs font-medium text-foreground">Webhook URL — paste into a ClickUp Automation</div>
               <p className="text-[11px] text-muted-foreground">
                 In ClickUp: <strong>Automations → Add → When a comment is posted → Webhook (POST)</strong>, URL below.
-                (The <code>task_id</code> is filled by ClickUp's <code>{'{{task.id}}'}</code> merge field.)
+                (The <code>{'{id}'}</code> is ClickUp's task-id merge field — it substitutes the real task id when the Automation fires.)
               </p>
               <code className="block break-all rounded bg-background p-2 font-mono text-[11px]">
-                {`${window.location.origin}${clickup.hookPath}&task_id={{task.id}}`}
+                {`${window.location.origin}${clickup.hookPath}&task_id={id}`}
               </code>
             </div>
           )}
