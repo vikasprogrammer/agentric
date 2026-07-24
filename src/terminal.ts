@@ -16,7 +16,7 @@ import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
 import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
-import { enrichArgs, autoClearsApproval } from './governance/enricher';
+import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
@@ -2551,6 +2551,14 @@ export class TerminalManager {
     // Computed once here, next to classify(); it rides on the gate.decision audit row (making the audit
     // trail legible instead of a wall of {tool,input}) and, for a gated action, on the approval card.
     const brief = briefFor(capability, args, decision);
+    // Scrub credential-looking tokens (a hardcoded GH_TOKEN/API key inline in the command) BEFORE the
+    // command is persisted — into the audit trail, the approval card, and the approvals row (they all
+    // read this same `args`). Classification + host parsing already ran on the real value above.
+    if (typeof args.command === 'string') args.command = redactSecrets(args.command);
+    if (args.input && typeof args.input === 'object') {
+      const inp = args.input as Record<string, unknown>;
+      if (typeof inp.command === 'string') inp.command = redactSecrets(inp.command);
+    }
     this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning, ...sub });
     this.audit(sessionId, agent, 'gate.decision', { capability, decision, brief, ...sub });
 

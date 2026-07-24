@@ -35,13 +35,15 @@ const DESTRUCTIVE: RegExp[] = [
   /\bdrop\s+(database|table|schema)\b/i,
   /\btruncate\b/i,
   /\bdelete\s+from\b(?![\s\S]*\bwhere\b)/i, // DELETE FROM ... with no WHERE → whole-table wipe
-  /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r|\brm\s+-r\b/i, // rm -rf / -fr / -r
   /\bmkfs\b/i,
   /\bdd\s+(if|of)=/i,
   /\bterraform\s+destroy\b/i,
   /\bkubectl\s+delete\b/i,
   /\bgit\s+push\s+(--force|-f)\b/i,
 ];
+// `rm -rf` is handled separately (path-aware, below): deleting a scratch/tmp/relative dir is routine
+// agent work, so it's destructive ONLY when a target is a real system/absolute path or unresolvable.
+const RM_RF = /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r|\brm\s+-r\b/i;
 const DESTRUCTIVE_TOOL = /delete_site|drop_database|drop_table|drop_schema/i;
 const MUTATION_TOOL = /create|send|update|delete|remove|write|post|put|patch|merge|publish|upload|deploy|pay|refund|archive|invite|execute/i;
 // Risky-shell keywords, but NOT when they're part of a hyphenated flag or compound token: the lookarounds
@@ -98,6 +100,83 @@ function scan(input: unknown): { text: string; entries: [string, unknown][] } {
 }
 
 /**
+ * Strip DATA payloads from a shell command before intent-matching, so text that is merely WRITTEN or
+ * SENT (a PR body, a commit message, a heredoc'd file) can't be mistaken for an EXECUTED action. The
+ * false positives this kills, seen in the wild: docs-bot's `gh pr create --body "…verified npm run build
+ * against app.globex.io…"` tripping a prodBuild guard, and `grep -rn "delete from"` reading as a
+ * destructive DELETE. We remove (a) the VALUES of message/body CLI flags (`-m`/`--body`/`--title`/…) and
+ * (b) heredoc bodies fed to a FILE sink (`cat`/`tee`/`>` redirect). We deliberately KEEP interpreter
+ * heredocs (`bash <<`, `python <<`) — those ARE executed, so a real destructive op inside one must still
+ * be caught. Stripping only ever REMOVES text, so it can make the scan miss a DATA match but can NEVER
+ * hide an executed command. Pure.
+ */
+export function sanitizeForIntent(command: string): string {
+  let s = command;
+  // (a) Heredoc bodies whose opener is a file sink (cat/tee or a `>`/`>>` redirect) and NOT an
+  //     interpreter — drop the body, keep the opener + tag so surrounding code still scans.
+  s = s.replace(
+    /(^|\n)([ \t]*[^\n]*?)<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\3([^\n]*)\n[\s\S]*?\n[ \t]*\4[ \t]*(?=\n|$)/g,
+    (full, nl: string, opener: string, _q: string, tag: string, rest: string) => {
+      const sink = /(^|[|&;])\s*(cat|tee)\b/.test(opener) || /[^<>]>>?[^>]/.test(` ${opener} `);
+      const interp = /\b(bash|sh|zsh|ksh|dash|python[0-9.]*|node|ruby|perl|php|Rscript|psql|mysql)\b/.test(opener);
+      return sink && !interp ? `${nl}${opener}<<${tag}${rest}\n${tag}` : full;
+    },
+  );
+  // (b) Message/body CLI arg VALUES — replace the quoted value after the flag with an empty string.
+  s = s.replace(
+    /(\s(?:-m|--message|--body|--title|--subject|--notes?|--description|--summary|--reason))(=|\s+)('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\$'(?:[^'\\]|\\.)*')/g,
+    '$1$2""',
+  );
+  return s;
+}
+
+/** Is a single `rm` target safe to delete without human sign-off? Safe = scratch/tmp or a path inside
+ *  the agent's own tree: literal `/tmp`|`/private/tmp`|`/var/folders`, or a RELATIVE path with no `..`
+ *  escape. UNSAFE (keeps it destructive) = any other absolute path, `~`/`$HOME`, a `..` escape, or an
+ *  unresolved variable / command-substitution (` ` marker) — we never green-light a delete we can't
+ *  see the target of. */
+function isSafeDeletePath(target: string): boolean {
+  const t = target.trim();
+  if (!t || t.includes(' ') || t.includes('$(') || t.includes('`')) return false; // unknown target
+  if (t === '/' || t === '~' || t === '.' || t === '..' || t === '*') return false;
+  if (/(^|\/)\.\.(\/|$)/.test(t)) return false; // escapes upward
+  if (/^(\/tmp|\/private\/tmp|\/var\/folders)\//.test(t)) return true; // scratch roots
+  if (t.startsWith('/') || t.startsWith('~')) return false; // any other absolute / home path
+  return true; // relative, no escape → inside the agent's cwd sandbox
+}
+
+/** Does every target of every `rm` in this command look safe (scratch/tmp/relative)? Resolves simple
+ *  `VAR=value` assignments made INLINE in the same command (`SCRATCH=/tmp/x … rm -rf "$SCRATCH"`) so the
+ *  common scratch-cleanup idiom is recognised. Returns false (→ stays destructive) on any unknown or
+ *  unsafe target. Best-effort + conservative: it can only DOWNGRADE an `rm -rf` that is provably safe. */
+function rmTargetsAllSafe(command: string): boolean {
+  const vars: Record<string, string> = {};
+  for (const m of command.matchAll(/(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"\n]*"|'[^'\n]*'|[^\s;&|)]+)/g)) {
+    vars[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
+  }
+  const expand = (tok: string): string =>
+    tok.replace(/^['"]|['"]$/g, '').replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_m, n: string) => vars[n] ?? ' ');
+  const calls = [...command.matchAll(/\brm\s+((?:-[A-Za-z]+\s+)*)([^\n;&|]+)/g)];
+  if (!calls.length) return false;
+  const targets: string[] = [];
+  for (const c of calls) {
+    for (const tok of c[2].split(/\s+/)) {
+      if (!tok || tok.startsWith('-')) continue;
+      targets.push(expand(tok));
+    }
+  }
+  return targets.length > 0 && targets.every(isSafeDeletePath);
+}
+
+const SECRET_RE = /\b(gh[posru]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})\b/g;
+/** Mask credential-looking tokens (GitHub PAT/OAuth, OpenAI/Anthropic keys, Slack tokens, AWS keys, JWTs)
+ *  in free text before it is PERSISTED (audit rows, approval cards). Classification runs on the real args
+ *  in memory first; this only scrubs the stored copy so a hardcoded token doesn't sit in the trail. */
+export function redactSecrets(text: string): string {
+  return text.replace(SECRET_RE, (m) => `${m.slice(0, 6)}…redacted`);
+}
+
+/**
  * Compute governance facts and return a NEW args object (original + facts). Pure; no I/O.
  * `args` is what the gate received: `{ tool?, input?, command?, ...callerFacts }`.
  * `orgDomains` are the workspace's internal email domains (lowercased, no `@`) — passed in by the
@@ -128,16 +207,23 @@ export function enrichArgs(
   // approvals to the owner. So shell.exec classifies on `command` only; connector calls still scan their
   // input VALUES (those ARE the effect) via `haystack`.
   const isShell = capability === 'shell.exec';
-  const classifyText = isShell ? command : haystack;
+  // Intent-match on the command with DATA payloads stripped (PR bodies, commit messages, file heredocs):
+  // a `--body "…npm run build…"` or `grep "delete from"` must not read as an executed build/DELETE.
+  const sanitizedCommand = isShell ? sanitizeForIntent(command) : command;
+  const classifyText = isShell ? sanitizedCommand : haystack;
 
   let destructive = args.destructive === true;
   if (!destructive && !isFileWrite) {
-    destructive = DESTRUCTIVE.some((re) => re.test(classifyText)) || (!!tool && DESTRUCTIVE_TOOL.test(tool));
+    const otherDestructive = DESTRUCTIVE.some((re) => re.test(classifyText)) || (!!tool && DESTRUCTIVE_TOOL.test(tool));
+    // `rm -rf` is destructive only when a target is a real system/absolute path (or unresolvable) — a
+    // scratch/tmp/relative delete is routine agent work, not an irreversible world effect.
+    const dangerousRm = RM_RF.test(classifyText) && !rmTargetsAllSafe(classifyText);
+    destructive = otherDestructive || dangerousRm;
   }
 
   let risky = args.risky === true || destructive;
   if (!risky && !isFileWrite) {
-    if (isShell) risky = RISKY_SHELL.test(command);
+    if (isShell) risky = RISKY_SHELL.test(sanitizedCommand);
     else if (capability.startsWith('connector')) risky = !!tool && MUTATION_TOOL.test(tool);
   }
 
@@ -228,6 +314,10 @@ export function enrichArgs(
   // Workspace-defined custom patterns (Settings → Governance): each sets a boolean fact the policy
   // gates on — the extension point for operator-specific dangerous ops without editing this file.
   // Applied to shell + connector calls only (never file.write, whose haystack is file *content*).
+  // For a shell command, match the SANITIZED text (same payload-stripping as the built-in scan) so a
+  // custom `prodBuild`/`serverReboot` rule can't be tripped by a PR body / commit message that merely
+  // MENTIONS the trigger — only by an executed command.
+  const patternHaystack = isShell ? `${tool}\n${sanitizedCommand}` : `${tool}\n${haystack}`;
   for (const p of patterns) {
     if (!p || typeof p.pattern !== 'string' || typeof p.fact !== 'string' || !p.fact) continue;
     const scope = p.scope ?? 'any';
@@ -243,8 +333,8 @@ export function enrichArgs(
       continue; // bad regex → ignore, never throw inside the gate
     }
     // Match the TOOL NAME too (a connector's `STRIPE_REFUND` / `delete_site` is the action itself), not
-    // just the command + input values in `haystack`. Harmless for shell, where `tool` is 'Bash'.
-    if (re.test(`${tool}\n${haystack}`)) facts[p.fact] = true;
+    // just the command + input values. Harmless for shell, where `tool` is 'Bash'.
+    if (re.test(patternHaystack)) facts[p.fact] = true;
   }
 
   return facts;

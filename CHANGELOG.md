@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.260.0] — 2026-07-24
+### Fixed
+- **Enricher no longer hard-denies on payload text or scratch deletes (content-vs-intent false
+  positives).** A fleet audit of globex found ~67% of hard denials were false positives with no
+  recourse: (1) the `destructive` tier blocked routine `rm -rf` of `/tmp`/scratch/relative dirs (agents
+  cleaning their own scratchpad, re-cloning a repo, clearing a build cache), and (2) custom guards like
+  `prodBuild` fired on **documentation content** — docs-bot's `gh pr create --body "…npm run build … on
+  app.globex.io"` read as an executed production build, systematically blocking its PRs. Root cause: the
+  enricher matched intent signals inside DATA payloads (PR bodies, commit messages, file heredocs) and
+  couldn't tell a scratch delete from a system delete. Now:
+  - `rm -rf` is destructive **only** when a target is a real system/absolute path, `~`/home, a `..`
+    escape, or an unresolvable variable — a `/tmp`/scratch/relative delete is allowed. Resolves inline
+    `VAR=…` assignments so the `SCRATCH=/tmp/x … rm -rf "$SCRATCH"` idiom is recognised. A genuine
+    `rm -rf /etc`, `~/web/public_html`, `..` escape, or unknown-var delete is **still denied**.
+  - New `sanitizeForIntent()` strips message/body CLI values (`-m`/`--body`/`--title`/…) and file-sink
+    heredocs (`cat`/`tee`/`>`) before intent-matching (built-in destructive/risky **and** custom
+    patterns), so a PR body / commit message / heredoc'd file can't trip a guard. **Interpreter**
+    heredocs (`bash <<`, `python <<`) are kept — a real destructive op inside one is still caught.
+  - Credential-looking tokens (GitHub PAT/OAuth, OpenAI/Anthropic keys, Slack tokens, AWS keys, JWTs) are
+    now **redacted** from the command before it is persisted to the audit trail / approval card
+    (`redactSecrets`) — a hardcoded `GH_TOKEN=gho_…` inline no longer sits in cleartext in the log.
+  - 15 new golden conformance cases pin both directions (false positives now allowed; real destructive /
+    real prod-build still gated); the runner gained direct `expectFacts` assertions.
+
 ## [0.259.0] — 2026-07-23
 ### Added
 - **Loop detection + the `instruct` verb (phase 3 of the decision-brief layer — the behavioural-failure
