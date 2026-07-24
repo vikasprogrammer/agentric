@@ -205,7 +205,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 58 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 59 always-on tools
   + 11 conditional (chat-reply / egress / media, each exposed only when its env flag is set; full list
   in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):

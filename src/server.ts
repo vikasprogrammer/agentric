@@ -1588,7 +1588,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const found = os.tasks.withEvents(url.searchParams.get('id') || '');
     if (!found) return sendJson(res, 404, { error: 'task not found' });
-    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id) });
+    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id), discussion: tm.discussionTimeline(found.task.id) });
+  }
+  // agent posts into a task's Discussion (the `task_say` tool). Author = the calling agent; @mentions
+  // escalate (a member → addressed card+DM, an agent → resumed/spawned on the task). Quiet otherwise.
+  if (method === 'POST' && p === '/api/tasks/say') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id || '').trim();
+    const message = String(b.message || '').trim();
+    if (!id || !message) return sendJson(res, 200, { ok: false, error: 'id and message are required' });
+    const out = autos.postTaskDiscussion({ taskId: id, author: `agent:${agent}`, agent, body: message, runAs: tm.sessionRunAs(session) });
+    return sendJson(res, 200, out.ok ? { ok: true, mentioned: out.mentionedMembers, agents: out.agentRuns } : { ok: false, error: out.error });
   }
   if (method === 'POST' && p === '/api/tasks/claim') {
     const b = await readBody(req);
@@ -3090,6 +3104,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // follows canRun on the assignee agent (spawning a session is a run); delete is owner/admin.
   const taskId = p.match(/^\/api\/tasks\/([\w-]+)$/);
   const taskComment = p.match(/^\/api\/tasks\/([\w-]+)\/comment$/);
+  const taskMessages = p.match(/^\/api\/tasks\/([\w-]+)\/messages$/);
+  const taskRead = p.match(/^\/api\/tasks\/([\w-]+)\/read$/);
   const taskDispatch = p.match(/^\/api\/tasks\/([\w-]+)\/dispatch$/);
   const taskAttachments = p.match(/^\/api\/tasks\/([\w-]+)\/attachments$/);
   const taskAttachmentRaw = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)\/raw$/);
@@ -3101,7 +3117,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);
     if (!found) return sendJson(res, 404, { error: 'task not found' });
-    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id) });
+    return sendJson(res, 200, {
+      ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id),
+      discussion: tm.discussionTimeline(found.task.id), unread: tm.discussionUnread(found.task.id, me),
+    });
+  }
+  // Post a message into a task's Discussion (any member). Parses @mentions → an @member gets an addressed
+  // Inbox card + DM, an @agent is resumed/spawned on the task. Quiet otherwise (not in the Inbox feed).
+  if (taskMessages && method === 'POST') {
+    const b = await readBody(req);
+    const message = String(b.body || b.message || '').trim();
+    if (!message) return sendJson(res, 400, { error: 'a message is required' });
+    const out = autos.postTaskDiscussion({ taskId: taskMessages[1], author: me.id, body: message, runAs: me.id });
+    if (!out.ok) return sendJson(res, 404, { error: out.error });
+    return sendJson(res, 200, { ok: true, entry: out.entry, mentioned: out.mentionedMembers, agents: out.agentRuns });
+  }
+  // Mark a task's Discussion read for this member (clears its unread badge).
+  if (taskRead && method === 'POST') {
+    if (!os.tasks.get(taskRead[1])) return sendJson(res, 404, { error: 'task not found' });
+    tm.markDiscussionRead(taskRead[1], me);
+    return sendJson(res, 200, { ok: true });
   }
   // Upload a file onto a task (raw bytes in the body; original name in ?name=). Any member, like a task edit.
   if (taskAttachments && method === 'POST') {

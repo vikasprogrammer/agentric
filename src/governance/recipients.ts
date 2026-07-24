@@ -19,12 +19,16 @@ import { Member, ApprovalLevel, canApprove } from '../types';
  * - `admins`        — active owners + admins; the shared escalation/fallback tier.
  * - `sessionOwner`  — the human a run acts for: its `run_as`, else a member who spawned it (empty for a
  *                     pure automation/task/chat spawn, whose provenance is prefixed `x:`).
+ * - `task`          — the human participants of a task's Discussion: its owner + human assignee + every
+ *                     human who has posted in it (see `docs/task-rooms-plan.md`). The fan-out set for a
+ *                     Discussion-wide event; individual @mentions use `member` instead.
  */
 export type Audience =
   | { kind: 'member'; id: string }
   | { kind: 'approvers'; level: ApprovalLevel }
   | { kind: 'admins' }
-  | { kind: 'sessionOwner'; id: string };
+  | { kind: 'sessionOwner'; id: string }
+  | { kind: 'task'; id: string };
 
 /**
  * Resolve an {@link Audience} to the concrete members who should receive the notification. Pure over
@@ -52,6 +56,20 @@ export function resolveRecipients(os: AgentOS, audience: Audience): Member[] {
       // A console-spawned run's provenance IS a member id (automation:/task:/chat: spawns are prefixed).
       if (!m && row?.spawned_by && !row.spawned_by.includes(':')) m = os.team.getMember(row.spawned_by);
       return m ? [m] : [];
+    }
+    case 'task': {
+      // The Discussion's human participants: owner + human assignee + every human who has posted a
+      // Discussion message (source is a bare member id; agents post with an `agent:<id>` source).
+      const t = os.tasks.get(audience.id);
+      const ids = new Set<string>();
+      if (t?.owner) ids.add(t.owner);
+      if (t?.assignee && !t.assignee.includes(':')) ids.add(t.assignee);
+      for (const r of os.db
+        .prepare("SELECT DISTINCT source FROM messages WHERE session_id = ? AND type = 'task.chat' AND source IS NOT NULL")
+        .all<{ source: string }>(`task:${audience.id}`)) {
+        if (r.source && !r.source.includes(':')) ids.add(r.source);
+      }
+      return [...ids].map((id) => os.team.getMember(id)).filter((m): m is Member => !!m);
     }
   }
 }

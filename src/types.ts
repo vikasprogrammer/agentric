@@ -823,6 +823,17 @@ export interface TaskEvent {
   createdAt: number;
 }
 
+/**
+ * One entry in a task's **Discussion** — the merged conversation+activity timeline the task-detail view
+ * renders (see `docs/task-rooms-plan.md`). Two shapes interleaved by time: a `chat` entry (a human/agent
+ * message, from the `messages` store with `audience_kind:'task'`, plus folded-in legacy `comment` events)
+ * and an `event` entry (a state transition from the append-only `task_events` log — status/claim/dispatch/
+ * assign/link/attach). `author` is a member id | `agent:<id>` | `automation:<id>` | `system`.
+ */
+export type TaskTimelineEntry =
+  | { kind: 'chat'; id: string; author: string; agentId?: string; body: string; mentions: string[]; at: number }
+  | { kind: 'event'; id: string; eventKind: TaskEvent['kind']; body?: string; author: string; at: number };
+
 /** A file attached to a task — a durable on-disk snapshot (mirrors {@link Artifact}, keyed to a task). */
 export interface TaskAttachment {
   id: string;

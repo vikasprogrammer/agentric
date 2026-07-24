@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -7125,8 +7125,6 @@ const TASK_COLUMNS: { status: TaskStatus; label: string; rail: string; head: str
 const PRIORITY_LABEL = ['Urgent', 'High', 'Normal', 'Low']
 // Base UI's Select.Value shows the raw value unless the root gets an items map (value → label).
 const PRIORITY_ITEMS: Record<string, string> = Object.fromEntries(PRIORITY_LABEL.map((l, i) => [String(i), l]))
-// A colored left edge so priority reads at a glance on a dense board (urgent red → low none).
-const priorityBorder = (p: number) => ['border-l-red-500', 'border-l-amber-500', 'border-l-transparent', 'border-l-transparent'][p] ?? 'border-l-transparent'
 // Tinted pill for a task status — used on the goal's linked-tasks list.
 const taskStatusTone = (s: TaskStatus): string => ({
   todo: 'bg-muted text-muted-foreground',
@@ -7482,13 +7480,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const selId = taskId || null
   const openTask = (id: string) => nav('tasks', id)
   const closeTask = () => { setEditing(false); nav('tasks') }
-  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[] } | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; discussion: TaskTimelineEntry[]; unread: number } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // view + filters
   const [view, setView] = useState<'board' | 'list' | 'focus'>(() => { const v = localStorage.getItem('aos_tasks_view'); return v === 'list' || v === 'focus' ? v : 'board' })
   useEffect(() => { localStorage.setItem('aos_tasks_view', view) }, [view])
-  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'none'>('priority')
+  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'goal' | 'none'>('priority')
   const [mine, setMine] = useState(false)
   const [fAssignee, setFAssignee] = useState('') // '' = all
   const [fLabel, setFLabel] = useState('')
@@ -7591,7 +7589,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [] }) })
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 }) })
   }, [selId, tasks, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
 
@@ -7662,10 +7660,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
     setEditing(false); setBusy(false)
     await load()
-    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [] })
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 })
   }
   // Re-pull the open task's detail (events + attachments + dependency edges) after a mutation that doesn't move columns.
-  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [] }) }
+  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 }) }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -7681,7 +7679,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; setDragId(t.id) }}
         onDragEnd={() => { setDragId(null); setDragOverCol(null) }}
         onClick={() => openTask(t.id)}
-        className={`w-full cursor-pointer rounded-md border border-l-[3px] bg-muted/20 p-2.5 text-left shadow-sm transition hover:bg-muted/50 ${priorityBorder(t.priority)} ${live ? 'border-sky-500/40' : ''} ${selId === t.id ? 'ring-1 ring-primary' : ''} ${dragId === t.id ? 'opacity-50' : ''}`}
+        className={`w-full cursor-pointer rounded-md border bg-muted/20 p-2.5 text-left shadow-sm transition hover:bg-muted/50 ${selId === t.id ? 'ring-1 ring-primary' : ''} ${dragId === t.id ? 'opacity-50' : ''}`}
       >
         <div className="flex items-start justify-between gap-2">
           <a href={navHref('tasks', t.id)} draggable={false} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-sm font-medium text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
@@ -7839,7 +7837,15 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         )}
         {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
 
-        <CommentBox onSubmit={async (text) => { await api.commentTask(detail.task.id, text); await refreshDetail(detail.task.id) }} />
+        <TaskDiscussion
+          taskId={detail.task.id}
+          entries={detail.discussion}
+          unread={detail.unread}
+          me={me}
+          members={members}
+          agents={agents}
+          onChange={() => refreshDetail(detail.task.id)}
+        />
 
         <TaskAttachments
           taskId={detail.task.id}
@@ -7943,9 +7949,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue</button>
         {view === 'list' && (
           <>
-            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
+            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', goal: 'Group: Goal', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
               <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
+              <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="goal">Group: Goal</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
             </Select>
             <Select items={{ priority: 'Sort: Priority', due: 'Sort: Due date', updated: 'Sort: Updated' }} value={sort} onValueChange={(v) => v && setSort(v as typeof sort)}>
               <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
@@ -8105,6 +8111,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
               if (listGroup === 'priority') groups = [0, 1, 2, 3].map((p) => ({ key: String(p), label: <span className="flex items-center gap-2"><PriorityPips p={p} />{PRIORITY_LABEL[p]}</span>, items: within(visible.filter((t) => t.priority === p)) })).filter((g) => g.items.length)
               else if (listGroup === 'status') groups = (['doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
               else if (listGroup === 'assignee') groups = [...new Set(visible.map((t) => t.assignee || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unassigned'}</span>, items: within(visible.filter((t) => (t.assignee || '') === k)) })).filter((g) => g.items.length)
+              else if (listGroup === 'goal') groups = [...new Set(visible.map((t) => t.goalId || ''))].sort((a, b) => (a ? goalTitle(a) : 'zzz').localeCompare(b ? goalTitle(b) : 'zzz')).map((k) => ({ key: k || 'none', label: <span className="flex items-center gap-1.5">{k ? <><Target className="h-3.5 w-3.5 text-muted-foreground" />{goalTitle(k)}</> : 'No goal'}</span>, items: within(visible.filter((t) => (t.goalId || '') === k)) })).filter((g) => g.items.length)
               else groups = [{ key: 'all', label: <span>All tasks</span>, items: within(visible) }]
               if (!visible.length) return <div className="px-3 py-8 text-center text-sm text-muted-foreground">No tasks match.</div>
               return groups.map((g) => (
@@ -8296,6 +8303,125 @@ function TaskDependencies({ task, dependents, tasks, canEdit, onOpen, onSave }: 
       )}
     </div>
   )
+}
+
+/** Resolve a Discussion author (member id | 'agent:<id>' | 'system') to a display name + avatar style. */
+function discussionAuthor(author: string, agentId: string | undefined, members: Member[]): { name: string; kind: 'human' | 'agent' | 'system'; initials: string } {
+  if (author === 'system') return { name: 'system', kind: 'system', initials: '' }
+  if (agentId || author.startsWith('agent:')) {
+    const id = agentId ?? author.slice('agent:'.length)
+    return { name: id, kind: 'agent', initials: id.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() }
+  }
+  const m = members.find((x) => x.id === author)
+  const name = m?.name || m?.email?.split('@')[0] || author
+  return { name, kind: 'human', initials: name.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '?' }
+}
+
+/** Render Discussion body text with @mentions highlighted (agent mentions get the sky accent). */
+function DiscussionBody({ text, agents }: { text: string; agents: AgentInfo[] }) {
+  const parts = text.split(/(@[a-z0-9][a-z0-9._-]*)/gi)
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part[0] === '@') {
+          const tok = part.slice(1).toLowerCase().replace(/[._-]+$/, '')
+          const isAgent = agents.some((a) => a.id.toLowerCase() === tok)
+          return <span key={i} className={`rounded px-1 font-medium ${isAgent ? 'bg-sky-500/15 text-sky-600' : 'bg-muted text-foreground'}`}>{part}</span>
+        }
+        return <span key={i}>{part}</span>
+      })}
+    </>
+  )
+}
+
+/** One-line phrasing for a task state event in the merged Discussion timeline. */
+function eventPhrase(e: Extract<TaskTimelineEntry, { kind: 'event' }>): { text: string; pill?: string; tone?: string } {
+  const b = e.body || ''
+  switch (e.eventKind) {
+    case 'status': {
+      const m = b.match(/(\w+)→(\w+)/)
+      if (m) { const to = m[2]; return { text: 'moved to', pill: to, tone: to === 'blocked' ? 'text-rose-600 bg-rose-500/15' : to === 'done' ? 'text-emerald-600 bg-emerald-500/15' : to === 'doing' ? 'text-sky-600 bg-sky-500/15' : 'text-muted-foreground bg-muted' } }
+      return { text: b || 'updated status' }
+    }
+    case 'claim': return { text: 'claimed the task' }
+    case 'dispatch': return { text: 'dispatched a session' }
+    case 'assign': return { text: `reassigned ${b}` }
+    case 'link': return { text: b || 'linked' }
+    case 'attach': return { text: `attached ${b}` }
+    default: return { text: b || String(e.eventKind) }
+  }
+}
+
+/**
+ * A task's **Discussion** — the merged conversation+activity timeline (chat + system events) with a
+ * mention-aware composer. Quiet by default: plain messages notify no one; @mention an agent to pull it
+ * onto the task, or a teammate to ping them. See docs/task-rooms-plan.md.
+ */
+function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange }: { taskId: string; entries: TaskTimelineEntry[]; unread: number; me: Member; members: Member[]; agents: AgentInfo[]; onChange: () => void }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  // Mark the Discussion read on open (fire-and-forget; the board badge clears on its next poll).
+  const readFor = useRef('')
+  useEffect(() => { if (unread > 0 && readFor.current !== taskId) { readFor.current = taskId; api.readTaskDiscussion(taskId).catch(() => {}) } }, [taskId, unread])
+  const send = async () => { const t = text.trim(); if (!t || busy) return; setBusy(true); try { await api.postTaskMessage(taskId, t); setText(''); onChange() } finally { setBusy(false) } }
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        <MessageSquare className="h-3.5 w-3.5" /> Discussion
+        {unread > 0 && <span className="rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white">{unread} new</span>}
+      </div>
+      <div className="mb-2 flex items-center gap-1.5 rounded-md bg-sky-500/10 px-2.5 py-1.5 text-[11px] text-sky-600 ring-1 ring-inset ring-sky-500/25">
+        <Bell className="h-3 w-3 shrink-0" /> Quiet by default — only <b className="font-semibold">@mentions</b> &amp; status changes reach an Inbox or DM.
+      </div>
+      <div className="flex flex-col gap-0.5">
+        {entries.length === 0 && <div className="py-3 text-center text-xs text-muted-foreground">No messages yet. Say something or @mention a teammate.</div>}
+        {entries.map((e) => {
+          if (e.kind === 'event') {
+            const p = eventPhrase(e)
+            const who = discussionAuthor(e.author, undefined, members)
+            return (
+              <div key={e.id} className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground">
+                <span className="w-4" />
+                <span><b className="font-medium text-foreground">{who.name}</b> {p.text} {p.pill && <span className={`ml-0.5 rounded px-1.5 py-0.5 font-mono ${p.tone}`}>{p.pill}</span>}</span>
+                <span className="ml-auto font-mono text-[10px] opacity-70">{fmtDiscussionClock(e.at)}</span>
+              </div>
+            )
+          }
+          const who = discussionAuthor(e.author, e.agentId, members)
+          const mine = who.kind === 'human' && e.author === me.id
+          return (
+            <div key={e.id} className="flex gap-2.5 rounded-md px-1 py-1.5 hover:bg-muted/40">
+              <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold ${who.kind === 'agent' ? 'bg-sky-500/15 text-sky-600 ring-1 ring-inset ring-sky-500/30' : 'bg-muted text-foreground ring-1 ring-inset ring-border'}`}>{who.initials}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className={`text-[13px] font-medium ${who.kind === 'agent' ? 'text-sky-600' : 'text-foreground'}`}>{mine ? 'you' : who.name}</span>
+                  {who.kind === 'agent' && <span className="flex items-center gap-0.5 rounded bg-sky-500/10 px-1 text-[9px] uppercase tracking-wide text-sky-600"><Bot className="h-2.5 w-2.5" />agent</span>}
+                  <span className="ml-auto font-mono text-[10px] text-muted-foreground">{fmtDiscussionClock(e.at)}</span>
+                </div>
+                <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground"><DiscussionBody text={e.body} agents={agents} /></div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <div className="mt-2 flex items-end gap-2">
+        <Textarea
+          value={text}
+          onChange={(ev) => setText(ev.target.value)}
+          onKeyDown={(ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); void send() } }}
+          rows={1}
+          placeholder="Message the task — @mention an agent or teammate to pull them in…"
+          className="min-h-8 text-[13px]"
+        />
+        <Button size="sm" disabled={!text.trim() || busy} onClick={() => void send()}><Send className="h-3.5 w-3.5" /></Button>
+      </div>
+    </div>
+  )
+}
+
+/** Short clock label (local HH:MM) for a Discussion timestamp. */
+function fmtDiscussionClock(ms: number): string {
+  try { return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) } catch { return '' }
 }
 
 function CommentBox({ onSubmit }: { onSubmit: (text: string) => Promise<void> }) {

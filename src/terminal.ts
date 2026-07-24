@@ -15,7 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
@@ -115,6 +115,9 @@ Other agents run in this workspace and you share state with them. You are a node
   same accountable human), park work too big for this run, or make your own multi-step work trackable —
   then \`task_update\` to close the loop (\`done\`, or \`blocked\` with why). Prefer delegating specialised
   work over doing it poorly yourself; an unassigned task just waits for someone to pick it up.
+  Every task has a **Discussion** — \`task_say({ id, message })\` to talk to the humans + agents on it (ask
+  a question, hand off, give a heads-up). @mention an \`agent:<id>\` to pull that agent onto the task, or a
+  teammate to ping them; plain messages stay quiet. Read it first via \`task_get\` (its \`discussion\`).
 - **Goals** (\`goal_*\`) are the strategic layer your work ladders up to — **Goal → Task → this session**.
   Goals are human-owned *direction*: \`goal_list\` / \`goal_get\` to see what the fleet is working toward,
   steer your work to advance one, and link tasks to it with \`task_create({ goalId })\` so progress rolls
@@ -280,7 +283,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
+  type: 'task' | 'task.chat' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
   sessionId: string;
   agent: string;
   title: string;
@@ -1278,7 +1281,7 @@ export class TerminalManager {
          LEFT JOIN questions q ON m.question_id = q.id
          LEFT JOIN term_sessions ts ON m.session_id = ts.id
          LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
-         WHERE m.dismissed_at IS NULL AND ms.dismissed_at IS NULL
+         WHERE m.dismissed_at IS NULL AND ms.dismissed_at IS NULL AND m.type != 'task.chat'
          ORDER BY m.created_at DESC`,
       )
       .all<MessageRow>(viewerId);
@@ -2855,15 +2858,17 @@ export class TerminalManager {
     return 'deny'; // rejected, cancelled, or unknown
   }
 
-  private addMessage(m: Omit<FeedMessage, 'id' | 'createdAt'>): void {
+  private addMessage(m: Omit<FeedMessage, 'id' | 'createdAt'>): string {
+    const id = newId('message');
     this.db
       .prepare('INSERT INTO messages (id, type, session_id, agent, title, body, status, approval_id, capability, args, level, source, question_id, outcome, audience_kind, audience_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(
-        newId('message'), m.type, m.sessionId, m.agent, m.title, m.body, m.status,
+        id, m.type, m.sessionId, m.agent, m.title, m.body, m.status,
         m.approvalId ?? null, m.capability ?? null, m.args !== undefined ? JSON.stringify(m.args) : null,
         m.level ?? null, m.source ?? null, m.questionId ?? null, m.outcome ?? null,
         m.audienceKind ?? null, m.audienceId ?? null, Date.now(),
       );
+    return id;
   }
 
   /**
@@ -2879,6 +2884,80 @@ export class TerminalManager {
       body: input.body, status: 'open', args: { taskId: input.taskId, event: input.event },
       audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
     });
+  }
+
+  /**
+   * Post one message into a task's **Discussion** (the task-detail conversation — see
+   * `docs/task-rooms-plan.md`). A Discussion message is a `messages` row with `type='task.chat'` +
+   * `audience_kind:'task'` on the `task:<id>` sentinel session; it is EXCLUDED from the Inbox feed
+   * (`listMessages`) — the Discussion is its own surface — so posting here never floods anyone's inbox.
+   * Escalation to an Inbox/DM happens only via @mentions (handled by the caller), per Decision 3.
+   * `author` is a member id (human) or `agent:<id>`; `agent` is the bare agent id when agent-authored.
+   * Returns the stored entry so a route/tool can echo it back. Auto-apply + audited, like task edits.
+   */
+  postTaskMessage(input: { taskId: string; author: string; agent?: string; body: string }): TaskTimelineEntry {
+    const body = input.body.trim();
+    const id = this.addMessage({
+      type: 'task.chat', sessionId: `task:${input.taskId}`, agent: input.agent ?? '',
+      title: '', body, status: 'open', source: input.author,
+      audienceKind: 'task', audienceId: input.taskId,
+    });
+    const at = Date.now();
+    this.audit(`task:${input.taskId}`, input.agent ?? input.author, 'task.said', { taskId: input.taskId, chars: body.length });
+    return {
+      kind: 'chat', id, author: input.author, agentId: input.agent || undefined,
+      body, mentions: parseMentions(body), at,
+    };
+  }
+
+  /**
+   * A task's Discussion timeline: the `task.chat` messages interleaved with the `task_events` state log,
+   * sorted oldest-first. Legacy `comment` events fold in as chat entries (Decision 2 — comments used to
+   * live in `task_events`; new ones are `task.chat` messages), everything else renders as a system event.
+   */
+  discussionTimeline(taskId: string): TaskTimelineEntry[] {
+    const chats = this.db
+      .prepare("SELECT id, agent, source, body, created_at FROM messages WHERE session_id = ? AND type = 'task.chat' ORDER BY created_at ASC")
+      .all<{ id: string; agent: string | null; source: string | null; body: string; created_at: number }>(`task:${taskId}`);
+    const entries: TaskTimelineEntry[] = chats.map((c) => ({
+      kind: 'chat' as const, id: c.id,
+      author: c.source ?? (c.agent ? `agent:${c.agent}` : 'system'),
+      agentId: c.agent || undefined, body: c.body, mentions: parseMentions(c.body), at: c.created_at,
+    }));
+    const events = this.os.tasks.withEvents(taskId)?.events ?? [];
+    for (const e of events) {
+      if (e.kind === 'comment') {
+        entries.push({
+          kind: 'chat', id: e.id, author: e.author,
+          agentId: e.author.startsWith('agent:') ? e.author.slice(6) : undefined,
+          body: e.body ?? '', mentions: parseMentions(e.body ?? ''), at: e.createdAt,
+        });
+      } else {
+        entries.push({ kind: 'event', id: e.id, eventKind: e.kind, body: e.body, author: e.author, at: e.createdAt });
+      }
+    }
+    return entries.sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  }
+
+  /** How many Discussion messages `viewer` hasn't read (excluding their own posts) — the unread badge on
+   *  a task card and the Discussion header. Uses the per-member `message_state` read line. */
+  discussionUnread(taskId: string, viewer: Member): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM messages m
+                  LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
+                 WHERE m.session_id = ? AND m.type = 'task.chat'
+                   AND ms.read_at IS NULL AND (m.source IS NULL OR m.source != ?)`)
+      .get<{ n: number }>(viewer.id, `task:${taskId}`, viewer.id);
+    return row?.n ?? 0;
+  }
+
+  /** Mark a task's Discussion read for a member (per-member upsert over its `task.chat` rows). */
+  markDiscussionRead(taskId: string, viewer: Member): void {
+    for (const r of this.db
+      .prepare("SELECT id FROM messages WHERE session_id = ? AND type = 'task.chat'")
+      .all<{ id: string }>(`task:${taskId}`)) {
+      this.upsertState(r.id, viewer.id, 'read_at');
+    }
   }
 
   /** Post a proactive **insight alert** to the admins' Inbox — a session-less `notification` card the
@@ -3228,6 +3307,10 @@ export class TerminalManager {
     if (this.hasCompleted(sessionId)) return;
     this.clearNotifications(sessionId);
     this.addMessage({ type: 'completed', sessionId, agent, title: `Completed — ${agent}`, body: summary || '(no summary)', status: 'open', outcome, audienceKind: 'sessionOwner', audienceId: sessionId });
+    // A task-dispatched run signs off IN its task's Discussion too (§3.2), so the delegate's closing note
+    // lands in the thread the humans + other agents are watching (the owner still gets the completed card).
+    const reportTaskId = this.taskForSession(sessionId);
+    if (reportTaskId) this.postTaskMessage({ taskId: reportTaskId, author: `agent:${agent}`, agent, body: summary || `Finished (${outcome}).` });
     this.fireSessionEvent(sessionId, agent, 'completed', `Completed — ${agent}`, summary || `Finished (${outcome}).`);
     // Close the chat loop: a chat-triggered run's completion goes back to the thread the human pinged
     // from, not just the console. No-op for non-chat runs. The agent's own `slack_reply`/`discord_reply`
@@ -3668,8 +3751,24 @@ export class TerminalManager {
   progress(sessionId: string, agent: string, message: string, important = false): void {
     const body = (message || '').trim();
     if (!body) return;
+    // A task-dispatched run narrates INTO its task's Discussion, not the owner's Inbox (§3.2) — its
+    // progress IS the conversation, and stays quiet (Discussion messages don't hit the Inbox feed).
+    const taskId = this.taskForSession(sessionId);
+    if (taskId) {
+      this.postTaskMessage({ taskId, author: `agent:${agent}`, agent, body });
+      this.audit(sessionId, agent, 'session.progress', { important, message: body, taskId });
+      return;
+    }
     this.addMessage({ type: 'update', sessionId, agent, title: `Update — ${agent}`, body, status: 'open', args: important ? { important: true } : undefined, audienceKind: 'sessionOwner', audienceId: sessionId });
     this.audit(sessionId, agent, 'session.progress', { important, message: body });
+  }
+
+  /** The task id a session was dispatched for (`task:<id>` provenance), else undefined. Drives the §3.2
+   *  reroute of a dispatched agent's `report`/`update` into the task Discussion. */
+  private taskForSession(sessionId: string): string | undefined {
+    const r = this.db.prepare('SELECT spawned_by FROM term_sessions WHERE id = ?').get<{ spawned_by: string | null }>(sessionId);
+    const sb = r?.spawned_by ?? '';
+    return sb.startsWith('task:') ? sb.slice('task:'.length) : undefined;
   }
 
   /**
@@ -3704,7 +3803,30 @@ export class TerminalManager {
     const lower = q.toLowerCase();
     const members = this.os.team.listMembers().filter((m) => m.status === 'active');
     return members.find((m) => m.email.toLowerCase() === lower)
-        ?? members.find((m) => (m.name ?? '').toLowerCase() === lower);
+        ?? members.find((m) => (m.name ?? '').toLowerCase() === lower)
+        ?? members.find((m) => m.email.split('@')[0].toLowerCase() === lower)
+        ?? members.find((m) => (m.name ?? '').toLowerCase().replace(/\s+/g, '') === lower);
+  }
+
+  /** Resolve an `@mention` token from a task Discussion (member id | email | email local-part | display
+   *  name, spaces collapsed) to a member. Public for the edge mention path. */
+  memberForMention(token: string): Member | undefined {
+    return this.resolveMember(token);
+  }
+
+  /**
+   * A task Discussion `@mentioned` a member: post an addressed inbox card (deep-linked to the task) AND
+   * fire the out-of-band DM — the ONLY way a Discussion message reaches an Inbox/DM (Decision 3). Mirrors
+   * {@link notifyMember} but for the session-less task surface (`task:<id>` sentinel + `args.taskId`).
+   */
+  mentionMember(taskId: string, byAgent: string, memberId: string, text: string): void {
+    this.addMessage({
+      type: 'task', sessionId: `task:${taskId}`, agent: byAgent,
+      title: 'You were mentioned in a task', body: text, status: 'open',
+      args: { taskId, event: 'mention' }, audienceKind: 'member', audienceId: memberId,
+    });
+    this.audit(`task:${taskId}`, byAgent, 'task.mention', { to: memberId });
+    try { this.memberNotifier?.({ sessionId: `task:${taskId}`, agent: byAgent, to: memberId, message: text, important: true }); } catch { /* advisory */ }
   }
 
   /**
@@ -4860,12 +4982,23 @@ function toMessage(r: MessageRow): FeedMessage {
 
 /** Rebuild an {@link Audience} from a message row's two persisted columns (`audience_kind`,
  *  `audience_id`) — the inverse of how `postTaskCard` flattens it. Unknown/blank kind → null. */
+/** Extract `@mention` tokens from Discussion text (the raw handle/agent-id after `@`, de-duped, lowercased).
+ *  Resolution to a member vs an agent — and the escalation it drives — happens at the call site, not here. */
+export function parseMentions(text: string): string[] {
+  const out = new Set<string>();
+  const re = /(?:^|[^\w@])@([a-z0-9][a-z0-9._-]*)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) out.add(m[1].toLowerCase().replace(/[._-]+$/, ''));
+  return [...out];
+}
+
 function audienceFromColumns(kind: string, id: string | null): Audience | null {
   switch (kind) {
     case 'member': return id ? { kind: 'member', id } : null;
     case 'sessionOwner': return id ? { kind: 'sessionOwner', id } : null;
     case 'admins': return { kind: 'admins' };
     case 'approvers': return id === 'head' || id === 'owner' ? { kind: 'approvers', level: id } : null;
+    case 'task': return id ? { kind: 'task', id } : null;
     default: return null;
   }
 }
@@ -4876,6 +5009,7 @@ function audienceIdOf(a: Audience): string | undefined {
   switch (a.kind) {
     case 'member': return a.id;
     case 'sessionOwner': return a.id;
+    case 'task': return a.id;
     case 'approvers': return a.level;
     case 'admins': return undefined;
   }

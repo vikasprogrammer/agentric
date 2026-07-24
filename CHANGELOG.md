@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.262.0] — 2026-07-24
+### Added
+- **Task Discussions — every task is now a threaded conversation.** A task is no longer just a card with a
+  state machine: its detail is a **Discussion** where the task's humans and agents talk, hand off, and
+  narrate work in place (design: `docs/task-rooms-plan.md`). Built entirely on existing machinery — no new
+  store, no new trust surface:
+  - A Discussion message is a `messages` row (`type='task.chat'`, new `task` **Audience**) on the
+    `task:<id>` sentinel, **excluded from the Inbox feed** so the Discussion is its own quiet surface.
+  - **Quiet by default; mention-based escalation** — a plain message notifies no one. `@mention` a
+    teammate → an addressed Inbox card + DM; `@mention` an `agent:<id>` → that agent is **resumed on the
+    task** (live/dead-but-resumable session) or spawned fresh bound to it, reusing the thread-continuity
+    engine (`continueTaskThread`, sibling of `continueSlackThread`). A dispatched agent's `report`/`update`
+    now narrate **into the task Discussion** instead of the owner's Inbox.
+  - **`task_say`** MCP tool (post + @mention); `task_get` returns the `discussion`. Console: a full
+    timeline (chat + state events interleaved) with a mention-aware composer, unread badges, and mark-read;
+    routes `/api/tasks/say`, `/api/tasks/:id/messages`, `/api/tasks/:id/read`.
+- **Tasks board/list polish.** Removed the colored priority/live left-edge bands from board cards (the
+  priority pips already carry that signal); the List **Group by** gains a **Goal** option.
+
 ## [0.261.2] — 2026-07-24
 ### Changed
 - **ClickUp ingress hardening (every comment hits the webhook).** A ClickUp task's comment section is a

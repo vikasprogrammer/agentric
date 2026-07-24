@@ -1007,6 +1007,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'task_say',
+    description:
+      "Post a message into a task's DISCUSSION — the threaded conversation on a task where its humans and " +
+      'agents talk. Use it to ask a question, give a heads-up, or hand off — and @mention someone to pull them ' +
+      'in: @<agent-id> resumes/spawns that agent ON this task (it keeps the task context), @<member> pings a ' +
+      "teammate in their Inbox + DM. Plain messages are quiet (they don't notify anyone) — they're just there " +
+      'in the discussion. Read the conversation first with task_get (its `discussion`). This is talk about a ' +
+      'unit of work; for durable state use task_update, for your private notes use remember.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The task id.' },
+        message: { type: 'string', description: 'What to say. @mention an agent id or a teammate to pull them in.' },
+      },
+      required: ['id', 'message'],
+    },
+  },
+  {
     name: 'task_wait',
     description:
       'Hand off and WAIT: block until a task reaches a terminal state (done / cancelled / blocked), then return ' +
@@ -2716,6 +2735,23 @@ async function taskUpdate(args: Record<string, unknown>): Promise<string> {
   return `Updated ${d.task.id} → [${d.task.status}].`;
 }
 
+async function taskSay(args: Record<string, unknown>): Promise<string> {
+  const id = String(args.id ?? '').trim();
+  const message = String(args.message ?? '').trim();
+  if (!id || !message) return 'task_say needs an id and a message.';
+  const res = await fetch(AOS_URL + '/api/tasks/say', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, id, message }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string; mentioned?: string[]; agents?: { agent: string; status: string }[] };
+  if (!d.ok) return `Could not post to task ${id}: ${d.error ?? 'unknown error'}.`;
+  const pulled = (d.agents ?? []).filter((a) => a.status !== 'none').map((a) => `@${a.agent} (${a.status})`);
+  const pinged = (d.mentioned ?? []).length;
+  const extra = [pulled.length ? `pulled in ${pulled.join(', ')}` : '', pinged ? `notified ${pinged} teammate${pinged > 1 ? 's' : ''}` : ''].filter(Boolean).join('; ');
+  return `Posted to task ${id}'s discussion${extra ? ` — ${extra}` : ''}.`;
+}
+
 async function taskDispatch(args: Record<string, unknown>): Promise<string> {
   const id = String(args.id ?? '').trim();
   if (!id) return 'Which task? (id is required).';
@@ -2893,6 +2929,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'task_get' ? await taskGet(args)
         : name === 'task_claim' ? await taskClaim(args)
         : name === 'task_update' ? await taskUpdate(args)
+        : name === 'task_say' ? await taskSay(args)
         : name === 'task_wait' ? await taskWait(args)
         : name === 'task_attach' ? await taskAttach(args)
         : name === 'task_dispatch' ? await taskDispatch(args)

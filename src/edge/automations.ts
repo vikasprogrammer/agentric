@@ -16,7 +16,7 @@ import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
-import { Task } from '../types';
+import { Task, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
@@ -850,6 +850,74 @@ export class Automations {
       reply = r.reply;
     }
     return { fired: sessions.length, sessions, reply };
+  }
+
+  /**
+   * Post a message into a task's **Discussion** and fan out its `@mentions` (the one entry point shared by
+   * the console route and the `task_say` MCP tool — see `docs/task-rooms-plan.md`). Stores the message
+   * (quiet — excluded from the Inbox feed), then for each mention: an **agent** is resumed/spawned bound to
+   * the task ({@link continueTaskThread}); a **member** gets an addressed Inbox card + DM. Returns the stored
+   * entry plus what escalation happened, so the caller can report it.
+   */
+  postTaskDiscussion(input: { taskId: string; author: string; agent?: string; body: string; runAs?: string }):
+    { ok: boolean; error?: string; entry?: TaskTimelineEntry; mentionedMembers?: string[]; agentRuns?: { agent: string; status: string; sessionId?: string }[] } {
+    const t = this.os.tasks.get(input.taskId);
+    if (!t) return { ok: false, error: 'task not found' };
+    const body = (input.body || '').trim();
+    if (!body) return { ok: false, error: 'message is required' };
+    const entry = this.tm.postTaskMessage({ taskId: input.taskId, author: input.author, agent: input.agent, body });
+    const byAgent = input.agent ?? 'system';
+    const authorLabel = input.agent ?? (this.os.team.getMember(input.author)?.name ?? input.author);
+    const mentionedMembers: string[] = [];
+    const agentRuns: { agent: string; status: string; sessionId?: string }[] = [];
+    const mentions = entry.kind === 'chat' ? entry.mentions : [];
+    for (const tok of mentions) {
+      if (this.os.agents.has(tok)) {
+        if (input.agent && tok === input.agent) continue; // don't pull an agent into its own message
+        const r = this.continueTaskThread(input.taskId, authorLabel, body, tok, input.runAs ?? t.owner ?? undefined);
+        agentRuns.push({ agent: tok, status: r.status, sessionId: r.sessionId });
+        continue;
+      }
+      const m = this.tm.memberForMention(tok);
+      if (m && m.id !== input.author && !mentionedMembers.includes(m.id)) {
+        this.tm.mentionMember(input.taskId, byAgent, m.id, body);
+        mentionedMembers.push(m.id);
+      }
+    }
+    return { ok: true, entry, mentionedMembers, agentRuns };
+  }
+
+  /**
+   * `@agent` in a task Discussion → put that agent on the task, reusing the thread-continuity engine
+   * (the task's `last_session_id` is the binding a Slack/Discord thread table provides). Live session for
+   * this agent → deliver into it; a dead-but-resumable one → revive the SAME transcript; otherwise spawn a
+   * fresh governed session bound to the task (`task:<id>` provenance, run-as the owner). The agent replies
+   * back into the Discussion via `task_say` / its rerouted `report`/`update`. Sibling of
+   * {@link continueSlackThread}.
+   */
+  continueTaskThread(taskId: string, authorLabel: string, text: string, agentId: string, runAsMember?: string):
+    { status: 'delivered' | 'revived' | 'spawned' | 'none'; sessionId?: string } {
+    const t = this.os.tasks.get(taskId);
+    if (!t || !this.os.agents.has(agentId)) return { status: 'none' };
+    const runAs = runAsMember ?? t.owner ?? undefined;
+    const liveMsg = `${authorLabel} in the task discussion: ${text}`;
+    const boundId = t.lastSessionId;
+    const boundAgent = boundId ? this.tm.sessionAgent(boundId) : undefined;
+    const emit = (mode: string, session: string) => this.os.audit.append({
+      ts: Date.now(), runId: session, tenant: this.os.tenant,
+      principal: runAs ? `member:${runAs}` : 'system', type: 'task.mention',
+      data: { mode, taskId, agent: agentId, session },
+    });
+    if (boundId && boundAgent === agentId) {
+      if (this.tm.deliverToResident(boundId, liveMsg)) { emit('delivered', boundId); return { status: 'delivered', sessionId: boundId }; }
+      if (this.tm.reviveResident(boundId, liveMsg, runAs)) { emit('revived', boundId); return { status: 'revived', sessionId: boundId }; }
+    }
+    const seed = buildTaskPrompt({ id: t.id, title: t.title, body: t.body, criteria: t.criteria }) +
+      `\n\nA teammate pulled you into the discussion:\n${authorLabel}: ${text}\n\nReply in the discussion with task_say({ id: "${t.id}", message: "…" }).`;
+    const s = this.tm.createSession(agentId, `Task: ${t.title}`, seed, `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, undefined, false);
+    this.os.tasks.markDispatched(t.id, s.id);
+    emit('spawned', s.id);
+    return { status: 'spawned', sessionId: s.id };
   }
 
   /**

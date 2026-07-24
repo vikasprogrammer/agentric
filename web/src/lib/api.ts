@@ -536,6 +536,10 @@ export interface TaskAttachment {
   uploadedBy: string
   createdAt: number
 }
+/** One entry in a task's Discussion timeline (chat message or state event) — see docs/task-rooms-plan.md. */
+export type TaskTimelineEntry =
+  | { kind: 'chat'; id: string; author: string; agentId?: string; body: string; mentions: string[]; at: number }
+  | { kind: 'event'; id: string; eventKind: TaskEvent['kind']; body?: string; author: string; at: number }
 export interface AddTaskReq {
   title: string
   body?: string
@@ -1387,7 +1391,9 @@ export const api = {
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
   tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[] }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
-  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; error?: string }>('GET', `/api/tasks/${id}`),
+  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; discussion?: TaskTimelineEntry[]; unread?: number; error?: string }>('GET', `/api/tasks/${id}`),
+  postTaskMessage: (id: string, body: string) => call<{ ok: boolean; entry?: TaskTimelineEntry; mentioned?: string[]; agents?: { agent: string; status: string }[]; error?: string }>('POST', `/api/tasks/${id}/messages`, { body }),
+  readTaskDiscussion: (id: string) => call<{ ok: boolean }>('POST', `/api/tasks/${id}/read`),
   addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
   patchTask: (id: string, b: { title?: string; body?: string; status?: TaskStatus; assignee?: string | null; priority?: number; labels?: string[]; mode?: 'headless' | 'interactive'; goalId?: string | null; criteria?: string | null; dependsOn?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; task?: Task; error?: string }>('PATCH', `/api/tasks/${id}`, b),
   commentTask: (id: string, body: string) => call<{ ok: boolean; task?: Task; error?: string }>('POST', `/api/tasks/${id}/comment`, { body }),
