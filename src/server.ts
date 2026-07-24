@@ -3112,7 +3112,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const taskAttachment = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)$/);
   if (method === 'GET' && p === '/api/tasks') {
     const tasks = os.tasks.list({ tenant: os.tenant, status: (url.searchParams.get('status') as TaskStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
-    return sendJson(res, 200, { tasks, counts: os.tasks.counts(os.tenant), agents: terminalAgents(os).map((a) => a.id) });
+    return sendJson(res, 200, { tasks, counts: os.tasks.counts(os.tenant), agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me) });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);

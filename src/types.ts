@@ -834,6 +834,14 @@ export type TaskTimelineEntry =
   | { kind: 'chat'; id: string; author: string; agentId?: string; body: string; mentions: string[]; at: number }
   | { kind: 'event'; id: string; eventKind: TaskEvent['kind']; body?: string; author: string; at: number };
 
+/** Per-task Discussion rollup for the board/list cards: unread count for the viewer, the last message
+ *  (preview), and the set of participants (humans + agents) — see `docs/task-rooms-plan.md`. */
+export interface TaskDiscussionSummary {
+  unread: number;
+  last?: { body: string; author: string; agentId?: string };
+  participants: string[]; // member id | 'agent:<id>' | 'system'
+}
+
 /** A file attached to a task — a durable on-disk snapshot (mirrors {@link Artifact}, keyed to a task). */
 export interface TaskAttachment {
   id: string;

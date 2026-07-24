@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.263.0] — 2026-07-24
+### Changed
+- **Task Discussions now match the redesign — a full-page room, not a modal panel.** Opening a task from the
+  board/list shows a **full-page two-column room**: the Discussion (merged chat + state timeline, mention
+  composer) as the main column, the task's state controls (status/assignee/priority/deps/dispatch/
+  attachments) as a sidebar — replacing the old modal drawer. Board/list **cards gain Discussion
+  affordances**: an unread badge, a last-message preview, and a participant avatar stack, backed by a new
+  per-task rollup (`TaskDiscussionSummary` via `tm.taskDiscussionSummaries`, returned on `GET /api/tasks`).
+  (The Focus view keeps its inline master-detail.)
+
 ## [0.262.1] — 2026-07-24
 ### Fixed
 - **ClickUp loop-guard broke personal API tokens (agents ignored your own comments).** The guard skipped

@@ -540,6 +540,12 @@ export interface TaskAttachment {
 export type TaskTimelineEntry =
   | { kind: 'chat'; id: string; author: string; agentId?: string; body: string; mentions: string[]; at: number }
   | { kind: 'event'; id: string; eventKind: TaskEvent['kind']; body?: string; author: string; at: number }
+/** Per-task Discussion rollup for the board/list cards (unread, last message, participants). */
+export interface TaskDiscussionSummary {
+  unread: number
+  last?: { body: string; author: string; agentId?: string }
+  participants: string[]
+}
 export interface AddTaskReq {
   title: string
   body?: string
@@ -1390,7 +1396,7 @@ export const api = {
   kbRevert: (id: string, rev: number) => call<{ ok: boolean; page?: KbPage; error?: string }>('POST', `/api/kb/page/${id}/revert`, { rev }),
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
-  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[] }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
+  tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; discussion?: TaskTimelineEntry[]; unread?: number; error?: string }>('GET', `/api/tasks/${id}`),
   postTaskMessage: (id: string, body: string) => call<{ ok: boolean; entry?: TaskTimelineEntry; mentioned?: string[]; agents?: { agent: string; status: string }[]; error?: string }>('POST', `/api/tasks/${id}/messages`, { body }),
   readTaskDiscussion: (id: string) => call<{ ok: boolean }>('POST', `/api/tasks/${id}/read`),

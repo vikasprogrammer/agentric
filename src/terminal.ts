@@ -15,7 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
@@ -2949,6 +2949,28 @@ export class TerminalManager {
                    AND ms.read_at IS NULL AND (m.source IS NULL OR m.source != ?)`)
       .get<{ n: number }>(viewer.id, `task:${taskId}`, viewer.id);
     return row?.n ?? 0;
+  }
+
+  /** Per-task Discussion rollups for the board/list cards (unread for `viewer`, last-message preview,
+   *  participant set), keyed by task id. One scan over the tenant's `task.chat` rows. */
+  taskDiscussionSummaries(viewer: Member): Record<string, TaskDiscussionSummary> {
+    const rows = this.db
+      .prepare(`SELECT m.session_id AS sid, m.source AS source, m.agent AS agent, m.body AS body, m.created_at AS at, ms.read_at AS read_at
+                  FROM messages m
+                  LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
+                 WHERE m.type = 'task.chat' AND m.session_id LIKE 'task:%'
+                 ORDER BY m.created_at ASC`)
+      .all<{ sid: string; source: string | null; agent: string | null; body: string; at: number; read_at: number | null }>(viewer.id);
+    const out: Record<string, TaskDiscussionSummary> = {};
+    for (const r of rows) {
+      const taskId = r.sid.slice('task:'.length);
+      const e = out[taskId] ?? (out[taskId] = { unread: 0, participants: [] });
+      const who = r.source ?? (r.agent ? `agent:${r.agent}` : 'system');
+      e.last = { body: r.body, author: who, agentId: r.agent || undefined };
+      if (!e.participants.includes(who)) e.participants.push(who);
+      if (r.read_at === null && r.source !== viewer.id) e.unread++;
+    }
+    return out;
   }
 
   /** Mark a task's Discussion read for a member (per-member upsert over its `task.chat` rows). */

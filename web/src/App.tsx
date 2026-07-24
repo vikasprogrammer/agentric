@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -7468,6 +7468,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   useEffect(() => { api.goals().then((r) => setGoals(r.goals ?? [])).catch(() => {}) }, [])
   const goalTitle = (id?: string) => (id ? goals.find((g) => g.id === id)?.title || id : '')
   const [tasks, setTasks] = useState<Task[] | null>(null)
+  const [discussions, setDiscussions] = useState<Record<string, TaskDiscussionSummary>>({})
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
   // Live sessions, cross-referenced against a task's lastSessionId to know which cards are running right now.
   const [sessions, setSessions] = useState<Session[]>([])
@@ -7575,6 +7576,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const load = async () => {
     const [r, ss] = await Promise.all([api.tasks(q), api.sessions().catch(() => [] as Session[])])
     setTasks(r.tasks ?? [])
+    setDiscussions(r.discussions ?? {})
     if (r.counts) setCounts(r.counts)
     setSessions(ss)
   }
@@ -7696,6 +7698,19 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
         </div>
         {blockerChips(t)}
+        {(() => {
+          const d = discussions[t.id]
+          if (!d || (!d.last && d.participants.length === 0)) return null
+          return (
+            <div className="mt-2 flex items-center gap-2 border-t border-dashed pt-1.5">
+              {d.last
+                ? <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"><b className="font-medium text-foreground">{discussionAuthor(d.last.author, d.last.agentId, members).name}</b>: {d.last.body}</span>
+                : <span className="flex-1" />}
+              <DiscussionAvatars participants={d.participants} members={members} />
+              {d.unread > 0 && <span className="inline-flex h-4 shrink-0 items-center gap-0.5 rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white"><MessageSquare className="h-2.5 w-2.5" />{d.unread}</span>}
+            </div>
+          )
+        })()}
         {/* The session, running inside the task — live tape with elapsed clock + attach, or an ended-run note. */}
         {doing && live && (
           <div
@@ -7725,9 +7740,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     )
   }
 
-  // The task detail — shared verbatim by the modal drawer (Board/List) and the inline Focus panel, so a
-  // task edits identically in both. Guards on `detail` being loaded.
-  const detailBody = () => {
+  // The task detail — shared by the inline Focus panel and the full-page room's sidebar. `withDiscussion`
+  // (default true) inlines the Discussion; the room renders the Discussion as its own main column instead,
+  // so it passes `withDiscussion:false` here. Guards on `detail` being loaded.
+  const detailBody = (opts?: { withDiscussion?: boolean }) => {
     if (!detail) return null
     const live = liveOf(detail.task)
     return editing ? (
@@ -7742,7 +7758,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     ) : (
       <div className="space-y-3.5">
         <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
-        {detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
+        {opts?.withDiscussion !== false && detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
 
         {live && (
           <button onClick={() => attach(detail.task, live)} className="flex w-full items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-left hover:border-sky-500/60">
@@ -7837,15 +7853,17 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         )}
         {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
 
-        <TaskDiscussion
-          taskId={detail.task.id}
-          entries={detail.discussion}
-          unread={detail.unread}
-          me={me}
-          members={members}
-          agents={agents}
-          onChange={() => refreshDetail(detail.task.id)}
-        />
+        {opts?.withDiscussion !== false && (
+          <TaskDiscussion
+            taskId={detail.task.id}
+            entries={detail.discussion}
+            unread={detail.unread}
+            me={me}
+            members={members}
+            agents={agents}
+            onChange={() => refreshDetail(detail.task.id)}
+          />
+        )}
 
         <TaskAttachments
           taskId={detail.task.id}
@@ -7900,8 +7918,40 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     </>
   ))
 
+  // Full-page room (Board/List): the task's Discussion as the main column + its state controls as a
+  // sidebar, replacing the old modal drawer. Focus view keeps its own inline master-detail (detailBody).
+  const roomView = () => {
+    if (!detail) return null
+    const t = detail.task
+    const parts = discussions[t.id]?.participants ?? []
+    return (
+      <div className="flex h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-lg border bg-background">
+        <div className="flex items-center gap-3 border-b px-4 py-2.5">
+          <button onClick={closeTask} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-4 w-4" />Tasks</button>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <TaskStatusPill status={t.status} />
+            <span className="truncate text-[15px] font-semibold">{t.title}</span>
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{t.id}</span>
+          </div>
+          {parts.length > 0 && <span className="hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:flex"><DiscussionAvatars participants={parts} members={members} />{parts.filter((p) => p !== 'system').length} in discussion</span>}
+          <button onClick={closeTask} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px]">
+          <div className="min-w-0 overflow-y-auto border-b p-4 lg:border-b-0 lg:border-r">
+            {detail.task.body && <div className="mb-3 max-h-40 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
+            <TaskDiscussion taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} />
+          </div>
+          <div className="overflow-y-auto p-4">
+            {detailBody({ withDiscussion: false })}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
+      {detail && view !== 'focus' && <div className="fixed inset-4 z-50">{roomView()}</div>}
       <div className="flex flex-wrap items-center gap-2">
         <p className="mr-auto max-w-xl text-sm text-muted-foreground">
           The shared work queue humans and agents drain together. Assign to an agent with <strong>auto-dispatch</strong> and it
@@ -8194,16 +8244,6 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
       </div>
 
-      {detail && view !== 'focus' && (
-        <Dialog open onOpenChange={(o) => { if (!o) closeTask() }}>
-          <DialogContent className="max-h-[88vh] w-full max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl lg:max-w-3xl">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 pr-8">{detailHeader()}</DialogTitle>
-            </DialogHeader>
-            {detailBody()}
-          </DialogContent>
-        </Dialog>
-      )}
     </div>
   )
 }
@@ -8315,6 +8355,20 @@ function discussionAuthor(author: string, agentId: string | undefined, members: 
   const m = members.find((x) => x.id === author)
   const name = m?.name || m?.email?.split('@')[0] || author
   return { name, kind: 'human', initials: name.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '?' }
+}
+
+/** A small overlapping avatar stack of a task Discussion's participants (humans + agents). */
+function DiscussionAvatars({ participants, members }: { participants: string[]; members: Member[] }) {
+  const shown = participants.filter((p) => p !== 'system').slice(0, 4)
+  if (!shown.length) return null
+  return (
+    <span className="flex shrink-0 -space-x-1.5">
+      {shown.map((p) => {
+        const a = discussionAuthor(p, undefined, members)
+        return <span key={p} title={a.name} className={`flex h-4 w-4 items-center justify-center rounded-[4px] text-[8px] font-semibold ring-2 ring-background ${a.kind === 'agent' ? 'bg-sky-500/20 text-sky-600' : 'bg-muted text-foreground'}`}>{a.initials}</span>
+      })}
+    </span>
+  )
 }
 
 /** Render Discussion body text with @mentions highlighted (agent mentions get the sky accent). */
