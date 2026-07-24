@@ -127,6 +127,29 @@ export function sanitizeForIntent(command: string): string {
     /(\s(?:-m|--message|--body|--title|--subject|--notes?|--description|--summary|--reason))(=|\s+)('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\$'(?:[^'\\]|\\.)*')/g,
     '$1$2""',
   );
+  // (c) `gh api -f/-F/--field/--raw-field key=value` VALUES — the `-f body="…"` form (how docs agents
+  //     open PRs) is data, exactly like --body. The `key=` is REQUIRED so this can't match a bare force
+  //     flag (`rm -f "x"`, `git push -f`). Strips `-f body="…"`, `--field title='…'`.
+  s = s.replace(
+    /(\s-{1,2}(?:f|F|field|raw-field)(?:=|\s+))([\w.-]+=)('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\$'(?:[^'\\]|\\.)*')/g,
+    '$1$2""',
+  );
+  // (d) DATA-command lines — `echo`/`printf`/`grep`/`rg`/… take a string / search-pattern as DATA, not an
+  //     executed command, so a trigger word inside their quoted arg (grepping FOR "reboot", echoing a
+  //     "rm -rf" note) must not classify. On any line that runs one of these — and does NOT itself execute
+  //     a string (`sh -c`, `eval`, `xargs`, which we must leave intact) — blank the quoted strings.
+  //     Stripping only REMOVES data: a real `rm -rf /etc` on such a line is either unquoted, or (if quoted)
+  //     loses its target and stays destructive — so this can only make classification MORE conservative.
+  const DATA_CMD = /(?:^|[\n;&|]|\bthen\b|\bdo\b)\s*(?:sudo\s+|env\s+|[A-Za-z_]\w*=\S*\s+)*(?:echo|printf|e?grep|fgrep|rg|ag)\b/;
+  const EXEC_STR = /\b(?:sh|bash|zsh|dash|ksh|python[0-9.]*|node|ruby|perl|php)\s+-\w*c\b|\b(?:eval|xargs)\b/;
+  s = s
+    .split('\n')
+    .map((line) =>
+      DATA_CMD.test(line) && !EXEC_STR.test(line)
+        ? line.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, '""')
+        : line,
+    )
+    .join('\n');
   return s;
 }
 

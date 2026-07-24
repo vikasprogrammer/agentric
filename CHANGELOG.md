@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.263.6] — 2026-07-24
+### Fixed
+- **Enricher: two more content-vs-intent false positives (`gh api -f body=` PR bodies, `grep`/`echo`
+  trigger words).** A live docs-bot session was still hard-denied post-v0.260 because `sanitizeForIntent`
+  missed two data forms: (1) `gh api … -f body="…" -f title="…"` — the `-f key=value` PR-body form (only
+  `--body`/`-m`/`--title` flags were stripped), so a docs PR mentioning `npm run build`/`app.globex.io`
+  in its body still tripped `prodBuild`; and (2) `grep -E "…reboot…systemctl…"` / `echo "…rm -rf…"` — a
+  search pattern or echoed note *containing* a trigger word tripped `serverReboot`/`destructive` (the
+  agent was literally grepping the governance source to see why it was blocked, and the grep tripped the
+  gate). `sanitizeForIntent` now also strips `-f`/`-F`/`--field`/`--raw-field key=value` values and blanks
+  quoted strings on lines whose command is `echo`/`printf`/`grep`/`rg`/… — while deliberately leaving
+  string-executing lines (`sh -c`, `eval`, `xargs`) intact so a real op is never hidden. Stripping only
+  ever removes DATA: a real `rm -rf /etc` on such a line stays destructive (verified). 8 new golden cases.
+
 ## [0.263.5] — 2026-07-24
 ### Changed
 - **Task room: tabs + a Slack-style pinned composer + an in-place Session tab.** The room's main column now
