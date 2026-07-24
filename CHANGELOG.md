@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.263.2] — 2026-07-24
+### Added
+- **`/agent-os <agent>` namespace prefix for the chat router.** `/agent-os engineer fix X` (or `/agentos …`)
+  now routes identically to the bare `/engineer fix X` — the `/agent-os` prefix is normalised away in
+  `routeChat`/`stripChatPrefix`, so it works on every channel (Slack/Discord/ClickUp). Clearer in shared
+  spaces like ClickUp task comments (a bare `/name` is ambiguous there); the bare form still works.
+
 ## [0.263.1] — 2026-07-24
 ### Changed
 - **ClickUp: 👀 reaction instead of an "on it" comment.** When a `/agentname` comment is picked up, the

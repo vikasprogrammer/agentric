@@ -13862,7 +13862,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
                 : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
             </div>
             <p className="text-xs text-muted-foreground">
-              Reach any agent from a ClickUp task comment: <code className="text-[11px]">/agent-name your request</code>.
+              Reach any agent from a ClickUp task comment: <code className="text-[11px]">/agent-os &lt;agent&gt; your request</code> (or just <code className="text-[11px]">/&lt;agent&gt;</code>).
               The agent works the task and posts its answer back as a comment; follow-up comments continue the same
               conversation. One company ClickUp API token reads the comment and posts the reply.
             </p>

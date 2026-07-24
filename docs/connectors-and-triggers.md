@@ -203,7 +203,8 @@ workspace ClickUp webhook secret, then `ClickupIngress.dispatch` (`src/edge/clic
 the latest comment via the API (the Automation payload has no text), **loop-guards** its own bot
 comments, resolves run-as (commenter email → member, `getMemberByEmail`), and either
 `continueClickupThread` (a follow-up on a task bound in `clickup_threads` → resume) or `fireClickup` → the
-same `/agentname` front door (`routeUnmatched`) — so `/ceoagent <request>` reaches any agent with no
+same `/agentname` front door (`routeUnmatched`) — so `/agent-os <agent> <request>` (or the bare
+`/<agent>`; the `/agent-os` namespace prefix is normalised away and works on every channel) reaches any agent with no
 per-agent automation. The agent replies with the `clickup_reply` MCP tool (gated `CLICKUP_REPLY=1`),
 which posts back on the bound task — never handed a task id. Config lives in **Settings → Integrations →
 ClickUp** (API token + the generated hook URL to paste into ClickUp); a `clickup` automation trigger type

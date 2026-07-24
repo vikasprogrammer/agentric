@@ -616,14 +616,22 @@ export class Automations {
    * is the fallback used by fireSlack/fireDiscord when NO automation matched, so connecting the bot once
    * makes the whole fleet reachable ("/pod-troubleshooter why is X down?").
    */
+  /** Normalise the optional `/agent-os` namespace prefix: `/agent-os engineer …` (or `/agentos …`, with
+   *  an optional second slash) collapses to `/engineer …`, so a namespaced invocation and the bare
+   *  `/<agent>` form route identically. Useful in shared spaces (ClickUp task comments) where a bare
+   *  `/name` is ambiguous; a no-op for a plain `/<agent>`. */
+  private normalizeChatCommand(text: string): string {
+    return (text || '').replace(/^(\s*)\/agent-?os\s+\/?/i, '$1/');
+  }
+
   private routeChat(text: string): { agentId?: string; help?: string } {
     const chatAgents = [...this.os.agents.values()].filter((a) => a.runtime === 'claude-code').map((a) => a.id);
-    const m = (text || '').trim().match(/^\/([A-Za-z0-9][\w-]*)\b\s*([\s\S]*)$/);
+    const m = this.normalizeChatCommand(text).trim().match(/^\/([A-Za-z0-9][\w-]*)\b\s*([\s\S]*)$/);
     if (m && chatAgents.includes(m[1])) return { agentId: m[1] };
     const list = chatAgents.length ? chatAgents.map((id) => `• \`/${id}\``).join('\n') : '_(no agents available)_';
     const help = m
-      ? `I don't have an agent named \`/${m[1]}\`. Address one with \`/<agent>\` and your request:\n${list}`
-      : `👋 Address an agent with \`/<agent>\` followed by your request. Available:\n${list}`;
+      ? `I don't have an agent named \`/${m[1]}\`. Address one with \`/agent-os <agent>\` (or just \`/<agent>\`) and your request:\n${list}`
+      : `👋 Address an agent with \`/agent-os <agent>\` (or just \`/<agent>\`) followed by your request. Available:\n${list}`;
     return { help };
   }
 
@@ -1084,7 +1092,7 @@ export class Automations {
    *  tokens from a follow-up before it's typed into a live claude — so a re-mention doesn't land as a
    *  slash command. Returns the cleaned message (never undefined). */
   private stripChatPrefix(text: string): string {
-    const t = (text || '').replace(/<@[^>]+>/g, '').trim();
+    const t = this.normalizeChatCommand((text || '').replace(/<@[^>]+>/g, '')).trim();
     const m = t.match(/^\/([A-Za-z0-9][\w-]*)\s+([\s\S]*)$/);
     if (m && this.os.agents.has(m[1])) return m[2].trim();
     return t;
