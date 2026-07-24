@@ -8,7 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.263.6] — 2026-07-24
+## [0.264.0] — 2026-07-24
+### Added
+- **Private (owner-only) agents — a tier below the owner+admin default.** Until now the tightest an
+  agent could be shared was the empty-assignment floor: owners **and** admins. `AgentAccess` gains an
+  `ownerOnly` flag so an owner can restrict an agent to the **owner role only** — admins are excluded and
+  the role/member grants are void (`canRun` returns true iff `role === 'owner'`). Owner-settable only: an
+  admin's assignment write preserves the flag but can't toggle it, and a private agent is filtered out of
+  the admin's `/api/team` agent + assignment lists entirely (invisible, not just un-runnable). Surfaced in
+  the Share dialog as a "Private — owners only" switch (shown to owners), which disables the All-members /
+  per-member controls while on. New `assignments.owner_only` column (idempotent migration; existing rows
+  default to the unchanged owner+admin floor).
 ### Fixed
 - **Enricher: two more content-vs-intent false positives (`gh api -f body=` PR bodies, `grep`/`echo`
   trigger words).** A live docs-bot session was still hard-denied post-v0.260 because `sanitizeForIntent`

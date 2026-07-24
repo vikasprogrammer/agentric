@@ -175,6 +175,12 @@ export interface MemberIdentity {
 export interface AgentAccess {
   allowedRoles: Role[];
   allowedMembers: string[];
+  /**
+   * Private-to-owners: when true, ONLY the owner role can run/see this agent — admins are
+   * excluded and the role/member grants are void (the tightest tier, below the owner+admin
+   * default). Only an owner may set or clear this flag. Absent/false → the default owner+admin floor.
+   */
+  ownerOnly?: boolean;
 }
 
 /** Can a role resolve an approval routed to `level`? owner→any, admin→head only, member→never. */

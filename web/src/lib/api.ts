@@ -31,6 +31,8 @@ export interface MemberIdentity {
 export interface AgentAccess {
   allowedRoles: Role[]
   allowedMembers: string[]
+  /** Private-to-owners: only the owner role runs/sees this agent (admins excluded). Owner-settable only. */
+  ownerOnly?: boolean
 }
 export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']

@@ -1826,7 +1826,7 @@ function MiniSwitch({ on, disabled, onClick, label }: { on: boolean; disabled?: 
  *  lives next to the agent it governs. Owners & admins always run every agent (shown as read-only);
  *  members are granted per-agent, or opened to everyone via the "All members" switch. Edits persist
  *  optimistically through PUT /api/team/assignments/:id (admin-gated server-side). */
-function ShareAgentDialog({ agent, open, onOpenChange }: { agent: AgentInfo; open: boolean; onOpenChange: (o: boolean) => void }) {
+function ShareAgentDialog({ me, agent, open, onOpenChange }: { me: Member; agent: AgentInfo; open: boolean; onOpenChange: (o: boolean) => void }) {
   const [members, setMembers] = useState<Member[] | null>(null)
   const [access, setAccess] = useState<AgentAccess>({ allowedRoles: [], allowedMembers: [] })
   const [busy, setBusy] = useState(false)
@@ -1850,16 +1850,21 @@ function ShareAgentDialog({ agent, open, onOpenChange }: { agent: AgentInfo; ope
     if ('assignment' in r && r.assignment) setAccess(r.assignment)
   }
 
+  const ownerOnly = !!access.ownerOnly
+  const isOwner = me.role === 'owner'
   const allMembers = access.allowedRoles.includes('member')
+  const toggleOwnerOnly = () => persist({ ...access, ownerOnly: !ownerOnly })
   const toggleAll = () => persist({ ...access, allowedRoles: allMembers ? access.allowedRoles.filter((r) => r !== 'member') : [...access.allowedRoles, 'member'] })
   const toggleMember = (mid: string) => persist({ ...access, allowedMembers: access.allowedMembers.includes(mid) ? access.allowedMembers.filter((x) => x !== mid) : [...access.allowedMembers, mid] })
 
   const privileged = (members ?? []).filter((m) => m.role !== 'member')
+  const owners = privileged.filter((m) => m.role === 'owner')
   const plain = (members ?? []).filter((m) => m.role === 'member')
   const grantedCount = allMembers ? plain.length : plain.filter((m) => access.allowedMembers.includes(m.id)).length
 
   // A one-line, human summary of who can run this agent.
   const summary = (() => {
+    if (ownerOnly) return owners.length ? `Private — ${owners.length} owner${owners.length > 1 ? 's' : ''} only` : 'Private — owners only'
     const parts: string[] = []
     if (privileged.length) parts.push(`${privileged.length} owner/admin`)
     if (allMembers) parts.push('all members')
@@ -1882,32 +1887,46 @@ function ShareAgentDialog({ agent, open, onOpenChange }: { agent: AgentInfo; ope
           <div className="p-8 text-center text-sm text-muted-foreground">Loading…</div>
         ) : (
           <div className="max-h-[60vh] space-y-4 overflow-y-auto p-4">
+            {/* Private (owner only) — the tightest tier, owner-settable. Excludes admins & voids grants. */}
+            {isOwner && (
+              <div className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${ownerOnly ? 'border-amber-500/40 bg-amber-500/5' : ''}`}>
+                <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${ownerOnly ? 'bg-amber-500/15 text-amber-600' : 'bg-muted text-muted-foreground'}`}>
+                  <Lock className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-medium">Private — owners only</div>
+                  <div className="text-xs text-muted-foreground">{ownerOnly ? 'Hidden from admins & members — only owners can run it.' : 'Restrict to owners; even admins are excluded.'}</div>
+                </div>
+                <MiniSwitch on={ownerOnly} disabled={busy} onClick={toggleOwnerOnly} label="Make private to owners" />
+              </div>
+            )}
+
             {/* All members — the "open to everyone" master switch */}
-            <div className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${allMembers ? 'border-primary/40 bg-primary/5' : ''}`}>
-              <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${allMembers ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'}`}>
-                {allMembers ? <Globe className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+            <div className={`flex items-center gap-3 rounded-lg border p-3 transition-colors ${ownerOnly ? 'opacity-50' : allMembers ? 'border-primary/40 bg-primary/5' : ''}`}>
+              <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${allMembers && !ownerOnly ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                {allMembers && !ownerOnly ? <Globe className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
               </span>
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">All members</div>
-                <div className="text-xs text-muted-foreground">{allMembers ? 'Everyone on the team can run this agent.' : 'Only the people you pick below.'}</div>
+                <div className="text-xs text-muted-foreground">{ownerOnly ? 'Disabled while the agent is private to owners.' : allMembers ? 'Everyone on the team can run this agent.' : 'Only the people you pick below.'}</div>
               </div>
-              <MiniSwitch on={allMembers} disabled={busy} onClick={toggleAll} label="Open to all members" />
+              <MiniSwitch on={allMembers && !ownerOnly} disabled={busy || ownerOnly} onClick={toggleAll} label="Open to all members" />
             </div>
 
-            {/* Individually-grantable members */}
+            {/* Individually-grantable members — void while owner-only */}
             {plain.length > 0 ? (
-              <div className="space-y-1">
+              <div className={`space-y-1 ${ownerOnly ? 'opacity-50' : ''}`}>
                 <div className="px-1 text-[11px] uppercase tracking-wider text-muted-foreground">Members</div>
                 {plain.map((m) => {
-                  const on = allMembers || access.allowedMembers.includes(m.id)
+                  const on = !ownerOnly && (allMembers || access.allowedMembers.includes(m.id))
                   return (
-                    <div key={m.id} className={`flex items-center gap-2.5 rounded-md px-2 py-1.5 ${allMembers ? 'opacity-60' : 'hover:bg-muted/50'}`}>
+                    <div key={m.id} className={`flex items-center gap-2.5 rounded-md px-2 py-1.5 ${allMembers || ownerOnly ? 'opacity-60' : 'hover:bg-muted/50'}`}>
                       <MemberAvatar member={m} className="h-7 w-7 text-[11px]" />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm">{m.name}</div>
                         <div className="truncate text-[11px] text-muted-foreground">{m.email}</div>
                       </div>
-                      <MiniSwitch on={on} disabled={busy || allMembers} onClick={() => toggleMember(m.id)} label={`Let ${m.name} run this agent`} />
+                      <MiniSwitch on={on} disabled={busy || allMembers || ownerOnly} onClick={() => toggleMember(m.id)} label={`Let ${m.name} run this agent`} />
                     </div>
                   )
                 })}
@@ -1916,19 +1935,22 @@ function ShareAgentDialog({ agent, open, onOpenChange }: { agent: AgentInfo; ope
               <div className="rounded-md border border-dashed px-3 py-2 text-[11px] text-muted-foreground">No members yet — invite teammates from the Team page.</div>
             )}
 
-            {/* Owners & admins — always have access, shown read-only */}
+            {/* Who always has access — owners always; admins too UNLESS the agent is private to owners */}
             {privileged.length > 0 && (
               <div className="space-y-1">
                 <div className="px-1 text-[11px] uppercase tracking-wider text-muted-foreground">Always has access</div>
                 <div className="flex flex-wrap gap-1.5">
-                  {privileged.map((m) => (
-                    <span key={m.id} title={`${m.role}s run every agent`} className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 py-0.5 pl-0.5 pr-2 text-xs">
+                  {(ownerOnly ? owners : privileged).map((m) => (
+                    <span key={m.id} title={ownerOnly ? 'only owners run this private agent' : `${m.role}s run every agent`} className="inline-flex items-center gap-1.5 rounded-full border bg-muted/40 py-0.5 pl-0.5 pr-2 text-xs">
                       <MemberAvatar member={m} className="h-5 w-5 text-[9px]" />
                       <span className="truncate">{m.name}</span>
                       <RoleBadge role={m.role} />
                     </span>
                   ))}
                 </div>
+                {ownerOnly && privileged.length > owners.length && (
+                  <div className="px-1 pt-0.5 text-[11px] text-muted-foreground">Admins are excluded while this agent is private.</div>
+                )}
               </div>
             )}
           </div>
@@ -2183,7 +2205,7 @@ function AgentsPage({
       {canEdit && <AgentLibrary open={libraryOpen} onOpenChange={setLibraryOpen} onInstalled={onRefresh} />}
 
       {/* share — pick which teammates can run the selected agent (opened from the composer header) */}
-      {canEdit && agent && <ShareAgentDialog agent={agent} open={shareOpen} onOpenChange={setShareOpen} />}
+      {canEdit && agent && <ShareAgentDialog me={me} agent={agent} open={shareOpen} onOpenChange={setShareOpen} />}
 
       {/* search — only worth showing once the fleet is more than a glance */}
       {agents.length > 6 && (

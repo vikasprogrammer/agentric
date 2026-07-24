@@ -345,21 +345,23 @@ export class TeamStore {
   // ── agent assignment ─────────────────────────────────────────────────────────
   getAssignment(agentId: string): AgentAccess {
     const r = this.db
-      .prepare('SELECT allowed_roles, allowed_members FROM assignments WHERE agent_id = ?')
-      .get<{ allowed_roles: string; allowed_members: string }>(agentId);
+      .prepare('SELECT allowed_roles, allowed_members, owner_only FROM assignments WHERE agent_id = ?')
+      .get<{ allowed_roles: string; allowed_members: string; owner_only: number | null }>(agentId);
     return {
       allowedRoles: r ? (JSON.parse(r.allowed_roles) as Role[]) : [],
       allowedMembers: r ? (JSON.parse(r.allowed_members) as string[]) : [],
+      ownerOnly: !!r?.owner_only,
     };
   }
   listAssignments(): Record<string, AgentAccess> {
     const out: Record<string, AgentAccess> = {};
     for (const r of this.db
-      .prepare('SELECT agent_id, allowed_roles, allowed_members FROM assignments')
-      .all<{ agent_id: string; allowed_roles: string; allowed_members: string }>()) {
+      .prepare('SELECT agent_id, allowed_roles, allowed_members, owner_only FROM assignments')
+      .all<{ agent_id: string; allowed_roles: string; allowed_members: string; owner_only: number | null }>()) {
       out[r.agent_id] = {
         allowedRoles: JSON.parse(r.allowed_roles) as Role[],
         allowedMembers: JSON.parse(r.allowed_members) as string[],
+        ownerOnly: !!r.owner_only,
       };
     }
     return out;
@@ -367,10 +369,10 @@ export class TeamStore {
   setAssignment(agentId: string, access: AgentAccess): void {
     this.db
       .prepare(
-        `INSERT INTO assignments (agent_id, allowed_roles, allowed_members) VALUES (?, ?, ?)
-         ON CONFLICT(agent_id) DO UPDATE SET allowed_roles = excluded.allowed_roles, allowed_members = excluded.allowed_members`,
+        `INSERT INTO assignments (agent_id, allowed_roles, allowed_members, owner_only) VALUES (?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET allowed_roles = excluded.allowed_roles, allowed_members = excluded.allowed_members, owner_only = excluded.owner_only`,
       )
-      .run(agentId, JSON.stringify(access.allowedRoles), JSON.stringify(access.allowedMembers));
+      .run(agentId, JSON.stringify(access.allowedRoles), JSON.stringify(access.allowedMembers), access.ownerOnly ? 1 : 0);
   }
 
   /** Drop an agent's access row — called when the agent itself is deleted. */
@@ -378,10 +380,14 @@ export class TeamStore {
     this.db.prepare('DELETE FROM assignments WHERE agent_id = ?').run(agentId);
   }
 
-  /** May this member run this agent? owner/admin always; member iff granted by role or id. */
+  /**
+   * May this member run this agent? owner-only agents → owner role ONLY (admins & grants void).
+   * Otherwise owner/admin always; member iff granted by role or id.
+   */
   canRun(member: Member, agentId: string): boolean {
-    if (member.role === 'owner' || member.role === 'admin') return true;
     const a = this.getAssignment(agentId);
+    if (a.ownerOnly) return member.role === 'owner';
+    if (member.role === 'owner' || member.role === 'admin') return true;
     return a.allowedRoles.includes(member.role) || a.allowedMembers.includes(member.id);
   }
 

@@ -2143,12 +2143,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
   // ── team / members / assignments ─────────────────────────────────────────────
   if (method === 'GET' && p === '/api/team') {
+    // Owner-only agents are invisible to admins — filter both the agent list and the assignment map so
+    // an admin can't see or manage a private-to-owner agent from the Team/Share surfaces.
+    const allAssignments = os.team.listAssignments();
+    const assignments = me.role === 'owner'
+      ? allAssignments
+      : Object.fromEntries(Object.entries(allAssignments).filter(([, a]) => !a.ownerOnly));
+    const agents = me.role === 'owner'
+      ? terminalAgents(os)
+      : terminalAgents(os).filter((a) => !allAssignments[a.id]?.ownerOnly);
     return sendJson(res, 200, {
       me,
       members: os.team.listMembers(),
-      assignments: os.team.listAssignments(),
+      assignments,
       identities: os.team.identitiesByMember(), // member id → external accounts (chat run-as join keys)
-      agents: terminalAgents(os), // ALL agents, so owner/admin can assign access
+      agents, // owner sees ALL to assign access; admins never see owner-only agents
     });
   }
   if (method === 'POST' && p === '/api/team/invite') {
@@ -2244,10 +2253,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const teamAssign = p.match(/^\/api\/team\/assignments\/([\w.-]+)$/);
   if (method === 'PUT' && teamAssign) {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const current = os.team.getAssignment(teamAssign[1]);
+    // A private (owner-only) agent is invisible to admins and its access is an owner's call — an admin
+    // can neither edit its grants nor flip the flag off to grant themselves in.
+    if (current.ownerOnly && me.role !== 'owner') return sendJson(res, 403, { error: 'this agent is private to owners' });
     const b = await readBody(req);
     const allowedRoles = (Array.isArray(b.allowedRoles) ? b.allowedRoles : []).map(roleOf).filter(Boolean) as Role[];
     const allowedMembers = (Array.isArray(b.allowedMembers) ? b.allowedMembers : []).map(String);
-    os.team.setAssignment(teamAssign[1], { allowedRoles, allowedMembers });
+    // Only an owner may set/clear owner-only; an admin's write preserves the existing flag.
+    const ownerOnly = me.role === 'owner' ? !!b.ownerOnly : current.ownerOnly;
+    os.team.setAssignment(teamAssign[1], { allowedRoles, allowedMembers, ownerOnly });
     return sendJson(res, 200, { ok: true, assignment: os.team.getAssignment(teamAssign[1]) });
   }
 

@@ -898,6 +898,10 @@ function migrate(db: Db): void {
   // re-nudged; a timestamp = we already sent the reminder. A resolved/answered row is skipped by status.
   addColumn(db, 'approvals', 'escalated_at', 'INTEGER');       // when the stale-approval reminder fired
   addColumn(db, 'questions', 'escalated_at', 'INTEGER');       // when the stale-question reminder fired
+
+  // Private-to-owners agents: when 1, ONLY the owner role runs/sees the agent (admins excluded, the
+  // role/member grants void) — the tightest tier below the owner+admin default. NULL/0 = default floor.
+  addColumn(db, 'assignments', 'owner_only', 'INTEGER');       // 1 = owner-role-only
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */
