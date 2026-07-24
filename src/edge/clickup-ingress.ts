@@ -21,7 +21,7 @@
  */
 import type { AgentOS } from '../kernel';
 import type { Automations } from './automations';
-import { addComment, fetchLatestComment, taskUrl } from '../connectors/clickup';
+import { addComment, addReaction, fetchLatestComment, taskUrl } from '../connectors/clickup';
 
 export class ClickupIngress {
   /**
@@ -78,6 +78,10 @@ export class ClickupIngress {
     // comment (ClickUp fetches "latest", which may still be this one) doesn't double-spawn.
     this.remember(comment.id);
 
+    // 👀 "read / processing" signal — react to the triggering comment so the caller knows we picked it up
+    // (lighter + less noisy than an "on it" comment). Best-effort; the eventual reply is the real answer.
+    void addReaction(token, comment.id, 'eyes');
+
     const member = comment.userEmail ? this.os.team.getMemberByEmail(comment.userEmail) : undefined;
     const runAs = member?.id;
     const actorLabel = member?.name || comment.userEmail || 'a ClickUp user';
@@ -93,13 +97,11 @@ export class ClickupIngress {
       { taskId, commentId: comment.id, text, taskUrl: taskUrl(taskId), actorLabel, raw },
       runAs,
     );
-    // Ack in-thread: a routing/disambiguation reply, or an "on it" when a session started. Remember the
-    // posted comment id so the webhook it triggers is skipped (loop-guard).
+    // A routing/disambiguation reply (help list / "which agent?") carries TEXT, so it's a comment — and
+    // we remember its id to skip the webhook it triggers. A successful dispatch posts NO "on it" comment:
+    // the 👀 reaction above is the acknowledgement; the agent's own `clickup_reply` is the result.
     if (r.reply) {
       const a = await addComment(token, taskId, r.reply);
-      if ('ok' in a) this.remember(a.id);
-    } else if (r.sessions.length) {
-      const a = await addComment(token, taskId, `🤖 On it — ${r.sessions.length === 1 ? 'an agent is' : 'agents are'} working on this; I'll post the result here.`);
       if ('ok' in a) this.remember(a.id);
     }
     return { ok: true, status: r.sessions.length ? 'dispatched' : 'ignored', sessions: r.sessions };

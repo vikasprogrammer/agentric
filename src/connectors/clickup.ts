@@ -70,6 +70,25 @@ export async function addComment(token: string, taskId: string, text: string): P
   }
 }
 
+/** Add an emoji reaction to a comment (ClickUp wants the emoji SHORTCODE, e.g. `eyes` for 👀 — NOT the
+ *  unicode char). Used to mark a triggering comment as "read / processing". Never throws. */
+export async function addReaction(token: string, commentId: string, reaction = 'eyes'): Promise<{ ok: true } | { error: string }> {
+  if (!token || !commentId) return { error: 'missing token or comment id' };
+  try {
+    const res = await fetch(`${CLICKUP_API}/comment/${encodeURIComponent(commentId)}/reaction`, {
+      method: 'POST',
+      headers: { authorization: token, 'content-type': 'application/json' },
+      body: JSON.stringify({ reactions: [reaction] }),
+    });
+    const j: any = await res.json().catch(() => ({}));
+    // `{ added: [...] }` on success; an ALREADY-reacted comment returns a benign error we treat as ok.
+    if (res.ok || (Array.isArray(j?.added))) return { ok: true };
+    return { error: String(j?.err || `reaction POST failed (${res.status})`) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'reaction POST failed' };
+  }
+}
+
 /** Fetch the authorized user for a token: `{ id, email, name }`, or `{ error }`. Used by Settings →
  *  Integrations "test connection" and by the ingress loop-guard (the bot posts comments as THIS user,
  *  so we skip comments authored by it to avoid re-triggering on our own replies). Never throws. */

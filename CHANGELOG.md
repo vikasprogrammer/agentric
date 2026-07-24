@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.263.1] — 2026-07-24
+### Changed
+- **ClickUp: 👀 reaction instead of an "on it" comment.** When a `/agentname` comment is picked up, the
+  ingress now reacts 👀 (`eyes`) on the triggering comment as the "read / processing" signal, and no
+  longer posts a "🤖 On it…" ack comment (noise) — the reaction + the agent's eventual `clickup_reply`
+  are enough. (Routing help / disambiguation still posts a comment, since it carries text.) New
+  `addReaction()` connector fn (ClickUp reactions take an emoji SHORTCODE array, e.g. `{reactions:["eyes"]}`).
 ## [0.263.0] — 2026-07-24
 ### Changed
 - **Task Discussions now match the redesign — a full-page room, not a modal panel.** Opening a task from the
