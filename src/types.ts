@@ -1079,6 +1079,13 @@ export interface AgentManifest extends RuntimeTuning {
    *  opt-out is absolute — a hard "don't spawn me"). Use for governance-sensitive personas (trust &
    *  safety, a destructive migrator) you don't want silently run under someone else's identity/budget. */
   spawnableAsSubagent?: boolean;
+  /** Whether this agent is reachable from the OPEN chat router — a `/agent-os <id>` / `/<id>` message on
+   *  Slack, Discord, or a ClickUp task comment. Default `true`. Set `false` to keep the agent OFF the
+   *  external front door (excluded from `routeChat` + the addressable-agent help list), so a comment can't
+   *  invoke it. It can still be run from the console, tasks, delegation, or an explicitly-configured
+   *  automation — this only closes the open `/agentname` router. Use for supervisor/ops personas (e.g. a
+   *  `ceo` triage agent) you don't want anyone spawning from a shared comment thread. */
+  chatReachable?: boolean;
   /** The agent's visual icon. Either a built-in library id (a lucide icon name like `"Bot"`) or a raw
    *  custom `<svg>…</svg>` markup string the user uploaded. Undefined → the console falls back to a
    *  default glyph. Purely cosmetic. Rendered in an `<img>` so inline SVG can't execute scripts. */

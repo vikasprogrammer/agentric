@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.263.4] — 2026-07-24
+### Added
+- **Per-agent `chatReachable` flag — control which agents the open chat router can reach.** By default any
+  claude-code agent is addressable via `/agent-os <id>` / `/<id>` on Slack, Discord, or a ClickUp task
+  comment. A new **Reachable from chat** toggle (Agent → config, owner/admin) sets `chatReachable:false` to
+  keep an agent OFF that open front door — excluded from `routeChat` + the help list, so a comment can't
+  invoke it; a `/<id>` for it replies "isn't reachable from chat". It stays runnable from the console,
+  tasks, delegation, and explicitly-configured automations. Use for supervisor/ops personas (e.g. a `ceo`
+  triage agent) you don't want spawned from a shared thread.
+### Changed
+- **Task room renders inside the content area, not as a full-page overlay.** The Discussion room now
+  replaces the board *within* the main content column (the app nav/sidebar stays visible), instead of a
+  fixed full-screen layer over everything.
+
 ## [0.263.3] — 2026-07-24
 ### Changed
 - **Task room renders inside the content area, not as a full-page overlay.** The Discussion room now

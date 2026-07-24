@@ -625,9 +625,13 @@ export class Automations {
   }
 
   private routeChat(text: string): { agentId?: string; help?: string } {
-    const chatAgents = [...this.os.agents.values()].filter((a) => a.runtime === 'claude-code').map((a) => a.id);
+    const claudeAgents = [...this.os.agents.values()].filter((a) => a.runtime === 'claude-code');
+    // Only agents opted-in to the open chat front door (`chatReachable !== false`) are addressable here.
+    const chatAgents = claudeAgents.filter((a) => a.chatReachable !== false).map((a) => a.id);
     const m = this.normalizeChatCommand(text).trim().match(/^\/([A-Za-z0-9][\w-]*)\b\s*([\s\S]*)$/);
     if (m && chatAgents.includes(m[1])) return { agentId: m[1] };
+    // A real agent deliberately kept OFF the chat router → say so, don't pretend it doesn't exist.
+    if (m && claudeAgents.some((a) => a.id === m[1])) return { help: `The \`${m[1]}\` agent isn't reachable from chat.` };
     const list = chatAgents.length ? chatAgents.map((id) => `• \`/${id}\``).join('\n') : '_(no agents available)_';
     const help = m
       ? `I don't have an agent named \`/${m[1]}\`. Address one with \`/agent-os <agent>\` (or just \`/<agent>\`) and your request:\n${list}`

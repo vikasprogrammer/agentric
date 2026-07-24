@@ -3837,7 +3837,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
@@ -3856,6 +3856,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Consent to being spawned as a sub-agent (default true → drop the key; false → internal, never
     // materialised into anyone's `.claude/agents`, even an explicit list). Owner/admin-only, like netMode.
     const spawnableAsSubagent = 'spawnableAsSubagent' in b ? (b.spawnableAsSubagent === false ? false : undefined) : ag.spawnableAsSubagent;
+    // Reachable from the open chat router (Slack/Discord/ClickUp `/agentname`). Default true → drop the key;
+    // false → excluded from the front door (still runnable via console/tasks/delegation). Owner/admin-only.
+    const chatReachable = 'chatReachable' in b ? (b.chatReachable === false ? false : undefined) : ag.chatReachable;
     // netMode is governance-sensitive (only owner/admin reach this route; a self-editing agent CANNOT
     // change it). 'allowlist' locks the agent to its granted hosts; anything else → 'open'. Undefined
     // ('open') is left off the manifest to keep it clean.
@@ -3863,7 +3866,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);

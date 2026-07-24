@@ -9795,6 +9795,8 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
   const [savedSubagents, setSavedSubagents] = useState<string[]>([])
   const [spawnable, setSpawnable] = useState(true)
   const [savedSpawnable, setSavedSpawnable] = useState(true)
+  const [chatReachable, setChatReachable] = useState(true)
+  const [savedChatReachable, setSavedChatReachable] = useState(true)
   const [netMode, setNetMode] = useState<'open' | 'allowlist'>('open')
   const [savedNetMode, setSavedNetMode] = useState<'open' | 'allowlist'>('open')
   const [busy, setBusy] = useState(false)
@@ -9809,19 +9811,19 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
       const c = r.category ?? ''
       const s = (r.shellSecrets ?? []).join(' ')
       const sub = r.usableSubagents ?? []
-      const sp = r.spawnableAsSubagent !== false
+      const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
       const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setNetMode(nm); setSavedNetMode(nm)
+      setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || netMode !== savedNetMode
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || chatReachable !== savedChatReachable || netMode !== savedNetMode
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
     const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
-    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, spawnableAsSubagent: spawnable, netMode, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     const t: RuntimeTuning = { model: r.model, effort: r.effort }
@@ -9830,9 +9832,9 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     const c = r.category ?? ''
     const s = (r.shellSecrets ?? []).join(' ')
     const sub = r.usableSubagents ?? []
-    const sp = r.spawnableAsSubagent !== false
+    const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
     const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -9895,6 +9897,13 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
             Other agents may spawn <span className="font-mono">{agentId}</span> as a sub-agent
           </label>
           <p className="text-[11px] text-muted-foreground">On by default. Uncheck to mark this agent <span className="font-medium">internal</span> — it's never materialised into anyone else's sub-agents (even if they list it explicitly), so no run can adopt its persona under a different identity + budget. Use for governance-sensitive agents (trust &amp; safety, a destructive migrator).</p>
+        </div>
+        <div className="space-y-1">
+          <label className="flex items-center gap-2 text-xs font-medium">
+            <input type="checkbox" checked={chatReachable} onChange={(e) => setChatReachable(e.target.checked)} className="h-3.5 w-3.5" />
+            Reachable from chat <span className="font-mono">/agent-os {agentId}</span> (Slack · Discord · ClickUp)
+          </label>
+          <p className="text-[11px] text-muted-foreground">On by default. Uncheck to keep <span className="font-mono">{agentId}</span> off the open chat front door — a <span className="font-mono">/{agentId}</span> message in Slack/Discord or a ClickUp task comment won't invoke it. It can still be run from the console, tasks, delegation, or an explicitly-configured automation. Use for supervisor/ops agents you don't want spawned from a shared thread.</p>
         </div>
         <div className="space-y-1">
           <label className="text-xs font-medium">Host access mode</label>
