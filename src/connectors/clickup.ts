@@ -51,8 +51,9 @@ export async function fetchLatestComment(token: string, taskId: string): Promise
   }
 }
 
-/** Post a plain-text comment to a task (ClickUp comments don't render markdown). Never throws. */
-export async function addComment(token: string, taskId: string, text: string): Promise<{ ok: true } | { error: string }> {
+/** Post a plain-text comment to a task (ClickUp comments don't render markdown). Returns the new
+ *  comment's id on success (used by the ingress to skip its own posts — loop-guard). Never throws. */
+export async function addComment(token: string, taskId: string, text: string): Promise<{ ok: true; id: string } | { error: string }> {
   if (!token) return { error: 'no ClickUp API token' };
   if (!taskId) return { error: 'no task id' };
   try {
@@ -62,7 +63,7 @@ export async function addComment(token: string, taskId: string, text: string): P
       body: JSON.stringify({ comment_text: text, notify_all: false }),
     });
     const j: any = await res.json().catch(() => ({}));
-    if (res.ok && (j?.id || j?.comment)) return { ok: true };
+    if (res.ok && (j?.id || j?.comment)) return { ok: true, id: String(j.id || j.comment?.id || '') };
     return { error: String(j?.err || j?.error || `comment POST failed (${res.status})`) };
   } catch (e) {
     return { error: e instanceof Error ? e.message : 'comment POST failed' };

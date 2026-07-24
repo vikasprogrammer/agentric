@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.262.1] — 2026-07-24
+### Fixed
+- **ClickUp loop-guard broke personal API tokens (agents ignored your own comments).** The guard skipped
+  comments authored by the token's ClickUp user — but a ClickUp API token is usually a **personal** token,
+  so the human running `/agentname` IS the token user, and their commands were silently dropped as "own
+  comment". Now the ingress guards by **comment id** (the ids it has acted on or posted itself), not user
+  identity: personal-token-safe, still drops our own acks/replies, and dedupes a racing duplicate webhook.
+
 ## [0.262.0] — 2026-07-24
 ### Added
 - **Task Discussions — every task is now a threaded conversation.** A task is no longer just a card with a

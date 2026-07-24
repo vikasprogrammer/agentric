@@ -21,11 +21,17 @@
  */
 import type { AgentOS } from '../kernel';
 import type { Automations } from './automations';
-import { addComment, authedUser, fetchLatestComment, taskUrl } from '../connectors/clickup';
+import { addComment, fetchLatestComment, taskUrl } from '../connectors/clickup';
 
 export class ClickupIngress {
-  /** The ClickUp user id our API token posts as — cached so we can skip our own comments (loop-guard). */
-  private botUserId?: string;
+  /**
+   * Comment ids we've already acted on OR posted ourselves — the loop-guard. We do NOT guard by the
+   * token's user id: the API token is often a PERSONAL token, so the human who runs `/agentname` IS the
+   * token user (guarding by user id would silently skip their own commands — a real bug we hit). Guarding
+   * by comment id instead is personal-token-safe: our acks/replies are skipped because WE posted them, and
+   * a racing duplicate webhook for the same command is skipped because we already handled it. Bounded.
+   */
+  private readonly handled = new Set<string>();
 
   constructor(
     private readonly os: AgentOS,
@@ -37,12 +43,11 @@ export class ClickupIngress {
     return this.os.settings.clickupConfigured();
   }
 
-  /** Resolve (and cache) the API token's own ClickUp user id, for the self-comment loop-guard. */
-  private async selfUserId(token: string): Promise<string> {
-    if (this.botUserId !== undefined) return this.botUserId;
-    const who = await authedUser(token);
-    this.botUserId = 'id' in who ? who.id : '';
-    return this.botUserId;
+  /** Record a comment id as handled (our own post, or a command we acted on) so a re-fetch skips it. */
+  private remember(id?: string): void {
+    if (!id) return;
+    this.handled.add(id);
+    if (this.handled.size > 500) for (const k of this.handled) { this.handled.delete(k); if (this.handled.size <= 300) break; }
   }
 
   /**
@@ -58,17 +63,20 @@ export class ClickupIngress {
     const comment = await fetchLatestComment(token, taskId);
     if (!comment) return { ok: true, status: 'no comment' };
 
-    // Loop-guard: ignore comments our own bot user posted (its acks/replies), or we'd re-trigger forever.
-    const self = await this.selfUserId(token);
-    if (self && comment.userId && comment.userId === self) return { ok: true, status: 'own comment' };
+    // Loop-guard: skip a comment we already acted on or posted ourselves (see `handled`). Personal-token-safe.
+    if (comment.id && this.handled.has(comment.id)) return { ok: true, status: 'already handled' };
 
     const text = comment.text || '';
     // ⚠ EVERY comment on a covered task fires this webhook, and a ClickUp task's comment section is a
     // SHARED space (not a dedicated bot thread like a Slack thread). So ONLY a comment addressed to an
     // agent (`/agentname …`) acts — a plain comment is ignored, never delivered into a bound session.
-    // This matches the old agent-orch behaviour (a `/command` each turn); the loop-guard above already
-    // drops our own bot comments. Gate FIRST, before continuity.
+    // This matches the old agent-orch behaviour (a `/command` each turn), and also drops our own acks/
+    // replies (they don't start with `/agentname`). Gate FIRST, before continuity.
     if (!/^\s*\/[A-Za-z0-9]/.test(text)) return { ok: true, status: 'not a command' };
+
+    // Mark this command comment handled BEFORE dispatching, so a racing second webhook for the same
+    // comment (ClickUp fetches "latest", which may still be this one) doesn't double-spawn.
+    this.remember(comment.id);
 
     const member = comment.userEmail ? this.os.team.getMemberByEmail(comment.userEmail) : undefined;
     const runAs = member?.id;
@@ -85,11 +93,14 @@ export class ClickupIngress {
       { taskId, commentId: comment.id, text, taskUrl: taskUrl(taskId), actorLabel, raw },
       runAs,
     );
-    // Ack in-thread: a routing/disambiguation reply, or an "on it" when a session started.
+    // Ack in-thread: a routing/disambiguation reply, or an "on it" when a session started. Remember the
+    // posted comment id so the webhook it triggers is skipped (loop-guard).
     if (r.reply) {
-      await addComment(token, taskId, r.reply);
+      const a = await addComment(token, taskId, r.reply);
+      if ('ok' in a) this.remember(a.id);
     } else if (r.sessions.length) {
-      await addComment(token, taskId, `🤖 On it — ${r.sessions.length === 1 ? 'an agent is' : 'agents are'} working on this; I'll post the result here.`);
+      const a = await addComment(token, taskId, `🤖 On it — ${r.sessions.length === 1 ? 'an agent is' : 'agents are'} working on this; I'll post the result here.`);
+      if ('ok' in a) this.remember(a.id);
     }
     return { ok: true, status: r.sessions.length ? 'dispatched' : 'ignored', sessions: r.sessions };
   }
@@ -110,6 +121,7 @@ export class ClickupIngress {
     if (!token) return { ok: false, error: 'ClickUp not configured' };
     const res = await addComment(token, row.task_id, body);
     if ('ok' in res) {
+      this.remember(res.id); // skip the webhook our own reply triggers (loop-guard)
       this.os.audit.append({ ts: Date.now(), runId: sessionId, tenant: this.os.tenant, principal: 'clickup', type: 'clickup.reply', data: { task: row.task_id, chars: body.length } });
       return { ok: true };
     }
