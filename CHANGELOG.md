@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.264.4] — 2026-07-24
+### Added
+- **@mention autocomplete in the task Discussion composer.** Typing `@` opens a suggestion menu
+  **grouped by type** (Agents, People) and **ranked by name**, filtered as you type. Arrow keys navigate,
+  Enter/Tab or click inserts the handle (an agent id, or the member's email local-part — which the server
+  resolves), Esc closes.
+
 ## [0.264.3] — 2026-07-24
 ### Fixed
 - **Enricher: `rm -rf` inside the agent's OWN workdir (via an absolute path) is no longer hard-denied.**

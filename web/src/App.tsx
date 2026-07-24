@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -8376,6 +8376,19 @@ function discussionAuthor(author: string, agentId: string | undefined, members: 
   return { name, kind: 'human', initials: name.replace(/[^a-z0-9]/gi, '').slice(0, 2).toUpperCase() || '?' }
 }
 
+/** If the caret sits inside an `@token` (an `@` at a word boundary, no whitespace after), return the
+ *  token start index + the query typed so far — drives the composer's @mention autocomplete. */
+function detectMention(v: string, caret: number): { start: number; query: string } | null {
+  const upto = v.slice(0, caret)
+  const at = upto.lastIndexOf('@')
+  if (at < 0) return null
+  const before = at === 0 ? ' ' : upto[at - 1]
+  if (!/\s/.test(before)) return null // '@' must start a token (avoid emails / mid-word)
+  const token = upto.slice(at + 1)
+  if (!/^[a-z0-9._-]*$/i.test(token)) return null // no spaces / other chars
+  return { start: at, query: token }
+}
+
 /** A small overlapping avatar stack of a task Discussion's participants (humans + agents). */
 function DiscussionAvatars({ participants, members }: { participants: string[]; members: Member[] }) {
   const shown = participants.filter((p) => p !== 'system').slice(0, 4)
@@ -8439,7 +8452,37 @@ function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange
   // Autoscroll the pinned message list to the newest entry.
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => { if (pinned) endRef.current?.scrollIntoView({ block: 'end' }) }, [entries.length, pinned])
-  const send = async () => { const t = text.trim(); if (!t || busy) return; setBusy(true); try { await api.postTaskMessage(taskId, t); setText(''); onChange() } finally { setBusy(false) } }
+  const send = async () => { const t = text.trim(); if (!t || busy) return; setBusy(true); try { await api.postTaskMessage(taskId, t); setText(''); setMention(null); onChange() } finally { setBusy(false) } }
+
+  // @mention autocomplete — suggestions grouped by type (Agents, People), each ranked by name.
+  const taRef = useRef<HTMLTextAreaElement>(null)
+  const [mention, setMention] = useState<{ start: number; query: string } | null>(null)
+  const [mSel, setMSel] = useState(0)
+  const q = mention?.query.toLowerCase() ?? ''
+  const agHits = mention ? agents.filter((a) => a.id.toLowerCase().includes(q)).sort((a, b) => a.id.localeCompare(b.id)).slice(0, 6) : []
+  const memHits = mention ? members.filter((m) => { const n = (m.name || '').toLowerCase(); const lp = m.email.split('@')[0].toLowerCase(); return !q || n.includes(q) || lp.includes(q) || m.email.toLowerCase().includes(q) }).sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email)).slice(0, 6) : []
+  const hits: { handle: string; node: ReactNode }[] = [
+    ...agHits.map((a) => ({ handle: a.id, node: (<><AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" /><span className="truncate">{a.id}</span><span className="ml-auto shrink-0 rounded bg-sky-500/10 px-1 text-[9px] uppercase tracking-wide text-sky-600">agent</span></>) })),
+    ...memHits.map((m) => ({ handle: m.email.split('@')[0], node: (<><span className="flex h-4 w-4 shrink-0 items-center justify-center rounded bg-muted text-[8px] font-semibold text-foreground">{(m.name || m.email).replace(/[^a-z0-9]/gi, '').slice(0, 1).toUpperCase()}</span><span className="truncate">{m.name || m.email}</span><span className="ml-auto shrink-0 truncate text-[10px] text-muted-foreground">{m.email}</span></>) })),
+  ]
+  const onText = (ev: ReactChangeEvent<HTMLTextAreaElement>) => { const v = ev.target.value; setText(v); setMention(detectMention(v, ev.target.selectionStart ?? v.length)); setMSel(0) }
+  const pick = (handle: string) => {
+    if (!mention) return
+    const before = text.slice(0, mention.start)
+    const after = text.slice(mention.start + 1 + mention.query.length)
+    setText(`${before}@${handle} ${after}`); setMention(null)
+    const pos = (`${before}@${handle} `).length
+    requestAnimationFrame(() => { const ta = taRef.current; if (ta) { ta.focus(); ta.setSelectionRange(pos, pos) } })
+  }
+  const onKey = (ev: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (mention && hits.length) {
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); setMSel((i) => (i + 1) % hits.length); return }
+      if (ev.key === 'ArrowUp') { ev.preventDefault(); setMSel((i) => (i - 1 + hits.length) % hits.length); return }
+      if ((ev.key === 'Enter' || ev.key === 'Tab') && hits[mSel]) { ev.preventDefault(); pick(hits[mSel].handle); return }
+      if (ev.key === 'Escape') { ev.preventDefault(); setMention(null); return }
+    }
+    if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); void send() }
+  }
 
   const list = (
     <div className="flex flex-col gap-0.5">
@@ -8476,16 +8519,23 @@ function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange
     </div>
   )
   const composer = (
-    <div className="flex items-end gap-2">
-      <Textarea
-        value={text}
-        onChange={(ev) => setText(ev.target.value)}
-        onKeyDown={(ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); void send() } }}
-        rows={1}
-        placeholder="Message the task — @mention an agent or teammate to pull them in…"
-        className="min-h-9 text-[13px]"
-      />
-      <Button size="sm" disabled={!text.trim() || busy} onClick={() => void send()}><Send className="h-3.5 w-3.5" /></Button>
+    <div className="relative">
+      {mention && hits.length > 0 && (
+        <div className="absolute bottom-full left-0 z-20 mb-1 max-h-64 w-72 overflow-y-auto rounded-lg border bg-popover p-1 text-[13px] shadow-md ring-1 ring-foreground/10">
+          {agHits.length > 0 && <div className="px-2 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">Agents</div>}
+          {hits.slice(0, agHits.length).map((h, i) => (
+            <button key={`a-${h.handle}`} onMouseDown={(e) => { e.preventDefault(); pick(h.handle) }} onMouseEnter={() => setMSel(i)} className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${mSel === i ? 'bg-muted' : 'hover:bg-muted/60'}`}>{h.node}</button>
+          ))}
+          {memHits.length > 0 && <div className="px-2 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">People</div>}
+          {hits.slice(agHits.length).map((h, i) => (
+            <button key={`m-${h.handle}`} onMouseDown={(e) => { e.preventDefault(); pick(h.handle) }} onMouseEnter={() => setMSel(agHits.length + i)} className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left ${mSel === agHits.length + i ? 'bg-muted' : 'hover:bg-muted/60'}`}>{h.node}</button>
+          ))}
+        </div>
+      )}
+      <div className="flex items-end gap-2">
+        <Textarea ref={taRef} value={text} onChange={onText} onKeyDown={onKey} rows={1} placeholder="Message the task — type @ to mention an agent or teammate…" className="min-h-9 text-[13px]" />
+        <Button size="sm" disabled={!text.trim() || busy} onClick={() => void send()}><Send className="h-3.5 w-3.5" /></Button>
+      </div>
     </div>
   )
   const legend = (
