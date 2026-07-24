@@ -91,6 +91,13 @@ for (const c of fixture.decisions) {
     if (!!args.risky === c.expectRisky) pass++;
     else failures.push(`risky     ✗ ${c.name}\n            expected risky=${c.expectRisky}, got ${!!args.risky}`);
   }
+  // Optional direct fact assertions (e.g. a custom `prodBuild` pattern that no bundled policy rule reads).
+  if (c.expectFacts && typeof c.expectFacts === 'object') {
+    for (const [k, v] of Object.entries(c.expectFacts)) {
+      if (!!args[k] === !!v) pass++;
+      else failures.push(`fact      ✗ ${c.name}\n            expected ${k}=${v}, got ${args[k]}`);
+    }
+  }
 }
 
 for (const c of fixture.context) {
@@ -100,7 +107,8 @@ for (const c of fixture.context) {
 }
 
 const riskyChecks = fixture.decisions.filter((c) => typeof c.expectRisky === 'boolean').length;
-const total = fixture.decisions.length + fixture.context.length + riskyChecks;
+const factChecks = fixture.decisions.reduce((n, c) => n + (c.expectFacts ? Object.keys(c.expectFacts).length : 0), 0);
+const total = fixture.decisions.length + fixture.context.length + riskyChecks + factChecks;
 if (failures.length) {
   console.error(`\nGOVERNANCE CONFORMANCE: ${pass}/${total} passed, ${failures.length} FAILED\n`);
   for (const f of failures) console.error('  ' + f);

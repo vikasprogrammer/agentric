@@ -956,6 +956,200 @@
       "hostGrants": [],
       "netMode": "open",
       "expect": "ask:head"
+    },
+    {
+      "name": "rm -rf /tmp scratch is allowed (not destructive)",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf /tmp/iwp-scratch && echo done"
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "rm -rf inline-var scratch is allowed",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "SCRATCH=/tmp/x/scratchpad cd /home/agent && rm -rf \"$SCRATCH\""
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "rm -rf relative build cache is allowed",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "cd /home/agent; rm -rf docs/.vitepress/cache dist"
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "rm -rf relative repo for re-clone is allowed",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "mkdir -p repos && rm -rf cli && gh repo clone Globex/cli cli"
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "rm -rf absolute system path still denied",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf /etc/nginx"
+        }
+      },
+      "expect": "never"
+    },
+    {
+      "name": "rm -rf home path still denied",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf ~/web/site/public_html"
+        }
+      },
+      "expect": "never"
+    },
+    {
+      "name": "rm -rf .. escape still denied",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "cd x && rm -rf ../../important"
+        }
+      },
+      "expect": "never"
+    },
+    {
+      "name": "rm -rf unresolved var still denied (unknown target)",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf \"$MYSTERY_DIR\""
+        }
+      },
+      "expect": "never"
+    },
+    {
+      "name": "destructive inside interpreter heredoc still caught",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "bash <<EOF\nrm -rf /var/data\nEOF"
+        }
+      },
+      "expect": "never"
+    },
+    {
+      "name": "commit message mentioning rm -rf is not destructive",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "git commit -m \"docs: warn against rm -rf in the guide\""
+        }
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "prodBuild not tripped by PR body mention",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "gh pr create --repo Globex/docs --body \"Reviewed app.globex.io; npm run build passes\""
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
+          "fact": "prodBuild",
+          "scope": "shell"
+        }
+      ],
+      "expect": "allow",
+      "expectFacts": {
+        "prodBuild": false
+      }
+    },
+    {
+      "name": "prodBuild not tripped by commit -m mention",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "git push origin x -m \"Verified npm run build against app.globex.io\""
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
+          "fact": "prodBuild",
+          "scope": "shell"
+        }
+      ],
+      "expect": "allow",
+      "expectFacts": {
+        "prodBuild": false
+      }
+    },
+    {
+      "name": "prodBuild not tripped by cat>file heredoc mention",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "cat > pr.md <<EOF\nnpm run build passes on app.globex.io\nEOF"
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
+          "fact": "prodBuild",
+          "scope": "shell"
+        }
+      ],
+      "expect": "allow",
+      "expectFacts": {
+        "prodBuild": false
+      }
+    },
+    {
+      "name": "prodBuild DOES fire on a real executed build+deploy",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "npm run build && rsync -a dist/ app.globex.io:/var/www"
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
+          "fact": "prodBuild",
+          "scope": "shell"
+        }
+      ],
+      "expect": "allow",
+      "expectFacts": {
+        "prodBuild": true
+      }
     }
   ],
   "context": [
