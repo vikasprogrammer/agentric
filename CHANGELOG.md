@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.263.5] — 2026-07-24
+### Changed
+- **Task room: tabs + a Slack-style pinned composer + an in-place Session tab.** The room's main column now
+  has **Discussion / Description / Session** tabs — the description no longer sits above the chat eating
+  vertical space. The Discussion is Slack-style: the message list scrolls and the **composer stays pinned to
+  the bottom** (with autoscroll), so you can always send. The **Session tab embeds the live terminal**
+  in-place, so you work a task's run without opening a separate Sessions tab. The right-hand detail sidebar
+  is de-cluttered: the redundant Activity list is gone (the Discussion already shows state events inline),
+  along with the now-duplicate live-attach / View-session buttons.
+
 ## [0.263.4] — 2026-07-24
 ### Added
 - **Per-agent `chatReachable` flag — control which agents the open chat router can reach.** By default any

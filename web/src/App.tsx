@@ -7161,11 +7161,6 @@ function StatusDot({ status }: { status: TaskStatus }) {
   return <span className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${cls}`} title={status} />
 }
 
-// Timeline dot colour per event kind — the append-only trail typed by what happened.
-const eventTone = (kind: TaskEvent['kind']): string => ({
-  dispatch: 'bg-amber-500', claim: 'bg-sky-500', status: 'bg-sky-500',
-  assign: 'bg-violet-500', comment: 'bg-slate-400', link: 'bg-slate-400', attach: 'bg-slate-400',
-}[kind] ?? 'bg-slate-400')
 
 /** Compact elapsed clock for a live session — m:ss under an hour, h:mm:ss past it. */
 function fmtElapsed(ms: number): string {
@@ -7482,6 +7477,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const openTask = (id: string) => nav('tasks', id)
   const closeTask = () => { setEditing(false); nav('tasks') }
   const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; discussion: TaskTimelineEntry[]; unread: number } | null>(null)
+  const [roomTab, setRoomTab] = useState<'discussion' | 'description' | 'session'>('discussion')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // view + filters
@@ -7593,7 +7589,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0 }) })
   }, [selId, tasks, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setRoomTab('discussion') }, [selId]) // fresh drawer per selection
 
   // Client-side filtering over the (≤500) board — cheap, and keeps the lens shareable via UI state.
   const labelsPresent = [...new Set((tasks ?? []).flatMap((t) => t.labels))].sort()
@@ -7760,7 +7756,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
         {opts?.withDiscussion !== false && detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
 
-        {live && (
+        {opts?.withDiscussion !== false && live && (
           <button onClick={() => attach(detail.task, live)} className="flex w-full items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-left hover:border-sky-500/60">
             <LiveBars />
             <span className="text-xs font-medium text-sky-600">Live session</span>
@@ -7846,7 +7842,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
           </Button>
         )}
-        {detail.task.lastSessionId && !live && (
+        {opts?.withDiscussion !== false && detail.task.lastSessionId && !live && (
           <Button size="sm" variant="outline" className="w-full" onClick={() => onOpen('aos-' + detail.task.lastSessionId, 'Task · ' + detail.task.title)}>
             <TerminalSquare className="mr-1 h-3.5 w-3.5" />View session
           </Button>
@@ -7872,29 +7868,6 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           onChange={() => refreshDetail(detail.task.id)}
         />
 
-        <div>
-          <div className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Activity
-            {live && <span className="inline-flex items-center gap-1 normal-case text-sky-600"><span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />live · {fmtElapsed(now - live.createdAt)}</span>}
-          </div>
-          {detail.events.length === 0
-            ? <div className="text-xs text-muted-foreground">No activity yet.</div>
-            : (
-              <ol className="relative ml-1 max-h-72 space-y-3.5 overflow-y-auto border-l border-border pl-4 pr-1">
-                {detail.events.slice().reverse().map((e) => (
-                  <li key={e.id} className="relative">
-                    <span className={`absolute -left-[21px] top-1 h-2.5 w-2.5 rounded-full ring-2 ring-background ${eventTone(e.kind)}`} />
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">{e.kind}</span>
-                      <span className="truncate font-mono text-[10px] text-foreground/80">{nameOf(e.author)}</span>
-                      <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
-                    </div>
-                    {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
-                  </li>
-                ))}
-              </ol>
-            )}
-        </div>
 
         {isAdmin && (
           confirmDel
@@ -7924,6 +7897,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     if (!detail) return null
     const t = detail.task
     const parts = discussions[t.id]?.participants ?? []
+    const live = liveOf(t)
+    const sessTmux = live?.tmux || (t.lastSessionId ? 'aos-' + t.lastSessionId : '')
+    const roomTab_btn = (id: 'discussion' | 'description' | 'session', label: ReactNode) => (
+      <button onClick={() => setRoomTab(id)} className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${roomTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</button>
+    )
     return (
       <div className="flex h-[calc(100vh-5.5rem)] flex-col overflow-hidden rounded-lg border bg-background">
         <div className="flex items-center gap-3 border-b px-4 py-2.5">
@@ -7936,12 +7914,26 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           {parts.length > 0 && <span className="hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:flex"><DiscussionAvatars participants={parts} members={members} />{parts.filter((p) => p !== 'system').length} in discussion</span>}
           <button onClick={closeTask} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="h-4 w-4" /></button>
         </div>
-        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div className="min-w-0 overflow-y-auto border-b p-4 lg:border-b-0 lg:border-r">
-            {detail.task.body && <div className="mb-3 max-h-40 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
-            <TaskDiscussion taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} />
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="flex min-w-0 flex-col overflow-hidden border-b lg:border-b-0 lg:border-r">
+            <div className="flex shrink-0 items-center gap-0.5 border-b px-2">
+              {roomTab_btn('discussion', <><MessageSquare className="h-3.5 w-3.5" />Discussion{detail.unread > 0 && <span className="ml-0.5 rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white">{detail.unread}</span>}</>)}
+              {roomTab_btn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
+              {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />Session{live && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />}</>)}
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              {roomTab === 'discussion' && <div className="h-full px-4 pt-3"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} /></div>}
+              {roomTab === 'description' && (
+                <div className="h-full overflow-y-auto p-4">
+                  {t.body
+                    ? <div className="break-words text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{t.body}</ReactMarkdown></div>
+                    : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description. <button className="text-primary underline" onClick={() => setEditing(true)}>Add one</button></div>}
+                </div>
+              )}
+              {roomTab === 'session' && sessTmux && <div className="h-full"><TerminalFrame session={live ?? undefined} tmux={sessTmux} standalone /></div>}
+            </div>
           </div>
-          <div className="overflow-y-auto p-4">
+          <div className="overflow-y-auto bg-muted/20 p-4">
             {detailBody({ withDiscussion: false })}
           </div>
         </div>
@@ -8411,64 +8403,90 @@ function eventPhrase(e: Extract<TaskTimelineEntry, { kind: 'event' }>): { text: 
  * mention-aware composer. Quiet by default: plain messages notify no one; @mention an agent to pull it
  * onto the task, or a teammate to ping them. See docs/task-rooms-plan.md.
  */
-function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange }: { taskId: string; entries: TaskTimelineEntry[]; unread: number; me: Member; members: Member[]; agents: AgentInfo[]; onChange: () => void }) {
+function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange, pinned }: { taskId: string; entries: TaskTimelineEntry[]; unread: number; me: Member; members: Member[]; agents: AgentInfo[]; onChange: () => void; pinned?: boolean }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   // Mark the Discussion read on open (fire-and-forget; the board badge clears on its next poll).
   const readFor = useRef('')
   useEffect(() => { if (unread > 0 && readFor.current !== taskId) { readFor.current = taskId; api.readTaskDiscussion(taskId).catch(() => {}) } }, [taskId, unread])
+  // Autoscroll the pinned message list to the newest entry.
+  const endRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (pinned) endRef.current?.scrollIntoView({ block: 'end' }) }, [entries.length, pinned])
   const send = async () => { const t = text.trim(); if (!t || busy) return; setBusy(true); try { await api.postTaskMessage(taskId, t); setText(''); onChange() } finally { setBusy(false) } }
+
+  const list = (
+    <div className="flex flex-col gap-0.5">
+      {entries.length === 0 && <div className="py-6 text-center text-xs text-muted-foreground">No messages yet. Say something or @mention a teammate.</div>}
+      {entries.map((e) => {
+        if (e.kind === 'event') {
+          const p = eventPhrase(e)
+          const who = discussionAuthor(e.author, undefined, members)
+          return (
+            <div key={e.id} className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground">
+              <span className="w-4" />
+              <span><b className="font-medium text-foreground">{who.name}</b> {p.text} {p.pill && <span className={`ml-0.5 rounded px-1.5 py-0.5 font-mono ${p.tone}`}>{p.pill}</span>}</span>
+              <span className="ml-auto font-mono text-[10px] opacity-70">{fmtDiscussionClock(e.at)}</span>
+            </div>
+          )
+        }
+        const who = discussionAuthor(e.author, e.agentId, members)
+        const mine = who.kind === 'human' && e.author === me.id
+        return (
+          <div key={e.id} className="flex gap-2.5 rounded-md px-1 py-1.5 hover:bg-muted/40">
+            <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold ${who.kind === 'agent' ? 'bg-sky-500/15 text-sky-600 ring-1 ring-inset ring-sky-500/30' : 'bg-muted text-foreground ring-1 ring-inset ring-border'}`}>{who.initials}</span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className={`text-[13px] font-medium ${who.kind === 'agent' ? 'text-sky-600' : 'text-foreground'}`}>{mine ? 'you' : who.name}</span>
+                {who.kind === 'agent' && <span className="flex items-center gap-0.5 rounded bg-sky-500/10 px-1 text-[9px] uppercase tracking-wide text-sky-600"><Bot className="h-2.5 w-2.5" />agent</span>}
+                <span className="ml-auto font-mono text-[10px] text-muted-foreground">{fmtDiscussionClock(e.at)}</span>
+              </div>
+              <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground"><DiscussionBody text={e.body} agents={agents} /></div>
+            </div>
+          </div>
+        )
+      })}
+      <div ref={endRef} />
+    </div>
+  )
+  const composer = (
+    <div className="flex items-end gap-2">
+      <Textarea
+        value={text}
+        onChange={(ev) => setText(ev.target.value)}
+        onKeyDown={(ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); void send() } }}
+        rows={1}
+        placeholder="Message the task — @mention an agent or teammate to pull them in…"
+        className="min-h-9 text-[13px]"
+      />
+      <Button size="sm" disabled={!text.trim() || busy} onClick={() => void send()}><Send className="h-3.5 w-3.5" /></Button>
+    </div>
+  )
+  const legend = (
+    <div className="flex items-center gap-1.5 rounded-md bg-sky-500/10 px-2.5 py-1.5 text-[11px] text-sky-600 ring-1 ring-inset ring-sky-500/25">
+      <Bell className="h-3 w-3 shrink-0" /> Quiet by default — only <b className="font-semibold">@mentions</b> &amp; status changes reach an Inbox or DM.
+    </div>
+  )
+
+  // Pinned (room tab): messages scroll, the composer stays put at the bottom — Slack-style.
+  if (pinned) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="shrink-0 pb-2">{legend}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">{list}</div>
+        <div className="shrink-0 border-t pt-2.5">{composer}</div>
+      </div>
+    )
+  }
+  // Panel (inline / focus): normal flow.
   return (
     <div>
       <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         <MessageSquare className="h-3.5 w-3.5" /> Discussion
         {unread > 0 && <span className="rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white">{unread} new</span>}
       </div>
-      <div className="mb-2 flex items-center gap-1.5 rounded-md bg-sky-500/10 px-2.5 py-1.5 text-[11px] text-sky-600 ring-1 ring-inset ring-sky-500/25">
-        <Bell className="h-3 w-3 shrink-0" /> Quiet by default — only <b className="font-semibold">@mentions</b> &amp; status changes reach an Inbox or DM.
-      </div>
-      <div className="flex flex-col gap-0.5">
-        {entries.length === 0 && <div className="py-3 text-center text-xs text-muted-foreground">No messages yet. Say something or @mention a teammate.</div>}
-        {entries.map((e) => {
-          if (e.kind === 'event') {
-            const p = eventPhrase(e)
-            const who = discussionAuthor(e.author, undefined, members)
-            return (
-              <div key={e.id} className="flex items-center gap-2 py-1 text-[11px] text-muted-foreground">
-                <span className="w-4" />
-                <span><b className="font-medium text-foreground">{who.name}</b> {p.text} {p.pill && <span className={`ml-0.5 rounded px-1.5 py-0.5 font-mono ${p.tone}`}>{p.pill}</span>}</span>
-                <span className="ml-auto font-mono text-[10px] opacity-70">{fmtDiscussionClock(e.at)}</span>
-              </div>
-            )
-          }
-          const who = discussionAuthor(e.author, e.agentId, members)
-          const mine = who.kind === 'human' && e.author === me.id
-          return (
-            <div key={e.id} className="flex gap-2.5 rounded-md px-1 py-1.5 hover:bg-muted/40">
-              <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[10px] font-semibold ${who.kind === 'agent' ? 'bg-sky-500/15 text-sky-600 ring-1 ring-inset ring-sky-500/30' : 'bg-muted text-foreground ring-1 ring-inset ring-border'}`}>{who.initials}</span>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className={`text-[13px] font-medium ${who.kind === 'agent' ? 'text-sky-600' : 'text-foreground'}`}>{mine ? 'you' : who.name}</span>
-                  {who.kind === 'agent' && <span className="flex items-center gap-0.5 rounded bg-sky-500/10 px-1 text-[9px] uppercase tracking-wide text-sky-600"><Bot className="h-2.5 w-2.5" />agent</span>}
-                  <span className="ml-auto font-mono text-[10px] text-muted-foreground">{fmtDiscussionClock(e.at)}</span>
-                </div>
-                <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground"><DiscussionBody text={e.body} agents={agents} /></div>
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      <div className="mt-2 flex items-end gap-2">
-        <Textarea
-          value={text}
-          onChange={(ev) => setText(ev.target.value)}
-          onKeyDown={(ev) => { if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); void send() } }}
-          rows={1}
-          placeholder="Message the task — @mention an agent or teammate to pull them in…"
-          className="min-h-8 text-[13px]"
-        />
-        <Button size="sm" disabled={!text.trim() || busy} onClick={() => void send()}><Send className="h-3.5 w-3.5" /></Button>
-      </div>
+      <div className="mb-2">{legend}</div>
+      {list}
+      <div className="mt-2">{composer}</div>
     </div>
   )
 }
