@@ -1258,6 +1258,54 @@
         }
       },
       "expect": "never"
+    },
+    {
+      "name": "rm -rf a subpath of the agent workdir (absolute) is allowed",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf /home/ubuntu/agents/engineer/work/client-app/broken"
+        }
+      },
+      "workdir": "/home/ubuntu/agents/engineer",
+      "expect": "allow"
+    },
+    {
+      "name": "rm -rf the workdir ROOT is still denied",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf /home/ubuntu/agents/engineer"
+        }
+      },
+      "workdir": "/home/ubuntu/agents/engineer",
+      "expect": "never"
+    },
+    {
+      "name": "rm -rf a SIBLING agent home is still denied",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf /home/ubuntu/agents/qa/secrets"
+        }
+      },
+      "workdir": "/home/ubuntu/agents/engineer",
+      "expect": "never"
+    },
+    {
+      "name": "rm -rf .. escape from workdir still denied",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "rm -rf /home/ubuntu/agents/engineer/../qa"
+        }
+      },
+      "workdir": "/home/ubuntu/agents/engineer",
+      "expect": "never"
     }
   ],
   "context": [

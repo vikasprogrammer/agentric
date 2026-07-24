@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.264.3] — 2026-07-24
+### Fixed
+- **Enricher: `rm -rf` inside the agent's OWN workdir (via an absolute path) is no longer hard-denied.**
+  A post-deploy fleet scan surfaced a residual false positive: an agent cleaning up a dir inside its own
+  home by absolute path — `rm -rf /home/<u>/…/agents/<a>/work/client-app/broken` — was still `destructive`,
+  because the v0.260 path-safety only whitelisted `/tmp` + relative paths, not the agent's own workdir
+  subtree. `isSafeDeletePath` now treats a strict SUBPATH of the workdir as safe (mirrors the
+  `outsideWorkdir` fact used for file writes). The workdir ROOT itself, a SIBLING agent's home, a `..`
+  escape, and any unrelated absolute/system path all stay denied — verified. 4 new golden cases (102/102).
+
 ## [0.264.2] — 2026-07-24
 ### Changed
 - **Task room tabs are deep-linked in the URL.** The hash detail becomes `<taskId>/<tab>`
