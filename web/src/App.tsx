@@ -7020,7 +7020,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                   <Field label="Status">
                     {isAdmin ? (
                       <Select value={detail.goal.status} onValueChange={(v) => v && patch(detail.goal.id, { status: v as GoalStatus })}>
-                        <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+                        <SelectTrigger className="h-8 w-full min-w-0"><SelectValue /></SelectTrigger>
                         <SelectContent>{GOAL_STATUSES.map((s) => <SelectItem key={s.status} value={s.status}>{s.label}</SelectItem>)}</SelectContent>
                       </Select>
                     ) : <div className={`h-8 text-sm capitalize ${goalStatusTone(detail.goal.status)}`}>{detail.goal.status}</div>}
@@ -7028,7 +7028,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                   <Field label="Owner">
                     {isAdmin ? (
                       <Select value={detail.goal.owner || 'none'} onValueChange={(v) => patch(detail.goal.id, { owner: !v || v === 'none' ? null : v })}>
-                        <SelectTrigger className="h-8"><SelectValue>{(v) => nameOf(!v || v === 'none' ? undefined : (v as string))}</SelectValue></SelectTrigger>
+                        <SelectTrigger className="h-8 w-full min-w-0"><SelectValue>{(v) => nameOf(!v || v === 'none' ? undefined : (v as string))}</SelectValue></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="none">Unassigned</SelectItem>
                           {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
@@ -7768,6 +7768,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const detailBody = (opts?: { withDiscussion?: boolean }) => {
     if (!detail) return null
     const live = liveOf(detail.task)
+    // In the narrow room sidebar (withDiscussion:false) stack fields single-column — a viewport-based
+    // `sm:grid-cols-2` would otherwise cram two selects into ~320px and overlap; the wider inline/Focus
+    // panel keeps two columns.
+    const fieldGrid = opts?.withDiscussion !== false ? 'grid grid-cols-1 gap-2 sm:grid-cols-2' : 'grid grid-cols-1 gap-3'
     return editing ? (
       <div className="space-y-3">
         <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
@@ -7791,24 +7795,24 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           </button>
         )}
 
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className={fieldGrid}>
           <Field label="Status">
             <Select value={detail.task.status} onValueChange={(v) => v && patch(detail.task.id, { status: v as TaskStatus })}>
-              <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0"><SelectValue /></SelectTrigger>
               <SelectContent>{(['todo', 'doing', 'blocked', 'done', 'cancelled'] as TaskStatus[]).map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
           <Field label="Priority">
             <Select items={PRIORITY_ITEMS} value={String(detail.task.priority)} onValueChange={(v) => v && patch(detail.task.id, { priority: Number(v) })}>
-              <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0"><SelectValue /></SelectTrigger>
               <SelectContent>{PRIORITY_LABEL.map((l, i) => <SelectItem key={i} value={String(i)}>{l}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
         </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className={fieldGrid}>
           <Field label="Assignee">
             <Select value={detail.task.assignee || 'none'} onValueChange={(v) => patch(detail.task.id, { assignee: !v || v === 'none' ? null : v })}>
-              <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? 'Unassigned' : nameOf(v as string)}</SelectValue></SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0"><SelectValue>{(v) => !v || v === 'none' ? 'Unassigned' : nameOf(v as string)}</SelectValue></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">Unassigned</SelectItem>
                 {chatAgents.map((a) => <SelectItem key={a.id} value={`agent:${a.id}`}><span className="flex items-center gap-1.5"><AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{a.id}</span></SelectItem>)}
@@ -7820,10 +7824,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <Input type="date" value={toDateInput(detail.task.dueAt)} onChange={(e) => patch(detail.task.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
           </Field>
         </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className={fieldGrid}>
           <Field label="Goal">
             <Select value={detail.task.goalId || 'none'} onValueChange={(v) => patch(detail.task.id, { goalId: !v || v === 'none' ? null : v })}>
-              <SelectTrigger className="h-8"><SelectValue>{(v) => !v || v === 'none' ? '— none —' : goalTitle(v as string)}</SelectValue></SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0"><SelectValue>{(v) => !v || v === 'none' ? '— none —' : goalTitle(v as string)}</SelectValue></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">— none —</SelectItem>
                 {goals.filter((g) => g.status === 'active' || g.id === detail.task.goalId).map((g) => <SelectItem key={g.id} value={g.id}><span className="flex items-center gap-1.5"><Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />{g.title}</span></SelectItem>)}
@@ -7854,7 +7858,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         {(detail.task.assignee || '').startsWith('agent:') && (
           <Field label="Run mode">
             <Select items={{ headless: 'Headless — runs to completion, then exits', interactive: 'Interactive — attachable TUI you drive' }} value={detail.task.mode} onValueChange={(v) => v && patch(detail.task.id, { mode: v as 'headless' | 'interactive' })}>
-              <SelectTrigger className="h-8"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="headless">Headless — runs to completion, then exits</SelectItem>
                 <SelectItem value="interactive">Interactive — attachable TUI you drive</SelectItem>
@@ -8352,7 +8356,7 @@ function TaskDependencies({ task, dependents, tasks, canEdit, onOpen, onSave }: 
         {canEdit && (
           <div className="mt-1.5">
             <Select value={adding} onValueChange={(v) => v && add(v)}>
-              <SelectTrigger className="h-8"><SelectValue placeholder={busy ? 'Saving…' : '+ Add a blocker…'} /></SelectTrigger>
+              <SelectTrigger className="h-8 w-full min-w-0"><SelectValue placeholder={busy ? 'Saving…' : '+ Add a blocker…'} /></SelectTrigger>
               <SelectContent>
                 {candidates.length === 0
                   ? <SelectItem value="__none" disabled>No other tasks</SelectItem>
