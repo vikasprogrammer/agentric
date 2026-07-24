@@ -759,6 +759,21 @@ function migrate(db: Db): void {
   addColumn(db, 'memories', 'scope', "TEXT NOT NULL DEFAULT 'agent'");
   db.exec('CREATE INDEX IF NOT EXISTS idx_mem_scope ON memories(tenant, scope, created_at)');
 
+  // Hot-path poll indexes. The console polls /api/messages (listMessages) and /api/sessions
+  // (listSessions) every 1.5s per open tab, and node:sqlite is synchronous — a slow query on these
+  // blocks the WHOLE server event loop. On a data-heavy tenant these were full table scans + sorts.
+  // These indexes make each poll an indexed range scan matching its WHERE + ORDER BY:
+  //  • messages:      WHERE dismissed_at IS NULL ORDER BY created_at DESC   (the inbox feed)
+  //  • term_sessions: WHERE archived_at  IS NULL ORDER BY created_at DESC   (the session list)
+  //  • audit_events:  the per-live-session insight tallies (stampInsights) — WHERE run_id=? [AND type=?]
+  //    ORDER BY ts DESC. The existing idx_audit_run (run_id only) is left in place; this composite
+  //    additionally serves the type-filtered + ts-ordered lookups.
+  // (message_state's (message_id, member_id) join is already served by its composite PRIMARY KEY.)
+  // Placed after the addColumn calls above so the columns are guaranteed to exist on older DBs.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_messages_feed ON messages(dismissed_at, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_live ON term_sessions(archived_at, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_run_type ON audit_events(run_id, type, ts)');
+
   // How a dispatched task session runs (headless work-to-completion vs. an attachable interactive TUI).
   // Older `tasks` rows (created before this column) default to today's behavior: headless.
   addColumn(db, 'tasks', 'mode', "TEXT NOT NULL DEFAULT 'headless'");

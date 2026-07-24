@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.265.3] — 2026-07-24
+### Fixed
+- **Inbox/session polling no longer degrades on data-heavy tenants.** The console polls `/api/messages`
+  (`listMessages`) and `/api/sessions` (`listSessions`) every 1.5s per open tab, and `node:sqlite` is
+  synchronous — a slow query on either blocks the entire server event loop, which surfaced as laggy
+  approval/inbox notifications (and contributed to the server feeling unresponsive) on tenants with a large
+  history. Added hot-path indexes matching each poll's `WHERE` + `ORDER BY`
+  (`messages(dismissed_at, created_at)`, `term_sessions(archived_at, created_at)`,
+  `audit_events(run_id, type, ts)` for the per-session insight tallies), so each poll is now an indexed
+  range scan instead of a full-table scan + sort. Also bounded the inbox feed query to the newest 500
+  non-dismissed cards (owner/admin see all, `mine` narrows further) so a pathological undismissed backlog
+  can't grow the per-poll cost without limit. Indexes apply to existing DBs on next boot.
+
 ## [0.265.2] — 2026-07-24
 ### Fixed
 - **The `consolidator` (memory gardener) crashed at launch on every tenant — and so could any run with a

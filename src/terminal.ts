@@ -1282,8 +1282,14 @@ export class TerminalManager {
          LEFT JOIN term_sessions ts ON m.session_id = ts.id
          LEFT JOIN message_state ms ON ms.message_id = m.id AND ms.member_id = ?
          WHERE m.dismissed_at IS NULL AND ms.dismissed_at IS NULL AND m.type NOT IN ('task.chat', 'task.mention')
-         ORDER BY m.created_at DESC`,
+         ORDER BY m.created_at DESC
+         LIMIT 500`,
       )
+      // Bound the newest 500 non-dismissed cards. This poll runs every 1.5s per open console tab and,
+      // on a busy tenant, the un-capped scan (+4 joins) grew with all-time inbox history — the synchronous
+      // node:sqlite call blocking the whole event loop. 500 far exceeds what the inbox usefully renders;
+      // owner/admin see all and the `mine` scope narrows further below, so this only caps a pathological
+      // backlog of undismissed cards (mark-all-read/dismiss iterate this list — capped to the same 500).
       .all<MessageRow>(viewerId);
     let visible = viewer ? rows.filter((r) => this.canViewMessageRow(r, viewer)) : rows;
     // `mine` (the default) narrows the visible set to what's ADDRESSED to the viewer, so owner/admin
