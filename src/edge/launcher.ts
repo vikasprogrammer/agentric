@@ -319,7 +319,7 @@ export class LauncherDaemon {
    * uid can read them, and return the env additions (MCP_CONFIG/COMPANY_FILE) pointing at them.
    * Written as root then chowned to the member uid, 0600. (The app can't write the member's 0700 home.)
    */
-  private writeSessionFiles(member: string, uid: number, sessionId: string, files?: { mcp?: string; company?: string }): Record<string, string> {
+  private writeSessionFiles(member: string, uid: number, sessionId: string, files?: { mcp?: string; company?: string; task?: string }): Record<string, string> {
     const dir = this.sessionsDir(member);
     this.prepareDir(dir, uid); // mkdir + chown uid + 0700
     const extra: Record<string, string> = {};
@@ -332,6 +332,7 @@ export class LauncherDaemon {
     };
     if (files?.mcp) put(`${sessionId}.mcp.json`, files.mcp, 'MCP_CONFIG');
     if (files?.company) put(`${sessionId}.company.md`, files.company, 'COMPANY_FILE');
+    if (files?.task) put(`${sessionId}.task`, files.task, 'TASK_FILE');
     return extra;
   }
 

@@ -27,7 +27,15 @@ fi
 # The `claude` CLI is commonly installed under ~/.local/bin; make sure it's findable even
 # when the parent process (e.g. a hardened systemd unit) ships a minimal PATH.
 export PATH="$HOME/.local/bin:$PATH"
-TASK=$(printf '%s' "${TASK_B64:-}" | base64 -d 2>/dev/null)
+# The opening task prompt. Prefer TASK_FILE (a path the server materialised) over the inline TASK_B64
+# env: LocalSessionBackend puts every env var on the `tmux new-session` command line, which tmux caps at
+# ~16KB, so a large base64 task there made new-session fail and the run never launched. TASK_B64 is kept
+# as a fallback for sessions whose persisted resume env predates TASK_FILE.
+if [ -n "${TASK_FILE:-}" ] && [ -f "${TASK_FILE}" ]; then
+  TASK=$(cat "${TASK_FILE}")
+else
+  TASK=$(printf '%s' "${TASK_B64:-}" | base64 -d 2>/dev/null)
+fi
 
 cyan() { printf '\033[36m%s\033[0m\n' "$1"; }
 dim()  { printf '\033[2m%s\033[0m\n' "$1"; }

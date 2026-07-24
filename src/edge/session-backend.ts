@@ -21,9 +21,11 @@ export interface SpawnSpec {
   env: Record<string, string>;
   /** The in-session command, e.g. `['bash', '/abs/terminal/claude-launch.sh']`. */
   argv: string[];
-  /** Per-session file CONTENTS the runner reads: the `.mcp.json` (connectors) + company markdown.
-   *  Each backend materialises them somewhere the session can read (local dir vs the member home). */
-  files?: { mcp?: string; company?: string };
+  /** Per-session file CONTENTS the runner reads: the `.mcp.json` (connectors), company markdown, and the
+   *  opening task prompt. Each backend materialises them somewhere the session can read (local dir vs the
+   *  member home). The task rides as a file (not inline env) so a large prompt can't overflow tmux's
+   *  new-session command-length cap — see launchClaudeCode. */
+  files?: { mcp?: string; company?: string; task?: string };
   /** The shared agent source dir. Under the launcher it's copied to a per-member working dir (so the
    *  member uid can write claude's `.claude/`/scratch); the local backend ignores it (claude runs as
    *  the app uid directly in the source dir, as today). */

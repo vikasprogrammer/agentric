@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.265.2] — 2026-07-24
+### Fixed
+- **The `consolidator` (memory gardener) crashed at launch on every tenant — and so could any run with a
+  large task prompt.** `LocalSessionBackend` puts every launch env var on the `tmux new-session` command
+  line, and tmux hard-caps that command at ~16KB (`command too long`). The consolidator embeds up to 40
+  recent episodes/lessons in its task (18–46KB), which — base64'd into `TASK_B64` — overflowed the cap, so
+  `new-session` failed **silently**: no pane, no transcript, no `.log`, and the liveness sweep then flipped
+  the never-launched row to `crashed` (~11s in, `turns=null`). Only the single small-task run ever
+  succeeded. The task now rides as a **file** (`TASK_FILE`, like `mcp.json`/`company.md` already do) instead
+  of a giant env var, keeping the command line tiny regardless of task size; `claude-launch.sh` reads
+  `TASK_FILE` (falling back to `TASK_B64` for pre-existing resume envs). Fixes the consolidation half of the
+  self-learning loop and any chat/automation run whose prompt exceeded ~10KB.
+
 ## [0.265.1] — 2026-07-24
 ### Fixed
 - **Task room sidebar no longer overlaps/cramps its Status/Assignee/Goal/Criteria controls.** Select

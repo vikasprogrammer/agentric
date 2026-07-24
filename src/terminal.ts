@@ -1591,8 +1591,11 @@ export class TerminalManager {
     // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
     this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
     if (this.uidIsolation) {
-      // Flag on: the launcher writes the files INTO the member's home and sets MCP_CONFIG/COMPANY_FILE itself.
-      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined }, agentSrc: manifest.dir });
+      // Flag on: the launcher writes the files INTO the member's home and sets MCP_CONFIG/COMPANY_FILE/
+      // TASK_FILE itself. The task rides as a FILE (not the inline TASK_B64 env) for the same reason as the
+      // local lane below — see the delete note there; the launcher points TASK_FILE at the member-home copy.
+      delete env.TASK_B64;
+      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined, task: o.task || undefined }, agentSrc: manifest.dir });
     } else {
       // Flag off: materialise into the app's connectors dir and persist the launch context so the ttyd
       // attach wrapper can resurrect a dead session. Headless automation runs write no resurrect env.
@@ -1600,6 +1603,15 @@ export class TerminalManager {
       if (mcpFile) env.MCP_CONFIG = mcpFile;
       const companyFile = this.writeSessionFile(o.id, 'company.md', companyMd);
       if (companyFile) env.COMPANY_FILE = companyFile;
+      // The task rides as a FILE, not the inline TASK_B64 env. LocalSessionBackend.spawn puts EVERY env var
+      // on the `tmux new-session` command line, and tmux hard-caps that command at ~16KB ("command too
+      // long") — so a base64'd task over ~10KB (e.g. the consolidator's 40-episode batch, or any long
+      // chat/automation prompt) made new-session fail SILENTLY: no pane, no transcript, then the liveness
+      // sweep flipped the never-launched row to `crashed`. Passing the task by path keeps the command line
+      // tiny regardless of task size; the launcher reads TASK_FILE (falling back to TASK_B64 for old
+      // persisted resume envs). Drop TASK_B64 once the file is written so it can't re-inflate the cmdline.
+      const taskFile = this.writeSessionFile(o.id, 'task', o.task);
+      if (taskFile) { env.TASK_FILE = taskFile; delete env.TASK_B64; }
       if (!o.headless) this.writeEnvFile(o.id, env);
       this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher] });
     }
