@@ -158,12 +158,19 @@ export function sanitizeForIntent(command: string): string {
  *  escape. UNSAFE (keeps it destructive) = any other absolute path, `~`/`$HOME`, a `..` escape, or an
  *  unresolved variable / command-substitution (` ` marker) — we never green-light a delete we can't
  *  see the target of. */
-function isSafeDeletePath(target: string): boolean {
+function isSafeDeletePath(target: string, workdir?: string): boolean {
   const t = target.trim();
   if (!t || t.includes(' ') || t.includes('$(') || t.includes('`')) return false; // unknown target
   if (t === '/' || t === '~' || t === '.' || t === '..' || t === '*') return false;
   if (/(^|\/)\.\.(\/|$)/.test(t)) return false; // escapes upward
   if (/^(\/tmp|\/private\/tmp|\/var\/folders)\//.test(t)) return true; // scratch roots
+  // A strict SUBPATH of the agent's own workdir is its sandbox — deleting there is its own work (like an
+  // in-folder file write; mirrors `outsideWorkdir`). Covers an absolute path into the agent's home, e.g.
+  // `rm -rf /home/<u>/.../agents/<a>/work/x`. The workdir ROOT itself stays gated (wiping the whole home).
+  if (workdir && t.startsWith('/')) {
+    const rel = path.relative(workdir, t);
+    if (rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel)) return true;
+  }
   if (t.startsWith('/') || t.startsWith('~')) return false; // any other absolute / home path
   return true; // relative, no escape → inside the agent's cwd sandbox
 }
@@ -172,7 +179,7 @@ function isSafeDeletePath(target: string): boolean {
  *  `VAR=value` assignments made INLINE in the same command (`SCRATCH=/tmp/x … rm -rf "$SCRATCH"`) so the
  *  common scratch-cleanup idiom is recognised. Returns false (→ stays destructive) on any unknown or
  *  unsafe target. Best-effort + conservative: it can only DOWNGRADE an `rm -rf` that is provably safe. */
-function rmTargetsAllSafe(command: string): boolean {
+function rmTargetsAllSafe(command: string, workdir?: string): boolean {
   const vars: Record<string, string> = {};
   for (const m of command.matchAll(/(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=("[^"\n]*"|'[^'\n]*'|[^\s;&|)]+)/g)) {
     vars[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
@@ -188,7 +195,7 @@ function rmTargetsAllSafe(command: string): boolean {
       targets.push(expand(tok));
     }
   }
-  return targets.length > 0 && targets.every(isSafeDeletePath);
+  return targets.length > 0 && targets.every((t) => isSafeDeletePath(t, workdir));
 }
 
 const SECRET_RE = /\b(gh[posru]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,})\b/g;
@@ -240,7 +247,7 @@ export function enrichArgs(
     const otherDestructive = DESTRUCTIVE.some((re) => re.test(classifyText)) || (!!tool && DESTRUCTIVE_TOOL.test(tool));
     // `rm -rf` is destructive only when a target is a real system/absolute path (or unresolvable) — a
     // scratch/tmp/relative delete is routine agent work, not an irreversible world effect.
-    const dangerousRm = RM_RF.test(classifyText) && !rmTargetsAllSafe(classifyText);
+    const dangerousRm = RM_RF.test(classifyText) && !rmTargetsAllSafe(classifyText, workdir);
     destructive = otherDestructive || dangerousRm;
   }
 
