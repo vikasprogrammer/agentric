@@ -1913,8 +1913,14 @@ export class TerminalManager {
     // back to the classic time-based rule for RUNNING rows only (never blind-sweep a 'done' row, or we'd
     // re-teardown it every tick with no way to know its pane already died). Uses the single `alive` poll
     // taken at the top of the sweep.
-    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
-      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null }>();
+    // Hard runtime ceiling for a headless run (stuck-mid-turn backstop, Settings → Runtime; default 24h). A
+    // headless run that hangs mid-turn never beacons a turn-end, so `last_activity` stays NULL — invisible to
+    // the idle-straggler rule below, which requires a beacon. Without this it lingers for DAYS holding a
+    // ~500MB claude process + a cap slot (confirmed on globex: unattended runs stuck at 60h+). `0` disables.
+    const maxHours = this.os.settings.unattendedMaxHours();
+    const maxAgeCutoff = maxHours > 0 ? Date.now() - maxHours * 3600_000 : null;
+    const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null; created_at: number }>();
     for (const r of unattended) {
       try {
         // A MEMBER's own interactive console session is never a done-orphan: the human owns its lifecycle,
@@ -1923,19 +1929,27 @@ export class TerminalManager {
         // to the idle-interactive janitor (sweep 3); reaping it here yanks the TUI out from under an active
         // user seconds after the agent reports. Unattended-lane done runs fall through and are reaped below.
         if (r.status === 'done' && !r.headless && r.spawned_by && !r.spawned_by.includes(':')) continue;
+        // A headless run past the hard runtime ceiling is reaped on wall-clock age ALONE — no turn-end beacon
+        // required (that's the whole point: it's stuck mid-turn). Headed sessions never reach here (the query
+        // only pulls headless running rows besides done orphans), so this can't cut a member mid-work.
+        const overMaxAge = maxAgeCutoff != null && r.headless === 1 && r.status === 'running' && r.created_at < maxAgeCutoff;
         if (alive) {
           if (!alive.has(r.tmux)) continue;                          // pane already gone — nothing to reap
           // a 'running' straggler is only idle-reaped once it has seen a turn-end beacon AND gone quiet past the
           // cutoff; a 'done' orphan is reaped on sight — it should never still be holding an interactive pane.
-          if (r.status === 'running' && (r.last_activity == null || r.last_activity >= cutoff)) continue;
+          // The hard-age backstop (overMaxAge) reaps regardless of the beacon.
+          if (r.status === 'running' && !overMaxAge && (r.last_activity == null || r.last_activity >= cutoff)) continue;
         } else {
           // no liveness signal: classic straggler rule, running-only, so we can't re-sweep a done row blind.
-          if (r.status !== 'running' || r.last_activity == null || r.last_activity >= cutoff) continue;
+          if (r.status !== 'running' || (!overMaxAge && (r.last_activity == null || r.last_activity >= cutoff))) continue;
         }
         const space = this.spaceFor(r.run_as ?? r.spawned_by);
         if (this.backend.hasClient(space, r.tmux) === true) continue; // a human is still watching — leave it
-        if (this.hasPendingHumanBlock(r.id)) continue;               // blocked on an answer/approval — keep alive
-        this.teardownUnattended(r.id, space, r.tmux, r.status === 'done' ? 'done-orphan' : 'idle-backstop');
+        // The idle-straggler path keeps a run that's legitimately blocked on a person; but a run past the hard
+        // ceiling is abandoned by definition (nobody has answered in a full day), so the backstop reaps it
+        // anyway — teardownUnattended cancels its dangling question/approval so nothing is left waiting.
+        if (!overMaxAge && this.hasPendingHumanBlock(r.id)) continue;
+        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }
 
@@ -2013,6 +2027,11 @@ export class TerminalManager {
   private teardownUnattended(sessionId: string, space: string, tmux: string, reason: string): void {
     this.captureTranscript(sessionId, space, tmux);
     this.markEnded(sessionId);   // status → done (if still running), blockResume, writeEpisode
+    // Release any dangling human-block so nothing is left waiting on a reaped run. A no-op for the
+    // idle-backstop/turn-end paths (they skip a blocked run upstream), but essential for the hard
+    // max-runtime backstop, which reaps an abandoned run that IS still blocked on a person.
+    this.cancelPendingQuestions(sessionId, 'system');
+    this.cancelPendingApprovals(sessionId, 'system');
     this.backend.kill(space, tmux);
     this.audit(sessionId, 'system', 'session.reaped', { reason });
   }

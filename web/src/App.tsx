@@ -13090,6 +13090,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const [data, setData] = useState<Concurrency | null>(null)
   const [input, setInput] = useState('')   // '' = use default; '0' = unlimited; N = cap
   const [idle, setIdle] = useState('')      // hours; '0' = off
+  const [maxRun, setMaxRun] = useState('')  // headless hard runtime ceiling, hours; '0' = off
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -13099,17 +13100,20 @@ function ConcurrencySettings({ me }: { me: Member }) {
     setData(r)
     setInput(r.value == null ? '' : String(r.value)) // box reflects only an explicit operator override
     setIdle(String(r.idleHours))
+    setMaxRun(String(r.unattendedMaxHours))
   }).catch(() => {})
   useEffect(() => { load() }, [])
 
   const capDirty = data != null && input.trim() !== (data.value == null ? '' : String(data.value))
   const idleDirty = data != null && idle.trim() !== String(data.idleHours)
-  const dirty = capDirty || idleDirty
+  const maxRunDirty = data != null && maxRun.trim() !== String(data.unattendedMaxHours)
+  const dirty = capDirty || idleDirty || maxRunDirty
   const save = async () => {
     setBusy(true); setHint('')
-    const body: { value?: number | null; idleHours?: number } = {}
+    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number } = {}
     if (capDirty) body.value = input.trim() === '' ? null : Number(input)
     if (idleDirty) body.idleHours = Number(idle)
+    if (maxRunDirty) body.unattendedMaxHours = Number(maxRun)
     const r = await api.saveConcurrency(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
@@ -13170,6 +13174,24 @@ function ConcurrencySettings({ me }: { me: Member }) {
           <p className="text-[11px] text-muted-foreground">
             A forgotten interactive session holds a <span className="font-mono">claude</span> process and a cap slot for days. This closes one
             left idle this long (nobody attached) so it stops starving scheduled work.
+          </p>
+        </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Force-close headless runs after (hours)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={maxRun}
+              onChange={(e) => setMaxRun(e.target.value)}
+              placeholder="24"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">headless/unattended runs only; 0 = never</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            A hard wall-clock ceiling. Unlike the idle timeout above, this reaps a headless run purely on age — the safety net for one
+            that hangs mid-turn and never signals completion, so it can't sit for days holding a <span className="font-mono">claude</span>{' '}
+            process. Headed (interactive) sessions are never cut mid-work by this.
           </p>
         </div>
         <div className="flex items-center gap-3">

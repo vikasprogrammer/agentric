@@ -3985,11 +3985,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const value = os.settings.maxConcurrentSessions(); // operator override (null = unset)
     const resolved = autos.concurrencyCap();           // effective cap the scheduler enforces (0 = unlimited)
     const source = envLocked ? 'env' : value != null ? 'setting' : 'derived';
-    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours() });
+    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours() });
   }
   if (method === 'PUT' && p === '/api/settings/concurrency') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    const b = await readBody(req) as { value?: unknown; idleHours?: unknown };
+    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown };
     // Cap: `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Only touched when the
     // key is present, so a PUT that only sets idleHours leaves the cap alone.
     if ('value' in b) {
@@ -4007,7 +4007,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const savedH = os.settings.setInteractiveIdleTimeoutHours(h, me.email);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.interactiveIdle.updated', data: { idleHours: savedH } });
     }
-    return sendJson(res, 200, { ok: true, value: os.settings.maxConcurrentSessions(), resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap(), idleHours: os.settings.interactiveIdleTimeoutHours() });
+    // Hard max-runtime backstop for headless/unattended runs (hours): 0 = off; else clamped 1h–30d. Present-only.
+    if ('unattendedMaxHours' in b) {
+      const h = Number(b.unattendedMaxHours);
+      if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'unattendedMaxHours must be a non-negative number (0 = off)' });
+      const savedH = os.settings.setUnattendedMaxHours(h, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.unattendedMax.updated', data: { unattendedMaxHours: savedH } });
+    }
+    return sendJson(res, 200, { ok: true, value: os.settings.maxConcurrentSessions(), resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours() });
   }
 
   // ── UI branding (per-tenant accent colour + favicon badge) — owner/admin edits ──

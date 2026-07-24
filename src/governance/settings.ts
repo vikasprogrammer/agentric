@@ -74,6 +74,7 @@ const ROUTER_CONFIG_KEY = 'router_config'; // auto-router tuning (JSON RouterCon
 const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat session idle-kill, minutes
 const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
+const UNATTENDED_MAX_HOURS_KEY = 'unattended_max_runtime_hours'; // hard runtime ceiling for a headless/unattended run (stuck-mid-turn backstop); unset → 24h, 0 → off
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 const SUPPRESSED_BUILTINS_KEY = 'suppressed_builtins'; // built-in agent ids an admin deleted (JSON string[]); boot won't re-seed them
 
@@ -888,6 +889,27 @@ export class SettingsStore {
     const clamped = !Number.isFinite(n) || n < 0 ? 48 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
     this.set(INTERACTIVE_IDLE_HOURS_KEY, String(clamped), by);
     return this.interactiveIdleTimeoutHours();
+  }
+
+  /** Hard runtime ceiling (hours) for an UNATTENDED (headless) run — the stuck-mid-turn backstop. Unlike the
+   *  idle-based reapers, this reaps a headless run purely on wall-clock age, so a run that hangs mid-turn and
+   *  never beacons a turn-end (`last_activity` stays NULL → invisible to the idle-straggler sweep) can't
+   *  linger for days holding ~500 MB + a cap slot. Applies ONLY to headless/unattended runs — a member's
+   *  headed interactive session is never cut mid-work; it keeps the idle-based janitor
+   *  (`interactiveIdleTimeoutHours`), which only closes a *detached* one. Default **24 h**; clamped 1 h–30 d;
+   *  `0` disables. */
+  unattendedMaxHours(): number {
+    const n = Number(this.getRow(UNATTENDED_MAX_HOURS_KEY)?.value);
+    if (!Number.isFinite(n)) return 24; // unset → default
+    if (n <= 0) return 0;               // explicit 0 → disabled
+    return Math.min(Math.max(Math.round(n), 1), 24 * 30);
+  }
+
+  setUnattendedMaxHours(hours: number, by?: string): number {
+    const n = Number(hours);
+    const clamped = !Number.isFinite(n) || n < 0 ? 24 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
+    this.set(UNATTENDED_MAX_HOURS_KEY, String(clamped), by);
+    return this.unattendedMaxHours();
   }
 
   // ── kill switch (workspace emergency stop) ───────────────────────────────────────
