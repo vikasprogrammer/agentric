@@ -7952,7 +7952,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                     : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description. <button className="text-primary underline" onClick={() => setEditing(true)}>Add one</button></div>}
                 </div>
               )}
-              {roomTab === 'session' && sessTmux && <div className="h-full"><TerminalFrame session={live ?? undefined} tmux={sessTmux} standalone /></div>}
+              {roomTab === 'session' && sessTmux && <div className="flex h-full min-h-0 flex-col"><TerminalFrame session={live ?? undefined} tmux={sessTmux} standalone /></div>}
             </div>
           </div>
           <div className="overflow-y-auto bg-muted/20 p-4">

@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.264.1] — 2026-07-24
+### Fixed
+- **The embedded Session terminal now fills the Session tab.** `TerminalFrame` is `flex-1`/`min-h-0` and
+  needs a flex-column parent with height; the room's Session-tab wrapper was a plain block, so the pane
+  collapsed to almost nothing. Wrapped it in `flex h-full flex-col`.
+
 ## [0.264.0] — 2026-07-24
 ### Added
 - **Private (owner-only) agents — a tier below the owner+admin default.** Until now the tightest an
