@@ -195,6 +195,21 @@ have no threads → reply-reference in the DM; a thread-create failure falls bac
 application id, so once the Gateway connects (`discord.connected` records the READY guild count) the
 invite URL is built automatically (no pasting the application id).
 
+**Native ClickUp ingress (webhook, v0.260.0).** The webhook-source twin of the Slack/Discord chat path,
+for the one channel that is genuinely a webhook rather than a socket. A ClickUp Automation ("comment
+posted" → `POST /hooks/clickup?key=…&task_id={{task.id}}`) drives it: the route
+(`server.ts`, in the PUBLIC block beside `/triggers/composio`) authenticates the `?key=` against the
+workspace ClickUp webhook secret, then `ClickupIngress.dispatch` (`src/edge/clickup-ingress.ts`) fetches
+the latest comment via the API (the Automation payload has no text), **loop-guards** its own bot
+comments, resolves run-as (commenter email → member, `getMemberByEmail`), and either
+`continueClickupThread` (a follow-up on a task bound in `clickup_threads` → resume) or `fireClickup` → the
+same `/agentname` front door (`routeUnmatched`) — so `/ceoagent <request>` reaches any agent with no
+per-agent automation. The agent replies with the `clickup_reply` MCP tool (gated `CLICKUP_REPLY=1`),
+which posts back on the bound task — never handed a task id. Config lives in **Settings → Integrations →
+ClickUp** (API token + the generated hook URL to paste into ClickUp); a `clickup` automation trigger type
+exists for per-task-scoped overrides. This is the in-platform replacement for the agent-orch
+`/ceoagent` command — same idea, but every effect on the mediated gateway.
+
 ## Layer B — Connectors (egress)
 
 Unchanged machinery (`connectors.ts` → `.mcp.json` → gate hook), plus P3. Selection at launch:

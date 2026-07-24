@@ -143,7 +143,7 @@ export interface Automation {
   id: string;
   agentId: string;
   name: string;
-  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord';
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'clickup';
   /** How the fired session runs (interactive TUI vs headless `claude -p`). */
   mode: ExecMode;
   /** Cron expression (cron type only). */
@@ -174,7 +174,7 @@ interface AutomationRow {
   id: string;
   agent_id: string;
   name: string;
-  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord';
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'clickup';
   mode: ExecMode | null;
   schedule: string | null;
   secret: string | null;
@@ -215,7 +215,7 @@ function toAutomation(r: AutomationRow): Automation {
 export interface AddAutomationInput {
   agentId: string;
   name: string;
-  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord';
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'clickup';
   mode?: ExecMode;
   schedule?: string;
   /** composio: trigger slug to match. slack: event type / channel id to match. ('' / omitted = any). */
@@ -525,7 +525,7 @@ export class Automations {
    * Spawn the automation's session. `guard: true` skips when the previous spawn is still alive —
    * the no-pile-ups rule for cron/webhook; "Run now" from the console passes guard: false.
    */
-  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
+  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; clickup?: { taskId: string; commentId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
     if (opts.guard && a.lastSessionId && this.tm.isAlive(a.lastSessionId)) {
       return { ok: false, reason: 'previous session still running' };
     }
@@ -540,7 +540,7 @@ export class Automations {
     const mode: ExecMode = opts.mode ?? a.mode;
     // `resumeClaudeId` (a self-scheduled follow-up) makes the run `--resume` the scheduling session's
     // transcript — the launcher's UNATTENDED lane restores it and injects `task` as the next turn.
-    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs, opts.resumeClaudeId);
+    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs, opts.resumeClaudeId, false, undefined, opts.clickup);
     this.db.prepare('UPDATE automations SET last_fired_at = ?, last_session_id = ? WHERE id = ?').run(Date.now(), s.id, a.id);
     this.os.audit.append({
       ts: Date.now(),
@@ -632,6 +632,7 @@ export class Automations {
       runAs?: string;
       slack?: { channel: string; threadTs: string };
       discord?: { channel: string; messageId: string };
+      clickup?: { taskId: string; commentId: string };
       title?: string;
       resident?: boolean;
       route?: { by: 'explicit' | 'auto' | 'auto-llm' | 'auto-disambiguated'; score?: number; runnerUp?: string };
@@ -641,7 +642,7 @@ export class Automations {
     // otherwise the classic one-shot headless run. `title` is the meaningful, message-derived label.
     const s = this.tm.createSession(
       agentId, opts.title || `Chat → ${agentId}`, task, `chat:${agentId}`,
-      !opts.resident, opts.slack, opts.discord, opts.runAs, undefined, !!opts.resident,
+      !opts.resident, opts.slack, opts.discord, opts.runAs, undefined, !!opts.resident, undefined, opts.clickup,
     );
     this.os.audit.append({
       ts: Date.now(),
@@ -652,7 +653,7 @@ export class Automations {
       data: {
         agent: agentId,
         runAs: opts.runAs ?? null,
-        channel: opts.slack?.channel ?? opts.discord?.channel ?? null,
+        channel: opts.slack?.channel ?? opts.discord?.channel ?? opts.clickup?.taskId ?? null,
         resident: !!opts.resident,
         routedBy: opts.route?.by ?? 'explicit',
         score: opts.route?.score ?? null,
@@ -720,10 +721,11 @@ export class Automations {
     runAs?: string;
     slack?: { channel: string; threadTs: string };
     discord?: { channel: string; messageId: string };
+    clickup?: { taskId: string; commentId: string };
   }): Promise<{ sessions: string[]; reply?: string }> {
     const sessions: string[] = [];
     const spawn = (agentId: string, task: string, route: NonNullable<Parameters<Automations['spawnChatAgent']>[2]['route']>, text: string, runAs?: string) => {
-      const r = this.spawnChatAgent(agentId, task, { runAs, slack: opts.slack, discord: opts.discord, title: chatTitle(text, agentId), resident: true, route });
+      const r = this.spawnChatAgent(agentId, task, { runAs, slack: opts.slack, discord: opts.discord, clickup: opts.clickup, title: chatTitle(text, agentId), resident: true, route });
       if (r.ok) sessions.push(r.sessionId);
     };
 
@@ -905,6 +907,72 @@ export class Automations {
     // Warm path: live resident session → deliver by typing into it.
     if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
     // Cold path: reaped/ended → revive the SAME row (resume transcript, seeded with the message).
+    if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', sessionId: bound.sessionId }; }
+    return { status: 'none' };
+  }
+
+  /**
+   * Inbound native ClickUp comment (webhook; a `/agentname` comment was posted on a task). ClickUp's
+   * Automation webhook carries NO comment text, so the caller (the `/hooks/clickup` route) fetches the
+   * latest comment via the API and passes it here. The webhook-source analogue of {@link fireSlack}: fire
+   * every enabled `clickup` automation whose `filter` matches the task id ('' / '*' = any), else the shared
+   * `/agentname` chat front door (so any agent is reachable — `/ceoagent <request>` — with no per-agent
+   * automation). `runAsMember` (the commenter's email → member, resolved upstream) runs the session AS that
+   * member; absent → the company identity. Event-driven, so no pile-up guard. Returns sessions started.
+   */
+  async fireClickup(
+    event: { taskId: string; commentId: string; text: string; taskUrl: string; actorLabel: string; raw: unknown },
+    runAsMember?: string,
+  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
+    const sessions: string[] = [];
+    const bind = { taskId: event.taskId, commentId: event.commentId };
+    const extra =
+      `Triggered from ClickUp by ${event.actorLabel} on task ${event.taskId} (${event.taskUrl}).\n` +
+      `Comment:\n${event.text}\n\n` +
+      `When you're done, call the \`clickup_reply\` tool with your answer — it posts back as a comment on ` +
+      `this exact task (you don't need a task id). Keep it concise; ClickUp comments are plain text.\n\n` +
+      `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
+    for (const a of this.list()) {
+      if (!a.enabled || a.type !== 'clickup') continue;
+      const f = (a.filter || '').trim().toLowerCase();
+      if (f && f !== '*' && f !== event.taskId.toLowerCase()) continue;
+      const r = this.fire(a, { guard: false, extra, runAs: runAsMember, clickup: bind });
+      if (r.ok) sessions.push(r.sessionId);
+    }
+    // No specific automation matched → the shared chat front door (explicit `/name` / auto-route / help).
+    let reply: string | undefined;
+    if (sessions.length === 0) {
+      const r = await this.routeUnmatched({ key: `clickup:${event.taskId}`, text: event.text, extra, runAs: runAsMember, clickup: bind });
+      sessions.push(...r.sessions);
+      reply = r.reply;
+    }
+    return { fired: sessions.length, sessions, reply };
+  }
+
+  /**
+   * ClickUp thread continuity — the analogue of {@link continueSlackThread}, keyed on the task id (the
+   * natural ClickUp "thread"). A follow-up `/agentname` comment on a task already bound to a session
+   * CONTINUES that conversation (deliver into the live claude, or revive the row) instead of a fresh spawn.
+   * `none` → nothing resumable is bound (the first command on the task) → the caller falls through to
+   * {@link fireClickup}. The route posts no ack — the agent's own `clickup_reply` is the feedback.
+   */
+  continueClickupThread(
+    event: { taskId: string; actorLabel: string; text: string; raw: unknown },
+    runAsMember?: string,
+  ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
+    const bound = this.tm.sessionForClickupThread(event.taskId);
+    if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
+    const runAs = runAsMember ?? bound.runAs;
+    const msg = this.stripChatPrefix(event.text);
+    if (!msg) return { status: 'none' };
+    const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
+      ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
+      principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
+      data: { mode, platform: 'clickup', agent: bound.agent, session: bound.sessionId, task: event.taskId, runAs: runAs ?? null },
+    });
+    // Warm path: live resident session → deliver by typing into it.
+    if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
+    // Cold path: reaped/ended → revive the SAME row (resume transcript, seeded with the comment).
     if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', sessionId: bound.sessionId }; }
     return { status: 'none' };
   }

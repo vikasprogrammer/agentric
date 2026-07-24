@@ -19,6 +19,7 @@ import { Automations } from './edge/automations';
 import { AppSupervisor } from './edge/app-supervisor';
 import { InsightAlert } from './edge/alerts';
 import { SlackSocket } from './edge/slack-socket';
+import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { Member, Task } from './types';
 import { TaskNotice } from './state/tasks';
@@ -35,6 +36,7 @@ export interface TenantRuntime {
   apps: AppSupervisor;
   slack: SlackSocket;
   discord: DiscordSocket;
+  clickup: ClickupIngress;
   ttyd: ChildProcess | null;
   ttydPort: number;
   /** The owner's one-time login token, set only when this build seeded a fresh tenant DB. */
@@ -245,6 +247,9 @@ export class TenantRegistry {
     void slack.start();
     const discord = new DiscordSocket(os, autos);
     void discord.start();
+    // Native ClickUp ingress (webhook, not a socket — nothing to start/dial): the `/hooks/clickup` route
+    // calls clickup.dispatch(); clickup.reply() posts an agent's answer back on the bound task.
+    const clickup = new ClickupIngress(os, autos);
     // Chat approval notifications (M5): when a risky action lands an approval card, DM whoever can
     // approve it — via their linked Slack/Discord account (identity map). Best-effort, off the hot path.
     tm.setApprovalNotifier((notice) => { void notifyApprovers(os, tm, slack, discord, consoleOrigin, notice); });
@@ -258,6 +263,7 @@ export class TenantRegistry {
       const render = (p: ChatPlatform) => (typeof text === 'function' ? text(p) : text);
       void slack.reply(sessionId, render('slack'));
       void discord.reply(sessionId, render('discord'));
+      void clickup.reply(sessionId, render('clickup'));
     });
     // Deadline notifications: when a task passes its due date, DM its owner (the human it runs as) once,
     // so a missed deadline surfaces off the board. Owner-less → owner/admins. Mirrors the question path.
@@ -289,7 +295,7 @@ export class TenantRegistry {
     tm.setSessionEventNotifier((notice) => { void notifySessionEvent(os, slack, discord, consoleOrigin, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
-    return { record: rec, os, tm, autos, apps, slack, discord, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
+    return { record: rec, os, tm, autos, apps, slack, discord, clickup, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
   }
 
   /** Build a tenant's accept-link. Default tenant → apex localhost; others → its subdomain. */

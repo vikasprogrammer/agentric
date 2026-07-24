@@ -19,6 +19,8 @@ const COMPOSIO_WEBHOOK_KEY = 'composio_webhook_secret';
 const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connections:write)
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
+const CLICKUP_TOKEN_KEY = 'clickup_api_token'; // pk_… (read task comments + post replies)
+const CLICKUP_WEBHOOK_KEY = 'clickup_webhook_secret'; // the ?key= that authenticates the inbound ClickUp Automation POST
 const GITHUB_CLIENT_ID_KEY = 'github_client_id'; // the company GitHub App / OAuth App client id (per-member OAuth)
 const GITHUB_APP_SLUG_KEY = 'github_app_slug'; // the created App's slug (from the manifest flow) → the Install-on-repos link
 const GITHUB_APP_ID_KEY = 'github_app_id'; // the GitHub App's numeric App ID (for the company-bot installation-token minter)
@@ -230,6 +232,40 @@ export class SettingsStore {
   }
   setDiscordBotToken(token: string, by?: string): void {
     this.set(DISCORD_BOT_TOKEN_KEY, token.trim(), by);
+  }
+
+  // ── native ClickUp (webhook ingress) ───────────────────────────────────────────
+  // One company ClickUp API token (pk_…), configured once here, shared across the workspace. Unlike
+  // Slack/Discord there is NO outbound socket — ClickUp ingress is a webhook: a ClickUp Automation
+  // ("comment added" → POST /hooks/clickup?key=…&task_id=…) drives it. The token reads the triggering
+  // comment (the Automation payload carries no text) and posts the agent's reply; the `webhookSecret`
+  // is the ?key= that authenticates the inbound POST (auto-generated on first save if empty).
+
+  /** ClickUp API token (`pk_…`) for reading comments + posting replies, or '' when unset. */
+  clickupToken(): string {
+    return this.getRow(CLICKUP_TOKEN_KEY)?.value?.trim() ?? '';
+  }
+  /** The shared secret that must appear as `?key=` on the inbound ClickUp Automation POST, or '' when unset. */
+  clickupWebhookSecret(): string {
+    return this.getRow(CLICKUP_WEBHOOK_KEY)?.value?.trim() ?? '';
+  }
+  /** Token present — the minimum to enrich comments and reply. (The webhook secret gates ingress auth.) */
+  clickupConfigured(): boolean {
+    return !!this.clickupToken();
+  }
+  /** Whether the ClickUp token/secret are set + who last touched them (never returns the values). */
+  clickupMeta(): { token: boolean; webhookSecret: boolean; updatedAt?: number; updatedBy?: string } {
+    const tok = this.getRow(CLICKUP_TOKEN_KEY);
+    const sec = this.getRow(CLICKUP_WEBHOOK_KEY);
+    const updatedAt = Math.max(tok?.updated_at ?? 0, sec?.updated_at ?? 0) || undefined;
+    const updatedBy = (tok?.updated_at ?? 0) >= (sec?.updated_at ?? 0) ? tok?.updated_by : sec?.updated_by;
+    return { token: !!tok?.value, webhookSecret: !!sec?.value, updatedAt, updatedBy: updatedBy ?? undefined };
+  }
+  setClickupToken(token: string, by?: string): void {
+    this.set(CLICKUP_TOKEN_KEY, token.trim(), by);
+  }
+  setClickupWebhookSecret(secret: string, by?: string): void {
+    this.set(CLICKUP_WEBHOOK_KEY, secret.trim(), by);
   }
 
   // ── per-member GitHub (user-to-server OAuth) ─────────────────────────────────

@@ -1004,6 +1004,9 @@ export interface IntegrationsResp {
   slack: { appToken: boolean; botToken: boolean; configured: boolean }
   /** Native Discord (Gateway) — whether the bot token is set; never the token. */
   discord: { botToken: boolean; configured: boolean }
+  /** Native ClickUp (webhook) — token/secret set flags + the hook path (with key) to paste into a
+   *  ClickUp Automation. `hookPath` is admin-only (it carries the inbound secret); '' until configured. */
+  clickup: { token: boolean; hint: string; webhookSecret: boolean; configured: boolean; hookPath: string }
   /** Per-member GitHub App OAuth — whether the client id / secret are set (never the secret itself),
    *  plus the created App's slug + the install-on-repos link (empty until an App is created). */
   github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean }
@@ -1496,7 +1499,7 @@ export const api = {
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
   atlasModels: () => call<{ configured: boolean; image: { id: string; label: string; priceUsd: number | null }[]; video: { id: string; label: string; priceUsd: number | null }[]; error?: string }>('GET', '/api/integrations/atlas/models'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   // Per-member GitHub (user-to-server OAuth): each member links their OWN account so run-as sessions
   // push / open PRs as the actual human. `connect` returns the authorize URL to navigate to.
   githubMe: () => call<GithubMe>('GET', '/api/github/me'),

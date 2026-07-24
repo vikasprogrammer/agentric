@@ -1241,6 +1241,24 @@ export class TerminalManager {
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
   }
+  /**
+   * The MOST RECENT session bound to a ClickUp task — the thread-continuity twin of
+   * {@link sessionForSlackThread}, keyed on the task id (the natural ClickUp "thread"). A follow-up
+   * `/agentname` comment on the same task resumes THAT run's agent + claude conversation. Undefined when
+   * nothing is bound (the first command on the task) or the newest run is unresumable (→ fresh spawn).
+   */
+  sessionForClickupThread(taskId: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+           FROM clickup_threads c JOIN term_sessions t ON t.id = c.session_id
+          WHERE c.task_id = ?
+          ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(taskId);
+    if (!row) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
   listMessages(viewer?: Member, scope: 'mine' | 'all' = 'mine'): FeedMessage[] {
     // Approval messages take their live status from the approvals table, so the inbox stays
     // correct even after a restart (when the in-memory resolution waiter is gone). We also pull each
@@ -1378,7 +1396,7 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
-  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning): Session {
+  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }): Session {
     const id = newId('session');
     const tmux = `aos-${id}`;
     // The claude conversation this run drives. A fresh run mints a new id (pinned via `--session-id`);
@@ -1415,6 +1433,12 @@ export class TerminalManager {
       this.db.prepare('INSERT OR REPLACE INTO discord_threads (session_id, channel, message_id, created_at) VALUES (?, ?, ?, ?)')
         .run(id, discord.channel, discord.messageId || '', Date.now());
     }
+    // Native ClickUp egress: bind the task (+ triggering comment) for clickup_reply — the agent posts
+    // its answer back as a comment on the SAME task, without supplying (or spoofing) a task id.
+    if (clickup?.taskId) {
+      this.db.prepare('INSERT OR REPLACE INTO clickup_threads (session_id, task_id, comment_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(id, clickup.taskId, clickup.commentId || '', Date.now());
+    }
 
     // Pick the runtime from the agent's manifest: claude-code → real claude in its folder;
     // anything else (incl. unknown/demo names) → the scripted mock runner.
@@ -1434,7 +1458,7 @@ export class TerminalManager {
     }
 
     if (runtime === 'claude-code' && manifest?.dir) {
-      this.launchClaudeCode({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, headless, resident, resume: !!resumeClaudeId, claudeSessionId, tuning });
+      this.launchClaudeCode({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, hasClickup: !!clickup?.taskId, headless, resident, resume: !!resumeClaudeId, claudeSessionId, tuning });
     } else {
       this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env: this.sessionEnv(id, agent, task, secret), argv: ['bash', this.runner] });
     }
@@ -1478,7 +1502,7 @@ export class TerminalManager {
     this.audit(id, src.agent, 'session.forked', { from: sourceId, fromClaudeId: src.claude_session_id, claudeSessionId, runAs: actingMember ?? null, by });
     this.launchClaudeCode({
       id, agent: src.agent, task: seed, secret, actingMember, spawnedBy: by,
-      hasSlack: false, hasDiscord: false, headless: false, resident: false, resume: false,
+      hasSlack: false, hasDiscord: false, hasClickup: false, headless: false, resident: false, resume: false,
       claudeSessionId, forkFrom: src.claude_session_id,
     });
     return { ok: true, session };
@@ -1493,7 +1517,7 @@ export class TerminalManager {
    */
   private launchClaudeCode(o: {
     id: string; agent: string; task: string; secret: string;
-    actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean;
+    actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean; hasClickup: boolean;
     headless: boolean; resident: boolean; resume: boolean; claudeSessionId: string;
     // Per-launch tuning override (highest priority over the agent manifest + workspace default) — e.g. a
     // delegated task pinning the model/effort of its dispatched session. Undefined → resolve as before.
@@ -1511,7 +1535,7 @@ export class TerminalManager {
     // An ask_agent delegate (provenance `ask:<caller>`) gets the `answer` tool to close the loop back to
     // its caller — keyed on provenance so no other session is cluttered by it.
     const askAnswer = (o.spawnedBy ?? '').startsWith('ask:');
-    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer);
+    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup);
     const companyMd = this.buildCompanyMd(o.agent, o.actingMember);
     this.materializeSkills(o.id, o.agent, manifest.dir);
     this.materializeSubagents(o.id, o.agent, manifest);
@@ -1646,12 +1670,13 @@ export class TerminalManager {
     const actingMember = runAs ?? row.run_as ?? undefined;
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     this.db.prepare("UPDATE term_sessions SET status = 'running', resident = 1, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
       .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.revived', { runAs: actingMember ?? null });
     this.launchClaudeCode({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
     });
     return true;
@@ -1680,12 +1705,13 @@ export class TerminalManager {
     const actingMember = runAs ?? row.run_as ?? undefined;
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 1, resident = 0, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
       .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null });
     this.launchClaudeCode({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: true, resident: false, resume: true, claudeSessionId: row.claude_session_id,
     });
     return 'sent';
@@ -1757,10 +1783,11 @@ export class TerminalManager {
       .run(by, Date.now(), Date.now(), Date.now(), sessionId);
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'takeover-resume' });
     this.launchClaudeCode({
       id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: false, resident: false, resume: true, claudeSessionId: row.claude_session_id,
     });
     return { ok: true };
@@ -1792,10 +1819,11 @@ export class TerminalManager {
       .run(by, Date.now(), Date.now(), Date.now(), sessionId);
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
+    const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'chat-takeover' });
     this.launchClaudeCode({
       id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord,
+      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
     });
     return { ok: true };
@@ -2296,7 +2324,7 @@ export class TerminalManager {
    * session can read it: the app's connectors dir (local), or the member's home (launcher). The
    * memory server is ALWAYS included and scoped to this session+agent. '' when there's no data home.
    */
-  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false, askAnswer = false): string {
+  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false, askAnswer = false, clickupReply = false): string {
     if (!this.os.paths) return '';
     // `actingMember` is the identity the session runs AS (runAs ?? the spawning member). Undefined for a
     // pure automation/system spawn → org + shared connectors only, never a person's private credentials.
@@ -2347,6 +2375,10 @@ export class TerminalManager {
         AOS_TENANT: this.os.tenant, SESSION: sessionId, AGENT: agent, AOS_SECRET: secret,
         ...(slackReply ? { SLACK_REPLY: '1' } : {}),
         ...(discordReply ? { DISCORD_REPLY: '1' } : {}),
+        // CLICKUP_REPLY: '1' exposes the native `clickup_reply` tool — only for ClickUp-triggered
+        // sessions (which have a bound task), so the agent posts its answer back as a comment on the
+        // SAME task without being handed (or able to spoof) a task id.
+        ...(clickupReply ? { CLICKUP_REPLY: '1' } : {}),
         // ASK_ANSWER: '1' exposes the `answer` tool — only on an ask_agent delegate, so it can return its
         // result to the agent that asked. Other sessions never see it.
         ...(askAnswer ? { ASK_ANSWER: '1' } : {}),

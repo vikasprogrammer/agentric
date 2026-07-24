@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.261.0] — 2026-07-24
+### Added
+- **Native ClickUp ingress (comment → agent).** A ClickUp Automation ("comment posted" → `POST
+  /hooks/clickup?key=…&task_id={{task.id}}`) now reaches any agent from a task comment:
+  `/agent-name your request` spawns a governed session that works the task and posts its answer back as a
+  comment; follow-up comments **continue the same conversation** (a `clickup_threads` task→session binding
+  + `--resume`, the exact twin of `slack_threads`). This is the direct in-platform replacement for the old
+  agent-orch `/ceoagent` ClickUp command — but on the mediated gateway (every effect gated/audited),
+  run-as the commenter (their email → member, else company identity), and reachable fleet-wide with no
+  per-agent automation. New: `src/connectors/clickup.ts` (API), `src/edge/clickup-ingress.ts` (webhook
+  dispatch + reply, loop-guarded against the bot's own comments), a `clickup_reply` MCP tool (gated by
+  `CLICKUP_REPLY=1` for ClickUp-triggered sessions), a `clickup` automation trigger type, and a
+  **Settings → Integrations → ClickUp** card (API token + the webhook URL to paste into ClickUp).
+
 ## [0.260.0] — 2026-07-24
 ### Fixed
 - **Enricher no longer hard-denies on payload text or scratch deletes (content-vs-intent false

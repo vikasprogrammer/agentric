@@ -89,6 +89,23 @@ const DISCORD_REPLY_TOOL = {
   },
 };
 
+// Native ClickUp reply tool — the analogue of slack_reply, offered only for ClickUp-triggered sessions
+// (CLICKUP_REPLY=1), which have a task bound server-side (clickup_threads).
+const CLICKUP_REPLY = process.env.CLICKUP_REPLY === '1';
+
+const CLICKUP_REPLY_TOOL = {
+  name: 'clickup_reply',
+  description:
+    'Reply on the ClickUp task that triggered this session. Posts your message back as a comment on the ' +
+    'exact task the user commented on — you do NOT pass a task id. Call this when you have your answer ' +
+    '(you can call it more than once for progress updates). ClickUp comments are plain text (no markdown).',
+  inputSchema: {
+    type: 'object',
+    properties: { text: { type: 'string', description: 'The comment to post (plain text).' } },
+    required: ['text'],
+  },
+};
+
 // Answer tool — offered ONLY to an ask_agent delegate (ASK_ANSWER=1): a one-off session spawned because
 // another agent asked this one a question. Calling it returns the answer to that caller and ends the run.
 // The server resolves WHICH ask from this session, so the agent supplies only the answer.
@@ -1531,6 +1548,18 @@ async function discordReply(args: Record<string, unknown>): Promise<string> {
   return d.ok ? 'Posted to Discord.' : `Could not post to Discord: ${d.error ?? 'unknown error'}`;
 }
 
+async function clickupReply(args: Record<string, unknown>): Promise<string> {
+  const text = String(args.text ?? '').trim();
+  if (!text) return 'Nothing to post (text is required).';
+  const res = await fetch(AOS_URL + '/api/agent/clickup/reply', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, text }),
+  });
+  const d = (await res.json()) as { ok?: boolean; error?: string };
+  return d.ok ? 'Posted to ClickUp.' : `Could not post to ClickUp: ${d.error ?? 'unknown error'}`;
+}
+
 async function imageGenerate(args: Record<string, unknown>): Promise<string> {
   const prompt = String(args.prompt ?? '').trim();
   if (!prompt) return 'A prompt is required.';
@@ -2799,6 +2828,7 @@ async function handle(req: JsonRpc): Promise<void> {
       ...TOOLS,
       ...(SLACK_REPLY ? [SLACK_REPLY_TOOL] : []),
       ...(DISCORD_REPLY ? [DISCORD_REPLY_TOOL] : []),
+      ...(CLICKUP_REPLY ? [CLICKUP_REPLY_TOOL] : []),
       ...(ASK_ANSWER ? [ANSWER_TOOL] : []),
       ...(SLACK_EGRESS ? [SLACK_SEND_TOOL, SLACK_DM_TOOL] : []),
       ...(DISCORD_EGRESS ? [DISCORD_SEND_TOOL, DISCORD_DM_TOOL] : []),
@@ -2838,6 +2868,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'skill_request' ? await skillRequest(args)
         : name === 'slack_reply' ? await slackReply(args)
         : name === 'discord_reply' ? await discordReply(args)
+        : name === 'clickup_reply' ? await clickupReply(args)
         : name === 'slack_send' ? await slackSend(args)
         : name === 'slack_dm' ? await slackDm(args)
         : name === 'discord_send' ? await discordSend(args)

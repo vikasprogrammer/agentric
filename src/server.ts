@@ -24,6 +24,7 @@ import { chooseAgent } from './edge/router';
 import { classifyIntent } from './edge/intent';
 import { resolveLlm, chatComplete } from './edge/llm';
 import { SlackSocket } from './edge/slack-socket';
+import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { AppSupervisor } from './edge/app-supervisor';
 import { DreamingEngine, recommendationResolved, guidanceStale } from './edge/dreaming';
@@ -303,7 +304,7 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     }
     const rt = resolveRuntime(registry, req);
     if (!rt) return sendJson(res, 404, { error: 'no such workspace' });
-    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack, rt.discord, rt.apps).catch((err) =>
+    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack, rt.discord, rt.apps, rt.clickup).catch((err) =>
       sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }),
     );
   });
@@ -448,7 +449,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   return server;
 }
 
-async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket, appSup?: AppSupervisor): Promise<void> {
+async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket, appSup?: AppSupervisor, clickup?: ClickupIngress): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const p = url.pathname;
   const method = req.method || 'GET';
@@ -553,6 +554,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'set-cookie': clearCookie() });
     res.end(JSON.stringify({ ok: true }));
     return;
+  }
+
+  // ── ClickUp ingress (PUBLIC — authenticated by the workspace ClickUp webhook secret) ──────────
+  // A ClickUp Automation ("comment posted" → POST /hooks/clickup?key=…&task_id={{task.id}}) drives the
+  // native ClickUp ingress: fetch the comment, route `/agentname` (continuity via clickup_threads), and
+  // post the agent's reply. Sits BEFORE the generic /hooks/<id> so 'clickup' isn't read as an automation id.
+  if (method === 'POST' && p === '/hooks/clickup') {
+    const secret = os.settings.clickupWebhookSecret();
+    if (!secret) return sendJson(res, 503, { error: 'ClickUp webhook secret not configured (Settings → Integrations)' });
+    const key = url.searchParams.get('key') || String(req.headers['x-hook-key'] || '');
+    if (key !== secret) return sendJson(res, 401, { error: 'invalid key' });
+    if (!clickup) return sendJson(res, 503, { error: 'clickup not available' });
+    const taskId = (url.searchParams.get('task_id') || '').replace(/[^A-Za-z0-9]/g, '');
+    const payload = await readBody(req);
+    const out = await clickup.dispatch(taskId, payload);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'clickup', type: 'trigger.clickup', data: { task: taskId, status: out.status, sessions: out.sessions?.length ?? 0 } });
+    return sendJson(res, out.ok ? 200 : 400, { ok: out.ok, status: out.status, sessions: out.sessions ?? [] });
   }
 
   // ── inbound webhooks (PUBLIC — authenticated by the automation's own secret key) ────────────
@@ -1250,6 +1268,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     if (!discord) return sendJson(res, 503, { error: 'discord not available' });
     const out = await discord.reply(session, String(b.text || ''));
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+  }
+  // native ClickUp egress: the analogue of slack/reply. The task comes from the server-side binding
+  // (clickup_threads) — the agent only sends text; we post it as a comment on the SAME task.
+  if (method === 'POST' && p === '/api/agent/clickup/reply') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!clickup) return sendJson(res, 503, { error: 'clickup not available' });
+    const out = await clickup.reply(session, String(b.text || ''));
     return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
   }
   // native Slack egress (proactive): post to any channel by id/name. Not thread-bound — the agent
@@ -4090,6 +4119,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
     }
     if (discordTouched && discord) void discord.restart();
+    // ClickUp: an API token (pk_…) + a webhook secret (the `?key=` on the inbound Automation POST). Unlike
+    // Slack/Discord there's no socket to (re)dial — the company just points a ClickUp Automation at the hook
+    // URL. Setting the token with no secret yet auto-generates one so the URL shown in Settings is complete.
+    const clickupTouched = typeof b.clickupToken === 'string';
+    if (typeof b.clickupToken === 'string') os.settings.setClickupToken(b.clickupToken, me.email);
+    if (typeof b.clickupWebhookSecret === 'string') os.settings.setClickupWebhookSecret(b.clickupWebhookSecret, me.email);
+    if (os.settings.clickupToken() && !os.settings.clickupWebhookSecret()) os.settings.setClickupWebhookSecret(crypto.randomBytes(24).toString('hex'), me.email);
+    let removedClickupAutomations = 0;
+    if (clickupTouched && !os.settings.clickupConfigured()) {
+      for (const a of autos.list()) {
+        if (a.type === 'clickup' && autos.remove(a.id)) removedClickupAutomations++;
+      }
+    }
     // Per-member GitHub App OAuth credentials: client id → setting, client secret → vault. '' clears.
     if (typeof b.githubClientId === 'string') {
       os.settings.setGithubClientId(b.githubClientId, me.email);
@@ -4129,7 +4171,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (typeof b.chatRouter === 'boolean') os.settings.setChatRouterEnabled(b.chatRouter, me.email);
     // Warm (resident) Slack thread session idle-kill, minutes (0 = disable residence → cold replies).
     if (b.chatIdleTimeoutMin !== undefined && Number.isFinite(Number(b.chatIdleTimeoutMin))) os.settings.setChatIdleTimeoutMinutes(Number(b.chatIdleTimeoutMin), me.email);
-    return sendJson(res, 200, { ok: true, removedSlackAutomations, removedDiscordAutomations, ...integrationsView(os) });
+    return sendJson(res, 200, { ok: true, removedSlackAutomations, removedDiscordAutomations, removedClickupAutomations, ...integrationsView(os) });
   }
   // Live Slack Socket-Mode connection status (owner/admin) — for the Integrations panel.
   if (method === 'GET' && p === '/api/settings/slack/status') {
@@ -5958,6 +6000,7 @@ function integrationsView(os: AgentOS): {
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
+  clickup: { token: boolean; hint: string; webhookSecret: boolean; configured: boolean; hookPath: string };
   github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean };
@@ -5969,6 +6012,7 @@ function integrationsView(os: AgentOS): {
   const meta = os.settings.composioMeta();
   const slack = os.settings.slackMeta();
   const discord = os.settings.discordMeta();
+  const clickup = os.settings.clickupMeta();
   const gh = new GithubIdentity(os);
   const image = os.settings.imageGenMeta();
   const video = os.settings.videoGenMeta();
@@ -5977,6 +6021,7 @@ function integrationsView(os: AgentOS): {
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
+    clickup: { token: clickup.token, hint: redactSecret(os.settings.clickupToken()), webhookSecret: clickup.webhookSecret, configured: os.settings.clickupConfigured(), hookPath: os.settings.clickupWebhookSecret() ? `/hooks/clickup?key=${os.settings.clickupWebhookSecret()}` : '' },
     github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken() },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     video: { fal: video.fal, atlas: video.atlas, backend: video.backend, defaultModel: video.defaultModel, configured: os.settings.videoGenConfigured() },

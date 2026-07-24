@@ -232,6 +232,17 @@ function migrate(db: Db): void {
       created_at INTEGER NOT NULL
     );
 
+    -- Native ClickUp egress binding (the analogue of slack_threads): the task a ClickUp-triggered
+    -- session should reply into. Written when a /agentname comment on a task spawns a session; read by
+    -- the agentos clickup_reply tool so the agent posts its answer back as a comment on the SAME task,
+    -- without ever being handed (or able to spoof) a task id.
+    CREATE TABLE IF NOT EXISTS clickup_threads (
+      session_id TEXT PRIMARY KEY,
+      task_id    TEXT NOT NULL,
+      comment_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
     -- Binds an ask_human question to the Slack/Discord DM we sent about it, so the human can answer by
     -- REPLYING in that DM (not just via the web Inbox). Written when the question is DM'd (one row per
     -- provider we notified); read on an inbound DM: the sender's external id → the newest still-pending

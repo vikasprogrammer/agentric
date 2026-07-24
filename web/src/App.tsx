@@ -13323,6 +13323,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
+  const [clickup, setClickup] = useState<IntegrationsResp['clickup']>({ token: false, hint: '', webhookSecret: false, configured: false, hookPath: '' })
   const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false })
   const [ghId, setGhId] = useState('')
   const [ghSecret, setGhSecret] = useState('')
@@ -13347,12 +13348,14 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [botTok, setBotTok] = useState('')
   const [discordTok, setDiscordTok] = useState('')
   const [discordAppId, setDiscordAppId] = useState('')
+  const [clickupTok, setClickupTok] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
   // Defensive defaults so an older backend (one that predates a field) never white-screens the page.
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
   const DISCORD_DEFAULT = { botToken: false, configured: false }
+  const CLICKUP_DEFAULT = { token: false, hint: '', webhookSecret: false, configured: false, hookPath: '' }
   const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const VIDEO_DEFAULT = { fal: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
@@ -13361,6 +13364,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     if (r.webhook) setWebhook(r.webhook)
     setSlack(r.slack ?? SLACK_DEFAULT)
     setDiscord(r.discord ?? DISCORD_DEFAULT)
+    setClickup(r.clickup ?? CLICKUP_DEFAULT)
     setGithub(r.github ?? GITHUB_DEFAULT)
     setImage(r.image ?? IMAGE_DEFAULT)
     if (r.image) setImgModel(r.image.defaultModel || '')
@@ -13420,12 +13424,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
     }
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setGhId(''); setGhSecret(''); setGhAppId(''); setGhPem(''); setGhSlug(''); setAtKey(''); setFalKey('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setClickupTok(''); setGhId(''); setGhSecret(''); setGhAppId(''); setGhPem(''); setGhSlug(''); setAtKey(''); setFalKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
     // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
@@ -13665,6 +13669,51 @@ function IntegrationsSettings({ me }: { me: Member }) {
               </div>
             )
           })()}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              ClickUp (comment → agent)
+              {clickup.configured
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">configured</Badge>
+                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Reach any agent from a ClickUp task comment: <code className="text-[11px]">/agent-name your request</code>.
+              The agent works the task and posts its answer back as a comment; follow-up comments continue the same
+              conversation. One company ClickUp API token reads the comment and posts the reply.
+            </p>
+          </div>
+          <Field label="API token" help="ClickUp → Settings → Apps → API Token (pk_…). Needs comment read + write on the tasks you'll use it from.">
+            <Input
+              type="password"
+              value={clickupTok}
+              onChange={(e) => setClickupTok(e.target.value)}
+              placeholder={clickup.token ? '•••• (saved) — type a new token to replace' : 'pk_…'}
+              className="font-mono text-xs"
+            />
+          </Field>
+          <div className="flex items-center gap-3">
+            <Button onClick={() => save({ clickupToken: clickupTok.trim() }, 'saved')} disabled={busy || !clickupTok.trim()}>Save</Button>
+            {clickup.token && (
+              <Button variant="ghost" onClick={() => save({ clickupToken: '', clickupWebhookSecret: '' }, 'removed')} disabled={busy}>Remove</Button>
+            )}
+          </div>
+          {clickup.hookPath && (
+            <div className="space-y-1 rounded-md border bg-muted/20 p-3">
+              <div className="text-xs font-medium text-foreground">Webhook URL — paste into a ClickUp Automation</div>
+              <p className="text-[11px] text-muted-foreground">
+                In ClickUp: <strong>Automations → Add → When a comment is posted → Webhook (POST)</strong>, URL below.
+                (The <code>task_id</code> is filled by ClickUp's <code>{'{{task.id}}'}</code> merge field.)
+              </p>
+              <code className="block break-all rounded bg-background p-2 font-mono text-[11px]">
+                {`${window.location.origin}${clickup.hookPath}&task_id={{task.id}}`}
+              </code>
+            </div>
+          )}
         </CardContent>
       </Card>
 
