@@ -1150,6 +1150,114 @@
       "expectFacts": {
         "prodBuild": true
       }
+    },
+    {
+      "name": "grep searching for reboot/systemctl is not serverReboot",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "grep -rniE \"reboot|systemctl|rm -rf\" src/governance | head"
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "\\breboot\\b|systemctl\\s+reboot|shutdown\\s+-r",
+          "fact": "serverReboot",
+          "scope": "shell"
+        }
+      ],
+      "expect": "allow",
+      "expectFacts": {
+        "serverReboot": false,
+        "destructive": false
+      }
+    },
+    {
+      "name": "echo note mentioning triggers is not destructive/serverReboot",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "echo \"note: reboot and rm -rf are risky\""
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "\\breboot\\b|systemctl\\s+reboot|shutdown\\s+-r",
+          "fact": "serverReboot",
+          "scope": "shell"
+        }
+      ],
+      "expect": "allow",
+      "expectFacts": {
+        "serverReboot": false,
+        "destructive": false
+      }
+    },
+    {
+      "name": "gh api -f body= PR is not prodBuild",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "gh api repos/x/pulls -X POST -f title=\"docs\" -f body=\"Reviewed app.globex.io; npm run build passes\""
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
+          "fact": "prodBuild",
+          "scope": "shell"
+        }
+      ],
+      "expect": "allow",
+      "expectFacts": {
+        "prodBuild": false
+      }
+    },
+    {
+      "name": "real systemctl reboot IS serverReboot",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "sudo systemctl reboot"
+        }
+      },
+      "patterns": [
+        {
+          "pattern": "\\breboot\\b|systemctl\\s+reboot|shutdown\\s+-r",
+          "fact": "serverReboot",
+          "scope": "shell"
+        }
+      ],
+      "expectFacts": {
+        "serverReboot": true
+      },
+      "expect": "allow"
+    },
+    {
+      "name": "real rm -rf /etc after an echo note still denied",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "echo \"cleaning up\" && rm -rf /etc/nginx"
+        }
+      },
+      "expect": "never"
+    },
+    {
+      "name": "bash -c rm on a grep line is still caught (exec-string kept)",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "grep x f | true; bash -c \"rm -rf /var/lib/data\""
+        }
+      },
+      "expect": "never"
     }
   ],
   "context": [
