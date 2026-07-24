@@ -7925,7 +7925,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     const t = detail.task
     const parts = discussions[t.id]?.participants ?? []
     return (
-      <div className="flex h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-lg border bg-background">
+      <div className="flex h-[calc(100vh-5.5rem)] flex-col overflow-hidden rounded-lg border bg-background">
         <div className="flex items-center gap-3 border-b px-4 py-2.5">
           <button onClick={closeTask} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-4 w-4" />Tasks</button>
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -7951,7 +7951,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
   return (
     <div className="space-y-4">
-      {detail && view !== 'focus' && <div className="fixed inset-4 z-50">{roomView()}</div>}
+      {detail && view !== 'focus' ? roomView() : (<>
       <div className="flex flex-wrap items-center gap-2">
         <p className="mr-auto max-w-xl text-sm text-muted-foreground">
           The shared work queue humans and agents drain together. Assign to an agent with <strong>auto-dispatch</strong> and it
@@ -8243,7 +8243,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         )}
 
       </div>
-
+      </>)}
     </div>
   )
 }

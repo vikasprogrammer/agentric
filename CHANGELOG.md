@@ -8,6 +8,12 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.263.3] — 2026-07-24
+### Changed
+- **Task room renders inside the content area, not as a full-page overlay.** The Discussion room now
+  replaces the board *within* the main content column (the app nav/sidebar stays visible), instead of a
+  fixed full-screen layer over everything.
+
 ## [0.263.2] — 2026-07-24
 ### Added
 - **`/agent-os <agent>` namespace prefix for the chat router.** `/agent-os engineer fix X` (or `/agentos …`)
