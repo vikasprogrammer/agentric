@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.261.1] — 2026-07-24
+### Fixed
+- **Dispatch no longer hard-rejects a `/goal` when the criteria fits but the whole prompt doesn't.**
+  The `claude` CLI counts *everything* after `/goal ` as the goal condition — the acceptance criteria
+  **plus** the task/ask boilerplate we append, not just the first line (per
+  code.claude.com/docs/en/goal). The v0.247.1 guard measured only `criteria.length`, so a criteria well
+  under 4000 chars still blew the limit once the base prompt was appended, and the run failed at launch
+  with `Goal condition is limited to 4000 characters (got 4463)`. Both `/goal` emitters
+  (`buildTaskPrompt` for dispatched tasks, `buildAskAgentPrompt` for `ask_agent` delegates) now gate on
+  the **full emitted payload's** length and fall back to plain mode (criteria embedded in the body) when
+  it won't fit — the run still knows the definition of done, it just isn't evaluator-driven.
+
 ## [0.261.0] — 2026-07-24
 ### Added
 - **Native ClickUp ingress (comment → agent).** A ClickUp Automation ("comment posted" → `POST

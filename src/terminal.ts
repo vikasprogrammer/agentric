@@ -3156,9 +3156,10 @@ export class TerminalManager {
     // `answer` tool); run-as passes the accountable human through. Headless one-off — reaped at turn end.
     // A `goal` (when the installed claude supports `/goal`) opens the prompt under a convergence condition
     // so the delegate works to the objective before answering — the taskless "delegate with a goal" path.
-    // Over-limit goals would make the `claude` CLI hard-reject the run ("Goal condition is limited to
-    // 4000 characters"); fall back to a plain prompt (question still carries the objective) rather than fail.
-    const goalMode = !!(goal && goal.trim() && goal.trim().length <= GOAL_MAX_CHARS) && claudeSupportsGoal();
+    // An over-limit goal would make the `claude` CLI hard-reject the run ("Goal condition is limited to
+    // 4000 characters" — counting the WHOLE payload after `/goal `, not just this string); the builder
+    // measures the full payload and falls back to a plain prompt (question still carries the objective).
+    const goalMode = !!(goal && goal.trim()) && claudeSupportsGoal();
     const s = this.createSession(target, `Ask ← ${callerAgent}`, buildAskAgentPrompt(id, callerAgent, question, goalMode ? goal!.trim() : undefined), `ask:${callerAgent}`, true, undefined, undefined, runAs);
     this.db.prepare('UPDATE agent_asks SET delegate_run_id = ? WHERE id = ?').run(s.id, id);
     this.audit(callerSession, callerAgent, 'agent.asked', { askId: id, target, delegate: s.id, runAs: runAs ?? null });
@@ -4809,8 +4810,12 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
     `this run. Put EVERYTHING they need in that one call — they receive only the \`answer\` text, not the ` +
     `rest of your output. If you genuinely cannot help, still call answer with a short explanation of why.`;
   // A `goal` opens the run under a `/goal` convergence condition, so an independent evaluator drives the
-  // delegate across turns until the objective holds; it then returns via `answer` in that same turn.
-  return goal ? `/goal ${goal}\n\n${base}` : base;
+  // delegate across turns until the objective holds; it then returns via `answer` in that same turn. The
+  // CLI counts the WHOLE payload after `/goal ` (goal + this base, not just the first line) against
+  // GOAL_MAX_CHARS, so gate on the full length — else a fitting goal still hard-rejects once base is
+  // appended. Over-limit falls back to a plain prompt (the question still carries the objective).
+  const converging = !!goal && `${goal}\n\n${base}`.length <= GOAL_MAX_CHARS;
+  return converging ? `/goal ${goal}\n\n${base}` : base;
 }
 
 function toSession(r: SessionRow): Session {

@@ -271,24 +271,32 @@ const GOAL_AUTOPLAN_MAX_PER_TICK = Number(process.env.AOS_GOAL_AUTOPLAN_MAX_PER_
  * goal clearing and the task closing are atomic; the existing attempt-ceiling/guard net covers a miss.
  *
  * The `claude` CLI hard-rejects a `/goal` condition over `GOAL_MAX_CHARS` (it errors and the run never
- * starts). An overlong `criteria` therefore falls back to plain mode with the acceptance condition
- * embedded in the prompt body — the run still knows what "done" means, it just isn't evaluator-driven.
+ * starts). Critically, the CLI counts EVERYTHING after `/goal ` as the condition — the criteria AND the
+ * base prompt we append below (not just the first line; see code.claude.com/docs/en/goal). So the guard
+ * measures the WHOLE emitted payload, not `criteria` alone: a criteria that fits on its own still blows
+ * the limit once the boilerplate is appended (the "got 4463" the criteria-only check missed). When the
+ * full payload won't fit, we fall back to plain mode with the acceptance condition embedded in the body —
+ * the run still knows what "done" means, it just isn't evaluator-driven.
  */
 export function buildTaskPrompt(t: { id: string; title: string; body: string; criteria?: string }, opts: { goalMode?: boolean } = {}): string {
-  const goalFits = !!t.criteria && t.criteria.length <= GOAL_MAX_CHARS;
-  const converging = !!(opts.goalMode && goalFits);
-  // Criteria we want to honour but can't route through `/goal` (too long) still belongs in the prompt.
-  const embedCriteria = !!t.criteria && !converging;
-  const close = converging
-    ? `When you have satisfied the goal above, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }) in that same turn.\n`
-    : `When finished, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }).\n`;
-  const base =
-    `You are working task ${t.id}: ${t.title}\n\n` +
-    `${t.body || '(no description provided)'}\n\n` +
-    (embedCriteria ? `Acceptance criteria (the definition of done): ${t.criteria}\n\n` : '') +
-    close +
-    `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n` +
-    `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`;
+  const buildBase = (converging: boolean) => {
+    // Criteria we want to honour but can't route through `/goal` still belongs in the prompt.
+    const embedCriteria = !!t.criteria && !converging;
+    const close = converging
+      ? `When you have satisfied the goal above, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }) in that same turn.\n`
+      : `When finished, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }).\n`;
+    return (
+      `You are working task ${t.id}: ${t.title}\n\n` +
+      `${t.body || '(no description provided)'}\n\n` +
+      (embedCriteria ? `Acceptance criteria (the definition of done): ${t.criteria}\n\n` : '') +
+      close +
+      `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n` +
+      `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`
+    );
+  };
+  // The `/goal` condition is the criteria PLUS the appended base — gate on the full payload's length.
+  const converging = !!(opts.goalMode && t.criteria) && `${t.criteria}\n\n${buildBase(true)}`.length <= GOAL_MAX_CHARS;
+  const base = buildBase(converging);
   return converging ? `/goal ${t.criteria}\n\n${base}` : base;
 }
 
