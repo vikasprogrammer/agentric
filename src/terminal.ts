@@ -4454,7 +4454,11 @@ export class TerminalManager {
   markResumed(sessionId: string): void {
     const s = this.db.prepare('SELECT agent, status FROM term_sessions WHERE id = ?').get<{ agent: string; status: string }>(sessionId);
     if (!s || s.status === 'running') return;
-    this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    // Refresh last_activity too, not just updated_at: a resident chat session resurrected via attach.sh
+    // keeps its STALE last_activity (from the original run), so the very next idle sweep would reap it as
+    // long-idle within ≤60s ("killed shortly after resumption"). A deliberate re-open means the human is
+    // actively using it — give it a fresh idle window (the resident reaper keys off last_activity).
+    this.db.prepare("UPDATE term_sessions SET status = 'running', last_activity = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), sessionId);
     // No "Resumed" card — reconnecting is lifecycle noise, not something the operator needs in the feed.
     this.audit(sessionId, s.agent, 'session.resumed', {});
   }

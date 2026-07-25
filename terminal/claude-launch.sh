@@ -20,9 +20,16 @@ set -u
 # was killed (stopped/ended). The new tmux session does NOT inherit the original launch env, so
 # recover it from the persisted file before doing anything else. Sets AGENT_DIR/HOOK/AOS_*/
 # MCP_CONFIG/COMPANY_FILE/CLAUDE_SESSION_ID exactly as the first launch had them.
+RESUMED_FROM_ENV=
 if [ "${RESUME:-}" = "1" ] && [ -n "${ENV_FILE:-}" ] && [ -f "${ENV_FILE}" ]; then
   # shellcheck disable=SC1090
   . "$ENV_FILE"
+  # attach.sh browser-reattach resurrect: the sourced env carries the ORIGINAL launch TASK, which is
+  # ALREADY in the transcript we're about to `--resume`. The unattended/resident resume branch below must
+  # NOT re-seed it (doing so replays the first prompt — e.g. re-pasting the Slack/Discord trigger message).
+  # A server-driven follow-up (reviveResident/chatSend) instead spawns a FRESH pane with a genuinely new
+  # $TASK and no ENV_FILE, so this stays unset there and its new message IS seeded.
+  RESUMED_FROM_ENV=1
 fi
 # The `claude` CLI is commonly installed under ~/.local/bin; make sure it's findable even
 # when the parent process (e.g. a hardened systemd unit) ships a minimal PATH.
@@ -291,8 +298,17 @@ if [ "${RESIDENT:-}" = "1" ] || [ "${UNATTENDED:-}" = "1" ]; then
   echo
   if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
     notify_resumed
-    claude --resume "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" ${TASK:+"$TASK"} \
-      || claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" ${TASK:+"$TASK"}
+    if [ -n "${RESUMED_FROM_ENV:-}" ]; then
+      # Browser reattach: resume the conversation WITHOUT re-seeding $TASK (it's the original prompt,
+      # already in the transcript) — the human just wants to land back in the live TUI. The fallback still
+      # seeds so a lost transcript gets a prompt, mirroring the interactive lane below.
+      claude --resume "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" \
+        || claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" ${TASK:+"$TASK"}
+    else
+      # Server-driven follow-up (reviveResident/chatSend): $TASK is a genuinely NEW message → seed it.
+      claude --resume "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" ${TASK:+"$TASK"} \
+        || claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" ${TASK:+"$TASK"}
+    fi
   elif [ -n "${CLAUDE_SESSION_ID:-}" ]; then
     claude --session-id "$CLAUDE_SESSION_ID" "${RES_ARGS[@]}" "$TASK"
   else

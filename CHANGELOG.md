@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.266.1] — 2026-07-25
+### Fixed
+- **Resuming a resident chat session (Slack/Discord/`/agent`) from the web no longer replays the trigger
+  message, nor gets reaped seconds later.** When the browser reattaches to a stopped resident session,
+  `attach.sh` resurrects it via `RESUME=1 ENV_FILE=…`, sourcing the persisted env — which carries the
+  *original* launch `TASK` (e.g. the Discord message that started it). The unattended/resident resume branch
+  re-seeded that `$TASK` on `claude --resume`, so the resumed pane replayed the first prompt. Fixed: the
+  launcher now marks an env-file resurrect (`RESUMED_FROM_ENV`) and skips re-seeding the original task on the
+  primary resume (the fallback still seeds so a lost transcript gets a prompt); a genuine server-driven
+  follow-up (`reviveResident`/`chatSend`) spawns a fresh pane with no env file, so its new message is still
+  seeded. Second bug on the same path: `markResumed` refreshed only `updated_at`, leaving `last_activity`
+  stale, so the resurrected resident session tripped the 30-min resident idle reaper on the very next 60 s
+  sweep and was killed "shortly after resumption" — it now refreshes `last_activity` too, giving a
+  deliberately re-opened session a fresh idle window.
+
 ## [0.266.0] — 2026-07-24
 ### Added
 - **Hard max-runtime backstop for headless/unattended runs — the stuck-mid-turn session leak.** An
