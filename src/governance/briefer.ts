@@ -179,3 +179,17 @@ export function briefFor(capability: string, args: Record<string, unknown>, deci
   const signature = signatureFor(capability, verb, target, args, input);
   return { headline, verb, target, rationale, riskClass: decision.riskClass, suggestedAction, signature };
 }
+
+/** A short, stable human phrase for a brief's ACTION SHAPE — the label shown for an auto-approval rule
+ *  ("Run `git` commands", "Reach 198.51.100.42 (ssh)", "Grant stripe refund"). Unlike `headline` (which
+ *  varies per call), this reflects only the parts the signature keys on, so it reads the same every time. */
+export function describeBrief(brief: DecisionBrief): string {
+  const t = brief.target;
+  if (t.kind === 'host') return `Reach ${t.label}`;
+  if (t.kind === 'command') return `Run \`${t.label}\` commands`;
+  if (t.kind === 'file') return `Write files like ${t.label}`;
+  // Money is keyed on the payment TOOL, not the amount — the money-cap `never` rule still bounds the sum.
+  if (t.kind === 'money') return `Approve payments with this tool (money cap still applies)`;
+  if (t.kind === 'recipient') return `Send to ${t.label}`;
+  return `${VERB_WORD[brief.verb]} ${t.label}`;
+}

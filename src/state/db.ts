@@ -116,6 +116,20 @@ function migrate(db: Db): void {
       created_at  INTEGER NOT NULL
     );
 
+    -- Auto-approval list — "always approve THIS action" by decision-brief signature (auto-approvals.ts).
+    -- A pending APPROVE whose signature is here is cleared without a card. Never sees a deny (never-tier).
+    CREATE TABLE IF NOT EXISTS auto_approvals (
+      id          TEXT PRIMARY KEY,
+      signature   TEXT NOT NULL UNIQUE,          -- the brief signature (capability|verb|targetKind|key)
+      capability  TEXT NOT NULL,
+      label       TEXT NOT NULL,                 -- human phrase for the Settings list
+      example     TEXT,                          -- an example headline from the source approval
+      added_by    TEXT NOT NULL,                 -- member email
+      added_at    INTEGER NOT NULL,
+      hits        INTEGER NOT NULL DEFAULT 0,    -- times it has auto-cleared an approval
+      last_hit_at INTEGER
+    );
+
     -- Terminal-native agent sessions (each a tmux shell).
     CREATE TABLE IF NOT EXISTS term_sessions (
       id         TEXT PRIMARY KEY,

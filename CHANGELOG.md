@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.268.0] — 2026-07-27
+### Added
+- **Auto-approval list — "always approve THIS action", by decision-brief signature.** The old "Always"
+  button on an approval card added a capability-wide `allow` policy rule (allowing *all* `connector.connect`
+  / `net.connect` — far too broad). It now adds the approval's **brief signature**
+  (`capability|verb|targetKind|key`) to a dedicated **auto-approval list**, so it silences exactly one
+  recurring action shape (e.g. "Reach 198.51.100.42", "Grant Composio initiate connection") and nothing
+  broader. At gate time a pending `approve` whose signature is listed clears automatically (audited
+  `approval.auto_approved` via `auto-approve-list`) — no card, no notification. **Safety:** the list is
+  only ever consulted for an `approve`; a `deny` (never-tier: destructive / over-cap / prod-build) is a
+  different decision the list never sees, so it stays blocked (verified end-to-end). New
+  **Settings → Governance → Auto-approvals** panel shows the full, legible registry — what each rule
+  auto-approves (human label + raw signature), who added it, an example, and how many times it has fired —
+  with one-click **Revoke** (owner). New `src/state/auto-approvals.ts` (`AutoApprovalStore` + `auto_approvals`
+  table), `describeBrief()` in the briefer, and `GET`/`DELETE /api/auto-approvals`. Owner-only to add/revoke.
+
 ## [0.267.0] — 2026-07-27
 ### Added
 - **Automations can run as a member, so a scheduled/headless run reaches that person's personal Composio
