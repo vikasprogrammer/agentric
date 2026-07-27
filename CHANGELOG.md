@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.268.1] — 2026-07-27
+### Fixed
+- **Generated media now reliably lands in the Library instead of the scratchpad.** Agents (esp. via the
+  `dataviz`/`artifact-design` skills) were rendering charts/images/PDFs into the Claude Code harness
+  scratchpad (`/private/tmp/.../scratchpad/`), following the harness's emphatic "put ALL temporary files
+  in the scratchpad" instruction. Those files sit **outside** the agent's working folder, so
+  `publishArtifact` (which resolves paths strictly under `manifest.dir`) can't reach them — the media
+  never reaches the Library and is deleted when the session ends. Strengthened the launch operating-notes
+  guidance (`AGENT_OS_OPERATING_NOTES` in `src/terminal.ts`) to explicitly override the harness rule: throwaway
+  intermediates → scratchpad, but any deliverable a human should see → the working folder, then `publish`.
+
 ## [0.268.0] — 2026-07-27
 ### Added
 - **Auto-approval list — "always approve THIS action", by decision-brief signature.** The old "Always"

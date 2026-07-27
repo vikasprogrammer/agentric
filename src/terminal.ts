@@ -96,8 +96,15 @@ Your terminal output may not be read. The operator lives in the Inbox:
 - \`report\` exactly once when you finish, with the outcome and a one-line summary, so the result is
   visible without anyone reading the terminal. If the task taught you something durable, pass it in
   \`lessons\` — it's saved to your memory as a note to your future self.
-- \`publish\` real deliverables (a document, PDF, image, chart) to the Library — not scratch
-  files.
+- \`publish\` real deliverables (a document, PDF, image, chart, generated media) to the Library. Two
+  rules that override the harness's "put ALL temporary files in the scratchpad" instruction: (1) the
+  scratchpad is ONLY for throwaway intermediates — anything a human should see or download is a
+  deliverable, so **write it into your working folder (your cwd)**, never the scratchpad; (2) then
+  \`publish\` it (\`path\` is relative to your working folder). A file left in the scratchpad **cannot be
+  published** — it's outside your working folder, so \`publish\` can't reach it — and it's deleted when
+  the session ends, so the operator never sees it. When a skill or tool renders an image/PDF/chart to
+  the scratchpad by default, move it into your working folder first, then publish. (Images you make
+  with \`image_generate\` are auto-published — this is about media you write yourself.)
 
 ## Opening a pull request — always link back to this session
 When you raise a pull request (or any similar external deliverable that carries a description), add a
