@@ -24,10 +24,11 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Card, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import {
   api, type Member, type CatalogEntry, type Connector, type ConnectorScope, type AddConnectorReq,
-  type IntegrationsOverview, type ConnectionsResp, type GithubMe,
+  type IntegrationsOverview, type ConnectionsResp, type GithubMe, type ConnectionRequest,
   type Host, type HostProtocol, type HostPosture, type AddHostReq,
 } from '@/lib/api'
 
@@ -898,6 +899,71 @@ function AddHostDialog({ me, host, scope, onClose, onSaved }: {
 }
 
 // ── page ─────────────────────────────────────────────────────────────────────────────
+/** The "Agent connection requests" review section: open `connection_request` cards a human completes.
+ *  Self-contained (fetches its own state) so ConnectorsPage can drop it in. The server scopes the list —
+ *  an admin sees every open request; a member sees only the personal ones addressed to them. Fulfilling
+ *  initiates the Composio OAuth and opens the hosted link in a new tab for the human to finish. */
+function ConnectionRequestsCard({ onResolved }: { onResolved: () => void }) {
+  const [requests, setRequests] = useState<ConnectionRequest[]>([])
+  const [busy, setBusy] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => api.connectionRequests().then((r) => setRequests(r.requests ?? [])).catch(() => setRequests([]))
+  useEffect(() => { load() }, [])
+  if (!requests.length) return null
+  const connect = async (r: ConnectionRequest) => {
+    setBusy(r.id); setHint('')
+    const res = await api.fulfillConnectionRequest(r.id)
+    setBusy('')
+    if (res.error || !res.ok) return setHint('⚠ ' + (res.error || 'failed'))
+    if (res.redirectUrl) window.open(res.redirectUrl, '_blank', 'noopener')
+    load(); onResolved()
+  }
+  const dismiss = async (r: ConnectionRequest) => {
+    setBusy(r.id); setHint('')
+    const res = await api.dismissConnectionRequest(r.id)
+    setBusy('')
+    if (res.error || !res.ok) return setHint('⚠ ' + (res.error || 'failed'))
+    load()
+  }
+  return (
+    <Card className="border-amber-200">
+      <CardContent className="space-y-2.5 p-4">
+        <div className="flex items-center gap-2">
+          <Plug className="h-4 w-4 text-amber-600" />
+          <h3 className="text-sm font-medium">Agent connection requests</h3>
+          <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{requests.length}</Badge>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          An agent asked (via <span className="font-mono">connection_request</span>) to connect an app. <strong>Connect</strong> opens the
+          Composio OAuth in a new tab — a <b>personal</b> connection you complete for your own account; a <b>company</b> one is shared by every agent.
+        </p>
+        {requests.map((r) => (
+          <div key={r.id} className="flex items-start justify-between gap-2 rounded-md border p-2.5">
+            <div className="flex min-w-0 gap-2.5">
+              <BrandIcon name={r.toolkit} box={28} />
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-sm font-medium">{r.toolkit}</span>
+                  <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">{r.scope}</Badge>
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  by <span className="font-mono">{r.agent}</span>
+                  {r.reasoning ? <> · <span className="italic">“{r.reasoning}”</span></> : null}
+                </div>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button size="sm" disabled={busy === r.id} onClick={() => connect(r)}><ExternalLink className="mr-1 h-3.5 w-3.5" />Connect</Button>
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="dismiss" disabled={busy === r.id} onClick={() => dismiss(r)}><Trash2 className="h-3.5 w-3.5" /></Button>
+            </div>
+          </div>
+        ))}
+        {hint && <div className="text-xs text-destructive">{hint}</div>}
+      </CardContent>
+    </Card>
+  )
+}
+
 export function ConnectorsPage({ me }: { me: Member | null }) {
   const [connectors, setConnectors] = useState<Connector[]>([])
   const [catalog, setCatalog] = useState<CatalogEntry[]>([])
@@ -976,6 +1042,8 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
           onClose={() => setShowAdd(false)}
         />
       )}
+
+      <ConnectionRequestsCard onResolved={reloadAll} />
 
       <ConnectedList
         me={me}

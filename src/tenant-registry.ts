@@ -565,6 +565,7 @@ const REVIEW_PRESENTATION: Record<ReviewNotice['kind'], { icon: string; page: st
   'policy.proposal': { icon: '🛡️', page: 'settings/policy' },
   'automation.proposed': { icon: '⚡', page: 'automations' },
   'agent.update.proposed': { icon: '✏️', page: 'agents' },
+  'connection.request': { icon: '🔌', page: 'connectors' },
 };
 
 /**
@@ -572,10 +573,11 @@ const REVIEW_PRESENTATION: Record<ReviewNotice['kind'], { icon: string; page: st
  * policy change) — the review-side twin of {@link notifyApprovers}/{@link notifyMember}. The inbox card is
  * already written (addressed to `admins`) by {@link TerminalManager.postReviewCard}; this is the out-of-band
  * push so a pending request reaches a human instead of only sitting in the inbox until someone opens
- * Settings. Targets the `admins` audience via {@link resolveRecipients}. Best-effort, audited once.
+ * Settings. Targets the notice's own `audience` (a personal connection request → the run's member) and
+ * falls back to the `admins` tier via {@link resolveRecipients}. Best-effort, audited once.
  */
 export async function notifyReview(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: ReviewNotice): Promise<void> {
-  const recipients = resolveRecipients(os, { kind: 'admins' });
+  const recipients = resolveRecipients(os, notice.audience ?? { kind: 'admins' });
   if (!recipients.length) return;
   const { icon, page } = REVIEW_PRESENTATION[notice.kind];
   const url = consolePage(consoleOrigin, page);

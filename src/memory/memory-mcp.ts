@@ -1418,6 +1418,28 @@ const TOOLS = [
     },
   },
   {
+    name: 'connection_request',
+    description:
+      'Ask a human to CONNECT a Composio app (Gmail, Slack, Google Calendar, an analytics account, …) you ' +
+      'need but is not yet connected. You pass only the toolkit slug + why; a human completes the OAuth in ' +
+      'their browser — you never handle a credential. Scope defaults to PERSONAL (connected under the human ' +
+      'you run as — their own account, e.g. their Gmail/calendar), which is almost always what you want. ' +
+      'Request scope:"company" ONLY when the app is a shared organisation resource the whole fleet would ' +
+      'legitimately use (a team Slack workspace, a shared analytics login) — never for someone\'s personal ' +
+      'inbox. If it is already connected you are told so (it is available next session); otherwise the ' +
+      'request goes to the right human (you for personal, an owner/admin for company) to finish.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        toolkit: { type: 'string', description: 'The Composio toolkit slug to connect, lowercase — e.g. "gmail", "slack", "googlecalendar", "notion".' },
+        scope: { type: 'string', enum: ['personal', 'company'], description: 'personal (default) = connected under the human you run as, for their own account. company = a shared connection every agent can use — only for genuine org-wide resources.' },
+        reasoning: { type: 'string', description: 'One line for the human: what you need this connection for (helps them complete it quickly).' },
+      },
+      required: ['toolkit'],
+    },
+  },
+  {
     name: 'github_refresh',
     description:
       'Refresh YOUR GitHub token when git/gh suddenly fails with "Bad credentials" or a 401. Your ' +
@@ -2620,6 +2642,25 @@ async function secretRequest(args: Record<string, unknown>): Promise<string> {
   return `Requested "${key}" — an owner/admin will provide it into the vault (they type the value, you never see it pasted here). Once fulfilled, secret_get "${key}", or it'll be a shell env var on your next session if they inject it.`;
 }
 
+async function connectionRequest(args: Record<string, unknown>): Promise<string> {
+  const toolkit = String(args.toolkit ?? '').trim().toLowerCase();
+  if (!toolkit) return 'connection_request needs the Composio toolkit slug you want connected, e.g. connection_request({ toolkit: "gmail" }).';
+  const scope = args.scope === 'company' ? 'company' : 'personal';
+  const res = await fetch(AOS_URL + '/api/agent/connection/request', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, toolkit, scope, reasoning: args.reasoning != null ? String(args.reasoning) : undefined }),
+  });
+  const d = (await res.json()) as { ok?: boolean; status?: string; scope?: string; error?: string };
+  if (!d.ok) return `Could not request the connection: ${d.error ?? 'unknown error'}`;
+  const s = d.scope ?? scope;
+  if (d.status === 'exists') return `"${toolkit}" is already connected (${s}) — it'll be available to you next session.`;
+  if (d.status === 'duplicate') return `A ${s} request to connect "${toolkit}" is already awaiting a human.`;
+  return s === 'company'
+    ? `Requested a COMPANY connection to "${toolkit}" — an owner/admin will complete the OAuth. Once connected it's available to every agent next session.`
+    : `Requested a PERSONAL connection to "${toolkit}" — the human you run as will complete the OAuth for their own account. Once connected it's available to you next session.`;
+}
+
 // ── Per-member GitHub token refresh: recover a live run whose ~8h GH_TOKEN went bad mid-flight ──────
 async function githubRefresh(): Promise<string> {
   const res = await fetch(AOS_URL + '/api/agent/github/refresh', {
@@ -2959,6 +3000,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'secret_get' ? await secretGet(args)
         : name === 'secret_list' ? await secretList()
         : name === 'secret_request' ? await secretRequest(args)
+        : name === 'connection_request' ? await connectionRequest(args)
         : name === 'github_refresh' ? await githubRefresh()
         : `unknown tool: ${name}`;
       send({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } });

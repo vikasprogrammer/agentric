@@ -983,6 +983,12 @@ export interface SkillRequestsResp { requests: SkillRequest[]; error?: string }
 export interface SecretRequest { id: string; key: string; agent: string; mode: 'provide' | 'access'; reasoning?: string; createdAt: number }
 export interface SecretRequestsResp { requests: SecretRequest[]; error?: string }
 
+/** An agent's `connection_request` awaiting a human. `scope` 'personal' (the run's own member completes
+ *  the OAuth for their own account) or 'company' (an owner/admin connects a shared app). `member` is the
+ *  personal-scope owner's member id. No credential is ever in play — a human finishes the browser OAuth. */
+export interface ConnectionRequest { id: string; toolkit: string; scope: 'personal' | 'company'; member: string; agent: string; reasoning?: string; createdAt: number }
+export interface ConnectionRequestsResp { requests: ConnectionRequest[]; error?: string }
+
 export interface CompanySettings {
   companyMd: string
   updatedAt?: number
@@ -1530,6 +1536,13 @@ export const api = {
     call<{ redirectUrl?: string; error?: string }>('POST', '/api/connections/connect', body),
   disconnectApp: (body: { id: string; scope: 'company' | 'personal' }) =>
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
+  // Agent connection requests (`connection_request`). List: admin sees all open; a member sees their own
+  // personal ones. Fulfilling initiates the Composio OAuth and returns the hosted link to finish.
+  connectionRequests: () => call<ConnectionRequestsResp>('GET', '/api/connections/requests'),
+  fulfillConnectionRequest: (id: string) =>
+    call<{ ok?: boolean; redirectUrl?: string; error?: string }>('POST', '/api/connections/requests/' + encodeURIComponent(id) + '/fulfill'),
+  dismissConnectionRequest: (id: string) =>
+    call<{ ok?: boolean; error?: string }>('POST', '/api/connections/requests/' + encodeURIComponent(id) + '/dismiss'),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
   atlasModels: () => call<{ configured: boolean; image: { id: string; label: string; priceUsd: number | null }[]; video: { id: string; label: string; priceUsd: number | null }[]; error?: string }>('GET', '/api/integrations/atlas/models'),
   saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),

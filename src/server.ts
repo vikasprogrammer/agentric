@@ -838,6 +838,40 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, out.ok ? 200 : 400, out);
   }
 
+  // agent ASKS a human to CONNECT a Composio app it needs (`connection_request`) — the connection twin of
+  // secret/request. Carries only the toolkit + why + scope, never a credential; a human completes the
+  // OAuth. Scope defaults to PERSONAL (the run's own member — their own account); `company` is a shared
+  // org connection every agent can use. Posts a 'connection.request' card (to the member for personal, the
+  // admin tier for company); a human fulfills it via POST /api/connections/requests/:id/fulfill.
+  // Pre-auth loopback, session-secret gated.
+  if (method === 'POST' && p === '/api/agent/connection/request') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const toolkit = String(b.toolkit || '').trim().toLowerCase();
+    if (!/^[a-z0-9_-]{1,64}$/.test(toolkit)) return sendJson(res, 400, { ok: false, error: 'toolkit must be a Composio toolkit slug (lowercase letters, digits, _ or -), e.g. "gmail", "googlecalendar"' });
+    const scope: 'personal' | 'company' = b.scope === 'company' ? 'company' : 'personal';
+    const key = os.settings.composioApiKey();
+    if (!key) return sendJson(res, 400, { ok: false, error: 'no Composio API key is set for this workspace — ask an owner/admin to add one in Settings → Integrations first' });
+    // Personal scope needs a human owner: the run's run-as member (whose account gets connected). A pure
+    // automation / company-identity run has none — personal is meaningless, so steer it to company scope.
+    const runAsId = tm.sessionRunAs(session);
+    const member = runAsId ? os.team.getMember(runAsId) : undefined;
+    if (scope === 'personal' && !member) {
+      return sendJson(res, 400, { ok: false, error: 'this run has no personal identity to own a connection — request scope:"company" instead (a shared connection every agent can use)' });
+    }
+    const entity = scope === 'company' ? serviceUserId(os.tenant) : member!.email;
+    // Already connected for this entity? Then the agent already has it (next launch) — no need to ask.
+    const connected = await listConnectedAccounts(key, entity);
+    if (connected.some((a) => a.toolkit.toLowerCase() === toolkit && a.status.toUpperCase() === 'ACTIVE')) {
+      return sendJson(res, 200, { ok: true, status: 'exists', scope });
+    }
+    const out = tm.requestConnection(session, agent, { toolkit, scope, member: scope === 'personal' ? member!.id : undefined, reasoning: b.reasoning != null ? String(b.reasoning) : undefined });
+    return sendJson(res, out.ok ? 200 : 400, { ...out, scope });
+  }
+
   // ── Per-member GitHub token refresh, agent-facing (loopback, session-scoped) ──────────────────────
   // An agent's injected GH_TOKEN is the run-as member's user-to-server token (~8h life). It's refreshed
   // only at launch (fire-and-forget, within the expiry skew) and can't be mutated in the running
@@ -5291,6 +5325,44 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const r = await deleteConnectedAccount(key, id);
     if ('error' in r) return sendJson(res, 502, { error: r.error });
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.disconnect', data: { id, scope, entity } });
+    return sendJson(res, 200, { ok: true });
+  }
+  // Open agent connection requests (`connection_request`). An admin sees every open request; a plain
+  // member sees only the PERSONAL ones addressed to them (their own account to connect).
+  if (method === 'GET' && p === '/api/connections/requests') {
+    return sendJson(res, 200, { requests: tm.openConnectionRequests(isAdmin(me) ? undefined : me.id) });
+  }
+  // Fulfill a connection request: initiate the Composio OAuth and hand back the hosted link to finish in
+  // the browser. COMPANY scope ⇒ owner/admin; PERSONAL ⇒ only the member whose account it is (an admin
+  // can't OAuth someone else's personal account). Marks the card fulfilled either way.
+  const connReqFulfill = p.match(/^\/api\/connections\/requests\/([\w.-]+)\/fulfill$/);
+  if (method === 'POST' && connReqFulfill) {
+    const card = tm.connectionRequestCard(connReqFulfill[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such connection request' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this request was already resolved' });
+    if (card.scope === 'company' ? !isAdmin(me) : me.id !== card.member) {
+      return sendJson(res, 403, { error: card.scope === 'company' ? 'only an owner or admin can add a company connection' : 'only the member this personal connection is for can complete it' });
+    }
+    const key = os.settings.composioApiKey();
+    if (!key) return sendJson(res, 400, { error: 'set a Composio API key in Settings → Integrations first' });
+    const entity = card.scope === 'company' ? serviceUserId(os.tenant) : (os.team.getMember(card.member)?.email ?? '');
+    if (!entity) return sendJson(res, 404, { error: 'the member this connection is for no longer exists' });
+    const r = await initiateConnection(key, entity, card.toolkit);
+    if ('error' in r) return sendJson(res, 502, { error: r.error });
+    tm.setConnectionRequestStatus(connReqFulfill[1], 'fulfilled');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connection.request.fulfilled', data: { toolkit: card.toolkit, scope: card.scope, entity, requestedBy: card.agent } });
+    return sendJson(res, 200, { ok: true, redirectUrl: r.redirectUrl });
+  }
+  const connReqDismiss = p.match(/^\/api\/connections\/requests\/([\w.-]+)\/dismiss$/);
+  if (method === 'POST' && connReqDismiss) {
+    const card = tm.connectionRequestCard(connReqDismiss[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such connection request' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this request was already resolved' });
+    if (card.scope === 'company' ? !isAdmin(me) : me.id !== card.member) {
+      return sendJson(res, 403, { error: 'not yours to dismiss' });
+    }
+    tm.setConnectionRequestStatus(connReqDismiss[1], 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connection.request.dismissed', data: { toolkit: card.toolkit, scope: card.scope, requestedBy: card.agent } });
     return sendJson(res, 200, { ok: true });
   }
   if (method === 'GET' && p === '/api/connectors') {

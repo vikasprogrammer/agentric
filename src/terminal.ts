@@ -291,7 +291,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
+  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
   sessionId: string;
   agent: string;
   title: string;
@@ -478,9 +478,13 @@ export interface MemberNotice {
 export interface ReviewNotice {
   sessionId: string;
   agent: string;
-  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed';
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
   title: string;
   summary: string;
+  /** Whom to DM. Defaults (in the registry's `notifyReview`) to the `admins` tier — the audience nearly
+   *  every review card is addressed to. A PERSONAL connection request overrides it to the run's own
+   *  member, since only they can complete the OAuth for their own account. */
+  audience?: Audience;
 }
 
 /** The spec an agent proposes for a new automation — the subset of `AddAutomationInput` an agent may
@@ -3130,15 +3134,18 @@ export class TerminalManager {
    * fires in ONE place — parity with how approvals/questions/tasks already reach a human. The notifier is
    * advisory: a failed push never wedges the request.
    */
-  private postReviewCard(input: { type: ReviewNotice['kind']; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string }): void {
+  private postReviewCard(input: { type: ReviewNotice['kind']; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience }): void {
+    // Providing/publishing/granting is an owner/admin act — address the review card to the admin tier by
+    // default. A caller can override (e.g. a personal connection request, which only its own member can
+    // complete) by passing an explicit `audience`.
+    const audience: Audience = input.audience ?? { kind: 'admins' };
     this.addMessage({
       type: input.type, sessionId: input.sessionId, agent: input.agent,
       title: input.title, body: input.body, status: 'open',
       ...(input.args ? { args: input.args } : {}),
-      // Providing/publishing/granting is an owner/admin act — address the review card to the admin tier.
-      audienceKind: 'admins',
+      audienceKind: audience.kind, audienceId: audienceIdOf(audience),
     });
-    try { this.reviewNotifier?.({ sessionId: input.sessionId, agent: input.agent, kind: input.type, title: input.title, summary: input.summary ?? input.body }); }
+    try { this.reviewNotifier?.({ sessionId: input.sessionId, agent: input.agent, kind: input.type, title: input.title, summary: input.summary ?? input.body, audience }); }
     catch { /* out-of-band push is advisory — never let it wedge the request */ }
   }
 
@@ -3672,6 +3679,74 @@ export class TerminalManager {
         try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
         return { id: r.id, key: String(a.key ?? ''), agent: r.agent, mode: a.mode === 'access' ? 'access' : 'provide', reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
       });
+  }
+
+  /**
+   * Agent asks a human to connect a Composio app (the `connection_request` tool) — the connection twin of
+   * {@link requestSecret}. The agent carries only the intent (toolkit + why + scope), never a credential; a
+   * human completes the OAuth. Scope defaults to **personal** (the run's own member — their own account),
+   * and is `company` only when the app is a shared org resource. The already-connected / no-API-key checks
+   * live in the async route (they hit Composio); this just dedupes an identical open request, posts the
+   * review card — addressed to the run's MEMBER for personal (only they can OAuth their own account) or the
+   * `admins` tier for company — and audits `connection.requested`. `member` is the run-as member id, set
+   * for personal requests. A human resolves it via POST /api/connections/requests/:id/fulfill. */
+  requestConnection(
+    sessionId: string,
+    agent: string,
+    input: { toolkit: string; scope: 'personal' | 'company'; member?: string; reasoning?: string },
+  ): { ok: boolean; status?: 'requested' | 'duplicate'; error?: string } {
+    const toolkit = (input.toolkit || '').trim().toLowerCase();
+    if (!toolkit) return { ok: false, error: 'a toolkit slug is required' };
+    const scope = input.scope === 'company' ? 'company' : 'personal';
+    // Dedupe against an already-open request for the same toolkit+scope from the same agent.
+    const open = this.db
+      .prepare(`SELECT 1 FROM messages WHERE type = 'connection.request' AND status = 'open' AND agent = ? AND json_extract(args, '$.toolkit') = ? AND json_extract(args, '$.scope') = ?`)
+      .get(agent, toolkit, scope);
+    if (open) return { ok: true, status: 'duplicate' };
+    const audience: Audience = scope === 'company' || !input.member
+      ? { kind: 'admins' }
+      : { kind: 'member', id: input.member };
+    this.postReviewCard({
+      type: 'connection.request', sessionId, agent,
+      title: `Connection requested — ${toolkit} (${scope})`,
+      body: (input.reasoning?.trim() || `${agent} needs a ${scope} connection to ${toolkit}.`).trim(),
+      args: { toolkit, scope, ...(input.member ? { member: input.member } : {}), ...(input.reasoning ? { reasoning: input.reasoning } : {}) },
+      audience,
+    });
+    this.audit(sessionId, agent, 'connection.requested', { toolkit, scope, member: input.member, reasoning: input.reasoning });
+    return { ok: true, status: 'requested' };
+  }
+
+  /** Read a 'connection.request' card's payload (for the fulfill/dismiss routes). undefined if not one.
+   *  `member` is the run-as member id for a personal request (whose account it is), empty for company. */
+  connectionRequestCard(id: string): { toolkit: string; scope: 'personal' | 'company'; member: string; agent: string; reasoning?: string; status: string } | undefined {
+    const row = this.db
+      .prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'connection.request'`)
+      .get<{ agent: string; args: string | null; status: string }>(id);
+    if (!row) return undefined;
+    let a: Record<string, unknown> = {};
+    try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+    return { toolkit: String(a.toolkit ?? ''), scope: a.scope === 'company' ? 'company' : 'personal', member: String(a.member ?? ''), agent: row.agent, reasoning: a.reasoning ? String(a.reasoning) : undefined, status: row.status };
+  }
+
+  /** Mark a 'connection.request' card resolved once a human fulfilled (connected) or dismissed it. */
+  setConnectionRequestStatus(id: string, status: 'fulfilled' | 'rejected'): void {
+    this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'connection.request'`).run(status, id);
+  }
+
+  /** Open (unresolved) connection.request cards — the Connections page's agent-request review section.
+   *  `forMember`, when set, narrows to the personal requests addressed to that member (a non-admin viewer
+   *  sees only their own); admins pass it undefined to see every open request. */
+  openConnectionRequests(forMember?: string): { id: string; toolkit: string; scope: 'personal' | 'company'; member: string; agent: string; reasoning?: string; createdAt: number }[] {
+    return this.db
+      .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'connection.request' AND status = 'open' ORDER BY created_at DESC`)
+      .all<{ id: string; agent: string; args: string | null; created_at: number }>()
+      .map((r) => {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
+        return { id: r.id, toolkit: String(a.toolkit ?? ''), scope: a.scope === 'company' ? 'company' as const : 'personal' as const, member: String(a.member ?? ''), agent: r.agent, reasoning: a.reasoning ? String(a.reasoning) : undefined, createdAt: r.created_at };
+      })
+      .filter((r) => forMember === undefined || (r.scope === 'personal' && r.member === forMember));
   }
 
   /** Live governance thresholds (the numeric caps the never-tier rules read), for the proposal

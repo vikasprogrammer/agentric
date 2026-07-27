@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.271.0] — 2026-07-27
+### Added
+- **Agent-driven Composio connection requests — default to personal (`connection_request`).** An agent
+  that needs a Composio app it isn't connected to can now ask for it through the governed spine (the
+  connection twin of `secret_request`): it carries only the toolkit slug + reason + scope, never a
+  credential — a human finishes the browser OAuth. **Scope defaults to `personal`** (connected under the
+  human the run acts as, for their own account); `company` is a shared connection every agent can use, and
+  the tool steers the agent to reserve it for genuine org-wide resources. Personal requests are addressed
+  to (and completed by) the run's own member — only they can OAuth their own account — while company
+  requests go to the owner/admin tier. The console surfaces open requests on the **Connections** page
+  (admins see all; a member sees their own personal ones), where **Connect** opens the hosted OAuth link.
+  Short-circuits when the app is already connected or an identical request is open; audited
+  `connection.requested` / `connection.request.fulfilled` / `connection.request.dismissed`. New loopback
+  route `POST /api/agent/connection/request` + console `GET/POST /api/connections/requests[...]`. Plan:
+  `docs/composio-connection-request-plan.md`. (`postReviewCard` gained an optional `audience` so a review
+  card can target a specific member, not only the admin tier.)
+
 ## [0.270.0] — 2026-07-27
 ### Added
 - **Goal planning: a "steer the plan" step before the strategist runs.** "Plan this goal" now opens a
