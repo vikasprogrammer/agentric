@@ -457,7 +457,7 @@ export class Automations {
    * Fires IMMEDIATELY (unlike schedule(), whose 1-min floor makes it a scheduler, not a wake). The delegate
    * (task assignee) is always the actor, never the caller, so this can't self-wake. Audited `agent.poked`.
    */
-  pokeCaller(input: { callerAgent: string; callerClaudeId: string; runAs?: string; message: string; source: string }): FireResult {
+  pokeCaller(input: { callerAgent: string; callerClaudeId: string; runAs?: string; message: string; source: string; title?: string }): FireResult {
     const agentId = input.callerAgent.startsWith('agent:') ? input.callerAgent.slice('agent:'.length) : input.callerAgent;
     if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown caller agent: ${agentId}` };
     if (!input.callerClaudeId) return { ok: false, reason: 'no caller transcript to resume' };
@@ -481,7 +481,7 @@ export class Automations {
       // (unreadable pane) fall through to a resume so the poke is never silently dropped.
       if (injected.ok) return { ok: true, sessionId: liveSession.id, tmux: liveSession.tmux };
     }
-    const s = this.tm.createSession(agentId, `Poke ← ${input.source}`, input.message, `poke:${input.source}`, true, undefined, undefined, input.runAs, input.callerClaudeId);
+    const s = this.tm.createSession(agentId, input.title ?? `Poke ← ${input.source}`, input.message, `poke:${input.source}`, true, undefined, undefined, input.runAs, input.callerClaudeId);
     this.os.audit.append({
       ts: Date.now(),
       runId: s.id,
