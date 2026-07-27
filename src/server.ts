@@ -4051,7 +4051,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── governance thresholds (the numeric caps the never-tier policy rules read) ──
   if (method === 'GET' && p === '/api/settings/governance') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    return sendJson(res, 200, { ...os.settings.governanceThresholds(), hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), ...os.settings.governanceMeta() });
+    return sendJson(res, 200, { ...os.settings.governanceThresholds(), hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), semanticGuardEnabled: os.settings.semanticGuardEnabled(), ...os.settings.governanceMeta() });
   }
   if (method === 'PUT' && p === '/api/settings/governance') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
@@ -4067,8 +4067,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.settings.setHostGovernanceEnabled(b.hostGovernanceEnabled, me.email);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.host_governance.updated', data: { enabled: b.hostGovernanceEnabled } });
     }
+    // Semantic-guard master switch — owner-only for the same reason (it changes WHAT gates). Present-only.
+    if (typeof b.semanticGuardEnabled === 'boolean') {
+      if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required to change the semantic guard' });
+      os.settings.setSemanticGuardEnabled(b.semanticGuardEnabled, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.semantic_guard.updated', data: { enabled: b.semanticGuardEnabled } });
+    }
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.governance.updated', data: { ...saved } });
-    return sendJson(res, 200, { ok: true, ...saved, hostGovernanceEnabled: os.settings.hostGovernanceEnabled() });
+    return sendJson(res, 200, { ok: true, ...saved, hostGovernanceEnabled: os.settings.hostGovernanceEnabled(), semanticGuardEnabled: os.settings.semanticGuardEnabled() });
   }
 
   // ── custom governance patterns (operator regex → boolean fact the enricher sets, policy gates on) ──

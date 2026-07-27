@@ -20,6 +20,7 @@ import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enri
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
+import { injectionDecision } from './governance/semantic-guard';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { JsonPolicyEngine, PolicyDelta, applyProposal, describeProposal } from './governance/policy';
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
@@ -2634,6 +2635,14 @@ export class TerminalManager {
     // still pauses even when the tenant's policy has no host rule. Only for reclassified host caps.
     if (hostGrants && (capability === 'net.connect' || capability === 'ssh.exec')) {
       decision = stricterDecision(decision, hostGovernanceDecision(capability, args));
+    }
+    // Semantic guard (Tier 1): a CLEAR-CUT prompt-injection / secret-exfiltration shape (the enricher's
+    // `injectionSuspect` fact) pauses for a human. Engine-level like host governance — combined via
+    // stricterDecision, NOT a JSON rule — so it reaches every tenant regardless of a persisted policy
+    // override. Only an `ask` (a heuristic false positive must be recoverable), and only when the
+    // workspace toggle is on; OFF by default so the patterns bake against the audit trail first.
+    if (args.injectionSuspect === true && this.os.settings.semanticGuardEnabled()) {
+      decision = stricterDecision(decision, injectionDecision(args));
     }
     // The DECISION BRIEF — one human-legible account of this effect (docs/decision-brief-layer-plan.md).
     // Computed once here, next to classify(); it rides on the gate.decision audit row (making the audit

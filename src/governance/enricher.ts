@@ -30,6 +30,7 @@
 import * as path from 'node:path';
 import { ApprovalLevel, EnrichPattern, Role, canApprove } from '../types';
 import { computeHostFacts, type HostGrant } from './host-match';
+import { screenInjection } from './semantic-guard';
 
 const DESTRUCTIVE: RegExp[] = [
   /\bdrop\s+(database|table|schema)\b/i,
@@ -329,7 +330,23 @@ export function enrichArgs(
     if (hf.netEgress) hostFacts = hf as unknown as Record<string, unknown>;
   }
 
+  // Semantic-guard Tier 1 (semantic-guard.ts): a CLEAR-CUT injection/exfiltration shape sets
+  // `injectionSuspect`, a softer one sets `injectionUncertain` (the Tier-2 escalation hook). Screen the
+  // RAW haystack (payloads intact — the opposite of sanitizeForIntent, which strips them). Skip
+  // file.write: its haystack is file CONTENT, and a file that merely CONTAINS "curl … | bash" is not an
+  // exfil the AGENT is performing. A caller-supplied fact wins (tests/policy_check). Fact only — the gate
+  // decides whether to act (engine-level, toggle-gated), so this is inert until the guard is enabled.
+  let injectionSuspect = args.injectionSuspect === true;
+  let injectionUncertain = args.injectionUncertain === true;
+  if (!isFileWrite && !injectionSuspect) {
+    const screen = screenInjection(haystack);
+    if (screen === 'suspect') injectionSuspect = true;
+    else if (screen === 'uncertain') injectionUncertain = true;
+  }
+
   const facts: Record<string, unknown> = { ...args, destructive, risky };
+  if (injectionSuspect) facts.injectionSuspect = true;
+  else if (injectionUncertain) facts.injectionUncertain = true;
   if (hostFacts) Object.assign(facts, hostFacts);
   if (outsideWorkdir !== undefined) facts.outsideWorkdir = outsideWorkdir;
   if (amountUsd !== undefined) facts.amountUsd = amountUsd;

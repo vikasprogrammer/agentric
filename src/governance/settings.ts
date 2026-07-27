@@ -52,6 +52,7 @@ const LEARNED_APPLY_KEY = 'learned_guidance_apply'; // 'off' to stop injecting (
 const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation[], dismissed: string[] }
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
 const HOST_GOV_KEY = 'host_governance_enabled'; // master switch for Phase 2b host-egress governance ('1'|'0')
+const SEMANTIC_GUARD_KEY = 'semantic_guard_enabled'; // master switch for the prompt-injection semantic guard ('1'|'0')
 const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
 const BRANDING_KEY = 'ui_branding'; // per-tenant web-console accent colour + favicon badge (JSON Branding)
 
@@ -712,6 +713,20 @@ export class SettingsStore {
 
   setHostGovernanceEnabled(on: boolean, by?: string): boolean {
     this.set(HOST_GOV_KEY, on ? '1' : '0', by);
+    return on;
+  }
+
+  // ── semantic guard (prompt-injection) master switch (semantic-guard.ts, docs/semantic-guard-plan.md) ──
+  // OFF by default: the enricher always computes the `injectionSuspect` fact, but the gate only combines
+  // an `ask` (engine-level, so it reaches every tenant regardless of a persisted policy) once an admin
+  // flips this on — so the CLEAR-CUT patterns can bake against the live fleet's audit trail before they
+  // start pausing work.
+  semanticGuardEnabled(): boolean {
+    return this.getRow(SEMANTIC_GUARD_KEY)?.value === '1';
+  }
+
+  setSemanticGuardEnabled(on: boolean, by?: string): boolean {
+    this.set(SEMANTIC_GUARD_KEY, on ? '1' : '0', by);
     return on;
   }
 

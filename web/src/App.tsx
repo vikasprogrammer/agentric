@@ -12885,6 +12885,8 @@ function GovernanceSettings({ me }: { me: Member }) {
   const [hint, setHint] = useState('')
   const [hostGov, setHostGov] = useState(false)
   const [hostBusy, setHostBusy] = useState(false)
+  const [semGuard, setSemGuard] = useState(false)
+  const [semBusy, setSemBusy] = useState(false)
   const canEdit = me.role === 'owner' || me.role === 'admin'
   const isOwner = me.role === 'owner'
 
@@ -12892,7 +12894,7 @@ function GovernanceSettings({ me }: { me: Member }) {
     api.governance().then((r) => {
       if (r.error) return
       const v = { moneyCapUsd: r.moneyCapUsd, bulkDeleteCount: r.bulkDeleteCount }
-      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy }); setHostGov(!!r.hostGovernanceEnabled)
+      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy }); setHostGov(!!r.hostGovernanceEnabled); setSemGuard(!!r.semanticGuardEnabled)
     }).catch(() => {})
   }, [])
 
@@ -12903,6 +12905,15 @@ function GovernanceSettings({ me }: { me: Member }) {
     setHostBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     setHostGov(!!r.hostGovernanceEnabled)
+  }
+
+  const toggleSemGuard = async () => {
+    setSemBusy(true)
+    const next = !semGuard
+    const r = await api.saveGovernance({ ...saved, semanticGuardEnabled: next })
+    setSemBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setSemGuard(!!r.semanticGuardEnabled)
   }
 
   const dirty = JSON.stringify(t) !== JSON.stringify(saved)
@@ -12958,6 +12969,25 @@ function GovernanceSettings({ me }: { me: Member }) {
                 unrecognised hosts pause for approval; a host set to <em>never</em> is refused). Public-internet egress stays ungoverned unless an
                 agent is set to <span className="font-mono">allowlist</span> mode. Best-effort command parsing — a governance + audit layer, not a
                 firewall. Owner-only.
+              </p>
+            </span>
+          </label>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <label className="flex items-start gap-3">
+            <input type="checkbox" className="mt-1" checked={semGuard} disabled={!isOwner || semBusy} onChange={toggleSemGuard} />
+            <span className="text-sm">
+              <span className="font-medium">Semantic guard (prompt-injection / secret-exfiltration)</span>
+              <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">beta</span>
+              <p className="mt-1 text-xs text-muted-foreground">
+                When on, an agent action whose command carries a clear-cut exfiltration or injection shape — a
+                <span className="font-mono"> .env</span> read piped to <span className="font-mono">curl</span>, a
+                <span className="font-mono"> curl … | bash</span>, an env dump to the network — <strong>pauses for a human</strong> instead
+                of running. High-precision heuristics only (a false positive is an approval, never a hard block); softer signals are logged
+                for a later model-assisted pass. Best-effort command inspection, not a firewall. Owner-only.
               </p>
             </span>
           </label>

@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.269.0] — 2026-07-27
+### Added
+- **Semantic guard (Tier 1) — prompt-injection / secret-exfiltration screening.** A new pure, synchronous
+  classifier (`src/governance/semantic-guard.ts`) that sits beside the enricher: it sets one boolean fact,
+  `injectionSuspect`, when a shell/connector action carries a **clear-cut** exfiltration or injection shape
+  — a `.env`/`id_rsa`/`*.credentials` read (or `printenv`) piped to an outbound transfer (`curl`/`nc`/`scp`…),
+  or a remote script piped straight into a shell (`curl … | bash`). Softer signals ("ignore all previous
+  instructions", base64-decode-to-shell) set `injectionUncertain` — the hook for a later model-assisted pass,
+  with no consumer yet. Enforcement is **engine-level** (combined into the gate decision via `stricterDecision`,
+  like host governance, so it reaches every tenant regardless of a persisted policy override) and is always an
+  **`ask`, never a hard block** — a heuristic false positive must be recoverable by a human; the `never` tier
+  (a destructive exfil) still wins and stays denied. Screens the **raw** command (payloads intact, unlike
+  `sanitizeForIntent`) and **skips `file.write`** (a file whose content mentions `curl … | bash` is not an
+  exfil the agent is performing). New **Settings → Governance → Semantic guard** toggle, **OFF by default**
+  (owner-only): the fact is computed always but inert until enabled, so the patterns bake against the audit
+  trail before they start pausing work. 7 new governance-conformance cases (119/119). See
+  `docs/semantic-guard-plan.md`. Origin: a comparative analysis of Prismor (which we are *not* adopting — its
+  one idea worth having, the hybrid heuristic→LLM guard, re-implemented natively).
+
 ## [0.268.1] — 2026-07-27
 ### Fixed
 - **Generated media now reliably lands in the Library instead of the scratchpad.** Agents (esp. via the
