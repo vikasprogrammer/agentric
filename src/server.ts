@@ -3313,7 +3313,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const goal = os.goals.get(goalPlan[1]);
     if (!goal) return sendJson(res, 404, { error: 'goal not found' });
-    const r = await new Strategist(os, tm).plan(goal.id, me.email, me.id);
+    // Optional pre-plan steering from the requester — free-text guidance + a cap on tasks filed.
+    const pb = await readBody(req);
+    const guidance = typeof pb.guidance === 'string' ? pb.guidance.trim().slice(0, 2000) : undefined;
+    const maxTasks = Number.isFinite(Number(pb.maxTasks)) && Number(pb.maxTasks) > 0 ? Math.floor(Number(pb.maxTasks)) : undefined;
+    const r = await new Strategist(os, tm).plan(goal.id, me.email, me.id, { guidance: guidance || undefined, maxTasks });
     if (r.spawned) os.audit.append({ ts: Date.now(), runId: r.sessionId ?? '-', tenant: os.tenant, principal: me.email, type: 'goal.plan.requested', data: { goalId: goal.id } });
     return sendJson(res, r.spawned ? 200 : 409, r.spawned ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
   }

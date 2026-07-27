@@ -6820,6 +6820,10 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const [confirmDel, setConfirmDel] = useState(false)
   const [planNote, setPlanNote] = useState('') // inline confirmation for "Plan this goal"
   const [planSession, setPlanSession] = useState('') // the strategist session id, so the user can jump to it
+  // Pre-plan steering step — the user shapes the plan (guidance + a task cap) before the strategist runs.
+  const [showPlan, setShowPlan] = useState(false)
+  const [planGuidance, setPlanGuidance] = useState('')
+  const [planMax, setPlanMax] = useState('')
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const nameOf = (id?: string) => principalLabel(id, members)
@@ -6855,7 +6859,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) })
   }, [selId, goals, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession('') }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax('') }, [selId]) // fresh drawer per selection
 
   const visible = goals ?? []
 
@@ -6873,9 +6877,11 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   // plan (no dispatch) — refresh the detail shortly after so newly-filed tasks show up.
   const plan = async (id: string) => {
     setPlanNote(''); setHint(''); setBusy(true)
-    const r = await api.planGoal(id)
+    const maxTasks = planMax.trim() ? Number(planMax.trim()) : undefined
+    const r = await api.planGoal(id, { guidance: planGuidance.trim() || undefined, maxTasks: maxTasks && maxTasks > 0 ? maxTasks : undefined })
     setBusy(false)
     if (!r.ok) return setHint('⚠ ' + (r.error || 'Could not start the strategist.'))
+    setShowPlan(false); setPlanGuidance(''); setPlanMax('')
     setPlanNote('Strategist is drafting a plan — tasks will appear under this goal shortly.')
     setPlanSession(r.sessionId ?? '')
     setTimeout(() => refreshDetail(id), 6000)
@@ -7059,13 +7065,35 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
                     <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Linked tasks{detail.tasks.length ? ` · ${detail.tasks.length}` : ''}</span>
                     <div className="flex items-center gap-2">
                       {detail.progress && detail.progress.total > 0 && <span className="text-[11px] text-muted-foreground">{detail.progress.percent}% · {detail.progress.done}/{detail.progress.total} done</span>}
-                      {isAdmin && (detail.goal.status === 'active' || detail.goal.status === 'draft') && (
-                        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => plan(detail.goal.id)}>
+                      {isAdmin && (detail.goal.status === 'active' || detail.goal.status === 'draft') && !showPlan && (
+                        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setPlanNote(''); setHint(''); setShowPlan(true) }}>
                           <Wand2 className="mr-1 h-3.5 w-3.5" />Plan this goal
                         </Button>
                       )}
                     </div>
                   </div>
+                  {/* Pre-plan steering — shape what the strategist files before it runs. */}
+                  {isAdmin && showPlan && (detail.goal.status === 'active' || detail.goal.status === 'draft') && (
+                    <div className="mb-2 space-y-2 rounded-md border bg-muted/20 p-2.5">
+                      <div className="text-[11px] font-medium text-muted-foreground">Steer the plan <span className="font-normal">(optional)</span></div>
+                      <textarea
+                        value={planGuidance}
+                        onChange={(e) => setPlanGuidance(e.target.value)}
+                        placeholder="Guidance for the strategist — focus areas, constraints, which specialists to prefer…"
+                        rows={3}
+                        className="w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+                      />
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-muted-foreground">Max tasks</label>
+                        <Input type="number" min={1} value={planMax} onChange={(e) => setPlanMax(e.target.value)} placeholder="—" className="h-7 w-20" />
+                        <div className="flex-1" />
+                        <Button size="sm" variant="ghost" className="h-7" disabled={busy} onClick={() => { setShowPlan(false); setPlanGuidance(''); setPlanMax('') }}>Cancel</Button>
+                        <Button size="sm" className="h-7" disabled={busy} onClick={() => plan(detail.goal.id)}>
+                          <Wand2 className="mr-1 h-3.5 w-3.5" />Draft plan
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                   {planNote && (
                     <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
                       <span>{planNote}</span>

@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.270.0] — 2026-07-27
+### Added
+- **Goal planning: a "steer the plan" step before the strategist runs.** "Plan this goal" now opens a
+  short pre-plan form instead of spawning immediately — the requester can add free-text **guidance**
+  (focus areas, constraints, which specialists to prefer) and a **max tasks** cap. Both optional; blank
+  = plan with no constraints. The steering is injected into the strategist's opening prompt as a binding
+  constraint (`POST /api/goals/:id/plan` now takes `{ guidance?, maxTasks? }`), audited via
+  `goal.planned { steered }`.
+
 ## [0.269.1] — 2026-07-27
 ### Changed
 - **Descriptive titles for delegation poke-back sessions.** When a delegate finishes a `poke_on_done`

@@ -30,6 +30,15 @@ export interface PlanResult {
   sessionId?: string;
 }
 
+/** Human steering for a plan run — an optional pre-plan step where the requester shapes what the
+ *  strategist files before it runs. All fields optional; an empty object plans with no constraints. */
+export interface PlanSteer {
+  /** Free-text guidance the strategist must honour (focus, constraints, which specialists to prefer, …). */
+  guidance?: string;
+  /** Hard cap on how many NEW tasks to file this run — keeps a plan tight instead of sprawling. */
+  maxTasks?: number;
+}
+
 export class Strategist {
   constructor(private readonly os: AgentOS, private readonly tm: TerminalManager) {}
 
@@ -39,7 +48,7 @@ export class Strategist {
    * and any specialist it later delegates to ladder back to an accountable person). File-only — the run
    * files tasks but never dispatches; a human reviews the plan under the goal and dispatches.
    */
-  async plan(goalId: string, by: string, runAs?: string): Promise<PlanResult> {
+  async plan(goalId: string, by: string, runAs?: string, steer?: PlanSteer): Promise<PlanResult> {
     const goal = this.os.goals.get(goalId);
     if (!goal) return { spawned: false, reason: 'goal not found' };
     if (goal.status !== 'active' && goal.status !== 'draft') {
@@ -47,18 +56,18 @@ export class Strategist {
     }
     this.ensureAgent();
     const existing = this.os.tasks.tasksForGoal(goalId);
-    const task = this.buildTask(goal, existing);
+    const task = this.buildTask(goal, existing, steer);
     const session = this.tm.createSession(AGENT_ID, `Plan goal — ${goal.title}`, task, `goal:${goalId}`, true /* headless */, undefined, undefined, runAs);
     this.os.audit.append({
       ts: Date.now(), runId: session.id, tenant: this.os.tenant, principal: by,
-      type: 'goal.planned', data: { goalId, title: goal.title, sessionId: session.id, existingTasks: existing.length },
+      type: 'goal.planned', data: { goalId, title: goal.title, sessionId: session.id, existingTasks: existing.length, steered: !!(steer?.guidance || steer?.maxTasks) },
     });
     return { spawned: true, sessionId: session.id };
   }
 
   /** The opening prompt: the goal, its current progress, and the tasks already linked (so a re-run only
    *  fills gaps). The full method lives in the agent's CLAUDE.md. */
-  private buildTask(goal: Goal, existing: Task[]): string {
+  private buildTask(goal: Goal, existing: Task[], steer?: PlanSteer): string {
     const prog = this.os.goals.progress(goal.id);
     const existingList = existing.length
       ? existing.map((t) => `  - [${t.status}] ${t.id} — ${t.title}${t.assignee ? ` (→ ${t.assignee})` : ''}`).join('\n')
@@ -76,6 +85,18 @@ export class Strategist {
       `Current progress: ${prog.percent}% (${prog.done}/${prog.total} linked tasks done).`,
       'Tasks already linked to this goal:',
       existingList,
+    );
+    // Optional human steering — a pre-plan step where the requester shaped this run. Treat it as a
+    // binding constraint on top of the standard method, not a suggestion.
+    const maxTasks = steer?.maxTasks && steer.maxTasks > 0 ? Math.floor(steer.maxTasks) : undefined;
+    const guidance = steer?.guidance?.trim();
+    if (maxTasks || guidance) {
+      lines.push('', '--- STEERING FROM THE REQUESTER (must honour) ---');
+      if (guidance) lines.push(`Guidance: ${guidance}`);
+      if (maxTasks) lines.push(`File AT MOST ${maxTasks} new task(s) this run — prioritise the highest-leverage work and stop there.`);
+      lines.push('--- end steering ---');
+    }
+    lines.push(
       '',
       `Now follow your CLAUDE.md method: goal_get "${goal.id}" for the full picture, identify the GAP to the`,
       `target, and file the tasks needed to close it with task_create({ goalId: "${goal.id}", ... }),`,

@@ -24,6 +24,10 @@ the goal, its current progress, and any tasks already linked — works out the *
 and **files the tasks needed to close it**, linked back to the goal. It drafts; it never dispatches.
 The tasks land in the goal's linked-tasks list for a human to review and kick off.
 
+Before it runs, a short **steering** step lets you shape the plan: free-text **guidance** (focus
+areas, constraints, which specialists to prefer) and a **max tasks** cap to keep the plan tight.
+Both are optional — leave them blank to plan with no constraints.
+
 The strategist can also **propose sub-goals** for a goal too big to plan in one pass, so a sprawling
 outcome decomposes instead of turning into fifty loose tasks.
 
