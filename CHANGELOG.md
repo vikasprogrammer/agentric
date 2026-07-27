@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.269.1] — 2026-07-27
+### Changed
+- **Descriptive titles for delegation poke-back sessions.** When a delegate finishes a `poke_on_done`
+  hand-off and the caller agent has already exited, the resume-path session that wakes the caller now
+  gets a human-readable title — `Poke ← <delegate> done: <task title>` (or `blocked`, task title
+  truncated at 48 chars) — instead of the opaque `Poke ← <task-id>`. Provenance (`poke:<id>`) and the
+  `agent.poked` audit `source` field are unchanged; only the console-facing title improved.
+
 ## [0.269.0] — 2026-07-27
 ### Added
 - **Semantic guard (Tier 1) — prompt-injection / secret-exfiltration screening.** A new pure, synchronous

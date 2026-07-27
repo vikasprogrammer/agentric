@@ -520,7 +520,10 @@ function maybePokeCaller(autos: Automations, os: AgentOS, notice: TaskNotice): v
       `Result: ${note}\n\nPick your own work back up from here.`
     : `⛔ Handed back: ${delegate} is BLOCKED on the task you handed off (${t.id}: "${t.title}")${goal}.\n\n` +
       `Why: ${note}\n\nDecide how to proceed — unblock it, re-scope it, or take it on yourself.`;
-  autos.pokeCaller({ callerAgent: t.callerAgent, callerClaudeId: t.callerClaudeId, runAs: t.owner, message, source: t.id });
+  const verb = t.status === 'done' ? 'done' : 'blocked';
+  const shortTitle = t.title.length > 48 ? `${t.title.slice(0, 47)}…` : t.title;
+  const title = `Poke ← ${delegate} ${verb}: ${shortTitle}`;
+  autos.pokeCaller({ callerAgent: t.callerAgent, callerClaudeId: t.callerClaudeId, runAs: t.owner, message, source: t.id, title });
 }
 
 /**
