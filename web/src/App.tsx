@@ -13,7 +13,7 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
-import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { docPages } from '@/docs'
@@ -4582,13 +4582,15 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
     const rc = m.riskClass ?? (m.level === 'owner' ? 'red' : 'yellow')
     const approverLabel = m.level === 'owner' ? 'owner' : 'admin'
     const resolve = async (approved: boolean) => { setBusy(true); const r = await api.resolve(m.approvalId!, approved); if (r.error) setBusy(false) }
-    // "Always approve" also teaches policy an allow rule for this capability — a policy edit, so owner-only.
+    // "Always approve" adds THIS action's brief signature to the auto-approval list (Settings →
+    // Auto-approvals) — narrow + revocable, owner-only. Not a capability-wide policy rule.
     const always = async () => {
       setBusy(true)
       const r = await api.alwaysApprove(m.approvalId!)
       if (r.error) { setBusy(false); alert(r.error) }          // 403/404 — not resolved; leave the card
-      else if (r.ruleAdded === false && r.note) alert(`Approved once — ${r.note}`)  // resolved, rule not added
+      else if (r.ruleAdded === false && r.note) alert(`Approved once — ${r.note}`)  // resolved, already listed
     }
+    const briefLabel = (m.args as { brief?: Brief } | undefined)?.brief?.headline
     // Phase-2 host trust: for a "host not yet trusted" approval, offer a durable, NARROW "trust this host"
     // grant (posture allow) — better than "Always", which would allow the whole net.connect/ssh.exec
     // capability. Owner-only (loosens the gate durably). Shown only when the brief identifies a host.
@@ -4622,7 +4624,7 @@ function ActionItem({ m, me, onOpen, onDismiss }: { m: Msg; me: Member; onOpen: 
               {me.role === 'owner' && (
                 trustHost
                   ? <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={trust} title={`Trust ${trustHost} and stop asking — adds an "allow" host grant for it (this host only)`}><Shield className="mr-1 h-3.5 w-3.5" />Trust host</Button>
-                  : <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={always} title={`Approve this and stop asking — adds an "allow ${m.capability ?? ''}" rule to policy`}><Shield className="mr-1 h-3.5 w-3.5" />Always</Button>
+                  : <Button size="sm" variant="outline" className="h-7 px-2.5 text-xs" disabled={busy} onClick={always} title={`Approve this and stop asking for this same action${briefLabel ? ` (“${briefLabel}”)` : ''} — adds it to the auto-approval list (Settings → Auto-approvals), revocable anytime`}><Shield className="mr-1 h-3.5 w-3.5" />Always</Button>
               )}
               <Button size="sm" variant="destructive" className="h-7 px-2.5 text-xs" disabled={busy} onClick={() => resolve(false)}><X className="mr-1 h-3.5 w-3.5" />Reject</Button>
             </>
@@ -12961,7 +12963,61 @@ function GovernanceSettings({ me }: { me: Member }) {
           </label>
         </CardContent>
       </Card>
+
+      <AutoApprovalsCard me={me} />
     </div>
+  )
+}
+
+/** Settings → Governance → Auto-approvals: the legible registry of "always approve THIS action" rules.
+ *  Each row shows WHAT is auto-approved (label + raw signature), who added it, and how many times it has
+ *  fired. Owner can revoke. Populated by the "Always" button on an approval card. */
+function AutoApprovalsCard({ me }: { me: Member }) {
+  const [rules, setRules] = useState<AutoApproval[] | null>(null)
+  const [busy, setBusy] = useState('')
+  const load = () => api.autoApprovals().then((r) => { if (!r.error) setRules(r.rules) }).catch(() => {})
+  useEffect(() => { load() }, [])
+  const revoke = async (id: string) => {
+    setBusy(id); const r = await api.revokeAutoApproval(id); setBusy('')
+    if (r.error) alert(r.error); else load()
+  }
+  const rel = (t?: number) => (t ? new Date(t).toLocaleDateString() : '')
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div>
+          <div className="text-sm font-medium">Auto-approvals</div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Actions you chose to <span className="font-medium">always approve</span> (the “Always” button on an approval). Each
+            silences one specific action shape — never a whole capability — and the <strong>never</strong> tier (destructive /
+            over-cap) is unaffected. This is the full list of what runs without asking; revoke anytime.
+          </p>
+        </div>
+        {rules === null ? <p className="text-xs text-muted-foreground">Loading…</p>
+          : rules.length === 0 ? <p className="rounded border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">Nothing is auto-approved. Approvals that recur can be silenced with the “Always” button on the card.</p>
+          : (
+            <div className="divide-y rounded border">
+              {rules.map((r) => (
+                <div key={r.id} className="flex items-start gap-3 px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium">{r.label}</div>
+                    <div className="mt-0.5 font-mono text-[10px] text-muted-foreground/80">{r.signature}</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      <span className="font-mono">{r.capability}</span> · auto-approved <strong>{r.hits}×</strong> · added by {r.addedBy} {rel(r.addedAt)}
+                      {r.example ? <> · e.g. “{r.example}”</> : null}
+                    </div>
+                  </div>
+                  {me.role === 'owner' && (
+                    <Button size="sm" variant="outline" className="h-7 shrink-0 px-2 text-xs" disabled={busy === r.id} onClick={() => revoke(r.id)}>
+                      <X className="mr-1 h-3.5 w-3.5" />Revoke
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+      </CardContent>
+    </Card>
   )
 }
 

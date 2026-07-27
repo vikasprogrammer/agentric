@@ -2659,6 +2659,15 @@ export class TerminalManager {
     }
     if (decision.effect === 'deny') return { decision: 'deny' };
 
+    // Auto-approval list: an owner has said "always approve THIS action" for this exact brief signature,
+    // so clear it without a card or notification. Only reachable for an `approve` (the deny/never tier
+    // returned above), so a listed signature can never wave through an irreversible action.
+    const listed = this.os.autoApprovals.match(brief.signature);
+    if (listed) {
+      this.audit(sessionId, agent, 'approval.auto_approved', { capability, level: decision.level, via: 'auto-approve-list', signature: brief.signature, by: listed.addedBy });
+      return { decision: 'allow' };
+    }
+
     // Context-aware `ask` (governance P5): if an attended human who can approve this level started the
     // run, clear it without a self-addressed card — audited as auto-approved. The never tier (deny)
     // already returned above, so this can never auto-clear an irreversible action.

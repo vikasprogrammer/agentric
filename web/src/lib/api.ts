@@ -622,6 +622,19 @@ export interface Brief {
   signature: string
 }
 
+/** An "always approve THIS action" rule — the durable, legible registry (Settings → Auto-approvals). */
+export interface AutoApproval {
+  id: string
+  signature: string
+  capability: string
+  label: string
+  example: string
+  addedBy: string
+  addedAt: number
+  hits: number
+  lastHitAt?: number
+}
+
 export interface Msg {
   id: string
   type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed'
@@ -1308,7 +1321,10 @@ export const api = {
     call<{ ok: boolean; path?: string; error?: string }>('POST', `/api/sessions/${id}/attach-file`, { dataB64, ext, name }),
   resolve: (id: string, approved: boolean) => call<{ ok: boolean; error?: string }>('POST', '/api/approvals/' + id, { approved }),
   /** Approve this attempt AND add a persistent policy `allow` rule for its capability (owner-only). */
-  alwaysApprove: (id: string) => call<{ ok: boolean; ruleAdded?: boolean; note?: string; error?: string }>('POST', `/api/approvals/${id}/always`),
+  alwaysApprove: (id: string) => call<{ ok: boolean; ruleAdded?: boolean; label?: string; note?: string; error?: string }>('POST', `/api/approvals/${id}/always`),
+  /** The auto-approval list ("always approve THIS action" rules), owner/admin. */
+  autoApprovals: () => call<{ rules: AutoApproval[]; error?: string }>('GET', '/api/auto-approvals'),
+  revokeAutoApproval: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/auto-approvals/${id}`),
   /** Approve this attempt AND add a durable org host grant (posture allow) for its target host, so
    *  future reaches to it pass the gate without a card. Owner-only. */
   trustHost: (id: string) => call<{ ok: boolean; trusted?: boolean; host?: string; note?: string; error?: string }>('POST', `/api/approvals/${id}/trust-host`),

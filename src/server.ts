@@ -50,11 +50,12 @@ import { GithubIdentity } from './edge/github-identity';
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
-import { JsonPolicyEngine, PolicyDocument, applyProposal, validatePolicyDocument, withAlwaysAllow } from './governance/policy';
+import { JsonPolicyEngine, PolicyDocument, applyProposal, validatePolicyDocument } from './governance/policy';
+import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus } from './types';
+import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
@@ -5572,29 +5573,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     return sendJson(res, 200, { events, types });
   }
   if (method === 'GET' && p === '/api/approvals') return sendJson(res, 200, os.approvals.pending(os.tenant).filter((a) => tm.canViewSession(a.runId, me)).map(approvalView));
-  // "Always approve": approve THIS attempt AND teach the policy an `allow` rule for its capability, so
-  // future matching attempts pass the gate without a card. Adding a rule is a POLICY EDIT, so it's
-  // OWNER-ONLY — the same guard as PUT /api/policy (an admin can approve once but must not rewrite the
-  // ruleset to bypass future owner sign-off). The rule is inserted AFTER all `never` rules, so deny
-  // guardrails (destructive / over-cap) stay in force; a capability under an unconditional `never` is
-  // refused (approved once, rule not added, with a note). Audited `policy.rule.added` + `policy.updated`.
+  // "Always approve": approve THIS attempt AND add its decision-brief SIGNATURE to the auto-approval list,
+  // so future attempts of the SAME action shape (e.g. "reach 198.51.100.42", "use stripe refund") clear
+  // without a card. Narrower + safer than a capability-wide allow rule — it only silences this one shape,
+  // is fully legible in Settings → Auto-approvals, and one-click revocable. OWNER-ONLY (it durably loosens
+  // gating). Only reachable for an `approve`, so it can never wave through a never-tier (deny) action.
   const alwaysMatch = p.match(/^\/api\/approvals\/([\w-]+)\/always$/);
   if (method === 'POST' && alwaysMatch) {
     const ap = os.approvals.get(alwaysMatch[1]);
     if (!ap) return sendJson(res, 404, { error: 'approval not found' });
-    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required — “always approve” edits policy' });
-    if (!(os.policy instanceof JsonPolicyEngine)) return sendJson(res, 400, { error: 'active policy engine is not editable' });
-    const cap = ap.attempt.capabilityId;
-    const result = withAlwaysAllow(os.policy.document, cap);
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required — “always approve” loosens the gate durably' });
+    const decision = { effect: 'approve' as const, level: ap.level, riskClass: riskClassForLevel(ap.level), reason: ap.reason };
+    const brief = briefFor(ap.attempt.capabilityId, ap.attempt.args, decision);
     // The run is waiting — approve this attempt regardless of whether the durable rule lands.
     os.approvals.resolve(alwaysMatch[1], true, me.email);
-    if ('error' in result) return sendJson(res, 200, { ok: true, ruleAdded: false, note: result.error });
-    if (result.added) {
-      os.applyPolicyDocument(result.doc, me.email, `always-approve ${cap}`); // snapshot + persist + hot reload
-      os.audit.append({ ts: Date.now(), runId: ap.runId, tenant: os.tenant, principal: me.email, type: 'policy.rule.added', data: { capability: cap, effect: 'allow', from: 'inbox.always_approve' } });
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'policy.updated', data: { id: result.doc.id, rules: result.doc.rules.length } });
-    }
-    return sendJson(res, 200, { ok: true, ruleAdded: result.added, note: result.added ? undefined : `“${cap}” is already always-allowed` });
+    const { rule, added } = os.autoApprovals.add({ signature: brief.signature, capability: ap.attempt.capabilityId, label: describeBrief(brief), example: brief.headline, addedBy: me.email });
+    if (added) os.audit.append({ ts: Date.now(), runId: ap.runId, tenant: os.tenant, principal: me.email, type: 'autoapproval.added', data: { signature: rule.signature, capability: rule.capability, label: rule.label } });
+    return sendJson(res, 200, { ok: true, ruleAdded: added, label: rule.label, note: added ? undefined : `“${rule.label}” is already auto-approved` });
   }
   // "Trust host & allow": approve THIS attempt AND add a durable org HOST grant (posture `allow`) for
   // the target host, so future reaches to it pass the gate without a card — the phase-2 answer to the
@@ -5620,6 +5615,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.hosts.add({ name: host, match: host, protocol: proto, posture: 'allow', scope: 'org' });
     os.audit.append({ ts: Date.now(), runId: ap.runId, tenant: os.tenant, principal: me.email, type: 'host.trusted', data: { host, protocol: proto, from: 'inbox.trust_host' } });
     return sendJson(res, 200, { ok: true, trusted: true, host });
+  }
+  // Auto-approval list — the legible registry of "always approve THIS action" rules (Settings surface).
+  // Readable by owner/admin (oversight); revocable by owner only (removing a rule tightens the gate — safe,
+  // but keeping the durable-loosening symmetry that only the owner manages the list).
+  if (method === 'GET' && p === '/api/auto-approvals') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, { rules: os.autoApprovals.list() });
+  }
+  const autoApprDel = p.match(/^\/api\/auto-approvals\/([\w-]+)$/);
+  if (method === 'DELETE' && autoApprDel) {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const ok = os.autoApprovals.remove(autoApprDel[1]);
+    if (ok) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'autoapproval.removed', data: { id: autoApprDel[1] } });
+    return sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'not found' });
   }
   const apMatch = p.match(/^\/api\/approvals\/([\w-]+)$/);
   if (method === 'POST' && apMatch) {
