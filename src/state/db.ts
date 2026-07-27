@@ -769,7 +769,12 @@ function migrate(db: Db): void {
   //    ORDER BY ts DESC. The existing idx_audit_run (run_id only) is left in place; this composite
   //    additionally serves the type-filtered + ts-ordered lookups.
   // (message_state's (message_id, member_id) join is already served by its composite PRIMARY KEY.)
-  // Placed after the addColumn calls above so the columns are guaranteed to exist on older DBs.
+  // Every column an index below references must already exist. `dismissed_at` is in the base messages
+  // schema, but `term_sessions.archived_at` is added by a LATER addColumn (further down this same pass),
+  // so on a FRESH DB the idx_sessions_live create used to run before the column existed and crashed boot
+  // ("no such column: archived_at") — breaking new-tenant provisioning + every scratch-home harness.
+  // Ensure it here (addColumn is idempotent) so the index build is safe regardless of ordering.
+  addColumn(db, 'term_sessions', 'archived_at', 'INTEGER');
   db.exec('CREATE INDEX IF NOT EXISTS idx_messages_feed ON messages(dismissed_at, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_live ON term_sessions(archived_at, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_audit_run_type ON audit_events(run_id, type, ts)');

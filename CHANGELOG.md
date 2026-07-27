@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.267.0] — 2026-07-27
+### Added
+- **Automations can run as a member, so a scheduled/headless run reaches that person's personal Composio
+  apps (e.g. their Gmail) — and the agent that proposes an automation now knows it.** A fired automation
+  defaults to the *company* identity, which sees only the shared company Composio + org/shared connectors,
+  never one person's personal connections; the fix isn't new mechanism (the console form already had a
+  "Run as" selector) but closing the discoverability gap that hid it:
+  - `automation_propose` (the agent-facing MCP tool) gains a `runAs` field and its description now spells
+    out the identity→connector rule — an agent proposing e.g. a daily Gmail triage suggests the member to
+    act as (by id or email, resolved at propose time) instead of silently landing a company-identity run
+    with no Gmail. `proposeAutomation` validates the member and surfaces *whose* credentials will be used
+    in the proposal preview.
+  - The **Inbox → Proposed-by-agents** approval card gains a **Run as** picker, so the approving owner/admin
+    confirms or changes the identity at approval time (`POST /api/automations/proposals/:id/approve` accepts
+    an optional validated `runAs` override); the automations form's "Run as" help now names Gmail and states
+    it's the only way an unattended run reaches a personal app.
+### Fixed
+- **Fresh-DB boot crash (`no such column: archived_at`) — broke new-tenant provisioning and every
+  scratch-home test harness.** The hot-path `idx_sessions_live` index is built on
+  `term_sessions(archived_at, …)`, but that column's `addColumn` runs LATER in the same migration pass,
+  so on a brand-new database the index create ran before the column existed and threw at `openDb`.
+  Existing DBs already had the column, so it only bit fresh ones. The column is now ensured (idempotently)
+  immediately before the index block.
+
 ## [0.266.2] — 2026-07-27
 ### Fixed
 - **Two approval-noise fixes: benign `MANAGE_CONNECTIONS` reads no longer owner-gated, and the Slack/Discord

@@ -652,7 +652,13 @@ const TOOLS = [
       '`name`, the `task` (the prompt the spawned session receives), and the trigger: for `type:"cron"` ' +
       '(the default) a 5-field `schedule` (e.g. "0 9 * * 1-5" = 9am weekdays); for webhook/composio/slack/' +
       'discord an optional `filter`. `agentId` defaults to you (the proposing agent). Always include a ' +
-      '`rationale` — the approver reads it to decide.',
+      '`rationale` — the approver reads it to decide. ' +
+      'IDENTITY MATTERS FOR CONNECTORS: a fired automation runs by default as the COMPANY identity, which ' +
+      'sees only the shared company account + org/shared connectors — NOT any one person\'s personal apps. ' +
+      'If the task needs a specific human\'s OWN connected tools (e.g. THEIR Composio Gmail, their ClickUp), ' +
+      'those are injected only when the run acts AS that member — so set `runAs` to them (a member id or ' +
+      'email; use `directory_lookup` if unsure). Otherwise the scheduled run silently won\'t have those ' +
+      'tools. The approver sees whose credentials will be used and can change it.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -664,6 +670,7 @@ const TOOLS = [
         filter: { type: 'string', description: 'For event triggers — composio trigger slug, or slack/discord event type or channel id ("" = any).' },
         agentId: { type: 'string', description: 'Which agent the automation runs. Defaults to you (the proposing agent).' },
         mode: { type: 'string', enum: ['headless', 'interactive'], description: 'headless (unattended, default for event triggers) or interactive.' },
+        runAs: { type: 'string', description: 'Optional member (id or email) the fired session should ACT AS, so THEIR personal connectors — e.g. their own Composio Gmail — are injected. Omit to run as the company identity (shared connectors only). Suggest this whenever the task uses a person\'s personal apps.' },
         rationale: { type: 'string', description: 'Why this automation is worth running — the approver reads this to decide.' },
       },
       required: ['name', 'task'],
@@ -1795,6 +1802,7 @@ async function automationPropose(args: Record<string, unknown>): Promise<string>
       filter: args.filter ? String(args.filter) : undefined,
       agentId: args.agentId ? String(args.agentId) : undefined,
       mode: args.mode ? String(args.mode) : undefined,
+      runAs: args.runAs ? String(args.runAs) : undefined,
       rationale: args.rationale ? String(args.rationale) : undefined,
     }),
   });
