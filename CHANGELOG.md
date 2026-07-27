@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.266.2] — 2026-07-27
+### Fixed
+- **Two approval-noise fixes: benign `MANAGE_CONNECTIONS` reads no longer owner-gated, and the Slack/Discord
+  approval DM now leads with the decision-brief headline.** A fleet review found approval notifications were
+  dominated by false positives that were always approved: (1) the gate routed any Composio
+  `*MANAGE_CONNECTION*` tool to the owner-approval `connector.connect`, but in practice agents call
+  `COMPOSIO_MANAGE_CONNECTIONS` to LIST/check connection status (`{toolkits:["gmail"]}`) — a benign read
+  (26 such approvals across the fleet in 14 days, 0 rejected). The gate-hook now routes only
+  `*INITIATE_CONNECTION*` (the actual OAuth grant) to `connector.connect`; `MANAGE_CONNECTIONS` falls
+  through to `connector.call` (allowed). (2) The out-of-band approval DM said only
+  `` `shell.exec` (owner) … why: shell.exec: risky `` — the raw capability + terse rule. It now leads with
+  the **decision-brief headline** (e.g. "Deploy the marketing site to production via the deploy script"),
+  with the capability/reason as secondary detail (falls back to the old line when no brief is present).
+
 ## [0.266.1] — 2026-07-25
 ### Fixed
 - **Resuming a resident chat session (Slack/Discord/`/agent`) from the web no longer replays the trigger

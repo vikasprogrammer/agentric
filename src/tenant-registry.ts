@@ -395,9 +395,11 @@ export async function notifyApprovers(os: AgentOS, tm: Pick<TerminalManager, 'bi
   // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
   const dot = notice.riskClass === 'red' ? '🔴' : '🟡';
   const inbox = consolePage(consoleOrigin, 'inbox');
+  // Lead with the decision-brief headline (WHAT the agent wants) when we have it; the capability + terse
+  // reason are the secondary "why". Falls back to the old capability-first line for notices without a brief.
   const text = (p: ChatPlatform) =>
-    `${dot} ${notice.riskClass.toUpperCase()} approval needed — \`${notice.capability}\` (${notice.level}) requested by agent ${notice.agent}.` +
-    (notice.reason ? `\nwhy: ${notice.reason}` : '') +
+    `${dot} ${notice.riskClass.toUpperCase()} approval — ${notice.agent}: ${notice.headline || `\`${notice.capability}\``}` +
+    `\n\`${notice.capability}\` (${notice.level})${notice.reason ? ` — ${notice.reason}` : ''}` +
     `\n*Reply "approve" or "deny"* to decide, or open the ${chatLink(p, inbox, 'Agent OS Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, approvers, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'approval.notified', data: { capability: notice.capability, level: notice.level, approvers: approvers.length, dms } });

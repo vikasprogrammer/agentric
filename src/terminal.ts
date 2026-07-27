@@ -410,6 +410,9 @@ export interface ApprovalNotice {
   level: ApprovalLevel;
   riskClass: 'yellow' | 'red';
   reason?: string;
+  /** The decision-brief headline — a legible summary of the effect ("Run a deploy-status check…"),
+   *  so the out-of-band DM leads with WHAT the agent wants, not just the capability + terse reason. */
+  headline?: string;
 }
 
 /**
@@ -2687,7 +2690,7 @@ export class TerminalManager {
     });
     this.audit(sessionId, agent, 'approval.requested', { approvalId: req.id, level: decision.level, capability, brief });
     // Out-of-band ping (Slack/Discord DM to whoever can approve) — best-effort, never blocks the gate.
-    try { this.approvalNotifier?.({ approvalId: req.id, sessionId, agent, capability, level: decision.level, riskClass: decision.riskClass, reason: decision.reason }); } catch { /* notifications are advisory */ }
+    try { this.approvalNotifier?.({ approvalId: req.id, sessionId, agent, capability, level: decision.level, riskClass: decision.riskClass, reason: decision.reason, headline: brief.headline }); } catch { /* notifications are advisory */ }
     // If the run was triggered from chat, surface the gate in that thread too (the approver DM reaches
     // the approver; this reaches everyone watching the thread). No-op for non-chat runs.
     const dot = decision.riskClass === 'red' ? '🔴' : '🟡';

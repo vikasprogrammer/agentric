@@ -66,9 +66,13 @@ case "$TOOL" in
   # File writes go through the gateway too (the enricher decides inside-vs-outside the agent's folder
   # from the path in tool_input). The hook stays dumb transport — it only names the capability.
   Edit|Write|MultiEdit|NotebookEdit) CAP="file.write" ;;
-  mcp__composio-company__*MANAGE_CONNECTION*|mcp__composio-company__*INITIATE_CONNECTION*)
-    # Managing a COMPANY-wide connection grants the whole fleet access to an app — an owner/admin call.
+  mcp__composio-company__*INITIATE_CONNECTION*)
+    # INITIATE_CONNECTION starts an OAuth grant that gives the whole fleet access to an app — the actual
+    # privilege-bearing op, so it's an owner/admin call (connector.connect).
     CAP="connector.connect" ;;
+  # MANAGE_CONNECTIONS is a management/STATUS tool — in practice agents call it to LIST/check connections
+  # (`{toolkits:["gmail"]}`), a benign read that was needlessly owner-gated. Route it to connector.call
+  # (allowed) like any other connector tool; a real grant goes through INITIATE_CONNECTION above.
   mcp__*) CAP="connector.call" ;;
   *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
 esac
