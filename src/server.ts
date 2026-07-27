@@ -765,6 +765,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       filter: b.filter != null ? String(b.filter) : undefined,
       task: String(b.task || ''),
       mode: (b.mode === 'headless' || b.mode === 'interactive' ? b.mode : undefined) as ProposedAutomation['mode'],
+      runAs: b.runAs != null ? String(b.runAs) : undefined,
     };
     const out = tm.proposeAutomation(session, agent, spec, b.rationale != null ? String(b.rationale) : undefined);
     return sendJson(res, out.ok ? 200 : 400, out);
@@ -2306,14 +2307,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const card = tm.automationProposalCard(autoPropApprove[1]);
     if (!card) return sendJson(res, 404, { error: 'no such automation proposal' });
     if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    // The approver may confirm or CHANGE the run-as identity at approval time (the field that decides
+    // whether the fired session gets a member's personal Composio Gmail/etc. or only the company account):
+    // body `runAs` = a member id overrides the agent's suggestion; '' clears it back to company identity;
+    // absent = keep what the agent proposed. Validate an override so a bad id can't be persisted.
+    const ab = await readBody(req);
+    let runAs = card.spec.runAs;
+    if (ab.runAs !== undefined) {
+      const raw = String(ab.runAs || '').trim();
+      if (!raw) runAs = undefined;
+      else {
+        const m = os.team.getMember(raw) ?? os.team.getMemberByEmail(raw);
+        if (!m) return sendJson(res, 400, { error: `unknown member "${raw}" for runAs` });
+        runAs = m.id;
+      }
+    }
     try {
       const created = autos.add({
         agentId: card.spec.agentId, name: card.spec.name, type: card.spec.type,
         mode: card.spec.mode, schedule: card.spec.schedule, filter: card.spec.filter,
-        task: card.spec.task, createdBy: me.id,
+        task: card.spec.task, createdBy: me.id, runAs,
       });
       tm.setAutomationProposalStatus(autoPropApprove[1], 'approved');
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.approved', data: { by: me.email, agent: card.agent, id: created.id, name: created.name, type: created.type } });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'automation.proposal.approved', data: { by: me.email, agent: card.agent, id: created.id, name: created.name, type: created.type, runAs: runAs ?? null } });
       return sendJson(res, 200, { ok: true, automation: automationView(created, req, true) });
     } catch (e) {
       // A bad cron / unknown agent surfaces to the human here (validated by `add`); the proposal stays open.

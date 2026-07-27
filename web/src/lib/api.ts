@@ -703,7 +703,7 @@ export interface Automation {
 export interface AutomationProposal {
   id: string
   agent: string
-  spec: { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode }
+  spec: { agentId: string; name: string; type: Automation['type']; schedule?: string; filter?: string; task: string; mode?: ExecMode; runAs?: string }
   rationale?: string
   preview?: string
   createdAt: number
@@ -1368,7 +1368,7 @@ export const api = {
    *  fire-and-forget, interactive = watch/steer the live TUI); omit to keep the automation's own mode. */
   runAutomation: (id: string, mode?: 'interactive' | 'headless') => call<{ ok: boolean; sessionId?: string; reason?: string; error?: string }>('POST', `/api/automations/${id}/run`, mode ? { mode } : {}),
   automationProposals: () => call<{ proposals: AutomationProposal[]; error?: string }>('GET', '/api/automations/proposals'),
-  approveAutomationProposal: (id: string) => call<{ ok: boolean; automation?: Automation; error?: string }>('POST', `/api/automations/proposals/${id}/approve`),
+  approveAutomationProposal: (id: string, runAs?: string) => call<{ ok: boolean; automation?: Automation; error?: string }>('POST', `/api/automations/proposals/${id}/approve`, runAs !== undefined ? { runAs } : {}),
   rejectAutomationProposal: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/automations/proposals/${id}/reject`),
   agentUpdateProposals: (target?: string) => call<{ proposals: AgentUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/agents/proposals' + (target ? '?target=' + encodeURIComponent(target) : '')),
   approveAgentUpdateProposal: (id: string) => call<{ ok: boolean; target?: string; rev?: number; error?: string }>('POST', `/api/agents/proposals/${id}/approve`),

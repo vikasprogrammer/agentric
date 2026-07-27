@@ -486,6 +486,12 @@ export interface ProposedAutomation {
   filter?: string;
   task: string;
   mode?: 'headless' | 'interactive';
+  /** The member id the fired session should act AS. An unattended run defaults to the company identity
+   *  (only the shared company Composio + org/shared connectors); set this when the task needs a person's
+   *  OWN connected apps (their personal Composio Gmail/ClickUp/etc.), which are injected only under their
+   *  identity. The proposing agent may suggest it (by member id or email, resolved at propose time); the
+   *  approving owner/admin sees whose credentials will be used and consents by approving. */
+  runAs?: string;
 }
 
 /** What the session-event notifier sink receives when one of a member's own sessions changes state — it
@@ -3729,7 +3735,18 @@ export class TerminalManager {
     if (!task) return { ok: false, error: 'a task template is required' };
     const type = (['cron', 'webhook', 'composio', 'slack', 'discord'] as const).includes(spec.type as never) ? spec.type : 'cron';
     if (type === 'cron' && !(spec.schedule || '').trim()) return { ok: false, error: 'a cron automation needs a schedule (5-field cron expression)' };
-    const clean: ProposedAutomation = { agentId, name, type, task, ...(spec.schedule ? { schedule: String(spec.schedule).trim() } : {}), ...(spec.filter ? { filter: String(spec.filter).trim() } : {}), ...(spec.mode === 'headless' || spec.mode === 'interactive' ? { mode: spec.mode } : {}) };
+    // Resolve the suggested run-as identity to a canonical member id. Agents name a member by id or email
+    // (e.g. from `directory_lookup`); the automations store keys run_as by member id (fire → createSession
+    // runAs → composioUserId(member).email). Reject an unresolvable value so a typo can't silently degrade
+    // the approved automation back to company identity (the exact surprise that hides a missing Gmail).
+    let runAs: string | undefined;
+    if ((spec.runAs || '').trim()) {
+      const raw = String(spec.runAs).trim();
+      const m = this.os.team.getMember(raw) ?? this.os.team.getMemberByEmail(raw);
+      if (!m) return { ok: false, error: `unknown member "${raw}" for runAs — pass a member id or email (use directory_lookup), or omit runAs to run as the company identity` };
+      runAs = m.id;
+    }
+    const clean: ProposedAutomation = { agentId, name, type, task, ...(spec.schedule ? { schedule: String(spec.schedule).trim() } : {}), ...(spec.filter ? { filter: String(spec.filter).trim() } : {}), ...(spec.mode === 'headless' || spec.mode === 'interactive' ? { mode: spec.mode } : {}), ...(runAs ? { runAs } : {}) };
     // Cap the queue + dedupe an identical open proposal from this agent (mirrors proposePolicy).
     const open = this.db.prepare(`SELECT id, args FROM messages WHERE type = 'automation.proposed' AND status = 'open' AND agent = ?`).all<{ id: string; args: string | null }>(agent);
     if (open.length >= 10) return { ok: false, error: 'you already have 10 open automation proposals awaiting review — wait for a human to act on them first' };
@@ -3737,7 +3754,11 @@ export class TerminalManager {
     if (open.some((o) => { try { return JSON.stringify((JSON.parse(o.args || '{}') as { spec?: unknown }).spec) === specKey; } catch { return false; } })) {
       return { ok: false, error: 'an identical automation proposal from you is already awaiting review' };
     }
-    const preview = `${type}${clean.schedule ? ` \`${clean.schedule}\`` : ''} → runs \`${agentId}\`: ${task.slice(0, 80)}${task.length > 80 ? '…' : ''}`;
+    // Surface the run-as identity in the preview: it decides which connectors the fired session gets
+    // (a member → their personal Composio Gmail/etc.; unset → company identity only), so the approver
+    // consciously consents to whose credentials will be used.
+    const asWho = runAs ? (this.os.team.getMember(runAs)?.name || this.os.team.getMember(runAs)?.email || runAs) : 'company identity';
+    const preview = `${type}${clean.schedule ? ` \`${clean.schedule}\`` : ''} → runs \`${agentId}\` as ${asWho}: ${task.slice(0, 80)}${task.length > 80 ? '…' : ''}`;
     this.postReviewCard({
       type: 'automation.proposed', sessionId, agent,
       title: `Automation proposed — ${name}`,

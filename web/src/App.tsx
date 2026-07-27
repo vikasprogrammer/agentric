@@ -8784,12 +8784,18 @@ function triggerSummary(a: Automation): string {
  *  PolicyProposalsPanel; hidden entirely when there are no open proposals. */
 function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; onChanged: () => void }) {
   const [proposals, setProposals] = useState<AutomationProposal[]>([])
+  const [members, setMembers] = useState<Member[]>([])
+  const [runAsEdit, setRunAsEdit] = useState<Record<string, string>>({}) // proposal id → chosen member id ('' = company)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
   const load = () => { api.automationProposals().then((r) => setProposals(r.proposals ?? [])).catch(() => {}) }
   useEffect(load, [])
+  useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const agentName = (id: string) => agents.find((a) => a.id === id)?.id || id
-  const approve = async (id: string) => { setBusy(id); setHint(''); const r = await api.approveAutomationProposal(id); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load(); onChanged() }
+  // The run-as identity decides which connectors the fired session gets (a member → their personal Composio
+  // Gmail/etc.; company → shared account only), so let the approver confirm/override the agent's suggestion.
+  const runAsFor = (pr: AutomationProposal) => runAsEdit[pr.id] ?? pr.spec.runAs ?? ''
+  const approve = async (pr: AutomationProposal) => { setBusy(pr.id); setHint(''); const r = await api.approveAutomationProposal(pr.id, runAsFor(pr)); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load(); onChanged() }
   const reject = async (id: string) => { setBusy(id); setHint(''); const r = await api.rejectAutomationProposal(id); setBusy(''); if (!r.ok) return setHint('⚠ ' + (r.error || 'failed')); load() }
   if (!proposals.length) return null
   return (
@@ -8806,8 +8812,18 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
               </div>
               {pr.preview && <div className="rounded bg-muted/50 px-2 py-1 font-mono text-[11px]">{pr.preview}</div>}
               {pr.rationale && <p className="text-[11px] italic text-muted-foreground">“{pr.rationale}”</p>}
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-[11px] text-muted-foreground" title="The fired session acts as this member, so their personal connectors (e.g. their own Composio Gmail) are injected. Company identity = shared company account only.">Run as</label>
+                <Select value={runAsFor(pr) || '__company'} onValueChange={(v) => setRunAsEdit((m) => ({ ...m, [pr.id]: v && v !== '__company' ? v : '' }))}>
+                  <SelectTrigger className="h-7 w-[180px] text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__company">Company identity (no member)</SelectItem>
+                    {members.map((mm) => (<SelectItem key={mm.id} value={mm.id}>{mm.name || mm.email}</SelectItem>))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="flex items-center gap-2">
-                <Button size="sm" disabled={!!busy} onClick={() => approve(pr.id)}>Approve &amp; enable</Button>
+                <Button size="sm" disabled={!!busy} onClick={() => approve(pr)}>Approve &amp; enable</Button>
                 <Button size="sm" variant="ghost" disabled={!!busy} onClick={() => reject(pr.id)}>Reject</Button>
                 {hint && busy === '' && <span className="text-[11px] text-amber-600">{hint}</span>}
               </div>
@@ -9045,7 +9061,7 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { m
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="SLACK_DIRECT_MESSAGE_RECEIVED  (blank = any)" />
                   </Field>
                 )}
-                <Field label="Run as" help="The fired session acts as this member, so their personal connectors (e.g. their own ClickUp / Composio apps) are injected instead of the shared company account. Company identity = the company Composio only.">
+                <Field label="Run as" help="The fired session acts as this member, so THEIR personal connectors (e.g. their own Composio Gmail / ClickUp) are injected. This is the only way a scheduled/unattended run reaches a person's personal apps. Company identity (the default) = the shared company Composio only — a personal Gmail won't be available.">
                   <Select value={runAs || '__company'} onValueChange={(v) => setRunAs(v && v !== '__company' ? v : '')}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
