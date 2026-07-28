@@ -22,18 +22,20 @@
 import { Db } from './db';
 import { CodingRuntimeId } from '../types';
 
-export type RuntimeAccountKind = 'oauth' | 'apikey';
+export type RuntimeAccountKind = 'oauth' | 'apikey' | 'token';
 
 export interface RuntimeAccount {
   /** The coding runtime this account authenticates (claude-code | codex | …). */
   runtime: CodingRuntimeId;
   /** Operator-chosen label, unique per runtime (composite PK with `runtime`). */
   name: string;
-  /** 'oauth' → a credential DIRECTORY (configDir); 'apikey' → a usage-billed key held in the vault. */
+  /** 'oauth' → a credential DIRECTORY (configDir); 'apikey' → a usage-billed key held in the vault;
+   *  'token' → a long-lived OAuth token held in the vault, exported via the runtime's `tokenVar`
+   *  (the `claude setup-token` path — no config dir, cleanest to rotate). */
   kind: RuntimeAccountKind;
   /** kind=oauth: dir exported via the runtime's `configDirVar` (holds .credentials.json / auth.json). */
   configDir?: string;
-  /** kind=apikey: the secrets-vault key whose value is exported via the runtime's `apiKeyVar`. */
+  /** kind=apikey|token: the secrets-vault key whose value is exported via the runtime's `apiKeyVar`/`tokenVar`. */
   apiKeyRef?: string;
   enabled: boolean;
   status: 'available' | 'limited';
@@ -93,7 +95,7 @@ export class RuntimeAccountStore {
     const name = a.name.trim();
     if (!name) throw new Error('account name required');
     if (a.kind === 'oauth' && !a.configDir) throw new Error('oauth account needs a configDir');
-    if (a.kind === 'apikey' && !a.apiKeyRef) throw new Error('apikey account needs an apiKeyRef');
+    if (a.kind !== 'oauth' && !a.apiKeyRef) throw new Error(`${a.kind} account needs a vault ref`);
     this.db.prepare(`INSERT INTO runtime_accounts (runtime, name, kind, config_dir, api_key_ref, enabled, status, created_at)
                      VALUES (?, ?, ?, ?, ?, 1, 'available', ?)`)
       .run(a.runtime, name, a.kind, a.configDir ?? null, a.apiKeyRef ?? null, Date.now());

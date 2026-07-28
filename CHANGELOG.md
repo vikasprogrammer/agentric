@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.278.0] — 2026-07-28
+### Added
+- **Connect a Claude account by pasting a subscription token — no CLI wrangling on the box.** The rotation
+  pool gains a **token** account kind: run `claude setup-token` on your own computer (the browser
+  authorization completes there via the CLI's localhost loopback — no code to copy back), paste the printed
+  ~1-year token into Settings → Runtime → Runtime accounts, and it's sealed in the vault and injected as
+  `CLAUDE_CODE_OAUTH_TOKEN` at launch. This is the cleanest rotation credential — no `CLAUDE_CONFIG_DIR` to
+  build, works identically on local and remote boxes (the box never needs a browser or a reachable
+  callback), and the token value never touches the account row, audit, or logs. Runtimes declare an optional
+  `tokenVar` in `CodingRuntimeSpec.credentialEnv`; a runtime without one (codex, no OAuth-token env) simply
+  doesn't offer the option and stays dir/key-based. NB: Claude Code's OAuth redirect URI is hardcoded to
+  localhost loopback and not configurable, and it has no device-code flow, so a server-driven in-browser
+  "connect" that redirects back to the console isn't possible — pasting the token is the robust path.
+
 ## [0.276.1] — 2026-07-28
 ### Fixed
 - **OAuth-backed MCP connectors could never work under Codex.** Codex keeps remote-MCP OAuth tokens in

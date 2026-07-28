@@ -4117,12 +4117,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   if (method === 'POST' && p === '/api/runtime-accounts') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
-    const b = await readBody(req) as { runtime?: unknown; name?: unknown; kind?: unknown; configDir?: unknown; apiKeyRef?: unknown };
+    const b = await readBody(req) as { runtime?: unknown; name?: unknown; kind?: unknown; configDir?: unknown; apiKeyRef?: unknown; token?: unknown };
     const runtime = String(b.runtime ?? '') as RuntimeId;
     if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
-    const kind = b.kind === 'apikey' ? 'apikey' : 'oauth';
+    const name = String(b.name ?? '').trim();
+    const kind = b.kind === 'apikey' ? 'apikey' : b.kind === 'token' ? 'token' : 'oauth';
+    let apiKeyRef = b.apiKeyRef ? String(b.apiKeyRef) : undefined;
     try {
-      const acct = os.runtimeAccounts.add({ runtime, name: String(b.name ?? ''), kind, configDir: b.configDir ? String(b.configDir) : undefined, apiKeyRef: b.apiKeyRef ? String(b.apiKeyRef) : undefined });
+      // A 'token' account carries the raw long-lived OAuth token (from `claude setup-token`): seal it in the
+      // vault HERE (never stored on the row, never in audit) and hand the account only its key ref. The value
+      // never leaves this call except into the encrypted vault.
+      if (kind === 'token') {
+        const token = String(b.token ?? '').trim();
+        if (!name) return sendJson(res, 400, { error: 'account name required' });
+        if (!token) return sendJson(res, 400, { error: 'token value required' });
+        if (!CODING_RUNTIMES[runtime].credentialEnv.tokenVar) return sendJson(res, 400, { error: `${runtime} has no OAuth-token env — use an API key or credential dir instead` });
+        const key = `runtime-token:${runtime}:${name}`;
+        os.secrets.set(os.tenant, key, token, { principal: '*', updatedBy: me.email });
+        apiKeyRef = key;
+      }
+      const acct = os.runtimeAccounts.add({ runtime, name, kind, configDir: b.configDir ? String(b.configDir) : undefined, apiKeyRef });
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.added', data: { runtime, name: acct.name, kind } });
       return sendJson(res, 200, { ok: true, account: acct });
     } catch (e) { return sendJson(res, 400, { error: (e as Error).message }); }

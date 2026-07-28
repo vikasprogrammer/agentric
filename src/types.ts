@@ -1107,8 +1107,10 @@ export interface CodingRuntimeSpec {
    *  from `$AOS_REAL_CODEX_HOME`. `apiKeyVar` is the usage-billed API-key env (`ANTHROPIC_API_KEY` /
    *  `OPENAI_API_KEY`). Rotation exports ONE of these per session; both unset → the runtime uses the box's
    *  default single account, i.e. today's behavior. Generic so a third runtime slots in by declaring its
-   *  own two vars — no rotation code changes. */
-  credentialEnv: { configDirVar: string; apiKeyVar: string };
+   *  own two vars — no rotation code changes. `tokenVar` (optional) is a long-lived OAuth-token env the
+   *  runtime accepts for headless auth (claude: `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) — the
+   *  cleanest rotation credential (a vault-stored token, no config dir); a runtime without one (codex) omits it. */
+  credentialEnv: { configDirVar: string; apiKeyVar: string; tokenVar?: string };
   /** A few known-good model ids, offered as suggestions in the console. NOT an allowlist — a custom or
    *  newer id must still be settable, so validation only rejects ids that clearly belong to ANOTHER
    *  runtime (see `foreignModel`). */
@@ -1128,7 +1130,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     bin: 'claude',
     launchScript: 'claude-launch.sh',
     gateHook: 'gate-hook.sh',
-    credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY' },
+    credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY', tokenVar: 'CLAUDE_CODE_OAUTH_TOKEN' },
     suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
     foreignModel: /^(gpt|o[0-9]|codex)/i,
     capabilities: {
