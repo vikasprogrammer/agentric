@@ -208,6 +208,24 @@ export function redactSecrets(text: string): string {
 }
 
 /**
+ * Normalise a tool's `command` field to matchable text, accepting BOTH shapes a coding runtime sends:
+ *   - Claude Code's `Bash` tool → a string:  `"rm -rf /tmp/x"`
+ *   - Codex's `shell` tool      → an argv array: `["bash", "-lc", "rm -rf /tmp/x"]`
+ *
+ * This is load-bearing, not cosmetic. The previous `typeof === 'string'` test silently yielded `''`
+ * for an array, so EVERY Codex shell call was classified against an empty command — no destructive
+ * pattern could ever match and the gate blanket-allowed `rm -rf /`. Caught by the codex gate smoke
+ * test. Joining with spaces is right for intent-matching: it loses shell quoting, but the dangerous
+ * text is what we scan for, and `sanitizeForIntent` strips DATA payloads downstream either way.
+ * Non-string array members are dropped rather than stringified into `[object Object]` noise.
+ */
+export function commandText(v: unknown): string {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return v.filter((p): p is string => typeof p === 'string').join(' ');
+  return '';
+}
+
+/**
  * Compute governance facts and return a NEW args object (original + facts). Pure; no I/O.
  * `args` is what the gate received: `{ tool?, input?, command?, ...callerFacts }`.
  * `orgDomains` are the workspace's internal email domains (lowercased, no `@`) — passed in by the
@@ -224,7 +242,7 @@ export function enrichArgs(
   const tool = typeof args.tool === 'string' ? args.tool : '';
   const input = (args.input && typeof args.input === 'object' ? args.input : args) as Record<string, unknown>;
   // Text to pattern-match: an explicit shell command (Bash) and/or the connector input's string values.
-  const command = typeof args.command === 'string' ? args.command : typeof input.command === 'string' ? input.command : '';
+  const command = commandText(args.command) || commandText(input.command);
   const { text: inputText, entries } = scan(input);
   const haystack = `${command}\n${inputText}`;
 

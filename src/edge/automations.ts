@@ -16,7 +16,7 @@ import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
-import { Task, TaskTimelineEntry } from '../types';
+import { isCodingRuntime, Task, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
@@ -625,7 +625,7 @@ export class Automations {
   }
 
   private routeChat(text: string): { agentId?: string; help?: string } {
-    const claudeAgents = [...this.os.agents.values()].filter((a) => a.runtime === 'claude-code');
+    const claudeAgents = [...this.os.agents.values()].filter((a) => isCodingRuntime(a.runtime));
     // Only agents opted-in to the open chat front door (`chatReachable !== false`) are addressable here.
     const chatAgents = claudeAgents.filter((a) => a.chatReachable !== false).map((a) => a.id);
     const m = this.normalizeChatCommand(text).trim().match(/^\/([A-Za-z0-9][\w-]*)\b\s*([\s\S]*)$/);

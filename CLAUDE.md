@@ -111,7 +111,12 @@ Key modules:
 - `src/gateway/gateway.ts` — the 7-step mediated effect boundary. The heart of the trust layer.
 - `src/server.ts` — zero-dependency Node `http` server: JSON API + serves `web/dist` + terminal sessions.
 - `src/terminal.ts` — tmux-backed agent sessions; routes every effect through the same gateway via the
-  PreToolUse gate hook (`terminal/gate-hook.sh`). At launch it resolves each claude-code agent's
+  PreToolUse gate hook (`terminal/gate-hook.sh`). **Two real runtimes** — `claude-code` and `codex`
+  (`AgentManifest.runtime`; `CODING_RUNTIMES` in `src/types.ts` declares what each supports, probed via
+  `runtimeSupports()` / `isCodingRuntime()` — never compare runtime ids). `launchAgentRuntime` picks
+  `terminal/<runtime>-launch.sh`; the gate hook is SHARED and switches its tool→capability routing table
+  on `$AOS_RUNTIME`. Codex holds the invariant differently (shell via the hook, writes via an OS sandbox,
+  MCP server-side) and degrades on attach/resident-chat/cost/skills — see `docs/codex-runtime.md`. At launch it resolves each claude-code agent's
   **runtime tuning** (`resolveRuntimeTuning` in `src/types.ts`: agent manifest → workspace default → CLI
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
   maps onto `--model`/`--effort`/`--permission-mode` (model+effort both lanes; permission-mode interactive

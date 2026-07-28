@@ -1034,6 +1034,136 @@ export interface RuntimeTuning {
   permissionMode?: PermissionMode;
 }
 
+/** Every runtime an agent manifest may declare. `mock` is the in-process demo adapter (no CLI, no
+ *  tmux); the others are real coding CLIs. */
+export type RuntimeId = 'mock' | 'claude-code' | 'codex';
+/** The runtimes that spawn a real CLI in a governed tmux pane — everything except `mock`. */
+export type CodingRuntimeId = Exclude<RuntimeId, 'mock'>;
+
+/**
+ * What a coding runtime can actually do.
+ *
+ * These differ enough between CLIs that call sites MUST probe a capability rather than compare
+ * runtime ids — `runtime === 'claude-code'` was the old shorthand for "a real agent", and widening
+ * the union turned every one of those into a latent bug. Use {@link isCodingRuntime} for the
+ * "is this a real agent at all" question and a named flag for anything finer.
+ *
+ * The two governance flags (`fileWriteGate`, `mcpGate`) describe how the invariant is upheld, NOT
+ * whether it is: Claude Code intercepts file writes and MCP calls at the PreToolUse hook, while
+ * Codex's hook only sees the `shell` tool — so a Codex session instead confines writes with an OS
+ * sandbox (`writable_roots`) and relies on the loopback API to govern MCP calls server-side. Both
+ * routes close the hole; only the mechanism changes.
+ */
+export interface RuntimeCapabilities {
+  /** Can the OS CHOOSE the transcript id up front? Claude takes `--session-id <uuid>`; Codex mints
+   *  its own rollout id, so the launcher has to capture and report it back after the fact. */
+  pinnedSessionId: boolean;
+  /** Can a prior conversation be continued by id? */
+  resume: boolean;
+  /** Can a conversation be branched, leaving the parent transcript intact? */
+  fork: boolean;
+  /** Does an UNATTENDED run stay attachable so a human can take it over mid-turn? True when the
+   *  unattended lane is an interactive TUI torn down by the server at turn-end (Claude); false when
+   *  it is a one-shot process that exits on its own (Codex `exec`). */
+  attachableUnattended: boolean;
+  /** Can a warm chat session be kept resident and fed follow-ups via tmux send-keys? Needs an
+   *  interactive TUI that survives a turn — so it tracks `attachableUnattended`. */
+  residentChat: boolean;
+  /** Does the OS know how to parse this CLI's transcript into cost + engaged-time + a chat timeline? */
+  transcript: boolean;
+  /** Native Agent Skills discovered from a project directory (`.claude/skills`). */
+  nativeSkills: boolean;
+  /** Native in-process sub-agents (`.claude/agents`). */
+  nativeSubagents: boolean;
+  /** A custom status line renderer. */
+  statusLine: boolean;
+  /** Honours {@link RuntimeTuning.permissionMode}. */
+  permissionMode: boolean;
+  /** Does the PreToolUse hook intercept FILE WRITES? False → containment is the OS sandbox instead. */
+  fileWriteGate: boolean;
+  /** Does the PreToolUse hook intercept MCP/connector tool calls? False → those are governed
+   *  server-side at the loopback API, which every OS tool already goes through. */
+  mcpGate: boolean;
+  /** Can the gate steer the model on an ALLOW (Claude's `additionalContext`)? Codex's hook contract
+   *  acts on `deny` only, so the `instruct` verb degrades to a plain allow there. */
+  steerOnAllow: boolean;
+}
+
+/** Static description of a coding runtime: which binary drives it, which launch script + gate hook
+ *  wire it to the gateway, and what it supports. The single place a new CLI is declared. */
+export interface CodingRuntimeSpec {
+  id: CodingRuntimeId;
+  /** Human-facing name for the console + error messages. */
+  label: string;
+  /** The executable that must be on PATH for a session to launch. */
+  bin: string;
+  /** Basename of the launcher under `terminal/`. */
+  launchScript: string;
+  /** Basename of the PreToolUse gate hook under `terminal/`. */
+  gateHook: string;
+  capabilities: RuntimeCapabilities;
+}
+
+export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec>> = {
+  'claude-code': {
+    id: 'claude-code',
+    label: 'Claude Code',
+    bin: 'claude',
+    launchScript: 'claude-launch.sh',
+    gateHook: 'gate-hook.sh',
+    capabilities: {
+      pinnedSessionId: true, resume: true, fork: true, attachableUnattended: true,
+      residentChat: true, transcript: true, nativeSkills: true, nativeSubagents: true,
+      statusLine: true, permissionMode: true, fileWriteGate: true, mcpGate: true,
+      steerOnAllow: true,
+    },
+  },
+  codex: {
+    id: 'codex',
+    label: 'Codex',
+    bin: 'codex',
+    launchScript: 'codex-launch.sh',
+    // Same hook binary as Claude Code: Codex 0.145 uses identical PreToolUse stdin fields
+    // (`tool_name`/`tool_input`/`agent_type`) and an identical decision wire, so only the
+    // tool→capability routing table differs — selected inside the hook by $AOS_RUNTIME. Sharing the
+    // file keeps the fail-closed retry + approval-wait logic in ONE place; two copies would let a
+    // security fix land in one runtime and silently miss the other.
+    gateHook: 'gate-hook.sh',
+    capabilities: {
+      // Codex mints its own rollout id (`codex exec resume <id>` / `codex fork <id>`), so the id is
+      // captured after launch rather than pinned. The unattended lane is `codex exec`, which exits at
+      // turn end — no Stop hook needed, but also nothing to attach to, which rules out resident chat.
+      pinnedSessionId: false, resume: true, fork: true, attachableUnattended: false,
+      residentChat: false, transcript: false, nativeSkills: false, nativeSubagents: false,
+      statusLine: false, permissionMode: false,
+      // PreToolUse reliably sees the `shell` tool; `apply_patch` writes are confined instead by the
+      // sandbox's `writable_roots`, and MCP calls are governed server-side at the loopback API every
+      // OS tool already goes through. See the RuntimeCapabilities note on mechanism vs. invariant.
+      fileWriteGate: false, mcpGate: false,
+      // Codex 0.145's PreToolUse output wire matches Claude's: permissionDecision allow|deny|ask plus
+      // `additionalContext` (verified against the JSON schema embedded in the binary), so the gate's
+      // `instruct` verb carries over unchanged.
+      steerOnAllow: true,
+    },
+  },
+};
+
+/** Is this a real CLI-backed agent (as opposed to the `mock` demo adapter)? This is what almost every
+ *  former `runtime === 'claude-code'` check actually meant. */
+export function isCodingRuntime(runtime: RuntimeId | undefined): runtime is CodingRuntimeId {
+  return runtime === 'claude-code' || runtime === 'codex';
+}
+
+/** The spec for a runtime, or undefined for `mock`/unknown. */
+export function codingRuntime(runtime: RuntimeId | undefined): CodingRuntimeSpec | undefined {
+  return isCodingRuntime(runtime) ? CODING_RUNTIMES[runtime] : undefined;
+}
+
+/** Does `runtime` support `cap`? False for `mock` and unknown runtimes. */
+export function runtimeSupports(runtime: RuntimeId | undefined, cap: keyof RuntimeCapabilities): boolean {
+  return codingRuntime(runtime)?.capabilities[cap] ?? false;
+}
+
 export interface AgentManifest extends RuntimeTuning {
   id: string;
   version: string;
@@ -1047,9 +1177,12 @@ export interface AgentManifest extends RuntimeTuning {
    *  a mismatch is warned at registration (see {@link policyContextMismatch}) because the agent would
    *  otherwise be governed by a different policy than it declares. */
   policyContext: string;
-  runtime: 'mock' | 'claude-code';
+  /** Which coding CLI drives this agent. `mock` is the in-process demo adapter; the rest are real
+   *  CLIs launched in a tmux pane and governed by a PreToolUse gate hook. See {@link CODING_RUNTIMES}
+   *  for what each one can actually do — capabilities differ, so probe rather than compare ids. */
+  runtime: RuntimeId;
   budget: Budget;
-  /** claude-code runtime extras. */
+  /** Coding-runtime extras. */
   maxTurns?: number;
   allowedTools?: string[];
   path?: string;

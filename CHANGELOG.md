@@ -8,6 +8,43 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.272.0] — 2026-07-28
+### Added
+- **A second coding runtime: OpenAI Codex.** An agent manifest can now declare `"runtime": "codex"`
+  alongside `claude-code` and `mock`, and it launches as a real, governed `codex` session in the agent's
+  folder (`terminal/codex-launch.sh`). The gateway invariant is unchanged, but the *mechanism* differs
+  because Codex's PreToolUse hook doesn't reliably cover file writes and MCP calls: shell (and therefore
+  all `curl`/`git`/`npm` egress) goes through the SAME `terminal/gate-hook.sh` → `/api/gate`; writes are
+  contained structurally by the OS sandbox (`sandbox_mode = workspace-write`, `writable_roots` = the
+  agent folder); MCP/connector calls stay governed server-side at the loopback API; and
+  `approval_policy = "never"` makes Agent OS the sole authority (the mirror of
+  `--dangerously-skip-permissions`). The launcher generates a per-session `$CODEX_HOME` holding a fresh
+  `config.toml` (model/effort, sandbox, MCP servers translated to Codex's TOML schema incl. Composio's
+  `http_headers`, and a `trust_level = "trusted"` seed for the agent folder), a `hooks.json` wiring the
+  gate, and an `AGENTS.md` composed from the agent persona + Company context (Codex has no
+  `--append-system-prompt-file`). See `docs/codex-runtime.md`.
+- **Runtime capability matrix.** `CODING_RUNTIMES` / `RuntimeCapabilities` / `runtimeSupports()` /
+  `isCodingRuntime()` in `src/types.ts` declare what each CLI actually supports (pinned session ids,
+  resume, fork, attachable-unattended, resident chat, transcript parsing, native skills/sub-agents,
+  status line, permission mode, file-write & MCP gating, allow-time steering). The ~20 scattered
+  `runtime === 'claude-code'` checks — which had quietly become the shorthand for "is this a real agent"
+  — now probe a named capability or `isCodingRuntime()`, so a Codex agent is first-class where it is
+  supported and cleanly refused (with a reason) where it is not.
+- `POST /api/runtime-session` — session-secret-gated loopback route for a runtime that mints its OWN
+  transcript id. Codex has no `--session-id` to pin, so the launcher discovers the rollout UUID from its
+  per-session `$CODEX_HOME` and reports it back; first write wins, so a resume can't re-point an existing
+  conversation at a different transcript.
+
+### Fixed
+- **Shell commands sent as an argv array were classified against an empty string.** The enricher (and the
+  briefer) only accepted a `command` of type `string` — Claude Code's `Bash` shape. Codex's `shell` tool
+  sends `["bash","-lc","…"]`, so `typeof` fell through to `''`: no destructive/risky pattern could ever
+  match and the gate **allowed `rm -rf /`**. `commandText()` in `src/governance/enricher.ts` now
+  normalises both shapes (and any future runtime that sends argv arrays); approval cards no longer render
+  an empty command either. Found by the Codex gate smoke test.
+- An unknown `runtime` string in a manifest (a typo, or a manifest from a newer build) used to fail
+  silently — every capability check returned false and the agent quietly ran the scripted mock runner.
+  `registerAgent` now warns once, naming the known runtimes.
 ## [0.271.1] — 2026-07-28
 ### Fixed
 - **Explicit `/agent` overrides thread continuity when it names a different agent.** In a chat "thread"

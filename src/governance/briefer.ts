@@ -10,8 +10,11 @@
  * is already a one-line human summary of the command, so we prefer it for the headline.
  */
 import { ActionVerb, BriefTarget, Decision, DecisionBrief } from '../types';
+import { commandText } from './enricher';
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+// Shell `command` arrives as a string (Claude `Bash`) OR an argv array (Codex `shell`) — the shared
+// normaliser handles both, so an approval card never renders an empty command for a Codex run.
 const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
 const truncate = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s);
 
@@ -57,7 +60,7 @@ function verbFor(capability: string, args: Record<string, unknown>): ActionVerb 
     case 'secret.put': return 'grant';
     case 'connector.connect': return 'grant';
     case 'shell.exec': {
-      const cmd = `${str(args.command)} ${str(inputOf(args).command)}`;
+      const cmd = `${commandText(args.command)} ${commandText(inputOf(args).command)}`;
       if (/\b(deploy|kubectl|systemctl|terraform|helm)\b/i.test(cmd)) return 'deploy';
       return 'execute';
     }
@@ -97,7 +100,7 @@ function targetFor(capability: string, args: Record<string, unknown>, input: Rec
   }
   if (capability === 'secret.put') return { kind: 'resource', label: str(input.key) || 'a secret' };
   if (capability === 'shell.exec') {
-    const head = commandHead(str(args.command) || str(input.command));
+    const head = commandHead(commandText(args.command) || commandText(input.command));
     return { kind: 'command', label: head || 'a shell command' };
   }
   return { kind: 'unknown', label: capability };
@@ -128,7 +131,7 @@ function headlineFor(capability: string, args: Record<string, unknown>, input: R
     return truncate(tool ? `${VERB_WORD[verb]} ${prettyTool(tool)}` : `${VERB_WORD[verb]} a connector`, 120);
   }
   if (isShellish(capability)) {
-    const cmd = str(args.command) || str(input.command);
+    const cmd = commandText(args.command) || commandText(input.command);
     return truncate(cmd ? `Run: ${cmd}` : `${VERB_WORD[verb]} ${target.label}`, 120);
   }
   return truncate(`${VERB_WORD[verb]} ${target.label}`, 120);
@@ -155,7 +158,7 @@ function signatureFor(capability: string, verb: ActionVerb, target: BriefTarget,
   let key = '';
   if (target.host) key = target.host;
   else if (capability === 'file.write') key = pathFamily(str(input.file_path) || str(input.path) || '');
-  else if (capability === 'shell.exec') key = commandHead(str(args.command) || str(input.command));
+  else if (capability === 'shell.exec') key = commandHead(commandText(args.command) || commandText(input.command));
   else if (capability.startsWith('connector')) key = str(args.tool);
   return `${capability}|${verb}|${target.kind}|${key}`.toLowerCase();
 }

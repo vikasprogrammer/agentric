@@ -12,6 +12,8 @@ import {
   AgentManifest,
   AuditSink,
   Capability,
+  CODING_RUNTIMES,
+  isCodingRuntime,
   MemoryConfig,
   MemoryMaintenanceResult,
   MemoryProvider,
@@ -232,6 +234,20 @@ export class AgentOS {
   }
   registerAgent(manifest: AgentManifest): this {
     this.agents.set(manifest.id, manifest);
+    // An unrecognised `runtime` (a typo like "codeex", or a manifest written for a newer build) is not a
+    // type error — manifests are parsed as untyped JSON — and it fails SILENTLY in the worst way: every
+    // `isCodingRuntime` check returns false, so the agent quietly spawns the scripted mock runner instead
+    // of a real CLI, and looks like it "did nothing". Say so once, loudly, at registration.
+    if (manifest.runtime !== undefined && manifest.runtime !== 'mock' && !isCodingRuntime(manifest.runtime)) {
+      const key = `runtime:${manifest.id}:${manifest.runtime}`;
+      if (!this.warnedPolicyContexts.has(key)) {
+        this.warnedPolicyContexts.add(key);
+        console.warn(
+          `agent "${manifest.id}" declares unknown runtime "${manifest.runtime}" — it will run as the mock ` +
+          `demo agent, not a real CLI. Known runtimes: mock, ${Object.keys(CODING_RUNTIMES).join(', ')}.`,
+        );
+      }
+    }
     // Surface a `policyContext` that names a ruleset the engine isn't enforcing (see policyContextMismatch)
     // — a silent mismatch means the agent's declared guardrails aren't the ones actually applied.
     const key = `${manifest.id} ${manifest.policyContext ?? ''}`;

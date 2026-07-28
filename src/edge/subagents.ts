@@ -20,7 +20,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { AgentManifest } from '../types';
+import { isCodingRuntime, AgentManifest } from '../types';
 
 /**
  * The toolset a materialised fleet sub-agent is allowed to use, written verbatim into the `tools:`
@@ -104,7 +104,7 @@ export function resolveSubagents(
   defaultMode: 'all' | 'none',
 ): AgentManifest[] {
   const eligible = (m: AgentManifest | undefined): m is AgentManifest =>
-    !!m && m.id !== parent.id && m.runtime === 'claude-code' && m.spawnableAsSubagent !== false;
+    !!m && m.id !== parent.id && isCodingRuntime(m.runtime) && m.spawnableAsSubagent !== false;
   const explicit = parent.usableSubagents ?? [];
   if (explicit.length) return explicit.map((id) => fleet.get(id)).filter(eligible);
   return defaultMode === 'all' ? [...fleet.values()].filter(eligible) : [];

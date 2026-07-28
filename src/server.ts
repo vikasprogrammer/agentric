@@ -55,7 +55,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
@@ -219,7 +219,7 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
  *  may answer from. Kept small (agents + live counts + KB sections) and derived live, so answers reflect
  *  the real fleet, not a hallucination. Member-scoped where it matters (sessions the viewer can see). */
 function cockpitWorkspaceContext(os: AgentOS, tm: TerminalManager, autos: Automations, me: Member): string {
-  const agents = [...os.agents.values()].filter((a) => a.runtime === 'claude-code');
+  const agents = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime));
   const agentLines = agents.map((a) => `  - ${a.id}: ${(a.description || '').replace(/\s+/g, ' ').slice(0, 140)}`).join('\n');
   const sessions = tm.listSessions(me);
   const live = sessions.filter((s) => s.alive).length;
@@ -676,7 +676,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!self) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const agents = [...os.agents.values()]
-      .filter((a) => a.runtime === 'claude-code' && a.id !== self)
+      .filter((a) => isCodingRuntime(a.runtime) && a.id !== self)
       .map((a) => ({ id: a.id, description: a.description, category: a.category }));
     return sendJson(res, 200, { agents });
   }
@@ -1450,6 +1450,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     tm.notify(session, String(b.agent || ''), String(b.kind || ''), String(b.message || ''));
     return sendJson(res, 200, { ok: true });
   }
+  // Runtime session-id capture. Claude Code lets the OS PIN the transcript id up front
+  // (`--session-id`), so it never calls this. Codex mints its OWN rollout UUID, so codex-launch.sh
+  // discovers it (the per-session CODEX_HOME contains exactly one rollout file) and reports it back
+  // here — that id is what `codex exec resume <id>` / `codex fork <id>` need later. Session-secret
+  // gated like the rest of the loopback signals; first write wins, so a resumed run can't re-point an
+  // existing conversation at a different transcript.
+  if (method === 'POST' && p === '/api/runtime-session') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const ok = tm.recordRuntimeSessionId(session, String(b.runtimeSessionId || ''));
+    return sendJson(res, 200, { ok });
+  }
   // attach-wrapper signal that a stopped session was resurrected (→ mark running again).
   if (method === 'POST' && p === '/api/resumed') {
     const b = await readBody(req);
@@ -1552,7 +1566,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (assignee && assignee.startsWith('agent:')) {
       const targetId = assignee.slice('agent:'.length);
       if (!os.agents.get(targetId)) {
-        const valid = [...os.agents.values()].filter((a) => a.runtime === 'claude-code').map((a) => a.id).join(', ');
+        const valid = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime)).map((a) => a.id).join(', ');
         return sendJson(res, 200, { ok: false, error: `no agent "${targetId}" — assign to one of: ${valid} (call list_agents to see the roster)` });
       }
     }
@@ -1837,7 +1851,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, { ok: false, error: `you can only edit your own listing ("${id}"), not "${String(b.id).trim().toLowerCase()}"` });
     const ag = os.agents.get(id);
     if (!ag?.dir) return sendJson(res, 200, { ok: false, error: `unknown agent "${id}"` });
-    if (ag.runtime !== 'claude-code') return sendJson(res, 200, { ok: false, error: 'only claude-code agents can be edited' });
+    if (!isCodingRuntime(ag.runtime)) return sendJson(res, 200, { ok: false, error: 'only CLI-backed agents can be edited' });
     // Only agents that live under the data home are editable (the read-only bundled examples are not).
     const userRoot = path.resolve(os.paths.userAgents) + path.sep;
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
@@ -2402,7 +2416,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!os.team.canRun(me, card.target)) return sendJson(res, 403, { error: `you cannot run "${card.target}", so you cannot approve edits to it` });
     const ag = os.agents.get(card.target);
     if (!ag?.dir) { tm.setAgentUpdateProposalStatus(card.id, 'rejected'); return sendJson(res, 200, { ok: false, error: `target agent "${card.target}" no longer exists` }); }
-    if (ag.runtime !== 'claude-code') return sendJson(res, 200, { ok: false, error: 'only claude-code agents can be edited' });
+    if (!isCodingRuntime(ag.runtime)) return sendJson(res, 200, { ok: false, error: 'only CLI-backed agents can be edited' });
     const userRoot = path.resolve(os.paths.userAgents) + path.sep;
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
     const f = card.fields; // the proposed field delta (only present keys are applied — same shape as the self-edit body)
@@ -2543,7 +2557,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return { id, description: a?.description || '', category: a?.category, icon: a?.icon, score };
     };
     const fleet = () =>
-      [...os.agents.values()].filter((a) => a.runtime === 'claude-code' && runnable(a.id)).map((a) => card(a.id));
+      [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && runnable(a.id)).map((a) => card(a.id));
     // The `work` responder: the agent-routing decision, filtered to what this member can run.
     const respondWork = async (askFallback?: boolean) => {
       const decision = await chooseAgent(os, text);
@@ -3845,7 +3859,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const srcId = agentDup[1];
     const src = os.agents.get(srcId);
     if (!src?.dir) return sendJson(res, 404, { error: `unknown agent "${srcId}"` });
-    if (src.runtime !== 'claude-code') return sendJson(res, 400, { error: 'only claude-code agents can be duplicated' });
+    if (!isCodingRuntime(src.runtime)) return sendJson(res, 400, { error: 'only CLI-backed agents can be duplicated' });
     const newId = String(b.newId || `${srcId}-copy`).trim().toLowerCase();
     if (!/^[a-z][a-z0-9-]{1,39}$/.test(newId)) return sendJson(res, 400, { error: 'id must be lowercase letters, digits and hyphens (2–40 chars, starting with a letter)' });
     if (os.agents.get(newId)) return sendJson(res, 409, { error: `an agent named "${newId}" already exists` });
@@ -3926,7 +3940,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const ag = os.agents.get(agentConfig[1]);
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
-    if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'runtime tuning applies to claude-code agents only' });
+    if (!isCodingRuntime(ag.runtime)) return sendJson(res, 400, { error: 'runtime tuning applies to CLI-backed agents only' });
     if (method === 'GET') {
       return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
@@ -3979,7 +3993,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     const ag = os.agents.get(agentRevert[1]);
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
-    if (ag.runtime !== 'claude-code') return sendJson(res, 400, { error: 'only claude-code agents can be reverted' });
+    if (!isCodingRuntime(ag.runtime)) return sendJson(res, 400, { error: 'only CLI-backed agents can be reverted' });
     const b = await readBody(req);
     const rev = Number(b.rev);
     const target = os.agentRevisions.get(ag.id, rev);

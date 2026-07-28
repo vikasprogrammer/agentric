@@ -54,8 +54,10 @@ Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`]
 
 **Today.** Agents are folders with an `agent.json` manifest (`src/types.ts` → `AgentManifest`), loaded
 from bundled examples (`config/agents/`) and the user's data home (`<home>/agents/`, user wins on id
-collision). Two runtimes: `mock` (scripted demo) and `claude-code` (real Claude opened in the agent's
-folder, governed by the PreToolUse gate hook — `terminal/claude-launch.sh` + `terminal/gate-hook.sh`).
+collision). Three runtimes: `mock` (scripted demo), `claude-code` (real Claude opened in the agent's
+folder) and `codex` (OpenAI Codex, same folder) — both real CLIs governed by the SHARED PreToolUse gate
+hook (`terminal/<runtime>-launch.sh` + `terminal/gate-hook.sh`, which picks its tool→capability routing
+table from `$AOS_RUNTIME`).
 Sessions are tmux shells (`src/terminal.ts`), attachable in the browser via ttyd, persisted in the
 `term_sessions` table with who spawned them. Spawning is permission-checked (`TeamStore.canRun`), and
 the same gate covers their lifecycle: **Stop** (`POST /api/sessions/:id/stop`) kills a runaway shell
@@ -75,8 +77,14 @@ resolves agent-value → workspace-default → CLI-default (`resolveRuntimeTunin
 `--model`/`--effort`/`--permission-mode`. Model+effort apply to both lanes; permission-mode only to the
 interactive lane (headless keeps `--dangerously-skip-permissions`). Permission-mode is the agent's *own*
 posture — the PreToolUse gate hook still gates risky effects underneath it, even under `bypassPermissions`.
-The runtime registry stays a two-value union (`mock | claude-code`); a foreign-CLI runtime (Codex etc.) is
-deliberately **parked** — its governance has no PreToolUse-hook equivalent (see Gaps).
+Codex takes `model`/`effort` (via the generated `config.toml`) but has no permission-mode — Agent OS is
+its sole authority through `approval_policy = "never"`, so that knob is not forwarded.
+
+**Runtime capabilities.** `CODING_RUNTIMES` in `src/types.ts` declares what each CLI supports
+(`pinnedSessionId`, `resume`, `fork`, `attachableUnattended`, `residentChat`, `transcript`,
+`nativeSkills`, `nativeSubagents`, `statusLine`, `permissionMode`, `fileWriteGate`, `mcpGate`,
+`steerOnAllow`). Call sites probe a named capability via `runtimeSupports()` rather than comparing
+runtime ids, and `isCodingRuntime()` answers the plain "is this a real CLI agent" question.
 
 Agents have full **console CRUD** (owner/admin): **create** (`POST /api/agents` writes a `claude-code`
 folder — `agent.json` + `CLAUDE.md` — under the data home and registers it live), **edit** the
@@ -85,10 +93,12 @@ assignment, refusing while a session runs). Only agents under the data home are 
 examples are read-only (`deletable` flag on each agent).
 
 **Gaps.** Session cleanup is manual only (no retention sweep / auto-archive of old idle sessions); no
-per-agent run history view tying sessions to audit. **Swappable foreign CLIs (Codex/Gemini/etc.) are not
-implemented** — the runtime seam (manifest `runtime`, env→flag launcher) is general enough to add one, but
-the gateway invariant ("every side effect through the gateway") relies on Claude Code's PreToolUse hook,
-which foreign CLIs lack; bringing one in needs an MCP-fronted-only or sandbox-based enforcement model first.
+per-agent run history view tying sessions to audit. **Codex is a first cut** (see `docs/codex-runtime.md`):
+its unattended lane is `codex exec`, which exits at turn end, so a Codex run is not attachable/takeover-able
+and has no resident warm chat; cost, engaged-time and the friendly chat timeline are unavailable because the
+transcript parser only understands Claude Code's JSONL; skills/sub-agents are Claude-only; and it is
+local-lane only (refused under `AOS_UID_ISOLATION`). There is still no console picker for an agent's
+runtime — set `"runtime": "codex"` in `agent.json`. **Other foreign CLIs (Gemini etc.) remain unimplemented.**
 
 ## 2. Inbox — ✅ Working
 

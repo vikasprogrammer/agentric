@@ -10,6 +10,7 @@
  */
 import type { AgentOS } from '../kernel';
 import type { Insights } from './insights';
+import { isCodingRuntime } from '../types';
 import { BUILTIN_SEED_IDS } from './agent-catalog';
 import { CONSOLIDATOR_ID } from './consolidation';
 import { ANALYST_ID } from './diagnosis';
@@ -145,7 +146,7 @@ export function buildImprovements(os: AgentOS, insights: Insights, now = Date.no
   const lastRun = new Map(db.prepare("SELECT agent, MAX(created_at) AS m FROM term_sessions GROUP BY agent").all<{ agent: string; m: number }>().map((r) => [r.agent, r.m]));
   const idleAgents = [...os.agents.values()].filter((a) => {
     const last = lastRun.get(a.id);
-    return a.runtime === 'claude-code' && !BUILT_IN_AGENTS.has(a.id) && last != null && last < now - AGENT_IDLE_DAYS * DAY;
+    return isCodingRuntime(a.runtime) && !BUILT_IN_AGENTS.has(a.id) && last != null && last < now - AGENT_IDLE_DAYS * DAY;
   });
   tiles.push({
     domain: 'idle-agents', count: idleAgents.length,

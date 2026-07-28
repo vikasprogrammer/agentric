@@ -15,7 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
-import { ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
@@ -523,11 +523,16 @@ export interface SessionEventNotice {
 export class TerminalManager {
   /** Scripted demo runner — for `runtime: mock` agents. */
   private readonly runner = path.resolve(__dirname, '../terminal/agent-runner.sh');
-  /** Real-Claude launcher — for `runtime: claude-code` agents. Opens claude in the agent's folder. */
+  /** Real-Claude launcher — for `runtime: claude-code` agents. Opens claude in the agent's folder.
+   *  Kept as a named field because the uid-isolation launcher path still references it directly. */
   private readonly launcher = path.resolve(__dirname, '../terminal/claude-launch.sh');
-  /** PreToolUse gate hook the launched claude is wired to. */
+  /** The launcher for a given coding runtime (`terminal/<spec.launchScript>`). */
+  private launchScriptFor(runtime: CodingRuntimeId): string {
+    return path.resolve(__dirname, '..', 'terminal', CODING_RUNTIMES[runtime].launchScript);
+  }
+  /** PreToolUse gate hook every runtime is wired to (shared; $AOS_RUNTIME picks its routing table). */
   private readonly hook = path.resolve(__dirname, '../terminal/gate-hook.sh');
-  /** OS-owned memory MCP server (compiled JS), injected into every claude-code session. */
+  /** OS-owned memory MCP server (compiled JS), injected into every CLI-backed session. */
   private readonly memoryMcp = path.resolve(__dirname, 'memory/memory-mcp.js');
   private readonly db: Db;
   /** Where sessions actually run: the shared local socket (default) or per-member uids via the
@@ -704,7 +709,7 @@ export class TerminalManager {
       alive: alive ? alive.has(r.tmux) : undefined,
       blocked: r.status === 'running' && blocked.has(r.id),
       resumable: resumable.has(r.id),
-      forkable: !!r.claude_session_id && this.os.agents.get(r.agent)?.runtime === 'claude-code',
+      forkable: !!r.claude_session_id && runtimeSupports(this.os.agents.get(r.agent)?.runtime, 'fork'),
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
       sourceKind: this.sourceKind(r.spawned_by),
       runAsLabel: this.runAsLabel(r.run_as),
@@ -1470,8 +1475,8 @@ export class TerminalManager {
         .run(id, clickup.taskId, clickup.commentId || '', Date.now());
     }
 
-    // Pick the runtime from the agent's manifest: claude-code → real claude in its folder;
-    // anything else (incl. unknown/demo names) → the scripted mock runner.
+    // Pick the runtime from the agent's manifest: a coding runtime (claude-code / codex) → that real
+    // CLI in the agent's folder; anything else (incl. unknown/demo names) → the scripted mock runner.
     const manifest = this.os.agents.get(agent);
     const runtime = manifest?.runtime ?? 'mock';
     // Audit records BOTH provenance and the run-as principal — when they differ (a trigger acting as
@@ -1487,8 +1492,8 @@ export class TerminalManager {
       this.fireSessionEvent(id, agent, 'started', `Started — ${agent}`, task || 'A delegated run began.');
     }
 
-    if (runtime === 'claude-code' && manifest?.dir) {
-      this.launchClaudeCode({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, hasClickup: !!clickup?.taskId, headless, resident, resume: !!resumeClaudeId, claudeSessionId, tuning });
+    if (isCodingRuntime(runtime) && manifest?.dir) {
+      this.launchAgentRuntime({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, hasClickup: !!clickup?.taskId, headless, resident, resume: !!resumeClaudeId, claudeSessionId, tuning });
     } else {
       this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env: this.sessionEnv(id, agent, task, secret), argv: ['bash', this.runner] });
     }
@@ -1510,7 +1515,7 @@ export class TerminalManager {
       .get<{ agent: string; claude_session_id: string | null; run_as: string | null }>(sourceId);
     if (!src) return { ok: false, error: 'unknown session' };
     const manifest = this.os.agents.get(src.agent);
-    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be forked' };
+    if (!runtimeSupports(manifest?.runtime, 'fork') || !manifest?.dir) return { ok: false, error: `forking is not supported by this agent's runtime` };
     if (!src.claude_session_id) return { ok: false, error: 'this session has no conversation to fork yet' };
 
     const id = newId('session');
@@ -1530,7 +1535,7 @@ export class TerminalManager {
       .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, resident, last_activity, headless, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(id, src.agent, title, seed, tmux, 'running', by ?? null, actingMember ?? null, secret, claudeSessionId, 0, null, 0, now, now);
     this.audit(id, src.agent, 'session.forked', { from: sourceId, fromClaudeId: src.claude_session_id, claudeSessionId, runAs: actingMember ?? null, by });
-    this.launchClaudeCode({
+    this.launchAgentRuntime({
       id, agent: src.agent, task: seed, secret, actingMember, spawnedBy: by,
       hasSlack: false, hasDiscord: false, hasClickup: false, headless: false, resident: false, resume: false,
       claudeSessionId, forkFrom: src.claude_session_id,
@@ -1545,7 +1550,7 @@ export class TerminalManager {
    * Memory + connectors are delivered purely as MCP tools via the per-session `.mcp.json`; the
    * orchestrator injects nothing into the prompt.
    */
-  private launchClaudeCode(o: {
+  private launchAgentRuntime(o: {
     id: string; agent: string; task: string; secret: string;
     actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean; hasClickup: boolean;
     headless: boolean; resident: boolean; resume: boolean; claudeSessionId: string;
@@ -1567,8 +1572,14 @@ export class TerminalManager {
     const askAnswer = (o.spawnedBy ?? '').startsWith('ask:');
     const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup);
     const companyMd = this.buildCompanyMd(o.agent, o.actingMember);
-    this.materializeSkills(o.id, o.agent, manifest.dir);
-    this.materializeSubagents(o.id, o.agent, manifest);
+    const runtime: CodingRuntimeId = isCodingRuntime(manifest.runtime) ? manifest.runtime : 'claude-code';
+    const caps = CODING_RUNTIMES[runtime].capabilities;
+    // Skills + sub-agents are materialised as native filesystem conventions (`.claude/skills`,
+    // `.claude/agents`), so they only apply to a runtime that discovers them. Codex has its own
+    // (differently-shaped) skills mechanism — not wired yet, so we skip rather than write files it
+    // would ignore. The agent still gets its persona + Company context via the launcher's AGENTS.md.
+    if (caps.nativeSkills) this.materializeSkills(o.id, o.agent, manifest.dir);
+    if (caps.nativeSubagents) this.materializeSubagents(o.id, o.agent, manifest);
     // Unattended (automation/cron/task) runs are now an attachable interactive TUI, not `claude -p` — so a
     // human can take one over mid-run by simply attaching (no kill, no resume). The launcher's UNATTENDED
     // lane runs interactive + `--dangerously-skip-permissions` (the gate hook still governs every effect),
@@ -1580,19 +1591,37 @@ export class TerminalManager {
     if (o.resident) env.RESIDENT = '1';
     env.AGENT_DIR = manifest.dir;
     env.HOOK = this.hook;
+    // Tells the shared gate hook which tool→capability routing table to use.
+    env.AOS_RUNTIME = runtime;
     // No OS sandbox env: the gate hook (PreToolUse) is the sole authority for governed side effects, so
     // we don't wrap the shell in Seatbelt/bubblewrap. Real OS containment is the Linux uid-isolation path.
     // Per-agent model / effort / permission-mode fall back to the workspace default; the launcher maps
     // them onto `--model`/`--effort`/`--permission-mode` (permission-mode on the interactive lane only).
     const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults(), o.tuning);
-    if (tuning.model) env.CLAUDE_MODEL = tuning.model;
-    if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
-    if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
-    this.audit(o.id, o.agent, 'session.tuning', { model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, override: o.tuning ?? null });
-    // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
-    // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
-    // follow-up or a console reconnect) instead of starting fresh.
-    env.CLAUDE_SESSION_ID = o.claudeSessionId;
+    if (runtime === 'codex') {
+      // Codex reads model/effort from the config.toml the launcher generates; it has no
+      // --permission-mode (Agent OS is the sole authority there via approval_policy = "never"), so
+      // permissionMode is deliberately not forwarded.
+      if (tuning.model) env.CODEX_MODEL = tuning.model;
+      if (tuning.effort) env.CODEX_EFFORT = tuning.effort;
+    } else {
+      if (tuning.model) env.CLAUDE_MODEL = tuning.model;
+      if (tuning.effort) env.CLAUDE_EFFORT = tuning.effort;
+      if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
+    }
+    this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, override: o.tuning ?? null });
+    if (caps.pinnedSessionId) {
+      // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
+      // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
+      // follow-up or a console reconnect) instead of starting fresh.
+      env.CLAUDE_SESSION_ID = o.claudeSessionId;
+    } else {
+      // Codex mints its OWN rollout id, so there is nothing to pin: the launcher discovers it from the
+      // per-session CODEX_HOME and POSTs it to /api/runtime-session. On a resume we hand back whatever
+      // it reported (persisted in the same column) so it can continue that transcript.
+      if (o.resume && o.claudeSessionId) env.RUNTIME_SESSION_ID = o.claudeSessionId;
+      env.AOS_CODEX_HOME = this.ensureCodexHome(o.id);
+    }
     if (o.resume) env.RESUME = '1';
     // Fork: on FIRST launch, branch off the parent conversation. RESUME is never set alongside forkFrom
     // (a fork's first run resumes nothing), and the launcher checks RESUME before FORK_FROM, so a later
@@ -1617,12 +1646,25 @@ export class TerminalManager {
     // Phase 2c: granted Host connections' SSH keys → a session ssh_config + ssh/scp PATH shim, so the
     // agent's plain `ssh` authenticates to a host without ever handling the key. (Local-lane only.)
     this.injectHostCredentials(env, o.agent, o.actingMember, o.id);
+    const launchScript = this.launchScriptFor(runtime);
     if (this.uidIsolation) {
       // Flag on: the launcher writes the files INTO the member's home and sets MCP_CONFIG/COMPANY_FILE/
       // TASK_FILE itself. The task rides as a FILE (not the inline TASK_B64 env) for the same reason as the
       // local lane below — see the delete note there; the launcher points TASK_FILE at the member-home copy.
+      //
+      // Codex is LOCAL-LANE ONLY for now: the Phase A launcher materialises a fixed set of files into the
+      // member home and knows nothing about a per-session CODEX_HOME, so the config/hooks the codex
+      // launcher needs would land outside the member's reach. Fail loudly rather than spawn a session
+      // whose gate hook was never wired — an ungoverned agent is the one outcome we never allow.
+      if (runtime !== 'claude-code') {
+        const why = `${CODING_RUNTIMES[runtime].label} sessions are not supported under AOS_UID_ISOLATION yet`;
+        this.audit(o.id, o.agent, 'session.launch.refused', { runtime, reason: why });
+        this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(Date.now(), o.id);
+        this.addMessage({ type: 'completed', sessionId: o.id, agent: o.agent, title: `Could not start — ${o.agent}`, body: why, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: o.id });
+        return;
+      }
       delete env.TASK_B64;
-      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher], files: { mcp: mcpJson || undefined, company: companyMd || undefined, task: o.task || undefined }, agentSrc: manifest.dir });
+      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript], files: { mcp: mcpJson || undefined, company: companyMd || undefined, task: o.task || undefined }, agentSrc: manifest.dir });
     } else {
       // Flag off: materialise into the app's connectors dir and persist the launch context so the ttyd
       // attach wrapper can resurrect a dead session. Headless automation runs write no resurrect env.
@@ -1640,8 +1682,24 @@ export class TerminalManager {
       const taskFile = this.writeSessionFile(o.id, 'task', o.task);
       if (taskFile) { env.TASK_FILE = taskFile; delete env.TASK_B64; }
       if (!o.headless) this.writeEnvFile(o.id, env);
-      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', this.launcher] });
+      this.backend.spawn(this.spaceFor(o.actingMember ?? o.spawnedBy), { sessionId: o.id, agent: o.agent, tmuxName: tmux, env, argv: ['bash', launchScript] });
     }
+  }
+
+  /**
+   * Create (0700) the per-session `$CODEX_HOME` a Codex run redirects all of its config + state into,
+   * and return its path. Two reasons it is per-SESSION rather than per-agent:
+   *  - the generated config.toml/hooks.json can't disturb the operator's own `~/.codex`; and
+   *  - `sessions/` then holds EXACTLY ONE rollout file, which is how the launcher discovers the id
+   *    Codex minted (there is no `--session-id` to pin) before POSTing it to /api/runtime-session.
+   * It lives beside the other `session-<id>.*` artefacts, so `removeSessionFiles` — which is prefix
+   * matched and recursive — already cleans it up when the session is deleted.
+   */
+  private ensureCodexHome(sessionId: string): string {
+    if (!this.os.paths) return '';
+    const dir = path.join(this.os.paths.connectors, `session-${sessionId}.codex`);
+    this.ensureSecureDir(dir);
+    return dir;
   }
 
   /**
@@ -1716,7 +1774,7 @@ export class TerminalManager {
     this.db.prepare("UPDATE term_sessions SET status = 'running', resident = 1, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
       .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.revived', { runAs: actingMember ?? null });
-    this.launchClaudeCode({
+    this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
       actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
@@ -1751,7 +1809,7 @@ export class TerminalManager {
     this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 1, resident = 0, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
       .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null });
-    this.launchClaudeCode({
+    this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
       actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: true, resident: false, resume: true, claudeSessionId: row.claude_session_id,
@@ -1773,9 +1831,13 @@ export class TerminalManager {
     const row = this.db.prepare('SELECT agent, claimed_by FROM term_sessions WHERE id = ?')
       .get<{ agent: string; claimed_by: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
-    // Only the real claude-code runtime has an attachable governed TUI; a mock/other runtime has nothing to take over.
+    // Take-over needs a runtime whose UNATTENDED lane is a live, attachable TUI. Claude Code qualifies;
+    // Codex's unattended lane is `codex exec`, a one-shot process that exits at turn end, so there is no
+    // pane to claim (and mock has no pane at all).
     const manifest = this.os.agents.get(row.agent);
-    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be taken over' };
+    if (!runtimeSupports(manifest?.runtime, 'attachableUnattended') || !manifest?.dir) {
+      return { ok: false, error: `this agent's runtime has no attachable session to take over` };
+    }
     if (row.claimed_by) return { ok: true }; // already taken over — the pane is already sticky/attachable
     // A prior stop must not veto the deliberate take-over; clear any sentinel so a re-open resurrects.
     this.allowResume(sessionId);
@@ -1812,7 +1874,9 @@ export class TerminalManager {
       .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
     const manifest = this.os.agents.get(row.agent);
-    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be taken over' };
+    if (!runtimeSupports(manifest?.runtime, 'attachableUnattended') || !manifest?.dir) {
+      return { ok: false, error: `this agent's runtime has no attachable session to take over` };
+    }
     // A turn is still generating → attach to the live pane, no relaunch (identical to a live take-over).
     if (this.isAlive(sessionId)) return this.claimSession(sessionId, by);
     // Dead → resurrect the transcript. Needs the pinned claude session id to `--resume` from.
@@ -1827,7 +1891,7 @@ export class TerminalManager {
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'takeover-resume' });
-    this.launchClaudeCode({
+    this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
       actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: false, resident: false, resume: true, claudeSessionId: row.claude_session_id,
@@ -1851,7 +1915,10 @@ export class TerminalManager {
       .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
     const manifest = this.os.agents.get(row.agent);
-    if (manifest?.runtime !== 'claude-code' || !manifest.dir) return { ok: false, error: 'only claude-code sessions can be taken over' };
+    // Resurrecting a chat as a warm resident TUI needs the resident-chat capability, not just resume.
+    if (!runtimeSupports(manifest?.runtime, 'residentChat') || !manifest?.dir) {
+      return { ok: false, error: `this agent's runtime does not support resident chat sessions` };
+    }
     if (!row.claude_session_id) return { ok: false, error: 'this chat has no conversation to open yet' };
     // A turn is still generating → attach to the live pane, no relaunch.
     if (this.isAlive(sessionId)) return this.claimSession(sessionId, by);
@@ -1863,7 +1930,7 @@ export class TerminalManager {
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'chat-takeover' });
-    this.launchClaudeCode({
+    this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
       actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
       headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
@@ -2147,10 +2214,34 @@ export class TerminalManager {
     return this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(id)?.run_as ?? undefined;
   }
 
-  /** The pinned claude transcript id for a session — so a self-scheduled follow-up can `--resume` this
-   *  same conversation (context continuity) instead of starting fresh. */
+  /** The runtime transcript id for a session — so a self-scheduled follow-up can resume this same
+   *  conversation (context continuity) instead of starting fresh.
+   *
+   *  NOTE ON THE COLUMN NAME: `claude_session_id` predates multi-runtime support and now holds the
+   *  transcript id for WHICHEVER runtime drove the run — Claude Code's pinned `--session-id` or the
+   *  Codex rollout UUID captured via `/api/runtime-session`. Both are consumed the same way (resume /
+   *  fork by id), so the column is generic in meaning if not in name; it is left un-renamed on purpose
+   *  to avoid a migration + ~25-callsite churn for zero behavioural gain. */
   sessionClaudeId(id: string): string | undefined {
     return this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?').get<{ claude_session_id: string | null }>(id)?.claude_session_id ?? undefined;
+  }
+
+  /**
+   * Record a runtime-minted transcript id (Codex). FIRST WRITE WINS: once a session has an id, a later
+   * report is ignored, so a resumed run can't silently re-point an existing conversation at a different
+   * transcript (which would strand the original and break `resume`/`fork`). Returns whether it stored.
+   */
+  recordRuntimeSessionId(sessionId: string, runtimeSessionId: string): boolean {
+    const id = runtimeSessionId.trim();
+    // Codex rollout ids are UUIDs; reject anything else so a malformed scrape can't poison the column.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return false;
+    const row = this.db.prepare('SELECT agent, claude_session_id FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; claude_session_id: string | null }>(sessionId);
+    if (!row || row.claude_session_id) return false;
+    this.db.prepare('UPDATE term_sessions SET claude_session_id = ?, updated_at = ? WHERE id = ?')
+      .run(id, Date.now(), sessionId);
+    this.audit(sessionId, row.agent, 'session.runtime_id', { runtimeSessionId: id });
+    return true;
   }
 
   /** Resolve a tmux session name (`aos-xxxx`) to its session id — for the terminal-attach authz check. */
@@ -2223,7 +2314,7 @@ export class TerminalManager {
     // answerable straight from the prompt without a discovery round-trip (`list_agents` is the live
     // equivalent). Excludes self and mock agents, so it only lists peers this agent can actually dispatch.
     const roster = [...this.os.agents.values()]
-      .filter((a) => a.runtime === 'claude-code' && a.id !== selfAgent)
+      .filter((a) => isCodingRuntime(a.runtime) && a.id !== selfAgent)
       .map((a) => `- \`agent:${a.id}\`${a.category ? ` (${a.category})` : ''} — ${a.description}`)
       .join('\n');
     const fleet = roster
@@ -2530,7 +2621,7 @@ export class TerminalManager {
    */
   refreshAgentSkills(agent: string): { reloaded: number } {
     const manifest = this.os.agents.get(agent);
-    if (!manifest || manifest.runtime !== 'claude-code' || !manifest.dir) return { reloaded: 0 };
+    if (!manifest || !runtimeSupports(manifest.runtime, 'nativeSkills') || !manifest.dir) return { reloaded: 0 };
     const rows = this.db
       .prepare(`SELECT id, tmux, run_as, spawned_by FROM term_sessions WHERE agent = ? AND status = 'running' AND headless = 0`)
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null }>(agent)
@@ -3362,7 +3453,7 @@ export class TerminalManager {
     if (target === callerAgent) return { error: 'an agent cannot ask itself — pick a different teammate' };
     const manifest = this.os.agents.get(target);
     if (!manifest) return { error: `unknown agent: ${target}` };
-    if (manifest.runtime !== 'claude-code') return { error: `${target} is not an interactive agent that can answer` };
+    if (!isCodingRuntime(manifest.runtime)) return { error: `${target} is not an interactive agent that can answer` };
     // Run-as passthrough: the delegate acts AS the caller's accountable human, so budget/approvals/identity
     // ladder to the same person the caller already answers to (mirrors task-owner passthrough).
     const runAs = this.db.prepare('SELECT run_as FROM term_sessions WHERE id = ?').get<{ run_as: string | null }>(callerSession)?.run_as ?? undefined;
@@ -3911,7 +4002,7 @@ export class TerminalManager {
     if (!this.os.paths) return { ok: false, error: 'editing agents requires a data home' };
     const ag = this.os.agents.get(target);
     if (!ag?.dir) return { ok: false, error: `unknown agent "${target}"` };
-    if (ag.runtime !== 'claude-code') return { ok: false, error: 'only claude-code agents can be edited' };
+    if (!isCodingRuntime(ag.runtime)) return { ok: false, error: 'only CLI-backed agents can be edited' };
     const userRoot = path.resolve(this.os.paths.userAgents) + path.sep;
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return { ok: false, error: 'built-in agents cannot be edited' };
     // Only the fields actually present become the delta; store them verbatim on the card for the approve route.

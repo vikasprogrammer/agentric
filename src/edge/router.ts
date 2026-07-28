@@ -22,7 +22,7 @@
  * only bad outcome, and it's gated behind a clear score margin. The router only PICKS an id — the spawn
  * is still fully governed downstream (provenance, run-as, gate hook), so routing carries no privilege.
  */
-import { AgentManifest, EmbeddingsConfig, RouterConfig } from '../types';
+import { isCodingRuntime, AgentManifest, EmbeddingsConfig, RouterConfig } from '../types';
 import { AgentOS } from '../kernel';
 import { resolveLlm, chatComplete } from './llm';
 
@@ -168,7 +168,7 @@ function profileHash(s: string): string {
  */
 export async function chooseAgent(os: AgentOS, text: string): Promise<RouteDecision> {
   const cfg = os.settings.routerConfig();
-  const agents = [...os.agents.values()].filter((a) => a.runtime === 'claude-code');
+  const agents = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime));
   if (agents.length === 0) return { kind: 'none' };
 
   let scored = scoreAgents(text, agents);

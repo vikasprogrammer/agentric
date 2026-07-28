@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# Claude Code PreToolUse hook — the AUTHENTIC path.
+# PreToolUse hook — the AUTHENTIC path. Shared by every coding runtime.
 #
-# Wire this in a session's settings.json (see terminal/claude-settings.json) so a REAL
-# `claude` agent running in tmux is governed by Agent OS: before every tool call, Claude
-# runs this hook. The server decides: allow / ask (create an inbox approval and BLOCK here
-# until a human decides) / never (denied outright).
+# Wire this in a session's runtime config (Claude Code: `.claude/aos-settings.json`, written by
+# claude-launch.sh; Codex: `$CODEX_HOME/hooks.json`, written by codex-launch.sh) so a REAL agent
+# running in tmux is governed by Agent OS: before every tool call, the CLI runs this hook. The server
+# decides: allow / ask (create an inbox approval and BLOCK here until a human decides) / never
+# (denied outright).
+#
+# MULTI-RUNTIME: $AOS_RUNTIME (`claude-code` | `codex`, default `claude-code`) selects the
+# tool→capability routing table below. Everything else — the fail-closed gate call, the approval
+# wait, the decision wire — is identical, because Codex 0.145 uses the same PreToolUse stdin fields
+# (`tool_name`/`tool_input`/`agent_type`) and the same `permissionDecision` allow|deny|ask +
+# `additionalContext` output wire as Claude Code (verified against the schema embedded in the codex
+# binary). One file on purpose: a governance fix must never land for one runtime and miss the other.
 #
 # Contract (AUTHORITATIVE-DECISION mode): for the capabilities Agent OS governs (Bash,
 # connector.*), the hook emits a PreToolUse `permissionDecision` on stdout and exits 0.
@@ -22,7 +30,7 @@
 # the hook stays silent (bare exit 0) and defers to Claude's normal permission flow — that's
 # what keeps the crown-jewel `permissions.deny` Read rules in force for the built-in Read tool.
 #
-# Env: AOS_URL, SESSION, AGENT  (exported when the claude session is launched)
+# Env: AOS_URL, SESSION, AGENT, AOS_RUNTIME  (exported when the session is launched)
 set -u
 EVENT=$(cat)
 
@@ -54,30 +62,52 @@ emit_allow_note() {
 IFS=$'\x1f' read -r TOOL SUBTYPE SUBID INPUT <<<"$(printf '%s' "$EVENT" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const e=JSON.parse(d||"{}");const S="\x1f";process.stdout.write([e.tool_name||"",e.agent_type||"",e.agent_id||"",JSON.stringify(e.tool_input||{})].join(S))})')"
 
 # The OS-owned tools (memory recall/remember, ask/report, policy preview) are internal and never
-# touch the outside world, so they bypass the gate entirely.
+# touch the outside world, so they bypass the gate entirely. Claude namespaces MCP tools
+# `mcp__<server>__<tool>`; Codex may present the bare `<server>__<tool>` — accept both spellings so the
+# OS's own server is never gated under either runtime.
 case "$TOOL" in
-  mcp__agentos__*) exit 0 ;;
+  mcp__agentos__*|agentos__*) exit 0 ;;
 esac
 
 # Route the tool to an Agent OS capability (structural — the only thing the hook still decides). All
 # riskiness/destructiveness classification now happens server-side in the enricher + policy.
-case "$TOOL" in
-  Bash) CAP="shell.exec" ;;
-  # File writes go through the gateway too (the enricher decides inside-vs-outside the agent's folder
-  # from the path in tool_input). The hook stays dumb transport — it only names the capability.
-  Edit|Write|MultiEdit|NotebookEdit) CAP="file.write" ;;
-  mcp__composio-company__*INITIATE_CONNECTION*)
-    # INITIATE_CONNECTION starts an OAuth grant that gives the whole fleet access to an app — the actual
-    # privilege-bearing op, so it's an owner/admin call (connector.connect).
-    CAP="connector.connect" ;;
-  # MANAGE_CONNECTIONS is a management/STATUS tool — in practice agents call it to LIST/check connections
-  # (`{toolkits:["gmail"]}`), a benign read that was needlessly owner-gated. Route it to connector.call
-  # (allowed) like any other connector tool; a real grant goes through INITIATE_CONNECTION above.
-  mcp__*) CAP="connector.call" ;;
-  *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
+#
+# The routing table is per-runtime because each CLI names its tools differently; everything BELOW this
+# block (the fail-closed gate call, the approval wait, the decision wire) is deliberately shared, so a
+# governance fix can't land for one runtime and miss the other.
+case "${AOS_RUNTIME:-claude-code}" in
+  codex)
+    # Codex tool inventory. `shell` is the exec tool (its aliases are matched too, defensively).
+    # NOTE: Codex applies most edits by piping `apply_patch` THROUGH the shell tool, so those already
+    # arrive here as shell.exec; the explicit apply_patch arm covers the native-tool spelling. Writes
+    # that dodge the hook entirely are still contained by the sandbox's `writable_roots` (set to the
+    # agent folder in codex-launch.sh) — see the RuntimeCapabilities note in src/types.ts.
+    case "$TOOL" in
+      shell|local_shell|exec_command|unified_exec) CAP="shell.exec" ;;
+      apply_patch) CAP="file.write" ;;
+      *INITIATE_CONNECTION*) CAP="connector.connect" ;;
+      mcp__*|*composio*) CAP="connector.call" ;;
+      *) exit 0 ;;  # read_file / update_plan / web_search / … aren't world side effects → allow
+    esac ;;
+  *)
+    case "$TOOL" in
+      Bash) CAP="shell.exec" ;;
+      # File writes go through the gateway too (the enricher decides inside-vs-outside the agent's folder
+      # from the path in tool_input). The hook stays dumb transport — it only names the capability.
+      Edit|Write|MultiEdit|NotebookEdit) CAP="file.write" ;;
+      mcp__composio-company__*INITIATE_CONNECTION*)
+        # INITIATE_CONNECTION starts an OAuth grant that gives the whole fleet access to an app — the actual
+        # privilege-bearing op, so it's an owner/admin call (connector.connect).
+        CAP="connector.connect" ;;
+      # MANAGE_CONNECTIONS is a management/STATUS tool — in practice agents call it to LIST/check connections
+      # (`{toolkits:["gmail"]}`), a benign read that was needlessly owner-gated. Route it to connector.call
+      # (allowed) like any other connector tool; a real grant goes through INITIATE_CONNECTION above.
+      mcp__*) CAP="connector.call" ;;
+      *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
+    esac ;;
 esac
 
-payload=$(node -e 'const[s,a,cap,t,inp,st,si]=process.argv.slice(1);let input={};try{input=JSON.parse(inp||"{}")}catch(e){};const o={sessionId:s,agent:a,capability:cap,args:{tool:t,input},reasoning:"claude PreToolUse: "+t};if(st){o.subagentType=st;if(si)o.subagentId=si;}console.log(JSON.stringify(o))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$INPUT" "$SUBTYPE" "$SUBID")
+payload=$(node -e 'const[s,a,cap,t,inp,st,si]=process.argv.slice(1);let input={};try{input=JSON.parse(inp||"{}")}catch(e){};const o={sessionId:s,agent:a,capability:cap,args:{tool:t,input},reasoning:(process.env.AOS_RUNTIME||"claude-code")+" PreToolUse: "+t};if(st){o.subagentType=st;if(si)o.subagentId=si;}console.log(JSON.stringify(o))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$INPUT" "$SUBTYPE" "$SUBID")
 
 # FAIL-CLOSED classify. Retry the gate until it returns a usable decision; a transient failure (server
 # restart, network blip, the documented stale-server 401/404 window) must NEVER fall through to "allow".
