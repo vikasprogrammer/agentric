@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.273.0] — 2026-07-28
+### Added
+- **Per-runtime account pool + launch-time credential rotation.** A box authenticates each coding runtime
+  with ONE credential set (`claude` via a Max-subscription OAuth token, `codex` via `~/.codex/auth.json`),
+  and a subscription plan has a WEEKLY cap. When it's exhausted every spawned session gets a "you've hit
+  your limit" refusal, does no work, and hangs — and during a limit window every cron tick spawns another
+  zombie. Operators can now register more than one account **per runtime** (Settings → owner-only
+  `/api/runtime-accounts`); the launcher hands each session an available account and points its credentials
+  there via the runtime's own env vars — declared generically in `CodingRuntimeSpec.credentialEnv`
+  (`CLAUDE_CONFIG_DIR`/`ANTHROPIC_API_KEY` for claude-code, `AOS_REAL_CODEX_HOME`/`OPENAI_API_KEY` for
+  codex; a future runtime slots in by declaring its two vars, no rotation-code change). On a detected limit
+  the account is parked until its reset and the next launch rotates to another; only when a runtime's whole
+  pool is dry does the scheduler DEFER (retry a later tick) instead of spawning a doomed run. **Inert by
+  default**: with an empty pool nothing changes — the CLI uses the box's single default account exactly as
+  today.
+### Fixed
+- **A headless run that never started leaked for up to 24h.** A usage-limit refusal / trust-dialog hang /
+  lost prompt makes an unattended run complete no turn (so no Stop beacon, `last_activity` stays NULL) and
+  make no tool call — indistinguishable to the idle reaper from a mid-turn run, so it lingered until the
+  24h `unattendedMaxHours` ceiling, holding a ~500MB claude process + a concurrency-cap slot the whole
+  time (the globex pile-up). A new no-progress backstop reaps a headless running row past
+  `unattendedNoProgressMinutes` (default 30m; Settings → Runtime) that has made zero `gate.attempt` — a
+  busy long first turn fires one on its first tool, so it's never cut. 48× faster than the old ceiling.
+
 ## [0.272.2] — 2026-07-28
 ### Fixed
 - **A Codex session with no credentials dropped into an interactive login menu inside the agent pane.**

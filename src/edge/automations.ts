@@ -16,7 +16,7 @@ import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
-import { isCodingRuntime, Task, TaskTimelineEntry } from '../types';
+import { CodingRuntimeId, isCodingRuntime, Task, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
@@ -529,6 +529,17 @@ export class Automations {
   }
 
   // ── firing ─────────────────────────────────────────────────────────────────────
+  /** Is the account pool for this agent's runtime fully exhausted right now? Returns the runtime + earliest
+   *  reset when yes, else null. An EMPTY pool is never exhausted (rotation inert → scheduled work runs exactly
+   *  as today), so this only ever fires on a box that has opted into rotation and burned through every account.
+   *  The scheduler uses it to DEFER rather than spawn a doomed, zombie-prone run. */
+  private runtimePoolExhausted(agentId: string): { runtime: CodingRuntimeId; until: number | null } | null {
+    const manifest = this.os.agents.get(agentId);
+    const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+    const state = this.os.runtimeAccounts.allLimited(runtime);
+    return state.limited ? { runtime, until: state.until } : null;
+  }
+
   /**
    * Spawn the automation's session. `guard: true` skips when the previous spawn is still alive —
    * the no-pile-ups rule for cron/webhook; "Run now" from the console passes guard: false.
@@ -536,6 +547,13 @@ export class Automations {
   fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; clickup?: { taskId: string; commentId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
     if (opts.guard && a.lastSessionId && this.tm.isAlive(a.lastSessionId)) {
       return { ok: false, reason: 'previous session still running' };
+    }
+    // Don't spawn a scheduled/triggered run into an exhausted quota — it would just hit the usage limit and
+    // zombie. Defer (retry a later tick, firing once an account's limit resets). A human "Run now"
+    // (guard:false) is never deferred. Inert when no pool is configured (allLimited → false).
+    if (opts.guard) {
+      const dry = this.runtimePoolExhausted(a.agentId);
+      if (dry) return { ok: false, reason: `all ${dry.runtime} accounts limited${dry.until ? ` until ${new Date(dry.until).toISOString()}` : ''}` };
     }
     const task = opts.extra ? `${a.task}\n\n${opts.extra}` : a.task;
     // Provenance is ALWAYS the automation (`spawned_by`); the run-as member (when a trigger resolved
@@ -581,6 +599,13 @@ export class Automations {
     if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown agent: ${agentId}` };
     if (guard && t.lastSessionId && this.tm.isAlive(t.lastSessionId)) {
       return { ok: false, reason: 'a session is already working this task' };
+    }
+    // Defer a guarded (scheduler-driven) dispatch when the agent's runtime pool is exhausted — retried next
+    // tick, fires once an account resets. Attempts are NOT incremented (see below), so deferral costs no
+    // retry budget. A direct console/task_dispatch (guard:false) is never deferred.
+    if (guard) {
+      const dry = this.runtimePoolExhausted(agentId);
+      if (dry) return { ok: false, reason: `all ${dry.runtime} accounts limited${dry.until ? ` until ${new Date(dry.until).toISOString()}` : ''}` };
     }
     if (t.attempts >= TASK_MAX_ATTEMPTS) {
       this.os.tasks.update(id, { status: 'blocked', note: `auto-dispatch gave up after ${t.attempts} attempts`, by: 'system' });
