@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.274.0] — 2026-07-28
+### Added
+- **Runtime picker on the agent config card.** An agent's runtime was manifest-only — you had to hand-edit
+  `agent.json` and rescan. It's now a dropdown (owner/admin, `PUT /api/agents/:id/config` accepts
+  `runtime`), which also surfaces what the chosen runtime can't do ("Codex does not support: take-over,
+  warm chat, cost + timeline, skills, sub-agents — every effect is still governed by the same gate") and
+  warns that a runtime change starts a new conversation.
+- **Per-runtime model validation.** Agents carry a pinned `model`, so switching a Claude agent to Codex
+  used to hand `claude-opus-4-8` straight to `codex --model` and break every run. `sanitizeRuntimeTuning`
+  now takes the runtime and rejects a model belonging to another family (deliberately a narrow guard, not
+  an allowlist — custom/newer ids still work), the console offers per-runtime model suggestions via a
+  datalist and flags a foreign id inline, and switching runtimes in the picker clears a now-foreign model
+  so it lands on "inherit" rather than something broken. A `permissionMode` set on a runtime that has none
+  is refused too, instead of being silently stored and never applied.
+
 ## [0.273.0] — 2026-07-28
 ### Fixed
 - **Codex sessions were running UNGOVERNED — two independent silent failures.** Found by driving a real

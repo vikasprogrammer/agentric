@@ -1101,6 +1101,15 @@ export interface CodingRuntimeSpec {
   launchScript: string;
   /** Basename of the PreToolUse gate hook under `terminal/`. */
   gateHook: string;
+  /** A few known-good model ids, offered as suggestions in the console. NOT an allowlist — a custom or
+   *  newer id must still be settable, so validation only rejects ids that clearly belong to ANOTHER
+   *  runtime (see `foreignModel`). */
+  suggestedModels: readonly string[];
+  /** Matches a model id belonging to a DIFFERENT runtime. This is the one model mistake worth blocking:
+   *  agents carry a pinned `model`, so flipping a Claude agent to Codex would silently hand
+   *  `claude-opus-4-8` to `codex --model` and break every run. Deliberately narrow — it rejects the
+   *  obvious cross-family id and lets anything else through. */
+  foreignModel: RegExp;
   capabilities: RuntimeCapabilities;
 }
 
@@ -1111,6 +1120,8 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     bin: 'claude',
     launchScript: 'claude-launch.sh',
     gateHook: 'gate-hook.sh',
+    suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
+    foreignModel: /^(gpt|o[0-9]|codex)/i,
     capabilities: {
       pinnedSessionId: true, resume: true, fork: true, attachableUnattended: true,
       residentChat: true, transcript: true, nativeSkills: true, nativeSubagents: true,
@@ -1129,6 +1140,8 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // file keeps the fail-closed retry + approval-wait logic in ONE place; two copies would let a
     // security fix land in one runtime and silently miss the other.
     gateHook: 'gate-hook.sh',
+    suggestedModels: ['gpt-5-codex', 'gpt-5.6-sol'],
+    foreignModel: /^claude/i,
     capabilities: {
       // Codex mints its own rollout id (`codex exec resume <id>` / `codex fork <id>`), so the id is
       // captured after launch rather than pinned. The unattended lane is `codex exec`, which exits at
@@ -1167,6 +1180,16 @@ export function codingRuntime(runtime: RuntimeId | undefined): CodingRuntimeSpec
 /** Does `runtime` support `cap`? False for `mock` and unknown runtimes. */
 export function runtimeSupports(runtime: RuntimeId | undefined, cap: keyof RuntimeCapabilities): boolean {
   return codingRuntime(runtime)?.capabilities[cap] ?? false;
+}
+
+
+/** Reject a model id that plainly belongs to another runtime. Returns an error string, or undefined
+ *  when the id is acceptable (including any unknown/custom id — this is a guard, not an allowlist). */
+export function validateModelForRuntime(runtime: RuntimeId | undefined, model: string): string | undefined {
+  const spec = codingRuntime(runtime);
+  if (!spec || !model) return undefined;
+  if (!spec.foreignModel.test(model)) return undefined;
+  return `"${model}" is not a ${spec.label} model. Try one of: ${spec.suggestedModels.join(', ')} — or clear the field to inherit the workspace default.`;
 }
 
 export interface AgentManifest extends RuntimeTuning {
@@ -1338,10 +1361,20 @@ export function sanitizeAppDomains(input: unknown): string[] {
  *  strings to undefined and rejects out-of-set effort values. Returns the clean tuning plus any
  *  validation error (so callers can 400). Unknown model strings pass through — the CLI validates
  *  those, and aliases evolve faster than we'd want to hard-code. */
-export function sanitizeRuntimeTuning(input: Partial<Record<keyof RuntimeTuning, unknown>>): { tuning: RuntimeTuning; error?: string } {
+export function sanitizeRuntimeTuning(
+  input: Partial<Record<keyof RuntimeTuning, unknown>>,
+  /** The runtime the tuning will run under. Supplied by the agent-config route so a model or a
+   *  permission-mode that runtime can't honour is rejected at the edge rather than silently ignored
+   *  (or, for a cross-family model, passed to the CLI and breaking every run). */
+  runtime?: RuntimeId,
+): { tuning: RuntimeTuning; error?: string } {
   const tuning: RuntimeTuning = {};
   const model = typeof input.model === 'string' ? input.model.trim() : '';
-  if (model) tuning.model = model;
+  if (model) {
+    const bad = validateModelForRuntime(runtime, model);
+    if (bad) return { tuning, error: bad };
+    tuning.model = model;
+  }
   const effort = typeof input.effort === 'string' ? input.effort.trim() : '';
   if (effort) {
     if (!EFFORTS.includes(effort as Effort)) return { tuning, error: `effort must be one of: ${EFFORTS.join(', ')}` };
@@ -1350,6 +1383,11 @@ export function sanitizeRuntimeTuning(input: Partial<Record<keyof RuntimeTuning,
   const mode = typeof input.permissionMode === 'string' ? input.permissionMode.trim() : '';
   if (mode) {
     if (!PERMISSION_MODES.includes(mode as PermissionMode)) return { tuning, error: `permissionMode must be one of: ${PERMISSION_MODES.join(', ')}` };
+    // Silently storing a mode a runtime ignores is worse than refusing it: the console would show a
+    // posture that isn't in force anywhere.
+    if (runtime && !runtimeSupports(runtime, 'permissionMode')) {
+      return { tuning, error: `${codingRuntime(runtime)?.label ?? runtime} has no permission mode — Agent OS is its sole authority. Leave it on inherit.` };
+    }
     tuning.permissionMode = mode as PermissionMode;
   }
   return { tuning };
