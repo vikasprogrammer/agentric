@@ -17,7 +17,7 @@ import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
-import { readConversation, type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
+import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { chooseAgent } from './edge/router';
@@ -1037,8 +1037,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const target = tm.sessionsForAgent(agent).find((s) => s.id === id);
     if (!target) return sendJson(res, 403, { error: 'not one of your sessions' });
     const meta = { id: target.id, title: target.title, task: target.task, status: target.status, createdAt: target.createdAt, updatedAt: target.updatedAt, rating: target.rating };
-    const claudeId = tm.sessionClaudeId(id);
-    const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
+    const convo = tm.sessionConversation(id);
     if (url.searchParams.get('summary') === '1') {
       const out = await summarizeConversation(convo);
       os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'session.summarized', data: { target: id, via: out.via, found: out.found } });
@@ -2600,8 +2599,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const agent = tm.sessionAgent(id);
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
-    const claudeId = tm.sessionClaudeId(id);
-    const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
+    const convo = tm.sessionConversation(id);
     // Resolve the deliverables an activity produced (a Library artifact, a KB page, a hosted app) into
     // viewer-safe preview cards the chat UI renders inline — dropping anything the viewer may not see or
     // that no longer exists. The viewer already passed canViewSession, so their own run's outputs resolve;
@@ -2860,8 +2858,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const id = summarizeMatch[1];
     if (!tm.sessionAgent(id)) return sendJson(res, 404, { error: 'unknown session' });
     if (!tm.canViewSession(id, me)) return sendJson(res, 403, { error: 'not allowed to view this session' });
-    const claudeId = tm.sessionClaudeId(id);
-    const convo = claudeId ? readConversation(claudeId) : { turns: [], found: false };
+    const convo = tm.sessionConversation(id);
     const out = await summarizeConversation(convo);
     os.audit.append({ ts: Date.now(), runId: id, tenant: os.tenant, principal: me.email, type: 'session.summarized', data: { via: out.via, found: out.found } });
     return sendJson(res, 200, out);

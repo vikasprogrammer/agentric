@@ -1152,7 +1152,9 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       // (openai/codex#24093) — so an interactive Codex session would run with no gate at all. Until hook
       // trust can be pre-seeded we take the feature gap over the security hole. See docs/codex-runtime.md.
       attachableUnattended: false, residentChat: false,
-      transcript: false, nativeSkills: false, nativeSubagents: false,
+      // Codex's rollout JSONL is parsed by src/edge/codex-transcript.ts, so cost / engaged time /
+      // turns / tool calls and the friendly chat timeline all work.
+      transcript: true, nativeSkills: false, nativeSubagents: false,
       statusLine: false, permissionMode: false,
       // PreToolUse covers Bash, apply_patch AND mcp__* — verified empirically against codex 0.145 (its
       // hook reports Claude's exact tool names). So the gate, not just the sandbox, governs writes and

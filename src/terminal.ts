@@ -32,6 +32,8 @@ import { VendorError, retryableStatus, timedFetch, withRetry, vendorErrorInfo } 
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
 import { understandMedia } from './edge/media-understand';
 import { readSessionCost } from './edge/session-cost';
+import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
+import { readConversation, Conversation } from './edge/conversation';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
@@ -752,7 +754,7 @@ export class TerminalManager {
       budget--;
       let cost;
       try {
-        cost = readSessionCost(r.claude_session_id);
+        cost = this.readCostFor(r.id, r.agent, r.claude_session_id);
       } catch {
         continue;                                       // transcript unreadable — retry on a later poll
       }
@@ -1708,6 +1710,42 @@ export class TerminalManager {
    * It lives beside the other `session-<id>.*` artefacts, so `removeSessionFiles` — which is prefix
    * matched and recursive — already cleans it up when the session is deleted.
    */
+  /** The per-session `$CODEX_HOME` path WITHOUT creating it — for readers that only want to look. */
+  private codexHomePath(sessionId: string): string | undefined {
+    return this.os.paths ? path.join(this.os.paths.connectors, `session-${sessionId}.codex`) : undefined;
+  }
+
+  /**
+   * Cost + shape for a session, read from whichever transcript its runtime writes. Claude Code's lives
+   * in the global `~/.claude/projects` tree keyed by the pinned id; Codex's is a rollout inside the run's
+   * own `$CODEX_HOME`. One dispatcher so every caller (the sweep, the console, insights) stays runtime-
+   * agnostic. `null` = no transcript yet / unreadable, exactly as before.
+   */
+  private readCostFor(sessionId: string, agent: string, runtimeSessionId: string) {
+    if (this.os.agents.get(agent)?.runtime === 'codex') {
+      const home = this.codexHomePath(sessionId);
+      const file = home ? findCodexRollout(home) : undefined;
+      return file ? readCodexCost(file) : null;
+    }
+    return readSessionCost(runtimeSessionId);
+  }
+
+  /**
+   * The friendly chat timeline for a session, from whichever transcript its runtime writes. Returns the
+   * same `Conversation` shape for both, so the console renders them identically.
+   */
+  sessionConversation(sessionId: string): Conversation {
+    const row = this.db.prepare('SELECT agent, claude_session_id FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; claude_session_id: string | null }>(sessionId);
+    if (!row) return { turns: [], found: false };
+    if (this.os.agents.get(row.agent)?.runtime === 'codex') {
+      const home = this.codexHomePath(sessionId);
+      const file = home ? findCodexRollout(home) : undefined;
+      return file ? readCodexConversation(file) : { turns: [], found: false };
+    }
+    return row.claude_session_id ? readConversation(row.claude_session_id) : { turns: [], found: false };
+  }
+
   private ensureCodexHome(sessionId: string): string {
     if (!this.os.paths) return '';
     const dir = path.join(this.os.paths.connectors, `session-${sessionId}.codex`);
