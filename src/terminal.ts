@@ -1434,10 +1434,17 @@ export class TerminalManager {
   createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }): Session {
     const id = newId('session');
     const tmux = `aos-${id}`;
-    // The claude conversation this run drives. A fresh run mints a new id (pinned via `--session-id`);
-    // a thread follow-up passes the PRIOR run's id so the launcher `--resume`s the same transcript and
-    // keeps context. Persisted on the row so a later follow-up can look it up (see sessionForSlackThread).
-    const claudeSessionId = resumeClaudeId || randomUUID();
+    // The conversation this run drives. A thread follow-up passes the PRIOR run's id so the launcher
+    // resumes the same transcript and keeps context. Persisted on the row so a later follow-up can look
+    // it up (see sessionForSlackThread).
+    //
+    // For a fresh run we may only MINT the id when the runtime lets us PIN it (`claude --session-id`).
+    // Codex mints its own rollout UUID and has no such flag, so pre-filling the column here would store
+    // a random id that matches no real transcript — and, because `recordRuntimeSessionId` is
+    // first-write-wins, it would then REJECT the real id the launcher reports, silently breaking
+    // resume/fork for every Codex run. Leave it NULL and let the launcher's report be the first write.
+    const runtimeOf = this.os.agents.get(agent)?.runtime;
+    const claudeSessionId = resumeClaudeId || (runtimeSupports(runtimeOf, 'pinnedSessionId') ? randomUUID() : null);
     // P2 — provenance vs identity:
     //   `spawnedBy`     = what TRIGGERED this run (an `automation:<id>` or the console member). Stays
     //                     provenance: drives the inbox source label, the audit principal, isolation
@@ -1521,8 +1528,11 @@ export class TerminalManager {
     const id = newId('session');
     const tmux = `aos-${id}`;
     // The fork's OWN new conversation id (distinct from the parent's) — `--fork-session --session-id`
-    // copies the parent history into it, leaving the parent's transcript intact.
-    const claudeSessionId = randomUUID();
+    // copies the parent history into it, leaving the parent's transcript intact. Only mint it when the
+    // runtime lets us pin it: `codex fork <parent>` mints the branch's id ITSELF, so pre-filling the
+    // column would store an id matching no transcript AND block the launcher's real report (see the
+    // same trap in createSession).
+    const claudeSessionId = runtimeSupports(manifest.runtime, 'pinnedSessionId') ? randomUUID() : null;
     // Inherit the branch identity (connectors/Composio/uid follow run_as); fall back to the forker when
     // the parent had none. Provenance (`spawned_by`) is the forking member — this fork was console-driven.
     const actingMember = src.run_as ?? (by || undefined);
@@ -1553,7 +1563,10 @@ export class TerminalManager {
   private launchAgentRuntime(o: {
     id: string; agent: string; task: string; secret: string;
     actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean; hasClickup: boolean;
-    headless: boolean; resident: boolean; resume: boolean; claudeSessionId: string;
+    headless: boolean; resident: boolean; resume: boolean;
+    /** The transcript id to pin. NULL for a runtime that mints its own (Codex) — the launcher
+     *  discovers it and reports it back via /api/runtime-session instead. */
+    claudeSessionId: string | null;
     // Per-launch tuning override (highest priority over the agent manifest + workspace default) — e.g. a
     // delegated task pinning the model/effort of its dispatched session. Undefined → resolve as before.
     tuning?: RuntimeTuning;
@@ -1614,7 +1627,7 @@ export class TerminalManager {
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
       // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
       // follow-up or a console reconnect) instead of starting fresh.
-      env.CLAUDE_SESSION_ID = o.claudeSessionId;
+      if (o.claudeSessionId) env.CLAUDE_SESSION_ID = o.claudeSessionId;
     } else {
       // Codex mints its OWN rollout id, so there is nothing to pin: the launcher discovers it from the
       // per-session CODEX_HOME and POSTs it to /api/runtime-session. On a resume we hand back whatever

@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.272.1] — 2026-07-28
+### Fixed
+- **Codex sessions stored a meaningless transcript id, breaking resume/fork.** `createSession` (and
+  `forkSession`) unconditionally pre-filled `claude_session_id` with a fresh `randomUUID()` — correct for
+  Claude Code, which PINS that id via `--session-id`, but wrong for Codex, which mints its own rollout
+  UUID. Because `recordRuntimeSessionId` is first-write-wins, the pre-filled random id then **rejected the
+  real id the launcher reported**, so the column held a UUID matching no transcript and a later
+  `codex exec resume <id>` / `codex fork <id>` would silently fall back to a fresh conversation. The id is
+  now only minted for a runtime with the `pinnedSessionId` capability; Codex leaves it NULL so the
+  launcher's report is the first write. Caught on the live box on the first real Codex run (stored
+  `712b2de7-…` vs the actual rollout `019fa7a4-…`).
+
 ## [0.272.0] — 2026-07-28
 ### Added
 - **A second coding runtime: OpenAI Codex.** An agent manifest can now declare `"runtime": "codex"`
