@@ -1625,6 +1625,12 @@ export class TerminalManager {
       if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
     }
     this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, override: o.tuning ?? null });
+    // Account rotation: if a POOL is configured for this runtime, pick an available account and point the
+    // session at its credentials via the runtime's own env vars (CODING_RUNTIMES[runtime].credentialEnv).
+    // INERT when the pool is empty — pick() returns null, we set nothing, the CLI uses the box default (i.e.
+    // today's behavior). pick() also returns null when every account is limited; a member launch then still
+    // proceeds on the default (better than blocking the human), while the scheduler defers cron upstream.
+    this.applyRuntimeAccount(env, o.id, o.agent, runtime);
     if (caps.pinnedSessionId) {
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
       // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
@@ -2058,6 +2064,13 @@ export class TerminalManager {
     // ~500MB claude process + a cap slot (confirmed on globex: unattended runs stuck at 60h+). `0` disables.
     const maxHours = this.os.settings.unattendedMaxHours();
     const maxAgeCutoff = maxHours > 0 ? Date.now() - maxHours * 3600_000 : null;
+    // No-progress backstop (fast net for a run that never STARTED — usage-limit / trust-hang / lost prompt).
+    // A headless run stuck this way looks identical to the 24h ceiling case (last_activity NULL, never
+    // beacons) but should not have to wait a full day: it made ZERO governed tool calls, so once it's older
+    // than this short window we know it never got going and reap it. A busy long first turn is EXCLUDED — it
+    // fires gate.attempt on its first tool (see hasMadeProgress). Settings → Runtime; default 30m, 0 = off.
+    const noProgMin = this.os.settings.unattendedNoProgressMinutes();
+    const noProgCutoff = noProgMin > 0 ? Date.now() - noProgMin * 60_000 : null;
     const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null; created_at: number }>();
     for (const r of unattended) {
@@ -2072,23 +2085,31 @@ export class TerminalManager {
         // required (that's the whole point: it's stuck mid-turn). Headed sessions never reach here (the query
         // only pulls headless running rows besides done orphans), so this can't cut a member mid-work.
         const overMaxAge = maxAgeCutoff != null && r.headless === 1 && r.status === 'running' && r.created_at < maxAgeCutoff;
+        // A headless run past the short no-progress window that never completed a turn (last_activity NULL)
+        // AND never made a governed tool call — it never actually started. Reap fast, like overMaxAge but on a
+        // 30-min clock. hasMadeProgress keeps a genuinely-busy long turn (which fires gate.attempt) safe.
+        const noProgress = noProgCutoff != null && r.headless === 1 && r.status === 'running'
+          && r.last_activity == null && r.created_at < noProgCutoff && !this.hasMadeProgress(r.id);
+        const forceReap = overMaxAge || noProgress;
         if (alive) {
           if (!alive.has(r.tmux)) continue;                          // pane already gone — nothing to reap
           // a 'running' straggler is only idle-reaped once it has seen a turn-end beacon AND gone quiet past the
           // cutoff; a 'done' orphan is reaped on sight — it should never still be holding an interactive pane.
-          // The hard-age backstop (overMaxAge) reaps regardless of the beacon.
-          if (r.status === 'running' && !overMaxAge && (r.last_activity == null || r.last_activity >= cutoff)) continue;
+          // The hard-age (overMaxAge) and no-progress backstops reap regardless of the beacon.
+          if (r.status === 'running' && !forceReap && (r.last_activity == null || r.last_activity >= cutoff)) continue;
         } else {
           // no liveness signal: classic straggler rule, running-only, so we can't re-sweep a done row blind.
-          if (r.status !== 'running' || (!overMaxAge && (r.last_activity == null || r.last_activity >= cutoff))) continue;
+          if (r.status !== 'running' || (!forceReap && (r.last_activity == null || r.last_activity >= cutoff))) continue;
         }
         const space = this.spaceFor(r.run_as ?? r.spawned_by);
         if (this.backend.hasClient(space, r.tmux) === true) continue; // a human is still watching — leave it
         // The idle-straggler path keeps a run that's legitimately blocked on a person; but a run past the hard
         // ceiling is abandoned by definition (nobody has answered in a full day), so the backstop reaps it
-        // anyway — teardownUnattended cancels its dangling question/approval so nothing is left waiting.
+        // anyway — teardownUnattended cancels its dangling question/approval so nothing is left waiting. A
+        // no-progress run CAN legitimately be blocked (it may have called `ask` — an MCP tool, no gate.attempt),
+        // so it keeps the block-skip; only overMaxAge overrides it.
         if (!overMaxAge && this.hasPendingHumanBlock(r.id)) continue;
-        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
+        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : noProgress ? 'stuck-no-progress' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }
 
@@ -2165,6 +2186,9 @@ export class TerminalManager {
    *  releases. Shared by the Stop-hook fast path and the idle backstop. */
   private teardownUnattended(sessionId: string, space: string, tmux: string, reason: string): void {
     this.captureTranscript(sessionId, space, tmux);
+    // Before killing the pane, check whether this run died on a usage-limit refusal; if so park the account
+    // it used so the next launch rotates away from it (rotation's detection point).
+    this.detectUsageLimit(sessionId, space, tmux);
     this.markEnded(sessionId);   // status → done (if still running), blockResume, writeEpisode
     // Release any dangling human-block so nothing is left waiting on a reaped run. A no-op for the
     // idle-backstop/turn-end paths (they skip a blocked run upstream), but essential for the hard
@@ -2183,6 +2207,46 @@ export class TerminalManager {
     return this.os.approvals.pending(this.os.tenant).some((a) => a.runId === sessionId);
   }
 
+  /** Has this run made any real PROGRESS — i.e. attempted at least one governed tool call (a `gate.attempt`
+   *  audit event)? The no-progress backstop (sweep 2) uses this to tell a run that never STARTED (usage-limit
+   *  refusal / trust-hang / lost prompt → zero tools) apart from a genuinely-busy long first turn (which fires
+   *  gate.attempt on its first Bash/tool). Best-effort: if the audit table can't be read (demo `:memory:` db
+   *  with no sink, a transient error), return TRUE so a read failure can never trigger a mass reap. Note: a
+   *  hypothetical MCP-only run that does real work via un-gated loopback tools would read as no-progress, but
+   *  such a run either completes its turn (stamps last_activity → excluded) or is blocked on `ask` (excluded
+   *  by hasPendingHumanBlock) — so the 30-min window makes a false reap vanishingly unlikely. */
+  private hasMadeProgress(sessionId: string): boolean {
+    try {
+      const row = this.db.prepare("SELECT 1 FROM audit_events WHERE run_id = ? AND type = 'gate.attempt' LIMIT 1").get(sessionId);
+      return !!row;
+    } catch {
+      return true; // can't tell → assume progress; never let a read error reap live runs
+    }
+  }
+
+  /** Select a rotation-pool account for this runtime and point the session's credentials at it, via the
+   *  runtime's own env vars (`CODING_RUNTIMES[runtime].credentialEnv`). Records which account the run used
+   *  (`term_sessions.runtime_account`) so limit detection at teardown can park the right one. No-op — leaving
+   *  the box's default credentials in place — when the pool is empty or exhausted, or when an api-key
+   *  account's vault value can't be resolved (fail-open: better to launch on the default than not at all). */
+  private applyRuntimeAccount(env: Record<string, string>, sessionId: string, agent: string, runtime: CodingRuntimeId): void {
+    try {
+      const acct = this.os.runtimeAccounts.pick(runtime);
+      if (!acct) return; // empty pool (inert) or all limited → box default
+      const { configDirVar, apiKeyVar } = CODING_RUNTIMES[runtime].credentialEnv;
+      if (acct.kind === 'apikey') {
+        const value = acct.apiKeyRef ? this.os.secrets.getSync(this.os.tenant, agent, acct.apiKeyRef) : undefined;
+        if (!value) { this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, ref: acct.apiKeyRef }); return; }
+        env[apiKeyVar] = value;
+      } else {
+        if (!acct.configDir) return;
+        env[configDirVar] = acct.configDir;
+      }
+      this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
+      this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind });
+    } catch { /* rotation must never break a launch — fall through to the box default */ }
+  }
+
   /** Snapshot a live pane's scrollback to `<connectors>/session-<id>.log` (0600) so the console's
    *  transcript view survives the pane being killed — the replacement for the old headless `-p` tee.
    *  Best-effort: no paths, an unreachable socket, or a launcher backend (capturePane → null) → skip. */
@@ -2194,6 +2258,48 @@ export class TerminalManager {
       fs.mkdirSync(this.os.paths.connectors, { recursive: true }); // the dir exists once a session wrote its .mcp.json, but don't depend on it
       fs.writeFileSync(path.join(this.os.paths.connectors, `session-${sessionId}.log`), text, { mode: 0o600 });
     } catch { /* transcript capture is a nicety — never block teardown */ }
+  }
+
+  // Signature of a usage-limit refusal in a session's pane, and the reset-time parse. Covers the shapes the
+  // CLIs print — claude: "you've hit your weekly limit", "usage limit reached", "resets Jul 30, 10am (UTC)";
+  // a generic "rate limit" catch covers codex / future runtimes. Best-effort text scan, no API dependency.
+  private static readonly USAGE_LIMIT_RE = /\b(weekly limit|usage limit|rate limit|hit your .{0,20}limit|limit reached|out of (?:usage|credits))\b/i;
+
+  /** Did this unattended run die on a usage-limit refusal? Scans the final pane for the limit signature and,
+   *  if the run launched under a rotation-pool account, parks THAT account (with a parsed reset time, or a
+   *  1 h fallback so an unparseable reset still rotates without wedging) so the next launch picks another.
+   *  No account recorded (box default) → nothing to rotate; still audited so the box's limit state is visible.
+   *  Best-effort — never throws, never blocks teardown. */
+  private detectUsageLimit(sessionId: string, space: string, tmux: string): void {
+    try {
+      const row = this.db.prepare('SELECT agent, runtime_account FROM term_sessions WHERE id = ?')
+        .get<{ agent: string; runtime_account: string | null }>(sessionId);
+      if (!row) return;
+      const text = this.backend.capturePane(space, tmux);
+      if (!text || !TerminalManager.USAGE_LIMIT_RE.test(text)) return;
+      const until = this.parseLimitReset(text) ?? Date.now() + 60 * 60_000; // 1h fallback keeps it parked but self-heals
+      const manifest = this.os.agents.get(row.agent);
+      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+      if (row.runtime_account) {
+        this.os.runtimeAccounts.markLimited(runtime, row.runtime_account, until);
+        this.audit(sessionId, 'system', 'runtime.account.limited', { runtime, account: row.runtime_account, until });
+      } else {
+        // No pool account → the box's single default hit its limit; surface it (an operator adds accounts to rotate).
+        this.audit(sessionId, 'system', 'runtime.usage_limited', { runtime, until });
+      }
+    } catch { /* detection is best-effort — never block teardown */ }
+  }
+
+  /** Best-effort parse of a reset time from a limit message ("resets Jul 30, 10am (UTC)" / "resets 3:10pm").
+   *  Returns epoch ms, or null when nothing parseable is found (caller applies a fallback). Timezone-naive
+   *  parses are fine — a slightly-off reset just means one extra retry, which re-parks the account. */
+  private parseLimitReset(text: string): number | null {
+    const m = /\bresets?\b[^.\n]*/i.exec(text);
+    if (!m) return null;
+    // Pull a date-ish or time-ish fragment out of the "resets …" clause and let Date parse it.
+    const frag = m[0].replace(/^resets?\s*/i, '').replace(/\(([^)]*)\)/, '$1').trim();
+    const t = Date.parse(frag);
+    return Number.isFinite(t) ? t : null;
   }
 
   /** `{ AOS_URL, SESSION, AGENT, TASK_B64, AOS_SECRET }` — the base env every runner/launcher inherits. */

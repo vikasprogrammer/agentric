@@ -1101,6 +1101,14 @@ export interface CodingRuntimeSpec {
   launchScript: string;
   /** Basename of the PreToolUse gate hook under `terminal/`. */
   gateHook: string;
+  /** How to point a session at a SPECIFIC account's credentials, for launch-time account rotation across a
+   *  pool (see `RuntimeAccountStore`). `configDirVar` is the env var that relocates the runtime's credential
+   *  directory — claude reads `$CLAUDE_CONFIG_DIR/.credentials.json`; codex's launcher symlinks `auth.json`
+   *  from `$AOS_REAL_CODEX_HOME`. `apiKeyVar` is the usage-billed API-key env (`ANTHROPIC_API_KEY` /
+   *  `OPENAI_API_KEY`). Rotation exports ONE of these per session; both unset → the runtime uses the box's
+   *  default single account, i.e. today's behavior. Generic so a third runtime slots in by declaring its
+   *  own two vars — no rotation code changes. */
+  credentialEnv: { configDirVar: string; apiKeyVar: string };
   /** A few known-good model ids, offered as suggestions in the console. NOT an allowlist — a custom or
    *  newer id must still be settable, so validation only rejects ids that clearly belong to ANOTHER
    *  runtime (see `foreignModel`). */
@@ -1120,6 +1128,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     bin: 'claude',
     launchScript: 'claude-launch.sh',
     gateHook: 'gate-hook.sh',
+    credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY' },
     suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
     foreignModel: /^(gpt|o[0-9]|codex)/i,
     capabilities: {
@@ -1140,6 +1149,9 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // file keeps the fail-closed retry + approval-wait logic in ONE place; two copies would let a
     // security fix land in one runtime and silently miss the other.
     gateHook: 'gate-hook.sh',
+    // Codex reads auth.json from the dir the launcher symlinks (AOS_REAL_CODEX_HOME → $CODEX_HOME/auth.json);
+    // OPENAI_API_KEY is the usage-billed alternative the launcher already accepts.
+    credentialEnv: { configDirVar: 'AOS_REAL_CODEX_HOME', apiKeyVar: 'OPENAI_API_KEY' },
     suggestedModels: ['gpt-5-codex', 'gpt-5.6-sol'],
     foreignModel: /^claude/i,
     capabilities: {

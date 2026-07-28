@@ -4071,7 +4071,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   if (method === 'PUT' && p === '/api/settings/concurrency') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown };
+    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown; unattendedNoProgressMinutes?: unknown };
     // Cap: `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Only touched when the
     // key is present, so a PUT that only sets idleHours leaves the cap alone.
     if ('value' in b) {
@@ -4096,7 +4096,54 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const savedH = os.settings.setUnattendedMaxHours(h, me.email);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.unattendedMax.updated', data: { unattendedMaxHours: savedH } });
     }
-    return sendJson(res, 200, { ok: true, value: os.settings.maxConcurrentSessions(), resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours() });
+    // No-progress backstop for headless runs (minutes): 0 = off; else clamped 5m–24h. Present-only.
+    if ('unattendedNoProgressMinutes' in b) {
+      const m = Number(b.unattendedNoProgressMinutes);
+      if (!Number.isFinite(m) || m < 0) return sendJson(res, 400, { error: 'unattendedNoProgressMinutes must be a non-negative number (0 = off)' });
+      const savedM = os.settings.setUnattendedNoProgressMinutes(m, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.noProgress.updated', data: { unattendedNoProgressMinutes: savedM } });
+    }
+    return sendJson(res, 200, { ok: true, value: os.settings.maxConcurrentSessions(), resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes() });
+  }
+
+  // ── Runtime account POOL (launch-time credential rotation) — owner-managed ──────────────
+  // A per-runtime pool of credentials the launcher rotates so a session isn't spawned into an exhausted
+  // usage quota. Empty pool = inert (box default). Never returns an api-key VALUE — only its vault ref.
+  if (method === 'GET' && p === '/api/runtime-accounts') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const accounts = os.runtimeAccounts.list();
+    const runtimes = Object.values(CODING_RUNTIMES).map((s) => ({ id: s.id, label: s.label, credentialEnv: s.credentialEnv }));
+    return sendJson(res, 200, { accounts, runtimes });
+  }
+  if (method === 'POST' && p === '/api/runtime-accounts') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const b = await readBody(req) as { runtime?: unknown; name?: unknown; kind?: unknown; configDir?: unknown; apiKeyRef?: unknown };
+    const runtime = String(b.runtime ?? '') as RuntimeId;
+    if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
+    const kind = b.kind === 'apikey' ? 'apikey' : 'oauth';
+    try {
+      const acct = os.runtimeAccounts.add({ runtime, name: String(b.name ?? ''), kind, configDir: b.configDir ? String(b.configDir) : undefined, apiKeyRef: b.apiKeyRef ? String(b.apiKeyRef) : undefined });
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.added', data: { runtime, name: acct.name, kind } });
+      return sendJson(res, 200, { ok: true, account: acct });
+    } catch (e) { return sendJson(res, 400, { error: (e as Error).message }); }
+  }
+  {
+    const m = /^\/api\/runtime-accounts\/([^/]+)\/([^/]+)$/.exec(p);
+    if (m && (method === 'PATCH' || method === 'DELETE')) {
+      if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+      const runtime = decodeURIComponent(m[1]) as RuntimeId;
+      const name = decodeURIComponent(m[2]);
+      if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
+      if (method === 'DELETE') {
+        os.runtimeAccounts.remove(runtime, name);
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.removed', data: { runtime, name } });
+        return sendJson(res, 200, { ok: true });
+      }
+      const b = await readBody(req) as { enabled?: unknown };
+      if ('enabled' in b) os.runtimeAccounts.setEnabled(runtime, name, !!b.enabled);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.updated', data: { runtime, name, enabled: !!b.enabled } });
+      return sendJson(res, 200, { ok: true, account: os.runtimeAccounts.get(runtime, name) });
+    }
   }
 
   // ── UI branding (per-tenant accent colour + favicon badge) — owner/admin edits ──
