@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.277.0] — 2026-07-28
+### Added
+- **Settings → Runtime → "Runtime accounts" panel.** The per-runtime credential pool (v0.276.0's
+  launch-time rotation) is now manageable in the console, owner-only: a table of accounts per runtime
+  (name, credential, `available` / `limited · resets …`, last used) with add / enable-disable / remove,
+  driven by `/api/runtime-accounts`. An empty pool shows an explicit "inert — box default" state, and the
+  add-form adapts its credential field to the chosen runtime's env vars and account kind (subscription dir
+  vs vault key ref). The **no-progress reaper** knob (`unattendedNoProgressMinutes`) also gets a field
+  alongside the concurrency / idle / max-runtime controls.
+
 ## [0.276.0] — 2026-07-28
 ### Added
 - **File-write guard — closes a fleet-wide hole where agents could write anywhere.** `default@v3` ships
