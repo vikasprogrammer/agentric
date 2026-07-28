@@ -578,19 +578,38 @@ function IconPicker({ value, onChange }: { value?: string; onChange: (v: string 
  *  effort map 1:1 to `claude --model/--effort`; permissionMode maps to `--permission-mode` on the
  *  INTERACTIVE lane only and its blank/floor is `auto` (the gate hook governs every side effect
  *  regardless of the mode — it only tunes the fallback for tools the hook leaves alone). */
-function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritLabel = 'inherit', permInheritLabel }: {
+/** What the agent-config route tells the console about a runtime: its label, the model ids worth
+ *  suggesting, and which knobs it honours. Mirrors CODING_RUNTIMES server-side so the picker never
+ *  hardcodes the registry. */
+type RuntimeInfo = { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean> }
+
+function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritLabel = 'inherit', permInheritLabel, runtime }: {
   tuning: RuntimeTuning
   onChange: (t: RuntimeTuning) => void
   modelPlaceholder?: string
   inheritLabel?: string
   permInheritLabel?: string
+  /** The runtime these knobs will run under, when known (the per-agent card passes it; the
+   *  workspace-defaults page leaves it undefined because a default spans every runtime). Drives the
+   *  model suggestions and hides a permission mode the runtime can't honour. */
+  runtime?: RuntimeInfo
 }) {
   const selCls = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
+  const models = runtime?.suggestedModels ?? []
+  // A model pinned for ANOTHER runtime is the one mistake worth flagging inline: agents carry a model,
+  // so switching runtimes silently hands e.g. `claude-opus-4-8` to `codex --model`. The server rejects
+  // it too — this just says so before the round-trip.
+  const foreign = !!(tuning.model && models.length && !models.includes(tuning.model) &&
+    (runtime?.id === 'codex' ? /^claude/i.test(tuning.model) : /^(gpt|o[0-9]|codex)/i.test(tuning.model)))
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="space-y-1">
         <label className="text-xs font-medium">Model</label>
-        <Input value={tuning.model ?? ''} onChange={(e) => onChange({ ...tuning, model: e.target.value || undefined })} placeholder={modelPlaceholder} className="h-8 font-mono text-xs" />
+        <Input list={models.length ? 'aos-model-suggestions' : undefined} value={tuning.model ?? ''} onChange={(e) => onChange({ ...tuning, model: e.target.value || undefined })} placeholder={modelPlaceholder} className={`h-8 font-mono text-xs ${foreign ? 'border-destructive' : ''}`} />
+        {models.length > 0 && (
+          <datalist id="aos-model-suggestions">{models.map((m) => <option key={m} value={m} />)}</datalist>
+        )}
+        {foreign && <p className="text-[11px] text-destructive">Not a {runtime?.label} model — try {models.join(' or ')}, or clear to inherit.</p>}
       </div>
       <div className="space-y-1">
         <label className="text-xs font-medium">Effort</label>
@@ -599,14 +618,22 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
           {EFFORTS.map((x) => <option key={x} value={x}>{x}</option>)}
         </select>
       </div>
-      <div className="space-y-1">
-        <label className="text-xs font-medium">Permission mode</label>
-        <select className={selCls} value={tuning.permissionMode ?? ''} onChange={(e) => onChange({ ...tuning, permissionMode: (e.target.value || undefined) as PermissionMode | undefined })}>
-          <option value="">{permInheritLabel ?? inheritLabel}</option>
-          {PERMISSION_MODES.map((x) => <option key={x} value={x}>{x}</option>)}
-        </select>
-        <p className="text-[11px] text-muted-foreground">Interactive only — headless stays fully skipped. The gate hook governs regardless.</p>
-      </div>
+      {runtime && !runtime.capabilities.permissionMode ? (
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-muted-foreground">Permission mode</label>
+          <div className="flex h-8 items-center rounded-md border border-dashed bg-muted/30 px-2 text-xs text-muted-foreground">not applicable</div>
+          <p className="text-[11px] text-muted-foreground">{runtime.label} has no permission mode — Agent OS is its sole authority, and the gate hook still governs every effect.</p>
+        </div>
+      ) : (
+        <div className="space-y-1">
+          <label className="text-xs font-medium">Permission mode</label>
+          <select className={selCls} value={tuning.permissionMode ?? ''} onChange={(e) => onChange({ ...tuning, permissionMode: (e.target.value || undefined) as PermissionMode | undefined })}>
+            <option value="">{permInheritLabel ?? inheritLabel}</option>
+            {PERMISSION_MODES.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+          <p className="text-[11px] text-muted-foreground">Interactive only — headless stays fully skipped. The gate hook governs regardless.</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -9960,6 +9987,9 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
   const [savedChatReachable, setSavedChatReachable] = useState(true)
   const [netMode, setNetMode] = useState<'open' | 'allowlist'>('open')
   const [savedNetMode, setSavedNetMode] = useState<'open' | 'allowlist'>('open')
+  const [runtime, setRuntime] = useState('')
+  const [savedRuntime, setSavedRuntime] = useState('')
+  const [runtimes, setRuntimes] = useState<RuntimeInfo[]>([])
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
 
@@ -9974,17 +10004,19 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
       const sub = r.usableSubagents ?? []
       const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
       const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
+      const rt = r.runtime ?? ''
+      setRuntime(rt); setSavedRuntime(rt); setRuntimes(r.runtimes ?? [])
       setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm)
     }).catch(() => {})
   }, [agentId])
 
-  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || chatReachable !== savedChatReachable || netMode !== savedNetMode
+  const dirty = JSON.stringify(tuning) !== JSON.stringify(saved) || description !== savedDescription || prompts !== savedPrompts || category !== savedCategory || icon !== savedIcon || secrets !== savedSecrets || JSON.stringify(subagents) !== JSON.stringify(savedSubagents) || spawnable !== savedSpawnable || chatReachable !== savedChatReachable || netMode !== savedNetMode || runtime !== savedRuntime
   const save = async () => {
     setBusy(true); setHint('')
     const examplePrompts = prompts.split('\n').map((s) => s.trim()).filter(Boolean)
     const shellSecrets = secrets.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
     // Always send `icon` (empty string clears it → server drops the manifest key).
-    const r = await api.saveAgentConfig(agentId, { ...tuning, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
+    const r = await api.saveAgentConfig(agentId, { runtime, ...tuning, description: description.trim(), examplePrompts, shellSecrets, usableSubagents: subagents, spawnableAsSubagent: spawnable, chatReachable, netMode, category: category.trim(), icon: icon ?? '' })
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     const t: RuntimeTuning = { model: r.model, effort: r.effort }
@@ -9995,7 +10027,7 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     const sub = r.usableSubagents ?? []
     const sp = r.spawnableAsSubagent !== false; const cr = r.chatReachable !== false
     const nm = r.netMode === 'allowlist' ? 'allowlist' : 'open'
-    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
+    setTuning(t); setSaved(t); setDescription(d); setSavedDescription(d); setPrompts(p); setSavedPrompts(p); setCategory(c); setSavedCategory(c); setIcon(r.icon); setSavedIcon(r.icon); setSecrets(s); setSavedSecrets(s); setSubagents(sub); setSavedSubagents(sub); setSpawnable(sp); setSavedSpawnable(sp); setChatReachable(cr); setSavedChatReachable(cr); setNetMode(nm); setSavedNetMode(nm); setRuntime(r.runtime ?? runtime); setSavedRuntime(r.runtime ?? runtime); setHint('saved — applies on the next session'); setTimeout(() => setHint(''), 2500)
     onSaved?.()
   }
 
@@ -10003,7 +10035,44 @@ function AgentTuningCard({ agentId, agents, onSaved }: { agentId: string; agents
     <Card>
       <CardContent className="space-y-3 p-4">
         <div className="flex items-center gap-2 text-xs font-medium"><SlidersHorizontal className="h-3.5 w-3.5" /> Runtime tuning</div>
-        <TuningFields tuning={tuning} onChange={setTuning} />
+        {runtimes.length > 1 && (
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Runtime</label>
+            <select
+              value={runtime}
+              onChange={(e) => {
+                const next = e.target.value
+                setRuntime(next)
+                // Clear a model that belongs to the runtime being left. Agents carry a pinned model, so
+                // keeping it would hand e.g. `claude-opus-4-8` to `codex --model` and break every run —
+                // the exact trap this picker exists to close. Inheriting the workspace default is the
+                // safe landing spot; the operator can set a runtime-appropriate model right after.
+                const info = runtimes.find((x) => x.id === next)
+                if (tuning.model && info && !info.suggestedModels.includes(tuning.model)) {
+                  const foreign = next === 'codex' ? /^claude/i.test(tuning.model) : /^(gpt|o[0-9]|codex)/i.test(tuning.model)
+                  if (foreign) setTuning({ ...tuning, model: undefined })
+                }
+                if (next === 'codex') setTuning((t) => ({ ...t, permissionMode: undefined }))
+              }}
+              className="w-full rounded-md border bg-background px-2 py-1.5 text-sm"
+            >
+              {runtimes.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+            {runtime !== savedRuntime && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-500">Changes on the next session — the current conversation isn't portable between runtimes.</p>
+            )}
+            {(() => {
+              const info = runtimes.find((x) => x.id === runtime)
+              if (!info) return null
+              const missing = ([['attachableUnattended', 'take-over'], ['residentChat', 'warm chat'], ['transcript', 'cost + timeline'], ['nativeSkills', 'skills'], ['nativeSubagents', 'sub-agents']] as const)
+                .filter(([k]) => !info.capabilities[k]).map(([, label]) => label)
+              return missing.length
+                ? <p className="text-[11px] text-muted-foreground">{info.label} does not support: {missing.join(', ')}. Every effect is still governed by the same gate.</p>
+                : null
+            })()}
+          </div>
+        )}
+        <TuningFields tuning={tuning} onChange={setTuning} runtime={runtimes.find((x) => x.id === runtime)} />
         <div className="space-y-1">
           <label className="text-xs font-medium">Description</label>
           <Input value={description} onChange={(e) => setDescription(e.target.value)} className="text-sm" placeholder="one line shown on the agent card" />

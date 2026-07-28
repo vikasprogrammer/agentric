@@ -154,9 +154,9 @@ node -e '
   // Egress via the shell IS governed (the hook sees every shell call), so the sandbox does not need
   // to cut the network — doing so would break git push / npm install for every agent.
   out.push("network_access = true");
-  out.push("");
-  out.push("[features]");
-  out.push("codex_hooks = true");
+  // NOTE: do NOT write `[features] codex_hooks = true`. There is no such key — `codex features list`
+  // names the flag `hooks`, and it is already stage=stable/enabled by default, so the bogus key was
+  // silently ignored and gave a false sense that hooks had been switched on.
   // Pre-accept the workspace-TRUST gate for this agent folder — the exact analogue of the
   // `~/.claude.json` hasTrustDialogAccepted seed on the Claude lane, and the same failure mode if
   // missing: agent folders are freshly created and are NOT git repos, so without this `codex exec`
@@ -301,68 +301,30 @@ COMMON_ARGS=(--dangerously-bypass-hook-trust -C "$AGENT_DIR")
 # lives in a separate array. Belt-and-braces with the `[projects.…] trust_level` seed above.
 EXEC_ARGS=("${COMMON_ARGS[@]}" --skip-git-repo-check)
 
-if [ "${UNATTENDED:-}" = "1" ]; then
-  # UNATTENDED lane — `codex exec`, which runs the turn and EXITS. Teardown is therefore by process
-  # exit (like the pre-attachable `claude -p` lane), not by a server-driven Stop hook: notify_ended
-  # below flips the row idle and releases the automations pile-up guard. Consequence, recorded in the
-  # capability matrix as attachableUnattended:false — there is no live TUI to "take over" mid-run.
-  dim "unattended run — codex exec (gate hook governs every shell call). Exits at turn end."
-  echo
-  if [ "${RESUME:-}" = "1" ] && [ -n "${RUNTIME_SESSION_ID:-}" ]; then
-    notify_resumed
-    codex exec resume "$RUNTIME_SESSION_ID" "${EXEC_ARGS[@]}" ${TASK:+"$TASK"} \
-      || codex exec "${EXEC_ARGS[@]}" "$TASK"
-  elif [ -n "${FORK_FROM:-}" ]; then
-    codex exec resume "$FORK_FROM" "${EXEC_ARGS[@]}" ${TASK:+"$TASK"} \
-      || codex exec "${EXEC_ARGS[@]}" "$TASK"
-  else
-    codex exec "${EXEC_ARGS[@]}" "$TASK"
-  fi
-  notify_ended
-  exit 0
-fi
-
-# INTERACTIVE lane — the attachable TUI a member drives from the browser terminal.
+# ── launch ────────────────────────────────────────────────────────────────────────────────────────
+# EXEC-ONLY, ON PURPOSE. Codex will not run a hook whose hash it has not recorded as trusted — an
+# untrusted hook is SILENTLY SKIPPED (no warning, no error), and `--dangerously-bypass-hook-trust` is
+# documented as applying only "for that invocation". Critically, that flag is IGNORED IN TUI MODE
+# (openai/codex#24093), so an interactive `codex` session runs with NO PreToolUse hook at all — i.e.
+# completely ungoverned. We proved both halves locally: exec WITHOUT the flag → hook skipped; exec WITH
+# it → hook fires on Bash/apply_patch/mcp__*.
+#
+# So every Codex run — console, automation, task, chat — goes down `codex exec`, the one lane where the
+# gate provably runs. The cost is that a Codex session is not attachable/take-over-able (already
+# declared as attachableUnattended:false + residentChat:false in the capability matrix). That is a
+# feature gap; an ungoverned interactive session would be a security hole, and we take the gap.
+# Re-enabling the TUI requires pre-seeding hook trust — tracked in docs/codex-runtime.md.
+dim "codex exec — the gate hook governs every Bash / apply_patch / MCP call. Exits at turn end."
+echo
 if [ "${RESUME:-}" = "1" ] && [ -n "${RUNTIME_SESSION_ID:-}" ]; then
   notify_resumed
-  dim "resuming codex session $RUNTIME_SESSION_ID …"
-  echo
-  # A browser reattach must NOT re-seed $TASK (it is already in the transcript); a server-driven
-  # follow-up spawns a fresh pane with no ENV_FILE and a genuinely new $TASK, so it does seed.
-  if [ -n "${RESUMED_FROM_ENV:-}" ]; then
-    codex resume "$RUNTIME_SESSION_ID" "${COMMON_ARGS[@]}" || codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
-  else
-    codex resume "$RUNTIME_SESSION_ID" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"} || codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
-  fi
+  codex exec resume "$RUNTIME_SESSION_ID" "${EXEC_ARGS[@]}" ${TASK:+"$TASK"} \
+    || codex exec "${EXEC_ARGS[@]}" "$TASK"
 elif [ -n "${FORK_FROM:-}" ]; then
-  dim "forking codex session $FORK_FROM …"
-  echo
-  codex fork "$FORK_FROM" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"} || codex "${COMMON_ARGS[@]}" "$TASK"
+  codex exec resume "$FORK_FROM" "${EXEC_ARGS[@]}" ${TASK:+"$TASK"} \
+    || codex exec "${EXEC_ARGS[@]}" "$TASK"
 else
-  codex "${COMMON_ARGS[@]}" "$TASK"
+  codex exec "${EXEC_ARGS[@]}" "$TASK"
 fi
 notify_ended
-
-# SECURITY: do NOT drop to a raw shell when codex exits. A tmux shell has NO PreToolUse gate hook and
-# NO sandbox, so `exec bash` here would hand whoever is attached full, ungoverned access as the app
-# user — reading ~/.ssh, the workspace DB, every tenant's data, the network. Keep the pane alive (so
-# ttyd doesn't loop "Reconnecting") with a no-shell holding prompt that can ONLY re-open codex.
-echo
-while true; do
-  dim "codex session ended — press [r] to resume, [q] to close the tab."
-  key=""
-  IFS= read -rsn1 key || { sleep 2; continue; }   # blocked read is fine; EOF/detached → idle, no spin
-  case "$key" in
-    r|R)
-      notify_resumed
-      if [ -n "${RUNTIME_SESSION_ID:-}" ]; then
-        codex resume "$RUNTIME_SESSION_ID" "${COMMON_ARGS[@]}" || codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
-      else
-        codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
-      fi
-      notify_ended
-      ;;
-    q|Q) exit 0 ;;
-    *) : ;;   # ignore any other key — never spawn a shell
-  esac
-done
+exit 0

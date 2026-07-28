@@ -23,20 +23,35 @@ invariant is unchanged; only the mechanism differs.
 
 | Effect | Claude Code | Codex |
 | --- | --- | --- |
-| Shell (incl. all `curl`/`git`/`npm` egress) | PreToolUse hook → `/api/gate` | **same hook, same gate** |
-| File writes | PreToolUse hook (`Edit`/`Write`/…) | OS sandbox: `writable_roots` = the agent folder |
-| MCP / connectors | PreToolUse hook (`mcp__*`) | server-side at the loopback `/api/*` routes |
+| Shell | PreToolUse hook → `/api/gate` | **same hook, same gate** (`Bash`) |
+| File writes | PreToolUse hook | **same hook** (`apply_patch`) + OS sandbox as defence in depth |
+| MCP / connectors | PreToolUse hook | **same hook** (`mcp__<server>__<tool>`) |
 | The CLI's own prompts | `--dangerously-skip-permissions` | `approval_policy = "never"` |
 
-Notes:
+**Codex reports Claude's exact tool names.** Verified against 0.145: PreToolUse hands the hook
+`Bash`, `apply_patch` and `mcp__<server>__<tool>` — *not* the `shell` / `local_shell` names its internal
+protocol uses. So there is ONE routing table in `gate-hook.sh` for both runtimes. An earlier
+Codex-specific table keyed on `shell` matched nothing, and every shell command fell through the
+allow-by-default arm **ungoverned**; a single table makes that class of bug impossible, because a
+runtime whose names diverge fails loudly at the `*)` arm instead of silently allowing.
 
-- Codex applies most edits by piping `apply_patch` **through the shell tool**, so those are already
-  covered by the gate. The sandbox is the backstop for anything that isn't — and it is *structural*: a
-  write outside the agent folder is impossible at the OS level, not merely denied by policy.
-- `network_access` stays **true**. Egress driven from the shell is already gated, and cutting it would
-  break `git push` / `npm install` for every agent.
-- `approval_policy = "never"` removes Codex's *own* prompts (nobody is at the pane to answer them). It
-  does **not** touch our gate: the hook still runs and still blocks for inbox approval.
+**`apply_patch` carries its target inside the patch envelope**, not a `file_path` field:
+
+```
+*** Begin Patch
+*** Add File: demo.txt
++apple
+*** End Patch
+```
+
+`applyPatchTargets()` in `src/governance/enricher.ts` parses the four verbs (`Add`/`Update`/`Delete
+File:` and `Move to:`) so `outsideWorkdir` is computed correctly. Without it the enricher saw no path
+and fail-safed to "outside" for *every* edit — technically safe, but it would pause a human approval on
+every file an agent writes. `Move to:` counts as a target in its own right: moving a file OUT of the
+workdir is exactly the escape worth catching.
+
+`network_access` stays **true** — shell egress is already gated, and cutting it would break
+`git push` / `npm install` for every agent.
 
 ### One shared hook
 
@@ -78,6 +93,34 @@ pane is written to that session's scratch dir and thrown away with it. The launc
 whole fleet. If neither that file nor `OPENAI_API_KEY` is present the launcher **refuses to start** and
 prints the fix — it will not let Codex's interactive sign-in menu appear inside an agent session.
 
+## Hook trust — why Codex is `codex exec` only
+
+Codex will not run a hook whose hash it has not recorded as trusted. An untrusted hook is **silently
+skipped** — no warning, no error, the run just proceeds ungoverned. `--dangerously-bypass-hook-trust`
+lifts that, but only "for that invocation", and it is **ignored in TUI mode**
+([openai/codex#24093](https://github.com/openai/codex/issues/24093)).
+
+Both halves were verified locally:
+
+```
+codex exec WITHOUT --dangerously-bypass-hook-trust  → hook skipped   (trust is load-bearing)
+codex exec WITH    --dangerously-bypass-hook-trust  → hook fires on Bash / apply_patch / mcp__*
+```
+
+So **every** Codex run — console, automation, task, chat — goes down `codex exec`, the one lane where
+the gate provably runs. The cost is that a Codex session is not attachable or take-over-able
+(`attachableUnattended: false`, `residentChat: false`). That is a feature gap; an interactive session
+with no PreToolUse hook would be a security hole, and we take the gap.
+
+**Re-enabling the interactive TUI requires pre-seeding hook trust** — Codex stores it as a
+`trusted_hash` on the hook entry, but the hashing scheme is not documented and the docs say trust is
+recorded only through the interactive `/hooks` review. That is the blocker for attachable Codex
+sessions.
+
+> Do **not** write `[features] codex_hooks = true`. There is no such key — `codex features list` names
+> the flag `hooks`, and it is already stage=stable and enabled by default. The bogus key was silently
+> ignored and gave a false impression that hooks had been switched on.
+
 Two trust gates have to be pre-accepted or every session hangs or dies — the same class of bug as the
 Claude lane's `~/.claude.json` seed:
 
@@ -99,12 +142,12 @@ with `runtimeSupports(runtime, cap)`; use `isCodingRuntime(runtime)` for "is thi
 | --- | --- | --- | --- |
 | `pinnedSessionId` | ✅ | ❌ | Codex mints its own rollout UUID; no `--session-id` |
 | `resume` / `fork` | ✅ | ✅ | `codex resume <id>` / `codex fork <id>` |
-| `attachableUnattended` | ✅ | ❌ | unattended lane is `codex exec`, which exits at turn end |
+| `attachableUnattended` | ✅ | ❌ | exec-only lane, forced by hook trust — see above |
 | `residentChat` | ✅ | ❌ | needs a TUI that survives a turn |
 | `transcript` (cost, engaged time, chat timeline) | ✅ | ❌ | the parser only reads Claude's JSONL |
 | `nativeSkills` / `nativeSubagents` | ✅ | ❌ | `.claude/skills` + `.claude/agents` are Claude conventions |
 | `statusLine` / `permissionMode` | ✅ | ❌ | no equivalent |
-| `fileWriteGate` / `mcpGate` | ✅ | ❌ | contained by sandbox / server-side instead — see above |
+| `fileWriteGate` / `mcpGate` | ✅ | ✅ | PreToolUse covers `apply_patch` and `mcp__*` (verified) |
 | `steerOnAllow` | ✅ | ✅ | both support `additionalContext` |
 
 **Session ids.** Because Codex won't take a pinned id, `codex-launch.sh` watches its per-session

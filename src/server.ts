@@ -3942,10 +3942,26 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!ag?.dir) return sendJson(res, 404, { error: 'agent not found or has no folder' });
     if (!isCodingRuntime(ag.runtime)) return sendJson(res, 400, { error: 'runtime tuning applies to CLI-backed agents only' });
     if (method === 'GET') {
-      return sendJson(res, 200, { agent: ag.id, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      // `runtimes` lets the console render the picker (and its per-runtime model suggestions +
+      // capability flags) without hardcoding the registry client-side.
+      const runtimes = Object.values(CODING_RUNTIMES).map((r) => ({
+        id: r.id, label: r.label, suggestedModels: r.suggestedModels, capabilities: r.capabilities,
+      }));
+      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
+    // Runtime change (owner/admin). Validate BEFORE the tuning, so the tuning is checked against the
+    // runtime the agent is about to have, not the one it's leaving — otherwise switching a Claude agent
+    // to Codex would keep its pinned `claude-*` model and break every subsequent run.
+    let runtime: RuntimeId = ag.runtime;
+    if ('runtime' in b) {
+      const want = String(b.runtime ?? '') as RuntimeId;
+      if (!isCodingRuntime(want)) {
+        return sendJson(res, 400, { error: `runtime must be one of: ${Object.keys(CODING_RUNTIMES).join(', ')}` });
+      }
+      runtime = want;
+    }
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(b, runtime);
     if (tErr) return sendJson(res, 400, { error: tErr });
     const before = readAgentSnapshot(ag);
     // Replace the tuning fields wholesale (sanitize already dropped empties to undefined → those
@@ -3971,13 +3987,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [], netMode: netMode ?? 'open', rev } });
-    return sendJson(res, 200, { ok: true, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, netMode: netMode ?? 'open', category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [], netMode: netMode ?? 'open', rev } });
+    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, netMode: netMode ?? 'open', category, icon });
   }
 
   // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──

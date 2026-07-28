@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.273.0] — 2026-07-28
+## [0.275.0] — 2026-07-28
 ### Added
 - **Per-runtime account pool + launch-time credential rotation.** A box authenticates each coding runtime
   with ONE credential set (`claude` via a Max-subscription OAuth token, `codex` via `~/.codex/auth.json`),
@@ -31,6 +31,51 @@ new version heading in the same commit.
   time (the globex pile-up). A new no-progress backstop reaps a headless running row past
   `unattendedNoProgressMinutes` (default 30m; Settings → Runtime) that has made zero `gate.attempt` — a
   busy long first turn fires one on its first tool, so it's never cut. 48× faster than the old ceiling.
+
+## [0.274.0] — 2026-07-28
+### Added
+- **Runtime picker on the agent config card.** An agent's runtime was manifest-only — you had to hand-edit
+  `agent.json` and rescan. It's now a dropdown (owner/admin, `PUT /api/agents/:id/config` accepts
+  `runtime`), which also surfaces what the chosen runtime can't do ("Codex does not support: take-over,
+  warm chat, cost + timeline, skills, sub-agents — every effect is still governed by the same gate") and
+  warns that a runtime change starts a new conversation.
+- **Per-runtime model validation.** Agents carry a pinned `model`, so switching a Claude agent to Codex
+  used to hand `claude-opus-4-8` straight to `codex --model` and break every run. `sanitizeRuntimeTuning`
+  now takes the runtime and rejects a model belonging to another family (deliberately a narrow guard, not
+  an allowlist — custom/newer ids still work), the console offers per-runtime model suggestions via a
+  datalist and flags a foreign id inline, and switching runtimes in the picker clears a now-foreign model
+  so it lands on "inherit" rather than something broken. A `permissionMode` set on a runtime that has none
+  is refused too, instead of being silently stored and never applied.
+
+## [0.273.0] — 2026-07-28
+### Fixed
+- **Codex sessions were running UNGOVERNED — two independent silent failures.** Found by driving a real
+  Codex run on the live box and watching the audit stay empty while it executed `git status` and wrote to
+  `/tmp`.
+  1. **The tool→capability routing table used the wrong names.** Codex's PreToolUse actually reports
+     Claude Code's exact spellings — `Bash`, `apply_patch`, `mcp__<server>__<tool>` — not the
+     `shell`/`local_shell` names its internal protocol uses. The Codex-specific table keyed on `shell`
+     matched nothing, so every shell command fell through the allow-by-default arm. There is now ONE
+     routing table for all runtimes: a runtime whose names diverge fails loudly at the `*)` arm instead
+     of silently allowing.
+  2. **Hook trust.** Codex silently SKIPS a hook whose hash it hasn't recorded as trusted, and
+     `--dangerously-bypass-hook-trust` is ignored in TUI mode (openai/codex#24093) — so an interactive
+     Codex session ran with no PreToolUse hook at all. Every Codex run now uses `codex exec`, the one
+     lane where the gate provably fires. A Codex session is therefore not attachable; an ungoverned
+     interactive session would be a security hole, and we take the feature gap.
+  Also removed `[features] codex_hooks = true` from the generated config — there is no such key (the
+  flag is `hooks`, already stable and on), so it was silently ignored and implied hooks had been enabled.
+- **Codex `apply_patch` writes were mis-classified.** Codex carries the target path inside the patch
+  envelope (`*** Add File: …`) rather than a `file_path` field, so the enricher saw no path and fail-safed
+  `outsideWorkdir = true` for EVERY edit — safe, but it would have paused a human approval on every file
+  an agent writes. New `applyPatchTargets()` parses the `Add`/`Update`/`Delete File:` and `Move to:`
+  verbs, so in-folder edits pass and an escape (absolute path, `..`, or a move out of the workdir) is
+  still caught.
+
+### Changed
+- Codex capabilities corrected now that the gate is proven: `fileWriteGate` and `mcpGate` are **true**
+  (PreToolUse covers `apply_patch` and `mcp__*`), making the OS sandbox defence in depth rather than the
+  only line. `attachableUnattended`/`residentChat` stay false, now for the hook-trust reason above.
 
 ## [0.272.2] — 2026-07-28
 ### Fixed
