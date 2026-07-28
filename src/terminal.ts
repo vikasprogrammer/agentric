@@ -2020,6 +2020,13 @@ export class TerminalManager {
     // ~500MB claude process + a cap slot (confirmed on globex: unattended runs stuck at 60h+). `0` disables.
     const maxHours = this.os.settings.unattendedMaxHours();
     const maxAgeCutoff = maxHours > 0 ? Date.now() - maxHours * 3600_000 : null;
+    // No-progress backstop (fast net for a run that never STARTED — usage-limit / trust-hang / lost prompt).
+    // A headless run stuck this way looks identical to the 24h ceiling case (last_activity NULL, never
+    // beacons) but should not have to wait a full day: it made ZERO governed tool calls, so once it's older
+    // than this short window we know it never got going and reap it. A busy long first turn is EXCLUDED — it
+    // fires gate.attempt on its first tool (see hasMadeProgress). Settings → Runtime; default 30m, 0 = off.
+    const noProgMin = this.os.settings.unattendedNoProgressMinutes();
+    const noProgCutoff = noProgMin > 0 ? Date.now() - noProgMin * 60_000 : null;
     const unattended = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, headless, last_activity, created_at FROM term_sessions WHERE resident = 0 AND claimed_by IS NULL AND (status = 'done' OR (headless = 1 AND status = 'running'))")
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; headless: number; last_activity: number | null; created_at: number }>();
     for (const r of unattended) {
@@ -2034,23 +2041,31 @@ export class TerminalManager {
         // required (that's the whole point: it's stuck mid-turn). Headed sessions never reach here (the query
         // only pulls headless running rows besides done orphans), so this can't cut a member mid-work.
         const overMaxAge = maxAgeCutoff != null && r.headless === 1 && r.status === 'running' && r.created_at < maxAgeCutoff;
+        // A headless run past the short no-progress window that never completed a turn (last_activity NULL)
+        // AND never made a governed tool call — it never actually started. Reap fast, like overMaxAge but on a
+        // 30-min clock. hasMadeProgress keeps a genuinely-busy long turn (which fires gate.attempt) safe.
+        const noProgress = noProgCutoff != null && r.headless === 1 && r.status === 'running'
+          && r.last_activity == null && r.created_at < noProgCutoff && !this.hasMadeProgress(r.id);
+        const forceReap = overMaxAge || noProgress;
         if (alive) {
           if (!alive.has(r.tmux)) continue;                          // pane already gone — nothing to reap
           // a 'running' straggler is only idle-reaped once it has seen a turn-end beacon AND gone quiet past the
           // cutoff; a 'done' orphan is reaped on sight — it should never still be holding an interactive pane.
-          // The hard-age backstop (overMaxAge) reaps regardless of the beacon.
-          if (r.status === 'running' && !overMaxAge && (r.last_activity == null || r.last_activity >= cutoff)) continue;
+          // The hard-age (overMaxAge) and no-progress backstops reap regardless of the beacon.
+          if (r.status === 'running' && !forceReap && (r.last_activity == null || r.last_activity >= cutoff)) continue;
         } else {
           // no liveness signal: classic straggler rule, running-only, so we can't re-sweep a done row blind.
-          if (r.status !== 'running' || (!overMaxAge && (r.last_activity == null || r.last_activity >= cutoff))) continue;
+          if (r.status !== 'running' || (!forceReap && (r.last_activity == null || r.last_activity >= cutoff))) continue;
         }
         const space = this.spaceFor(r.run_as ?? r.spawned_by);
         if (this.backend.hasClient(space, r.tmux) === true) continue; // a human is still watching — leave it
         // The idle-straggler path keeps a run that's legitimately blocked on a person; but a run past the hard
         // ceiling is abandoned by definition (nobody has answered in a full day), so the backstop reaps it
-        // anyway — teardownUnattended cancels its dangling question/approval so nothing is left waiting.
+        // anyway — teardownUnattended cancels its dangling question/approval so nothing is left waiting. A
+        // no-progress run CAN legitimately be blocked (it may have called `ask` — an MCP tool, no gate.attempt),
+        // so it keeps the block-skip; only overMaxAge overrides it.
         if (!overMaxAge && this.hasPendingHumanBlock(r.id)) continue;
-        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
+        this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : noProgress ? 'stuck-no-progress' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }
 
@@ -2143,6 +2158,23 @@ export class TerminalManager {
     const q = this.db.prepare("SELECT 1 FROM questions WHERE run_id = ? AND status = 'pending' LIMIT 1").get(sessionId);
     if (q) return true;
     return this.os.approvals.pending(this.os.tenant).some((a) => a.runId === sessionId);
+  }
+
+  /** Has this run made any real PROGRESS — i.e. attempted at least one governed tool call (a `gate.attempt`
+   *  audit event)? The no-progress backstop (sweep 2) uses this to tell a run that never STARTED (usage-limit
+   *  refusal / trust-hang / lost prompt → zero tools) apart from a genuinely-busy long first turn (which fires
+   *  gate.attempt on its first Bash/tool). Best-effort: if the audit table can't be read (demo `:memory:` db
+   *  with no sink, a transient error), return TRUE so a read failure can never trigger a mass reap. Note: a
+   *  hypothetical MCP-only run that does real work via un-gated loopback tools would read as no-progress, but
+   *  such a run either completes its turn (stamps last_activity → excluded) or is blocked on `ask` (excluded
+   *  by hasPendingHumanBlock) — so the 30-min window makes a false reap vanishingly unlikely. */
+  private hasMadeProgress(sessionId: string): boolean {
+    try {
+      const row = this.db.prepare("SELECT 1 FROM audit_events WHERE run_id = ? AND type = 'gate.attempt' LIMIT 1").get(sessionId);
+      return !!row;
+    } catch {
+      return true; // can't tell → assume progress; never let a read error reap live runs
+    }
   }
 
   /** Snapshot a live pane's scrollback to `<connectors>/session-<id>.log` (0600) so the console's

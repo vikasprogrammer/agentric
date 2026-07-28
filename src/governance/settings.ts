@@ -76,6 +76,7 @@ const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat sessi
 const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
 const UNATTENDED_MAX_HOURS_KEY = 'unattended_max_runtime_hours'; // hard runtime ceiling for a headless/unattended run (stuck-mid-turn backstop); unset → 24h, 0 → off
+const UNATTENDED_NO_PROGRESS_MIN_KEY = 'unattended_no_progress_minutes'; // reap a headless run that never made a tool call (never-started: rate-limit/trust-hang/lost-prompt); unset → 30m, 0 → off
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 const SUPPRESSED_BUILTINS_KEY = 'suppressed_builtins'; // built-in agent ids an admin deleted (JSON string[]); boot won't re-seed them
 
@@ -925,6 +926,29 @@ export class SettingsStore {
     const clamped = !Number.isFinite(n) || n < 0 ? 24 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
     this.set(UNATTENDED_MAX_HOURS_KEY, String(clamped), by);
     return this.unattendedMaxHours();
+  }
+
+  /** Minutes after which a headless/unattended run that has made ZERO progress — never a completed turn
+   *  (`last_activity` NULL) AND never a single governed tool call (`gate.attempt`) — is reaped as
+   *  `stuck-no-progress`. This is the fast net for a run that never actually STARTED: the account hit its
+   *  Claude usage limit ("you've hit your weekly limit" → zero tools), a trust-dialog hang, or a lost
+   *  prompt. Without it such a zombie only clears at the 24 h `unattendedMaxHours` ceiling — for a whole
+   *  day it holds a ~500 MB claude process + a concurrency-cap slot, and during a usage-limit window every
+   *  cron tick spawns another. A genuinely-working long first turn emits `gate.attempt` on its first tool,
+   *  so it is NOT caught (the zero-tool signal is what distinguishes "hung" from "busy"). Default **30 min**;
+   *  clamped 5 min–24 h; `0` disables. */
+  unattendedNoProgressMinutes(): number {
+    const n = Number(this.getRow(UNATTENDED_NO_PROGRESS_MIN_KEY)?.value);
+    if (!Number.isFinite(n)) return 30; // unset → default
+    if (n <= 0) return 0;               // explicit 0 → disabled
+    return Math.min(Math.max(Math.round(n), 5), 24 * 60);
+  }
+
+  setUnattendedNoProgressMinutes(minutes: number, by?: string): number {
+    const n = Number(minutes);
+    const clamped = !Number.isFinite(n) || n < 0 ? 30 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 5), 24 * 60);
+    this.set(UNATTENDED_NO_PROGRESS_MIN_KEY, String(clamped), by);
+    return this.unattendedNoProgressMinutes();
   }
 
   // ── kill switch (workspace emergency stop) ───────────────────────────────────────
