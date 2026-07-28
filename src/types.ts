@@ -1133,13 +1133,18 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       // Codex mints its own rollout id (`codex exec resume <id>` / `codex fork <id>`), so the id is
       // captured after launch rather than pinned. The unattended lane is `codex exec`, which exits at
       // turn end — no Stop hook needed, but also nothing to attach to, which rules out resident chat.
-      pinnedSessionId: false, resume: true, fork: true, attachableUnattended: false,
-      residentChat: false, transcript: false, nativeSkills: false, nativeSubagents: false,
+      pinnedSessionId: false, resume: true, fork: true,
+      // Every Codex run uses `codex exec`. Not a preference: Codex silently SKIPS a hook whose hash it
+      // hasn't recorded as trusted, and `--dangerously-bypass-hook-trust` is ignored in TUI mode
+      // (openai/codex#24093) — so an interactive Codex session would run with no gate at all. Until hook
+      // trust can be pre-seeded we take the feature gap over the security hole. See docs/codex-runtime.md.
+      attachableUnattended: false, residentChat: false,
+      transcript: false, nativeSkills: false, nativeSubagents: false,
       statusLine: false, permissionMode: false,
-      // PreToolUse reliably sees the `shell` tool; `apply_patch` writes are confined instead by the
-      // sandbox's `writable_roots`, and MCP calls are governed server-side at the loopback API every
-      // OS tool already goes through. See the RuntimeCapabilities note on mechanism vs. invariant.
-      fileWriteGate: false, mcpGate: false,
+      // PreToolUse covers Bash, apply_patch AND mcp__* — verified empirically against codex 0.145 (its
+      // hook reports Claude's exact tool names). So the gate, not just the sandbox, governs writes and
+      // connector calls; the sandbox's `writable_roots` is now defence in depth rather than the only line.
+      fileWriteGate: true, mcpGate: true,
       // Codex 0.145's PreToolUse output wire matches Claude's: permissionDecision allow|deny|ask plus
       // `additionalContext` (verified against the JSON schema embedded in the binary), so the gate's
       // `instruct` verb carries over unchanged.

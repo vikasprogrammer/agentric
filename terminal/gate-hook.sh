@@ -72,39 +72,28 @@ esac
 # Route the tool to an Agent OS capability (structural — the only thing the hook still decides). All
 # riskiness/destructiveness classification now happens server-side in the enricher + policy.
 #
-# The routing table is per-runtime because each CLI names its tools differently; everything BELOW this
-# block (the fail-closed gate call, the approval wait, the decision wire) is deliberately shared, so a
-# governance fix can't land for one runtime and miss the other.
-case "${AOS_RUNTIME:-claude-code}" in
-  codex)
-    # Codex tool inventory. `shell` is the exec tool (its aliases are matched too, defensively).
-    # NOTE: Codex applies most edits by piping `apply_patch` THROUGH the shell tool, so those already
-    # arrive here as shell.exec; the explicit apply_patch arm covers the native-tool spelling. Writes
-    # that dodge the hook entirely are still contained by the sandbox's `writable_roots` (set to the
-    # agent folder in codex-launch.sh) — see the RuntimeCapabilities note in src/types.ts.
-    case "$TOOL" in
-      shell|local_shell|exec_command|unified_exec) CAP="shell.exec" ;;
-      apply_patch) CAP="file.write" ;;
-      *INITIATE_CONNECTION*) CAP="connector.connect" ;;
-      mcp__*|*composio*) CAP="connector.call" ;;
-      *) exit 0 ;;  # read_file / update_plan / web_search / … aren't world side effects → allow
-    esac ;;
-  *)
-    case "$TOOL" in
-      Bash) CAP="shell.exec" ;;
-      # File writes go through the gateway too (the enricher decides inside-vs-outside the agent's folder
-      # from the path in tool_input). The hook stays dumb transport — it only names the capability.
-      Edit|Write|MultiEdit|NotebookEdit) CAP="file.write" ;;
-      mcp__composio-company__*INITIATE_CONNECTION*)
-        # INITIATE_CONNECTION starts an OAuth grant that gives the whole fleet access to an app — the actual
-        # privilege-bearing op, so it's an owner/admin call (connector.connect).
-        CAP="connector.connect" ;;
-      # MANAGE_CONNECTIONS is a management/STATUS tool — in practice agents call it to LIST/check connections
-      # (`{toolkits:["gmail"]}`), a benign read that was needlessly owner-gated. Route it to connector.call
-      # (allowed) like any other connector tool; a real grant goes through INITIATE_CONNECTION above.
-      mcp__*) CAP="connector.call" ;;
-      *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
-    esac ;;
+# ONE table for every runtime, because the tool names are the SAME. Verified empirically against codex
+# 0.145: its PreToolUse emits `Bash`, `apply_patch` and `mcp__<server>__<tool>` — Claude Code's exact
+# spellings, not the `shell`/`local_shell` names its internal protocol uses. An earlier codex-specific
+# table keyed on `shell` therefore matched NOTHING and every shell command fell through to the
+# allow-by-default arm, ungoverned. Keeping one table makes that class of bug impossible: a runtime whose
+# names diverge fails loudly at the `*)` arm rather than silently allowing.
+case "$TOOL" in
+  Bash|shell|local_shell|exec_command|unified_exec) CAP="shell.exec" ;;
+  # File writes go through the gateway too (the enricher decides inside-vs-outside the agent's folder
+  # from the path in tool_input). The hook stays dumb transport — it only names the capability.
+  # `apply_patch` is Codex's editor tool and DOES fire PreToolUse (verified), so writes are gated there
+  # as well as contained by the sandbox.
+  Edit|Write|MultiEdit|NotebookEdit|apply_patch) CAP="file.write" ;;
+  mcp__composio-company__*INITIATE_CONNECTION*|*INITIATE_CONNECTION*)
+    # INITIATE_CONNECTION starts an OAuth grant that gives the whole fleet access to an app — the actual
+    # privilege-bearing op, so it's an owner/admin call (connector.connect).
+    CAP="connector.connect" ;;
+  # MANAGE_CONNECTIONS is a management/STATUS tool — in practice agents call it to LIST/check connections
+  # (`{toolkits:["gmail"]}`), a benign read that was needlessly owner-gated. Route it to connector.call
+  # (allowed) like any other connector tool; a real grant goes through INITIATE_CONNECTION above.
+  mcp__*) CAP="connector.call" ;;
+  *) exit 0 ;;  # any other built-in tool (Read/Glob/Grep/…) isn't a world side effect → allow
 esac
 
 payload=$(node -e 'const[s,a,cap,t,inp,st,si]=process.argv.slice(1);let input={};try{input=JSON.parse(inp||"{}")}catch(e){};const o={sessionId:s,agent:a,capability:cap,args:{tool:t,input},reasoning:(process.env.AOS_RUNTIME||"claude-code")+" PreToolUse: "+t};if(st){o.subagentType=st;if(si)o.subagentId=si;}console.log(JSON.stringify(o))' "$SESSION" "$AGENT" "$CAP" "$TOOL" "$INPUT" "$SUBTYPE" "$SUBID")

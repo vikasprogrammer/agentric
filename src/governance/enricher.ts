@@ -226,6 +226,30 @@ export function commandText(v: unknown): string {
 }
 
 /**
+ * Paths targeted by a Codex `apply_patch` call. Codex does not pass a `file_path`; it hands the whole
+ * patch envelope in `command`:
+ *
+ *     *** Begin Patch
+ *     *** Add File: demo.txt
+ *     +apple
+ *     *** End Patch
+ *
+ * Without parsing it the enricher sees NO path and (correctly, but uselessly) fails safe to
+ * `outsideWorkdir = true` for every edit — which would pause a human approval on literally every file
+ * an agent writes, including ones inside its own folder. Extract the real targets instead, so an
+ * in-folder edit is allowed and an escape attempt is still caught.
+ *
+ * Handles the four envelope verbs. `Move to:` is the rename DESTINATION and is treated as a target in
+ * its own right — moving a file OUT of the workdir is exactly the escape we care about.
+ */
+export function applyPatchTargets(command: string): string[] {
+  const out: string[] = [];
+  for (const m of command.matchAll(/^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+?)\s*$/gm)) out.push(m[1]);
+  for (const m of command.matchAll(/^\*\*\*\s+Move\s+to:\s*(.+?)\s*$/gm)) out.push(m[1]);
+  return out;
+}
+
+/**
  * Compute governance facts and return a NEW args object (original + facts). Pure; no I/O.
  * `args` is what the gate received: `{ tool?, input?, command?, ...callerFacts }`.
  * `orgDomains` are the workspace's internal email domains (lowercased, no `@`) — passed in by the
@@ -283,13 +307,20 @@ export function enrichArgs(
   // (opaque write needs a human). Left undefined when it's not a file write or no workdir was provided.
   let outsideWorkdir = typeof args.outsideWorkdir === 'boolean' ? (args.outsideWorkdir as boolean) : undefined;
   if (outsideWorkdir === undefined && isFileWrite && workdir) {
+    const escapes = (t: string): boolean => {
+      const rel = path.relative(workdir, path.resolve(workdir, t));
+      return rel !== '' && (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
+    };
     const target = typeof input.file_path === 'string' ? input.file_path
       : typeof input.notebook_path === 'string' ? input.notebook_path : '';
-    if (!target) {
-      outsideWorkdir = true;
+    // Codex's apply_patch carries its targets inside the patch envelope rather than a path field.
+    const patched = !target && typeof input.command === 'string' ? applyPatchTargets(input.command) : [];
+    if (target) {
+      outsideWorkdir = escapes(target);
+    } else if (patched.length) {
+      outsideWorkdir = patched.some(escapes);   // one escaping target taints the whole patch
     } else {
-      const rel = path.relative(workdir, path.resolve(workdir, target));
-      outsideWorkdir = rel !== '' && (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
+      outsideWorkdir = true;                    // no path we can see → opaque write needs a human
     }
   }
 
