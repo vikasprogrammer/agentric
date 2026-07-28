@@ -1623,6 +1623,12 @@ export class TerminalManager {
       if (tuning.permissionMode) env.CLAUDE_PERMISSION_MODE = tuning.permissionMode;
     }
     this.audit(o.id, o.agent, 'session.tuning', { runtime, model: tuning.model, effort: tuning.effort, permissionMode: caps.permissionMode ? tuning.permissionMode : undefined, override: o.tuning ?? null });
+    // Account rotation: if a POOL is configured for this runtime, pick an available account and point the
+    // session at its credentials via the runtime's own env vars (CODING_RUNTIMES[runtime].credentialEnv).
+    // INERT when the pool is empty — pick() returns null, we set nothing, the CLI uses the box default (i.e.
+    // today's behavior). pick() also returns null when every account is limited; a member launch then still
+    // proceeds on the default (better than blocking the human), while the scheduler defers cron upstream.
+    this.applyRuntimeAccount(env, o.id, o.agent, runtime);
     if (caps.pinnedSessionId) {
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
       // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
@@ -2142,6 +2148,9 @@ export class TerminalManager {
    *  releases. Shared by the Stop-hook fast path and the idle backstop. */
   private teardownUnattended(sessionId: string, space: string, tmux: string, reason: string): void {
     this.captureTranscript(sessionId, space, tmux);
+    // Before killing the pane, check whether this run died on a usage-limit refusal; if so park the account
+    // it used so the next launch rotates away from it (rotation's detection point).
+    this.detectUsageLimit(sessionId, space, tmux);
     this.markEnded(sessionId);   // status → done (if still running), blockResume, writeEpisode
     // Release any dangling human-block so nothing is left waiting on a reaped run. A no-op for the
     // idle-backstop/turn-end paths (they skip a blocked run upstream), but essential for the hard
@@ -2177,6 +2186,29 @@ export class TerminalManager {
     }
   }
 
+  /** Select a rotation-pool account for this runtime and point the session's credentials at it, via the
+   *  runtime's own env vars (`CODING_RUNTIMES[runtime].credentialEnv`). Records which account the run used
+   *  (`term_sessions.runtime_account`) so limit detection at teardown can park the right one. No-op — leaving
+   *  the box's default credentials in place — when the pool is empty or exhausted, or when an api-key
+   *  account's vault value can't be resolved (fail-open: better to launch on the default than not at all). */
+  private applyRuntimeAccount(env: Record<string, string>, sessionId: string, agent: string, runtime: CodingRuntimeId): void {
+    try {
+      const acct = this.os.runtimeAccounts.pick(runtime);
+      if (!acct) return; // empty pool (inert) or all limited → box default
+      const { configDirVar, apiKeyVar } = CODING_RUNTIMES[runtime].credentialEnv;
+      if (acct.kind === 'apikey') {
+        const value = acct.apiKeyRef ? this.os.secrets.getSync(this.os.tenant, agent, acct.apiKeyRef) : undefined;
+        if (!value) { this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, ref: acct.apiKeyRef }); return; }
+        env[apiKeyVar] = value;
+      } else {
+        if (!acct.configDir) return;
+        env[configDirVar] = acct.configDir;
+      }
+      this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
+      this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind });
+    } catch { /* rotation must never break a launch — fall through to the box default */ }
+  }
+
   /** Snapshot a live pane's scrollback to `<connectors>/session-<id>.log` (0600) so the console's
    *  transcript view survives the pane being killed — the replacement for the old headless `-p` tee.
    *  Best-effort: no paths, an unreachable socket, or a launcher backend (capturePane → null) → skip. */
@@ -2188,6 +2220,48 @@ export class TerminalManager {
       fs.mkdirSync(this.os.paths.connectors, { recursive: true }); // the dir exists once a session wrote its .mcp.json, but don't depend on it
       fs.writeFileSync(path.join(this.os.paths.connectors, `session-${sessionId}.log`), text, { mode: 0o600 });
     } catch { /* transcript capture is a nicety — never block teardown */ }
+  }
+
+  // Signature of a usage-limit refusal in a session's pane, and the reset-time parse. Covers the shapes the
+  // CLIs print — claude: "you've hit your weekly limit", "usage limit reached", "resets Jul 30, 10am (UTC)";
+  // a generic "rate limit" catch covers codex / future runtimes. Best-effort text scan, no API dependency.
+  private static readonly USAGE_LIMIT_RE = /\b(weekly limit|usage limit|rate limit|hit your .{0,20}limit|limit reached|out of (?:usage|credits))\b/i;
+
+  /** Did this unattended run die on a usage-limit refusal? Scans the final pane for the limit signature and,
+   *  if the run launched under a rotation-pool account, parks THAT account (with a parsed reset time, or a
+   *  1 h fallback so an unparseable reset still rotates without wedging) so the next launch picks another.
+   *  No account recorded (box default) → nothing to rotate; still audited so the box's limit state is visible.
+   *  Best-effort — never throws, never blocks teardown. */
+  private detectUsageLimit(sessionId: string, space: string, tmux: string): void {
+    try {
+      const row = this.db.prepare('SELECT agent, runtime_account FROM term_sessions WHERE id = ?')
+        .get<{ agent: string; runtime_account: string | null }>(sessionId);
+      if (!row) return;
+      const text = this.backend.capturePane(space, tmux);
+      if (!text || !TerminalManager.USAGE_LIMIT_RE.test(text)) return;
+      const until = this.parseLimitReset(text) ?? Date.now() + 60 * 60_000; // 1h fallback keeps it parked but self-heals
+      const manifest = this.os.agents.get(row.agent);
+      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+      if (row.runtime_account) {
+        this.os.runtimeAccounts.markLimited(runtime, row.runtime_account, until);
+        this.audit(sessionId, 'system', 'runtime.account.limited', { runtime, account: row.runtime_account, until });
+      } else {
+        // No pool account → the box's single default hit its limit; surface it (an operator adds accounts to rotate).
+        this.audit(sessionId, 'system', 'runtime.usage_limited', { runtime, until });
+      }
+    } catch { /* detection is best-effort — never block teardown */ }
+  }
+
+  /** Best-effort parse of a reset time from a limit message ("resets Jul 30, 10am (UTC)" / "resets 3:10pm").
+   *  Returns epoch ms, or null when nothing parseable is found (caller applies a fallback). Timezone-naive
+   *  parses are fine — a slightly-off reset just means one extra retry, which re-parks the account. */
+  private parseLimitReset(text: string): number | null {
+    const m = /\bresets?\b[^.\n]*/i.exec(text);
+    if (!m) return null;
+    // Pull a date-ish or time-ish fragment out of the "resets …" clause and let Date parse it.
+    const frag = m[0].replace(/^resets?\s*/i, '').replace(/\(([^)]*)\)/, '$1').trim();
+    const t = Date.parse(frag);
+    return Number.isFinite(t) ? t : null;
   }
 
   /** `{ AOS_URL, SESSION, AGENT, TASK_B64, AOS_SECRET }` — the base env every runner/launcher inherits. */

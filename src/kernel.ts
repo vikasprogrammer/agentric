@@ -40,6 +40,7 @@ import { KbStore } from './state/kb';
 import { AgentRevisions } from './state/agent-revisions';
 import { PolicyRevisions } from './state/policy-revisions';
 import { TaskStore } from './state/tasks';
+import { RuntimeAccountStore } from './state/runtime-accounts';
 import { GoalStore } from './state/goals';
 import { VideoJobStore } from './state/video-jobs';
 import { StubIdentity } from './governance/identity';
@@ -96,6 +97,8 @@ export class AgentOS {
   readonly policyRevisions: PolicyRevisions;
   /** The shared work queue — durable tasks humans + agents create, claim, and drain (auto-dispatchable). */
   readonly tasks: TaskStore;
+  /** The per-runtime credential POOL — rotate accounts so a session isn't spawned into an exhausted quota. */
+  readonly runtimeAccounts: RuntimeAccountStore;
   /** The strategic layer work ladders up to — human-owned goals agents read + propose. See goals-plan.md. */
   readonly goals: GoalStore;
   /** In-flight async video renders — persisted so a background poller can finish them. See media-integrations-plan.md. */
@@ -152,6 +155,7 @@ export class AgentOS {
     // Task rows are db-only structured state (§Decision 2), but attachments are real files, so the
     // store also gets the on-disk attachments dir (snapshot model, like artifacts).
     this.tasks = new TaskStore(this.db, opts.paths?.taskAttachments);
+    this.runtimeAccounts = new RuntimeAccountStore(this.db);
     // Goals are pure db-only structured state (no attachments/on-disk mirror) → the db alone.
     this.goals = new GoalStore(this.db);
     // In-flight video renders (async) — db-only control state, like tasks/goals.

@@ -673,6 +673,25 @@ function migrate(db: Db): void {
       prefs        TEXT NOT NULL,
       updated_at   INTEGER NOT NULL
     );
+
+    -- Runtime account POOL for launch-time credential rotation, generic across coding runtimes. Each row is
+    -- one set of credentials for a given runtime (claude-code | codex | …) the launcher can run a session
+    -- under; when one hits its usage limit the selector rotates to the next available account for the SAME
+    -- runtime, exported via that runtime's own credential env vars (CodingRuntimeSpec.credentialEnv). INERT
+    -- until a runtime has ≥1 row — with an empty pool the launcher uses the box default, i.e. today's behavior.
+    CREATE TABLE IF NOT EXISTS runtime_accounts (
+      runtime       TEXT NOT NULL,          -- CodingRuntimeId: 'claude-code' | 'codex' | …
+      name          TEXT NOT NULL,          -- operator-chosen label, e.g. 'primary' / 'overflow-1'
+      kind          TEXT NOT NULL,          -- 'oauth' (a credential dir) | 'apikey' (a vault-held key)
+      config_dir    TEXT,                   -- kind=oauth: dir exported via the runtime's configDirVar
+      api_key_ref   TEXT,                   -- kind=apikey: secrets-vault key exported via the runtime's apiKeyVar
+      enabled       INTEGER NOT NULL DEFAULT 1,
+      status        TEXT NOT NULL DEFAULT 'available',  -- 'available' | 'limited'
+      limited_until INTEGER,                -- epoch ms the usage limit resets (parsed from the limit message)
+      last_used_at  INTEGER,
+      created_at    INTEGER NOT NULL,
+      PRIMARY KEY (runtime, name)
+    );
   `);
 
   // Idempotent column additions for the inbox feed (older DBs won't have these).
@@ -925,6 +944,9 @@ function migrate(db: Db): void {
   // list but its row + transcript survive, so archiving is reversible (unarchive) AND keeps every
   // reference intact — task-reconcile's `tasks.last_session_id` join, audit, cost. NULL = live.
   addColumn(db, 'term_sessions', 'archived_at', 'INTEGER');
+  // The rotation-pool account this run launched under (RuntimeAccountStore) — so limit detection at
+  // teardown can park the RIGHT account. NULL = launched on the box's default single account.
+  addColumn(db, 'term_sessions', 'runtime_account', 'TEXT');
 
   // Stale-prompt escalation: a once-per-item marker so the scheduler's re-nudge sweep DMs the approver /
   // operator EXACTLY ONCE when an approval or question has sat pending past the threshold, and never
