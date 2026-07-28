@@ -1,5 +1,5 @@
 {
-  "_about": "Golden governance fixture: the single source of truth for what the gate decides. `decisions` feed enrichArgs() → JsonPolicyEngine.classify() (the brain tm.gate uses); `context` feed autoClearsApproval(). Run with `node scripts/governance-conformance.cjs` (exits non-zero on any mismatch). Add a case here before changing the enricher or the default policy.",
+  "_about": "Golden governance fixture: the single source of truth for what the gate decides. `decisions` feed enrichArgs() \u2192 JsonPolicyEngine.classify() (the brain tm.gate uses); `context` feed autoClearsApproval(). Run with `node scripts/governance-conformance.cjs` (exits non-zero on any mismatch). Add a case here before changing the enricher or the default policy.",
   "thresholdsDefault": {
     "moneyCapUsd": 500,
     "bulkDeleteCount": 25,
@@ -18,7 +18,7 @@
       "expect": "allow"
     },
     {
-      "name": "bash deploy runs freely (risky ≠ destructive; no longer gated)",
+      "name": "bash deploy runs freely (risky \u2260 destructive; no longer gated)",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -66,7 +66,7 @@
       "expectRisky": false
     },
     {
-      "name": "#139: drop table is destructive → never (and still matches, space-bounded)",
+      "name": "#139: drop table is destructive \u2192 never (and still matches, space-bounded)",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -115,7 +115,7 @@
       "expect": "allow"
     },
     {
-      "name": "file write via a relative path is inside → allowed",
+      "name": "file write via a relative path is inside \u2192 allowed",
       "capability": "file.write",
       "workdir": "/data/agents/support",
       "args": {
@@ -128,7 +128,7 @@
       "expect": "allow"
     },
     {
-      "name": "file write OUTSIDE the folder now runs freely (local, reversible — not a side effect on the world)",
+      "name": "file write OUTSIDE the folder now runs freely (local, reversible \u2014 not a side effect on the world)",
       "capability": "file.write",
       "workdir": "/data/agents/support",
       "args": {
@@ -226,7 +226,7 @@
       "expect": "never"
     },
     {
-      "name": "delete from with where is risky, not destructive → runs freely",
+      "name": "delete from with where is risky, not destructive \u2192 runs freely",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -302,7 +302,7 @@
       "expect": "never"
     },
     {
-      "name": "db_query DROP TABLE is never (argument-aware — the closed hole)",
+      "name": "db_query DROP TABLE is never (argument-aware \u2014 the closed hole)",
       "capability": "connector.call",
       "args": {
         "tool": "mcp__globex__db_query",
@@ -346,7 +346,7 @@
       "expect": "allow"
     },
     {
-      "name": "refund over cap → never",
+      "name": "refund over cap \u2192 never",
       "capability": "connector.call",
       "args": {
         "tool": "mcp__stripe__REFUND_CHARGE",
@@ -357,7 +357,7 @@
       "expect": "never"
     },
     {
-      "name": "explicit amount_usd over cap → never",
+      "name": "explicit amount_usd over cap \u2192 never",
       "capability": "connector.call",
       "args": {
         "tool": "mcp__billing__charge_customer",
@@ -368,7 +368,7 @@
       "expect": "never"
     },
     {
-      "name": "bulk delete over cap → never",
+      "name": "bulk delete over cap \u2192 never",
       "capability": "connector.call",
       "args": {
         "tool": "mcp__globex__delete_content",
@@ -421,7 +421,7 @@
       "expect": "allow"
     },
     {
-      "name": "company connection management → owner",
+      "name": "company connection management \u2192 owner",
       "capability": "connector.connect",
       "args": {
         "tool": "mcp__composio-company__GMAIL_MANAGE_CONNECTION",
@@ -430,7 +430,7 @@
       "expect": "ask:owner"
     },
     {
-      "name": "email to internal domain → allowed (green)",
+      "name": "email to internal domain \u2192 allowed (green)",
       "capability": "connector.call",
       "orgDomains": [
         "acme.com"
@@ -446,7 +446,7 @@
       "expect": "allow"
     },
     {
-      "name": "email to external domain → approval (yellow)",
+      "name": "email to external domain \u2192 approval (yellow)",
       "capability": "connector.call",
       "orgDomains": [
         "acme.com"
@@ -460,7 +460,7 @@
       "expect": "ask:head"
     },
     {
-      "name": "email mixed internal+external → approval",
+      "name": "email mixed internal+external \u2192 approval",
       "capability": "connector.call",
       "orgDomains": [
         "acme.com"
@@ -477,7 +477,7 @@
       "expect": "ask:head"
     },
     {
-      "name": "email with unparseable recipients → external (safe default)",
+      "name": "email with unparseable recipients \u2192 external (safe default)",
       "capability": "connector.call",
       "orgDomains": [
         "acme.com"
@@ -491,7 +491,7 @@
       "expect": "ask:head"
     },
     {
-      "name": "email with no org domains configured → all external",
+      "name": "email with no org domains configured \u2192 all external",
       "capability": "connector.call",
       "args": {
         "tool": "mcp__composio__GMAIL_SEND_EMAIL",
@@ -502,7 +502,7 @@
       "expect": "ask:head"
     },
     {
-      "name": "bulk external send → admin (external email always asks; no separate bulk tier now)",
+      "name": "bulk external send \u2192 admin (external email always asks; no separate bulk tier now)",
       "capability": "connector.call",
       "orgDomains": [
         "acme.com"
@@ -553,7 +553,7 @@
       "expect": "ask:head"
     },
     {
-      "name": "many INTERNAL recipients is not bulk-external → green",
+      "name": "many INTERNAL recipients is not bulk-external \u2192 green",
       "capability": "connector.call",
       "orgDomains": [
         "acme.com"
@@ -580,7 +580,7 @@
       "expect": "allow"
     },
     {
-      "name": "slack send stays a connector call (not email) → runs freely",
+      "name": "slack send stays a connector call (not email) \u2192 runs freely",
       "capability": "connector.call",
       "orgDomains": [
         "acme.com"
@@ -639,7 +639,7 @@
       "expect": "allow"
     },
     {
-      "name": "open: internal unlisted → net.connect ask admin",
+      "name": "open: internal unlisted \u2192 net.connect ask admin",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -673,7 +673,7 @@
       "expect": "ask:head"
     },
     {
-      "name": "open: listed CIDR posture ask → net.connect ask admin",
+      "name": "open: listed CIDR posture ask \u2192 net.connect ask admin",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -707,7 +707,7 @@
       "expect": "ask:head"
     },
     {
-      "name": "open: listed allowed db host (posture allow) → allow",
+      "name": "open: listed allowed db host (posture allow) \u2192 allow",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -741,7 +741,7 @@
       "expect": "allow"
     },
     {
-      "name": "open: listed ssh host posture ask → ssh.exec ask owner",
+      "name": "open: listed ssh host posture ask \u2192 ssh.exec ask owner",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -775,7 +775,7 @@
       "expect": "ask:owner"
     },
     {
-      "name": "open: host posture never → net.connect never",
+      "name": "open: host posture never \u2192 net.connect never",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -809,7 +809,7 @@
       "expect": "never"
     },
     {
-      "name": "open: unknown host (variable) → ssh.exec ask owner",
+      "name": "open: unknown host (variable) \u2192 ssh.exec ask owner",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -877,7 +877,7 @@
       "expect": "never"
     },
     {
-      "name": "allowlist: public egress now governed → net.connect ask admin",
+      "name": "allowlist: public egress now governed \u2192 net.connect ask admin",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -945,7 +945,7 @@
       "expect": "allow"
     },
     {
-      "name": "open: empty grants, internal reach → ask admin",
+      "name": "open: empty grants, internal reach \u2192 ask admin",
       "capability": "shell.exec",
       "args": {
         "tool": "Bash",
@@ -1307,7 +1307,6 @@
       "workdir": "/home/ubuntu/agents/engineer",
       "expect": "never"
     },
-
     {
       "name": "semantic-guard: .env read piped to curl is injectionSuspect (exfil)",
       "capability": "shell.exec",
@@ -1410,6 +1409,161 @@
         "injectionSuspect": false,
         "injectionUncertain": false
       }
+    },
+    {
+      "name": "file-guard: own folder is allowed",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/srv/aos-data/agents/writer/notes.txt",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "allow"
+    },
+    {
+      "name": "file-guard: ~/.ssh is never writable",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "~/.ssh/authorized_keys",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "never"
+    },
+    {
+      "name": "file-guard: ~/.codex auth is never writable",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "~/.codex/auth.json",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "never"
+    },
+    {
+      "name": "file-guard: the workspace DB is never writable",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/srv/aos-data/agent-os.db",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "never"
+    },
+    {
+      "name": "file-guard: the DB WAL sidecar is never writable",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/srv/aos-data/agent-os.db-wal",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "never"
+    },
+    {
+      "name": "file-guard: connectors dir is never writable",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/srv/aos-data/connectors/session-x.mcp.json",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "never"
+    },
+    {
+      "name": "file-guard: secret.key is never writable",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/srv/aos-data/secret.key",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "never"
+    },
+    {
+      "name": "file-guard: codex patch escaping to ~/.ssh is never writable",
+      "capability": "file.write",
+      "args": {
+        "tool": "apply_patch",
+        "input": {
+          "command": "*** Begin Patch\n*** Update File: ~/.ssh/id_rsa\n+x\n*** End Patch"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "never"
+    },
+    {
+      "name": "file-guard: tier 2 off \u2014 outside folder stays allowed",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/tmp/scratch.txt",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "allow"
+    },
+    {
+      "name": "file-guard: tier 2 on \u2014 outside folder asks",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/tmp/scratch.txt",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "ask:head",
+      "askOutsideWorkdir": true
+    },
+    {
+      "name": "file-guard: tier 2 on \u2014 own folder still allowed",
+      "capability": "file.write",
+      "args": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/srv/aos-data/agents/writer/notes.txt",
+          "content": "x"
+        }
+      },
+      "workdir": "/srv/aos-data/agents/writer",
+      "dataHome": "/srv/aos-data",
+      "expect": "allow",
+      "askOutsideWorkdir": true
     }
   ],
   "context": [

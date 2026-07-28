@@ -10,6 +10,28 @@ new version heading in the same commit.
 
 ## [0.276.0] — 2026-07-28
 ### Added
+- **File-write guard — closes a fleet-wide hole where agents could write anywhere.** `default@v3` ships
+  **no `file.write` rules at all** and defaults to allow, so every agent on every runtime (Claude
+  included) could write to `~/.ssh`, the workspace DB, or another tenant's data with no gate. Adding a
+  JSON rule wouldn't have fixed it — a tenant with a persisted policy override never picks up new
+  `default.policy.json` rules — so this is applied by the ENGINE and folded in with `stricterDecision`,
+  like host governance and the semantic guard, reaching every tenant regardless of its stored policy.
+  Two tiers:
+  - **Crown-jewel paths → denied, always on, no switch.** `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.claude`
+    (+ `~/.claude.json`), `~/.codex`, `~/.config/gcloud`, `<home>/agent-os.db*`, `connectors/`,
+    `control/`, `tenants/`, `secret.key`. Credential and control-plane tampering with no legitimate
+    workflow, so there is nothing to bake and nothing to break. (The Claude launcher already blocked
+    *reads* of these via `permissions.deny`; the write side was uncovered.)
+  - **Any other write outside the agent's own folder → ask, OFF by default** behind a new
+    Settings → Governance toggle (owner-only). Agents legitimately write to cloned repos and scratch
+    dirs, so this can create real approvals; the `outsideWorkdir` fact is recorded either way, so the
+    audit shows what it *would* have paused before you switch it on. Same posture as the semantic guard.
+  The enricher now emits a `writeTargets` fact (resolved absolute paths, including those parsed out of a
+  Codex `apply_patch` envelope), so the guard can name the offending path rather than only knowing that
+  a write went somewhere else. 11 new conformance cases; suite is 130/130.
+
+## [0.276.0] — 2026-07-28
+### Added
 - **Per-runtime account pool + launch-time credential rotation.** A box authenticates each coding runtime
   with ONE credential set (`claude` via a Max-subscription OAuth token, `codex` via `~/.codex/auth.json`),
   and a subscription plan has a WEEKLY cap. When it's exhausted every spawned session gets a "you've hit

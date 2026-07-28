@@ -306,6 +306,7 @@ export function enrichArgs(
   // otherwise we derive it from the path in tool_input vs `workdir`. No path we can see → treat as outside
   // (opaque write needs a human). Left undefined when it's not a file write or no workdir was provided.
   let outsideWorkdir = typeof args.outsideWorkdir === 'boolean' ? (args.outsideWorkdir as boolean) : undefined;
+  let writeTargets: string[] | undefined;
   if (outsideWorkdir === undefined && isFileWrite && workdir) {
     const escapes = (t: string): boolean => {
       const rel = path.relative(workdir, path.resolve(workdir, t));
@@ -322,6 +323,12 @@ export function enrichArgs(
     } else {
       outsideWorkdir = true;                    // no path we can see → opaque write needs a human
     }
+    // The RESOLVED absolute paths this write touches. `outsideWorkdir` collapses them to one boolean,
+    // which is enough for policy but not for the file-write guard: denying a write to `~/.ssh` needs to
+    // know WHICH path, not just that it's elsewhere. Emitted as its own fact so the guard stays a pure
+    // function of the facts (and so the audit row shows what was actually targeted).
+    const resolved = (target ? [target] : patched).map((t) => path.resolve(workdir, t));
+    if (resolved.length) writeTargets = resolved;
   }
 
   // amountUsd: explicit fact → a *_usd key → for a payment tool, a bare amount/total (treated as USD).
@@ -398,6 +405,7 @@ export function enrichArgs(
   else if (injectionUncertain) facts.injectionUncertain = true;
   if (hostFacts) Object.assign(facts, hostFacts);
   if (outsideWorkdir !== undefined) facts.outsideWorkdir = outsideWorkdir;
+  if (writeTargets) facts.writeTargets = writeTargets;
   if (amountUsd !== undefined) facts.amountUsd = amountUsd;
   if (deleteCount !== undefined) facts.deleteCount = deleteCount;
   if (emailSend) {

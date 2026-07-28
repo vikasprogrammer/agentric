@@ -1503,8 +1503,8 @@ export const api = {
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
   saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),
 
-  governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
-  saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
+  governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
+  saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
 
   // Per-tenant console branding (accent colour + favicon badge).
   branding: () => call<Branding & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/branding'),

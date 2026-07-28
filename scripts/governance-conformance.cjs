@@ -48,6 +48,7 @@ if (newestSrc > newestDist) {
 
 const { enrichArgs, autoClearsApproval } = require(path.join(ROOT, 'dist/governance/enricher'));
 const { JsonPolicyEngine } = require(path.join(ROOT, 'dist/governance/policy'));
+const { fileGovernanceDecision } = require(path.join(ROOT, 'dist/governance/file-guard.js'));
 const { hostGovernanceDecision, stricterDecision } = require(path.join(ROOT, 'dist/governance/host-match'));
 
 const fixture = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/governance/conformance.json'), 'utf8'));
@@ -81,6 +82,14 @@ for (const c of fixture.decisions) {
   // Mirror tm.gate: host governance is applied by the engine (not the JSON), combined most-restrictive.
   if (c.hostGrants && (capability === 'net.connect' || capability === 'ssh.exec')) {
     decision = stricterDecision(decision, hostGovernanceDecision(capability, args));
+  }
+  // Mirror tm.gate: the file-write guard is engine-level too (default@v3 has no file.write rules, and a
+  // tenant with a persisted policy override would never see a new JSON one). Tier 1 (crown-jewel paths)
+  // is unconditional; tier 2 is per-case via `askOutsideWorkdir`.
+  if (capability === 'file.write') {
+    decision = stricterDecision(decision, fileGovernanceDecision(capability, args, {
+      dataHome: c.dataHome, askOutsideWorkdir: c.askOutsideWorkdir === true,
+    }));
   }
   const got = tag(decision);
   if (got === c.expect) pass++;
