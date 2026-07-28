@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.275.0] — 2026-07-28
+## [0.276.0] — 2026-07-28
 ### Added
 - **Per-runtime account pool + launch-time credential rotation.** A box authenticates each coding runtime
   with ONE credential set (`claude` via a Max-subscription OAuth token, `codex` via `~/.codex/auth.json`),
@@ -31,6 +31,19 @@ new version heading in the same commit.
   time (the globex pile-up). A new no-progress backstop reaps a headless running row past
   `unattendedNoProgressMinutes` (default 30m; Settings → Runtime) that has made zero `gate.attempt` — a
   busy long first turn fires one on its first tool, so it's never cut. 48× faster than the old ceiling.
+
+## [0.275.0] — 2026-07-28
+### Added
+- **Codex transcript reader — cost, engaged time and the chat timeline now work for Codex runs**
+  (`src/edge/codex-transcript.ts`). Codex sessions previously showed `cost_usd`/`activeMs`/`turns` as
+  null and an empty conversation view, because the readers only understood Claude Code's JSONL. Four
+  things differ and each was a trap: the rollout lives in the run's OWN `$CODEX_HOME` (not a global
+  projects tree); records are `{timestamp, type, payload}` with the interesting variants nested under
+  `payload.type`; **`token_count` is CUMULATIVE**, so the last one is taken rather than summed (summing
+  would multiply the bill by the turn count); and `input_tokens` INCLUDES the cached portion, so uncached
+  input is `input_tokens - cached_input_tokens`. `TerminalManager` gained `sessionConversation()` and an
+  internal cost dispatcher, so the sweep and all three `/conversation` routes are runtime-agnostic.
+  The `transcript` capability flips to true.
 
 ## [0.274.0] — 2026-07-28
 ### Added

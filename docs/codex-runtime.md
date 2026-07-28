@@ -133,6 +133,33 @@ Claude lane's `~/.claude.json` seed:
 
 ---
 
+
+## Reading a Codex transcript
+
+`src/edge/codex-transcript.ts` is the Codex half of `conversation.ts` + `session-cost.ts`. Four things
+differ from Claude Code, and each one is a trap if assumed away:
+
+- **Location.** Claude's transcripts sit in a global `~/.claude/projects/<cwd>/<id>.jsonl`, findable by
+  filename. Codex writes `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`, and every run has
+  its OWN `$CODEX_HOME` — so the reader walks that one session dir.
+- **Shape.** One record per line: `{timestamp, type, payload}`, with the interesting variants nested
+  under `payload.type` (`event_msg` → `user_message` / `agent_message` / `token_count` / `task_complete`;
+  `response_item` → `message` / `custom_tool_call` / `custom_tool_call_output`).
+- **Usage is CUMULATIVE.** Claude reports per-request usage that we sum; Codex's `token_count` carries a
+  running `total_token_usage` for the whole session. Take the LAST one — summing would multiply the bill
+  by the number of turns.
+- **`input_tokens` includes the cached portion**, where Anthropic reports them separately. Uncached input
+  is `input_tokens - cached_input_tokens`, which is what the input rate applies to.
+
+The timeline is built from `event_msg`, not `response_item`: the response items also carry the
+developer/system preamble Codex injects (permissions instructions, plugin lists), which is machinery
+rather than conversation and would swamp the view.
+
+One thing to expect: Codex often batches several shell commands into a single `exec` tool call that
+scripts `tools.exec_command` internally. So a run's `toolCalls` can read 1 while the gate recorded 3
+governed `Bash` effects. Both are right — they measure tool invocations and governed effects
+respectively.
+
 ## Capabilities and what degrades
 
 `CODING_RUNTIMES` in `src/types.ts` is the single declaration of what each runtime supports. Probe it
@@ -144,7 +171,7 @@ with `runtimeSupports(runtime, cap)`; use `isCodingRuntime(runtime)` for "is thi
 | `resume` / `fork` | ✅ | ✅ | `codex resume <id>` / `codex fork <id>` |
 | `attachableUnattended` | ✅ | ❌ | exec-only lane, forced by hook trust — see above |
 | `residentChat` | ✅ | ❌ | needs a TUI that survives a turn |
-| `transcript` (cost, engaged time, chat timeline) | ✅ | ❌ | the parser only reads Claude's JSONL |
+| `transcript` (cost, engaged time, chat timeline) | ✅ | ✅ | `src/edge/codex-transcript.ts` reads the rollout JSONL |
 | `nativeSkills` / `nativeSubagents` | ✅ | ❌ | `.claude/skills` + `.claude/agents` are Claude conventions |
 | `statusLine` / `permissionMode` | ✅ | ❌ | no equivalent |
 | `fileWriteGate` / `mcpGate` | ✅ | ✅ | PreToolUse covers `apply_patch` and `mcp__*` (verified) |
