@@ -12983,6 +12983,8 @@ function GovernanceSettings({ me }: { me: Member }) {
   const [hostGov, setHostGov] = useState(false)
   const [hostBusy, setHostBusy] = useState(false)
   const [semGuard, setSemGuard] = useState(false)
+  const [fileGuard, setFileGuard] = useState(false)
+  const [fileBusy, setFileBusy] = useState(false)
   const [semBusy, setSemBusy] = useState(false)
   const canEdit = me.role === 'owner' || me.role === 'admin'
   const isOwner = me.role === 'owner'
@@ -12991,7 +12993,7 @@ function GovernanceSettings({ me }: { me: Member }) {
     api.governance().then((r) => {
       if (r.error) return
       const v = { moneyCapUsd: r.moneyCapUsd, bulkDeleteCount: r.bulkDeleteCount }
-      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy }); setHostGov(!!r.hostGovernanceEnabled); setSemGuard(!!r.semanticGuardEnabled)
+      setT(v); setSaved(v); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy }); setHostGov(!!r.hostGovernanceEnabled); setSemGuard(!!r.semanticGuardEnabled); setFileGuard(!!r.fileWriteGuardEnabled)
     }).catch(() => {})
   }, [])
 
@@ -13011,6 +13013,15 @@ function GovernanceSettings({ me }: { me: Member }) {
     setSemBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
     setSemGuard(!!r.semanticGuardEnabled)
+  }
+
+  const toggleFileGuard = async () => {
+    setFileBusy(true)
+    const next = !fileGuard
+    const r = await api.saveGovernance({ ...saved, fileWriteGuardEnabled: next })
+    setFileBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setFileGuard(!!r.fileWriteGuardEnabled)
   }
 
   const dirty = JSON.stringify(t) !== JSON.stringify(saved)
@@ -13085,6 +13096,24 @@ function GovernanceSettings({ me }: { me: Member }) {
                 <span className="font-mono"> curl … | bash</span>, an env dump to the network — <strong>pauses for a human</strong> instead
                 of running. High-precision heuristics only (a false positive is an approval, never a hard block); softer signals are logged
                 for a later model-assisted pass. Best-effort command inspection, not a firewall. Owner-only.
+              </p>
+            </span>
+          </label>
+          <label className="flex items-start gap-3 border-t pt-3">
+            <input type="checkbox" className="mt-1" checked={fileGuard} disabled={!isOwner || fileBusy} onChange={toggleFileGuard} />
+            <span className="text-sm">
+              <span className="font-medium">Ask before an agent writes outside its own folder</span>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Off by default. When on, a file write whose target is outside the agent's own folder <strong>pauses for a human</strong>.
+                Agents legitimately write to cloned repos and scratch dirs, so turning this on will create approvals — the
+                <span className="font-mono"> outsideWorkdir</span> fact is recorded either way, so check the <a href="#/audit" className="underline hover:text-foreground">audit</a> first
+                to see what it would have paused. Owner-only.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Independent of this switch, writes to <strong>credential and workspace-state paths</strong> — <span className="font-mono">~/.ssh</span>,
+                <span className="font-mono"> ~/.aws</span>, <span className="font-mono">~/.claude</span>, <span className="font-mono">~/.codex</span>, the
+                workspace database, <span className="font-mono">connectors/</span>, <span className="font-mono">secret.key</span> — are <strong>always denied</strong>
+                for every agent and every runtime. Nothing legitimate writes there, so there is no switch.
               </p>
             </span>
           </label>

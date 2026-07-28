@@ -20,6 +20,7 @@ import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enri
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
+import { fileGovernanceDecision } from './governance/file-guard';
 import { injectionDecision } from './governance/semantic-guard';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { JsonPolicyEngine, PolicyDelta, applyProposal, describeProposal } from './governance/policy';
@@ -2895,6 +2896,16 @@ export class TerminalManager {
     // workspace toggle is on; OFF by default so the patterns bake against the audit trail first.
     if (args.injectionSuspect === true && this.os.settings.semanticGuardEnabled()) {
       decision = stricterDecision(decision, injectionDecision(args));
+    }
+    // File-write guard. Engine-level for the same reason as the two above: `default@v3` carries NO
+    // file.write rules and defaults to allow, and a tenant with a persisted policy override would never
+    // pick up a new JSON rule. Tier 1 (crown-jewel paths → deny) is unconditional; tier 2 (ask for any
+    // write outside the agent's folder) is behind a workspace toggle, default off.
+    if (capability === 'file.write') {
+      decision = stricterDecision(decision, fileGovernanceDecision(capability, args, {
+        dataHome: this.os.paths?.home,
+        askOutsideWorkdir: this.os.settings.fileWriteGuardEnabled(),
+      }));
     }
     // The DECISION BRIEF — one human-legible account of this effect (docs/decision-brief-layer-plan.md).
     // Computed once here, next to classify(); it rides on the gate.decision audit row (making the audit

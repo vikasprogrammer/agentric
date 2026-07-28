@@ -53,6 +53,7 @@ const RECOMMENDATIONS_KEY = 'learned_recommendations'; // { open: Recommendation
 const GOVERNANCE_KEY = 'governance_thresholds'; // numeric caps the never-tier policy rules read (JSON GovernanceThresholds)
 const HOST_GOV_KEY = 'host_governance_enabled'; // master switch for Phase 2b host-egress governance ('1'|'0')
 const SEMANTIC_GUARD_KEY = 'semantic_guard_enabled'; // master switch for the prompt-injection semantic guard ('1'|'0')
+const FILE_WRITE_GUARD_KEY = 'file_write_guard';
 const ENRICH_PATTERNS_KEY = 'enrich_patterns'; // operator regex→boolean-fact rules the enricher applies (JSON EnrichPattern[])
 const BRANDING_KEY = 'ui_branding'; // per-tenant web-console accent colour + favicon badge (JSON Branding)
 
@@ -728,6 +729,21 @@ export class SettingsStore {
 
   setSemanticGuardEnabled(on: boolean, by?: string): boolean {
     this.set(SEMANTIC_GUARD_KEY, on ? '1' : '0', by);
+    return on;
+  }
+
+  // ── file-write guard, tier 2 (file-guard.ts) ──
+  // The crown-jewel DENY tier is always on and needs no switch — nothing legitimate writes to `~/.ssh`
+  // or the workspace DB. THIS toggle only controls the softer "ask before writing anywhere outside the
+  // agent's own folder" tier, which genuinely can interrupt real work (agents write to cloned repos and
+  // scratch dirs), so it's OFF by default: the `outsideWorkdir` fact is always computed and audited, and
+  // an operator flips this on once they've seen what it would have paused.
+  fileWriteGuardEnabled(): boolean {
+    return this.getRow(FILE_WRITE_GUARD_KEY)?.value === '1';
+  }
+
+  setFileWriteGuardEnabled(on: boolean, by?: string): boolean {
+    this.set(FILE_WRITE_GUARD_KEY, on ? '1' : '0', by);
     return on;
   }
 
