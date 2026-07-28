@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.278.1] — 2026-07-28
+### Fixed
+- **A `token` rotation account was silently ignored — never selected, its token never injected.** The
+  row→object mapper (`toAccount`) only special-cased `apikey` and collapsed every other kind, including the
+  new `token`, to `oauth`. So at launch `applyRuntimeAccount` took the oauth branch, found no `configDir`,
+  and early-returned — no `CLAUDE_CODE_OAUTH_TOKEN` injected, no `runtime.account.selected` audit, the row's
+  `runtime_account` left blank (the session just ran on the box default). Map `token` through correctly.
+
 ## [0.278.0] — 2026-07-28
 ### Added
 - **Connect a Claude account by pasting a subscription token — no CLI wrangling on the box.** The rotation
