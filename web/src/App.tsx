@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountsResp, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -12320,7 +12320,7 @@ function SettingsPage({ me, state, tab: tabParam, onTab, onStateChange }: { me: 
       </div>
       <div className="min-w-0 flex-1">
         {tab === 'company' ? <CompanySettings me={me} />
-          : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /></div>
+          : tab === 'runtime' ? <div className="space-y-4"><RuntimeDefaultsSettings me={me} /><ConcurrencySettings me={me} /><RuntimeAccountsSettings me={me} /></div>
           : tab === 'theme' ? <ThemeSettings me={me} state={state} onStateChange={onStateChange} />
           : tab === 'secrets' ? <SecretsSettings me={me} agents={state?.agents ?? []} />
           : tab === 'memory' ? <MemorySettings me={me} />
@@ -13290,6 +13290,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const [input, setInput] = useState('')   // '' = use default; '0' = unlimited; N = cap
   const [idle, setIdle] = useState('')      // hours; '0' = off
   const [maxRun, setMaxRun] = useState('')  // headless hard runtime ceiling, hours; '0' = off
+  const [noProg, setNoProg] = useState('')  // headless no-progress reap, minutes; '0' = off
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -13300,19 +13301,22 @@ function ConcurrencySettings({ me }: { me: Member }) {
     setInput(r.value == null ? '' : String(r.value)) // box reflects only an explicit operator override
     setIdle(String(r.idleHours))
     setMaxRun(String(r.unattendedMaxHours))
+    setNoProg(String(r.unattendedNoProgressMinutes))
   }).catch(() => {})
   useEffect(() => { load() }, [])
 
   const capDirty = data != null && input.trim() !== (data.value == null ? '' : String(data.value))
   const idleDirty = data != null && idle.trim() !== String(data.idleHours)
   const maxRunDirty = data != null && maxRun.trim() !== String(data.unattendedMaxHours)
-  const dirty = capDirty || idleDirty || maxRunDirty
+  const noProgDirty = data != null && noProg.trim() !== String(data.unattendedNoProgressMinutes)
+  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty
   const save = async () => {
     setBusy(true); setHint('')
-    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number } = {}
+    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number } = {}
     if (capDirty) body.value = input.trim() === '' ? null : Number(input)
     if (idleDirty) body.idleHours = Number(idle)
     if (maxRunDirty) body.unattendedMaxHours = Number(maxRun)
+    if (noProgDirty) body.unattendedNoProgressMinutes = Number(noProg)
     const r = await api.saveConcurrency(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
@@ -13393,10 +13397,151 @@ function ConcurrencySettings({ me }: { me: Member }) {
             process. Headed (interactive) sessions are never cut mid-work by this.
           </p>
         </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Reap a never-started headless run after (minutes)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={noProg}
+              onChange={(e) => setNoProg(e.target.value)}
+              placeholder="30"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">headless/unattended runs only; 0 = never</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            The fast net for a run that never STARTED — a usage-limit refusal, a trust-dialog hang, a lost prompt — which makes no tool
+            call and never signals a turn, so the ceiling above would otherwise hold it for hours. A run that has made even one tool call
+            is treated as working and is never cut by this.
+          </p>
+        </div>
         <div className="flex items-center gap-3">
           <Button onClick={save} disabled={!canEdit || busy || !dirty}>{dirty ? 'Save' : 'Saved'}</Button>
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
         </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/** Settings → Runtime → Runtime accounts. The per-runtime credential POOL the launcher rotates so a session
+ *  is never spawned into an exhausted usage quota. Empty pool = inert (the box uses its single default
+ *  credentials, i.e. today's behavior). Owner-only. Never shows an api-key value — only its vault ref. */
+function RuntimeAccountsSettings({ me }: { me: Member }) {
+  const [resp, setResp] = useState<RuntimeAccountsResp | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+  const [runtime, setRuntime] = useState('claude-code')
+  const [name, setName] = useState('')
+  const [kind, setKind] = useState<'oauth' | 'apikey'>('oauth')
+  const [cred, setCred] = useState('')
+  const canEdit = me.role === 'owner'
+
+  const load = () => api.runtimeAccounts().then((r) => { if (!r.error) setResp(r) }).catch(() => {})
+  useEffect(() => { load() }, [])
+
+  const runtimes = resp?.runtimes ?? []
+  const spec = runtimes.find((r) => r.id === runtime)
+  const credVar = spec ? (kind === 'oauth' ? spec.credentialEnv.configDirVar : spec.credentialEnv.apiKeyVar) : ''
+  const add = async () => {
+    setBusy(true); setHint('')
+    const body = { runtime, name: name.trim(), kind, ...(kind === 'oauth' ? { configDir: cred.trim() } : { apiKeyRef: cred.trim() }) }
+    const r = await api.addRuntimeAccount(body)
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setName(''); setCred(''); setHint('added'); setTimeout(() => setHint(''), 2000); load()
+  }
+  const toggle = async (a: RuntimeAccount) => { await api.setRuntimeAccountEnabled(a.runtime, a.name, !a.enabled); load() }
+  const remove = async (a: RuntimeAccount) => { if (!confirm(`Remove account "${a.name}" (${a.runtime})?`)) return; await api.removeRuntimeAccount(a.runtime, a.name); load() }
+  const labelFor = (id: string) => runtimes.find((r) => r.id === id)?.label ?? id
+
+  return (
+    <Card>
+      <CardContent className="space-y-4 p-4">
+        <div>
+          <h3 className="text-sm font-medium">Runtime accounts</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            A pool of credentials <em>per runtime</em> the launcher rotates through, so a session is never spawned into an
+            exhausted usage quota. When an account hits its limit it's parked until reset and the next launch picks another;
+            only when a runtime's whole pool is dry does the scheduler defer. <span className="font-medium">Empty pool = off</span> —
+            the box uses its single default login, exactly as before.
+          </p>
+        </div>
+
+        {resp && resp.accounts.length === 0 && (
+          <div className="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            No accounts configured — rotation is inert; every session uses the box's default credentials.
+          </div>
+        )}
+        {resp && resp.accounts.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-muted-foreground">
+                <tr className="border-b text-left">
+                  <th className="py-1.5 pr-3 font-medium">Account</th>
+                  <th className="py-1.5 pr-3 font-medium">Runtime</th>
+                  <th className="py-1.5 pr-3 font-medium">Credential</th>
+                  <th className="py-1.5 pr-3 font-medium">Status</th>
+                  <th className="py-1.5 pr-3 font-medium">Last used</th>
+                  <th className="py-1.5 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {resp.accounts.map((a) => (
+                  <tr key={`${a.runtime}/${a.name}`} className="border-b last:border-0">
+                    <td className="py-1.5 pr-3 font-mono">{a.name}{!a.enabled && <span className="ml-1 text-muted-foreground">(disabled)</span>}</td>
+                    <td className="py-1.5 pr-3">{labelFor(a.runtime)}</td>
+                    <td className="py-1.5 pr-3 font-mono text-muted-foreground">{a.kind === 'oauth' ? a.configDir : `secret:${a.apiKeyRef}`}</td>
+                    <td className="py-1.5 pr-3">
+                      {a.status === 'limited'
+                        ? <Badge variant="outline" className="border-amber-500/40 text-amber-600 dark:text-amber-400">limited{a.limitedUntil ? ` · resets ${new Date(a.limitedUntil).toLocaleString()}` : ''}</Badge>
+                        : <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">available</Badge>}
+                    </td>
+                    <td className="py-1.5 pr-3 text-muted-foreground">{a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleString() : '—'}</td>
+                    <td className="py-1.5 text-right">
+                      {canEdit && (
+                        <span className="flex justify-end gap-2">
+                          <button className="text-muted-foreground hover:text-foreground" onClick={() => toggle(a)}>{a.enabled ? 'Disable' : 'Enable'}</button>
+                          <button className="text-red-600 hover:text-red-500" onClick={() => remove(a)}>Remove</button>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {canEdit && (
+          <div className="space-y-2 border-t pt-4">
+            <label className="text-xs font-medium text-muted-foreground">Add an account</label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={runtime} onValueChange={(v) => setRuntime(v ?? 'claude-code')}>
+                <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="Runtime" /></SelectTrigger>
+                <SelectContent>{runtimes.map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
+              </Select>
+              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="name (e.g. overflow-1)" className="h-8 w-44 font-mono text-xs" />
+              <Select value={kind} onValueChange={(v) => setKind((v as 'oauth' | 'apikey') ?? 'oauth')}>
+                <SelectTrigger className="h-8 w-32 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="oauth">Subscription</SelectItem>
+                  <SelectItem value="apikey">API key</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input value={cred} onChange={(e) => setCred(e.target.value)}
+                placeholder={kind === 'oauth' ? 'credential dir path' : 'vault key name'}
+                className="h-8 w-52 font-mono text-xs" />
+              <Button onClick={add} disabled={busy || !name.trim() || !cred.trim()}>Add</Button>
+              {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              {kind === 'oauth'
+                ? <>A directory holding this account's credentials, exported to the session as <span className="font-mono">{credVar || 'the config dir'}</span> (for Claude, a full <span className="font-mono">CLAUDE_CONFIG_DIR</span> from <span className="font-mono">CLAUDE_CONFIG_DIR=&lt;dir&gt; claude login</span>).</>
+                : <>A key in the secrets vault whose value is this account's API key, exported as <span className="font-mono">{credVar || 'the API-key var'}</span>. Store the value in Settings → Secrets first.</>}
+            </p>
+          </div>
+        )}
       </CardContent>
     </Card>
   )

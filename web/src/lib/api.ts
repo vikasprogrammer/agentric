@@ -62,7 +62,25 @@ export interface Concurrency {
   idleHours: number
   /** Hard runtime ceiling (hours) for a headless/unattended run — the stuck-mid-turn backstop (0 = off; default 24). */
   unattendedMaxHours: number
+  /** Reap a headless run that never made a tool call after this many minutes — never-started net (0 = off; default 30). */
+  unattendedNoProgressMinutes: number
 }
+
+/** One credential set in the runtime rotation pool (never carries the api-key value, only its vault ref). */
+export interface RuntimeAccount {
+  runtime: string
+  name: string
+  kind: 'oauth' | 'apikey'
+  configDir?: string
+  apiKeyRef?: string
+  enabled: boolean
+  status: 'available' | 'limited'
+  limitedUntil?: number
+  lastUsedAt?: number
+  createdAt: number
+}
+export interface RuntimeSpecInfo { id: string; label: string; credentialEnv: { configDirVar: string; apiKeyVar: string } }
+export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; error?: string }
 
 export interface AgentInfo {
   id: string
@@ -1501,7 +1519,11 @@ export const api = {
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
   saveSessionMetrics: (value: SessionMetrics) => call<{ ok: boolean; sessionMetrics?: SessionMetrics; error?: string }>('PUT', '/api/settings/session-metrics', { value }),
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
-  saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),
+  saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number }>('PUT', '/api/settings/concurrency', body),
+  runtimeAccounts: () => call<RuntimeAccountsResp>('GET', '/api/runtime-accounts'),
+  addRuntimeAccount: (body: { runtime: string; name: string; kind: 'oauth' | 'apikey'; configDir?: string; apiKeyRef?: string }) => call<{ ok: boolean; error?: string; account?: RuntimeAccount }>('POST', '/api/runtime-accounts', body),
+  setRuntimeAccountEnabled: (runtime: string, name: string, enabled: boolean) => call<{ ok: boolean; error?: string }>('PATCH', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`, { enabled }),
+  removeRuntimeAccount: (runtime: string, name: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`),
 
   governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
   saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),
