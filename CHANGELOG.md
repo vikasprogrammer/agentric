@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.276.1] — 2026-07-28
+### Fixed
+- **OAuth-backed MCP connectors could never work under Codex.** Codex keeps remote-MCP OAuth tokens in
+  `$CODEX_HOME/mcp_oauth.age`, and Agent OS points `$CODEX_HOME` at a throwaway per-session dir — so every
+  run started with an empty store, the server answered 401, and rmcp logged
+  `AuthRequired … token is null or empty` into the pane while that connector's tools silently went
+  missing. Same shape as the `auth.json` bug in 0.272.2, and equally invisible: the run still succeeds,
+  just without those tools. The launcher now symlinks the OAuth store back to the real `$CODEX_HOME`
+  alongside `auth.json`, and makes the link even when the target doesn't exist yet — writing through a
+  dangling symlink creates the real file, so a `codex mcp login` lands in the shared home instead of
+  being discarded with the session. Surfaced by a live DataForSEO connector that works under Claude Code
+  (which has its own persisted OAuth store) but 401'd under Codex.
+
 ## [0.277.0] — 2026-07-28
 ### Added
 - **Settings → Runtime → "Runtime accounts" panel.** The per-runtime credential pool (v0.276.0's

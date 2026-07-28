@@ -81,12 +81,24 @@ export CODEX_HOME="${AOS_CODEX_HOME:-$AGENT_DIR/.aos-codex}"
 mkdir -p "$CODEX_HOME"
 chmod 700 "$CODEX_HOME" 2>/dev/null || true
 
-# Auth: Codex reads auth.json from $CODEX_HOME, so link the real one in. Without this every session
-# would demand its own `codex login`. Symlink (not copy) so a re-login/token refresh is picked up and
-# no credential is duplicated onto disk.
+# Auth: Codex keeps its credentials in $CODEX_HOME, which we've just pointed at a throwaway per-session
+# dir — so every credential store has to be linked back to the REAL home or it dies with the session.
+#   • auth.json     — the account login (`codex login`).
+#   • mcp_oauth.age — OAuth tokens for REMOTE MCP servers (`codex mcp login <name>`). Without this an
+#     OAuth-backed connector can NEVER work under Codex: each run starts with an empty store, the server
+#     answers 401, and rmcp logs `AuthRequired … token is null or empty` into the pane. (Seen live with
+#     a DataForSEO connector that works fine under Claude Code, which has its own persisted OAuth store.)
+# Symlinks, not copies, so a re-login or a token refresh performed in ANY session is picked up by all of
+# them and no credential is duplicated onto disk. The OAuth link is made even when the target doesn't
+# exist yet: writing through a dangling symlink creates the real file, so a login lands in the shared
+# home rather than being thrown away with the session.
 REAL_CODEX_HOME="${AOS_REAL_CODEX_HOME:-$HOME/.codex}"
+mkdir -p "$REAL_CODEX_HOME" 2>/dev/null || true
 if [ -f "$REAL_CODEX_HOME/auth.json" ] && [ ! -e "$CODEX_HOME/auth.json" ]; then
   ln -s "$REAL_CODEX_HOME/auth.json" "$CODEX_HOME/auth.json" 2>/dev/null || true
+fi
+if [ ! -e "$CODEX_HOME/mcp_oauth.age" ]; then
+  ln -s "$REAL_CODEX_HOME/mcp_oauth.age" "$CODEX_HOME/mcp_oauth.age" 2>/dev/null || true
 fi
 
 # PRE-FLIGHT: refuse to start unauthenticated. Codex's fallback when it finds no credentials is an

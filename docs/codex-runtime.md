@@ -86,7 +86,23 @@ It writes, fresh on every launch:
 - **`auth.json`** — symlinked from the real `$CODEX_HOME` so a re-login/token refresh is picked up and
   no credential is duplicated to disk.
 
-**Authentication is a one-time, out-of-band step.** Run `codex login` **from a normal shell as the
+**Remote (OAuth) MCP connectors need a one-time `codex mcp login`.** A connector registered as a
+hosted HTTP endpoint with no auth headers — e.g. DataForSEO — authenticates by OAuth, and Codex keeps
+those tokens in `$CODEX_HOME/mcp_oauth.age`. The launcher symlinks that store back to the real
+`$CODEX_HOME` (like `auth.json`), so a login done once is shared by every session; without the link
+every run starts with an empty store and rmcp logs
+`AuthRequired … token is null or empty` into the pane while that one connector's tools go missing.
+The login itself can't happen inside a session (`codex exec` is non-interactive), so do it once:
+
+```
+codex mcp add   dataforseo --url https://mcp.dataforseo.com/mcp   # so the name resolves
+codex mcp login dataforseo                                        # opens the browser once
+```
+
+Note this is per-CLI: Claude Code has its own OAuth store, so a connector working under Claude tells
+you nothing about whether Codex can reach it.
+
+**Account authentication is a one-time, out-of-band step.** Run `codex login` **from a normal shell as the
 service user**, never inside an agent session: `$CODEX_HOME` is per-session, so a login performed in a
 pane is written to that session's scratch dir and thrown away with it. The launcher symlinks
 `$REAL_CODEX_HOME/auth.json` (default `~/.codex/auth.json`) into each session, so one login covers the
