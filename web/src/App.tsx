@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountsResp, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -13462,8 +13462,9 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
   const [hint, setHint] = useState('')
   const [runtime, setRuntime] = useState('claude-code')
   const [name, setName] = useState('')
-  const [kind, setKind] = useState<'oauth' | 'apikey'>('oauth')
-  const [cred, setCred] = useState('')
+  const [kind, setKind] = useState<RuntimeAccountKind>('token')
+  const [cred, setCred] = useState('')   // configDir (oauth) or vault key ref (apikey)
+  const [token, setToken] = useState('') // raw setup-token value (token kind)
   const canEdit = me.role === 'owner'
 
   const load = () => api.runtimeAccounts().then((r) => { if (!r.error) setResp(r) }).catch(() => {})
@@ -13471,15 +13472,21 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
 
   const runtimes = resp?.runtimes ?? []
   const spec = runtimes.find((r) => r.id === runtime)
-  const credVar = spec ? (kind === 'oauth' ? spec.credentialEnv.configDirVar : spec.credentialEnv.apiKeyVar) : ''
+  const hasToken = !!spec?.credentialEnv.tokenVar
+  // A runtime with no token env (codex) can't offer the paste-token option; fall back to a dir/key.
+  const effKind: RuntimeAccountKind = kind === 'token' && !hasToken ? 'oauth' : kind
+  const credVar = spec ? (effKind === 'oauth' ? spec.credentialEnv.configDirVar : effKind === 'token' ? (spec.credentialEnv.tokenVar ?? '') : spec.credentialEnv.apiKeyVar) : ''
   const add = async () => {
     setBusy(true); setHint('')
-    const body = { runtime, name: name.trim(), kind, ...(kind === 'oauth' ? { configDir: cred.trim() } : { apiKeyRef: cred.trim() }) }
+    const body = effKind === 'token'
+      ? { runtime, name: name.trim(), kind: effKind, token: token.trim() }
+      : { runtime, name: name.trim(), kind: effKind, ...(effKind === 'oauth' ? { configDir: cred.trim() } : { apiKeyRef: cred.trim() }) }
     const r = await api.addRuntimeAccount(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setName(''); setCred(''); setHint('added'); setTimeout(() => setHint(''), 2000); load()
+    setName(''); setCred(''); setToken(''); setHint('added'); setTimeout(() => setHint(''), 2000); load()
   }
+  const addDisabled = busy || !name.trim() || (effKind === 'token' ? !token.trim() : !cred.trim())
   const toggle = async (a: RuntimeAccount) => { await api.setRuntimeAccountEnabled(a.runtime, a.name, !a.enabled); load() }
   const remove = async (a: RuntimeAccount) => { if (!confirm(`Remove account "${a.name}" (${a.runtime})?`)) return; await api.removeRuntimeAccount(a.runtime, a.name); load() }
   const labelFor = (id: string) => runtimes.find((r) => r.id === id)?.label ?? id
@@ -13551,23 +13558,26 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                 <SelectContent>{runtimes.map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
               </Select>
               <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="name (e.g. overflow-1)" className="h-8 w-44 font-mono text-xs" />
-              <Select value={kind} onValueChange={(v) => setKind((v as 'oauth' | 'apikey') ?? 'oauth')}>
-                <SelectTrigger className="h-8 w-32 text-xs"><SelectValue /></SelectTrigger>
+              <Select value={effKind} onValueChange={(v) => setKind((v as RuntimeAccountKind) ?? 'token')}>
+                <SelectTrigger className="h-8 w-44 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="oauth">Subscription</SelectItem>
+                  {hasToken && <SelectItem value="token">Subscription token (recommended)</SelectItem>}
                   <SelectItem value="apikey">API key</SelectItem>
+                  <SelectItem value="oauth">Credential dir</SelectItem>
                 </SelectContent>
               </Select>
-              <Input value={cred} onChange={(e) => setCred(e.target.value)}
-                placeholder={kind === 'oauth' ? 'credential dir path' : 'vault key name'}
-                className="h-8 w-52 font-mono text-xs" />
-              <Button onClick={add} disabled={busy || !name.trim() || !cred.trim()}>Add</Button>
+              {effKind === 'token'
+                ? <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="paste setup-token output" autoComplete="off" className="h-8 w-64 font-mono text-xs" />
+                : <Input value={cred} onChange={(e) => setCred(e.target.value)} placeholder={effKind === 'oauth' ? 'credential dir path' : 'vault key name'} className="h-8 w-52 font-mono text-xs" />}
+              <Button onClick={add} disabled={addDisabled}>Add</Button>
               {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              {kind === 'oauth'
+              {effKind === 'token'
+                ? <>On your own computer run <span className="font-mono">claude setup-token</span>, authorize in the browser (it completes there — no code to copy back), then paste the printed token here. It's sealed in the vault and injected as <span className="font-mono">{credVar || 'CLAUDE_CODE_OAUTH_TOKEN'}</span> — valid ~1 year. Nothing to install on this box.</>
+                : effKind === 'oauth'
                 ? <>A directory holding this account's credentials, exported to the session as <span className="font-mono">{credVar || 'the config dir'}</span> (for Claude, a full <span className="font-mono">CLAUDE_CONFIG_DIR</span> from <span className="font-mono">CLAUDE_CONFIG_DIR=&lt;dir&gt; claude login</span>).</>
-                : <>A key in the secrets vault whose value is this account's API key, exported as <span className="font-mono">{credVar || 'the API-key var'}</span>. Store the value in Settings → Secrets first.</>}
+                : <>A key already in the secrets vault whose value is this account's API key, exported as <span className="font-mono">{credVar || 'the API-key var'}</span>. Store the value in Settings → Secrets first.</>}
             </p>
           </div>
         )}

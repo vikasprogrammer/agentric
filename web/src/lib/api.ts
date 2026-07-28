@@ -67,10 +67,11 @@ export interface Concurrency {
 }
 
 /** One credential set in the runtime rotation pool (never carries the api-key value, only its vault ref). */
+export type RuntimeAccountKind = 'oauth' | 'apikey' | 'token'
 export interface RuntimeAccount {
   runtime: string
   name: string
-  kind: 'oauth' | 'apikey'
+  kind: RuntimeAccountKind
   configDir?: string
   apiKeyRef?: string
   enabled: boolean
@@ -79,7 +80,7 @@ export interface RuntimeAccount {
   lastUsedAt?: number
   createdAt: number
 }
-export interface RuntimeSpecInfo { id: string; label: string; credentialEnv: { configDirVar: string; apiKeyVar: string } }
+export interface RuntimeSpecInfo { id: string; label: string; credentialEnv: { configDirVar: string; apiKeyVar: string; tokenVar?: string } }
 export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; error?: string }
 
 export interface AgentInfo {
@@ -1521,7 +1522,7 @@ export const api = {
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
   saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number }>('PUT', '/api/settings/concurrency', body),
   runtimeAccounts: () => call<RuntimeAccountsResp>('GET', '/api/runtime-accounts'),
-  addRuntimeAccount: (body: { runtime: string; name: string; kind: 'oauth' | 'apikey'; configDir?: string; apiKeyRef?: string }) => call<{ ok: boolean; error?: string; account?: RuntimeAccount }>('POST', '/api/runtime-accounts', body),
+  addRuntimeAccount: (body: { runtime: string; name: string; kind: RuntimeAccountKind; configDir?: string; apiKeyRef?: string; token?: string }) => call<{ ok: boolean; error?: string; account?: RuntimeAccount }>('POST', '/api/runtime-accounts', body),
   setRuntimeAccountEnabled: (runtime: string, name: string, enabled: boolean) => call<{ ok: boolean; error?: string }>('PATCH', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`, { enabled }),
   removeRuntimeAccount: (runtime: string, name: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`),
 

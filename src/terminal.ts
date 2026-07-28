@@ -2234,14 +2234,17 @@ export class TerminalManager {
     try {
       const acct = this.os.runtimeAccounts.pick(runtime);
       if (!acct) return; // empty pool (inert) or all limited → box default
-      const { configDirVar, apiKeyVar } = CODING_RUNTIMES[runtime].credentialEnv;
-      if (acct.kind === 'apikey') {
-        const value = acct.apiKeyRef ? this.os.secrets.getSync(this.os.tenant, agent, acct.apiKeyRef) : undefined;
-        if (!value) { this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, ref: acct.apiKeyRef }); return; }
-        env[apiKeyVar] = value;
-      } else {
+      const { configDirVar, apiKeyVar, tokenVar } = CODING_RUNTIMES[runtime].credentialEnv;
+      if (acct.kind === 'oauth') {
         if (!acct.configDir) return;
         env[configDirVar] = acct.configDir;
+      } else {
+        // apikey | token: the value lives in the vault; the KIND picks which env var carries it (a usage-billed
+        // API key vs. a long-lived OAuth token). A runtime that has no tokenVar can't honour a token account.
+        const varName = acct.kind === 'token' ? tokenVar : apiKeyVar;
+        const value = varName && acct.apiKeyRef ? this.os.secrets.getSync(this.os.tenant, agent, acct.apiKeyRef) : undefined;
+        if (!value) { this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, kind: acct.kind, ref: acct.apiKeyRef, var: varName ?? null }); return; }
+        env[varName!] = value;
       }
       this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
       this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind });
