@@ -982,6 +982,8 @@ export class Automations {
     if (!event.threadTs) return { status: 'none' };
     const bound = this.tm.sessionForSlackThread(event.channel, event.threadTs);
     if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
+    // Explicit `/other-agent …` in the thread overrides continuity → let the caller spawn it fresh.
+    if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     // Continuation identity is whoever sent THIS follow-up (accountable human for this turn), falling back
     // to the original run-as when the sender is unmapped.
     const runAs = runAsMember ?? bound.runAs;
@@ -1015,6 +1017,8 @@ export class Automations {
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     const bound = this.tm.sessionForDiscordThread(event.channel);
     if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
+    // Explicit `/other-agent …` in the thread overrides continuity → let the caller spawn it fresh.
+    if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     const runAs = runAsMember ?? bound.runAs;
     const msg = this.stripChatPrefix(event.text);
     if (!msg) return { status: 'none' };
@@ -1087,6 +1091,8 @@ export class Automations {
   ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
     const bound = this.tm.sessionForClickupThread(event.taskId);
     if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
+    // Explicit `/other-agent …` on a shared task overrides continuity → let the caller spawn it fresh.
+    if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
     const runAs = runAsMember ?? bound.runAs;
     const msg = this.stripChatPrefix(event.text);
     if (!msg) return { status: 'none' };
@@ -1131,6 +1137,16 @@ export class Automations {
     const m = t.match(/^\/([A-Za-z0-9][\w-]*)\s+([\s\S]*)$/);
     if (m && this.os.agents.has(m[1])) return m[2].trim();
     return t;
+  }
+
+  /** True when a follow-up explicitly addresses a DIFFERENT known agent than the one bound to this
+   *  thread — a deliberate hand-off. Continuity must then DECLINE so the caller spawns the named agent
+   *  fresh, rather than delivering "/other-agent …" into the wrong live session. Critical in ClickUp's
+   *  SHARED comment space, where `/infra-ops …` and `/migration-ops …` land on the same task; a plain
+   *  follow-up (no `/agent` prefix, or one naming the SAME agent / a non-agent slash) still continues. */
+  private redirectsToOtherAgent(text: string, boundAgent: string): boolean {
+    const m = this.normalizeChatCommand((text || '').replace(/<@[^>]+>/g, '')).trim().match(/^\/([A-Za-z0-9][\w-]*)\b/);
+    return !!m && m[1] !== boundAgent && this.os.agents.has(m[1]);
   }
 
   /**

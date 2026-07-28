@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.271.1] — 2026-07-28
+### Fixed
+- **Explicit `/agent` overrides thread continuity when it names a different agent.** In a chat "thread"
+  already bound to a session, a follow-up that explicitly addresses a *different* known agent
+  (`/infra-ops …` on a task previously handled by `/migration-ops`) was being delivered into the bound
+  session instead of spawning the named agent — so the wrong agent replied. This bit ClickUp hardest,
+  where a task's comment section is a **shared** space and two agents are routinely addressed on the same
+  task. Continuity now declines when the follow-up redirects to another agent, and the caller spawns it
+  fresh; a plain follow-up (no prefix, the same agent, or a non-agent slash) still continues as before.
+  Applied consistently across ClickUp, Slack, and Discord continuity.
+
 ## [0.271.0] — 2026-07-27
 ### Added
 - **Agent-driven Composio connection requests — default to personal (`connection_request`).** An agent
