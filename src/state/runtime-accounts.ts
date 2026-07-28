@@ -61,7 +61,7 @@ interface Row {
 const toAccount = (r: Row): RuntimeAccount => ({
   runtime: r.runtime as CodingRuntimeId,
   name: r.name,
-  kind: r.kind === 'apikey' ? 'apikey' : 'oauth',
+  kind: r.kind === 'apikey' ? 'apikey' : r.kind === 'token' ? 'token' : 'oauth',
   configDir: r.config_dir ?? undefined,
   apiKeyRef: r.api_key_ref ?? undefined,
   enabled: r.enabled === 1,
