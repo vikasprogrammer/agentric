@@ -89,6 +89,45 @@ if [ -f "$REAL_CODEX_HOME/auth.json" ] && [ ! -e "$CODEX_HOME/auth.json" ]; then
   ln -s "$REAL_CODEX_HOME/auth.json" "$CODEX_HOME/auth.json" 2>/dev/null || true
 fi
 
+# PRE-FLIGHT: refuse to start unauthenticated. Codex's fallback when it finds no credentials is an
+# INTERACTIVE "Sign in with ChatGPT" menu that waits on a keypress, and that is harmful in both lanes:
+#   - unattended: nobody is at the pane, so the run parks on the menu forever — the same permanent-hang
+#     class as the Claude lane's folder-trust dialog (see CLAUDE.md).
+#   - interactive: a human CAN complete it, but `codex login` writes auth.json into whatever $CODEX_HOME
+#     is current — which here is the PER-SESSION dir. The credential is then thrown away with the
+#     session's files, the next run prompts again, and it looks like the login "didn't take". (Exactly
+#     what happened on the first live run: the login landed in session-<id>.codex/auth.json.)
+# So fail closed with the fix spelled out, and never let the login flow appear inside an agent session.
+# API-key mode needs no auth.json, so an injected OPENAI_API_KEY (shellSecret / assignment) counts.
+if [ ! -e "$CODEX_HOME/auth.json" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
+  red "Codex is not authenticated — refusing to start."
+  echo
+  dim "Agent OS looked for credentials at:  $REAL_CODEX_HOME/auth.json"
+  dim "Fix it ONCE, from a normal shell as this user (NOT inside an agent session):"
+  echo
+  cyan "    codex login"
+  echo
+  dim "…then re-run this agent. Every session symlinks that file, so one login covers the fleet."
+  dim "Alternatively give this agent an OPENAI_API_KEY (Settings → Secrets) for usage-based billing."
+  dim "Do NOT run 'codex login' in here: \$CODEX_HOME is per-session, so the credential would be discarded."
+  echo
+  notify_ended_early() {
+    curl -s -X POST "$AOS_URL/api/ended" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" \
+      -d "$(node -e 'console.log(JSON.stringify({session:process.argv[1]}))' "$SESSION")" >/dev/null 2>&1 || true
+  }
+  notify_ended_early
+  # Unattended runs must EXIT so tmux drops the pane and the pile-up guard releases. An interactive
+  # session holds the pane (so the operator can read this) but never drops to a shell — a raw tmux
+  # shell has no gate hook and no sandbox.
+  [ "${UNATTENDED:-}" = "1" ] && exit 1
+  while true; do
+    dim "Press [q] to close this tab."
+    key=""
+    IFS= read -rsn1 key || { sleep 5; continue; }
+    case "$key" in q|Q) exit 1 ;; *) : ;; esac
+  done
+fi
+
 # ── config.toml ───────────────────────────────────────────────────────────────────────────────────
 # Generated fresh each launch (so hook paths are always correct and portable across machines), from
 # the session's MCP JSON. Codex's schema is `[mcp_servers.<name>]` with command/args + a nested

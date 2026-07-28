@@ -71,6 +71,13 @@ It writes, fresh on every launch:
 - **`auth.json`** — symlinked from the real `$CODEX_HOME` so a re-login/token refresh is picked up and
   no credential is duplicated to disk.
 
+**Authentication is a one-time, out-of-band step.** Run `codex login` **from a normal shell as the
+service user**, never inside an agent session: `$CODEX_HOME` is per-session, so a login performed in a
+pane is written to that session's scratch dir and thrown away with it. The launcher symlinks
+`$REAL_CODEX_HOME/auth.json` (default `~/.codex/auth.json`) into each session, so one login covers the
+whole fleet. If neither that file nor `OPENAI_API_KEY` is present the launcher **refuses to start** and
+prints the fix — it will not let Codex's interactive sign-in menu appear inside an agent session.
+
 Two trust gates have to be pre-accepted or every session hangs or dies — the same class of bug as the
 Claude lane's `~/.claude.json` seed:
 

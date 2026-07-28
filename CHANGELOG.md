@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.272.2] — 2026-07-28
+### Fixed
+- **A Codex session with no credentials dropped into an interactive login menu inside the agent pane.**
+  Codex's fallback when it finds no auth is a "Sign in with ChatGPT" picker that waits on a keypress —
+  harmful in both lanes. Unattended, nobody is there to answer, so the run parked forever (the same
+  permanent-hang class as the Claude lane's folder-trust dialog). Interactive, a human COULD complete it,
+  but `codex login` writes `auth.json` into whatever `$CODEX_HOME` is current — here the **per-session**
+  dir — so the credential was discarded with the session's files and the next run prompted again, making
+  it look like the login "didn't take". The launcher now **pre-flights auth and fails closed** with the
+  fix spelled out (`codex login` once, from a normal shell), exiting non-zero on an unattended run so
+  tmux drops the pane and the pile-up guard releases, and holding the pane — never dropping to an
+  ungoverned shell — on an interactive one. An injected `OPENAI_API_KEY` satisfies the check too
+  (API-key mode needs no `auth.json`).
+
 ## [0.272.1] — 2026-07-28
 ### Fixed
 - **Codex sessions stored a meaningless transcript id, breaking resume/fork.** `createSession` (and
