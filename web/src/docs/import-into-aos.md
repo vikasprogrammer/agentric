@@ -84,7 +84,7 @@ header so it can be reconstructed.
      "description": "<one sentence: what you do and when to run you>",
      "category": "<Support|Engineering|Marketing|Sales|Research|Ops|System>",
      "runtime": "claude-code",
-     "model": "claude-opus-4-8",
+     "model": "opus",
      "examplePrompts": ["<2-4 prompts that show how you're typically invoked>"]
    }
    (Leave out principal/policyContext/budget — AOS assigns safe defaults.)

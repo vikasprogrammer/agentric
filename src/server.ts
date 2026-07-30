@@ -3683,8 +3683,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
     if (tErr) return sendJson(res, 400, { error: tErr });
     // No forced model default: a blank field means "inherit the workspace default" (Settings →
-    // Runtime defaults), same as effort/permission. The create form pre-fills claude-opus-4-8, so the
-    // common case still pins a model explicitly; clearing it opts the agent into the fleet default.
+    // Runtime defaults), same as effort/permission. The create form pre-fills the `opus` alias (which
+    // tracks the latest Opus rather than a pinned version), so the common case still sets a model
+    // explicitly; clearing it opts the agent into the fleet default.
     if (!/^[a-z][a-z0-9-]{1,39}$/.test(id)) return sendJson(res, 400, { error: 'id must be lowercase letters, digits and hyphens (2–40 chars, starting with a letter)' });
     if (os.agents.get(id)) return sendJson(res, 409, { error: `an agent named "${id}" already exists` });
     if (!claudeMd.trim()) return sendJson(res, 400, { error: 'a CLAUDE.md is required' });

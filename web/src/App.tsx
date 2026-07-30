@@ -9880,7 +9880,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
   const [description, setDescription] = useState('')
   const [category, setCategory] = useState('')
   const [icon, setIcon] = useState<string | undefined>(undefined)
-  const [tuning, setTuning] = useState<RuntimeTuning>({ model: 'claude-opus-4-8' })
+  const [tuning, setTuning] = useState<RuntimeTuning>({ model: 'opus' })
   const [claudeMd, setClaudeMd] = useState(NEW_AGENT_CLAUDE_TEMPLATE)
   const [prompts, setPrompts] = useState('')
   const [busy, setBusy] = useState(false)
@@ -9942,7 +9942,7 @@ function NewAgentPage({ me, onCreated }: { me: Member; onCreated: (id: string) =
             <p className="text-[11px] text-muted-foreground">Optional. The first becomes the spawn box’s prefill; the rest are one-click chips. Up to 6.</p>
           </div>
           <div className="space-y-1">
-            <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder="claude-opus-4-8" />
+            <TuningFields tuning={tuning} onChange={setTuning} modelPlaceholder="opus" />
             <p className="text-[11px] text-muted-foreground">Per-agent overrides. Leave effort/permission on <span className="font-mono">inherit</span> to follow the workspace default (Settings → Runtime defaults). The gate-hook governs regardless of permission mode.</p>
           </div>
           <div className="space-y-1">

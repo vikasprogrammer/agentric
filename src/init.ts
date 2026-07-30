@@ -33,7 +33,7 @@ function sampleManifest(id: string): string {
       principal: `svc-${id}`,
       policyContext: 'default@v3',
       runtime: 'claude-code',
-      model: 'claude-opus-4-8',
+      model: 'opus',
       budget: { usdCap: 2.0, tokenCap: 400000, wallClockMs: 1800000 },
     },
     null,

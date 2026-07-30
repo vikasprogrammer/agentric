@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.278.2] — 2026-07-30
+### Changed
+- **New agents now default to the `opus` model alias instead of a pinned `claude-opus-4-8`.** The sample
+  manifest (`agent-os init`), the console's create-agent form default + placeholder, and the import doc
+  example all baked in `claude-opus-4-8`, so every agent created since pinned that exact version and would
+  not follow a newer Opus. Default to the `opus` alias, which tracks the latest Opus. Existing agents are
+  unaffected (their manifests keep whatever they pinned); this only changes the default for *newly* created
+  agents. A specific version can still be typed in explicitly, and the model dropdown still suggests pinned
+  version ids for anyone who wants to pin.
+
 ## [0.278.1] — 2026-07-28
 ### Fixed
 - **A `token` rotation account was silently ignored — never selected, its token never injected.** The
