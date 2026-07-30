@@ -6,6 +6,10 @@ license: MIT
 
 # GLM code review
 
+> **Now an alias for the provider-agnostic [`code-review`](../code-review/SKILL.md) skill**, pinned to
+> z.ai's GLM. `glm-review.sh` forwards all its flags to `code-review.sh` — behaviour is unchanged, but
+> new work should prefer `code-review` (same review, any provider, a structured verdict + exit code).
+
 A fast, **one-shot cross-model** review of a code diff using z.ai's GLM models (via their
 Anthropic-compatible API) — a cheap second opinion that catches what a single reviewer misses.
 Different model, different blind spots: agreement across models raises confidence; disagreement

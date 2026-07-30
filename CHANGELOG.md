@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.279.0] — 2026-07-30
+### Added
+- **Model-agnostic `code-review` skill — an independent, cross-model code review over any
+  OpenAI-compatible (or Anthropic-compatible) provider.** Successor to `glm-review`: the reviewer
+  model/provider is config (`REVIEW_BASE_URL` / `REVIEW_MODEL` / `REVIEW_API_KEY`), so the same script
+  runs against z.ai GLM (default, unchanged), OpenAI, or a local Ollama endpoint (keyless on `localhost`).
+  It asks the model for a structured `{verdict, findings[]}`, renders findings most-severe-first, and maps
+  the verdict to an exit code (`REVIEW_FAIL_ON`) so a caller / CI / pre-push hook can gate on it.
+  `glm-review` is kept as a thin alias. Pairs with the new `code-reviewer` agent.
+
 ## [0.278.1] — 2026-07-28
 ### Fixed
 - **A `token` rotation account was silently ignored — never selected, its token never injected.** The
