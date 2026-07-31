@@ -65,7 +65,7 @@ const MIN_TOPIC_COUNT = 3;
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
-  'slack', 'discord', 'chat', 'check', 'checked', 'report', 'reported', 'completed', 'complete', 'summary', 'daily', 'sent', 'posted', 'update', 'updated', 'dashboard', 'message', 'notified', 'agent', 'agents', 'human', 'review', 'reviewed', 'ended', 'started', 'verified', 'read',
+  'claude', 'publish', 'recall', 'remember', 'notify', 'slack', 'discord', 'chat', 'check', 'checked', 'report', 'reported', 'completed', 'complete', 'summary', 'daily', 'sent', 'posted', 'update', 'updated', 'dashboard', 'message', 'notified', 'agent', 'agents', 'human', 'review', 'reviewed', 'ended', 'started', 'verified', 'read',
   // Conversational filler from natural-language task prompts — a Task line is a human sentence ("lets check
   // the latest emails …"), so instruction/filler words outrank the real noun. Fleet data showed "working,
   // recent, lets, latest" topping "frequently works on"; drop them so the actual subject surfaces.
@@ -287,7 +287,9 @@ function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new Set()):
     const seen = new Set<string>();
     for (const w of line.toLowerCase().match(/[a-z][a-z0-9.-]{3,}/g) ?? []) {
       const t = w.replace(/[.-]+$/, '');
-      if (t.length < 4 || STOP.has(t) || nameStop.has(t) || seen.has(t)) continue; // once per episode
+      // A filename is stopped by its base name, so `claude.md` is caught by the `claude` stop-word.
+      const base = t.replace(/\.[a-z0-9]{1,4}$/, '');
+      if (t.length < 4 || STOP.has(t) || STOP.has(base) || nameStop.has(t) || nameStop.has(base) || seen.has(t)) continue; // once per episode
       if (!isEntity(t, proper)) continue;
       seen.add(t);
       counts.set(t, (counts.get(t) ?? 0) + 1);
@@ -303,23 +305,78 @@ function firstLine(e: EpisodeRow): string {
 
 const WORD_RE = /[A-Za-z][A-Za-z0-9.-]{3,}/g;
 
+const CAPS_RUN_MAX = 1;    // ≥2 adjacent ALL-CAPS words = shouting, not an acronym
+const TITLE_CASE_RATIO = 0.6;  // a line this capitalized is a heading — its case carries no signal
+const ACRONYM_MAX = 6;     // FreeScout/SSL/FPM/ASE are short; a long ALL-CAPS word is emphasis
+const NAME_CONSISTENCY = 0.6;  // share of a token's non-forced occurrences that must be capitalized
+
 /**
- * Tokens the corpus itself writes as a **name** — capitalized away from a sentence start, or ALL-CAPS.
- * Case is the one strong, maintenance-free signal for "this is a thing, not an English word", and the
- * old lowercase-first tokenizer threw it away before anything could use it.
+ * Tokens the corpus itself writes as a **name** — capitalized away from a sentence start, or written as
+ * a short acronym. Case is the one strong, maintenance-free signal for "this is a thing, not an English
+ * word", and the old lowercase-first tokenizer threw it away before anything could use it.
+ *
+ * Case is only a signal where the writer was *choosing* it word by word. Two constructions break that,
+ * and both are common in agent prompts — a first pass on live data returned "automated, incremental,
+ * sweep, drafts", every one of them from a single automation prompt repeated ten times whose first line
+ * was `AUTOMATED INCREMENTAL SUPPORT SWEEP — runs every 2h, unattended, DRAFTS ONLY`:
+ *  - **Shouting.** A run of adjacent ALL-CAPS words is emphasis. A real acronym sits among lowercase
+ *    words ("the FPM worker", "valid SSL cert"), so require an isolated, short one.
+ *  - **Title Case / headings.** If most of a line's words are capitalized, capitalization distinguishes
+ *    nothing within it; the whole line is skipped for the capitalized-word signal.
  */
 function properNouns(episodes: EpisodeRow[]): Set<string> {
-  const proper = new Set<string>();
-  for (const e of episodes) {
-    const line = firstLine(e);
-    for (const m of line.matchAll(WORD_RE)) {
-      const raw = m[0].replace(/[.-]+$/, '');
+  const cap = new Map<string, number>();    // written as a name
+  const lower = new Map<string, number>();  // written as an ordinary word
+  const bump = (m: Map<string, number>, k: string) => m.set(k, (m.get(k) ?? 0) + 1);
+
+  // Case evidence is counted per DISTINCT line. The corpus is dominated by automation prompts repeated
+  // dozens of times verbatim, and re-reading one template 40× is not 40 independent writers choosing a
+  // capital — it let a single prompt's emphasis words ("WAIT for it to finish", "Read-only.") outweigh
+  // every real name. `topicCounts` still counts per episode, so frequency itself is unaffected.
+  const lines = [...new Set(episodes.map(firstLine))];
+  for (const line of lines) {
+    const words = [...line.matchAll(/[A-Za-z][A-Za-z0-9.-]*/g)];
+    const alpha = words.filter((w) => w[0].length > 1);
+    const capitalized = alpha.filter((w) => /^[A-Z]/.test(w[0])).length;
+    // A heading / Title Case line: case is uniform, so it separates nothing. Skipped entirely — it must
+    // not contribute to the lowercase side of the ratio either.
+    if (alpha.length >= 4 && capitalized / alpha.length >= TITLE_CASE_RATIO) continue;
+
+    const isCaps = (w: string) => w === w.toUpperCase() && /[A-Z]{2,}/.test(w);
+    for (let i = 0; i < words.length; i++) {
+      const raw = words[i][0].replace(/[.-]+$/, '');
       if (raw.length < 4) continue;
-      const before = line.slice(0, m.index).trimEnd();
-      const sentenceStart = before === '' || /[.!?:;•(\[\-—]$/.test(before);
-      const allCaps = raw === raw.toUpperCase() && /[A-Z]{2,}/.test(raw);
-      if (allCaps || (/^[A-Z]/.test(raw) && !sentenceStart)) proper.add(raw.toLowerCase());
+      const key = raw.toLowerCase();
+      const before = line.slice(0, words[i].index).trimEnd();
+      // A "sentence start" is anywhere the capital is forced. Beyond punctuation that means: nothing but
+      // symbols before it — the OS's own poke-back templates open with an emoji ("✅ Really done:",
+      // "⛔ Handed back:"), and treating those as mid-sentence made "really"/"handed" read as names.
+      const sentenceStart = before === '' || /[.!?:;•(\[\-—]$/.test(before) || !/[A-Za-z]/.test(before);
+      if (isCaps(words[i][0])) {
+        // An acronym is short and stands alone; a run of caps is a shouted header.
+        const neighbours = [words[i - 1], words[i + 1]].filter((w) => w && isCaps(w[0])).length;
+        if (raw.length <= ACRONYM_MAX && neighbours <= CAPS_RUN_MAX - 1) bump(cap, key);
+        continue;
+      }
+      if (/^[A-Z]/.test(raw)) {
+        // An enumerated label — "Phase 1", "Tier 2", "Step 3". The capital marks a section heading, not a
+        // name, so it must not count as evidence of one.
+        const after = line.slice((words[i].index ?? 0) + words[i][0].length);
+        if (/^\s+\d/.test(after)) continue;
+        // Sentence-start capitalization is forced by grammar — it says nothing either way, so it counts
+        // toward neither side of the ratio.
+        if (!sentenceStart) bump(cap, key);
+      } else bump(lower, key);
     }
+  }
+
+  // A real name is *consistently* capitalized: "Composio", "DataForSEO", "Globex". A word the corpus
+  // also writes in lowercase is an ordinary word that happened to start a clause — this is what separates
+  // "Phase 1"/"Publish the draft" (also written "phase"/"publish") from a product name. Corpus-internal,
+  // so it needs no list to maintain.
+  const proper = new Set<string>();
+  for (const [k, n] of cap) {
+    if (n / (n + (lower.get(k) ?? 0)) >= NAME_CONSISTENCY) proper.add(k);
   }
   return proper;
 }
@@ -334,6 +391,11 @@ function properNouns(episodes: EpisodeRow[]): Set<string> {
  * and the guidance line only prints at all when ≥2 topics survive.
  */
 function isEntity(token: string, proper: Set<string>): boolean {
+  // A FILENAME qualifies on its base name, never its extension — otherwise the dot rule (meant for
+  // hostnames and versions) admits every path an agent mentions, including format placeholders like
+  // `yyyy-mm-dd.md`. `.com`/`.io` are not code extensions, so real hostnames still pass below.
+  const m = /^(.*)\.(md|json|jsonl|ts|tsx|js|jsx|sh|ya?ml|txt|log|csv|sql|php|py|rb|go|html?|css|toml|ini|env|lock)$/.exec(token);
+  if (m) return isEntity(m[1], proper);
   return proper.has(token) || /\d/.test(token) || token.includes('.');
 }
 
