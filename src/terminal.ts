@@ -1645,7 +1645,7 @@ export class TerminalManager {
     // we don't wrap the shell in Seatbelt/bubblewrap. Real OS containment is the Linux uid-isolation path.
     // Per-agent model / effort / permission-mode fall back to the workspace default; the launcher maps
     // them onto `--model`/`--effort`/`--permission-mode` (permission-mode on the interactive lane only).
-    const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults(), o.tuning);
+    const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults(), o.tuning, runtime);
     if (runtime === 'codex') {
       // Codex reads model/effort from the config.toml the launcher generates; it has no
       // --permission-mode (Agent OS is the sole authority there via approval_policy = "never"), so

@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.283.0] — 2026-07-31
+### Fixed
+- **A Codex run silently inherited a Claude model from the workspace default and died.** Found on the
+  first live attachable Codex session: the fleet default is `model: "opus"`, `codex-scout` pins no model
+  of its own, so the launcher passed `opus` to Codex, which answered *"The 'opus' model is not supported
+  when using Codex with a ChatGPT account."* Two holes, both now closed:
+  - The cross-runtime model guard only matched full ids (`^claude`), so bare **aliases** — `opus`,
+    `sonnet`, `haiku`, `fable` — sailed through. The patterns are now anchored on a word boundary and
+    cover aliases both ways (`gpt`/`o<n>`/`codex`/`glm`/`kimi`/`deepseek` are refused for Claude Code).
+  - Nothing validated **inheritance**. `PUT /api/agents/:id/config` rejects a foreign model, but the
+    workspace default spans every runtime and therefore *cannot* be right for all of them at once — an
+    agent with no model of its own picked one up silently. `resolveRuntimeTuning` now takes the runtime
+    and **drops** a model that runtime can't run, so the session falls back to the CLI's own default (a
+    working run) instead of failing outright.
+  7 new conformance fixtures pin the inheritance matrix; suite is 137/137.
+
 ## [0.282.0] — 2026-07-31
 ### Added
 - **Cockpit `action` tier now *executes* — a governed operator carries it out (auto-router Phase 3).**

@@ -1132,7 +1132,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     gateHook: 'gate-hook.sh',
     credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY', tokenVar: 'CLAUDE_CODE_OAUTH_TOKEN' },
     suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
-    foreignModel: /^(gpt|o[0-9]|codex)/i,
+    foreignModel: /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i,
     capabilities: {
       pinnedSessionId: true, resume: true, fork: true, attachableUnattended: true,
       residentChat: true, transcript: true, nativeSkills: true, nativeSubagents: true,
@@ -1155,7 +1155,11 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // OPENAI_API_KEY is the usage-billed alternative the launcher already accepts.
     credentialEnv: { configDirVar: 'AOS_REAL_CODEX_HOME', apiKeyVar: 'OPENAI_API_KEY' },
     suggestedModels: ['gpt-5-codex', 'gpt-5.6-sol'],
-    foreignModel: /^claude/i,
+    // Bare ALIASES matter as much as full ids: the workspace default is often just `opus`,
+    // and Codex answers `The 'opus' model is not supported` — seen live. Anchor on a word
+    // boundary so `opus` and `claude-opus-4-8` are both caught but a hypothetical
+    // `opusgpt-x` custom id is not.
+    foreignModel: /^(claude|opus|sonnet|haiku|fable)\b/i,
     capabilities: {
       // Codex mints its own rollout id (`codex exec resume <id>` / `codex fork <id>`), so the id is
       // captured after launch rather than pinned. The unattended lane is `codex exec`, which exits at
@@ -1543,9 +1547,24 @@ export function sanitizeSvgIcon(input: string): string | undefined {
  *  own model/effort), else the agent's own value, else the workspace default, else undefined (CLI
  *  default) — except `permissionMode`, whose floor is `auto` (the interactive lane always runs with a
  *  mode; the built-in default is `auto`, not the CLI's own). Pure — used by the terminal launcher. */
-export function resolveRuntimeTuning(agent: RuntimeTuning, defaults: RuntimeTuning, override?: RuntimeTuning): RuntimeTuning {
+export function resolveRuntimeTuning(
+  agent: RuntimeTuning,
+  defaults: RuntimeTuning,
+  override?: RuntimeTuning,
+  /** The runtime this tuning will actually run under. When given, a resolved model that belongs to a
+   *  DIFFERENT runtime is dropped rather than passed to the CLI. */
+  runtime?: RuntimeId,
+): RuntimeTuning {
+  let model = override?.model ?? agent.model ?? defaults.model;
+  // The workspace default spans every runtime, so it CANNOT be correct for all of them at once: a
+  // fleet default of `opus` is right for Claude Code and fatal for Codex, which answers
+  // `The 'opus' model is not supported`. The per-agent config route already rejects a cross-family
+  // model, but nothing validated INHERITANCE — an agent with no model of its own silently picked up a
+  // foreign one. Drop it here instead, so the run falls back to the CLI's own default (a working
+  // session on a sensible model) rather than failing outright. Found live on a Codex run.
+  if (model && runtime && validateModelForRuntime(runtime, model)) model = undefined;
   return {
-    model: override?.model ?? agent.model ?? defaults.model,
+    model,
     effort: override?.effort ?? agent.effort ?? defaults.effort,
     permissionMode: override?.permissionMode ?? agent.permissionMode ?? defaults.permissionMode ?? 'auto',
   };
