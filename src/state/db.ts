@@ -948,6 +948,15 @@ function migrate(db: Db): void {
   // teardown can park the RIGHT account. NULL = launched on the box's default single account.
   addColumn(db, 'term_sessions', 'runtime_account', 'TEXT');
 
+  // Runtime-account health cache (RuntimeAccountStore): the last validation result + usage snapshot, so
+  // the console can show "valid / invalid / weekly 63% used · resets …" per key without re-hitting the
+  // provider on every page load. Written at add-time (validate before it enters the pool), on an explicit
+  // Refresh, and when a live run's teardown detects the credential went bad.
+  addColumn(db, 'runtime_accounts', 'last_checked_at', 'INTEGER'); // epoch ms of the last validation call
+  addColumn(db, 'runtime_accounts', 'check_ok', 'INTEGER');        // 1 = last validation authenticated, 0 = failed
+  addColumn(db, 'runtime_accounts', 'check_note', 'TEXT');         // human-readable status / auto-disable reason
+  addColumn(db, 'runtime_accounts', 'usage_json', 'TEXT');         // cached RuntimeUsage snapshot (weekly/session)
+
   // Stale-prompt escalation: a once-per-item marker so the scheduler's re-nudge sweep DMs the approver /
   // operator EXACTLY ONCE when an approval or question has sat pending past the threshold, and never
   // re-alarms across restarts (same discipline as `markOverdueNotified` on tasks). NULL = not yet

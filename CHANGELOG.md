@@ -8,6 +8,35 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.282.0] — 2026-07-31
+### Added
+- **Runtime-account tokens are validated against the provider before they enter the pool, and their
+  weekly/session usage is shown per key.** A mis-pasted Claude subscription token used to be vaulted
+  as-is, then silently sent every future session to `/login` (an invalid `CLAUDE_CODE_OAUTH_TOKEN` — the
+  exact outage seen on northwind). Now `POST /api/runtime-accounts` probes the token against Claude's own
+  `GET /api/oauth/usage` endpoint (the source Claude Code's status line uses; no quota consumed) and
+  **rejects a definitive 401 with a clear message** instead of storing it. A valid token is accepted; a
+  transient network/429 is added and badged "could not verify" rather than blocked. `src/edge/runtime-account-check.ts` (new),
+  `src/server.ts`.
+- **Per-key usage in Settings → Runtime accounts.** The pool table gains a **Usage** column (weekly 7d +
+  session 5h utilization, coloured amber ≥80% / red ≥100%, reset time on hover) and a **Refresh** action
+  to re-probe on demand; the add form echoes the validation result ("added · valid · weekly 13% used").
+  Usage is populated for accounts whose token carries the `user:profile` scope — an interactive-login
+  **credential-dir** (`oauth` kind). A `claude setup-token` (the paste-token kind) is validated the same
+  way but **can't report usage** (Anthropic scopes it out of the profile endpoint) — shown honestly as
+  "valid · usage n/a (setup-token lacks the user:profile scope)". New columns on `runtime_accounts`
+  (`last_checked_at`/`check_ok`/`check_note`/`usage_json`); `POST /api/runtime-accounts/:runtime/:name/check`.
+  `web/src/App.tsx`, `web/src/lib/api.ts`, `src/state/runtime-accounts.ts`, `src/state/db.ts`.
+### Fixed
+- **A pool token that goes bad mid-life now rotates itself out instead of trapping every launch.** The
+  launch-time backstop to add-time validation: when an unattended run's pane shows a credential-rejection
+  banner ("invalid bearer token" / "oauth token expired" / "failed to authenticate") — as opposed to a
+  usage-limit — the account it launched under is **auto-disabled** (`markInvalid`), since an invalid token
+  won't self-heal at a reset the way a usage limit does. It drops out of the pool (a `Refresh` that
+  re-authenticates re-enables it) so the launcher falls back to another account / the box default rather
+  than sending run after run to `/login`. `src/terminal.ts` (`detectUsageLimit` now distinguishes
+  auth-failure from usage-limit), `src/state/runtime-accounts.ts` (`markInvalid`/`recordCheck`).
+
 ## [0.281.0] — 2026-07-31
 ### Changed
 - **Cockpit `ask` tier now works with no LLM key — deterministic lookups + an ephemeral concierge run,
