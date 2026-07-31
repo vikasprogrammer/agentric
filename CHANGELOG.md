@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.284.0] — 2026-07-31
+### Added
+- **Policy v2, Tier A — set-membership and cross-arg conditions in the pure rule engine**
+  (`src/governance/policy.ts`). A rule's `when` clause gains two shapes beyond the existing
+  one-arg-vs-one-constant compare, both still stateless and still JSON:
+  - **`in` / `nin`** — set membership against an array value, e.g.
+    `{ arg: "status", op: "nin", value: ["paid","shipped","refunded"] }` → `never` (invalid-enum guard).
+  - **`argRef`** — compare one arg to *another arg* instead of a constant, e.g.
+    `{ arg: "payee", op: "ne", argRef: "buyer" }` → `ask` owner (wrong-recipient guard).
+  The `applyProposal` tighten-only safety proof stays sound: `sampleArgDomains` now emits every enum
+  member and seeds both sides of a cross-arg pair with one shared domain, and `firstLoosening`'s rare
+  fallback path gets explicit joint coverage of each `argRef` pair (independent variation can't see
+  `arg == argRef`). New test `scripts/tier-a-policy-test.cjs` (runs under `npm run test:governance`);
+  the 130-case conformance suite is unchanged (backward-compatible — the bundled default policy uses
+  no new ops).
+
 ## [0.283.0] — 2026-07-31
 ### Fixed
 - **A Codex run silently inherited a Claude model from the workspace default and died.** Found on the

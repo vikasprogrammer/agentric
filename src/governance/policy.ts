@@ -13,9 +13,24 @@
  */
 import { ActionAttempt, ApprovalLevel, Decision, PolicyEngine, RunContext, riskClassForLevel } from '../types';
 
-type Op = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne';
+type Op = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'ne' | 'in' | 'nin';
 export type PolicyAction = 'allow' | 'ask' | 'never';
 export type Approver = 'admin' | 'owner';
+
+/**
+ * A single condition on the CURRENT attempt's args (Tier A — still stateless, still one arg-focused
+ * clause per rule). Three shapes:
+ *   - constant compare — `{ arg, op: gt|gte|lt|lte|eq|ne, value }` (a `"$name"` value is a threshold ref).
+ *   - set membership   — `{ arg, op: in|nin, value: [...] }`  (value is a non-empty array of strings/numbers).
+ *   - cross-arg compare — `{ arg, op: gt|…|ne, argRef }` compares `args[arg]` to `args[argRef]`, not a
+ *                          constant (e.g. payout `payee ≠ buyer`). `argRef` and `value` are mutually exclusive.
+ */
+interface When {
+  arg: string;
+  op: Op;
+  value?: number | string | boolean | Array<string | number>;
+  argRef?: string;
+}
 
 /** The decision a rule (or the default) yields. `approver` is required only when action is `ask`. */
 interface PolicyOutcome {
@@ -24,7 +39,7 @@ interface PolicyOutcome {
 }
 
 interface PolicyRule extends PolicyOutcome {
-  match: { capability: string; when?: { arg: string; op: Op; value: number | string | boolean } };
+  match: { capability: string; when?: When };
 }
 
 export interface PolicyDocument {
@@ -37,14 +52,14 @@ export interface PolicyDocument {
 
 const ACTIONS: PolicyAction[] = ['allow', 'ask', 'never'];
 const APPROVERS: Approver[] = ['admin', 'owner'];
-const OPS = ['gt', 'gte', 'lt', 'lte', 'eq', 'ne'];
+const OPS = ['gt', 'gte', 'lt', 'lte', 'eq', 'ne', 'in', 'nin'];
 
 /** `admin` approves at the internal `head` level; `owner` at `owner`. (See canApprove in types.ts.) */
 function toLevel(approver: Approver | undefined): ApprovalLevel {
   return approver === 'owner' ? 'owner' : 'head';
 }
 
-const OP_PHRASE: Record<Op, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=', ne: '≠' };
+const OP_PHRASE: Record<Op, string> = { gt: '>', gte: '≥', lt: '<', lte: '≤', eq: '=', ne: '≠', in: '∈', nin: '∉' };
 
 /**
  * The human `reason` a decision carries — names the rule + the CONDITION that tripped it, so an approver
@@ -56,7 +71,12 @@ function describeMatch(rule: PolicyRule | undefined, thresholds: Record<string, 
   const cap = rule.match.capability === '*' ? 'any action' : rule.match.capability;
   const w = rule.match.when;
   if (!w) return cap;
-  const resolved = resolveValue(w.value, thresholds);
+  if (w.op === 'in' || w.op === 'nin') {
+    const set = Array.isArray(w.value) ? w.value.join(', ') : '';
+    return `${cap}: ${w.arg} ${OP_PHRASE[w.op]} {${set}}`;
+  }
+  if (w.argRef !== undefined) return `${cap}: ${w.arg} ${OP_PHRASE[w.op]} ${w.argRef}`;
+  const resolved = resolveValue(w.value as number | string | boolean, thresholds);
   const val = resolved === undefined ? w.value : resolved;
   // A boolean flag reads cleaner as the flag name alone (`destructive`, not `destructive = true`).
   if ((w.op === 'eq' && val === true) || (w.op === 'ne' && val === false)) return `${cap}: ${w.arg}`;
@@ -92,11 +112,23 @@ export function validatePolicyDocument(doc: unknown): string | null {
     const outErr = validateOutcome(r, `rule ${i + 1}`);
     if (outErr) return outErr;
     if (r.match.when) {
-      const w = r.match.when;
+      const w = r.match.when as When;
       if (typeof w.arg !== 'string' || !w.arg.trim()) return `rule ${i + 1}: when.arg (string) is required`;
       if (!OPS.includes(w.op)) return `rule ${i + 1}: when.op must be one of ${OPS.join('|')}`;
-      if (w.value === undefined || w.value === null || !['number', 'string', 'boolean'].includes(typeof w.value)) {
-        return `rule ${i + 1}: when.value must be a number, string, or boolean`;
+      if (w.op === 'in' || w.op === 'nin') {
+        if (w.argRef !== undefined) return `rule ${i + 1}: when.argRef is not valid with "${w.op}" (use a value array)`;
+        if (!Array.isArray(w.value) || w.value.length === 0 || !w.value.every((v) => typeof v === 'string' || typeof v === 'number')) {
+          return `rule ${i + 1}: "${w.op}" needs when.value to be a non-empty array of strings/numbers`;
+        }
+      } else {
+        const hasRef = w.argRef !== undefined;
+        const hasVal = w.value !== undefined && w.value !== null;
+        if (hasRef && hasVal) return `rule ${i + 1}: when.argRef and when.value are mutually exclusive`;
+        if (hasRef) {
+          if (typeof w.argRef !== 'string' || !w.argRef.trim()) return `rule ${i + 1}: when.argRef (string) is required`;
+        } else if (!hasVal || !['number', 'string', 'boolean'].includes(typeof w.value)) {
+          return `rule ${i + 1}: when.value must be a number, string, or boolean (or set when.argRef)`;
+        }
       }
     }
   }
@@ -266,21 +298,48 @@ function sampleCapabilities(before: PolicyDocument, after: PolicyDocument): stri
   return [...caps];
 }
 
+/** The cross-arg (`argRef`) pairs any rule branches on, deduped — `[arg, argRef]`. Used to give the
+ *  monotonicity sweep JOINT coverage of the two args (independent variation can't see `arg == argRef`). */
+function argRefPairs(before: PolicyDocument, after: PolicyDocument): Array<[string, string]> {
+  const pairs = new Map<string, [string, string]>();
+  for (const doc of [before, after]) {
+    for (const r of doc.rules) {
+      const w = r.match.when;
+      if (w?.argRef !== undefined) pairs.set(`${w.arg} ${w.argRef}`, [w.arg, w.argRef]);
+    }
+  }
+  return [...pairs.values()];
+}
+
 /** For each `when.arg` the rules branch on, the set of values worth testing. Booleans → {true,false};
- *  a numeric/threshold comparison → boundary values around the resolved cap. This is exhaustive because
- *  `classify` reads ONLY args named in a `when` clause — nothing else can change an outcome. */
+ *  a numeric/threshold comparison → boundary values around the resolved cap; a set membership (`in`/`nin`)
+ *  → every enum member (in-set) plus true/false (out-of-set); a cross-arg (`argRef`) comparison → seed BOTH
+ *  args with one SHARED comparable domain so the cartesian sweep hits equal AND unequal pairings. This is
+ *  exhaustive because `classify` reads ONLY args named in a `when` clause — nothing else changes an outcome —
+ *  provided the sweep enumerates each op's decision boundaries, which is exactly what this covers. */
 function sampleArgDomains(before: PolicyDocument, after: PolicyDocument, thresholds: Record<string, number>): Map<string, Array<unknown>> {
   const domains = new Map<string, Set<unknown>>();
   const add = (arg: string, v: unknown) => { (domains.get(arg) ?? domains.set(arg, new Set()).get(arg)!).add(v); };
+  // A shared domain for the two sides of a cross-arg compare: numbers (order boundaries) + string sentinels
+  // (equality), so (x,y) pairs include x==y and x≠y for both eq/ne and gt/lt.
+  const seedComparable = (arg: string) => { for (const v of [0, 1, 2, ' refA', ' refB']) add(arg, v); };
   for (const doc of [before, after]) {
     for (const r of doc.rules) {
       const w = r.match.when;
       if (!w) continue;
       // Always cover the boolean truth table for the flag.
       add(w.arg, true); add(w.arg, false);
-      // For a numeric/threshold comparison, cover the boundary either side of the cap.
-      if (['gt', 'gte', 'lt', 'lte'].includes(w.op)) {
-        const resolved = resolveValue(w.value, thresholds);
+      if (w.op === 'in' || w.op === 'nin') {
+        // Every enum member exercises the in-set branch; true/false (added above) are guaranteed non-members.
+        if (Array.isArray(w.value)) for (const m of w.value) add(w.arg, m);
+      } else if (w.argRef !== undefined) {
+        // Cross-arg: seed both args with the same comparable domain (+ booleans) so the product covers
+        // arg == argRef and arg ≠ argRef. Joint coverage in the rare fallback path is added in firstLoosening.
+        seedComparable(w.arg); seedComparable(w.argRef);
+        add(w.argRef, true); add(w.argRef, false);
+      } else if (['gt', 'gte', 'lt', 'lte'].includes(w.op)) {
+        // For a numeric/threshold comparison, cover the boundary either side of the cap.
+        const resolved = resolveValue(w.value as number | string | boolean, thresholds);
         const n = typeof resolved === 'number' ? resolved : Number(resolved);
         if (Number.isFinite(n)) { add(w.arg, n - 1); add(w.arg, n); add(w.arg, n + 1); add(w.arg, 0); }
       } else if (typeof w.value !== 'boolean') {
@@ -329,12 +388,21 @@ function firstLoosening(before: PolicyDocument, after: PolicyDocument, threshold
     }
     return null;
   }
-  // Fallback (rare): vary each arg independently against an all-false/zero baseline.
+  // Fallback (rare huge product): vary each arg independently against an all-false/zero baseline, PLUS
+  // jointly sweep each cross-arg (argRef) pair — independent variation holds the other arg at the baseline,
+  // so it never exercises arg == argRef with non-baseline values, which a cross-arg compare turns on.
+  const domainMap = new Map(domains);
+  const pairs = argRefPairs(before, after);
   for (const cap of caps) {
     const base: Record<string, unknown> = {};
     for (const [arg] of domains) base[arg] = false;
     const hit0 = check(cap, base); if (hit0) return hit0;
     for (const [arg, vals] of domains) for (const v of vals) { const hit = check(cap, { ...base, [arg]: v }); if (hit) return hit; }
+    for (const [a, b] of pairs) {
+      for (const x of domainMap.get(a) ?? []) for (const y of domainMap.get(b) ?? []) {
+        const hit = check(cap, { ...base, [a]: x, [b]: y }); if (hit) return hit;
+      }
+    }
   }
   return null;
 }
@@ -452,18 +520,24 @@ export function describeProposal(doc: PolicyDocument, delta: PolicyDelta, thresh
 }
 
 function evalWhen(
-  when: NonNullable<PolicyRule['match']['when']>,
+  when: When,
   args: Record<string, unknown>,
   thresholds: Record<string, number>,
 ): boolean {
   const actual = args[when.arg];
   const { op } = when;
-  const value = resolveValue(when.value, thresholds);
-  if (value === undefined) return false; // unresolved threshold ref → fail closed (no match)
-  if (op === 'eq') return actual === value;
-  if (op === 'ne') return actual !== value;
+  // Set membership — value is an array; no threshold resolution of members.
+  if (op === 'in' || op === 'nin') {
+    const member = Array.isArray(when.value) && (when.value as Array<string | number>).includes(actual as string | number);
+    return op === 'in' ? member : !member;
+  }
+  // Comparison — the RHS is another arg (`argRef`) or a constant/threshold (`$ref`).
+  const rhs = when.argRef !== undefined ? args[when.argRef] : resolveValue(when.value as number | string | boolean, thresholds);
+  if (rhs === undefined) return false; // unresolved threshold ref, or missing referenced arg → fail closed (no match)
+  if (op === 'eq') return actual === rhs;
+  if (op === 'ne') return actual !== rhs;
   const a = Number(actual);
-  const b = Number(value);
+  const b = Number(rhs);
   if (Number.isNaN(a) || Number.isNaN(b)) return false;
   if (op === 'gt') return a > b;
   if (op === 'gte') return a >= b;
