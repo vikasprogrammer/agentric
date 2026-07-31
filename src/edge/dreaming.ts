@@ -40,6 +40,9 @@ interface DreamState {
    *  fall into the gap between a pass's `until` and the next `since` and be silently skipped. Absent on
    *  states written before this field existed → we fall back to the old marker (see `dream`). */
   watermark?: number;
+  /** Which topic EXTRACTOR produced `topics`. Bumped when the extractor changes meaning; a state carrying
+   *  an older version has its topic map reset on the next pass (see TOPICS_VERSION). */
+  topicsVersion?: number;
 }
 
 interface EpisodeRow { content: string; created_at: number }
@@ -62,6 +65,17 @@ const TOPIC_CAP = 300;                          // hard cap on stored topic keys
 // this many distinct episodes (topicCounts counts once per episode, so `count` = distinct-episode hits).
 // Stops a one-off word — or a handful of near-identical test runs — from headlining the guidance line.
 const MIN_TOPIC_COUNT = 3;
+/**
+ * Version of the topic extractor. `topics` is a CUMULATIVE map — counts compound across passes and decay
+ * only on a 21-day half-life — so fixing the extractor does nothing for a workspace that has already been
+ * running: the words the old one admitted keep their (large) counts and keep headlining the guidance line
+ * for weeks. Live northwind held 300 topics led by `drafts(61)`, `sweep(59)`, `automated(58)` — all
+ * artefacts of one shouted prompt header, all of which v0.281.1 stopped extracting but none of which it
+ * removed. Bump this whenever the extractor's meaning changes; a state carrying an older version has its
+ * map cleared and rebuilt from the current corpus, so every tenant self-heals on its next pass instead of
+ * needing a hand-edited DB.
+ */
+const TOPICS_VERSION = 2;
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
@@ -136,6 +150,17 @@ export class DreamingEngine {
     // H2: window on a durable **data watermark** — the newest activity ts we've already consumed —
     // NOT the run clock. Migration-safe: states written before `watermark` existed fall back to the old
     // `learning.dreamed` marker, then to a 7-day cold start.
+    // Retire a topic map built by an older extractor BEFORE anything reads it — including the
+    // no-activity early return below, so a quiet workspace still stops serving the stale line today
+    // rather than at its next busy pass.
+    if (prior && prior.topicsVersion !== TOPICS_VERSION) {
+      const dropped = Object.keys(prior.topics ?? {}).length;
+      prior.topics = {};
+      prior.topicsVersion = TOPICS_VERSION;
+      this.os.settings.setDreamingState(prior as unknown as Record<string, unknown>, by);
+      this.os.settings.setLearnedGuidance(deriveGuidance(prior), by);
+      this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: by, type: 'learning.topics.reset', data: { dropped, version: TOPICS_VERSION } });
+    }
     const lastMark = db.prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'learning.dreamed'").get<{ t: number | null }>();
     const since = prior?.watermark ?? lastMark?.t ?? until - 7 * 24 * 3_600_000;
     const window = { since, until };
@@ -195,7 +220,8 @@ export class DreamingEngine {
     for (const f of frictionRows) if (f.ts > watermark) watermark = f.ts;
 
     // ── fold into the cumulative state ──
-    const state = prior ?? { firstPass: until, passes: 0, totals: zeroTally(), topics: {}, recent: [], watermark: since };
+    const state = prior ?? { firstPass: until, passes: 0, totals: zeroTally(), topics: {}, recent: [], watermark: since, topicsVersion: TOPICS_VERSION };
+    state.topicsVersion = TOPICS_VERSION;
     state.passes += 1;
     state.watermark = watermark;
     for (const k of Object.keys(win) as (keyof Tally)[]) state.totals[k] += win[k];

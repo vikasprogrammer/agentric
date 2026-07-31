@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.281.2] — 2026-07-31
+### Fixed
+- **A fixed topic extractor now actually reaches workspaces that have already been running.** `topics` is a
+  CUMULATIVE map — counts compound across passes and decay only on a 21-day half-life — so v0.281.1's
+  extractor fix changed nothing for an existing tenant: the words the old extractor admitted kept their
+  (large) counts and kept headlining the guidance line in every agent's prompt. Live northwind held 300
+  topics led by `drafts(61)`, `sweep(59)`, `automated(58)`, all artefacts of one shouted prompt header.
+  `DreamState` now carries a `topicsVersion`; a state written by an older extractor has its map cleared and
+  rebuilt from the current corpus. The reset runs **before** the no-activity early return, so a quiet
+  workspace stops serving the stale line immediately rather than at its next busy pass. Audited
+  `learning.topics.reset`. Every tenant self-heals on its next pass — no hand-edited databases.
+
 ## [0.281.1] — 2026-07-31
 ### Fixed
 - **Self-learning topic extraction: the case signal is now read the way a writer meant it.** v0.280.0
