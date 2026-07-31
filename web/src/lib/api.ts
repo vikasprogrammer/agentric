@@ -1343,6 +1343,10 @@ export const api = {
    *  `force:'work'` skips classification (the "route to an agent anyway" escape hatch). */
   routerPreview: (text: string, force?: 'work') =>
     call<RouterPreviewResp>('POST', '/api/router/preview', force ? { text, force } : { text }),
+  /** Cockpit `action` execution: carry out a detected action (create a task / propose an automation) by
+   *  starting the governed operator run. Returns its session id; poll `conversation` for the result. */
+  routerAct: (text: string) =>
+    call<{ sessionId?: string; error?: string }>('POST', '/api/router/act', { text }),
   /** Send the human's next turn into a chat session — a clean headless resume run. `busy` = a prior
    *  turn is still generating (keep the draft, resend shortly). */
   reply: (id: string, message: string) =>
