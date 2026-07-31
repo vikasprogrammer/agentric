@@ -161,3 +161,39 @@ is unset → skip the Slack post, still render dashboard + KB page (fail-soft, n
   24:00)` local.
 - **Empty day** — post a terse "quiet day, 0 sessions" or skip the Slack post entirely? (lean: skip
   Slack, still write the KB page so the date exists).
+
+## What shipped (v0.280.0) — from a log to a synthesis
+
+A real posted digest (globex, 94 sessions, 2026-07-30) exposed the limits of "group the episode lines by
+agent". The lines themselves were excellent — the `report`-first-sentence source is doing its job — but the
+artifact around them wasn't readable, and in two places it was actively misleading.
+
+**What was wrong, and what replaced it:**
+
+| Failure | Cause | Fix |
+| --- | --- | --- |
+| `…push is BLOCKED… ✓` | `outcome` is what the agent passed to `report()` — its grade of its own *effort*, not of the result | `BLOCKED_RE` over the line text → `⏳ blocked` + a **"Needs you"** section |
+| One incident told 9× by 4 agents, several correcting each other, all ✓ | `dedupeLines` clusters by Jaccard **within one agent** only | `refsOf` + `clusterIncidents` — transitive union over ticket/PR/task/host refs, **across** agents → **"Threads"**, newest-wins headline + update count |
+| Header said 94, parts summed to 76 | `tally()` never printed the `other` bucket | every bucket prints; plus cost and an explicit "N routine runs not shown" |
+| Customer complaints and prompts printed as results | no-report sessions fall back to the **title**, which is derived from the incoming task | a body line now requires a real `report`; the rest are counted in `hidden` |
+
+**Design notes worth keeping:**
+- **Needs-you owns its lines.** A blocked line appears there and nowhere else — but it still takes part in
+  clustering, because it's often what *links* a thread ("FS#2569: …awaiting human review" is the same thread
+  as "Root-caused FS#2569…"). Threads count it as an update and name its agent; only the headline excludes it.
+- **Newest-wins is the honest summary of a self-correcting thread.** Four agents diagnosing one bug produce
+  a sequence, not a set; the last diagnosis supersedes. The update count is what tells the reader that
+  revision happened rather than hiding it.
+- **Typed refs with a `num:` alias.** `FS#2701`, `FreeScout 2701` and a later bare `#2701` must fuse; `PR
+  #2701` and `FS#2701` should not. Each numeric ref emits both a typed key and a `num:` alias, so the common
+  case links and the namespaces stay mostly apart. Hostnames need ≥3 labels — an apex brand domain shows up
+  in unrelated marketing work and would fuse unrelated threads.
+- **`BLOCKED_RE` is deliberately explicit**, not clever. It decides what lands in the one section that is a
+  to-do list, and a loose match floods it. Known limitation: a line *describing* blocking as a feature
+  ("downgrades to blocked when…") is a false positive; it reads as obviously-not-a-blocker to a human and the
+  section is short enough to scan.
+- Deliberately absent from `BLOCKED_RE`: `couldn't` / `cannot`. In these reports they describe a **finding**
+  far more often than a blocked agent.
+
+**Still open:** no per-tenant timezone; threads don't detect *contradiction* (only churn); `hidden` is a
+count, not browsable.

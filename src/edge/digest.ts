@@ -1,7 +1,13 @@
 /**
  * The **daily digest** — a tenant-wide "what got done today" standup.
  *
- * Two halves in one artifact:
+ * Three halves in one artifact (the first two are synthesis, not a log — a day of 90 sessions grouped by
+ * author is unreadable, and the raw grouping actively misled: one incident worked by four agents produced
+ * a dozen mutually-correcting lines, each marked ✓):
+ *  0a. **⏳ Needs you** — every line whose own text says a human has to act (`BLOCKED_RE`), hoisted out of
+ *      the agent blocks. This is the only part of the digest that is a to-do rather than a record.
+ *  0b. **🔗 Threads** — lines sharing a ticket / PR / task / host (`refsOf` → `clusterIncidents`) collapsed
+ *      across agents into the LATEST word on the thread, plus the update count so revision is visible.
  *  1. **📋 Today** — the per-session changelog, grouped by agent. The lines are already written for us:
  *     every session end stores an **episode** (`TerminalManager.writeEpisode` → `composeEpisode`), a
  *     deterministic "what this session did" summary graded by `episodeSalience`. The digest just reads
@@ -25,20 +31,35 @@ const SECTION = 'operations';
 const SALIENCE = 0.5;          // episodes at/above this importance make the body; the rest count in the tally only
 const PER_AGENT = 6;           // cap body lines per agent (overflow → "+N more")
 const MAX_POST_ATTEMPTS = 3;   // scheduled EOD post retries per day before giving up (M3 — bound outage churn)
+const MAX_NEEDS = 12;          // cap the "Needs you" list (overflow → "+N more")
+const MAX_INCIDENTS = 8;       // cap the cross-agent thread list
+const MAX_THREAD_AGENTS = 4;   // agents named per thread before "+N"
 
 export interface DigestModel {
   iso: string;                 // YYYY-MM-DD (server-local)
   label: string;               // e.g. "Wed Jul 13"
   total: number;
   buckets: { success: number; partial: number; failure: number; stopped: number; running: number; other: number };
-  byAgent: { agent: string; lines: { title: string; outcome: string; importance: number; count?: number }[]; more: number }[];
-  signals: { tasksCreated: number; tasksCompleted: number; approvals: number; rejected: number; errors: number; budgetStops: number };
+  blocked: number;             // runs whose own report describes a blocker (reclassified OUT of `buckets`)
+  hidden: number;              // sessions with no reportable line — counted, never silently dropped
+  needs: NeedLine[];           // the day's human action list, hoisted out of the agent blocks
+  incidents: Incident[];       // cross-agent threads (one ticket/PR/host worked by several agents)
+  byAgent: { agent: string; lines: DigestLine[]; more: number }[];
+  signals: { tasksCreated: number; tasksCompleted: number; approvals: number; rejected: number; errors: number; budgetStops: number; costUsd: number };
   guidance: string[];          // a few distilled Dreaming imperatives
   recommendations: string[];   // open recommendation titles
 }
 
-interface SessionRow { id: string; agent: string; status: string; title: string; spawned_by: string | null; report: string | null; importance: number | null; outcome: string | null }
-interface DigestLine { title: string; outcome: string; importance: number; count?: number }
+export interface DigestLine { title: string; outcome: string; importance: number; count?: number }
+/** One item waiting on a person — the only part of the digest that is a to-do rather than a record. */
+export interface NeedLine { agent: string; title: string }
+/** Several sessions about the SAME thing (ticket / PR / task / host), collapsed to the latest word on it. */
+export interface Incident { label: string; headline: string; outcome: string; agent: string; agents: string[]; updates: number }
+
+interface SessionRow { id: string; agent: string; status: string; title: string; spawned_by: string | null; created_at: number; cost_usd: number | null; report: string | null; importance: number | null; outcome: string | null }
+/** A candidate body line before it's routed to a thread / an agent block. `blocked` lines are already in
+ *  `needs`; they stay in the pool only so they can still LINK a thread together. */
+interface Cand extends DigestLine { agent: string; ts: number; refs: string[]; blocked: boolean }
 interface AuditRow { type: string; data: string }
 
 /** Server-local day bounds + labels for `now`. Time is the deploy box's tz (single-box deployment). */
@@ -60,7 +81,7 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
   // Each session ⋈ its end-of-session episode (importance + outcome) + the agent's own `report` summary
   // (the richest line source — vs the 72-char title). One episode per session in practice.
   const rows = db.prepare(
-    `SELECT s.id, s.agent, s.status, s.title, s.spawned_by,
+    `SELECT s.id, s.agent, s.status, s.title, s.spawned_by, s.created_at, s.cost_usd,
             (SELECT body FROM messages WHERE session_id = s.id AND type = 'completed' ORDER BY created_at DESC LIMIT 1) AS report,
             MAX(m.importance) AS importance,
             MAX(json_extract(m.metadata,'$.outcome')) AS outcome
@@ -72,8 +93,13 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
   ).all<SessionRow>(start, end);
 
   const buckets = { success: 0, partial: 0, failure: 0, stopped: 0, running: 0, other: 0 };
-  const perAgent = new Map<string, DigestLine[]>();
+  const cands: Cand[] = [];
+  const needs: NeedLine[] = [];
+  let blocked = 0;
+  let included = 0;
+  let costUsd = 0;
   for (const r of rows) {
+    costUsd += r.cost_usd ?? 0;
     const outcome = (r.outcome || (r.status === 'done' ? 'success' : r.status) || 'unknown').toLowerCase();
     if (outcome in buckets) (buckets as Record<string, number>)[outcome]++; else buckets.other++;
     const importance = r.importance ?? 0;
@@ -90,15 +116,41 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
     // isn't fleet work. Detected on the reported LINE (not the audit event, which also fires when a session
     // did real work AND incidentally touched its config — dropping those would lose the real work).
     const selfMaint = /\b(my|its|their|own)\s+(claude\.?md|system prompt|starter prompts?|instructions?)\b/i.test(line);
-    const include = !placeholder && !askSession && !taskish && !selfMaint && (hasReport || importance >= SALIENCE || r.status === 'done');
-    if (include) {
-      const list = perAgent.get(r.agent) ?? [];
-      // A real report ranks at/above the salience line; a done-with-no-report just under it.
-      list.push({ title: line, outcome, importance: importance || (hasReport ? SALIENCE : (r.status === 'done' ? SALIENCE - 0.01 : 0)) });
-      perAgent.set(r.agent, list);
+    // A line must come from a real REPORT. `status === 'done'` and a salient episode used to be two more
+    // ways in, but with no report the only text available is the session TITLE — which is derived from the
+    // incoming task, so those lines were the human's prompt ("the backend is too slow", "can you check
+    // why this happened?") printed as if it were the day's result. They now land in `hidden` and are
+    // counted there rather than dressed up as outcomes.
+    const include = !placeholder && !askSession && !taskish && !selfMaint && hasReport;
+    if (!include) continue;
+    included++;
+    // Fix A — the ✓ was lying. `outcome` is whatever the agent passed to `report()`, i.e. its grade of its
+    // OWN effort, so a run can end `success` while its summary says the push was blocked. The line text is
+    // the honest signal: reclassify out of the outcome buckets and into the human action list.
+    const isBlocked = BLOCKED_RE.test(line);
+    if (isBlocked) {
+      blocked++;
+      if (outcome in buckets) (buckets as Record<string, number>)[outcome]--; else buckets.other--;
+      needs.push({ agent: r.agent, title: line });
     }
+    cands.push({
+      agent: r.agent, title: line, outcome, ts: r.created_at, refs: refsOf(line), blocked: isBlocked,
+      importance: importance || SALIENCE,
+    });
   }
 
+  // Fix B: collapse the day's cross-agent threads BEFORE the per-agent split — otherwise one migration bug
+  // worked by four agents reads as a dozen unrelated wins, several of them contradicting each other.
+  // Blocked lines take part in clustering (they're what LINKS a thread together — "FS#2569: …awaiting human
+  // review" is the same thread as "Root-caused FS#2569…") but never appear in it; "Needs you" owns them.
+  const { incidents, rest } = clusterIncidents(cands);
+
+  const perAgent = new Map<string, DigestLine[]>();
+  for (const c of rest) {
+    const list = perAgent.get(c.agent) ?? [];
+    list.push({ title: c.title, outcome: c.outcome, importance: c.importance });
+    perAgent.set(c.agent, list);
+  }
   const byAgent = [...perAgent.entries()]
     .map(([agent, all]) => {
       // Fix 2: collapse near-identical routine runs (e.g. 3× "fleet sweep — all healthy") into one ×N line.
@@ -108,7 +160,7 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
     .sort((a, b) => b.lines.length - a.lines.length || a.agent.localeCompare(b.agent));
 
   // Governance / throughput signals from the audit stream.
-  const signals = { tasksCreated: 0, tasksCompleted: 0, approvals: 0, rejected: 0, errors: 0, budgetStops: 0 };
+  const signals = { tasksCreated: 0, tasksCompleted: 0, approvals: 0, rejected: 0, errors: 0, budgetStops: 0, costUsd: 0 };
   const audit = db.prepare(
     // `session.error` = a real run error; `episode.error` (a memory-STORE failure) is deliberately excluded
     // so a flaky memory backend doesn't inflate the header with "N errors" that aren't the fleet's doing.
@@ -125,16 +177,124 @@ export function buildDigest(os: AgentOS, now = new Date()): DigestModel {
       case 'session.error': signals.errors++; break;
     }
   }
+  signals.costUsd = costUsd; // what the day actually burned (NULL cost_usd — still-running runs — reads 0)
 
   // The Dreaming half — distilled imperatives + open recommendation titles (already persisted).
   const guidance = os.settings.learnedGuidance()
     .split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ')).map((l) => l.slice(2).trim()).slice(0, 3);
   const recommendations = os.settings.recommendations().open.map((r) => r.title).slice(0, 3);
 
-  return { iso, label, total: rows.length, buckets, byAgent, signals, guidance, recommendations };
+  return { iso, label, total: rows.length, buckets, blocked, hidden: rows.length - included, needs, incidents, byAgent, signals, guidance, recommendations };
 }
 
-const LINE_MAX = 200; // digest lines can breathe — Slack/Discord/KB all handle it (vs the 72-char title)
+/**
+ * Phrases that mean **a person has to do something before this moves**. Deliberately explicit rather than
+ * clever: this list decides what lands in "Needs you", and a loose match would flood the one section of
+ * the digest that is a to-do list. Notably absent are `couldn't` / `cannot` — in these reports they far
+ * more often describe a FINDING ("the origin path cannot be observed per-vhost") than a blocked agent.
+ */
+const BLOCKED_RE = /(?:\bblocked\b|\bawaiting (?:a )?(?:human|owner|admin|review|approval|reply|response|direction|sign-?off)|\basked (?:the )?(?:owner|admin|a human) for\b|\bneeds? (?:a )?human\b|\bneeds? (?:owner|admin)\b|\bpending (?:human|owner|approval)\b|\bhuman (?:sends|review|approval)\b|\bnot sent\b|\bnothing sent\b|\bdraft[- ]only\b|\bunable to\b|\bpermission denied\b|\baccess denied\b|\bno access\b)/i;
+
+/** Ref kinds, most→least specific: the label for a thread prefers the most specific id it has. */
+const REF_PRIORITY = ['fs', 'pr', 'task', 'clickup', 'host', 'num'];
+
+/**
+ * The identifiers a line is ABOUT — the join key for cross-agent threads. Typed keys keep numeric
+ * namespaces apart (`FS#2701` is not `PR #2701`), but each numeric ref also emits a bare `num:` alias so
+ * "FreeScout 2701", "FS#2701" and a later bare "#2701" still land in one thread. Hostnames need a
+ * subdomain (≥3 labels) so an apex brand domain — which shows up in unrelated marketing/SEO work — can
+ * never fuse two threads. Exported for testing.
+ */
+export function refsOf(line: string): string[] {
+  const refs = new Set<string>();
+  const add = (kind: string, id: string) => {
+    refs.add(`${kind}:${id.toLowerCase()}`);
+    if (/^\d+$/.test(id)) refs.add(`num:${id}`);
+  };
+  for (const m of line.matchAll(/\b(?:fs|freescout|ticket)\s*#?\s*(\d{2,7})\b/gi)) add('fs', m[1]);
+  for (const m of line.matchAll(/\b(?:pr|pull request)\s*#?\s*(\d{2,7})\b/gi)) add('pr', m[1]);
+  for (const m of line.matchAll(/\b(tsk_[0-9a-f]{6,})\b/gi)) add('task', m[1]);
+  for (const m of line.matchAll(/\b(86[a-z0-9]{7,})\b/gi)) add('clickup', m[1]); // ClickUp task ids
+  for (const m of line.matchAll(/#(\d{3,7})\b/g)) add('num', m[1]);
+  for (const m of line.matchAll(/\b([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+){2,})\b/gi)) {
+    const h = m[1].toLowerCase();
+    if (/\.(?:com|io|dev|site|xyz|me|tech|info|net|org|ai|co|app|cloud)$/.test(h)) add('host', h);
+  }
+  return [...refs];
+}
+
+function prettyRef(ref: string): string {
+  const i = ref.indexOf(':');
+  const kind = ref.slice(0, i);
+  const id = ref.slice(i + 1);
+  if (kind === 'fs') return `FS#${id}`;
+  if (kind === 'pr') return `PR #${id}`;
+  if (kind === 'num') return `#${id}`;
+  return id;
+}
+
+/** The thread's display label: the ref shared by the most of its lines, tie-broken by specificity. */
+function labelFor(refs: Set<string>, lines: Cand[]): string {
+  let best = '';
+  let bestScore = -1;
+  for (const ref of refs) {
+    const kind = ref.slice(0, ref.indexOf(':'));
+    const p = REF_PRIORITY.indexOf(kind);
+    const score = lines.filter((l) => l.refs.includes(ref)).length * 10 + (p < 0 ? 0 : REF_PRIORITY.length - p);
+    if (score > bestScore) { bestScore = score; best = ref; }
+  }
+  return best ? prettyRef(best) : '—';
+}
+
+/**
+ * Group the day's lines into **threads** — several sessions about the same ticket / PR / task / host —
+ * and represent each by its LATEST line. This is the fix for the digest's worst readability failure: one
+ * incident worked by four agents produced a dozen lines, several of them explicitly correcting each other
+ * ("confirmed and corrected the root cause"), every one of them marked ✓. Newest-wins is the honest
+ * summary of a thread that revised itself; the update count tells the reader revision happened.
+ *
+ * A cluster only becomes a thread when it's genuinely one — ≥2 agents, or ≥3 lines from one agent. A
+ * single agent's pair of related lines stays in its own block, where it reads fine. Exported for testing.
+ */
+export function clusterIncidents(cands: Cand[]): { incidents: Incident[]; rest: Cand[] } {
+  const byRef = new Map<string, Cand[]>();     // ref → the cluster (array identity IS the cluster id)
+  const clusters = new Set<Cand[]>();
+  for (const c of cands) {
+    if (!c.refs.length) continue;
+    const hits = [...new Set(c.refs.map((r) => byRef.get(r)).filter((x): x is Cand[] => !!x))];
+    let cl: Cand[];
+    if (!hits.length) { cl = []; clusters.add(cl); } else {
+      cl = hits[0];
+      for (const other of hits.slice(1)) {      // transitively linked → merge into the first
+        cl.push(...other);
+        for (const [ref, target] of byRef) if (target === other) byRef.set(ref, cl);
+        clusters.delete(other);
+      }
+    }
+    cl.push(c);
+    for (const r of c.refs) byRef.set(r, cl);
+  }
+
+  const all: { incident: Incident; lines: Cand[] }[] = [];
+  for (const lines of clusters) {
+    const agents = [...new Set(lines.map((l) => l.agent))];
+    if (lines.length < 2 || (agents.length < 2 && lines.length < 3)) continue;
+    // Blocked lines count toward the thread's size and its agent list — they're part of the story — but
+    // can't headline it, since "Needs you" is already showing them verbatim. All-blocked → no thread.
+    const visible = lines.filter((l) => !l.blocked);
+    if (!visible.length) continue;
+    const refs = new Set(lines.flatMap((l) => l.refs));
+    const head = [...visible].sort((a, b) => b.ts - a.ts)[0]; // the latest word on the thread
+    all.push({ lines: visible, incident: { label: labelFor(refs, lines), headline: head.title, outcome: head.outcome, agent: head.agent, agents, updates: lines.length } });
+  }
+  all.sort((a, b) => b.incident.updates - a.incident.updates || a.incident.label.localeCompare(b.incident.label));
+
+  const kept = all.slice(0, MAX_INCIDENTS);
+  const taken = new Set(kept.flatMap((k) => k.lines)); // only KEPT threads consume their lines
+  return { incidents: kept.map((k) => k.incident), rest: cands.filter((c) => !c.blocked && !taken.has(c)) };
+}
+
+const LINE_MAX = 280; // digest lines can breathe — Slack/Discord/KB all handle it (vs the 72-char title)
 const DEDUP_STOP = new Set(['task', 'with', 'this', 'that', 'from', 'into', 'have', 'been', 'were', 'they', 'will', 'just', 'also', 'done', 'made', 'make', 'need', 'some', 'more', 'than', 'only', 'each', 'both', 'over', 'when', 'then', 'sent', 'added', 'set', 'the', 'and', 'for']);
 
 /** Whether a `completed`-card body is the agent's own summary vs a GENERIC end card — the launcher writes
@@ -191,19 +351,23 @@ function dedupeLines(lines: DigestLine[]): DigestLine[] {
   return clusters.map((c) => (c.count > 1 ? { ...c.rep, count: c.count } : c.rep));
 }
 
-/** Compact tally line — "18 sessions · 7 ✓ · 1 partial · 1 ✗ · 9 stopped". */
+/** Compact tally line — "18 sessions · 7 ✓ · 1 partial · 1 ✗ · 9 stopped". Every session is in exactly
+ *  one bucket and every bucket is printed, so the parts always sum back to the total (the old line
+ *  silently omitted `other`, so a 94-session day showed 76). */
 function tally(m: DigestModel): string {
   const b = m.buckets;
   const parts: string[] = [`${m.total} session${m.total === 1 ? '' : 's'}`];
   if (b.success) parts.push(`${b.success} ✓`);
+  if (m.blocked) parts.push(`${m.blocked} ⏳ blocked`);
   if (b.partial) parts.push(`${b.partial} partial`);
   if (b.failure) parts.push(`${b.failure} ✗`);
   if (b.stopped) parts.push(`${b.stopped} stopped`);
   if (b.running) parts.push(`${b.running} running`);
+  if (b.other) parts.push(`${b.other} other`);
   return parts.join(' · ');
 }
 
-const MARK: Record<string, string> = { success: '✓', partial: '◐', failure: '✗', stopped: '·', running: '…' };
+const MARK: Record<string, string> = { success: '✓', partial: '◐', failure: '✗', stopped: '·', running: '…', blocked: '⏳' };
 
 function signalLine(m: DigestModel): string {
   const s = m.signals;
@@ -213,7 +377,35 @@ function signalLine(m: DigestModel): string {
   if (s.rejected) parts.push(`${s.rejected} rejected`);
   if (s.budgetStops) parts.push(`${s.budgetStops} budget stops`);
   if (s.errors) parts.push(`${s.errors} errors`);
+  if (s.costUsd >= 0.01) parts.push(`$${s.costUsd.toFixed(2)}`);
+  // Say what was left out. A body of 60 lines over 94 sessions reads as "everything" unless the gap is named.
+  if (m.hidden) parts.push(`${m.hidden} routine run${m.hidden === 1 ? '' : 's'} not shown`);
   return parts.join(' · ');
+}
+
+/** "⏳ Needs you" — the day's human action list, hoisted above the record so it can't be missed. `b` is
+ *  the platform's bold wrapper (Slack `*x*` vs Discord/markdown `**x**`). */
+function needBlock(m: DigestModel, b: (s: string) => string): string[] {
+  if (!m.needs.length) return [];
+  const out = [b(`⏳ Needs you (${m.needs.length})`)];
+  for (const n of m.needs.slice(0, MAX_NEEDS)) out.push(`• ${b(n.agent)} — ${n.title}`);
+  if (m.needs.length > MAX_NEEDS) out.push(`• _+${m.needs.length - MAX_NEEDS} more_`);
+  out.push('');
+  return out;
+}
+
+/** "🔗 Threads" — one line per cross-agent incident: the latest word on it, plus how much churn there was. */
+function threadBlock(m: DigestModel, b: (s: string) => string): string[] {
+  if (!m.incidents.length) return [];
+  const out = [b('🔗 Threads')];
+  for (const i of m.incidents) {
+    const named = i.agents.slice(0, MAX_THREAD_AGENTS).join(', ');
+    const rest = i.agents.length > MAX_THREAD_AGENTS ? ` +${i.agents.length - MAX_THREAD_AGENTS}` : '';
+    out.push(`• ${b(i.label)} — ${i.headline} ${MARK[i.outcome] ?? ''}`.trimEnd());
+    out.push(`  _${i.updates} updates · ${named}${rest} · latest: ${i.agent}_`);
+  }
+  out.push('');
+  return out;
 }
 
 /** Slack mrkdwn (`*bold*`, `_italic_`, `<url|text>` links). One combined message: 📋 Today + 🧠 Learned.
@@ -222,11 +414,13 @@ function signalLine(m: DigestModel): string {
 export function renderSlack(os: AgentOS, m: DigestModel, origin?: string): string {
   const name = os.tenant.charAt(0).toUpperCase() + os.tenant.slice(1);
   const link = (path: string, text: string) => (origin ? `<${origin}/#/${path}|${text}>` : text);
+  const bold = (s: string) => `*${s}*`;
   const out: string[] = [`*📋 ${link('insights', `${name} — ${m.label}`)}*`, `_${tally(m)}_`];
   const sig = signalLine(m);
   if (sig) out.push(`_${sig}_`);
   out.push('');
-  if (!m.byAgent.length) out.push('_No notable sessions today._');
+  out.push(...needBlock(m, bold), ...threadBlock(m, bold));
+  if (!m.byAgent.length && !m.needs.length && !m.incidents.length) out.push('_No notable sessions today._');
   for (const a of m.byAgent) {
     out.push(`*${link(`agents/${a.agent}`, a.agent)}*`);
     for (const l of a.lines) out.push(`• ${l.title}${l.count ? ` (×${l.count})` : ''} ${MARK[l.outcome] ?? ''}`.trimEnd());
@@ -252,6 +446,17 @@ export function renderMarkdown(os: AgentOS, m: DigestModel): string {
   ];
   const sig = signalLine(m);
   if (sig) out.push(``, `_${sig}_`);
+  if (m.needs.length) {
+    out.push(``, `## ⏳ Needs you (${m.needs.length})`);
+    for (const n of m.needs) out.push(`- **${n.agent}** — ${n.title}`);
+  }
+  if (m.incidents.length) {
+    out.push(``, `## 🔗 Threads`);
+    for (const i of m.incidents) {
+      out.push(`- **${i.label}** ${MARK[i.outcome] ?? ''} ${i.headline}`.replace('  ', ' '));
+      out.push(`  <br>_${i.updates} updates · ${i.agents.join(', ')} · latest: ${i.agent}_`);
+    }
+  }
   out.push(``, `## What got done`);
   if (!m.byAgent.length) out.push(`- (no notable sessions today)`);
   for (const a of m.byAgent) {
@@ -272,11 +477,13 @@ export function renderMarkdown(os: AgentOS, m: DigestModel): string {
 export function renderDiscord(os: AgentOS, m: DigestModel, origin?: string): string {
   const name = os.tenant.charAt(0).toUpperCase() + os.tenant.slice(1);
   const link = (path: string, text: string) => (origin ? `[${text}](${origin}/#/${path})` : text);
+  const bold = (s: string) => `**${s}**`;
   const out: string[] = [`**📋 ${name} — ${m.label}**`, tally(m)];
   const sig = signalLine(m);
   if (sig) out.push(sig);
   out.push('');
-  if (!m.byAgent.length) out.push('_No notable sessions today._');
+  out.push(...needBlock(m, bold), ...threadBlock(m, bold));
+  if (!m.byAgent.length && !m.needs.length && !m.incidents.length) out.push('_No notable sessions today._');
   for (const a of m.byAgent) {
     out.push(`**${link(`agents/${a.agent}`, a.agent)}**`);
     for (const l of a.lines) out.push(`• ${l.title}${l.count ? ` (×${l.count})` : ''} ${MARK[l.outcome] ?? ''}`.trimEnd());

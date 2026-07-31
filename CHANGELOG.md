@@ -8,6 +8,41 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.280.0] — 2026-07-31
+### Changed
+- **The daily digest is now a synthesis, not a log grouped by author.** On a 94-session day the posted
+  digest listed ~60 lines across 19 agents with no cross-agent structure, and the day's real story — one
+  migration bug and one support ticket — was told nine separate times by four agents, several of the lines
+  explicitly correcting each other and every one of them marked ✓. Four fixes:
+  - **A blocked run no longer reads as a success.** `outcome` is whatever the agent passed to `report()` —
+    its grade of its own *effort* — so runs ended `success` while their summary said "push is BLOCKED: no
+    token can push". Lines whose own text says a person must act are reclassified `⏳ blocked` and hoisted
+    into a new **"⏳ Needs you"** section at the top of the digest — the only part of it that is a to-do
+    rather than a record.
+  - **Cross-agent threads collapse.** Lines sharing a ticket / PR / task id / host (`refsOf` →
+    `clusterIncidents`, transitive union over typed refs) are grouped across agents into a **"🔗 Threads"**
+    section showing the *latest* word on each, plus the update count so revision stays visible. Blocked
+    lines still link a thread together but never headline it.
+  - **The header reconciles.** `tally()` omitted the `other` bucket, so a 94-session day printed 76. Every
+    bucket now prints, the day's **cost** is shown, and the count of sessions with no reportable line is
+    stated ("N routine runs not shown") instead of silently dropped.
+  - **A line must come from a real `report`.** `status === 'done'` and a salient episode were two other ways
+    in, but with no report the only available text is the session title — derived from the incoming task —
+    so those lines printed the human's *prompt* as if it were the day's result ("the backend is too slow",
+    "can you check why this happened?"). They now land in the stated hidden count.
+  Also: digest lines clip at 280 chars rather than 200, which was cutting mid-outcome.
+- **Self-learning: topic extraction now allows by shape instead of blocking by word.** The guidance line
+  injected into every agent's prompt read "The fleet frequently works on: globex, handed, client-app,
+  read-only, really" — a hand-maintained stop-list is unwinnable, and each leaked word had to be found in
+  production and patched in. Tokenization now preserves case and admits a topic only if the corpus writes it
+  as a name (capitalized away from a sentence start, or ALL-CAPS) or it carries a digit or a dot. Agent ids
+  join member names as stop-words (who did the work, not what the fleet works on).
+- **Self-learning: approval friction is gated on the rejection RATE, not the raw count.** "≥3 rejections"
+  fired on tenants whose approvals are ~100% approved — 3 rejections out of 200 is a healthy gate — telling
+  the owner their policy over-rejects and telling every agent to expect rejection. Both the guidance line and
+  the `policy.review` recommendation now need the count **and** ≥20% of human approval decisions; the
+  recommendation states the rate. The per-pass tally records the approved denominator.
+
 ## [0.278.2] — 2026-07-30
 ### Changed
 - **New agents now default to the `opus` model alias instead of a pinned `claude-opus-4-8`.** The sample

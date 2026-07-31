@@ -125,3 +125,29 @@ Plus `npm run typecheck`, `cd web && npm run build`, `npm run demo`.
   per tenant — distinct `AGENT_OS_HOME` + `AGENT_OS_TENANT` + `PORT`). So the single-`os` schedulers in
   `startServer` are already correct: each process owns exactly one tenant's `os`, and `dream()` keys on
   `os.tenant` throughout. **No per-tenant fan-out needed** — nothing to change here.
+
+## Correction (v0.280.0) — two signals that were wrong in production
+
+Both surfaced by reading a real posted digest's **🧠 Learned** block on the globex tenant.
+
+1. **"The fleet frequently works on: globex, handed, client-app, read-only, really."** `topicCounts`
+   lowercased before tokenizing and filtered through a hand-maintained `STOP` list — an unwinnable game
+   where every leaked word ("handed", "really", "read-only") had to be discovered in production and then
+   patched in, and the guidance line rides in **every agent's system prompt**. Inverted to an **allow test
+   on shape**: tokenization preserves case, and a topic is admitted only if the corpus itself writes it as
+   a name (`properNouns` — capitalized away from a sentence start, or ALL-CAPS) or it carries a digit or a
+   dot (`v3`, `php8`, `globex.com`). Precision over recall: an always-lowercase repo name is missed, but
+   nothing embarrassing gets through, and the line only prints when ≥2 topics survive. Agent ids joined
+   member names as stop-words — both answer *who did the work*, not *what the fleet works on* (the whole
+   id only: `migration-ops` is an agent, `migration` is a topic).
+2. **"⚠ Recommend: Review your policy — actions are often rejected at approval"** on a tenant whose
+   approvals are ~100% approved. The gate was a raw count (`rejected >= 3`) with no denominator — 3
+   rejections out of 200 decisions is a *healthy* gate, and the advice was backwards in both directions:
+   the owner was told to loosen a policy that wasn't over-rejecting, and every agent was told to expect
+   rejection. Friction is a **rate**: the per-pass tally now records `approved` alongside `rejected`, and
+   both the guidance line and the `policy.review` recommendation need the count **and** ≥20% of human
+   decisions. The recommendation states the rate. Legacy `recent` entries have no denominator and read as
+   0, so a stale state can fire once more before self-correcting on the next pass.
+
+The general lesson: a signal injected into every prompt or shown to the owner as advice needs a
+**denominator and a shape test**, not a threshold on a raw count and a blocklist.

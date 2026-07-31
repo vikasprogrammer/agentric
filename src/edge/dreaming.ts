@@ -27,8 +27,8 @@ export interface DreamResult {
   busy?: boolean; // another pass for this tenant was already running (M1) — this call no-opped
 }
 
-interface Tally { sessions: number; episodes: number; success: number; failure: number; partial: number; stopped: number; unknown: number; rejected: number; budgetStops: number; errors: number }
-interface RecentEntry { day: string; ts: number; sessions: number; success: number; failure: number; stopped: number; rejected: number; budgetStops: number; errors: number; topics: string[] }
+interface Tally { sessions: number; episodes: number; success: number; failure: number; partial: number; stopped: number; unknown: number; approved: number; rejected: number; budgetStops: number; errors: number }
+interface RecentEntry { day: string; ts: number; sessions: number; success: number; failure: number; stopped: number; approved?: number; rejected: number; budgetStops: number; errors: number; topics: string[] }
 interface DreamState {
   firstPass: number;
   passes: number;
@@ -85,6 +85,14 @@ export class DreamingEngine {
     for (const m of this.os.team.listMembers()) {
       for (const w of (m.name || '').toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? []) stop.add(w);
     }
+    // Agent ids are WHO did the work, not WHAT the fleet works on — same reasoning as member names. A
+    // report that names the agent it delegated to ("routed infra-ops…") shouldn't make "infra-ops" a topic.
+    // Only the WHOLE id is stopped, never its parts: "migration-ops" is an agent, "migration" is a topic.
+    try {
+      for (const a of this.os.db.prepare('SELECT DISTINCT agent FROM term_sessions').all<{ agent: string }>()) {
+        if (a.agent) stop.add(a.agent.toLowerCase());
+      }
+    } catch { /* advisory — a missing table just means no agent stop-words */ }
     return stop;
   }
 
@@ -166,7 +174,7 @@ export class DreamingEngine {
     const outcomes = [...bySession.values()];
 
     // ── this window's tallies ──
-    const win: Tally = { sessions: outcomes.length, episodes: episodes.length, success: 0, failure: 0, partial: 0, stopped: 0, unknown: 0, rejected: 0, budgetStops: 0, errors: 0 };
+    const win: Tally = { sessions: outcomes.length, episodes: episodes.length, success: 0, failure: 0, partial: 0, stopped: 0, unknown: 0, approved: 0, rejected: 0, budgetStops: 0, errors: 0 };
     for (const e of outcomes) {
       const o = e.type === 'session.stopped' ? 'stopped' : String(parse(e.data).outcome ?? 'unknown');
       if (o in win) (win as unknown as Record<string, number>)[o]++; else win.unknown++;
@@ -175,6 +183,7 @@ export class DreamingEngine {
       if (f.type === 'budget.exceeded') win.budgetStops++;
       else if (f.type === 'session.error') win.errors++; // L3: real run errors, not memory-store (`episode.error`) failures
       else if (parse(f.data).approved === false) win.rejected++;
+      else win.approved++; // the DENOMINATOR: friction is the rejection RATE, not the raw count (a busy day approves hundreds)
     }
     const winTopics = topicCounts(episodes, this.memberNameStop());
 
@@ -196,7 +205,7 @@ export class DreamingEngine {
     }
     state.topics = pruneTopics(state.topics, until); // M6: bound the map + drop long-unseen topics
     const day = new Date(until).toISOString().slice(0, 10);
-    state.recent.unshift({ day, ts: until, sessions: win.sessions, success: win.success, failure: win.failure, stopped: win.stopped, rejected: win.rejected, budgetStops: win.budgetStops, errors: win.errors, topics: [...winTopics].slice(0, 6).map(([t]) => t) });
+    state.recent.unshift({ day, ts: until, sessions: win.sessions, success: win.success, failure: win.failure, stopped: win.stopped, approved: win.approved, rejected: win.rejected, budgetStops: win.budgetStops, errors: win.errors, topics: [...winTopics].slice(0, 6).map(([t]) => t) });
     state.recent = state.recent.slice(0, MAX_RECENT);
 
     this.os.settings.setDreamingState(state as unknown as Record<string, unknown>, by);
@@ -260,7 +269,7 @@ function normalizeState(raw: Record<string, unknown>): DreamState {
 }
 
 function zeroTally(): Tally {
-  return { sessions: 0, episodes: 0, success: 0, failure: 0, partial: 0, stopped: 0, unknown: 0, rejected: 0, budgetStops: 0, errors: 0 };
+  return { sessions: 0, episodes: 0, success: 0, failure: 0, partial: 0, stopped: 0, unknown: 0, approved: 0, rejected: 0, budgetStops: 0, errors: 0 };
 }
 
 function parse(s: string): Record<string, unknown> {
@@ -271,17 +280,61 @@ function parse(s: string): Record<string, unknown> {
  *  name tokens (built per-pass from the roster) — a person's name describes WHO asked, not WHAT the fleet
  *  works on, so "the fleet frequently works on … vikas, singhal" is noise; drop them alongside STOP. */
 function topicCounts(episodes: EpisodeRow[], nameStop: Set<string> = new Set()): [string, number][] {
+  const proper = properNouns(episodes);
   const counts = new Map<string, number>();
   for (const e of episodes) {
-    const line = (e.content.split('\n').map((l) => l.trim()).find((l) => l) ?? '').replace(/^Task:\s*/i, '');
+    const line = firstLine(e);
     const seen = new Set<string>();
-    for (const w of line.toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) ?? []) {
-      if (STOP.has(w) || nameStop.has(w) || seen.has(w)) continue; // once per episode
-      seen.add(w);
-      counts.set(w, (counts.get(w) ?? 0) + 1);
+    for (const w of line.toLowerCase().match(/[a-z][a-z0-9.-]{3,}/g) ?? []) {
+      const t = w.replace(/[.-]+$/, '');
+      if (t.length < 4 || STOP.has(t) || nameStop.has(t) || seen.has(t)) continue; // once per episode
+      if (!isEntity(t, proper)) continue;
+      seen.add(t);
+      counts.set(t, (counts.get(t) ?? 0) + 1);
     }
   }
   return [...counts].sort((a, b) => b[1] - a[1]);
+}
+
+/** The first meaningful line of an episode, with the `Task:` prefix stripped. */
+function firstLine(e: EpisodeRow): string {
+  return (e.content.split('\n').map((l) => l.trim()).find((l) => l) ?? '').replace(/^Task:\s*/i, '');
+}
+
+const WORD_RE = /[A-Za-z][A-Za-z0-9.-]{3,}/g;
+
+/**
+ * Tokens the corpus itself writes as a **name** — capitalized away from a sentence start, or ALL-CAPS.
+ * Case is the one strong, maintenance-free signal for "this is a thing, not an English word", and the
+ * old lowercase-first tokenizer threw it away before anything could use it.
+ */
+function properNouns(episodes: EpisodeRow[]): Set<string> {
+  const proper = new Set<string>();
+  for (const e of episodes) {
+    const line = firstLine(e);
+    for (const m of line.matchAll(WORD_RE)) {
+      const raw = m[0].replace(/[.-]+$/, '');
+      if (raw.length < 4) continue;
+      const before = line.slice(0, m.index).trimEnd();
+      const sentenceStart = before === '' || /[.!?:;•(\[\-—]$/.test(before);
+      const allCaps = raw === raw.toUpperCase() && /[A-Z]{2,}/.test(raw);
+      if (allCaps || (/^[A-Z]/.test(raw) && !sentenceStart)) proper.add(raw.toLowerCase());
+    }
+  }
+  return proper;
+}
+
+/**
+ * Whether a token is a THING the fleet works on rather than an ordinary English word. The old filter was a
+ * hand-maintained blocklist, which is unwinnable — fleet data produced "the fleet frequently works on:
+ * globex, handed, client-app, read-only, really", and every such word had to be discovered in production
+ * and then patched in. This inverts it to an ALLOW test on shape: a topic must be written as a name
+ * somewhere (`properNouns`), or carry a digit or a dot (`v3`, `php8`, `globex.com`). Deliberately
+ * precision-over-recall — an always-lowercase repo name is missed, but nothing embarrassing gets through,
+ * and the guidance line only prints at all when ≥2 topics survive.
+ */
+function isEntity(token: string, proper: Set<string>): boolean {
+  return proper.has(token) || /\d/.test(token) || token.includes('.');
 }
 
 /** A recency-decayed weight for a topic — `count` halved for every `TOPIC_HALFLIFE_MS` since last seen,
@@ -310,16 +363,32 @@ function pruneTopics(topics: Record<string, { count: number; lastSeen: number }>
 
 /** Sum the RECENT window (last `RECENT_PASSES` per-pass tallies) — the honest "recent" signal for
  *  guidance + recommendations, vs. the ever-growing lifetime `totals` (H4). */
-function recentTally(s: DreamState): { sessions: number; success: number; rejected: number; budgetStops: number; errors: number } {
-  const r = { sessions: 0, success: 0, rejected: 0, budgetStops: 0, errors: 0 };
+function recentTally(s: DreamState): { sessions: number; success: number; approved: number; rejected: number; budgetStops: number; errors: number } {
+  const r = { sessions: 0, success: 0, approved: 0, rejected: 0, budgetStops: 0, errors: 0 };
   for (const e of (s.recent ?? []).slice(0, RECENT_PASSES)) {
     r.sessions += e.sessions || 0;
     r.success += e.success || 0;
+    r.approved += e.approved || 0;
     r.rejected += e.rejected || 0;
     r.budgetStops += e.budgetStops || 0;
     r.errors += e.errors || 0;
   }
   return r;
+}
+
+/**
+ * Approval friction is a **rate**, not a count. Gating on "≥3 rejections" fired on tenants whose approvals
+ * are ~100% approved — 3 rejections out of 400 is a healthy gate, and telling the owner their policy is
+ * over-rejecting (and telling every agent to expect rejection) was simply wrong. Both the guidance line
+ * and the recommendation now need the raw count AND this share of human decisions.
+ *
+ * Legacy `recent` entries have no `approved` field → they read as 0, so a stale state can still fire once;
+ * it self-corrects on the next pass, which records the denominator.
+ */
+const REJECTION_RATE = 0.2;
+function rejectionRate(t: { approved: number; rejected: number }): number {
+  const n = t.approved + t.rejected;
+  return n ? t.rejected / n : 0;
 }
 
 // Cadence is OFF (everyHours 0) → learned guidance goes stale after this long unrefreshed. When a cadence
@@ -350,7 +419,7 @@ export function deriveGuidance(s: DreamState): string {
   lines.push('Before non-trivial work, `recall` your memory and `kb_search` the knowledge base — the fleet may have already solved this; build on it rather than redoing it.');
   const topics = topTopicList(s.topics, 5).filter(([, v]) => v.count >= MIN_TOPIC_COUNT).map(([k]) => k);
   if (topics.length >= 2) lines.push(`The fleet frequently works on: ${topics.join(', ')}. For these, read the KB runbook first (kb_read) and update it (kb_write) when you learn something new.`);
-  if (t.rejected >= 2) lines.push('Recent actions were rejected at human approval — `policy_check` before risky effects, and never retry an action a human already rejected.');
+  if (t.rejected >= 2 && rejectionRate(t) >= REJECTION_RATE) lines.push('Recent actions were rejected at human approval — `policy_check` before risky effects, and never retry an action a human already rejected.');
   if (t.budgetStops >= 1) lines.push('Budget limits have been hit — scope work tightly, avoid broad scans / long loops, and `ask` rather than burn budget guessing.');
   if (t.errors >= 2) lines.push('Some sessions ended in errors — verify your work before finishing, and `report` the real outcome (including failures) honestly.');
   const rate = t.sessions ? t.success / t.sessions : 1;
@@ -393,11 +462,11 @@ export function deriveRecommendations(s: DreamState, currentEffort: string | und
       apply: { runtimeDefaults: { effort: 'high' } }, createdAt: now,
     });
   }
-  if (t.rejected >= 3) {
+  if (t.rejected >= 3 && rejectionRate(t) >= REJECTION_RATE) {
     recs.push({
       id: 'policy.review', kind: 'policy',
       title: 'Review your policy — actions are often rejected at approval',
-      rationale: `${t.rejected} actions were rejected at human approval. If a capability is always rejected it may belong on the deny list; if always approved, the gate is just friction. (Advisory — edit in Settings → Policy.)`,
+      rationale: `${t.rejected} of ${t.approved + t.rejected} approvals were rejected (${Math.round(rejectionRate(t) * 100)}%). If a capability is always rejected it may belong on the deny list; if always approved, the gate is just friction. (Advisory — edit in Settings → Policy.)`,
       link: '#/settings', createdAt: now,
     });
   }

@@ -460,8 +460,12 @@ export interface DigestModel {
   label: string
   total: number
   buckets: { success: number; partial: number; failure: number; stopped: number; running: number; other: number }
+  blocked: number
+  hidden: number
+  needs: { agent: string; title: string }[]
+  incidents: { label: string; headline: string; outcome: string; agent: string; agents: string[]; updates: number }[]
   byAgent: { agent: string; lines: { title: string; outcome: string; importance: number; count?: number }[]; more: number }[]
-  signals: { tasksCreated: number; tasksCompleted: number; approvals: number; rejected: number; errors: number; budgetStops: number }
+  signals: { tasksCreated: number; tasksCompleted: number; approvals: number; rejected: number; errors: number; budgetStops: number; costUsd: number }
   guidance: string[]
   recommendations: string[]
 }
