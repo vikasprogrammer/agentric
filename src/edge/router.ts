@@ -168,7 +168,9 @@ function profileHash(s: string): string {
  */
 export async function chooseAgent(os: AgentOS, text: string): Promise<RouteDecision> {
   const cfg = os.settings.routerConfig();
-  const agents = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime));
+  // Route only to user-facing teammates — never to the code-provisioned System machinery (consolidator,
+  // concierge, strategist, …); those aren't work agents a person should be handed off to.
+  const agents = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && a.category !== 'System');
   if (agents.length === 0) return { kind: 'none' };
 
   let scored = scoreAgents(text, agents);

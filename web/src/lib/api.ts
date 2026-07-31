@@ -1246,8 +1246,15 @@ export interface RouterPreviewResp {
   method?: 'keyword' | 'embedding' | 'llm'
   suggested?: RouterCard
   candidates: RouterCard[]
-  /** ask only: the inline answer composed from the workspace context. */
+  /** ask only: an inline answer that's ready immediately (band 1 = from live state, or a configured
+   *  direct LLM). Rendered as-is. */
   answer?: string
+  /** ask only: no instant answer was available, so a governed ephemeral concierge run was started —
+   *  poll its conversation and render the reply inline. */
+  run?: { sessionId: string }
+  /** ask only: where the answer came from — `state` (deterministic lookup), `llm` (direct model),
+   *  `concierge` (ephemeral claude run via `run`). */
+  source?: 'state' | 'llm' | 'concierge'
   /** action only: the primitive surface this request maps to. */
   surface?: 'automations' | 'tasks'
   /** work only: this was classified `ask` but no LLM is configured, so it fell back to routing (show a

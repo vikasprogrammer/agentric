@@ -3940,6 +3940,35 @@ function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runPreview() }
   }
 
+  // `ask` band 2b: the server started an ephemeral concierge run — poll its transcript and surface the
+  // reply inline (so a claude-backed answer still feels session-free). Stops once the reply stabilises.
+  const runSession = preview?.intent === 'ask' ? preview.run?.sessionId : undefined
+  const [askAnswer, setAskAnswer] = useState('')
+  const [askThinking, setAskThinking] = useState(false)
+  const prevAnswer = useRef('')
+  useEffect(() => {
+    setAskAnswer(''); prevAnswer.current = ''
+    if (!runSession) { setAskThinking(false); return }
+    setAskThinking(true)
+    let stop = false
+    const poll = async () => {
+      const r = await api.conversation(runSession)
+      if (stop) return
+      const assistant = (r.turns || []).filter((t) => t.kind !== 'user')
+      const last = assistant[assistant.length - 1]
+      const text = (last && 'text' in last ? last.text : '') || ''
+      if (text) {
+        setAskAnswer(text)
+        if (text === prevAnswer.current) { setAskThinking(false); stop = true; clearInterval(timer); clearTimeout(to) } // stable → done
+        prevAnswer.current = text
+      }
+    }
+    poll()
+    const timer = setInterval(poll, 1500)
+    const to = setTimeout(() => { stop = true; clearInterval(timer); setAskThinking(false) }, 60000)
+    return () => { stop = true; clearInterval(timer); clearTimeout(to) }
+  }, [runSession])
+
   const isWork = !preview?.intent || preview.intent === 'work'
 
   const card = (c: RouterCard, opts?: { primary?: boolean }) => (
@@ -3990,12 +4019,26 @@ function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
 
       {preview && (
         <div className="flex flex-col gap-3">
-          {/* ASK — answered inline from the workspace context; no session spawned. */}
-          {preview.intent === 'ask' && preview.answer && (
+          {/* ASK — answered inline (band 1 from live state / a direct LLM), or via an ephemeral concierge
+              run (band 2b) whose reply we poll in. Either way: no session the user has to babysit. */}
+          {preview.intent === 'ask' && (preview.answer || preview.run) && (
             <div className="rounded-xl border bg-card p-4">
-              <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><Sparkles className="h-3.5 w-3.5 text-primary" /><span>Answered from your workspace</span></div>
-              <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.answer}</ReactMarkdown></div>
-              <button onClick={() => runPreview('work')} className="mt-3 text-xs text-muted-foreground underline-offset-2 hover:underline">Not what you meant? Route to an agent instead →</button>
+              <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                <span>{preview.source === 'state' ? 'Answered from your workspace' : preview.run ? 'Concierge · looked it up for you' : 'Answered'}</span>
+              </div>
+              {preview.answer && (
+                <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.answer}</ReactMarkdown></div>
+              )}
+              {preview.run && (
+                askAnswer
+                  ? <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{askAnswer}</ReactMarkdown></div>
+                  : <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" />Looking into it…</div>
+              )}
+              <div className="mt-3 flex items-center gap-3 text-xs">
+                <button onClick={() => runPreview('work')} className="text-muted-foreground underline-offset-2 hover:underline">Not what you meant? Route to an agent instead →</button>
+                {preview.run && !askThinking && askAnswer && <button onClick={() => onOpenChat(preview.run!.sessionId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>}
+              </div>
             </div>
           )}
 

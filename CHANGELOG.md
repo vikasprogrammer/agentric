@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.281.0] — 2026-07-31
+### Changed
+- **Cockpit `ask` tier now works with no LLM key — deterministic lookups + an ephemeral concierge run,
+  not a bolt-on API.** The `ask` path previously needed a separately-configured `router_config.llm`
+  (which the deployment doesn't have), so it was inert. Rebuilt in two bands that use what the workspace
+  already has:
+  - **Band 1 — structured lookups answered from live state**, instant, no LLM/session/key: "which agents
+    are idle?", "what's running?", "how many open tasks?", "list my automations", "what agents do I have?"
+    (`src/edge/ask.ts` `answerFromState`, deterministic over `tm.listSessions`/`os.tasks.counts`/
+    `autos.list`).
+  - **Band 2 — freeform** ("how do automations work?", "why did X fail?"): a fast direct LLM **if one is
+    configured**, else a governed **ephemeral concierge run** — the native LLM in Agent OS is a claude
+    session, so a new System agent (`src/edge/concierge.ts`, `concierge`) answers using the OS tools
+    (`kb_search`/`recall`/`session_history`/…), run-as the asker; Cockpit polls its transcript and renders
+    the reply inline, so it still feels session-free. No API key required.
+  Also: the agent **router now excludes `category:'System'` agents** (concierge/consolidator/strategist/…)
+  — you can never be routed to the machinery for work. `POST /api/router/preview` returns `source`
+  (`state`/`llm`/`concierge`) and, for a concierge answer, `run.sessionId` to poll. `src/edge/ask.ts` +
+  `src/edge/concierge.ts` (new), `src/edge/router.ts`, `src/server.ts`, `web/src/App.tsx`,
+  `web/src/lib/api.ts`.
+
 ## [0.280.0] — 2026-07-31
 ### Changed
 - **The daily digest is now a synthesis, not a log grouped by author.** On a 94-session day the posted
