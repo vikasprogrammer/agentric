@@ -8,6 +8,13 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.281.4] — 2026-07-31
+### Fixed
+- **Bump `TOPICS_VERSION` to 3.** v0.281.3 tightened the topic extractor (opaque hex ids) without bumping
+  the version counter added in v0.281.2, so ids already written into a workspace's cumulative topic map
+  stayed there — the exact failure that counter exists to prevent. Bumped, and the requirement to bump it
+  alongside any extractor change is now stated at the constant.
+
 ## [0.281.3] — 2026-07-31
 ### Fixed
 - **Opaque identifiers are no longer "things the fleet works on".** The digit rule that admits `v3`/`php8`
