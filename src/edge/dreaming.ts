@@ -417,6 +417,10 @@ function properNouns(episodes: EpisodeRow[]): Set<string> {
  * and the guidance line only prints at all when ≥2 topics survive.
  */
 function isEntity(token: string, proper: Set<string>): boolean {
+  // An opaque IDENTIFIER is never a topic. The digit rule below exists for `v3`/`php8`, but it also let
+  // hex ids through — live globex surfaced `f90fc16d7fb9a19` as something "the fleet frequently works
+  // on". A long hex/base36 run with no vowel structure is a handle, not a name.
+  if (/^[0-9a-f]{8,}$/i.test(token) || /^[a-z]{2,4}_[0-9a-f]{6,}$/i.test(token)) return false;
   // A FILENAME qualifies on its base name, never its extension — otherwise the dot rule (meant for
   // hostnames and versions) admits every path an agent mentions, including format placeholders like
   // `yyyy-mm-dd.md`. `.com`/`.io` are not code extensions, so real hostnames still pass below.
@@ -474,9 +478,13 @@ function recentTally(s: DreamState): { sessions: number; success: number; approv
  * it self-corrects on the next pass, which records the denominator.
  */
 const REJECTION_RATE = 0.2;
+/** A rate also needs a SAMPLE. Live globex fired the recommendation off 3 decisions (0 approved,
+ *  3 rejected = 100%) — directionally true for that window, but far too thin to tell an owner their
+ *  policy is miscalibrated. Below this many human decisions the signal stays quiet. */
+const MIN_APPROVAL_DECISIONS = 8;
 function rejectionRate(t: { approved: number; rejected: number }): number {
   const n = t.approved + t.rejected;
-  return n ? t.rejected / n : 0;
+  return n >= MIN_APPROVAL_DECISIONS ? t.rejected / n : 0;
 }
 
 // Cadence is OFF (everyHours 0) → learned guidance goes stale after this long unrefreshed. When a cadence

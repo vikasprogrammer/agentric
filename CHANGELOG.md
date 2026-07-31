@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.281.3] — 2026-07-31
+### Fixed
+- **Opaque identifiers are no longer "things the fleet works on".** The digit rule that admits `v3`/`php8`
+  also admitted hex handles — after the topic-map rebuild, live globex surfaced `f90fc16d7fb9a19` in the
+  guidance line. A long hex/base36 run (or a `tsk_…`-style prefixed id) is a handle, not a name.
+- **The approval-friction signal now needs a sample, not just a rate.** v0.280.0 replaced a raw-count gate
+  with a ≥20% rejection rate; on live globex that fired off **3 decisions** (0 approved, 3 rejected =
+  100%) — directionally true for the window but far too thin to tell an owner their policy is
+  miscalibrated, or to tell every agent to expect rejection. Both the guidance line and the
+  `policy.review` recommendation now also require at least 8 human approval decisions in the window.
+
 ## [0.281.2] — 2026-07-31
 ### Fixed
 - **A fixed topic extractor now actually reaches workspaces that have already been running.** `topics` is a
