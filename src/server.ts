@@ -23,6 +23,8 @@ import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle 
 import { chooseAgent } from './edge/router';
 import { classifyIntent } from './edge/intent';
 import { resolveLlm, chatComplete } from './edge/llm';
+import { ensureConcierge, CONCIERGE_ID } from './edge/concierge';
+import { answerFromState } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
@@ -2556,7 +2558,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return { id, description: a?.description || '', category: a?.category, icon: a?.icon, score };
     };
     const fleet = () =>
-      [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && runnable(a.id)).map((a) => card(a.id));
+      [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && a.category !== 'System' && runnable(a.id)).map((a) => card(a.id));
     // The `work` responder: the agent-routing decision, filtered to what this member can run.
     const respondWork = async (askFallback?: boolean) => {
       const decision = await chooseAgent(os, text);
@@ -2580,14 +2582,30 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
 
     if (intent.intent === 'ask') {
+      // Band 1: structured lookups answered deterministically from state — instant, no LLM, no session.
+      const stateAnswer = answerFromState(os, tm, autos, me, text);
+      if (stateAnswer) return sendJson(res, 200, { intent: 'ask', answer: stateAnswer, source: 'state' });
+
+      // Band 2a: freeform, and a fast direct LLM IS configured → answer inline from a compact context.
       const llm = resolveLlm(os);
-      if (!llm) return respondWork(true); // no LLM → route to an agent, but flag why (Settings hint)
-      const answer = await chatComplete(llm, [
-        { role: 'system', content: 'You are the assistant for this Agent OS workspace. Answer the question ONLY from the CONTEXT below — the live state of this workspace. Be concise (2–5 sentences). If the answer is not in the context, say you do not have that information and suggest the relevant console page. Never invent agents, numbers, or names.' },
-        { role: 'user', content: `CONTEXT:\n${cockpitWorkspaceContext(os, tm, autos, me)}\n\nQUESTION: ${text}` },
-      ], { maxTokens: 500, timeoutMs: 15000 });
-      if (!answer) return respondWork(true); // LLM failed → don't dead-end; route instead
-      return sendJson(res, 200, { intent: 'ask', answer });
+      if (llm) {
+        const answer = await chatComplete(llm, [
+          { role: 'system', content: 'You are the assistant for this Agent OS workspace. Answer the question ONLY from the CONTEXT below — the live state of this workspace. Be concise (2–5 sentences). If the answer is not in the context, say you do not have that information and suggest the relevant console page. Never invent agents, numbers, or names.' },
+          { role: 'user', content: `CONTEXT:\n${cockpitWorkspaceContext(os, tm, autos, me)}\n\nQUESTION: ${text}` },
+        ], { maxTokens: 500, timeoutMs: 15000 });
+        if (answer) return sendJson(res, 200, { intent: 'ask', answer, source: 'llm' });
+      }
+
+      // Band 2b: no direct LLM → answer via a governed, ephemeral CLAUDE run (the concierge). This is the
+      // native LLM in Agent OS — no separate API key needed, and it can use the OS tools to ground the
+      // answer. Spawned run-as the asker (read-only persona, System agent so it's never a route target);
+      // the client polls the run's transcript and renders the reply inline. See src/edge/concierge.ts.
+      ensureConcierge(os);
+      if (os.agents.get(CONCIERGE_ID)?.dir) {
+        const s = tm.createSession(CONCIERGE_ID, chatTitle(text, CONCIERGE_ID), text, `chat:${me.id}`, true, undefined, undefined, me.id, undefined, false);
+        return sendJson(res, 200, { intent: 'ask', run: { sessionId: s.id }, source: 'concierge' });
+      }
+      return respondWork(true); // last resort — couldn't provision the concierge
     }
 
     return respondWork();
