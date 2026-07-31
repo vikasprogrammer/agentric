@@ -1430,7 +1430,7 @@
       "args": {
         "tool": "Write",
         "input": {
-          "file_path": "~/.ssh/authorized_keys",
+          "file_path": "${HOME}/.ssh/authorized_keys",
           "content": "x"
         }
       },
@@ -1444,7 +1444,7 @@
       "args": {
         "tool": "Write",
         "input": {
-          "file_path": "~/.codex/auth.json",
+          "file_path": "${HOME}/.codex/auth.json",
           "content": "x"
         }
       },
@@ -1514,7 +1514,7 @@
       "args": {
         "tool": "apply_patch",
         "input": {
-          "command": "*** Begin Patch\n*** Update File: ~/.ssh/id_rsa\n+x\n*** End Patch"
+          "command": "*** Begin Patch\n*** Update File: ${HOME}/.ssh/id_rsa\n+x\n*** End Patch"
         }
       },
       "workdir": "/srv/aos-data/agents/writer",
