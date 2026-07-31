@@ -1290,7 +1290,7 @@ function Console({ me }: { me: Member }) {
   // reattachable), which would inflate this badge with finished sessions whose panes were never reaped.
   // A running row with a confirmed-dead pane (alive === false) is mid-reap → excluded; alive undefined
   // (poll failed / launcher backend) falls back to the stored 'running' status.
-  const runningSessions = sessions.filter((s) => s.status === 'running' && s.alive !== false).length
+  const runningSessions = sessions.filter((s) => s.status === 'running' && s.alive !== false && !s.system).length
   // The sidebar is a switcher over the sessions *I'm accountable for* — ones I started directly
   // (spawnedBy is my member id) OR ones a trigger spawned that run AS me (runAs): a Task I own that
   // auto-dispatched, a chat message I sent. Those have a `task:`/`automation:` provenance, so keying
@@ -3245,6 +3245,7 @@ function SessionsPage({
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>
+      !s.system && // OS machinery (Cockpit concierge/operator, …) stays out of the sessions list
       matchesStatus(s, statusFilter) &&
       (agentFilter === 'all' || s.agent === agentFilter) &&
       (sourceFilter === 'all' || sessionSource(s) === sourceFilter) &&
@@ -4158,7 +4159,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
   // surface (or the chat router) spawned, newest first.
   const chatAgents = useMemo(() => agents.filter((a) => a.runtime === 'claude-code'), [agents])
   const chats = useMemo(
-    () => sessions.filter((s) => s.sourceKind === 'chat').sort((a, b) => b.updatedAt - a.updatedAt),
+    () => sessions.filter((s) => s.sourceKind === 'chat' && !s.system).sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions],
   )
   const active = selected ? sessions.find((s) => s.id === selected) : undefined

@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.283.2] — 2026-07-31
+### Changed
+- **System-agent runs (the Cockpit concierge/operator, consolidator, …) are hidden from the Chat +
+  Sessions lists.** These `category:'System'` machinery runs are spawned run-as the member (provenance
+  `chat:<member>`), so they were cluttering the member's Chat list and the Sessions list as if they were
+  conversations the member started. `listSessions` now derives a `system` flag from the agent's category;
+  the console filters it out of the Chat list, the Sessions list, and the running-count badge. The rows
+  still exist — openable by id (Cockpit's "Open full session" still works) and in the Audit log — they're
+  just out of the everyday lists. `src/terminal.ts` (`Session.system`), `web/src/App.tsx`,
+  `web/src/lib/api.ts`.
+
 ## [0.283.1] — 2026-07-31
 ### Fixed
 - **Every allowed Codex tool call logged `PreToolUse hook (failed)`.** Codex's parser acts on `deny` but
