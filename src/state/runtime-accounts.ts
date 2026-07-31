@@ -24,6 +24,20 @@ import { CodingRuntimeId } from '../types';
 
 export type RuntimeAccountKind = 'oauth' | 'apikey' | 'token';
 
+/** A single usage window (subscription session = ~5h, weekly = 7d) as reported by the runtime provider.
+ *  `usedPct` is 0..100 of the window consumed; `resetsAt` is when it rolls over. Either may be absent when
+ *  the provider doesn't surface it — the UI renders what's present. */
+export interface RuntimeUsageWindow {
+  usedPct?: number;
+  resetsAt?: number;
+}
+/** A cached usage snapshot for an account, shown per-key in the console. Provider-agnostic: the validator
+ *  maps whatever the runtime exposes onto these two windows. */
+export interface RuntimeUsage {
+  weekly?: RuntimeUsageWindow;
+  session?: RuntimeUsageWindow;
+}
+
 export interface RuntimeAccount {
   /** The coding runtime this account authenticates (claude-code | codex | …). */
   runtime: CodingRuntimeId;
@@ -43,6 +57,14 @@ export interface RuntimeAccount {
   limitedUntil?: number;
   lastUsedAt?: number;
   createdAt: number;
+  /** Health cache from the last validation call (add-time / Refresh / teardown). */
+  lastCheckedAt?: number;
+  /** Did the last validation authenticate? undefined = never checked. */
+  checkOk?: boolean;
+  /** Human-readable status of the last check / reason an account was auto-disabled. */
+  checkNote?: string;
+  /** Last usage snapshot (weekly/session), when the provider reports it. */
+  usage?: RuntimeUsage;
 }
 
 interface Row {
@@ -56,7 +78,16 @@ interface Row {
   limited_until: number | null;
   last_used_at: number | null;
   created_at: number;
+  last_checked_at: number | null;
+  check_ok: number | null;
+  check_note: string | null;
+  usage_json: string | null;
 }
+
+const parseUsage = (raw: string | null): RuntimeUsage | undefined => {
+  if (!raw) return undefined;
+  try { return JSON.parse(raw) as RuntimeUsage; } catch { return undefined; }
+};
 
 const toAccount = (r: Row): RuntimeAccount => ({
   runtime: r.runtime as CodingRuntimeId,
@@ -69,6 +100,10 @@ const toAccount = (r: Row): RuntimeAccount => ({
   limitedUntil: r.limited_until ?? undefined,
   lastUsedAt: r.last_used_at ?? undefined,
   createdAt: r.created_at,
+  lastCheckedAt: r.last_checked_at ?? undefined,
+  checkOk: r.check_ok == null ? undefined : r.check_ok === 1,
+  checkNote: r.check_note ?? undefined,
+  usage: parseUsage(r.usage_json),
 });
 
 export class RuntimeAccountStore {
@@ -126,6 +161,27 @@ export class RuntimeAccountStore {
                        WHEN limited_until IS NULL THEN ? ELSE MAX(limited_until, ?) END
                      WHERE runtime = ? AND name = ?`)
       .run(until, until, until, runtime, name);
+  }
+
+  /** Cache the outcome of a validation call (add-time / Refresh) — health + usage snapshot. Doesn't touch
+   *  `enabled`/`status`; a usage-derived limit is applied by the caller via {@link markLimited}. `ok=null`
+   *  (couldn't verify) leaves the previous check_ok untouched so a transient network blip doesn't clear a
+   *  known-good badge — only a definitive true/false overwrites it. */
+  recordCheck(runtime: CodingRuntimeId, name: string, r: { ok: boolean | null; note: string; usage?: RuntimeUsage; now?: number }): void {
+    const now = r.now ?? Date.now();
+    this.db.prepare(`UPDATE runtime_accounts
+                     SET last_checked_at = ?, check_note = ?, usage_json = ?,
+                         check_ok = CASE WHEN ? IS NULL THEN check_ok ELSE ? END
+                     WHERE runtime = ? AND name = ?`)
+      .run(now, r.note, r.usage ? JSON.stringify(r.usage) : null, r.ok === null ? null : 1, r.ok ? 1 : 0, runtime, name);
+  }
+
+  /** The credential is definitively bad (a live run authenticated with it and got a 401 / "invalid bearer
+   *  token", or a Refresh returned 401): DISABLE it — unlike a usage limit it will NOT self-heal at a reset,
+   *  so it must drop out of the pool until a human replaces the token. Records why, for the console badge. */
+  markInvalid(runtime: CodingRuntimeId, name: string, note: string, now: number = Date.now()): void {
+    this.db.prepare("UPDATE runtime_accounts SET enabled = 0, check_ok = 0, check_note = ?, last_checked_at = ? WHERE runtime = ? AND name = ?")
+      .run(note, now, runtime, name);
   }
 
   /** Select the account to launch the next `runtime` session under — least-recently-used among enabled +

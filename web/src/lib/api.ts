@@ -68,6 +68,8 @@ export interface Concurrency {
 
 /** One credential set in the runtime rotation pool (never carries the api-key value, only its vault ref). */
 export type RuntimeAccountKind = 'oauth' | 'apikey' | 'token'
+export interface RuntimeUsageWindow { usedPct?: number; resetsAt?: number }
+export interface RuntimeUsage { weekly?: RuntimeUsageWindow; session?: RuntimeUsageWindow }
 export interface RuntimeAccount {
   runtime: string
   name: string
@@ -79,6 +81,10 @@ export interface RuntimeAccount {
   limitedUntil?: number
   lastUsedAt?: number
   createdAt: number
+  lastCheckedAt?: number
+  checkOk?: boolean
+  checkNote?: string
+  usage?: RuntimeUsage
 }
 export interface RuntimeSpecInfo { id: string; label: string; credentialEnv: { configDirVar: string; apiKeyVar: string; tokenVar?: string } }
 export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; error?: string }
@@ -1543,6 +1549,7 @@ export const api = {
   addRuntimeAccount: (body: { runtime: string; name: string; kind: RuntimeAccountKind; configDir?: string; apiKeyRef?: string; token?: string }) => call<{ ok: boolean; error?: string; account?: RuntimeAccount }>('POST', '/api/runtime-accounts', body),
   setRuntimeAccountEnabled: (runtime: string, name: string, enabled: boolean) => call<{ ok: boolean; error?: string }>('PATCH', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`, { enabled }),
   removeRuntimeAccount: (runtime: string, name: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`),
+  checkRuntimeAccount: (runtime: string, name: string) => call<{ ok: boolean; error?: string; account?: RuntimeAccount; check?: { ok: boolean | null; note: string } }>('POST', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}/check`),
 
   governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),
   saveGovernance: (t: GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean }) => call<{ ok: boolean; error?: string; hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean } & GovernanceThresholds>('PUT', '/api/settings/governance', t),

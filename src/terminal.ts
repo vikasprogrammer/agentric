@@ -2307,10 +2307,19 @@ export class TerminalManager {
   // a generic "rate limit" catch covers codex / future runtimes. Best-effort text scan, no API dependency.
   private static readonly USAGE_LIMIT_RE = /\b(weekly limit|usage limit|rate limit|hit your .{0,20}limit|limit reached|out of (?:usage|credits))\b/i;
 
-  /** Did this unattended run die on a usage-limit refusal? Scans the final pane for the limit signature and,
-   *  if the run launched under a rotation-pool account, parks THAT account (with a parsed reset time, or a
-   *  1 h fallback so an unparseable reset still rotates without wedging) so the next launch picks another.
-   *  No account recorded (box default) → nothing to rotate; still audited so the box's limit state is visible.
+  // Signature of a CREDENTIAL rejection (as opposed to a usage limit): the CLI got a 401 / bad-token banner,
+  // meaning the injected account's token is invalid/revoked/expired and will NOT self-heal at a reset. These
+  // phrases are the runtime's own auth-failure banners — specific enough not to trip on ordinary output.
+  private static readonly AUTH_FAIL_RE = /\b(invalid bearer token|oauth token (?:has )?expired|invalid api key|failed to authenticate)\b/i;
+
+  /** How this unattended run ended, credentials-wise — scanned from the final pane. Two distinct outcomes for
+   *  a rotation-pool account:
+   *   • usage-limit refusal → the token is fine but EXHAUSTED: park it `limited` until reset (self-heals,
+   *     next launch rotates on), with a 1 h fallback when the reset can't be parsed.
+   *   • auth failure (401 / invalid-bearer) → the token is BAD: DISABLE the account (it won't recover at a
+   *     reset) so it drops out of the pool until a human replaces it — the launch-time backstop to add-time
+   *     validation, for a token that was good when added but got revoked/expired since.
+   *  No pool account (box default) → nothing to rotate; still audited so the box's own limit state is visible.
    *  Best-effort — never throws, never blocks teardown. */
   private detectUsageLimit(sessionId: string, space: string, tmux: string): void {
     try {
@@ -2318,10 +2327,24 @@ export class TerminalManager {
         .get<{ agent: string; runtime_account: string | null }>(sessionId);
       if (!row) return;
       const text = this.backend.capturePane(space, tmux);
-      if (!text || !TerminalManager.USAGE_LIMIT_RE.test(text)) return;
-      const until = this.parseLimitReset(text) ?? Date.now() + 60 * 60_000; // 1h fallback keeps it parked but self-heals
+      if (!text) return;
+      const usageLimited = TerminalManager.USAGE_LIMIT_RE.test(text);
+      // A usage-limit banner is checked first — it's the benign, self-healing case; an auth failure is only
+      // acted on when there's no usage-limit signature, so an exhausted-but-valid token is never disabled.
+      const authFailed = !usageLimited && TerminalManager.AUTH_FAIL_RE.test(text);
+      if (!usageLimited && !authFailed) return;
       const manifest = this.os.agents.get(row.agent);
       const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+      if (authFailed) {
+        if (row.runtime_account) {
+          this.os.runtimeAccounts.markInvalid(runtime, row.runtime_account, 'auto-disabled: a run authenticated with this token and was rejected (401)');
+          this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: row.runtime_account });
+        } else {
+          this.audit(sessionId, 'system', 'runtime.auth_failed', { runtime });
+        }
+        return;
+      }
+      const until = this.parseLimitReset(text) ?? Date.now() + 60 * 60_000; // 1h fallback keeps it parked but self-heals
       if (row.runtime_account) {
         this.os.runtimeAccounts.markLimited(runtime, row.runtime_account, until);
         this.audit(sessionId, 'system', 'runtime.account.limited', { runtime, account: row.runtime_account, until });

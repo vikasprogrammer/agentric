@@ -13540,6 +13540,22 @@ function ConcurrencySettings({ me }: { me: Member }) {
 /** Settings → Runtime → Runtime accounts. The per-runtime credential POOL the launcher rotates so a session
  *  is never spawned into an exhausted usage quota. Empty pool = inert (the box uses its single default
  *  credentials, i.e. today's behavior). Owner-only. Never shows an api-key value — only its vault ref. */
+/** Per-account usage cell: the weekly (7d) + session (5h) windows as compact "wk 13% / 5h 33%" lines, each
+ *  coloured by pressure (amber ≥80%, red ≥100%) with the reset time on hover. Falls back to the last check
+ *  note (e.g. "could not verify") or a dash when there's no usage snapshot. */
+function runtimeUsageCell(a: RuntimeAccount) {
+  const u = a.usage
+  const win = (label: string, w?: { usedPct?: number; resetsAt?: number }) => {
+    if (!w || w.usedPct == null) return null
+    const pct = w.usedPct
+    const cls = pct >= 100 ? 'text-red-600 dark:text-red-400' : pct >= 80 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'
+    return <span key={label} className={cls} title={w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString()}` : undefined}>{label} {pct}%</span>
+  }
+  const rows = u ? [win('wk', u.weekly), win('5h', u.session)].filter(Boolean) : []
+  if (rows.length) return <span className="flex flex-col font-mono leading-tight">{rows}</span>
+  return <span className="text-muted-foreground">{a.kind === 'token' && a.checkNote && a.checkOk !== true ? a.checkNote : '—'}</span>
+}
+
 function RuntimeAccountsSettings({ me }: { me: Member }) {
   const [resp, setResp] = useState<RuntimeAccountsResp | null>(null)
   const [busy, setBusy] = useState(false)
@@ -13568,11 +13584,21 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
     const r = await api.addRuntimeAccount(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setName(''); setCred(''); setToken(''); setHint('added'); setTimeout(() => setHint(''), 2000); load()
+    // The server validated a token before storing it and returned the account with its usage snapshot; echo
+    // that ("added · valid · weekly 13% used") so the operator sees the key is live without hunting the table.
+    setName(''); setCred(''); setToken(''); setHint(r.account?.checkNote ? `added · ${r.account.checkNote}` : 'added'); setTimeout(() => setHint(''), 6000); load()
   }
   const addDisabled = busy || !name.trim() || (effKind === 'token' ? !token.trim() : !cred.trim())
   const toggle = async (a: RuntimeAccount) => { await api.setRuntimeAccountEnabled(a.runtime, a.name, !a.enabled); load() }
   const remove = async (a: RuntimeAccount) => { if (!confirm(`Remove account "${a.name}" (${a.runtime})?`)) return; await api.removeRuntimeAccount(a.runtime, a.name); load() }
+  const [checking, setChecking] = useState('')  // `${runtime}/${name}` currently being re-validated
+  const refresh = async (a: RuntimeAccount) => {
+    setChecking(`${a.runtime}/${a.name}`)
+    const r = await api.checkRuntimeAccount(a.runtime, a.name)
+    setChecking('')
+    if (r.error) { setHint('⚠ ' + r.error); setTimeout(() => setHint(''), 3000) }
+    load()
+  }
   const labelFor = (id: string) => runtimes.find((r) => r.id === id)?.label ?? id
 
   return (
@@ -13602,6 +13628,7 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                   <th className="py-1.5 pr-3 font-medium">Runtime</th>
                   <th className="py-1.5 pr-3 font-medium">Credential</th>
                   <th className="py-1.5 pr-3 font-medium">Status</th>
+                  <th className="py-1.5 pr-3 font-medium">Usage</th>
                   <th className="py-1.5 pr-3 font-medium">Last used</th>
                   <th className="py-1.5 font-medium"></th>
                 </tr>
@@ -13613,14 +13640,20 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                     <td className="py-1.5 pr-3">{labelFor(a.runtime)}</td>
                     <td className="py-1.5 pr-3 font-mono text-muted-foreground">{a.kind === 'oauth' ? a.configDir : `secret:${a.apiKeyRef}`}</td>
                     <td className="py-1.5 pr-3">
-                      {a.status === 'limited'
+                      {a.checkOk === false
+                        ? <Badge variant="outline" className="border-red-500/40 text-red-600 dark:text-red-400" title={a.checkNote}>invalid</Badge>
+                        : a.status === 'limited'
                         ? <Badge variant="outline" className="border-amber-500/40 text-amber-600 dark:text-amber-400">limited{a.limitedUntil ? ` · resets ${new Date(a.limitedUntil).toLocaleString()}` : ''}</Badge>
                         : <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">available</Badge>}
                     </td>
+                    <td className="py-1.5 pr-3">{runtimeUsageCell(a)}</td>
                     <td className="py-1.5 pr-3 text-muted-foreground">{a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleString() : '—'}</td>
                     <td className="py-1.5 text-right">
                       {canEdit && (
                         <span className="flex justify-end gap-2">
+                          {a.kind !== 'apikey' && a.runtime === 'claude-code' && (
+                            <button className="text-muted-foreground hover:text-foreground disabled:opacity-50" disabled={checking === `${a.runtime}/${a.name}`} onClick={() => refresh(a)}>{checking === `${a.runtime}/${a.name}` ? 'Checking…' : 'Refresh'}</button>
+                          )}
                           <button className="text-muted-foreground hover:text-foreground" onClick={() => toggle(a)}>{a.enabled ? 'Disable' : 'Enable'}</button>
                           <button className="text-red-600 hover:text-red-500" onClick={() => remove(a)}>Remove</button>
                         </span>

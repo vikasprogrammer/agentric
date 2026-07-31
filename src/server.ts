@@ -26,6 +26,7 @@ import { resolveLlm, chatComplete } from './edge/llm';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerFromState } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
+import { checkClaudeToken, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { AppSupervisor } from './edge/app-supervisor';
@@ -4162,19 +4163,66 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // A 'token' account carries the raw long-lived OAuth token (from `claude setup-token`): seal it in the
       // vault HERE (never stored on the row, never in audit) and hand the account only its key ref. The value
       // never leaves this call except into the encrypted vault.
+      let check: RuntimeCheckResult | null = null;
       if (kind === 'token') {
         const token = String(b.token ?? '').trim();
         if (!name) return sendJson(res, 400, { error: 'account name required' });
         if (!token) return sendJson(res, 400, { error: 'token value required' });
         if (!CODING_RUNTIMES[runtime].credentialEnv.tokenVar) return sendJson(res, 400, { error: `${runtime} has no OAuth-token env — use an API key or credential dir instead` });
+        // Validate the token against the provider BEFORE it enters the pool, so a mis-pasted value is
+        // rejected here instead of silently sending every future session to /login. Claude-specific probe
+        // (the OAuth-usage endpoint); other runtimes skip straight through. A definitive 401 blocks the add;
+        // "couldn't verify" (network/429) is allowed through and badged — never wedge on a transient blip.
+        if (runtime === 'claude-code') {
+          check = await checkClaudeToken(token);
+          if (check.ok === false) return sendJson(res, 400, { error: check.note });
+        }
         const key = `runtime-token:${runtime}:${name}`;
         os.secrets.set(os.tenant, key, token, { principal: '*', updatedBy: me.email });
         apiKeyRef = key;
       }
       const acct = os.runtimeAccounts.add({ runtime, name, kind, configDir: b.configDir ? String(b.configDir) : undefined, apiKeyRef });
-      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.added', data: { runtime, name: acct.name, kind } });
-      return sendJson(res, 200, { ok: true, account: acct });
+      // An oauth credential-dir carries a login token WITH the usage scope — probe it too so its usage shows
+      // right after adding (non-blocking: a bad dir is just badged, not rejected — the operator set the path).
+      if (!check && kind === 'oauth' && runtime === 'claude-code' && acct.configDir) {
+        const dirTok = readConfigDirToken(acct.configDir);
+        if (dirTok) check = await checkClaudeToken(dirTok);
+      }
+      // Persist the validation snapshot (health + weekly/session usage) so the console can show it right away;
+      // if usage says a window is already exhausted, park the account limited until it resets.
+      if (check) {
+        os.runtimeAccounts.recordCheck(runtime, acct.name, { ok: check.ok, note: check.note, usage: check.usage });
+        if (check.limitedUntil) os.runtimeAccounts.markLimited(runtime, acct.name, check.limitedUntil);
+      }
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.added', data: { runtime, name: acct.name, kind, check: check ? { ok: check.ok, note: check.note } : undefined } });
+      return sendJson(res, 200, { ok: true, account: os.runtimeAccounts.get(runtime, acct.name) });
     } catch (e) { return sendJson(res, 400, { error: (e as Error).message }); }
+  }
+  {
+    // Re-validate an existing token account on demand (the console's Refresh) — re-probe the vaulted token,
+    // refresh its health + usage snapshot, and re-enable it if a previously-bad token now authenticates.
+    const mc = /^\/api\/runtime-accounts\/([^/]+)\/([^/]+)\/check$/.exec(p);
+    if (mc && method === 'POST') {
+      if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+      const runtime = decodeURIComponent(mc[1]) as RuntimeId;
+      const name = decodeURIComponent(mc[2]);
+      if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
+      const acct = os.runtimeAccounts.get(runtime, name);
+      if (!acct) return sendJson(res, 404, { error: 'account not found' });
+      if (runtime !== 'claude-code' || acct.kind === 'apikey') return sendJson(res, 400, { error: 'refresh is only available for Claude subscription-token / credential-dir accounts' });
+      // token kind → the vaulted setup-token; oauth kind → the login token inside its credential dir.
+      const token = acct.kind === 'token'
+        ? (acct.apiKeyRef ? os.secrets.getSync(os.tenant, '*', acct.apiKeyRef) : undefined)
+        : (acct.configDir ? readConfigDirToken(acct.configDir) : undefined);
+      if (!token) return sendJson(res, 400, { error: acct.kind === 'token' ? 'token value not found in the vault' : 'no .credentials.json found in the credential dir' });
+      const check = await checkClaudeToken(token);
+      os.runtimeAccounts.recordCheck(runtime, name, { ok: check.ok, note: check.note, usage: check.usage });
+      // A now-valid token re-enables a previously auto-disabled account; usage-exhaustion re-parks it limited.
+      if (check.ok === true && !acct.enabled && acct.checkOk === false) os.runtimeAccounts.setEnabled(runtime, name, true);
+      if (check.limitedUntil) os.runtimeAccounts.markLimited(runtime, name, check.limitedUntil);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.checked', data: { runtime, name, ok: check.ok, note: check.note } });
+      return sendJson(res, 200, { ok: true, account: os.runtimeAccounts.get(runtime, name), check: { ok: check.ok, note: check.note } });
+    }
   }
   {
     const m = /^\/api\/runtime-accounts\/([^/]+)\/([^/]+)$/.exec(p);
