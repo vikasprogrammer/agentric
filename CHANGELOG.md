@@ -7,6 +7,23 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.282.0] — 2026-07-31
+### Added
+- **Cockpit `action` tier now *executes* — a governed operator carries it out (auto-router Phase 3).**
+  A detected action ("create a task to migrate the acme site", "run the churn report every morning") no
+  longer just deep-links — clicking **Set it up** spawns the **operator**: an ephemeral System agent
+  (`src/edge/concierge.ts`, sibling to the read-only concierge), run-as the member, that carries out the
+  request via the **governed** tools and nothing else — `task_create` (filed immediately, audited) for a
+  task, `automation_propose` (a DRAFT an owner must approve — it never fires unattended) for a scheduled
+  job. Cockpit polls its transcript and shows the one-line confirmation inline ("✓ Created task: …" /
+  "✓ Proposed automation … — pending an owner's approval"), with a link to Tasks / the Inbox. Explicit
+  consent by design: nothing executes until **Set it up** is clicked; the operator can't bypass the gate
+  hook, and an automation still needs a human approval — so this adds no ungoverned power. The card keeps
+  "Open Automations/Tasks" (do it yourself) and "Route to an agent" as alternatives. New endpoint
+  `POST /api/router/act`; the operator is `category:'System'` so it's never a route target.
+  `src/edge/concierge.ts` (`ensureOperator`/`OPERATOR_ID` + shared provisioner), `src/server.ts`,
+  `web/src/App.tsx`, `web/src/lib/api.ts`.
 ### Fixed
 - **Governance conformance passes off the author's Mac again.** Three `file-guard` fixtures hardcoded
   `~/.ssh/…` as "the service user's home", but `sensitiveWriteRoots` resolves the home with

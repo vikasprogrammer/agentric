@@ -1,15 +1,15 @@
 /**
- * The **concierge** — a code-provisioned System agent that answers freeform questions ABOUT this
- * workspace for Cockpit's `ask` tier. It exists so `ask` can answer questions that need reasoning/tools
- * WITHOUT depending on a separately-configured LLM API key: the native "LLM" in Agent OS is a claude
- * session (authenticated via the agents' subscription), and every session already gets the OS MCP tools
- * (recall / kb_search / session_history / task_list / list_capabilities / directory_lookup). So the
- * concierge answers by querying real state, not a hand-assembled context snapshot.
+ * Cockpit's two code-provisioned System agents — the native-LLM backends for the `ask` and `action`
+ * tiers, so neither needs a separately-configured LLM API key (the native "LLM" in Agent OS is a claude
+ * session). Both run as ordinary one-shot chat runs (governed, run-as the member); Cockpit polls the
+ * transcript and renders the result inline. Category `System` keeps them out of the agent ROUTER (you're
+ * never "routed to the concierge" for work) and the fleet picker. Provisioning mirrors the consolidator:
+ * idempotent, writes a manifest + persona under the home's agents dir, registers a live claude runtime.
  *
- * It's spawned as an ordinary one-shot chat run (governed, run-as the asker), and Cockpit renders its
- * reply inline. Category `System` keeps it out of the agent ROUTER (you never get "routed to the
- * concierge" for work) and out of the fleet picker. Provisioning mirrors the consolidator: idempotent,
- * writes a manifest + persona under the home's agents dir, registers a live claude-code runtime.
+ *   - **concierge** (read-only) — answers questions ABOUT the workspace using its tools.
+ *   - **operator** (acts) — carries out a requested action via the GOVERNED tools: `task_create`
+ *     (auto-applied) and `automation_propose` (a draft an owner approves). It cannot bypass governance —
+ *     every tool call still passes the gate hook, and an automation never fires until a human approves.
  */
 import * as fs from 'fs';
 import * as path from 'path';
@@ -17,8 +17,21 @@ import { AgentManifest } from '../types';
 import { AgentOS } from '../kernel';
 
 export const CONCIERGE_ID = 'concierge';
+export const OPERATOR_ID = 'operator';
 
-const MANIFEST: AgentManifest = {
+/** Provision + register a System agent from its manifest + persona. Idempotent; safe to call on demand. */
+function ensureSystemAgent(os: AgentOS, manifest: AgentManifest, claudeMd: string): void {
+  if (os.agents.get(manifest.id)?.dir) return;
+  const base = os.paths?.userAgents ?? path.join(process.cwd(), 'data', 'agents');
+  const dir = path.join(base, manifest.id);
+  fs.mkdirSync(dir, { recursive: true });
+  const manifestPath = path.join(dir, 'agent.json');
+  if (!fs.existsSync(manifestPath)) fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  if (!fs.existsSync(path.join(dir, 'CLAUDE.md'))) fs.writeFileSync(path.join(dir, 'CLAUDE.md'), claudeMd);
+  os.registerAgent({ ...manifest, dir });
+}
+
+const CONCIERGE_MANIFEST: AgentManifest = {
   id: CONCIERGE_ID,
   version: '1.0.0',
   description: 'Workspace concierge — answers questions about this Agent OS workspace using its own tools.',
@@ -29,7 +42,7 @@ const MANIFEST: AgentManifest = {
   budget: { usdCap: 0.5, tokenCap: 150_000, wallClockMs: 300_000 },
 };
 
-const CLAUDE_MD = `# Workspace concierge
+const CONCIERGE_MD = `# Workspace concierge
 
 You are the **concierge** for this Agent OS workspace. A member asked a question about the workspace
 itself — the agents, sessions, tasks, automations, memory, knowledge base, policy, or how any of it
@@ -49,15 +62,49 @@ works. Answer it, concisely, grounded in **real state**.
 
 You act on the member's behalf and only read workspace state — nothing you do needs their connectors.`;
 
-/** Ensure the concierge agent exists on disk + is registered as a live runtime. Idempotent; safe to call
- *  on every `ask` that needs it. Mirrors the consolidator's self-provisioning. */
+const OPERATOR_MANIFEST: AgentManifest = {
+  id: OPERATOR_ID,
+  version: '1.0.0',
+  description: 'Workspace operator — carries out a requested action (create a task / propose an automation) via governed tools.',
+  category: 'System',
+  principal: 'svc-operator',
+  policyContext: 'default@v3',
+  runtime: 'claude-code',
+  budget: { usdCap: 0.5, tokenCap: 150_000, wallClockMs: 300_000 },
+};
+
+const OPERATOR_MD = `# Workspace operator
+
+A member asked you to **set something up** in this Agent OS workspace. Do exactly that — nothing more —
+using the governed tools, then confirm in one line what happened. You act on the member's behalf.
+
+## What to do
+- **A task / to-do** ("create a task to migrate the acme site", "add a todo to call the vendor") →
+  call \`task_create\` with a short imperative \`title\` (and \`body\`/\`assignee\` only if the member
+  gave them). It's filed immediately. Confirm: "✓ Created task: <title>".
+- **A recurring / scheduled / triggered job** ("run the churn report every morning", "audit the fleet
+  weekly") → call \`automation_propose\`: a short \`name\`, the \`task\` (the prompt the run executes each
+  time), a 5-field cron \`schedule\` (e.g. "0 9 * * 1-5" = 9am weekdays), and \`agentId\` = the best-fit
+  agent for the job (use \`directory_lookup\` / \`list_capabilities\` to pick; don't guess a name — verify
+  it exists). Include a one-line \`rationale\`. This is a **DRAFT an owner must approve** — it will NOT
+  fire until then. Confirm: "✓ Proposed automation "<name>" (<when>, <agent>) — pending an owner's approval
+  in the Inbox".
+
+## Rules
+- **Do ONLY what was asked.** One task, or one automation proposal. Never invent extra work, and never
+  take a destructive or privilege-bearing action beyond these two tools.
+- **Make sensible defaults and state them** (e.g. "every morning" → "0 9 * * *"). If something essential
+  is genuinely ambiguous (which agent should run it, and you can't tell), pick the closest fit and say so
+  in your confirmation rather than stalling.
+- Your reply text IS the confirmation shown inline — no preamble, no sign-off, lead with the "✓" line.
+  Do not call \`report\`/\`ask\`.`;
+
+/** Ensure the read-only concierge exists. */
 export function ensureConcierge(os: AgentOS): void {
-  if (os.agents.get(CONCIERGE_ID)?.dir) return;
-  const base = os.paths?.userAgents ?? path.join(process.cwd(), 'data', 'agents');
-  const dir = path.join(base, CONCIERGE_ID);
-  fs.mkdirSync(dir, { recursive: true });
-  const manifestPath = path.join(dir, 'agent.json');
-  if (!fs.existsSync(manifestPath)) fs.writeFileSync(manifestPath, JSON.stringify(MANIFEST, null, 2));
-  if (!fs.existsSync(path.join(dir, 'CLAUDE.md'))) fs.writeFileSync(path.join(dir, 'CLAUDE.md'), CLAUDE_MD);
-  os.registerAgent({ ...MANIFEST, dir });
+  ensureSystemAgent(os, CONCIERGE_MANIFEST, CONCIERGE_MD);
+}
+
+/** Ensure the action-taking operator exists. */
+export function ensureOperator(os: AgentOS): void {
+  ensureSystemAgent(os, OPERATOR_MANIFEST, OPERATOR_MD);
 }
