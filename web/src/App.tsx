@@ -12020,8 +12020,23 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
             <div>
               <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Today so far — preview</div>
               <div className="rounded-md border bg-muted/40 p-3 text-xs">
-                <div className="font-medium">📋 {preview.label} · {preview.total} session{preview.total === 1 ? '' : 's'} · {preview.buckets.success} ✓{preview.buckets.failure ? ` · ${preview.buckets.failure} ✗` : ''}{preview.buckets.stopped ? ` · ${preview.buckets.stopped} stopped` : ''}</div>
-                {preview.byAgent.length === 0
+                <div className="font-medium">📋 {preview.label} · {preview.total} session{preview.total === 1 ? '' : 's'} · {preview.buckets.success} ✓{preview.blocked ? ` · ${preview.blocked} ⏳` : ''}{preview.buckets.failure ? ` · ${preview.buckets.failure} ✗` : ''}{preview.buckets.stopped ? ` · ${preview.buckets.stopped} stopped` : ''}{preview.signals?.costUsd >= 0.01 ? ` · $${preview.signals.costUsd.toFixed(2)}` : ''}</div>
+                {/* The two synthesis sections lead, same as the posted digest: what needs a person, then
+                    the day's cross-agent threads. Only then the per-agent record. */}
+                {preview.needs?.length > 0 && (
+                  <div className="mt-2">
+                    <div className="font-medium">⏳ Needs you ({preview.needs.length})</div>
+                    {preview.needs.slice(0, 5).map((n, i) => <div key={i} className="truncate text-muted-foreground">• <span className="font-medium">{n.agent}</span> — {n.title}</div>)}
+                    {preview.needs.length > 5 && <div className="text-muted-foreground">• +{preview.needs.length - 5} more</div>}
+                  </div>
+                )}
+                {preview.incidents?.length > 0 && (
+                  <div className="mt-2">
+                    <div className="font-medium">🔗 Threads</div>
+                    {preview.incidents.map((i) => <div key={i.label} className="truncate text-muted-foreground">• <span className="font-medium">{i.label}</span> — {i.headline} <span className="opacity-70">({i.updates} updates · {i.agents.length} agent{i.agents.length === 1 ? '' : 's'})</span></div>)}
+                  </div>
+                )}
+                {preview.byAgent.length === 0 && !preview.needs?.length && !preview.incidents?.length
                   ? <div className="mt-1 text-muted-foreground">No notable sessions yet today.</div>
                   : preview.byAgent.map((a) => (
                       <div key={a.agent} className="mt-2">
