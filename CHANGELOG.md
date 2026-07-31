@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.283.1] — 2026-07-31
+### Fixed
+- **Every allowed Codex tool call logged `PreToolUse hook (failed)`.** Codex's parser acts on `deny` but
+  **rejects `allow`** (`unsupported permissionDecision:allow`) and then runs the tool anyway. Governance
+  was never at risk — deny genuinely blocks, verified live (`PreToolUse hook (blocked)`, command never
+  ran) — but the pane showed a hook FAILURE on every allowed call, which reads as "the gate is broken"
+  to anyone watching. The audit trail looked identical either way, which is why it survived several
+  releases: it is only visible in the pane. The gate now expresses an allow on Codex as **silence +
+  exit 0**, the same way it already expresses "not my business" for `Read`/`Glob`/`Grep`; Claude Code
+  still gets the explicit `allow` it needs (there it is what bypasses Claude's own permission engine).
+  The `instruct` verb survives — Codex makes `permissionDecision` optional, so an allow-with-note is sent
+  as `additionalContext` alone; verified end to end (`hook (completed)`, note reached the model, model
+  acted on it).
+
 ## [0.281.5] — 2026-07-31
 ### Fixed
 - **The approval-friction signal no longer divides by a denominator that isn't there.** v0.280.0 started

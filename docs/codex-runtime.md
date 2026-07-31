@@ -53,6 +53,28 @@ workdir is exactly the escape worth catching.
 `network_access` stays **true** — shell egress is already gated, and cutting it would break
 `git push` / `npm install` for every agent.
 
+### The decision wire differs: Codex acts on `deny`, rejects `allow`
+
+Both CLIs take the same PreToolUse stdin, but their **output** contracts diverge, and the difference is
+only visible in the pane — the audit trail looks identical either way, which is how it went unnoticed
+through several releases:
+
+| Emitted | Claude Code | Codex |
+| --- | --- | --- |
+| `permissionDecision: "deny"` | blocks | **blocks** — `PreToolUse hook (blocked)`, command never runs |
+| `permissionDecision: "allow"` | authoritative allow (bypasses Claude's own permission engine) | **rejected** — `hook (failed) … unsupported permissionDecision:allow`, then runs the tool anyway |
+| silence + exit 0 | defer to Claude's permission flow | proceed |
+| `additionalContext` with **no** decision | n/a | **works** — `hook (completed)`, note reaches the model |
+
+So on Codex the gate expresses an allow as **silence**, exactly the way Claude's hook already expresses
+"not my business" for `Read`/`Glob`/`Grep`. Governance was never at risk — deny is honoured, verified
+live — but emitting `allow` painted a hook FAILURE into the pane on every allowed call, which reads as
+"the gate is broken" to anyone watching a session.
+
+The `instruct` verb survives: Codex's output wire makes `permissionDecision` optional, so an
+allow-with-note is sent as `additionalContext` alone. Verified end to end — the note appears as
+`hook context:` and the model acts on it.
+
 ### One shared hook
 
 `terminal/gate-hook.sh` serves both runtimes. Codex 0.145 uses the same PreToolUse stdin fields
