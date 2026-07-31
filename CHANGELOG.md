@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.281.5] — 2026-07-31
+### Fixed
+- **The approval-friction signal no longer divides by a denominator that isn't there.** v0.280.0 started
+  recording the `approved` count so friction could be a rate; per-pass entries written before that carry
+  rejections with **no denominator**, and `recentTally` summed them anyway — so a window of mostly-legacy
+  entries read as ~100% rejection. Live northwind was nagging every agent that "recent actions were
+  rejected at human approval" while its true 7-day rate was **5.4%** (35 approved / 2 rejected). Entries
+  lacking the denominator now contribute to neither side of the ratio (their budget/error signals still
+  count), so the signal stays quiet until real evidence exists rather than inventing it. Verified against
+  both live tenants' actual window shapes: the false northwind nag stops; genuine friction with a real
+  sample still fires.
+
 ## [0.281.4] — 2026-07-31
 ### Fixed
 - **Bump `TOPICS_VERSION` to 3.** v0.281.3 tightened the topic extractor (opaque hex ids) without bumping

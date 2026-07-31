@@ -464,8 +464,14 @@ function recentTally(s: DreamState): { sessions: number; success: number; approv
   for (const e of (s.recent ?? []).slice(0, RECENT_PASSES)) {
     r.sessions += e.sessions || 0;
     r.success += e.success || 0;
-    r.approved += e.approved || 0;
-    r.rejected += e.rejected || 0;
+    // Approval friction is a RATIO, so an entry that predates the `approved` denominator must contribute
+    // NEITHER side — counting its rejections against a missing denominator reads as 100% rejection. Live
+    // northwind computed 22% (and nagged every agent) while its true rate was 5.4%, because six of seven
+    // window entries were legacy. Skipping them means the signal stays quiet until real evidence exists.
+    if (e.approved !== undefined) {
+      r.approved += e.approved;
+      r.rejected += e.rejected || 0;
+    }
     r.budgetStops += e.budgetStops || 0;
     r.errors += e.errors || 0;
   }
