@@ -7,6 +7,14 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Fixed
+- **Governance conformance passes off the author's Mac again.** Three `file-guard` fixtures hardcoded
+  `~/.ssh/…` as "the service user's home", but `sensitiveWriteRoots` resolves the home with
+  `os.homedir()` at call time — so those cases only ever exercised the guard on one machine and asserted
+  `allow`-shaped nonsense everywhere else. CI (Linux) had been red on exactly these 3 for weeks, which
+  meant the governance gate was giving **no signal on merges**. Fixtures now write `${HOME}` and the
+  runner expands it per platform. The guard itself was never wrong — verified on a Linux host that
+  `$HOME/.ssh/authorized_keys` and `$HOME/.codex/auth.json` are denied.
 
 ## [0.281.0] — 2026-07-31
 ### Changed
