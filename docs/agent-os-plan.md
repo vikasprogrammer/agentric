@@ -123,28 +123,50 @@ routing-first land-grab (§ Landscape). We ship the *mediation* — the room beh
 as a standalone plane that plugs into whoever wins the routing fight. We own the room; they own
 the doorway.
 
+**Spike verdict (2026-07-31): the bet is viable, with one constraint — no native indefinite
+hold.** Both candidate gateways have the two ingredients we need — a real per-tool-call external
+decision hook, and a structured reject that reaches the agent as a JSON-RPC error — but neither
+can *park a call open* for a minutes-long human approval. Both are synchronous callouts on a
+bounded timeout (agentgateway: ~10s hardcoded default, force-decided by fail-open/closed;
+ContextForge: async, configurable, default 30s). So **suspend-for-a-human is implemented as a
+protocol, not a blocking wait** (see Delta). Two unknowns still need a hands-on test: whether an
+agentgateway backend-timeout override reaches the guardrails gRPC channel, and the agent's own
+client-side MCP request timeout — the true outer bound on any synchronous hold, whichever gateway.
+
 - **Exists:** the 7-step boundary (`src/gateway/gateway.ts`) + `policy.ts` classification +
   approvals + audit already mediate every effect **inside sessions we host** (via the PreToolUse
   gate-hook). `src/memory/memory-mcp.ts` is a stdio MCP server injected into *our* sessions.
   What's missing: any way to mediate effects flowing through a customer's **own** external MCP
   gateway — the boundary is trapped inside our runtime.
-- **Delta:** expose the mediation as a **callable policy hook** that agentgateway (CEL policy /
-  ext-authz seam) and IBM ContextForge (interceptor/plugin seam) invoke per tool call:
-  classify → **suspend-for-a-human** → budget debit → idempotency → tamper-evident audit, plus
+- **Delta:** expose the mediation as a **callable policy hook** the gateway invokes per tool call:
+  classify → suspend-for-a-human → budget debit → idempotency → tamper-evident audit, plus
   **tool-drift / poisoning quarantine** (fingerprint schema + server identity; a changed version
-  parks until an owner approves). We speak the MCP Authorization doorway (OAuth 2.1 / PKCE) so we
-  compose with their authn, and we **do not** rebuild transport, routing, or discovery.
-- **Touch-points:** new `src/mediation/*` — the decision exposed as an HTTP/gRPC hook + thin
-  adapters (agentgateway CEL/ext-authz, ContextForge plugin). Reuse `gateway.ts` for the
-  decision, `policy.ts` for classification, the audit sink for the record. Our own hosted path
-  already calls the same core, so this is *one core, external front doors added*.
-- **Done when:** a tool call flowing through an **unmodified** agentgateway or ContextForge
-  deployment hits our hook, a `RED` action is suspended for a human, the effect is budget-debited
-  and recorded in a tamper-evident chain, and an upstream tool's schema change quarantines the
-  new version — **all with zero change to the customer's agent code.**
+  parks until an owner approves). Because there's no native hold, **suspend uses a
+  deny-with-"pending" → retry protocol**: on first call we open the approval and reject with a
+  structured, machine-readable `{status:"pending_approval", approval_id, retry_after}`; the agent
+  (or a thin client shim) re-issues the same call, keyed by `approval_id` for idempotency, and we
+  return `allow` once a human approves or a terminal `deny`. A sub-timeout approval can resolve as
+  a synchronous hold on the same path. We speak the MCP Authorization doorway (OAuth 2.1 / PKCE) so
+  we compose with their authn, and we **do not** rebuild transport, routing, or discovery.
+- **Touch-points:** new `src/mediation/*` — the decision exposed as an out-of-process hook + thin
+  per-gateway adapters. **First adapter: IBM ContextForge** (`tool_pre_invoke(payload, ctx) →
+  ToolPreInvokeResult{continue_processing, violation, modified_payload}`) — Python, async,
+  configurable timeout, and a return shape nearly identical to our existing PreToolUse gate-hook,
+  so classify→approve→budget→audit ports with the least friction; its external-plugin transport
+  (MCP/gRPC/UDS) keeps our plane out of their process. **Second: agentgateway** (`ExtMcp` gRPC —
+  `CheckRequest`/`CheckResponse`, `Pass`/`Mutated`/`AuthorizationError`) — a cleaner MCP-native
+  contract, but Rust + the ~10s deadline; revisit once the timeout-override unknown is settled.
+  Reuse `gateway.ts` for the decision, `policy.ts` for classification, the audit sink for the
+  record. Our own hosted path already calls the same core — *one core, external front doors added*.
+- **Done when:** a tool call flowing through an **unmodified** ContextForge (then agentgateway)
+  deployment hits our hook, a `RED` action is suspended for a human via the pending→retry protocol,
+  the effect is budget-debited and recorded in a tamper-evident chain, and an upstream tool's
+  schema change quarantines the new version — **all with zero change to the customer's agent code.**
 - **Strategic risk (own it):** we now depend on those projects' extension points and roadmaps.
-  Mitigate by keeping the hook contract gateway-agnostic (a clean `EffectIntent → Decision`
-  interface) so a third adapter — or our own thin proxy — is additive, never a rewrite.
+  Mitigate by keeping the hook contract gateway-agnostic — a clean `EffectIntent → Decision`
+  interface where **`Decision` carries a first-class `pending` outcome** (allow / ask / deny /
+  **pending**), not just the three we have today — so a third adapter, or our own thin proxy, is
+  additive, never a rewrite.
 
 ## §4.2 — Capability Registry  *(the moat)*
 

@@ -1430,7 +1430,7 @@
       "args": {
         "tool": "Write",
         "input": {
-          "file_path": "~/.ssh/authorized_keys",
+          "file_path": "${HOME}/.ssh/authorized_keys",
           "content": "x"
         }
       },
@@ -1444,7 +1444,7 @@
       "args": {
         "tool": "Write",
         "input": {
-          "file_path": "~/.codex/auth.json",
+          "file_path": "${HOME}/.codex/auth.json",
           "content": "x"
         }
       },
@@ -1514,7 +1514,7 @@
       "args": {
         "tool": "apply_patch",
         "input": {
-          "command": "*** Begin Patch\n*** Update File: ~/.ssh/id_rsa\n+x\n*** End Patch"
+          "command": "*** Begin Patch\n*** Update File: ${HOME}/.ssh/id_rsa\n+x\n*** End Patch"
         }
       },
       "workdir": "/srv/aos-data/agents/writer",
@@ -1629,6 +1629,89 @@
         "attended": true
       },
       "expectAutoClear": false
+    }
+  ],
+  "tuning": [
+    {
+      "name": "tuning: codex does not inherit a Claude workspace model",
+      "runtime": "codex",
+      "agent": {},
+      "defaults": {
+        "model": "opus",
+        "effort": "high",
+        "permissionMode": "auto"
+      },
+      "expectModel": null
+    },
+    {
+      "name": "tuning: claude-code does inherit the workspace model",
+      "runtime": "claude-code",
+      "agent": {},
+      "defaults": {
+        "model": "opus",
+        "effort": "high",
+        "permissionMode": "auto"
+      },
+      "expectModel": "opus"
+    },
+    {
+      "name": "tuning: codex keeps its own valid model",
+      "runtime": "codex",
+      "agent": {
+        "model": "gpt-5-codex"
+      },
+      "defaults": {
+        "model": "opus",
+        "effort": "high",
+        "permissionMode": "auto"
+      },
+      "expectModel": "gpt-5-codex"
+    },
+    {
+      "name": "tuning: a stale per-agent Claude model is dropped for codex",
+      "runtime": "codex",
+      "agent": {
+        "model": "claude-opus-4-8"
+      },
+      "defaults": {
+        "model": "opus",
+        "effort": "high",
+        "permissionMode": "auto"
+      },
+      "expectModel": null
+    },
+    {
+      "name": "tuning: claude-code drops an inherited codex model",
+      "runtime": "claude-code",
+      "agent": {},
+      "defaults": {
+        "model": "gpt-5-codex"
+      },
+      "expectModel": null
+    },
+    {
+      "name": "tuning: a per-launch override still wins when valid",
+      "runtime": "codex",
+      "agent": {},
+      "defaults": {
+        "model": "opus",
+        "effort": "high",
+        "permissionMode": "auto"
+      },
+      "override": {
+        "model": "gpt-5.6-sol"
+      },
+      "expectModel": "gpt-5.6-sol"
+    },
+    {
+      "name": "tuning: no runtime given leaves the model untouched (back-compat)",
+      "agent": {},
+      "defaults": {
+        "model": "opus",
+        "effort": "high",
+        "permissionMode": "auto"
+      },
+      "expectModel": "opus"
     }
   ]
 }

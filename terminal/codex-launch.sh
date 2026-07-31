@@ -33,7 +33,8 @@
 #   MCP_CONFIG     path to the session's mcpServers JSON (converted to TOML below)
 #   COMPANY_FILE   workspace Company context markdown (folded into AGENTS.md below)
 #   CODEX_MODEL / CODEX_EFFORT   resolved runtime tuning ("" → inherit the CLI default)
-#   UNATTENDED     "1" → an automation/cron/task run: `codex exec`, which exits at turn end
+#   UNATTENDED     "1" → an automation/cron/task run: an attachable TUI torn down by the server at
+#                  turn end (Stop hook → /api/turn-idle), same contract as the Claude lane
 #   RESUME         "1" → continue RUNTIME_SESSION_ID instead of starting fresh
 #   FORK_FROM      branch a new conversation off this rollout id (first launch only)
 set -u
@@ -171,8 +172,8 @@ node -e '
   // silently ignored and gave a false sense that hooks had been switched on.
   // Pre-accept the workspace-TRUST gate for this agent folder — the exact analogue of the
   // `~/.claude.json` hasTrustDialogAccepted seed on the Claude lane, and the same failure mode if
-  // missing: agent folders are freshly created and are NOT git repos, so without this `codex exec`
-  // dies on "Not inside a trusted directory" and the interactive TUI parks on a trust prompt nobody
+  // missing: agent folders are freshly created and are NOT git repos, so without this the TUI parks
+  // on a "Not inside a trusted directory" / trust prompt nobody
   // is there to answer. (Verified against codex 0.145 in a dry run.) Trust only bypasses that
   // one-time gate; the PreToolUse hook and the sandbox still govern every effect.
   out.push("");
@@ -211,18 +212,59 @@ node -e '
   fs.writeFileSync(process.env.CODEX_HOME + "/config.toml", out.join("\n") + "\n", { mode: 0o600 });
 ' || { red "failed to generate codex config — refusing to start ungoverned."; exec bash; }
 
-# ── hooks.json (the gate) ─────────────────────────────────────────────────────────────────────────
-# matcher ".*" so EVERY tool reaches the hook and OUR routing table decides what is a governed
-# capability — the hook itself is dumb transport, exactly as on the Claude lane.
-node -e '
-  const fs = require("fs");
-  const hook = process.argv[1];
-  fs.writeFileSync(process.env.CODEX_HOME + "/hooks.json", JSON.stringify({
+# ── hooks.json + PRE-SEEDED TRUST ─────────────────────────────────────────────────────────────────
+# Two hooks:
+#   PreToolUse (matcher ".*") — the gate. Every tool reaches it and OUR routing table decides.
+#   Stop       (NO matcher)   — beacons /api/turn-idle so the server can tear down an unattended run at
+#                               turn end, exactly as the Claude lane does.
+#
+# TRUST IS THE HARD PART. Codex refuses to run a hook whose hash it hasn't recorded as trusted, and
+# `--dangerously-bypass-hook-trust` is ignored in TUI mode (openai/codex#24093) — which is why every
+# Codex run used to be forced down `codex exec`. We now compute the trust hash ourselves and write it
+# into config.toml, so an interactive/attachable TUI runs GOVERNED with no human ever seeing a prompt.
+#
+# The hash (codex-rs/hooks/src/engine/discovery.rs `command_hook_hash` → config/src/fingerprint.rs
+# `version_for_toml`): build the identity, serialize TOML→JSON (so absent/None fields vanish),
+# RECURSIVELY SORT every object's keys, compact-JSON it, sha256, prefix `sha256:`.
+#
+# Two details that are easy to get wrong and fail SILENTLY-ish:
+#   • the serde name is `timeout`, not `timeout_sec`, and its default (600) is baked into the hash even
+#     though it never appears in hooks.json;
+#   • `matcher` is part of the identity for PreToolUse but is DROPPED for Stop (Stop takes no matcher),
+#     so the Stop identity must omit the key entirely.
+# Both hashes below are verified against values Codex itself wrote after an interactive `/hooks` trust.
+#
+# If a Codex upgrade changes this, the TUI shows "Hooks need review" instead of silently skipping — and
+# TerminalManager's pane guard kills the session on sight, so a human can never answer that prompt with
+# "continue without trusting". Stale trust therefore fails LOUD, never ungoverned.
+STOP_HOOK="$(dirname "$HOOK")/stop-hook.sh"
+AOS_HOOK="$HOOK" AOS_STOP_HOOK="$STOP_HOOK" node -e '
+  const fs = require("fs"), crypto = require("crypto");
+  const home = process.env.CODEX_HOME;
+  const gate = `bash ${JSON.stringify(process.env.AOS_HOOK)}`;
+  const stop = `bash ${JSON.stringify(process.env.AOS_STOP_HOOK)}`;
+  fs.writeFileSync(home + "/hooks.json", JSON.stringify({
     hooks: {
-      PreToolUse: [{ matcher: ".*", hooks: [{ type: "command", command: `bash ${JSON.stringify(hook)}` }] }],
+      PreToolUse: [{ matcher: ".*", hooks: [{ type: "command", command: gate }] }],
+      Stop: [{ hooks: [{ type: "command", command: stop }] }],
     },
   }, null, 2), { mode: 0o600 });
-' "$HOOK" || { red "failed to write the gate hook config — refusing to start ungoverned."; exec bash; }
+
+  const canon = (v) => Array.isArray(v) ? v.map(canon)
+    : (v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon(v[k])])) : v);
+  const hash = (identity) =>
+    "sha256:" + crypto.createHash("sha256").update(JSON.stringify(canon(identity))).digest("hex");
+  const handler = (command) => ({ type: "command", command, timeout: 600, async: false });
+  const hooksJson = home + "/hooks.json";
+  const rows = [
+    // key = <hooks.json path>:<event label>:<matcher-group index>:<handler index>
+    [`${hooksJson}:pre_tool_use:0:0`, hash({ event_name: "pre_tool_use", matcher: ".*", hooks: [handler(gate)] })],
+    [`${hooksJson}:stop:0:0`,         hash({ event_name: "stop",                        hooks: [handler(stop)] })],
+  ];
+  const esc = (s) => s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+  const toml = rows.map(([k, h]) => `\n[hooks.state."${esc(k)}"]\ntrusted_hash = "${h}"\n`).join("");
+  fs.appendFileSync(home + "/config.toml", toml);
+' || { red "failed to write the gate hook config — refusing to start ungoverned."; exec bash; }
 
 # ── AGENTS.md (system prompt) ─────────────────────────────────────────────────────────────────────
 # Codex has no `--append-system-prompt-file`; it discovers AGENTS.md from the workspace root. So the
@@ -308,35 +350,71 @@ echo
 # path, so the hash legitimately changes and there is no human at the pane to confirm it. This is
 # precisely the documented "automation that already vets hook sources" case — the hook is ours. It
 # does NOT weaken the gate; without it the gate would simply never run, which is the unsafe outcome.
+# `--dangerously-bypass-hook-trust` is kept as belt-and-braces: it is INERT in TUI mode (that's the
+# upstream bug that forced exec-only), but harmless, and it keeps the non-TUI fallback paths governed if
+# one is ever reintroduced. The real mechanism is the pre-seeded `[hooks.state]` trust above.
 COMMON_ARGS=(--dangerously-bypass-hook-trust -C "$AGENT_DIR")
-# `--skip-git-repo-check` is an exec-only flag (the TUI has no such option and errors on it), so it
-# lives in a separate array. Belt-and-braces with the `[projects.…] trust_level` seed above.
-EXEC_ARGS=("${COMMON_ARGS[@]}" --skip-git-repo-check)
 
 # ── launch ────────────────────────────────────────────────────────────────────────────────────────
-# EXEC-ONLY, ON PURPOSE. Codex will not run a hook whose hash it has not recorded as trusted — an
-# untrusted hook is SILENTLY SKIPPED (no warning, no error), and `--dangerously-bypass-hook-trust` is
-# documented as applying only "for that invocation". Critically, that flag is IGNORED IN TUI MODE
-# (openai/codex#24093), so an interactive `codex` session runs with NO PreToolUse hook at all — i.e.
-# completely ungoverned. We proved both halves locally: exec WITHOUT the flag → hook skipped; exec WITH
-# it → hook fires on Bash/apply_patch/mcp__*.
-#
-# So every Codex run — console, automation, task, chat — goes down `codex exec`, the one lane where the
-# gate provably runs. The cost is that a Codex session is not attachable/take-over-able (already
-# declared as attachableUnattended:false + residentChat:false in the capability matrix). That is a
-# feature gap; an ungoverned interactive session would be a security hole, and we take the gap.
-# Re-enabling the TUI requires pre-seeding hook trust — tracked in docs/codex-runtime.md.
-dim "codex exec — the gate hook governs every Bash / apply_patch / MCP call. Exits at turn end."
+# Every lane is now the INTERACTIVE TUI, matching the Claude lane. This is only possible because trust
+# is pre-seeded above; before that, the TUI ran with no PreToolUse hook at all and we were forced onto
+# `codex exec`. Consequences:
+#   • an UNATTENDED run is attachable — a human can take it over mid-run by simply attaching, no kill,
+#     no resume, no lost turn. Teardown is SERVER-driven: the Stop hook beacons /api/turn-idle and
+#     TerminalManager.markTurnIdle kills the pane, unless a human has taken it over / is watching / it's
+#     blocked on a person. Exactly the Claude lane's contract.
+#   • a RESIDENT (warm chat) run stays live for send-keys follow-ups until the idle reaper.
+# `approval_policy = "never"` in the generated config is what removes Codex's own prompts (nobody is at
+# the pane to answer them); the gate hook still blocks every governed effect for inbox approval.
+if [ "${UNATTENDED:-}" = "1" ]; then
+  dim "unattended run — attachable TUI (gate hook governs); take it over anytime. Closes at turn-end."
+elif [ "${RESIDENT:-}" = "1" ]; then
+  dim "resident warm chat session — kept warm for fast follow-ups (gate hook still governs)."
+else
+  dim "interactive session — every Bash / apply_patch / MCP call is gated by Agent OS."
+fi
 echo
+
 if [ "${RESUME:-}" = "1" ] && [ -n "${RUNTIME_SESSION_ID:-}" ]; then
   notify_resumed
-  codex exec resume "$RUNTIME_SESSION_ID" "${EXEC_ARGS[@]}" ${TASK:+"$TASK"} \
-    || codex exec "${EXEC_ARGS[@]}" "$TASK"
+  dim "resuming codex session $RUNTIME_SESSION_ID …"
+  echo
+  # A browser reattach must NOT re-seed $TASK (it's already in the transcript); a server-driven
+  # follow-up spawns a fresh pane with no ENV_FILE and a genuinely new $TASK, so that one does seed.
+  if [ -n "${RESUMED_FROM_ENV:-}" ]; then
+    codex resume "$RUNTIME_SESSION_ID" "${COMMON_ARGS[@]}" || codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
+  else
+    codex resume "$RUNTIME_SESSION_ID" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"} || codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
+  fi
 elif [ -n "${FORK_FROM:-}" ]; then
-  codex exec resume "$FORK_FROM" "${EXEC_ARGS[@]}" ${TASK:+"$TASK"} \
-    || codex exec "${EXEC_ARGS[@]}" "$TASK"
+  dim "forking codex session $FORK_FROM …"
+  echo
+  codex fork "$FORK_FROM" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"} || codex "${COMMON_ARGS[@]}" "$TASK"
 else
-  codex exec "${EXEC_ARGS[@]}" "$TASK"
+  codex "${COMMON_ARGS[@]}" "$TASK"
 fi
 notify_ended
-exit 0
+
+# SECURITY: do NOT drop to a raw shell when codex exits. A tmux shell has NO PreToolUse gate hook and NO
+# sandbox, so `exec bash` here would hand whoever is attached full, ungoverned access as the app user.
+# Keep the pane alive (so ttyd doesn't loop "Reconnecting") with a holding prompt that can ONLY re-open
+# codex or close.
+echo
+while true; do
+  dim "codex session ended — press [r] to resume, [q] to close the tab."
+  key=""
+  IFS= read -rsn1 key || { sleep 2; continue; }
+  case "$key" in
+    r|R)
+      notify_resumed
+      if [ -n "${RUNTIME_SESSION_ID:-}" ]; then
+        codex resume "$RUNTIME_SESSION_ID" "${COMMON_ARGS[@]}" || codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
+      else
+        codex "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
+      fi
+      notify_ended
+      ;;
+    q|Q) exit 0 ;;
+    *) : ;;   # ignore any other key — never spawn a shell
+  esac
+done

@@ -1290,7 +1290,7 @@ function Console({ me }: { me: Member }) {
   // reattachable), which would inflate this badge with finished sessions whose panes were never reaped.
   // A running row with a confirmed-dead pane (alive === false) is mid-reap → excluded; alive undefined
   // (poll failed / launcher backend) falls back to the stored 'running' status.
-  const runningSessions = sessions.filter((s) => s.status === 'running' && s.alive !== false).length
+  const runningSessions = sessions.filter((s) => s.status === 'running' && s.alive !== false && !s.system).length
   // The sidebar is a switcher over the sessions *I'm accountable for* — ones I started directly
   // (spawnedBy is my member id) OR ones a trigger spawned that run AS me (runAs): a Task I own that
   // auto-dispatched, a chat message I sent. Those have a `task:`/`automation:` provenance, so keying
@@ -3245,6 +3245,7 @@ function SessionsPage({
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>
+      !s.system && // OS machinery (Cockpit concierge/operator, …) stays out of the sessions list
       matchesStatus(s, statusFilter) &&
       (agentFilter === 'all' || s.agent === agentFilter) &&
       (sourceFilter === 'all' || sessionSource(s) === sourceFilter) &&
@@ -3911,11 +3912,12 @@ function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
   const runPreview = async (force?: 'work') => {
     const text = draft.trim()
     if (!text || busy) return
-    setBusy(true); setErr(''); setPreview(null)
+    setBusy(true); setErr(''); setPreview(null); setRunId('')
     const r = await api.routerPreview(text, force)
     setBusy(false)
     if (r.error) { setErr(r.error); return }
     setPreview(r)
+    if (r.intent === 'ask' && r.run?.sessionId) setRunId(r.run.sessionId) // concierge answer streams in
   }
 
   // Dispatch the chosen agent in the selected launch mode, using the ORIGINAL message as its task.
@@ -3940,34 +3942,46 @@ function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runPreview() }
   }
 
-  // `ask` band 2b: the server started an ephemeral concierge run — poll its transcript and surface the
-  // reply inline (so a claude-backed answer still feels session-free). Stops once the reply stabilises.
-  const runSession = preview?.intent === 'ask' ? preview.run?.sessionId : undefined
-  const [askAnswer, setAskAnswer] = useState('')
-  const [askThinking, setAskThinking] = useState(false)
+  // An ephemeral System-agent run whose reply we surface inline — the `ask` concierge (band 2b) OR the
+  // `action` operator (Phase 3, started by "Set it up"). Either way it feels session-free: we poll the
+  // transcript and render the one-line result, stopping once it stabilises.
+  const [runId, setRunId] = useState('')
+  const [runAnswer, setRunAnswer] = useState('')
+  const [runThinking, setRunThinking] = useState(false)
   const prevAnswer = useRef('')
   useEffect(() => {
-    setAskAnswer(''); prevAnswer.current = ''
-    if (!runSession) { setAskThinking(false); return }
-    setAskThinking(true)
+    setRunAnswer(''); prevAnswer.current = ''
+    if (!runId) { setRunThinking(false); return }
+    setRunThinking(true)
     let stop = false
     const poll = async () => {
-      const r = await api.conversation(runSession)
+      const r = await api.conversation(runId)
       if (stop) return
       const assistant = (r.turns || []).filter((t) => t.kind !== 'user')
       const last = assistant[assistant.length - 1]
       const text = (last && 'text' in last ? last.text : '') || ''
       if (text) {
-        setAskAnswer(text)
-        if (text === prevAnswer.current) { setAskThinking(false); stop = true; clearInterval(timer); clearTimeout(to) } // stable → done
+        setRunAnswer(text)
+        if (text === prevAnswer.current) { setRunThinking(false); stop = true; clearInterval(timer); clearTimeout(to) } // stable → done
         prevAnswer.current = text
       }
     }
     poll()
     const timer = setInterval(poll, 1500)
-    const to = setTimeout(() => { stop = true; clearInterval(timer); setAskThinking(false) }, 60000)
+    const to = setTimeout(() => { stop = true; clearInterval(timer); setRunThinking(false) }, 90000)
     return () => { stop = true; clearInterval(timer); clearTimeout(to) }
-  }, [runSession])
+  }, [runId])
+
+  // Phase 3: carry out a detected action via the governed operator run.
+  const setUp = async () => {
+    const text = draft.trim()
+    if (!text || busy) return
+    setBusy(true); setErr('')
+    const r = await api.routerAct(text)
+    setBusy(false)
+    if (r.error || !r.sessionId) { setErr(r.error || 'could not start the operator'); return }
+    setRunId(r.sessionId)
+  }
 
   const isWork = !preview?.intent || preview.intent === 'work'
 
@@ -4031,31 +4045,43 @@ function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
                 <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.answer}</ReactMarkdown></div>
               )}
               {preview.run && (
-                askAnswer
-                  ? <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{askAnswer}</ReactMarkdown></div>
+                runAnswer
+                  ? <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{runAnswer}</ReactMarkdown></div>
                   : <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" />Looking into it…</div>
               )}
               <div className="mt-3 flex items-center gap-3 text-xs">
                 <button onClick={() => runPreview('work')} className="text-muted-foreground underline-offset-2 hover:underline">Not what you meant? Route to an agent instead →</button>
-                {preview.run && !askThinking && askAnswer && <button onClick={() => onOpenChat(preview.run!.sessionId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>}
+                {preview.run && !runThinking && runAnswer && <button onClick={() => onOpenChat(preview.run!.sessionId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>}
               </div>
             </div>
           )}
 
-          {/* ACTION — deep-link into the primitive's surface; execution stays human-driven. */}
+          {/* ACTION — let the governed operator carry it out ("Set it up"), or open the surface / route. */}
           {preview.intent === 'action' && preview.surface && (
             <div className="rounded-xl border bg-card p-4">
               <div className="flex items-start gap-3">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10">{preview.surface === 'automations' ? <Zap className="h-4.5 w-4.5 text-primary" /> : <ListChecks className="h-4.5 w-4.5 text-primary" />}</span>
                 <div className="min-w-0 flex-1">
                   <div className="font-medium">This looks like {preview.surface === 'automations' ? 'scheduling an automation' : 'creating a task'}.</div>
-                  <div className="mt-0.5 text-xs text-muted-foreground">Open the {preview.surface === 'automations' ? 'Automations' : 'Tasks'} page to set it up — or have an agent do it for you.</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">{preview.surface === 'automations' ? 'I can draft the automation for an owner to approve' : "I'll create the task for you"} — or open the {preview.surface === 'automations' ? 'Automations' : 'Tasks'} page yourself.</div>
                 </div>
               </div>
-              <div className="mt-3 flex gap-2">
-                <Button size="sm" onClick={() => nav(preview.surface === 'automations' ? 'automations' : 'tasks')}>Open {preview.surface === 'automations' ? 'Automations' : 'Tasks'}</Button>
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => runPreview('work')}>Have an agent do it</Button>
-              </div>
+              {runId ? (
+                runAnswer
+                  ? <div className="mt-3 rounded-lg border bg-muted/40 p-3"><div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1"><ReactMarkdown remarkPlugins={[remarkGfm]}>{runAnswer}</ReactMarkdown></div>
+                      <div className="mt-2 flex gap-3 text-xs">
+                        <button onClick={() => nav(preview.surface === 'automations' ? 'inbox' : 'tasks')} className="text-muted-foreground underline-offset-2 hover:underline">{preview.surface === 'automations' ? 'Review in Inbox →' : 'Open Tasks →'}</button>
+                        <button onClick={() => onOpenChat(runId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>
+                      </div>
+                    </div>
+                  : <div className="mt-3 flex items-center gap-2 py-1 text-sm text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" />Setting it up…</div>
+              ) : (
+                <div className="mt-3 flex gap-2">
+                  <Button size="sm" disabled={busy} onClick={setUp}>Set it up</Button>
+                  <Button size="sm" variant="outline" onClick={() => nav(preview.surface === 'automations' ? 'automations' : 'tasks')}>Open {preview.surface === 'automations' ? 'Automations' : 'Tasks'}</Button>
+                  <Button size="sm" variant="ghost" disabled={busy} onClick={() => runPreview('work')}>Route to an agent</Button>
+                </div>
+              )}
             </div>
           )}
 
@@ -4133,7 +4159,7 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
   // surface (or the chat router) spawned, newest first.
   const chatAgents = useMemo(() => agents.filter((a) => a.runtime === 'claude-code'), [agents])
   const chats = useMemo(
-    () => sessions.filter((s) => s.sourceKind === 'chat').sort((a, b) => b.updatedAt - a.updatedAt),
+    () => sessions.filter((s) => s.sourceKind === 'chat' && !s.system).sort((a, b) => b.updatedAt - a.updatedAt),
     [sessions],
   )
   const active = selected ? sessions.find((s) => s.id === selected) : undefined

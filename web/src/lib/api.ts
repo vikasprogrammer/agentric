@@ -238,6 +238,9 @@ export interface Session {
    *  `task` = the Tasks dispatcher; `chat` = the `/agent` chat router; `system` = an internal principal.
    *  Server-resolved (the automation sub-type needs a join the raw `spawnedBy` can't give). */
   sourceKind?: 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system'
+  /** True for a `category:'System'` machinery agent (the Cockpit concierge/operator, consolidator, …).
+   *  Hidden from the Chat + Sessions lists to reduce clutter; still openable by id + in Audit. */
+  system?: boolean
   /** True when the run launched unattended (an automation/cron/task run). These now run as an attachable
    *  interactive TUI a human can take over live; the list badges them as unattended vs. a member session. */
   headless?: boolean
@@ -1349,6 +1352,10 @@ export const api = {
    *  `force:'work'` skips classification (the "route to an agent anyway" escape hatch). */
   routerPreview: (text: string, force?: 'work') =>
     call<RouterPreviewResp>('POST', '/api/router/preview', force ? { text, force } : { text }),
+  /** Cockpit `action` execution: carry out a detected action (create a task / propose an automation) by
+   *  starting the governed operator run. Returns its session id; poll `conversation` for the result. */
+  routerAct: (text: string) =>
+    call<{ sessionId?: string; error?: string }>('POST', '/api/router/act', { text }),
   /** Send the human's next turn into a chat session — a clean headless resume run. `busy` = a prior
    *  turn is still generating (keep the draft, resend shortly). */
   reply: (id: string, message: string) =>

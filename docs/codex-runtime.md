@@ -53,6 +53,28 @@ workdir is exactly the escape worth catching.
 `network_access` stays **true** — shell egress is already gated, and cutting it would break
 `git push` / `npm install` for every agent.
 
+### The decision wire differs: Codex acts on `deny`, rejects `allow`
+
+Both CLIs take the same PreToolUse stdin, but their **output** contracts diverge, and the difference is
+only visible in the pane — the audit trail looks identical either way, which is how it went unnoticed
+through several releases:
+
+| Emitted | Claude Code | Codex |
+| --- | --- | --- |
+| `permissionDecision: "deny"` | blocks | **blocks** — `PreToolUse hook (blocked)`, command never runs |
+| `permissionDecision: "allow"` | authoritative allow (bypasses Claude's own permission engine) | **rejected** — `hook (failed) … unsupported permissionDecision:allow`, then runs the tool anyway |
+| silence + exit 0 | defer to Claude's permission flow | proceed |
+| `additionalContext` with **no** decision | n/a | **works** — `hook (completed)`, note reaches the model |
+
+So on Codex the gate expresses an allow as **silence**, exactly the way Claude's hook already expresses
+"not my business" for `Read`/`Glob`/`Grep`. Governance was never at risk — deny is honoured, verified
+live — but emitting `allow` painted a hook FAILURE into the pane on every allowed call, which reads as
+"the gate is broken" to anyone watching a session.
+
+The `instruct` verb survives: Codex's output wire makes `permissionDecision` optional, so an
+allow-with-note is sent as `additionalContext` alone. Verified end to end — the note appears as
+`hook context:` and the model acts on it.
+
 ### One shared hook
 
 `terminal/gate-hook.sh` serves both runtimes. Codex 0.145 uses the same PreToolUse stdin fields
@@ -85,6 +107,80 @@ It writes, fresh on every launch:
   context are composed into the file Codex discovers. Regenerated each launch and marked as such.
 - **`auth.json`** — symlinked from the real `$CODEX_HOME` so a re-login/token refresh is picked up and
   no credential is duplicated to disk.
+
+**Remote (OAuth) MCP connectors need a one-time `codex mcp login`.** A connector registered as a
+hosted HTTP endpoint with no auth headers — e.g. DataForSEO — authenticates by OAuth, and Codex keeps
+those tokens in `$CODEX_HOME/mcp_oauth.age`. The launcher symlinks that store back to the real
+`$CODEX_HOME` (like `auth.json`), so a login done once is shared by every session; without the link
+every run starts with an empty store and rmcp logs
+`AuthRequired … token is null or empty` into the pane while that one connector's tools go missing.
+The login itself can't happen inside a session (`codex exec` is non-interactive), so do it once:
+
+```
+codex mcp add   dataforseo --url https://mcp.dataforseo.com/mcp   # so the name resolves
+codex mcp login dataforseo                                        # opens the browser once
+```
+
+Note this is per-CLI: Claude Code has its own OAuth store, so a connector working under Claude tells
+you nothing about whether Codex can reach it.
+
+**Account authentication is a one-time, out-of-band step.** Run `codex login` **from a normal shell as the
+service user**, never inside an agent session: `$CODEX_HOME` is per-session, so a login performed in a
+pane is written to that session's scratch dir and thrown away with it. The launcher symlinks
+`$REAL_CODEX_HOME/auth.json` (default `~/.codex/auth.json`) into each session, so one login covers the
+whole fleet. If neither that file nor `OPENAI_API_KEY` is present the launcher **refuses to start** and
+prints the fix — it will not let Codex's interactive sign-in menu appear inside an agent session.
+
+## Hook trust — why Codex sessions are attachable
+
+Codex will not run a hook whose hash it hasn't recorded as trusted; an untrusted hook is **silently
+skipped** in `exec`, and in the TUI it **blocks** on a "Hooks need review" prompt.
+`--dangerously-bypass-hook-trust` is documented as per-invocation and is **ignored in TUI mode**
+([openai/codex#24093](https://github.com/openai/codex/issues/24093)). That combination originally forced
+every Codex run down `codex exec`, costing take-over and warm chat.
+
+The launcher now **pre-seeds the trust hash**, so the TUI runs fully governed and no human ever sees the
+prompt. Trust lives in `config.toml`, not `hooks.json`:
+
+```toml
+[hooks.state."<abs hooks.json path>:<event_label>:<group_index>:<handler_index>"]
+trusted_hash = "sha256:<hex>"
+```
+
+The hash (`command_hook_hash` in `codex-rs/hooks/src/engine/discovery.rs` → `version_for_toml` in
+`codex-rs/config/src/fingerprint.rs`): build the identity, serialize **TOML→JSON** (absent/`None` fields
+vanish), **recursively sort every object's keys**, compact-JSON, sha256, prefix `sha256:`.
+
+```js
+{ event_name: "pre_tool_use", matcher: ".*",
+  hooks: [{ type: "command", command: CMD, timeout: 600, async: false }] }
+```
+
+Three details that are easy to get wrong, and that no amount of black-box guessing recovers:
+
+- it is **TOML→JSON, not JSON** — every direct-JSON serialization fails;
+- the serde name is **`timeout`**, not `timeout_sec`, and its default **600** is baked into the hash even
+  though it never appears in `hooks.json`;
+- **`matcher` is part of the identity for `PreToolUse` but is dropped for `Stop`** (Stop takes no
+  matcher), so the Stop identity must omit the key entirely.
+
+Both hashes are verified against values Codex itself wrote after an interactive `/hooks` trust.
+
+### The pane guard
+
+The hash is derived from Codex internals, so a future release could change it. **That failure is not
+silent** — the TUI blocks on the review prompt. The danger is narrower: a human who attaches, sees a
+stuck pane, and picks *"3. Continue without trusting (hooks won't run)"* then has a completely
+ungoverned agent.
+
+So nobody is allowed to reach that choice. `TerminalManager.guardHookTrust` runs inside the existing
+60s liveness sweep, captures the pane of every live Codex session, and on "Hooks need review" stops the
+session and posts an explicit card — turning a silent-governance-loss risk into a loud, actionable
+failure. Verified by pre-seeding a deliberately stale hash and confirming detection.
+
+**If you upgrade Codex and sessions start dying with "hook trust stale", re-derive the hash**: run the
+TUI once against a scratch `$CODEX_HOME`, trust the hooks interactively, and diff the `trusted_hash`
+Codex writes against what `codex-launch.sh` computes.
 
 **Remote (OAuth) MCP connectors need a one-time `codex mcp login`.** A connector registered as a
 hosted HTTP endpoint with no auth headers — e.g. DataForSEO — authenticates by OAuth, and Codex keeps
@@ -185,8 +281,8 @@ with `runtimeSupports(runtime, cap)`; use `isCodingRuntime(runtime)` for "is thi
 | --- | --- | --- | --- |
 | `pinnedSessionId` | ✅ | ❌ | Codex mints its own rollout UUID; no `--session-id` |
 | `resume` / `fork` | ✅ | ✅ | `codex resume <id>` / `codex fork <id>` |
-| `attachableUnattended` | ✅ | ❌ | exec-only lane, forced by hook trust — see above |
-| `residentChat` | ✅ | ❌ | needs a TUI that survives a turn |
+| `attachableUnattended` | ✅ | ✅ | TUI on every lane; trust pre-seeded, Stop hook tears down |
+| `residentChat` | ✅ | ✅ | the TUI survives a turn, so follow-ups go by send-keys |
 | `transcript` (cost, engaged time, chat timeline) | ✅ | ✅ | `src/edge/codex-transcript.ts` reads the rollout JSONL |
 | `nativeSkills` / `nativeSubagents` | ✅ | ❌ | `.claude/skills` + `.claude/agents` are Claude conventions |
 | `statusLine` / `permissionMode` | ✅ | ❌ | no equivalent |

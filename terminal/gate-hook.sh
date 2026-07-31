@@ -34,8 +34,22 @@
 set -u
 EVENT=$(cat)
 
-# Emit an authoritative PreToolUse decision and exit 0. $1 = allow|deny, $2 = reason (shown to Claude).
+# Emit an authoritative PreToolUse decision and exit 0. $1 = allow|deny, $2 = reason (shown to the model).
+#
+# RUNTIME DIFFERENCE, found by reading a live Codex pane: Codex's parser acts on `deny` but REJECTS
+# `allow` outright —
+#     PreToolUse hook (failed)
+#     error: PreToolUse hook returned unsupported permissionDecision:allow
+# — and then runs the tool anyway. Governance is intact either way (deny genuinely blocks; verified live:
+# "PreToolUse hook (blocked)" and the command never ran), but emitting `allow` painted a hook FAILURE
+# into the pane on every single allowed call, which reads as "the gate is broken" to anyone watching.
+# So on Codex an allow is expressed the way Claude's hook already expresses "not my business": silence
+# plus exit 0. Claude Code still gets the explicit allow, which it needs — there it is what BYPASSES
+# Claude's own permission engine, so dropping it would hand the decision back to a second brain.
 emit() {
+  if [ "$1" = "allow" ] && [ "${AOS_RUNTIME:-claude-code}" = "codex" ]; then
+    exit 0
+  fi
   node -e 'const[d,r]=process.argv.slice(1);console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:d,permissionDecisionReason:r}}))' "$1" "$2"
   exit 0
 }
@@ -45,6 +59,12 @@ emit() {
 # (docs/decision-brief-layer-plan.md §8a); permissionDecisionReason on allow is audit-only. $1 = reason,
 # $2 = note. Used for a reliability nudge (e.g. a detected loop) — soft; the model may ignore it.
 emit_allow_note() {
+  # On Codex the same `allow` rejection applies, but `permissionDecision` is optional in its output wire
+  # (it defaults to null) — so the note is carried on its own, with no decision, and the tool proceeds.
+  if [ "${AOS_RUNTIME:-claude-code}" = "codex" ]; then
+    node -e 'const[c]=process.argv.slice(1);console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:c}}))' "$2"
+    exit 0
+  fi
   node -e 'const[r,c]=process.argv.slice(1);console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",permissionDecisionReason:r,additionalContext:c}}))' "$1" "$2"
   exit 0
 }

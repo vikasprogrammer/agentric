@@ -13,6 +13,7 @@
  */
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -48,10 +49,24 @@ if (newestSrc > newestDist) {
 
 const { enrichArgs, autoClearsApproval } = require(path.join(ROOT, 'dist/governance/enricher'));
 const { JsonPolicyEngine } = require(path.join(ROOT, 'dist/governance/policy'));
+const { resolveRuntimeTuning } = require(path.join(ROOT, 'dist/types.js'));
 const { fileGovernanceDecision } = require(path.join(ROOT, 'dist/governance/file-guard.js'));
 const { hostGovernanceDecision, stricterDecision } = require(path.join(ROOT, 'dist/governance/host-match'));
 
-const fixture = JSON.parse(fs.readFileSync(path.join(ROOT, 'test/governance/conformance.json'), 'utf8'));
+/**
+ * The file-guard cases assert that a write under the SERVICE USER's home is denied, and
+ * `sensitiveWriteRoots` resolves that home with `os.homedir()` at call time. A fixture can therefore
+ * not hardcode a home path: three cases baked in `~/…`, so they passed on the author's Mac
+ * and failed on every Linux box — CI included, which went red for weeks while the guard itself was
+ * working correctly (verified on a Linux host: `$HOME/.ssh/authorized_keys` → deny). Fixtures write
+ * `${HOME}` and it is expanded here, per platform, before enrichment.
+ */
+const expandHome = (v) => (typeof v === 'string' ? v.split('${HOME}').join(os.homedir())
+  : Array.isArray(v) ? v.map(expandHome)
+  : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, expandHome(x)]))
+  : v);
+
+const fixture = expandHome(JSON.parse(fs.readFileSync(path.join(ROOT, 'test/governance/conformance.json'), 'utf8')));
 const policyDoc = JSON.parse(fs.readFileSync(path.join(ROOT, 'config/policy/default.policy.json'), 'utf8'));
 
 /** Map a Decision to the fixture's compact expectation string. */
@@ -117,7 +132,18 @@ for (const c of fixture.context) {
 
 const riskyChecks = fixture.decisions.filter((c) => typeof c.expectRisky === 'boolean').length;
 const factChecks = fixture.decisions.reduce((n, c) => n + (c.expectFacts ? Object.keys(c.expectFacts).length : 0), 0);
-const total = fixture.decisions.length + fixture.context.length + riskyChecks + factChecks;
+// Runtime tuning: a model belonging to another runtime must never reach a CLI. The per-agent route
+// rejects one outright; INHERITANCE from the workspace default (which spans every runtime and so can't
+// be right for all of them) silently drops it instead, so the run falls back to the CLI default rather
+// than dying. Regression-guards a live failure where a Codex run inherited `opus`.
+for (const c of fixture.tuning || []) {
+  const got = resolveRuntimeTuning(c.agent || {}, c.defaults || {}, c.override, c.runtime);
+  const want = c.expectModel === null ? undefined : c.expectModel;
+  if (got.model === want) pass++;
+  else failures.push(`tuning    ✗ ${c.name}\n            expected model=${want}, got ${got.model}`);
+}
+
+const total = fixture.decisions.length + fixture.context.length + riskyChecks + factChecks + (fixture.tuning || []).length;
 if (failures.length) {
   console.error(`\nGOVERNANCE CONFORMANCE: ${pass}/${total} passed, ${failures.length} FAILED\n`);
   for (const f of failures) console.error('  ' + f);

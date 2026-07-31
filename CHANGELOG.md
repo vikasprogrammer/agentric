@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.282.0] — 2026-07-31
+## [0.284.0] — 2026-07-31
 ### Added
 - **Runtime-account tokens are validated against the provider before they enter the pool, and their
   weekly/session usage is shown per key.** A mis-pasted Claude subscription token used to be vaulted
@@ -36,6 +36,181 @@ new version heading in the same commit.
   re-authenticates re-enables it) so the launcher falls back to another account / the box default rather
   than sending run after run to `/login`. `src/terminal.ts` (`detectUsageLimit` now distinguishes
   auth-failure from usage-limit), `src/state/runtime-accounts.ts` (`markInvalid`/`recordCheck`).
+
+## [0.283.2] — 2026-07-31
+### Changed
+- **System-agent runs (the Cockpit concierge/operator, consolidator, …) are hidden from the Chat +
+  Sessions lists.** These `category:'System'` machinery runs are spawned run-as the member (provenance
+  `chat:<member>`), so they were cluttering the member's Chat list and the Sessions list as if they were
+  conversations the member started. `listSessions` now derives a `system` flag from the agent's category;
+  the console filters it out of the Chat list, the Sessions list, and the running-count badge. The rows
+  still exist — openable by id (Cockpit's "Open full session" still works) and in the Audit log — they're
+  just out of the everyday lists. `src/terminal.ts` (`Session.system`), `web/src/App.tsx`,
+  `web/src/lib/api.ts`.
+
+## [0.283.1] — 2026-07-31
+### Fixed
+- **Every allowed Codex tool call logged `PreToolUse hook (failed)`.** Codex's parser acts on `deny` but
+  **rejects `allow`** (`unsupported permissionDecision:allow`) and then runs the tool anyway. Governance
+  was never at risk — deny genuinely blocks, verified live (`PreToolUse hook (blocked)`, command never
+  ran) — but the pane showed a hook FAILURE on every allowed call, which reads as "the gate is broken"
+  to anyone watching. The audit trail looked identical either way, which is why it survived several
+  releases: it is only visible in the pane. The gate now expresses an allow on Codex as **silence +
+  exit 0**, the same way it already expresses "not my business" for `Read`/`Glob`/`Grep`; Claude Code
+  still gets the explicit `allow` it needs (there it is what bypasses Claude's own permission engine).
+  The `instruct` verb survives — Codex makes `permissionDecision` optional, so an allow-with-note is sent
+  as `additionalContext` alone; verified end to end (`hook (completed)`, note reached the model, model
+  acted on it).
+
+## [0.281.5] — 2026-07-31
+### Fixed
+- **The approval-friction signal no longer divides by a denominator that isn't there.** v0.280.0 started
+  recording the `approved` count so friction could be a rate; per-pass entries written before that carry
+  rejections with **no denominator**, and `recentTally` summed them anyway — so a window of mostly-legacy
+  entries read as ~100% rejection. Live northwind was nagging every agent that "recent actions were
+  rejected at human approval" while its true 7-day rate was **5.4%** (35 approved / 2 rejected). Entries
+  lacking the denominator now contribute to neither side of the ratio (their budget/error signals still
+  count), so the signal stays quiet until real evidence exists rather than inventing it. Verified against
+  both live tenants' actual window shapes: the false northwind nag stops; genuine friction with a real
+  sample still fires.
+
+## [0.281.4] — 2026-07-31
+### Fixed
+- **Bump `TOPICS_VERSION` to 3.** v0.281.3 tightened the topic extractor (opaque hex ids) without bumping
+  the version counter added in v0.281.2, so ids already written into a workspace's cumulative topic map
+  stayed there — the exact failure that counter exists to prevent. Bumped, and the requirement to bump it
+  alongside any extractor change is now stated at the constant.
+
+## [0.281.3] — 2026-07-31
+### Fixed
+- **Opaque identifiers are no longer "things the fleet works on".** The digit rule that admits `v3`/`php8`
+  also admitted hex handles — after the topic-map rebuild, live globex surfaced `f90fc16d7fb9a19` in the
+  guidance line. A long hex/base36 run (or a `tsk_…`-style prefixed id) is a handle, not a name.
+- **The approval-friction signal now needs a sample, not just a rate.** v0.280.0 replaced a raw-count gate
+  with a ≥20% rejection rate; on live globex that fired off **3 decisions** (0 approved, 3 rejected =
+  100%) — directionally true for the window but far too thin to tell an owner their policy is
+  miscalibrated, or to tell every agent to expect rejection. Both the guidance line and the
+  `policy.review` recommendation now also require at least 8 human approval decisions in the window.
+
+## [0.281.2] — 2026-07-31
+### Fixed
+- **A fixed topic extractor now actually reaches workspaces that have already been running.** `topics` is a
+  CUMULATIVE map — counts compound across passes and decay only on a 21-day half-life — so v0.281.1's
+  extractor fix changed nothing for an existing tenant: the words the old extractor admitted kept their
+  (large) counts and kept headlining the guidance line in every agent's prompt. Live northwind held 300
+  topics led by `drafts(61)`, `sweep(59)`, `automated(58)`, all artefacts of one shouted prompt header.
+  `DreamState` now carries a `topicsVersion`; a state written by an older extractor has its map cleared and
+  rebuilt from the current corpus. The reset runs **before** the no-activity early return, so a quiet
+  workspace stops serving the stale line immediately rather than at its next busy pass. Audited
+  `learning.topics.reset`. Every tenant self-heals on its next pass — no hand-edited databases.
+
+## [0.281.1] — 2026-07-31
+### Fixed
+- **Self-learning topic extraction: the case signal is now read the way a writer meant it.** v0.280.0
+  replaced the unwinnable stop-list with an allow-test on shape (a topic must be written as a name), but
+  running a real pass on two live tenants showed case alone is not enough — the guidance line, which rides
+  in **every agent's system prompt**, came back as "the fleet frequently works on: claude.md, drafts,
+  support, sweep, automated" on northwind and still carried "handed, really" on globex. Every one of those
+  came from a construction where the capital was not a choice:
+  - **Shouted headers.** One automation prompt repeated ten times opened `AUTOMATED INCREMENTAL SUPPORT
+    SWEEP — …`. ALL-CAPS was admitted as an acronym signal (for `SSL`/`FPM`/`ASE`); now an acronym must be
+    short and **isolated**, since a real one sits among lowercase words while a run of capitals is emphasis.
+  - **Title Case / headings.** A line where most words are capitalized is skipped — case separates nothing
+    within it.
+  - **Emoji-prefixed templates.** The OS's own poke-back cards open `✅ Really done:` / `⛔ Handed back:`;
+    an emoji wasn't recognized as a sentence start, so "really"/"handed" read as names. Anything with no
+    letters before it now counts as a sentence start.
+  - **Enumerated labels.** `Phase 1`, `Tier 2` — a capital followed by a number is a section heading.
+  - **Words the corpus also writes lowercase.** A real name is *consistently* capitalized (`Composio`,
+    `DataForSEO`); a word appearing both ways is an ordinary word that happened to open a clause. Evidence
+    is counted per distinct line, so one template repeated verbatim can't outweigh every real name.
+  - **Filenames** qualify on their base name, not the `.md`/`.ts` extension — the dot rule (meant for
+    hostnames and versions) was admitting `claude.md` and even the placeholder `yyyy-mm-dd.md`.
+  Also stop-worded the OS's own tool vocabulary (`publish`/`recall`/`remember`/`notify`, alongside the
+  existing `report`/`update`) and `claude`, which describe **how** an agent worked, not what it worked on.
+  Measured on the live corpora: northwind now yields `composio, dataforseo, monday, library, northwind.com`
+  (previously nothing usable); globex yields `freescout, bunny, shield` among five (previously one).
+
+## [0.284.0] — 2026-07-31
+### Added
+- **Policy v2, Tier A — set-membership and cross-arg conditions in the pure rule engine**
+  (`src/governance/policy.ts`). A rule's `when` clause gains two shapes beyond the existing
+  one-arg-vs-one-constant compare, both still stateless and still JSON:
+  - **`in` / `nin`** — set membership against an array value, e.g.
+    `{ arg: "status", op: "nin", value: ["paid","shipped","refunded"] }` → `never` (invalid-enum guard).
+  - **`argRef`** — compare one arg to *another arg* instead of a constant, e.g.
+    `{ arg: "payee", op: "ne", argRef: "buyer" }` → `ask` owner (wrong-recipient guard).
+  The `applyProposal` tighten-only safety proof stays sound: `sampleArgDomains` now emits every enum
+  member and seeds both sides of a cross-arg pair with one shared domain, and `firstLoosening`'s rare
+  fallback path gets explicit joint coverage of each `argRef` pair (independent variation can't see
+  `arg == argRef`). New test `scripts/tier-a-policy-test.cjs` (runs under `npm run test:governance`);
+  the 130-case conformance suite is unchanged (backward-compatible — the bundled default policy uses
+  no new ops).
+
+## [0.283.0] — 2026-07-31
+### Fixed
+- **A Codex run silently inherited a Claude model from the workspace default and died.** Found on the
+  first live attachable Codex session: the fleet default is `model: "opus"`, `codex-scout` pins no model
+  of its own, so the launcher passed `opus` to Codex, which answered *"The 'opus' model is not supported
+  when using Codex with a ChatGPT account."* Two holes, both now closed:
+  - The cross-runtime model guard only matched full ids (`^claude`), so bare **aliases** — `opus`,
+    `sonnet`, `haiku`, `fable` — sailed through. The patterns are now anchored on a word boundary and
+    cover aliases both ways (`gpt`/`o<n>`/`codex`/`glm`/`kimi`/`deepseek` are refused for Claude Code).
+  - Nothing validated **inheritance**. `PUT /api/agents/:id/config` rejects a foreign model, but the
+    workspace default spans every runtime and therefore *cannot* be right for all of them at once — an
+    agent with no model of its own picked one up silently. `resolveRuntimeTuning` now takes the runtime
+    and **drops** a model that runtime can't run, so the session falls back to the CLI's own default (a
+    working run) instead of failing outright.
+  7 new conformance fixtures pin the inheritance matrix; suite is 137/137.
+
+## [0.282.0] — 2026-07-31
+### Added
+- **Cockpit `action` tier now *executes* — a governed operator carries it out (auto-router Phase 3).**
+  A detected action ("create a task to migrate the acme site", "run the churn report every morning") no
+  longer just deep-links — clicking **Set it up** spawns the **operator**: an ephemeral System agent
+  (`src/edge/concierge.ts`, sibling to the read-only concierge), run-as the member, that carries out the
+  request via the **governed** tools and nothing else — `task_create` (filed immediately, audited) for a
+  task, `automation_propose` (a DRAFT an owner must approve — it never fires unattended) for a scheduled
+  job. Cockpit polls its transcript and shows the one-line confirmation inline ("✓ Created task: …" /
+  "✓ Proposed automation … — pending an owner's approval"), with a link to Tasks / the Inbox. Explicit
+  consent by design: nothing executes until **Set it up** is clicked; the operator can't bypass the gate
+  hook, and an automation still needs a human approval — so this adds no ungoverned power. The card keeps
+  "Open Automations/Tasks" (do it yourself) and "Route to an agent" as alternatives. New endpoint
+  `POST /api/router/act`; the operator is `category:'System'` so it's never a route target.
+  `src/edge/concierge.ts` (`ensureOperator`/`OPERATOR_ID` + shared provisioner), `src/server.ts`,
+  `web/src/App.tsx`, `web/src/lib/api.ts`.
+### Fixed
+- **Governance conformance passes off the author's Mac again.** Three `file-guard` fixtures hardcoded
+  `~/.ssh/…` as "the service user's home", but `sensitiveWriteRoots` resolves the home with
+  `os.homedir()` at call time — so those cases only ever exercised the guard on one machine and asserted
+  `allow`-shaped nonsense everywhere else. CI (Linux) had been red on exactly these 3 for weeks, which
+  meant the governance gate was giving **no signal on merges**. Fixtures now write `${HOME}` and the
+  runner expands it per platform. The guard itself was never wrong — verified on a Linux host that
+  `$HOME/.ssh/authorized_keys` and `$HOME/.codex/auth.json` are denied.
+
+## [0.282.0] — 2026-07-31
+### Added
+- **Codex sessions are attachable, and support warm resident chat.** Every lane is now the interactive
+  TUI, matching the Claude lane: an unattended run can be taken over mid-run by simply attaching (no
+  kill, no resume, no lost turn) and is torn down at turn end by the server via a `Stop` hook →
+  `/api/turn-idle`; a chat run stays warm for send-keys follow-ups. `attachableUnattended` and
+  `residentChat` flip to true, giving Codex parity with Claude Code on every capability except pinned
+  session ids, native skills/sub-agents, the status line and permission mode.
+- **Hook trust is pre-seeded**, which is what made the above possible. Codex refuses to run a hook whose
+  hash it hasn't recorded as trusted, and `--dangerously-bypass-hook-trust` is ignored in TUI mode
+  (openai/codex#24093) — so the TUI previously ran with no gate at all and Codex was locked to
+  `codex exec`. The launcher now computes the hash itself and writes it into `config.toml`
+  (`[hooks.state."<hooks.json>:<event>:<i>:<j>"] trusted_hash`). Algorithm, from the Codex sources and
+  verified against hashes Codex itself wrote: identity → **TOML→JSON** → **recursively sorted keys** →
+  compact JSON → sha256. The traps: it is TOML→JSON and not JSON; the serde name is `timeout` (default
+  **600**, baked in even when absent from `hooks.json`); and `matcher` is part of the identity for
+  `PreToolUse` but **dropped for `Stop`**.
+- **Pane guard (`TerminalManager.guardHookTrust`).** The trust hash is derived from Codex internals, so a
+  future release could stale it. That fails *loudly* — the TUI blocks on "Hooks need review" rather than
+  skipping the hook — but a human could still answer it with *"continue without trusting"* and get an
+  ungoverned agent. The existing 60s liveness sweep now captures the pane of every live Codex session and
+  stops any that shows that prompt, with a card naming the cause. Verified by pre-seeding a deliberately
+  stale hash. Codex-only; one `capture-pane` per live Codex session per sweep.
 
 ## [0.281.0] — 2026-07-31
 ### Changed

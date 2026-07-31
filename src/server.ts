@@ -23,7 +23,7 @@ import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle 
 import { chooseAgent } from './edge/router';
 import { classifyIntent } from './edge/intent';
 import { resolveLlm, chatComplete } from './edge/llm';
-import { ensureConcierge, CONCIERGE_ID } from './edge/concierge';
+import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerFromState } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
 import { checkClaudeToken, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
@@ -2610,6 +2610,22 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
 
     return respondWork();
+  }
+
+  // Cockpit `action` execution (Phase 3): the member explicitly clicked "Set it up" on a detected action
+  // ("create a task to…", "schedule … every morning"). Spawn the governed **operator** — an ephemeral
+  // System agent, run-as the member — which carries it out via `task_create` (filed) or
+  // `automation_propose` (a draft an owner approves; nothing fires unattended). Every tool call still
+  // passes the gate hook; this endpoint only starts the run — the client polls its transcript for the
+  // one-line confirmation. Explicit-consent by design: nothing executes until this is called.
+  if (method === 'POST' && p === '/api/router/act') {
+    const b = await readBody(req);
+    const text = String(b.text || '').trim();
+    if (!text) return sendJson(res, 400, { error: 'text is required' });
+    ensureOperator(os);
+    if (!os.agents.get(OPERATOR_ID)?.dir) return sendJson(res, 500, { error: 'could not start the operator' });
+    const s = tm.createSession(OPERATOR_ID, chatTitle(text, OPERATOR_ID), text, `chat:${me.id}`, true, undefined, undefined, me.id, undefined, false);
+    return sendJson(res, 200, { sessionId: s.id });
   }
   // Read the friendly conversation timeline for a session (poll this like the rest of the console).
   const convoMatch = p.match(/^\/api\/sessions\/([\w-]+)\/conversation$/);
