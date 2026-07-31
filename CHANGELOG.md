@@ -8,6 +8,33 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.281.1] — 2026-07-31
+### Fixed
+- **Self-learning topic extraction: the case signal is now read the way a writer meant it.** v0.280.0
+  replaced the unwinnable stop-list with an allow-test on shape (a topic must be written as a name), but
+  running a real pass on two live tenants showed case alone is not enough — the guidance line, which rides
+  in **every agent's system prompt**, came back as "the fleet frequently works on: claude.md, drafts,
+  support, sweep, automated" on northwind and still carried "handed, really" on globex. Every one of those
+  came from a construction where the capital was not a choice:
+  - **Shouted headers.** One automation prompt repeated ten times opened `AUTOMATED INCREMENTAL SUPPORT
+    SWEEP — …`. ALL-CAPS was admitted as an acronym signal (for `SSL`/`FPM`/`ASE`); now an acronym must be
+    short and **isolated**, since a real one sits among lowercase words while a run of capitals is emphasis.
+  - **Title Case / headings.** A line where most words are capitalized is skipped — case separates nothing
+    within it.
+  - **Emoji-prefixed templates.** The OS's own poke-back cards open `✅ Really done:` / `⛔ Handed back:`;
+    an emoji wasn't recognized as a sentence start, so "really"/"handed" read as names. Anything with no
+    letters before it now counts as a sentence start.
+  - **Enumerated labels.** `Phase 1`, `Tier 2` — a capital followed by a number is a section heading.
+  - **Words the corpus also writes lowercase.** A real name is *consistently* capitalized (`Composio`,
+    `DataForSEO`); a word appearing both ways is an ordinary word that happened to open a clause. Evidence
+    is counted per distinct line, so one template repeated verbatim can't outweigh every real name.
+  - **Filenames** qualify on their base name, not the `.md`/`.ts` extension — the dot rule (meant for
+    hostnames and versions) was admitting `claude.md` and even the placeholder `yyyy-mm-dd.md`.
+  Also stop-worded the OS's own tool vocabulary (`publish`/`recall`/`remember`/`notify`, alongside the
+  existing `report`/`update`) and `claude`, which describe **how** an agent worked, not what it worked on.
+  Measured on the live corpora: northwind now yields `composio, dataforseo, monday, library, northwind.com`
+  (previously nothing usable); globex yields `freescout, bunny, shield` among five (previously one).
+
 ## [0.284.0] — 2026-07-31
 ### Added
 - **Policy v2, Tier A — set-membership and cross-arg conditions in the pure rule engine**
