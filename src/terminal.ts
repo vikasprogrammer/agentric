@@ -221,6 +221,11 @@ export interface Session {
    *  trigger; `task`/`chat` = the dispatcher/chat-router; `system` = an internal principal (e.g. the
    *  consolidation gardener). */
   sourceKind?: SessionSourceKind;
+  /** True when this run belongs to a `category:'System'` agent — the OS machinery (concierge/operator
+   *  answering Cockpit, consolidator, …), not a user teammate. The console hides these from the Chat +
+   *  Sessions lists to keep them uncluttered; the row still exists for by-id opens (Cockpit's "Open full
+   *  session") + Audit. */
+  system?: boolean;
   /** True when the run launched unattended (an automation/cron/task run). These now run as an attachable
    *  interactive TUI (not `claude -p`) that a human can take over live; the console badges them as
    *  unattended vs. a member's own interactive session. */
@@ -713,6 +718,7 @@ export class TerminalManager {
       blocked: r.status === 'running' && blocked.has(r.id),
       resumable: resumable.has(r.id),
       forkable: !!r.claude_session_id && runtimeSupports(this.os.agents.get(r.agent)?.runtime, 'fork'),
+      system: this.os.agents.get(r.agent)?.category === 'System',
       spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as),
       sourceKind: this.sourceKind(r.spawned_by),
       runAsLabel: this.runAsLabel(r.run_as),

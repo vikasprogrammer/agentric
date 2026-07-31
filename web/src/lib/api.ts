@@ -232,6 +232,9 @@ export interface Session {
    *  `task` = the Tasks dispatcher; `chat` = the `/agent` chat router; `system` = an internal principal.
    *  Server-resolved (the automation sub-type needs a join the raw `spawnedBy` can't give). */
   sourceKind?: 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system'
+  /** True for a `category:'System'` machinery agent (the Cockpit concierge/operator, consolidator, …).
+   *  Hidden from the Chat + Sessions lists to reduce clutter; still openable by id + in Audit. */
+  system?: boolean
   /** True when the run launched unattended (an automation/cron/task run). These now run as an attachable
    *  interactive TUI a human can take over live; the list badges them as unattended vs. a member session. */
   headless?: boolean
