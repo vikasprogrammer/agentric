@@ -74,8 +74,12 @@ const MIN_TOPIC_COUNT = 3;
  * removed. Bump this whenever the extractor's meaning changes; a state carrying an older version has its
  * map cleared and rebuilt from the current corpus, so every tenant self-heals on its next pass instead of
  * needing a hand-edited DB.
+ *
+ * **Bump this in the same commit as any change to `isEntity`/`properNouns`/`STOP`.** v0.281.3 tightened
+ * `isEntity` (opaque hex ids) without bumping, so the ids already stored stayed in the map — the exact
+ * failure this counter exists to prevent.
  */
-const TOPICS_VERSION = 2;
+const TOPICS_VERSION = 3;
 const STOP = new Set(['task', 'outcome', 'session', 'after', 'then', 'with', 'this', 'that', 'from', 'into', 'your', 'their', 'about', 'over', 'when', 'while', 'should', 'would', 'could', 'have', 'been', 'were', 'them', 'they', 'will', 'just', 'also', 'using', 'used', 'ran', 'run', 'done', 'made', 'make', 'need', 'needs', 'some', 'more', 'than', 'only', 'each', 'both', 'unknown', 'none',
   // Procedural / plumbing words — they describe HOW an agent worked, not WHAT the fleet works on, so they
   // drown the real topics ("slack, check, report, completed, summary" is a useless "frequently works on").
