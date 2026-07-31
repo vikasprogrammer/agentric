@@ -938,8 +938,40 @@ export class TerminalManager {
     for (const r of rows) {
       if (!alive.has(r.tmux) && r.created_at < cutoff) {
         try { this.markCrashed(r); } catch { /* one bad row must not stop the sweep */ }
+      } else if (alive.has(r.tmux)) {
+        try { this.guardHookTrust(r); } catch { /* one bad row must not stop the sweep */ }
       }
     }
+  }
+
+  /**
+   * PANE GUARD — kill any Codex session sitting on Codex's "Hooks need review" prompt.
+   *
+   * We pre-seed the hook trust hash so that prompt never appears (see terminal/codex-launch.sh). But the
+   * hash is derived from Codex's internals, so a future Codex release could change it. If that happens
+   * the TUI does NOT silently skip the hook — it BLOCKS on a three-way prompt. The danger is entirely in
+   * the third option: a human who attaches, sees the pane stuck, and picks *"Continue without trusting
+   * (hooks won't run)"* now has a completely ungoverned agent.
+   *
+   * So we never let a person reach that choice. The sweep already reads panes for liveness; here we look
+   * for the prompt and tear the session down with an explicit reason, turning a silent-governance-loss
+   * risk into a loud, actionable failure ("re-derive the trust hash"). Codex-only and cheap: one
+   * capture-pane per live Codex session per 60s sweep.
+   */
+  private guardHookTrust(r: SessionRow): void {
+    if (this.os.agents.get(r.agent)?.runtime !== 'codex') return;
+    const pane = this.backend.capturePane(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
+    if (!pane || !/hooks need review/i.test(pane)) return;
+    const why = 'Codex asked to review its hooks, which means Agent OS\'s pre-seeded trust hash is stale '
+      + '(most likely after a Codex upgrade). The session was stopped rather than risk it running with the '
+      + 'gate hook disabled — re-derive the hash in terminal/codex-launch.sh.';
+    this.audit(r.id, r.agent, 'session.hook_trust.stale', { tmux: r.tmux });
+    this.stopSession(r.id, 'system');
+    this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+    this.addMessage({
+      type: 'completed', sessionId: r.id, agent: r.agent, title: `Stopped — ${r.agent} (hook trust stale)`,
+      body: why, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: r.id,
+    });
   }
 
   /** The set of session ids BLOCKED on a human right now — a pending `ask` question or a pending approval

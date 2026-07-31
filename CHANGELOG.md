@@ -16,6 +16,30 @@ new version heading in the same commit.
   runner expands it per platform. The guard itself was never wrong — verified on a Linux host that
   `$HOME/.ssh/authorized_keys` and `$HOME/.codex/auth.json` are denied.
 
+## [0.282.0] — 2026-07-31
+### Added
+- **Codex sessions are attachable, and support warm resident chat.** Every lane is now the interactive
+  TUI, matching the Claude lane: an unattended run can be taken over mid-run by simply attaching (no
+  kill, no resume, no lost turn) and is torn down at turn end by the server via a `Stop` hook →
+  `/api/turn-idle`; a chat run stays warm for send-keys follow-ups. `attachableUnattended` and
+  `residentChat` flip to true, giving Codex parity with Claude Code on every capability except pinned
+  session ids, native skills/sub-agents, the status line and permission mode.
+- **Hook trust is pre-seeded**, which is what made the above possible. Codex refuses to run a hook whose
+  hash it hasn't recorded as trusted, and `--dangerously-bypass-hook-trust` is ignored in TUI mode
+  (openai/codex#24093) — so the TUI previously ran with no gate at all and Codex was locked to
+  `codex exec`. The launcher now computes the hash itself and writes it into `config.toml`
+  (`[hooks.state."<hooks.json>:<event>:<i>:<j>"] trusted_hash`). Algorithm, from the Codex sources and
+  verified against hashes Codex itself wrote: identity → **TOML→JSON** → **recursively sorted keys** →
+  compact JSON → sha256. The traps: it is TOML→JSON and not JSON; the serde name is `timeout` (default
+  **600**, baked in even when absent from `hooks.json`); and `matcher` is part of the identity for
+  `PreToolUse` but **dropped for `Stop`**.
+- **Pane guard (`TerminalManager.guardHookTrust`).** The trust hash is derived from Codex internals, so a
+  future release could stale it. That fails *loudly* — the TUI blocks on "Hooks need review" rather than
+  skipping the hook — but a human could still answer it with *"continue without trusting"* and get an
+  ungoverned agent. The existing 60s liveness sweep now captures the pane of every live Codex session and
+  stops any that shows that prompt, with a card naming the cause. Verified by pre-seeding a deliberately
+  stale hash. Codex-only; one `capture-pane` per live Codex session per sweep.
+
 ## [0.281.0] — 2026-07-31
 ### Changed
 - **Cockpit `ask` tier now works with no LLM key — deterministic lookups + an ephemeral concierge run,

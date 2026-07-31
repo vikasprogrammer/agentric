@@ -1161,11 +1161,12 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
       // captured after launch rather than pinned. The unattended lane is `codex exec`, which exits at
       // turn end — no Stop hook needed, but also nothing to attach to, which rules out resident chat.
       pinnedSessionId: false, resume: true, fork: true,
-      // Every Codex run uses `codex exec`. Not a preference: Codex silently SKIPS a hook whose hash it
-      // hasn't recorded as trusted, and `--dangerously-bypass-hook-trust` is ignored in TUI mode
-      // (openai/codex#24093) — so an interactive Codex session would run with no gate at all. Until hook
-      // trust can be pre-seeded we take the feature gap over the security hole. See docs/codex-runtime.md.
-      attachableUnattended: false, residentChat: false,
+      // Attachable since v0.281.0. Codex refuses to run a hook whose hash it hasn't recorded as trusted,
+      // and `--dangerously-bypass-hook-trust` is ignored in TUI mode (openai/codex#24093), which used to
+      // force every run down `codex exec`. The launcher now PRE-SEEDS the trust hash, so the TUI runs
+      // fully governed — and `guardHookTrust` kills any session that still shows the review prompt, so a
+      // stale hash after a Codex upgrade fails loud instead of letting someone opt out of the gate.
+      attachableUnattended: true, residentChat: true,
       // Codex's rollout JSONL is parsed by src/edge/codex-transcript.ts, so cost / engaged time /
       // turns / tool calls and the friendly chat timeline all work.
       transcript: true, nativeSkills: false, nativeSubagents: false,
