@@ -4,10 +4,12 @@
 > leadership agents that guide other agents *and* humans toward company success? Is that a new
 > primitive, and is it something bigger than Goals?
 >
-> **The verdict: no new primitive.** The leadership team is already built — nine pieces doing
+> **The verdict: no new primitive.** The leadership team is already built — ten pieces doing
 > exactly that work, scattered across `src/edge/` with no shared spine. What's missing is one
-> unifying concept, one genuinely primitive-shaped object (**Intervention**), and one governed
-> **scope** (`fleet:read`). This doc is the consolidation plan.
+> unifying concept, one genuinely primitive-shaped object (**`Intervention`**, §3.2), one governed
+> **scope** (`fleet:read`, §3.1), and — for the "master agents that automatically run and fix
+> things" instinct — a **bounded autonomy grant** (**Leadership mode**, §5), whose Tier 1 is mostly
+> a scheduler over fix endpoints that already ship. This doc is the consolidation plan.
 
 ---
 
@@ -119,10 +121,12 @@ top of `goals-plan.md` until goals themselves are being actively contested in pr
 
 These are guardrails on anything built here, not preferences.
 
-1. **Propose-don't-apply holds, permanently.** The pattern is already eight tools deep —
-   `goal_propose`, `policy_propose`, `agent_propose_update`, `skill_propose`, `automation_propose`,
-   `host_propose`, `connection_request`, `secret_request`. An oversight agent gets **read** breadth
-   and **propose** authority. Never apply.
+1. **Propose-don't-apply is the default, and the only thing that may override it is the §5 tier
+   test.** The pattern is already eight tools deep — `goal_propose`, `policy_propose`,
+   `agent_propose_update`, `skill_propose`, `automation_propose`, `host_propose`,
+   `connection_request`, `secret_request`. An oversight agent gets **read** breadth and **propose**
+   authority by default; it earns auto-apply only for a *named, reversible, effect-inert* action on
+   the Tier 1/2 list (§5), never as a blanket privilege and never for anything in Tier 3.
 2. **No oversight agent writes the guidance-injection channel.** `deriveGuidance` →
    `buildCompanyMd` → *every agent's system prompt* is the highest-blast-radius surface in the
    product, and it has already shipped garbage twice (v0.280.0: the topic line reading "handed,
@@ -139,22 +143,106 @@ These are guardrails on anything built here, not preferences.
    `concierge` in `src/edge/concierge.ts`). *Oversight plane* is the internal/engine name; the
    console word stays **Insights**.
 
-## 5. Sequenced build
+## 5. Leadership mode — bounded autonomy
+
+> *"Master agents with more access that automatically run and fix things."*
+
+The instinct is right and most of it is already built. Leadership mode decomposes into three parts,
+and **two of them ship today**:
+
+| Part | Status |
+|---|---|
+| **Detect** — what is wrong, stale, or underperforming | ✅ `insights.ts`, `improvements.ts`, `measurement.ts`, `reliability.ts` |
+| **Act** — a governed agent that can fix it | ✅ the `System` agents (`analyst`, `improver`, `skill-scout`, `strategist`, `consolidator`) |
+| **Permission to act unasked** | ❌ the only real gap |
+
+So the missing piece is **not access**. It is an **autonomy grant**.
+
+### 5.1 The reframe: bound by blast radius, not by trust level
+
+"More access" is the wrong axis — it is vague, unauditable, and it converts one bad LLM turn into
+an incident. The grant is instead a **named list of pre-approved actions**, and the test for
+membership is mechanical:
+
+> **An action may auto-apply only if it is (a) reversible *and* (b) effect-inert — undoing it
+> actually undoes it.**
+
+Both halves are load-bearing, and (b) is the one that is easy to miss. Applying an improver proposal
+is *technically* reversible — `os.agentRevisions.commit` snapshots it and it rolls back. But the
+rewritten prompt changes what that agent does on every run until someone notices, and reverting the
+file does **not** undo those runs. **Reversibility of the artifact is not reversibility of its
+effects.** Archiving a dead KB page has no downstream behaviour; rewriting a system prompt does.
+
+### 5.2 The three tiers
+
+**Tier 1 — janitorial: auto-run.** Reversible *and* effect-inert. These already exist as
+human-triggered buttons, and they are already the right shape — each is a **deterministic
+plan/apply split** (`GET` previews with no mutation, `POST` applies), each is reversible by
+construction (soft-archive, history retained, restore from the UI), each is audited and owner/admin
+gated:
+
+| Endpoint | Fix |
+|---|---|
+| `/api/insights/memory/cleanup` | prune + merge dead memories |
+| `/api/insights/kb/tidy` | archive never-read, aged pages |
+| `/api/insights/tasks/reconcile` | close finished-but-open tasks (run succeeded, agent never closed it) |
+| `/api/insights/library/tidy` | soft-archive orphaned artifacts |
+| `/api/insights/sessions/tidy` | soft-archive old settled sessions |
+
+**Putting these five on a schedule *is* Leadership mode v1**, and it is nearly free — the plan
+functions already produce the would-do list, so a scheduled run can log exactly what it intends
+before doing it.
+
+**Tier 2 — corrective: auto-apply, announced, one-click revert, always writes an `Intervention`.**
+Reversible but behaviour-affecting, so it ships only where the change is *provably* in the safe
+direction. The canonical case is a **policy tightening**: `applyProposal` already refuses any
+loosening by construction plus an exhaustive monotonicity sweep, so auto-applying a tightening is
+already proven safe — a proof built for a different reason that pays off exactly here. Tier 2
+requires an announcement to the owner and a revert affordance; it never runs silently.
+
+**Tier 3 — structural: propose-only, permanently.** Irreversible, privilege-bearing, or unbounded
+in effect: rewriting another agent's prompt (§5.1), creating or retiring agents, **any** policy
+loosening, spending money, anything touching secrets, and — per §4.2 — the guidance-injection
+channel.
+
+### 5.3 Why `Intervention` (§3.2) becomes load-bearing here
+
+Autonomy without a record is the version that gets switched off in week two: *"the system changed
+things while I slept."* With every auto-fix writing an `Intervention`, the same feature reads as
+*"the OS made 40 moves this week — here they are, what each was meant to do, and which ones
+helped."* **§3.2 is a prerequisite for Tier 2, not a parallel track.** Tier 1 can ship before it;
+Tier 2 must not.
+
+### 5.4 Kill switch
+
+One master toggle (Settings, default **off**), plus per-tier and per-action toggles. A tenant that
+turns Leadership mode off returns to today's behaviour exactly — every Tier 1/2 action remains
+available as the human-triggered button it is now. Nothing here removes a manual path.
+
+## 6. Sequenced build
 
 1. **Name and unify the roster** — present the ten pieces as one standing function on the existing
    Insights page. Zero engine work; pure coherence. This is the change that actually delivers the
    feeling the "God agent" idea was reaching for, and it should ship first precisely because it
    costs nothing to reverse.
-2. **Generalize `Intervention`** (§3.2) — the machinery exists; this makes advice accountable.
-3. **Add `fleet:read`** (§3.1) — unlocks real cross-fleet reasoning and collapses the five bespoke
+2. **Leadership mode Tier 1** (§5.2) — schedule the five existing tidy/cleanup/reconcile endpoints
+   behind an off-by-default toggle. The cheapest real autonomy in the product; no new fix logic.
+3. **Generalize `Intervention`** (§3.2) — the machinery exists; this makes advice accountable, and
+   gates Tier 2.
+4. **Leadership mode Tier 2** (§5.2) — starting with auto-applied policy tightenings, announced and
+   revertable.
+5. **Add `fleet:read`** (§3.1) — unlocks real cross-fleet reasoning and collapses the five bespoke
    provision-and-spawn modules toward one shape.
-4. *(Only if 1–3 land and the gap is still felt)* a single **watcher** `System` agent with
+6. *(Only if 1–5 land and the gap is still felt)* a single **watcher** `System` agent with
    `fleet:read` + propose-only authority. Note that by this point it is a **manifest and a trigger**
    — every capability it needs already exists. That is the proof it was never a primitive.
 
-## 6. Deliberately not building
+## 7. Deliberately not building
 
-- **A God agent with authority over other agents.** It inverts the product's own invariant.
+- **A God agent with authority over other agents.** Bounded autonomy (§5) is a *named list of
+  reversible, effect-inert actions*; it is not authority over other agents, and the distinction is
+  the whole point. An agent that can rewrite another agent's prompt or loosen policy on its own
+  inverts the product's invariant, whatever the toggle is called.
 - **Supervisor/manager-agent framing.** That is the crowded framework narrative (LangGraph
   supervisor, CrewAI hierarchical, AutoGen GroupChat) and walks off the whitespace
   `docs/agent-os-plan.md` identified. Our version is differentiated precisely because it is
@@ -164,12 +252,18 @@ These are guardrails on anything built here, not preferences.
 - **An LLM stall-sensor wired into Dreaming.** Already assessed and deferred in `goals-plan.md`
   (Slice 3, Phase 3); nothing here changes that.
 
-## 7. Open decisions
+## 8. Open decisions
 
 1. **Intervention storage** — a dedicated table + event log (Tasks/KB shape), or an audit-event
    convention plus a view? Leaning table: verdicts need a stable id to attach to and to re-score.
 2. **`fleet:read` granularity** — one scope, or split `fleet:stats` (aggregates only) from
    `fleet:transcripts` (session bodies)? Leaning split — reading every transcript is a materially
    larger grant than reading counts, and the split is much easier to give than to retract.
-3. **Whether step 4 is ever taken.** Deliberately left open; steps 1–3 stand on their own merits
-   and may well dissolve the original ask.
+3. **Tier 1 announcement** — does a scheduled janitorial run post anything (a digest line), or stay
+   silent? Leaning **one digest line**: silence is what makes autonomy feel uncontrolled, and the
+   digest already exists as the daily surface.
+4. **Does Tier 1 write an `Intervention`?** Leaning no for v1 — janitorial actions are effect-inert
+   by definition, so there is no outcome to score, and scoring noise would dilute the Tier 2
+   verdicts that matter. Revisit if a tidy ever correlates with a regression.
+5. **Whether step 6 is ever taken.** Deliberately left open; steps 1–5 stand on their own merits and
+   may well dissolve the original ask.
