@@ -7758,6 +7758,17 @@ function OverviewPage({ me, sessions, members, agents, maturity, serverTz, onOpe
   )
 }
 
+// The status machine (todo/doing/blocked/done/cancelled) collapsed to the three questions a list gets
+// asked. `open` = still live work (blocked included — it's unfinished), `blocked` = the subset needing a
+// human, `done` = terminal, cancelled with it (both mean "off my plate"). '' matches everything.
+type QuickStatus = '' | 'open' | 'blocked' | 'done'
+function matchesQuickStatus(t: Task, s: QuickStatus): boolean {
+  if (s === 'open') return t.status !== 'done' && t.status !== 'cancelled'
+  if (s === 'blocked') return t.status === 'blocked'
+  if (s === 'done') return t.status === 'done' || t.status === 'cancelled'
+  return true
+}
+
 function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
@@ -7799,6 +7810,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [fGoal, setFGoal] = useState('') // '' = all
   const [fOverdue, setFOverdue] = useState(false)
   const [fLive, setFLive] = useState(false) // show only tasks with a running session
+  // Quick filters: the two lenses the board couldn't express at all. `fStatus` collapses the status
+  // machine into the three questions actually asked of a list — what's still open, what's stuck, what's
+  // finished — and `fUnassigned` finds work nobody has picked up. Default '' (everything) so the view
+  // opens exactly as it always has.
+  const [fStatus, setFStatus] = useState<'' | 'open' | 'blocked' | 'done'>('')
+  const [fUnassigned, setFUnassigned] = useState(false)
   const [sort, setSort] = useState<'priority' | 'due' | 'updated'>('priority')
   // drag-and-drop
   const [dragId, setDragId] = useState<string | null>(null)
@@ -7909,19 +7926,30 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const liveOf = (t: Task): Session | null => { const s = t.lastSessionId ? sessionById.get(t.lastSessionId) : undefined; return s && isLive(s) ? s : null }
   const attach = (t: Task, s: Session) => onOpen(s.tmux || ('aos-' + s.id), 'Task · ' + t.title)
 
-  const visible = (tasks ?? []).filter((t) => {
+  // One predicate for every lens, with `skip` naming a dimension to ignore. That's what lets each quick
+  // filter show a count of what picking it would actually yield *given the other filters* — a facet count,
+  // not a global tally, so "Blocked 7" doesn't promise 7 when you're already narrowed to one assignee.
+  const passes = (t: Task, skip?: 'status' | 'unassigned' | 'overdue'): boolean => {
     if (mine && t.assignee !== me.id) return false
     if (fAssignee && t.assignee !== fAssignee) return false
     if (fLabel && !t.labels.includes(fLabel)) return false
     if (fPriority !== '' && t.priority !== Number(fPriority)) return false
     if (fGoal && t.goalId !== fGoal) return false
-    if (fOverdue && !dueMeta(t.dueAt, t.status)?.overdue) return false
+    if (skip !== 'overdue' && fOverdue && !dueMeta(t.dueAt, t.status)?.overdue) return false
     if (fLive && !liveOf(t)) return false
+    if (skip !== 'unassigned' && fUnassigned && t.assignee) return false
+    if (skip !== 'status' && !matchesQuickStatus(t, fStatus)) return false
     return true
-  })
+  }
+  const visible = (tasks ?? []).filter((t) => passes(t))
+  // Facet counts for the quick-filter row (each ignores its own dimension, as above).
+  const statusPool = (tasks ?? []).filter((t) => passes(t, 'status'))
+  const statusCount = (s: '' | 'open' | 'blocked' | 'done') => statusPool.filter((t) => matchesQuickStatus(t, s)).length
+  const unassignedCount = (tasks ?? []).filter((t) => passes(t, 'unassigned') && !t.assignee).length
+  const overdueCount = (tasks ?? []).filter((t) => passes(t, 'overdue') && dueMeta(t.dueAt, t.status)?.overdue).length
   const goalsPresent = [...new Set((tasks ?? []).map((t) => t.goalId).filter(Boolean) as string[])]
-  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive
-  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false) }
+  const filterActive = mine || fAssignee || fLabel || fPriority !== '' || fGoal || fOverdue || fLive || fStatus !== '' || fUnassigned
+  const clearFilters = () => { setMine(false); setFAssignee(''); setFLabel(''); setFPriority(''); setFGoal(''); setFOverdue(false); setFLive(false); setFStatus(''); setFUnassigned(false) }
 
   const liveTasks = visible.filter((t) => liveOf(t))
   const liveCount = liveTasks.length
@@ -8290,12 +8318,28 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <Button size="sm" onClick={() => setShowNew((v) => !v)}><Plus className="mr-1 h-3.5 w-3.5" />New task</Button>
       </div>
 
-      {/* Filter bar */}
+      {/* Filter bar. Quick filters lead — one click each, with a live count of what they'd yield — and the
+          narrower select-driven filters follow. */}
       <div className="flex flex-wrap items-center gap-2 text-xs">
+        <div className="inline-flex overflow-hidden rounded-md border">
+          {([['', 'All'], ['open', 'Open'], ['blocked', 'Blocked'], ['done', 'Done']] as [QuickStatus, string][]).map(([s, label], i) => {
+            const n = statusCount(s)
+            const on = fStatus === s
+            const tone = on ? (s === 'blocked' ? 'bg-red-500/10 font-medium text-red-600' : 'bg-muted font-medium') : 'text-muted-foreground'
+            return (
+              <button key={s || 'all'} onClick={() => setFStatus(s)} title={s === 'open' ? 'Everything not finished' : s === 'blocked' ? 'Stuck — needs a human' : s === 'done' ? 'Done and cancelled' : 'No status filter'} className={`px-2.5 py-1 ${i ? 'border-l' : ''} ${tone}`}>
+                {label}{s !== '' && <span className="ml-1 font-mono text-[10px] tabular-nums opacity-70">{n}</span>}
+              </button>
+            )
+          })}
+        </div>
         <div className="inline-flex overflow-hidden rounded-md border">
           <button onClick={() => setMine(false)} className={`px-2.5 py-1 ${!mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>All</button>
           <button onClick={() => setMine(true)} className={`border-l px-2.5 py-1 ${mine ? 'bg-muted font-medium' : 'text-muted-foreground'}`}>My tasks</button>
         </div>
+        <button onClick={() => setFUnassigned((v) => !v)} title="Work nobody has picked up" className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fUnassigned ? 'border-amber-500 bg-amber-500/10 text-amber-600' : 'text-muted-foreground'}`}>
+          <User className="h-3.5 w-3.5" />Unassigned{unassignedCount > 0 && <span className="font-mono text-[10px] tabular-nums">{unassignedCount}</span>}
+        </button>
         <Select items={{ all: 'Anyone', ...Object.fromEntries(assigneesPresent.map((a) => [a, nameOf(a)])) }} value={fAssignee || 'all'} onValueChange={(v) => setFAssignee(v === 'all' ? '' : v || '')}>
           <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
           <SelectContent><SelectItem value="all">Anyone</SelectItem>{assigneesPresent.map((a) => <SelectItem key={a} value={a}>{nameOf(a)}</SelectItem>)}</SelectContent>
@@ -8317,7 +8361,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           </Select>
         )}
         <button onClick={() => setFLive((v) => !v)} title="Only tasks with a running session" className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 ${fLive ? 'border-sky-500 bg-sky-500/10 text-sky-600' : 'text-muted-foreground'}`}><span className={`h-1.5 w-1.5 rounded-full ${fLive || liveCount ? 'bg-sky-500 motion-safe:animate-pulse' : 'bg-muted-foreground/40'}`} />Live{liveCount > 0 && <span className="font-mono text-[10px] tabular-nums">{liveCount}</span>}</button>
-        <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue</button>
+        <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue{overdueCount > 0 && <span className="font-mono text-[10px] tabular-nums">{overdueCount}</span>}</button>
         {view === 'list' && (
           <>
             <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', goal: 'Group: Goal', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>

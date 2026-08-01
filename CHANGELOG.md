@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.290.0] — 2026-08-01
+### Added
+- **Quick filters on the Tasks board — a status lens and an "Unassigned" chip, both with live counts.**
+  The board could filter by assignee, label, priority, goal, live-session and overdue, but **not by
+  status** — so the list showed every finished task forever (on the live northwind board that's 73 of 126
+  tasks, 58% of it terminal, with 7 blocked tasks buried in the middle). A leading segmented control now
+  collapses the status machine into the three questions a list actually gets asked — **Open** (anything
+  unfinished), **Blocked** (stuck, needs a human — tinted red when active), **Done** (done + cancelled) —
+  and an **Unassigned** chip finds work nobody has picked up. Every quick filter carries a **facet count**:
+  the number computed with its *own* dimension ignored, so "Blocked 7" narrows to "Blocked 2" once you add
+  Unassigned and each count promises exactly what clicking it yields. Overdue gained a count for parity.
+  Defaults are unchanged (**All**), so the view opens the way it always has. `web/src/App.tsx`.
+
 ## [0.289.0] — 2026-08-01
 ### Changed
 - **The goal detail is a full-page room, not a modal.** A goal has too much going on for a dialog —
