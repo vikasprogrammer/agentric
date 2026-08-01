@@ -14248,6 +14248,9 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [video, setVideo] = useState<IntegrationsResp['video']>({ fal: false, atlas: false, backend: null, defaultModel: '', configured: false })
   const [falKey, setFalKey] = useState('')
   const [vidModel, setVidModel] = useState('')
+  const [anthropic, setAnthropic] = useState<IntegrationsResp['anthropic']>({ set: false, source: null, model: 'claude-haiku-4-5' })
+  const [anthKey, setAnthKey] = useState('')
+  const [anthModel, setAnthModel] = useState('')
   // Live Atlas catalog for the default-model comboboxes (dropdown suggestions; the fields stay free text).
   const [atlasModels, setAtlasModels] = useState<{ image: { id: string; label: string; priceUsd: number | null }[]; video: { id: string; label: string; priceUsd: number | null }[] }>({ image: [], video: [] })
   const [chatRouter, setChatRouter] = useState(true)
@@ -14270,6 +14273,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
   const VIDEO_DEFAULT = { fal: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
+  const ANTHROPIC_DEFAULT = { set: false, source: null, model: 'claude-haiku-4-5' } as const
   const apply = (r: IntegrationsResp) => {
     if (r.composio) setComposio(r.composio)
     if (r.webhook) setWebhook(r.webhook)
@@ -14281,6 +14285,8 @@ function IntegrationsSettings({ me }: { me: Member }) {
     if (r.image) setImgModel(r.image.defaultModel || '')
     setVideo(r.video ?? VIDEO_DEFAULT)
     if (r.video) setVidModel(r.video.defaultModel || '')
+    setAnthropic(r.anthropic ?? ANTHROPIC_DEFAULT)
+    if (r.anthropic) setAnthModel(r.anthropic.model || '')
     if (typeof r.chatRouter === 'boolean') setChatRouter(r.chatRouter)
     if (typeof r.chatIdleTimeoutMin === 'number') setChatIdle(r.chatIdleTimeoutMin)
     setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
@@ -14335,7 +14341,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     }
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; anthropicApiKey?: string; anthropicModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
@@ -14886,6 +14892,63 @@ function IntegrationsSettings({ me }: { me: Member }) {
               </div>
             </Field>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Cockpit `ask` tier + router tie-break: a first-party Claude key → answer directly via /v1/messages
+          (fast, no session) instead of the concierge run. Billed to the Anthropic org, not the subscription. */}
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              Cockpit answers (Anthropic)
+              {anthropic.set
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">on{anthropic.source === 'env' ? ' · env' : ''}</Badge>
+                : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">off</Badge>}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              An <strong>Anthropic API key</strong> lets Cockpit's <strong>ask</strong> tier and the router's near-tie
+              tie-break answer directly via Claude — fast, no session — instead of spawning the concierge agent.
+              Billed to your Anthropic org (separate from any Claude Code subscription). Without a key, the concierge
+              still answers, just slower.
+            </p>
+          </div>
+
+          <Field label="Anthropic API key" help="platform.claude.com → API keys. Alternatively set ANTHROPIC_API_KEY in the server environment (the Settings value wins).">
+            <Input
+              type="password"
+              value={anthKey}
+              onChange={(e) => setAnthKey(e.target.value)}
+              placeholder={anthropic.set ? (anthropic.source === 'env' ? 'set via ANTHROPIC_API_KEY env — type a key to override here' : '•••• (saved) — type a new key to replace') : 'sk-ant-…'}
+              className="font-mono text-xs"
+            />
+            <div className="mt-1 flex items-center gap-3">
+              <Button
+                size="sm"
+                onClick={() => save({ ...(anthKey.trim() ? { anthropicApiKey: anthKey.trim() } : {}) }, 'saved')}
+                disabled={busy || !anthKey.trim()}
+              >Save key</Button>
+              {anthropic.set && anthropic.source === 'settings' && (
+                <button type="button" className="text-[11px] text-muted-foreground hover:text-destructive disabled:opacity-50" onClick={() => save({ anthropicApiKey: '' }, 'removed')} disabled={busy}>Remove</button>
+              )}
+            </div>
+          </Field>
+
+          <Field label="Model" help="Which Claude model the direct answers use. Haiku is fastest + cheapest — plenty for a workspace Q&A; agents' own reasoning still runs on your subscription via the concierge.">
+            <Input
+              list="anthropic-models"
+              value={anthModel}
+              onChange={(e) => setAnthModel(e.target.value)}
+              onBlur={() => { if (anthModel.trim() !== (anthropic.model || '')) save({ anthropicModel: anthModel.trim() }, 'model saved') }}
+              placeholder="claude-haiku-4-5"
+              className="font-mono text-xs"
+            />
+            <datalist id="anthropic-models">
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 — fastest + cheapest</option>
+              <option value="claude-sonnet-5">Claude Sonnet 5 — balanced</option>
+              <option value="claude-opus-4-8">Claude Opus 4.8 — most capable</option>
+            </datalist>
+          </Field>
         </CardContent>
       </Card>
     </div>

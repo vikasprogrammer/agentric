@@ -1079,6 +1079,10 @@ export interface IntegrationsResp {
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean }
   /** Video generation backend — which keys are set (never the keys), the active backend, default model. */
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean }
+  /** First-party Anthropic key for the Cockpit `ask` tier + router tie-break (direct /v1/messages, no
+   *  session). `set` = a key is available; `source` = where (Settings vs `ANTHROPIC_API_KEY` env); the
+   *  key itself is never returned. `model` = which Claude model the direct path uses (default Haiku). */
+  anthropic: { set: boolean; source: 'settings' | 'env' | null; model: string }
   /** Generic `/agent` chat router: when on, an unmatched Slack/Discord message reaches any agent by name. */
   chatRouter: boolean
   /** Warm (resident) Slack thread session idle-kill, minutes. 0 = residence off (every reply cold-starts). */
@@ -1593,7 +1597,7 @@ export const api = {
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/requests/' + encodeURIComponent(id) + '/dismiss'),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
   atlasModels: () => call<{ configured: boolean; image: { id: string; label: string; priceUsd: number | null }[]; video: { id: string; label: string; priceUsd: number | null }[]; error?: string }>('GET', '/api/integrations/atlas/models'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; anthropicApiKey?: string; anthropicModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   // Per-member GitHub (user-to-server OAuth): each member links their OWN account so run-as sessions
   // push / open PRs as the actual human. `connect` returns the authorize URL to navigate to.
   githubMe: () => call<GithubMe>('GET', '/api/github/me'),

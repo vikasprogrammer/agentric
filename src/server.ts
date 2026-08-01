@@ -4421,6 +4421,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Only touch a field when the client sends it as a string; '' clears the key.
     if (typeof b.composioApiKey === 'string') os.settings.setComposioApiKey(b.composioApiKey, me.email);
     if (typeof b.composioWebhookSecret === 'string') os.settings.setComposioWebhookSecret(b.composioWebhookSecret, me.email);
+    // Anthropic key/model for the Cockpit ask tier + router tie-break (direct /v1/messages, no session).
+    if (typeof b.anthropicApiKey === 'string') os.settings.setAnthropicKey(b.anthropicApiKey, me.email);
+    if (typeof b.anthropicModel === 'string') os.settings.setAnthropicModel(b.anthropicModel, me.email);
     // Slack tokens: changing either re-dials (or tears down) the Socket-Mode connection.
     const slackTouched = typeof b.slackAppToken === 'string' || typeof b.slackBotToken === 'string';
     if (typeof b.slackAppToken === 'string') os.settings.setSlackAppToken(b.slackAppToken, me.email);
@@ -6377,6 +6380,7 @@ function integrationsView(os: AgentOS): {
   github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
   video: { fal: boolean; atlas: boolean; backend: 'fal' | 'atlas' | null; defaultModel: string; configured: boolean };
+  anthropic: { set: boolean; source: 'settings' | 'env' | null; model: string };
   chatRouter: boolean;
   chatIdleTimeoutMin: number;
   updatedAt?: number;
@@ -6398,6 +6402,7 @@ function integrationsView(os: AgentOS): {
     github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken() },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },
     video: { fal: video.fal, atlas: video.atlas, backend: video.backend, defaultModel: video.defaultModel, configured: os.settings.videoGenConfigured() },
+    anthropic: (() => { const a = os.settings.anthropicMeta(); return { set: a.set, source: a.source, model: a.model }; })(),
     chatRouter: os.settings.chatRouterEnabled(),
     chatIdleTimeoutMin: os.settings.chatIdleTimeoutMinutes(),
     updatedAt: meta.updatedAt,
