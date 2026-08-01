@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.289.0] — 2026-08-01
+### Changed
+- **The goal detail is a full-page room, not a modal.** A goal has too much going on for a dialog —
+  linked tasks, the strategist plan step, a timeline you scroll, and a sign-off decision — and the modal
+  made all of it compete inside one scrolling box. It now opens the same way a task does: a header with a
+  back-to-Goals control, status chip and id; the work as the main column under **Tasks / Description /
+  Activity** tabs; and the goal's own state (sign-off box, status, owner, target, due, progress, delete)
+  as a 320px sidebar. The active tab lives in the URL (`#/goals/<id>/activity`), so a permalink opens
+  where you meant it to. Editing takes over the main column instead of stacking another layer, and the
+  Activity tab pins its comment box to the bottom the way a discussion does. `web/src/App.tsx`.
+
 ## [0.288.0] — 2026-08-01
 ### Added
 - **Cockpit `ask` + router tie-break can answer via first-party Claude — configured from the web UI.**

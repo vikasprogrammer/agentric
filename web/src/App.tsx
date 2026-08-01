@@ -6878,6 +6878,17 @@ const goalStatusBorder = (s: GoalStatus): string => ({
   achieved: 'border-l-emerald-500',
   abandoned: 'border-l-red-500',
 }[s])
+// Compact status chip for a goal — the room header's twin of TaskStatusPill. A goal whose work is all
+// done reads "Ready to close" rather than "active": the derived state is the useful one to see.
+function GoalStatusPill({ status, ready }: { status: GoalStatus; ready?: boolean }) {
+  if (ready) return <span className="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0 text-[10px] font-medium text-emerald-600"><Check className="h-3 w-3" />Ready to close</span>
+  const tone = status === 'achieved' ? 'bg-emerald-500/15 text-emerald-600'
+    : status === 'abandoned' ? 'bg-red-500/15 text-red-600'
+    : status === 'draft' ? 'bg-muted text-muted-foreground'
+    : 'bg-sky-500/15 text-sky-600'
+  return <span className={`shrink-0 rounded px-1.5 py-0 text-[10px] font-medium capitalize ${tone}`}>{status}</span>
+}
+
 // A goal is COMPLETE-in-fact when every task filed under it has finished — derived from linked-task
 // status, never stored. It stays `active` until a human signs it off: "all the filed work is done" is a
 // weaker claim than "the outcome was achieved" (the plan may simply have been incomplete), and goal state
@@ -6898,6 +6909,8 @@ function GoalProgressBar({ p, className = '' }: { p?: GoalProgress; className?: 
   )
 }
 
+type GoalTab = 'tasks' | 'description' | 'activity'
+
 function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
@@ -6907,9 +6920,13 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const [q, setQ] = useState('')
   const [fStatus, setFStatus] = useState<GoalStatus | ''>('') // '' = all
   const [autoPlan, setAutoPlan] = useState(false) // scheduler auto-plans stuck goals (owner/admin toggle)
-  // Selection is URL-driven (#/goals/<id>) so a goal detail is a shareable permalink.
-  const selId = goalId || null
+  // Selection is URL-driven (#/goals/<id>[/<tab>]) so a goal — and the tab you're on — is a shareable
+  // permalink. Same scheme as the task room, which this page's detail view mirrors.
+  const [routeGoalId, routeTab] = (goalId || '').split('/')
+  const selId = routeGoalId || null
+  const roomTab: GoalTab = routeTab === 'description' || routeTab === 'activity' ? routeTab : 'tasks'
   const openGoal = (id: string) => nav('goals', id)
+  const openGoalTab = (id: string, tab: GoalTab) => nav('goals', tab === 'tasks' ? id : `${id}/${tab}`)
   const closeGoal = () => { setEditing(false); nav('goals') }
   const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; progress?: GoalProgress } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -7023,6 +7040,257 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
 
   if (!goals) return <div className="text-sm text-muted-foreground">Loading…</div>
 
+  // ── the goal room ────────────────────────────────────────────────────────────
+  // A goal has too much going on for a dialog — linked tasks, a plan step, a timeline you scroll, and a
+  // sign-off decision. So the detail is a full-page room (the same shape as the task room): the work as
+  // the main column, the goal's own state as a sidebar. No modal, and the tab lives in the URL.
+
+  /** Sign-off box: the goal's work is all done, so put the decision in front of the person rather than
+   *  leaving them to find `achieved` in the status dropdown. Rendered at the top of the sidebar. */
+  const signOffBox = () => detail && isAdmin && goalComplete(detail.goal, detail.progress) && (
+    <div className="space-y-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3">
+      <div className="flex items-start gap-2 text-[13px] text-emerald-800 dark:text-emerald-300">
+        <Check className="mt-0.5 h-4 w-4 shrink-0" />
+        <span>All {detail.progress?.counted} task{detail.progress?.counted === 1 ? '' : 's'} under this goal are done. Was the outcome achieved?</span>
+      </div>
+      {signingOff ? (
+        <div className="space-y-2">
+          <textarea
+            value={outcome}
+            onChange={(e) => setOutcome(e.target.value)}
+            placeholder="What actually changed? (optional — kept on the goal's timeline, and what agents read later)"
+            rows={3}
+            className="w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
+          <div className="flex items-center gap-2">
+            <Button size="sm" className="h-7" disabled={busy} onClick={achieve}>Confirm achieved</Button>
+            <Button size="sm" variant="ghost" className="h-7" onClick={() => { setSigningOff(false); setOutcome('') }}>Cancel</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" className="h-7" disabled={busy} onClick={() => setSigningOff(true)}><Check className="mr-1 h-3.5 w-3.5" />Mark achieved</Button>
+          <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setPlanNote(''); setHint(''); openGoalTab(detail.goal.id, 'tasks'); setShowPlan(true) }}>
+            <Wand2 className="mr-1 h-3.5 w-3.5" />Not yet — plan the gap
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+
+  /** The room's right rail: everything that IS the goal's own state (status, owner, target, horizon,
+   *  progress) plus the destructive action, mirroring the task room's sidebar. */
+  const goalSidebar = () => detail && (
+    <div className="space-y-3.5">
+      {signOffBox()}
+      <Field label="Status">
+        {isAdmin ? (
+          <Select value={detail.goal.status} onValueChange={(v) => v && patch(detail.goal.id, { status: v as GoalStatus })}>
+            <SelectTrigger className="h-8 w-full min-w-0"><SelectValue /></SelectTrigger>
+            <SelectContent>{GOAL_STATUSES.map((s) => <SelectItem key={s.status} value={s.status}>{s.label}</SelectItem>)}</SelectContent>
+          </Select>
+        ) : <div className={`h-8 text-sm capitalize ${goalStatusTone(detail.goal.status)}`}>{detail.goal.status}</div>}
+      </Field>
+      <Field label="Owner">
+        {isAdmin ? (
+          <Select value={detail.goal.owner || 'none'} onValueChange={(v) => patch(detail.goal.id, { owner: !v || v === 'none' ? null : v })}>
+            <SelectTrigger className="h-8 w-full min-w-0"><SelectValue>{(v) => nameOf(!v || v === 'none' ? undefined : (v as string))}</SelectValue></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Unassigned</SelectItem>
+              {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
+            </SelectContent>
+          </Select>
+        ) : <div className="h-8 text-sm text-muted-foreground">{detail.goal.owner ? ownerChip(detail.goal.owner) : '—'}</div>}
+      </Field>
+      <Field label="Target">
+        {isAdmin
+          ? <Input key={detail.goal.id} defaultValue={detail.goal.target ?? ''} placeholder="e.g. < 10 min by Q3" className="h-8" onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.goal.target ?? '')) patch(detail.goal.id, { target: v || null }) }} />
+          : <div className="h-8 text-sm text-muted-foreground">{detail.goal.target || '—'}</div>}
+      </Field>
+      <Field label="Due date">
+        {isAdmin
+          ? <Input type="date" value={toDateInput(detail.goal.dueAt)} onChange={(e) => patch(detail.goal.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
+          : <div className="h-8 text-sm text-muted-foreground">{detail.goal.dueAt ? new Date(detail.goal.dueAt).toLocaleDateString() : '—'}</div>}
+      </Field>
+      {detail.progress && detail.progress.total > 0 && (
+        <div>
+          <div className="mb-1 text-[11px] uppercase tracking-wider text-muted-foreground">Progress</div>
+          <GoalProgressBar p={detail.progress} />
+        </div>
+      )}
+      <div className="border-t pt-3 text-[11px] text-muted-foreground">
+        Created {new Date(detail.goal.createdAt).toLocaleDateString()}{detail.goal.createdBy ? ` by ${nameOf(detail.goal.createdBy)}` : ''}
+      </div>
+      {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
+      {isAdmin && (
+        confirmDel
+          ? <div className="flex items-center gap-2">
+              <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.goal.id)}>Confirm delete</Button>
+              <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
+            </div>
+          : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
+              <Trash2 className="mr-1 h-3.5 w-3.5" />Delete goal
+            </Button>
+      )}
+    </div>
+  )
+
+  /** Tasks tab — the work grounded under this goal, and the strategist step that fills it. */
+  const tasksTab = () => detail && (
+    <div className="h-full overflow-y-auto p-4">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Linked tasks{detail.tasks.length ? ` · ${detail.tasks.length}` : ''}</span>
+        <div className="flex items-center gap-2">
+          {detail.progress && detail.progress.total > 0 && <span className="text-[11px] text-muted-foreground">{detail.progress.percent}% · {detail.progress.done}/{detail.progress.total} done</span>}
+          {isAdmin && (detail.goal.status === 'active' || detail.goal.status === 'draft') && !showPlan && (
+            <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setPlanNote(''); setHint(''); setShowPlan(true) }}>
+              <Wand2 className="mr-1 h-3.5 w-3.5" />Plan this goal
+            </Button>
+          )}
+        </div>
+      </div>
+      {/* Pre-plan steering — shape what the strategist files before it runs. */}
+      {isAdmin && showPlan && (detail.goal.status === 'active' || detail.goal.status === 'draft') && (
+        <div className="mb-2 space-y-2 rounded-md border bg-muted/20 p-2.5">
+          <div className="text-[11px] font-medium text-muted-foreground">Steer the plan <span className="font-normal">(optional)</span></div>
+          <textarea
+            value={planGuidance}
+            onChange={(e) => setPlanGuidance(e.target.value)}
+            placeholder="Guidance for the strategist — focus areas, constraints, which specialists to prefer…"
+            rows={3}
+            className="w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+          />
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-muted-foreground">Max tasks</label>
+            <Input type="number" min={1} value={planMax} onChange={(e) => setPlanMax(e.target.value)} placeholder="—" className="h-7 w-20" />
+            <div className="flex-1" />
+            <Button size="sm" variant="ghost" className="h-7" disabled={busy} onClick={() => { setShowPlan(false); setPlanGuidance(''); setPlanMax('') }}>Cancel</Button>
+            <Button size="sm" className="h-7" disabled={busy} onClick={() => plan(detail.goal.id)}>
+              <Wand2 className="mr-1 h-3.5 w-3.5" />Draft plan
+            </Button>
+          </div>
+        </div>
+      )}
+      {planNote && (
+        <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+          <span>{planNote}</span>
+          {planSession && (
+            <a href={navHref('sessions', 'aos-' + planSession)} onClick={onNavClick(() => nav('sessions', 'aos-' + planSession))} className="inline-flex shrink-0 items-center gap-1 font-medium no-underline hover:underline">
+              Go to session<ChevronRight className="h-3 w-3" />
+            </a>
+          )}
+        </div>
+      )}
+      <div className="space-y-1.5">
+        {detail.tasks.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm text-muted-foreground">
+            <ListChecks className="h-6 w-6 opacity-40" />
+            No tasks linked yet — set this goal on a task to ground work under it.
+          </div>
+        )}
+        {detail.tasks.map((t) => {
+          // Dependency gating — resolve each blocker from this goal's own tasks (no extra fetch).
+          // A dep is *unmet* only if its blocker is present here AND not yet done/cancelled.
+          const unmet = (t.dependsOn ?? []).filter((id) => { const b = detail.tasks.find((x) => x.id === id); return b && b.status !== 'done' && b.status !== 'cancelled' }).length
+          return (
+            <a
+              key={t.id}
+              href={navHref('tasks', t.id)}
+              onClick={onNavClick(() => nav('tasks', t.id))}
+              className="flex items-center gap-2 rounded-md border bg-muted/20 px-2.5 py-2 text-[13px] no-underline hover:bg-muted"
+            >
+              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] capitalize ${taskStatusTone(t.status)}`}>{t.status}</span>
+              <span className={`min-w-0 flex-1 truncate text-foreground ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
+              {unmet > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmet}</span>}
+            </a>
+          )
+        })}
+      </div>
+    </div>
+  )
+
+  /** Activity tab — the append-only timeline plus the comment box that writes to it. */
+  const activityTab = () => detail && (
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
+        {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
+        {detail.events.slice().reverse().map((e) => (
+          <div key={e.id} className="rounded-md border bg-muted/20 p-2">
+            <div className="flex items-center justify-between gap-2">
+              <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
+              <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+            </div>
+            {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
+            <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="shrink-0 border-t p-3">
+        <CommentBox onSubmit={async (text) => { await api.commentGoal(detail.goal.id, text); await refreshDetail(detail.goal.id) }} />
+      </div>
+    </div>
+  )
+
+  const roomView = () => {
+    if (!detail) return null
+    const g = detail.goal
+    const ready = goalComplete(g, detail.progress)
+    const tabBtn = (id: GoalTab, label: ReactNode) => (
+      <a href={navHref('goals', id === 'tasks' ? g.id : `${g.id}/${id}`)} onClick={onNavClick(() => openGoalTab(g.id, id))} className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium no-underline transition-colors ${roomTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</a>
+    )
+    return (
+      <div className="flex h-[calc(100vh-5.5rem)] flex-col overflow-hidden rounded-lg border bg-background">
+        <div className="flex items-center gap-3 border-b px-4 py-2.5">
+          <button onClick={closeGoal} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-4 w-4" />Goals</button>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <GoalStatusPill status={g.status} ready={ready} />
+            <span className="truncate text-[15px] font-semibold">{g.title}</span>
+            <span className="hidden shrink-0 font-mono text-[11px] text-muted-foreground sm:inline">{g.id}</span>
+          </div>
+          {isAdmin && !editing && <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>}
+          <button onClick={closeGoal} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div className="flex min-w-0 flex-col overflow-hidden border-b lg:border-b-0 lg:border-r">
+            {editing ? (
+              // Editing takes over the main column (the sidebar's live fields keep working) — same idea
+              // as the task room, where an edit replaces the body rather than opening another layer.
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+                <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
+                <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={16} className="font-mono text-xs" /></Field>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Scrolls rather than clips: at phone widths three tabs don't fit the column. */}
+                <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b px-2">
+                  {tabBtn('tasks', <><ListChecks className="h-3.5 w-3.5" />Tasks{detail.tasks.length > 0 && <span className="ml-0.5 text-[11px] opacity-70">{detail.tasks.length}</span>}</>)}
+                  {tabBtn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
+                  {tabBtn('activity', <><HistoryIcon className="h-3.5 w-3.5" />Activity</>)}
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  {roomTab === 'tasks' && tasksTab()}
+                  {roomTab === 'description' && (
+                    <div className="h-full overflow-y-auto p-4">
+                      {g.body
+                        ? <div className="break-words text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{g.body}</ReactMarkdown></div>
+                        : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description.{isAdmin && <> <button className="text-primary underline" onClick={startEdit}>Add one</button></>}</div>}
+                    </div>
+                  )}
+                  {roomTab === 'activity' && activityTab()}
+                </div>
+              </>
+            )}
+          </div>
+          <div className="overflow-y-auto bg-muted/20 p-4">{goalSidebar()}</div>
+        </div>
+      </div>
+    )
+  }
+
   const row = (g: Goal) => {
     const dm = dueMeta(g.dueAt, g.status === 'achieved' || g.status === 'abandoned' ? 'done' : 'todo')
     const p = progress[g.id]
@@ -7047,6 +7315,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
 
   return (
     <div className="space-y-4">
+      {detail ? roomView() : (<>
       <div className="flex flex-wrap items-center gap-2">
         <p className="mr-auto max-w-xl text-sm text-muted-foreground">
           The top of the strategy→task ladder. Frame the outcomes the fleet is working toward; agents propose
@@ -7143,205 +7412,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
         </table>
       </div>
 
-      {detail && (
-        <Dialog open onOpenChange={(o) => { if (!o) closeGoal() }}>
-          <DialogContent className="max-h-[88vh] w-full max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-2xl lg:max-w-3xl">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2 pr-8">
-                {editing ? 'Edit goal' : (
-                  <>
-                    <span className="min-w-0 flex-1 truncate">{detail.goal.title}</span>
-                    {isAdmin && <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" title="Edit" onClick={startEdit}><Pencil className="h-3.5 w-3.5" /></Button>}
-                  </>
-                )}
-              </DialogTitle>
-            </DialogHeader>
-
-            {editing ? (
-              <div className="space-y-3">
-                <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
-                <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={10} className="font-mono text-xs" /></Field>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3.5">
-                <div className="font-mono text-xs text-muted-foreground">{detail.goal.id}{detail.goal.createdBy ? ` · by ${nameOf(detail.goal.createdBy)}` : ''}</div>
-
-                {/* The sign-off prompt: this goal's work is all done, so put the decision in front of the
-                    person instead of leaving them to find `achieved` in the status dropdown. Both outcomes
-                    are one click — it's finished, or the plan missed something and needs more work. */}
-                {isAdmin && goalComplete(detail.goal, detail.progress) && (
-                  <div className="space-y-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3">
-                    <div className="flex items-start gap-2 text-sm text-emerald-800 dark:text-emerald-300">
-                      <Check className="mt-0.5 h-4 w-4 shrink-0" />
-                      <span>All {detail.progress?.counted} task{detail.progress?.counted === 1 ? '' : 's'} under this goal are done. Was the outcome achieved?</span>
-                    </div>
-                    {signingOff ? (
-                      <div className="space-y-2">
-                        <textarea
-                          value={outcome}
-                          onChange={(e) => setOutcome(e.target.value)}
-                          placeholder="What actually changed? (optional — kept on the goal's timeline, and what agents read later)"
-                          rows={3}
-                          className="w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
-                        />
-                        <div className="flex items-center gap-2">
-                          <Button size="sm" className="h-7" disabled={busy} onClick={achieve}>Confirm achieved</Button>
-                          <Button size="sm" variant="ghost" className="h-7" onClick={() => { setSigningOff(false); setOutcome('') }}>Cancel</Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button size="sm" className="h-7" disabled={busy} onClick={() => setSigningOff(true)}><Check className="mr-1 h-3.5 w-3.5" />Mark achieved</Button>
-                        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setPlanNote(''); setHint(''); setShowPlan(true) }}>
-                          <Wand2 className="mr-1 h-3.5 w-3.5" />Not yet — plan the gap
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {detail.goal.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.goal.body}</ReactMarkdown></div>}
-
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <Field label="Status">
-                    {isAdmin ? (
-                      <Select value={detail.goal.status} onValueChange={(v) => v && patch(detail.goal.id, { status: v as GoalStatus })}>
-                        <SelectTrigger className="h-8 w-full min-w-0"><SelectValue /></SelectTrigger>
-                        <SelectContent>{GOAL_STATUSES.map((s) => <SelectItem key={s.status} value={s.status}>{s.label}</SelectItem>)}</SelectContent>
-                      </Select>
-                    ) : <div className={`h-8 text-sm capitalize ${goalStatusTone(detail.goal.status)}`}>{detail.goal.status}</div>}
-                  </Field>
-                  <Field label="Owner">
-                    {isAdmin ? (
-                      <Select value={detail.goal.owner || 'none'} onValueChange={(v) => patch(detail.goal.id, { owner: !v || v === 'none' ? null : v })}>
-                        <SelectTrigger className="h-8 w-full min-w-0"><SelectValue>{(v) => nameOf(!v || v === 'none' ? undefined : (v as string))}</SelectValue></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">Unassigned</SelectItem>
-                          {members.map((m) => <SelectItem key={m.id} value={m.id}><span className="flex items-center gap-1.5"><MemberAvatar member={m} className="h-4 w-4 text-[8px]" />{m.name || m.email}</span></SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    ) : <div className="h-8 text-sm text-muted-foreground">{detail.goal.owner ? ownerChip(detail.goal.owner) : '—'}</div>}
-                  </Field>
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <Field label="Target">
-                    {isAdmin
-                      ? <Input key={detail.goal.id} defaultValue={detail.goal.target ?? ''} placeholder="e.g. < 10 min by Q3" className="h-8" onBlur={(e) => { const v = e.target.value.trim(); if (v !== (detail.goal.target ?? '')) patch(detail.goal.id, { target: v || null }) }} />
-                      : <div className="h-8 text-sm text-muted-foreground">{detail.goal.target || '—'}</div>}
-                  </Field>
-                  <Field label="Due date">
-                    {isAdmin
-                      ? <Input type="date" value={toDateInput(detail.goal.dueAt)} onChange={(e) => patch(detail.goal.id, { dueAt: fromDateInput(e.target.value) })} className="h-8" />
-                      : <div className="h-8 text-sm text-muted-foreground">{detail.goal.dueAt ? new Date(detail.goal.dueAt).toLocaleDateString() : '—'}</div>}
-                  </Field>
-                </div>
-                {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
-
-                {/* Linked tasks — the work grounded under this goal, plus its derived progress. */}
-                <div>
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Linked tasks{detail.tasks.length ? ` · ${detail.tasks.length}` : ''}</span>
-                    <div className="flex items-center gap-2">
-                      {detail.progress && detail.progress.total > 0 && <span className="text-[11px] text-muted-foreground">{detail.progress.percent}% · {detail.progress.done}/{detail.progress.total} done</span>}
-                      {isAdmin && (detail.goal.status === 'active' || detail.goal.status === 'draft') && !showPlan && (
-                        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setPlanNote(''); setHint(''); setShowPlan(true) }}>
-                          <Wand2 className="mr-1 h-3.5 w-3.5" />Plan this goal
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {/* Pre-plan steering — shape what the strategist files before it runs. */}
-                  {isAdmin && showPlan && (detail.goal.status === 'active' || detail.goal.status === 'draft') && (
-                    <div className="mb-2 space-y-2 rounded-md border bg-muted/20 p-2.5">
-                      <div className="text-[11px] font-medium text-muted-foreground">Steer the plan <span className="font-normal">(optional)</span></div>
-                      <textarea
-                        value={planGuidance}
-                        onChange={(e) => setPlanGuidance(e.target.value)}
-                        placeholder="Guidance for the strategist — focus areas, constraints, which specialists to prefer…"
-                        rows={3}
-                        className="w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
-                      />
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs text-muted-foreground">Max tasks</label>
-                        <Input type="number" min={1} value={planMax} onChange={(e) => setPlanMax(e.target.value)} placeholder="—" className="h-7 w-20" />
-                        <div className="flex-1" />
-                        <Button size="sm" variant="ghost" className="h-7" disabled={busy} onClick={() => { setShowPlan(false); setPlanGuidance(''); setPlanMax('') }}>Cancel</Button>
-                        <Button size="sm" className="h-7" disabled={busy} onClick={() => plan(detail.goal.id)}>
-                          <Wand2 className="mr-1 h-3.5 w-3.5" />Draft plan
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                  {planNote && (
-                    <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
-                      <span>{planNote}</span>
-                      {planSession && (
-                        <a href={navHref('sessions', 'aos-' + planSession)} onClick={onNavClick(() => nav('sessions', 'aos-' + planSession))} className="inline-flex shrink-0 items-center gap-1 font-medium no-underline hover:underline">
-                          Go to session<ChevronRight className="h-3 w-3" />
-                        </a>
-                      )}
-                    </div>
-                  )}
-                  {detail.progress && detail.progress.total > 0 && <GoalProgressBar p={detail.progress} className="mb-2" />}
-                  <div className="max-h-56 space-y-1.5 overflow-y-auto pr-1">
-                    {detail.tasks.length === 0 && <div className="text-xs text-muted-foreground">No tasks linked yet — set this goal on a task to ground work under it.</div>}
-                    {detail.tasks.map((t) => {
-                      // Dependency gating — resolve each blocker from this goal's own tasks (no extra fetch).
-                      // A dep is *unmet* only if its blocker is present here AND not yet done/cancelled.
-                      const unmet = (t.dependsOn ?? []).filter((id) => { const b = detail.tasks.find((x) => x.id === id); return b && b.status !== 'done' && b.status !== 'cancelled' }).length
-                      return (
-                      <a
-                        key={t.id}
-                        href={navHref('tasks', t.id)}
-                        onClick={onNavClick(() => nav('tasks', t.id))}
-                        className="flex items-center gap-2 rounded-md border bg-muted/20 px-2 py-1.5 text-xs no-underline hover:bg-muted"
-                      >
-                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] capitalize ${taskStatusTone(t.status)}`}>{t.status}</span>
-                        <span className={`min-w-0 flex-1 truncate text-foreground ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
-                        {unmet > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmet}</span>}
-                      </a>
-                      )
-                    })}
-                  </div>
-                </div>
-
-                <CommentBox onSubmit={async (text) => { await api.commentGoal(detail.goal.id, text); await refreshDetail(detail.goal.id) }} />
-
-                <div>
-                  <div className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Activity</div>
-                  <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
-                    {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
-                    {detail.events.slice().reverse().map((e) => (
-                      <div key={e.id} className="rounded-md border bg-muted/20 p-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
-                          <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
-                        </div>
-                        {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
-                        <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {isAdmin && (
-                  confirmDel
-                    ? <div className="flex items-center gap-2">
-                        <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.goal.id)}>Confirm delete</Button>
-                        <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
-                      </div>
-                    : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
-                        <Trash2 className="mr-1 h-3.5 w-3.5" />Delete goal
-                      </Button>
-                )}
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
-      )}
+      </>)}
     </div>
   )
 }
