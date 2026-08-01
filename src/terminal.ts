@@ -17,6 +17,7 @@ import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
+import { resolveCapability } from './capabilities/normalize';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
 import { hostGovernanceDecision, stricterDecision } from './governance/host-match';
@@ -2948,6 +2949,17 @@ export class TerminalManager {
         this.audit(sessionId, agent, 'gate.net.reclassified', { capability, host: (args.host as string) ?? null, netMode, hostAllowed: args.hostAllowed === true, hostUnknown: args.hostUnknown === true });
       }
     }
+    // Capability normalization (§4.2): a generic `connector.call` carries the vendor action only in
+    // args.tool. Resolve it to a canonical, provider-independent capability (STRIPE_REFUND →
+    // payments.refund) so ONE policy rule governs the same action across Stripe / a REST call / an SDK
+    // call. Runs AFTER enrichArgs (so the enricher's connector-mutation facts are already set) and after
+    // the email/host promotions above (which never produce `connector.call`, so they're untouched). An
+    // unmapped tool falls through unchanged — this only adds granularity, never removes governance.
+    const normalizedCap = resolveCapability(capability, typeof args.tool === 'string' ? args.tool : undefined);
+    if (normalizedCap !== capability) {
+      this.audit(sessionId, agent, 'gate.capability.normalized', { from: capability, to: normalizedCap, tool: args.tool });
+      capability = normalizedCap;
+    }
     const attempt: ActionAttempt = { capabilityId: capability, args, reasoning };
     let decision: Decision = this.os.policy.classify(attempt, this.ctx(sessionId, agent));
     // Host governance is applied by the ENGINE (not the editable policy), so enabling it works on any
@@ -3187,7 +3199,11 @@ export class TerminalManager {
   policyCheck(sessionId: string, agent: string, capability: string, args: Record<string, unknown>): Decision {
     if (this.os.settings.killSwitch().engaged) return { effect: 'deny', riskClass: 'deny', reason: 'workspace emergency stop is engaged' };
     const enriched = enrichArgs(capability, args, this.emailOrgDomains(), this.os.agents.get(agent)?.dir, this.os.settings.enrichPatterns());
-    const cap = enriched.emailSend === true ? 'email.send' : capability;
+    // Mirror the gate: email promotion first, then capability normalization (§4.2), so a dry-run preview
+    // classifies the same canonical capability the live gate will.
+    const cap = enriched.emailSend === true
+      ? 'email.send'
+      : resolveCapability(capability, typeof enriched.tool === 'string' ? enriched.tool : undefined);
     return this.os.policy.classify({ capabilityId: cap, args: enriched, reasoning: '' }, this.ctx(sessionId, agent));
   }
 

@@ -52,6 +52,7 @@ const { JsonPolicyEngine } = require(path.join(ROOT, 'dist/governance/policy'));
 const { resolveRuntimeTuning } = require(path.join(ROOT, 'dist/types.js'));
 const { fileGovernanceDecision } = require(path.join(ROOT, 'dist/governance/file-guard.js'));
 const { hostGovernanceDecision, stricterDecision } = require(path.join(ROOT, 'dist/governance/host-match'));
+const { resolveCapability } = require(path.join(ROOT, 'dist/capabilities/normalize'));
 
 /**
  * The file-guard cases assert that a write under the SERVICE USER's home is denied, and
@@ -93,6 +94,9 @@ for (const c of fixture.decisions) {
     const govern = netMode === 'allowlist' ? true : (args.hostUnknown === true || args.hostInternal === true || args.hostListed === true);
     if (govern) capability = args.netProtocol === 'ssh' ? 'ssh.exec' : 'net.connect';
   }
+  // Mirror tm.gate: capability normalization (§4.2) — a generic connector.call resolves to its canonical
+  // capability by tool name (STRIPE_REFUND → payments.refund). No-op for non-connector caps.
+  capability = resolveCapability(capability, typeof args.tool === 'string' ? args.tool : undefined);
   let decision = engine.classify({ capabilityId: capability, args, reasoning: '' }, ctx);
   // Mirror tm.gate: host governance is applied by the engine (not the JSON), combined most-restrictive.
   if (c.hostGrants && (capability === 'net.connect' || capability === 'ssh.exec')) {

@@ -346,6 +346,17 @@
       "expect": "allow"
     },
     {
+      "name": "capability normalization (§4.2): an over-cap Stripe refund is STILL never — the money cap survives the connector.call → payments.refund rename",
+      "capability": "connector.call",
+      "args": {
+        "tool": "mcp__composio-company__STRIPE_REFUND",
+        "input": {
+          "amount": 600
+        }
+      },
+      "expect": "never"
+    },
+    {
       "name": "refund over cap \u2192 never",
       "capability": "connector.call",
       "args": {
