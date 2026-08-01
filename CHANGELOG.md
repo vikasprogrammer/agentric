@@ -8,7 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.285.0] — 2026-08-01
+## [0.286.0] — 2026-08-01
+### Added
+- **Capability Registry (§4.2) — normalize connector tool names to canonical, provider-independent
+  capabilities** (`src/capabilities/normalize.ts`). The gate hook collapses every MCP/connector call
+  to the structural id `connector.call`, with the real vendor action surviving only in `args.tool`
+  (`mcp__composio-company__STRIPE_REFUND`, …), so the same action wears a different name on every
+  surface and policy can't target it portably. `resolveCapability(capability, toolName)` maps that raw
+  name to ONE canonical capability (`payments.refund`, `repo.pr.create`, `messaging.post`, …) so a
+  single policy rule governs a Stripe refund across a Composio slug / a REST-shaped tool / an SDK-shaped
+  name identically. First-match table keyed on `connector.call` only; an unmapped tool falls through
+  unchanged, so this only ADDS granularity, never removes governance. Seeded narrowly (payments.*,
+  repo.*, messaging.post) per the plan — grow as coverage grows; plus `capabilityDescriptor()` /
+  `knownCapabilities()` (id + effects + risk + example providers) for a future catalog view. Wired into
+  `TerminalManager.gate()` **after** `enrichArgs` (so the enricher's connector-mutation facts are still
+  set off `connector.call`) and after the email/host promotions, mirrored in `policyCheck()` and the
+  conformance runner. New test `scripts/capability-registry-test.cjs` (18 cases incl. the moat proof:
+  one `payments.refund` rule governs three surfaces identically), wired into `npm run test:governance`;
+  +1 conformance fixture pinning that an over-cap refund is STILL `never` after the rename. Suite
+  138/138 — backward-compatible (the bundled default policy gains no new rules; normalization preserves
+  every existing decision). The in-process demo `Gateway` (execution-registry path) is intentionally
+  untouched.
 ### Added
 - **Goals can now finish.** `progress()` has always derived 100% from linked tasks and *nothing consumed
   it* — `achieved` was reachable only by hand-picking it from a dropdown inside the goal drawer, so a
