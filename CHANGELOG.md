@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.286.0] — 2026-08-01
+### Changed
+- **Runtime-account validation now reads real weekly/session usage for `setup-token` accounts too — not
+  just login credential-dirs.** The previous check hit `GET /api/oauth/usage`, which requires the
+  `user:profile` scope a `claude setup-token` doesn't carry (403 → usage always blank for the fleet's
+  paste-tokens). Switched to the method that works for every subscription token: a minimal
+  `POST /v1/messages` (cheapest model, `max_tokens:1`) whose `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset,status}`
+  response headers carry the subscription usage — readable with the `user:inference` scope every token has,
+  and present even on a 429 (at-limit) response. So the **Usage** column now populates for setup-tokens
+  (e.g. `weekly 0% · session 1%`), and a window reported `rejected`/≥100% parks the account limited until
+  its reset. Validation is unchanged (401 → rejected on add). Costs one 1-token inference per add/Refresh
+  (a fraction of a cent), which mirrors Claude Code's own startup probe. `src/edge/runtime-account-check.ts`.
+
 ## [0.285.0] — 2026-08-01
 ### Added
 - **Goals can now finish.** `progress()` has always derived 100% from linked tasks and *nothing consumed
