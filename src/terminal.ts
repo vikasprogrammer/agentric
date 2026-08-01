@@ -299,7 +299,7 @@ export interface Session {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
+  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
   sessionId: string;
   agent: string;
   title: string;
@@ -2647,7 +2647,11 @@ export class TerminalManager {
     // Human-owned; toggleable in Settings. Capped so a long goal list can't dominate every prompt.
     let goalsSection = '';
     if (this.os.settings.injectGoals()) {
-      const active = this.os.goals.active(this.os.tenant).slice(0, 12);
+      // Drop goals whose work is all done but that nobody has closed yet — they're awaiting a human's
+      // sign-off, not direction for the fleet. Left in, a finished goal keeps steering every agent's work
+      // indefinitely (it stays `active` until someone flips it). `goal_list` still shows them live.
+      const complete = new Set(this.os.goals.readyToClose(this.os.tenant).map((g) => g.id));
+      const active = this.os.goals.active(this.os.tenant).filter((g) => !complete.has(g.id)).slice(0, 12);
       if (active.length) {
         goalsSection =
           '# Company goals — the direction your work serves\n\n' +
@@ -3435,14 +3439,15 @@ export class TerminalManager {
   }
 
   /**
-   * Post an inbox card for an agent's goal PROPOSAL (a draft goal an owner/admin must review + activate),
-   * addressed to an explicit {@link Audience} (admins). Like {@link postTaskCard} it uses the `goal:<id>`
+   * Post an inbox card about a goal — an agent's PROPOSAL (a draft an owner/admin reviews + activates) or,
+   * with `type: 'goal.ready'`, a goal whose linked work has all finished and now needs its owner to sign it
+   * off. Addressed to an explicit {@link Audience}. Like {@link postTaskCard} it uses the `goal:<id>`
    * sentinel for `session_id` (no session backs a goal) so visibility is governed by the audience, and
    * `args.goalId` deep-links the card to the Goals page. Public so the loopback propose route can call it.
    */
-  postGoalCard(input: { goalId: string; agent: string; title: string; body: string; audience: Audience }): void {
+  postGoalCard(input: { goalId: string; agent: string; title: string; body: string; audience: Audience; type?: 'goal.proposed' | 'goal.ready' }): void {
     this.addMessage({
-      type: 'goal.proposed', sessionId: `goal:${input.goalId}`, agent: input.agent, title: input.title,
+      type: input.type ?? 'goal.proposed', sessionId: `goal:${input.goalId}`, agent: input.agent, title: input.title,
       body: input.body, status: 'open', args: { goalId: input.goalId },
       audienceKind: input.audience.kind, audienceId: audienceIdOf(input.audience),
     });

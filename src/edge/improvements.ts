@@ -65,14 +65,32 @@ export function buildImprovements(os: AgentOS, insights: Insights, now = Date.no
     actionLabel: 'Open Knowledge', href: '#/kb',
   });
 
-  // 3) Goals — active goals with no progress recently (stuck) that a human/strategist should nudge.
+  // 3) Goals — two different asks, deliberately not lumped together. A goal whose work is all DONE needs a
+  // human DECISION (close it, or plan what's missing); a goal with no recent progress needs a NUDGE. Both
+  // used to read as "stuck", which sent an owner to re-plan goals that were actually finished.
+  const goalsReady = num(db, `SELECT count(*) AS n FROM goals g WHERE g.status = 'active'
+      AND EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status != 'cancelled'
+                   AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id))
+      AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status NOT IN ('done','cancelled')
+                   AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id))`);
   const stuck = num(db,
-    "SELECT count(*) AS n FROM goals g WHERE g.status = 'active' AND COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) < ?",
+    `SELECT count(*) AS n FROM goals g WHERE g.status = 'active'
+       AND COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) < ?
+       AND EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status NOT IN ('done','cancelled'))`,
     now - 7 * DAY);
+  const noPlan = num(db, `SELECT count(*) AS n FROM goals g WHERE g.status = 'active'
+      AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status != 'cancelled')`);
+  const goalWork = goalsReady + stuck + noPlan;
+  const parts = [
+    goalsReady ? `${goalsReady} finished and waiting to be closed` : '',
+    noPlan ? `${noPlan} with no work planned yet` : '',
+    stuck ? `${stuck} with no progress in 7+ days` : '',
+  ].filter(Boolean);
   tiles.push({
-    domain: 'goals', count: stuck,
-    title: stuck ? `${stuck} goal${stuck === 1 ? '' : 's'} stuck` : 'Goals are moving',
-    detail: stuck ? `${stuck} active goal${stuck === 1 ? '' : 's'} with no progress in 7+ days — plan the next tasks or re-scope.` : 'Every active goal has recent progress.',
+    domain: 'goals', count: goalWork,
+    title: goalsReady ? `${goalsReady} goal${goalsReady === 1 ? '' : 's'} ready to close`
+      : goalWork ? `${goalWork} goal${goalWork === 1 ? '' : 's'} need you` : 'Goals are moving',
+    detail: goalWork ? `${parts.join(', ')} — sign off what's done, plan the rest.` : 'Every active goal has open work and recent progress.',
     actionLabel: 'Open Goals', href: '#/goals',
   });
 

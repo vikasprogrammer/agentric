@@ -1302,6 +1302,7 @@ export class Automations {
     }
     this.sweepOverdue(now);
     this.sweepStuckGoals(now);
+    this.sweepCompletedGoals();
     this.sweepExpiredShares(now);
     // Re-nudge stale human-in-the-loop prompts (approvals/questions blocking an agent) so a missed ask
     // doesn't strand the run forever. Wrapped so a bad row can't take down the scheduler.
@@ -1354,6 +1355,26 @@ export class Automations {
       }
     } catch {
       // never let the goal sweep take down the automation scheduler
+    }
+  }
+
+  /**
+   * The completion half of the goal sweep: a goal whose every linked task has finished is DONE-in-fact but
+   * still says `active`, because only a human closes a goal. Announce it exactly once (the once-guard lives
+   * in `goal_events`, so a restart never re-alarms) so the owner gets an inbox card + DM rather than having
+   * to notice a full progress bar on a page nobody visits daily.
+   *
+   * Always on and cheap — unlike {@link sweepStuckGoals} this spawns nothing, it just tells a human their
+   * goal is finished. Wrapped so a bad row never kills the scheduler.
+   */
+  private sweepCompletedGoals(): void {
+    try {
+      for (const g of this.os.goals.readyToClose(this.os.tenant)) {
+        if (!this.os.goals.announceReady(g.id)) continue; // already announced this completion streak
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'system', type: 'goal.ready', data: { goalId: g.id, title: g.title } });
+      }
+    } catch {
+      // never let the completion sweep take down the automation scheduler
     }
   }
 

@@ -163,7 +163,17 @@ function pendingProposals(os: AgentOS): string[] {
 function stuckGoals(os: AgentOS, now = Date.now()): Array<{ id: string; title: string; days: number }> {
   const cutoff = now - 7 * 86_400_000;
   return os.db
-    .prepare("SELECT g.id, g.title, COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) AS last FROM goals g WHERE g.tenant = ? AND g.status = 'active' AND COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) < ? ORDER BY last")
+    // A goal whose filed work is ALL DONE is excluded: it isn't stuck, it's finished and waiting on a
+    // human to close it (the Goals page flags that separately). Offering to re-plan it would file fresh
+    // work for a completed goal.
+    .prepare(`SELECT g.id, g.title, COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) AS last
+                FROM goals g WHERE g.tenant = ? AND g.status = 'active'
+                 AND COALESCE((SELECT MAX(created_at) FROM goal_events e WHERE e.goal_id = g.id), g.created_at) < ?
+                 AND NOT (EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status != 'cancelled'
+                                   AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id))
+                      AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status NOT IN ('done','cancelled')
+                                   AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id)))
+               ORDER BY last`)
     .all<{ id: string; title: string; last: number }>(os.tenant, cutoff)
     .map((g) => ({ id: g.id, title: g.title, days: Math.floor((now - g.last) / 86_400_000) }));
 }

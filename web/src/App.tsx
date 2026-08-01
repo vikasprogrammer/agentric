@@ -4774,8 +4774,9 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
   const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
   // A 'task' card has no session — it deep-links to the board (its taskId), not a terminal.
   const goTask = m.type === 'task' && meta.taskId && onOpenTask ? () => onOpenTask(meta.taskId!) : null
-  // A 'goal.proposed' card deep-links to the Goals page for that goal (no session).
-  const goGoal = m.type === 'goal.proposed' && meta.goalId && onOpenGoal ? () => onOpenGoal(meta.goalId!) : null
+  // A goal card ('goal.proposed' — an agent's draft; 'goal.ready' — its work all finished) deep-links to
+  // the Goals page for that goal (no session backs a goal).
+  const goGoal = (m.type === 'goal.proposed' || m.type === 'goal.ready') && meta.goalId && onOpenGoal ? () => onOpenGoal(meta.goalId!) : null
   // An 'agent.update.proposed' card deep-links to the TARGET agent's page, where the owner review
   // card lives — not the proposer's session terminal. Hash routing, so setting the hash routes in place.
   const goAgentEdit = m.type === 'agent.update.proposed' && meta.target ? () => { window.location.hash = navHref('agent', meta.target!) } : null
@@ -4844,6 +4845,11 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     Icon = Target; iconCls = 'text-indigo-600'; highlight = true
     verb = 'proposed a goal'; detail = m.body
     badge = <Badge variant="outline" className="border-indigo-300 px-1.5 py-0 text-[10px] font-normal text-indigo-700">Goal proposed</Badge>
+  } else if (m.type === 'goal.ready') {
+    // Every task under a goal finished — the human still owns the close, so this asks rather than reports.
+    Icon = Target; iconCls = 'text-emerald-600'; highlight = m.status === 'open'
+    verb = m.title; detail = m.body
+    badge = <Badge variant="outline" className="border-emerald-300 px-1.5 py-0 text-[10px] font-normal text-emerald-700">Ready to close</Badge>
   } else if (m.type === 'skill.request') {
     Icon = Sparkles; iconCls = 'text-violet-600'; highlight = m.status === 'open'
     const resolved = m.status === 'approved' ? 'installed' : m.status === 'rejected' ? 'dismissed' : ''
@@ -6872,6 +6878,12 @@ const goalStatusBorder = (s: GoalStatus): string => ({
   achieved: 'border-l-emerald-500',
   abandoned: 'border-l-red-500',
 }[s])
+// A goal is COMPLETE-in-fact when every task filed under it has finished — derived from linked-task
+// status, never stored. It stays `active` until a human signs it off: "all the filed work is done" is a
+// weaker claim than "the outcome was achieved" (the plan may simply have been incomplete), and goal state
+// is human-owned. So the UI proposes the close; the owner confirms it or plans the gap.
+const goalComplete = (g: Goal, p?: GoalProgress): boolean =>
+  g.status === 'active' && !!p && p.counted > 0 && p.done === p.counted
 // Derived-progress meter for a goal (share of its linked tasks that are done). A thin emerald bar +
 // a "done/total tasks" caption; renders nothing when the goal has no linked tasks.
 function GoalProgressBar({ p, className = '' }: { p?: GoalProgress; className?: string }) {
@@ -6920,6 +6932,9 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const [showPlan, setShowPlan] = useState(false)
   const [planGuidance, setPlanGuidance] = useState('')
   const [planMax, setPlanMax] = useState('')
+  // Sign-off step for a goal whose work is complete — an optional outcome note lands on the timeline.
+  const [signingOff, setSigningOff] = useState(false)
+  const [outcome, setOutcome] = useState('')
 
   const isAdmin = me.role === 'owner' || me.role === 'admin'
   const nameOf = (id?: string) => principalLabel(id, members)
@@ -6955,9 +6970,12 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) })
   }, [selId, goals, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax('') }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setSigningOff(false); setOutcome('') }, [selId]) // fresh drawer per selection
 
   const visible = goals ?? []
+  // Goals finished in fact but still open — the banner's subject. Derived from the list in view (the
+  // default "All" filter shows every one; a narrowed filter scopes the call-to-action to what you're on).
+  const ready = visible.filter((g) => goalComplete(g, progress[g.id]))
 
   const create = async () => {
     setHint('')
@@ -6982,6 +7000,16 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     setPlanSession(r.sessionId ?? '')
     setTimeout(() => refreshDetail(id), 6000)
   }
+  // Close a completed goal. Status + the outcome note go in ONE patch so the timeline reads
+  // "achieved" alongside *why* — that note is the goal's lasting record, and what `goal_get` shows later.
+  const achieve = async () => {
+    if (!detail) return
+    setBusy(true)
+    await api.patchGoal(detail.goal.id, { status: 'achieved', note: outcome.trim() || undefined })
+    setSigningOff(false); setOutcome(''); setBusy(false)
+    await load()
+    await refreshDetail(detail.goal.id)
+  }
   const startEdit = () => { if (!detail) return; setETitle(detail.goal.title); setEBody(detail.goal.body); setEditing(true) }
   const saveEdit = async () => {
     if (!detail) return
@@ -6997,12 +7025,19 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
 
   const row = (g: Goal) => {
     const dm = dueMeta(g.dueAt, g.status === 'achieved' || g.status === 'abandoned' ? 'done' : 'todo')
+    const p = progress[g.id]
+    const done = goalComplete(g, p)
+    // An active goal nobody has filed work under isn't "0%" — it's unplanned. Say so, so the two very
+    // different empty states (nothing planned vs. planned-and-finished) don't both read as a bare dash.
+    const unplanned = g.status === 'active' && (!p || p.total === 0)
     return (
-      <tr key={g.id} onClick={() => openGoal(g.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${goalStatusBorder(g.status)} ${selId === g.id ? 'bg-muted' : ''}`}>
+      <tr key={g.id} onClick={() => openGoal(g.id)} className={`cursor-pointer border-b border-l-[3px] last:border-b-0 hover:bg-muted ${done ? 'border-l-emerald-500' : goalStatusBorder(g.status)} ${selId === g.id ? 'bg-muted' : ''}`}>
         <td className="px-3 py-2"><a href={navHref('goals', g.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openGoal(g.id))(e) }} className={`text-foreground no-underline hover:underline ${g.status === 'abandoned' ? 'line-through opacity-60' : ''}`}>{g.title}</a> {g.labels.map((l) => <Badge key={l} variant="outline" className="ml-1 px-1 py-0 text-[10px]">{l}</Badge>)}</td>
-        <td className={`px-3 py-2 text-xs capitalize ${goalStatusTone(g.status)}`}>{g.status}</td>
+        <td className={`px-3 py-2 text-xs capitalize ${goalStatusTone(g.status)}`}>
+          {done ? <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium normal-case text-emerald-700 dark:text-emerald-400" title="Every task under this goal is done — close it out or plan what's missing"><Check className="h-3 w-3" />Ready to close</span> : g.status}
+        </td>
         <td className="px-3 py-2 text-xs text-muted-foreground">{g.target || '—'}</td>
-        <td className="px-3 py-2">{progress[g.id]?.total ? <GoalProgressBar p={progress[g.id]} className="w-28" /> : <span className="text-xs text-muted-foreground">—</span>}</td>
+        <td className="px-3 py-2">{p?.total ? <GoalProgressBar p={p} className="w-28" /> : <span className="text-xs text-muted-foreground">{unplanned ? 'No work planned' : '—'}</span>}</td>
         <td className="px-3 py-2 text-muted-foreground">{g.owner ? ownerChip(g.owner) : '—'}</td>
         <td className="px-3 py-2 text-xs">{dm ? <span className={dm.overdue ? 'text-red-600' : dm.soon ? 'text-amber-600' : 'text-muted-foreground'}>{dm.label}</span> : <span className="text-muted-foreground">—</span>}</td>
         <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(g.updatedAt).toLocaleDateString()}</td>
@@ -7072,6 +7107,22 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
         </Card>
       )}
 
+      {/* Completion, surfaced where you land rather than left to be noticed as a full progress bar. The
+          goals it names are finished in fact but still `active` — the OS never closes one for you. */}
+      {ready.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-300">
+          <Check className="h-4 w-4 shrink-0" />
+          <span className="font-medium">{ready.length === 1 ? 'A goal has finished all its work' : `${ready.length} goals have finished all their work`}</span>
+          <span className="text-emerald-700/80 dark:text-emerald-400/80">— sign it off, or plan what's still missing.</span>
+          <span className="flex flex-wrap gap-1.5">
+            {ready.slice(0, 4).map((g) => (
+              <button key={g.id} onClick={() => openGoal(g.id)} className="rounded border border-emerald-500/40 bg-background/60 px-1.5 py-0.5 font-medium hover:bg-background">{g.title.length > 40 ? g.title.slice(0, 39) + '…' : g.title}</button>
+            ))}
+            {ready.length > 4 && <span className="self-center">+{ready.length - 4} more</span>}
+          </span>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-md border">
         <table className="w-full text-sm">
           <thead className="border-b bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
@@ -7118,6 +7169,40 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
             ) : (
               <div className="space-y-3.5">
                 <div className="font-mono text-xs text-muted-foreground">{detail.goal.id}{detail.goal.createdBy ? ` · by ${nameOf(detail.goal.createdBy)}` : ''}</div>
+
+                {/* The sign-off prompt: this goal's work is all done, so put the decision in front of the
+                    person instead of leaving them to find `achieved` in the status dropdown. Both outcomes
+                    are one click — it's finished, or the plan missed something and needs more work. */}
+                {isAdmin && goalComplete(detail.goal, detail.progress) && (
+                  <div className="space-y-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 p-3">
+                    <div className="flex items-start gap-2 text-sm text-emerald-800 dark:text-emerald-300">
+                      <Check className="mt-0.5 h-4 w-4 shrink-0" />
+                      <span>All {detail.progress?.counted} task{detail.progress?.counted === 1 ? '' : 's'} under this goal are done. Was the outcome achieved?</span>
+                    </div>
+                    {signingOff ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={outcome}
+                          onChange={(e) => setOutcome(e.target.value)}
+                          placeholder="What actually changed? (optional — kept on the goal's timeline, and what agents read later)"
+                          rows={3}
+                          className="w-full resize-y rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:ring-1 focus:ring-ring"
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" className="h-7" disabled={busy} onClick={achieve}>Confirm achieved</Button>
+                          <Button size="sm" variant="ghost" className="h-7" onClick={() => { setSigningOff(false); setOutcome('') }}>Cancel</Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button size="sm" className="h-7" disabled={busy} onClick={() => setSigningOff(true)}><Check className="mr-1 h-3.5 w-3.5" />Mark achieved</Button>
+                        <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setPlanNote(''); setHint(''); setShowPlan(true) }}>
+                          <Wand2 className="mr-1 h-3.5 w-3.5" />Not yet — plan the gap
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {detail.goal.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.goal.body}</ReactMarkdown></div>}
 
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">

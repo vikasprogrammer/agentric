@@ -8,6 +8,36 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.285.0] — 2026-08-01
+### Added
+- **Goals can now finish.** `progress()` has always derived 100% from linked tasks and *nothing consumed
+  it* — `achieved` was reachable only by hand-picking it from a dropdown inside the goal drawer, so a
+  completed goal sat `active` indefinitely (on the live globex tenant, one had been 6/6 done for 19
+  days). Completion is now **derived, announced, and human-confirmed** — never auto-flipped, because "every
+  task I filed is done" is a weaker claim than "the outcome was achieved". New `GoalStore.readyToClose()`
+  (every non-cancelled *leaf* linked task done) drives: a **Ready to close** chip + page banner + drawer
+  sign-off box on the Goals page, offering **Mark achieved** with an optional outcome note (patched
+  alongside the status, so the timeline records *why*) or **Not yet — plan the gap** (hands it back to the
+  strategist). `src/state/goals.ts`, `web/src/App.tsx`, `docs/goals-plan.md` §Slice 4.
+- **A goal whose work completes now reaches its owner.** `GoalStore.setNotifier` existed with **no
+  consumer** — every goal status change was silent. `notifyGoalEvent` (mirroring `notifyTaskEvent`) routes
+  `ready` → the goal's owner (else admins) and `achieved`/`abandoned` → the owner as an inbox card
+  (`goal.ready`) + DM. Driven by a new always-on `sweepCompletedGoals` tick, announced exactly once per
+  completion streak via a `ready` goal_event guard (later work that also completes announces again).
+  `src/tenant-registry.ts`, `src/edge/automations.ts`, `src/terminal.ts`.
+
+### Fixed
+- **The goal auto-planner filed fresh work for goals that were already done.** `GoalStore.stuck()` selected
+  active goals with no *open* task — true both for "never planned" and for "all work finished", so with
+  Auto-plan on the strategist was spawned to invent new tasks for a completed goal. `stuck()` now means
+  **no work filed at all** (never planned, or every task cancelled); the finished case routes to the owner
+  for sign-off instead. The Insights "unstick" list excludes finished goals for the same reason, and the
+  goals tile now separates *ready to close* / *no work planned* / *no progress in 7+ days* rather than
+  calling all three "stuck". `src/state/goals.ts`, `src/server.ts`, `src/edge/improvements.ts`.
+- **A finished goal kept steering the whole fleet.** `buildCompanyMd` injects active goals into every
+  agent's prompt as "the direction your work serves" — including goals whose work was complete but
+  unclosed, indefinitely. Completed-but-unsigned-off goals are now filtered out of that set (they're
+  awaiting a human, not directing work); `goal_list` still returns them live. `src/terminal.ts`.
 ## [0.284.1] — 2026-08-01
 ### Fixed
 - **Codex's "Update available" banner is now suppressed** (`check_for_update_on_startup = false` in the

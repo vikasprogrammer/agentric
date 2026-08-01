@@ -36,7 +36,7 @@ const STATUSES: readonly GoalStatus[] = ['draft', 'active', 'achieved', 'abandon
  */
 export interface GoalNotice {
   goal: Goal;
-  kind: 'created' | 'status' | 'proposed';
+  kind: 'created' | 'status' | 'proposed' | 'ready';
   by: string;
   detail?: string;
 }
@@ -126,19 +126,66 @@ export class GoalStore {
   }
 
   /**
-   * The auto-planner's trigger set: active goals that need (re)planning — they have **no OPEN**
-   * (non-terminal) linked task (never planned, or all their work finished but the goal isn't achieved) and
-   * haven't been edited within `graceMs` (so a goal you're still writing isn't grabbed). Oldest-idle first.
+   * The auto-planner's trigger set: active goals with **no work filed at all** (never planned, or every
+   * linked task cancelled) that haven't been edited within `graceMs` — so a goal you're still writing
+   * isn't grabbed. Oldest-idle first.
+   *
+   * Deliberately EXCLUDES a goal whose filed work is all *done*: that isn't stalled, it's finished and
+   * waiting on a human to sign it off ({@link readyToClose}). Planning it would invent fresh work for a
+   * completed goal, which is what the old "no OPEN task" predicate did.
    */
   stuck(tenant: string, graceMs: number, now: number): Goal[] {
     return this.db
       .prepare(
         `SELECT * FROM goals g WHERE g.tenant = ? AND g.status = 'active' AND g.updated_at < ?
-           AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status NOT IN ('done','cancelled'))
+           AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status != 'cancelled')
          ORDER BY g.updated_at ASC`,
       )
       .all<GoalRow>(tenant, now - graceMs)
       .map(toGoal);
+  }
+
+  /**
+   * Goals whose work is COMPLETE but whose status still says `active` — every leaf task linked to them is
+   * done (and there's at least one), matching {@link progress}'s 100%. Completion is *derived*; the goal
+   * does NOT self-close, because "all the filed tasks are done" is not the same claim as "the outcome was
+   * achieved" — the plan may simply have been incomplete. So this is a proposal set: the console flags it
+   * and the owner confirms (or plans the gap). Oldest-idle first.
+   */
+  readyToClose(tenant: string): Goal[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM goals g WHERE g.tenant = ? AND g.status = 'active'
+           AND EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status != 'cancelled'
+                        AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id))
+           AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.goal_id = g.id AND t.status NOT IN ('done','cancelled')
+                        AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id))
+         ORDER BY g.updated_at ASC`,
+      )
+      .all<GoalRow>(tenant)
+      .map(toGoal);
+  }
+
+  /**
+   * Announce that a goal's work is complete — append the `ready` timeline event and fire the notifier, so
+   * the owner learns their goal finished instead of having to notice a full progress bar. Idempotent per
+   * *completion streak*: returns false when a `ready` event already sits newer than the most recently
+   * touched linked task. If more work is later filed under the goal and finished, that task's `updated_at`
+   * moves past the old event and the goal announces again — one notice per time it actually completes.
+   */
+  announceReady(goalId: string, by = 'system'): boolean {
+    const goal = this.get(goalId);
+    if (!goal) return false;
+    const last = this.db
+      .prepare(
+        `SELECT (SELECT MAX(created_at) FROM goal_events WHERE goal_id = ? AND kind = 'ready') AS announced,
+                (SELECT MAX(updated_at) FROM tasks WHERE goal_id = ?) AS worked`,
+      )
+      .get<{ announced: number | null; worked: number | null }>(goalId, goalId);
+    if (last?.announced && last.announced >= (last.worked ?? 0)) return false; // already announced this streak
+    this.addEvent(goalId, 'ready', 'all linked work is done — ready to close', by);
+    this.notify({ goal, kind: 'ready', by });
+    return true;
   }
 
   /**

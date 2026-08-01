@@ -34,9 +34,9 @@ outcome decomposes instead of turning into fifty loose tasks.
 ## Auto-planning (opt-in)
 
 Turn on **Auto-plan stuck goals** (owner/admin, top of the Goals page) and you don't even click Plan.
-The scheduler notices an **active goal with no open work** — never planned, or all its tasks finished
-but the goal isn't achieved — that's sat idle past a short grace window, and runs the strategist for
-you. Same as clicking Plan: it drafts tasks for review and never auto-dispatches.
+The scheduler notices an **active goal with no work filed against it** — never planned, or every task
+cancelled — that's sat idle past a short grace window, and runs the strategist for you. Same as
+clicking Plan: it drafts tasks for review and never auto-dispatches.
 
 It's **off by default** (it spawns agent sessions) and deliberately boring — a plain check on the
 goal's own data, rate-limited per goal and per tick so it can't burst runs or grab a goal you're
@@ -51,6 +51,24 @@ spawns a governed session, the agent closes its own loop, and the goal's progres
 
 Deleting a goal **detaches** its tasks rather than deleting them — real work survives on the board,
 just unlinked.
+
+## When the work is done
+
+Once **every task under a goal has finished**, the goal is marked **Ready to close** — on its row, in
+a banner at the top of the Goals page, and as an inbox card + DM to whoever owns it. You don't have to
+be watching the page to find out your goal landed.
+
+Agent OS does **not** close the goal for you. "All the tasks I filed are done" is a weaker claim than
+"the outcome was achieved" — the plan may simply have missed something — and goal status is yours to
+set. So the goal's page offers the two real answers:
+
+- **Mark achieved** — with an optional note on *what actually changed*. That note stays on the goal's
+  timeline and is what agents read later when they ask what came of it.
+- **Not yet — plan the gap** — hands it back to the strategist to file the work that's still missing.
+
+Until you pick one, a finished goal stops being injected into agents' prompts as current direction
+(it's awaiting your sign-off, not steering work), and the auto-planner leaves it alone rather than
+inventing fresh tasks for something that's already done.
 
 ## Rule of thumb
 

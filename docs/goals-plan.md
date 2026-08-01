@@ -238,6 +238,41 @@ this v1 triggers only on "no open work" (never-planned, or all tasks finished bu
 **Phase 3 (later, separate concern):** if/when Dreaming gains real LLM reasoning, fold stall-judgment into
 it — a Dreaming upgrade tracked against its 🟡 Partial grade, not a blocker for goals.
 
+---
+
+## Slice 4 — completion (shipped, v0.285.0)
+
+Slices 1–3 could plan a goal and measure it, but a goal could never *finish*. `progress()` computed
+100% and **nothing consumed it**: `achieved` was reachable only by hand-picking it from a dropdown
+inside the drawer. On the live globex tenant a goal sat 6/6 done and `active` for 19 days — still
+injected into every agent's prompt as current direction, and still a re-plan candidate.
+
+**The model: completion is derived, proposed, and human-confirmed.** No auto-flip. "Every task I filed
+is done" ≠ "the outcome was achieved" (the plan may have been incomplete, and `target` is a caption
+nothing verifies), and goal state is human-owned — the same posture as agents proposing but not
+activating goals.
+
+- **`GoalStore.readyToClose(tenant)`** — active goals whose every non-cancelled *leaf* linked task is
+  done (≥1). Derived, no schema change; matches `progress()`'s 100% exactly.
+- **`stuck()` no longer means "no OPEN work".** It meant "never planned" *and* "all work finished",
+  so the auto-planner would file fresh tasks for a completed goal. Now it's "**no work filed at all**"
+  (never planned, or all cancelled); the finished case routes to the human instead.
+- **`announceReady(goalId)`** — appends a `ready` goal_event and fires the notifier, once per
+  *completion streak*: suppressed while a `ready` event sits newer than the newest linked task's
+  `updated_at`, so later work that also completes announces again. The tick's `sweepCompletedGoals`
+  drives it (always on — it spawns nothing).
+- **The notifier is finally wired.** `GoalStore.setNotifier` had **no consumer** — goal state changed
+  silently. `notifyGoalEvent` (tenant-registry, mirroring `notifyTaskEvent`) now routes `ready` →
+  the owner (else admins) and `achieved`/`abandoned` → the owner, as an inbox card + DM.
+- **Prompt injection skips completed goals** — `buildCompanyMd` filters `readyToClose` out of the
+  active set, so a finished goal stops steering the fleet while it waits for sign-off.
+- **Console** — a "Ready to close" chip on the row, a page-level banner, and a drawer sign-off box with
+  **Mark achieved** (+ an optional outcome note, patched with the status so the timeline records *why*)
+  or **Not yet — plan the gap** (reuses the strategist steering box). An active goal with no tasks now
+  reads "No work planned" instead of a bare dash — the two empty states are different asks.
+- **Insights** — the goals tile splits *ready to close* / *no work planned* / *no progress in 7+ days*,
+  and the "unstick" list excludes finished goals.
+
 ## Out of scope (both slices)
 
 - **Agent-authored strategy with real authority.** Humans own goals + acceptance criteria; agents `goal_list`/

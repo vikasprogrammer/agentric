@@ -936,7 +936,8 @@ export interface Goal {
 export interface GoalEvent {
   id: string;
   goalId: string;
-  kind: 'status' | 'comment' | 'edit' | 'link';
+  // `ready` = every linked task finished; the derived completion signal, and the once-guard for its notice.
+  kind: 'status' | 'comment' | 'edit' | 'link' | 'ready';
   body?: string;
   author: string; // member id | 'agent:<id>' | 'system'
   createdAt: number;

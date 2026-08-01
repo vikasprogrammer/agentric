@@ -23,6 +23,7 @@ import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { Member, Task } from './types';
 import { TaskNotice } from './state/tasks';
+import { GoalNotice } from './state/goals';
 import { Audience, approvalAudience, resolveRecipients } from './governance/recipients';
 import { ChatPlatform, chatLink, consolePage } from './governance/chat-links';
 import { controlHome, resolvePaths, resolveTenantPaths } from './home';
@@ -282,6 +283,10 @@ export class TenantRegistry {
       // transcript with the outcome, so a fire-and-forget delegation wakes the caller (no polling).
       maybePokeCaller(autos, os, notice);
     });
+    // Goal lifecycle → Inbox. Same sink shape as Tasks, one rung up the ladder: a goal whose work all
+    // finished (the tick's completion sweep) or that someone closed reaches the human accountable for it.
+    // Until this was wired the store's notifier had no consumer, so goal state changed silently.
+    os.goals.setNotifier((notice) => { void notifyGoalEvent(os, tm, slack, discord, consoleOrigin, notice); });
     // Agent → teammate: when an agent uses the `notify` tool, the inbox card is written inline (addressed
     // to the target member); this sink DMs that member on their linked Slack/Discord too.
     tm.setMemberNotifier((notice) => { void notifyMember(os, slack, discord, notice); });
@@ -497,6 +502,45 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
+}
+
+/**
+ * Goal lifecycle → Inbox. The strategic twin of {@link notifyTaskEvent}: writes an audience-addressed card
+ * for the human a goal change concerns and DMs them.
+ *
+ * Only two kinds are routed, and both are things a human must ACT on:
+ * - **ready** → the goal's every linked task finished, so its owner (else the admin tier, since an
+ *   unowned goal still needs closing) is asked to sign it off or plan the gap. This is the notice that
+ *   makes derived completion real — without it a finished goal just sits `active` forever.
+ * - **status → achieved | abandoned** → the owner, so a close someone else performed doesn't go unseen.
+ *
+ * `created`/`proposed` are deliberately silent here: a goal an admin just typed needs no card back, and
+ * the agent `goal_propose` route already posts its own review card inline.
+ */
+async function notifyGoalEvent(os: AgentOS, tm: Pick<TerminalManager, 'postGoalCard'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: GoalNotice): Promise<void> {
+  const g = notice.goal;
+  const owned: Audience = isHumanMember(g.owner) ? { kind: 'member', id: g.owner } : { kind: 'admins' };
+  let card: { audience: Audience; title: string; line: string; type: 'goal.ready' | 'goal.proposed' } | null = null;
+  if (notice.kind === 'ready') {
+    card = {
+      audience: owned, type: 'goal.ready', title: 'Goal complete — ready to close',
+      line: `🎯 Every task under **${g.title}** is done. Close it out (or plan what's still missing).`,
+    };
+  } else if (notice.kind === 'status' && isHumanMember(g.owner) && (g.status === 'achieved' || g.status === 'abandoned')) {
+    card = {
+      audience: { kind: 'member', id: g.owner }, type: 'goal.proposed',
+      title: g.status === 'achieved' ? 'Goal achieved' : 'Goal abandoned',
+      line: `🎯 Goal **${g.title}** was marked ${g.status}.`,
+    };
+  }
+  if (!card) return;
+  const recipients = resolveRecipients(os, card.audience).filter((m) => m.id !== notice.by);
+  if (!recipients.length) return;
+  tm.postGoalCard({ goalId: g.id, agent: 'goals', title: card.title, body: g.target ? `${g.title} — target: ${g.target}` : g.title, audience: card.audience, type: card.type });
+  const url = consolePage(consoleOrigin, 'goals', g.id);
+  const text = (p: ChatPlatform) => `${card!.line}\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
+  const dms = await deliverDM(slack, discord, os, recipients, text);
+  os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'goal.notified', data: { id: g.id, kind: notice.kind, status: g.status, recipients: recipients.length, dms } });
 }
 
 /**
