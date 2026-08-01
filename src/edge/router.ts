@@ -183,8 +183,10 @@ export async function chooseAgent(os: AgentOS, text: string): Promise<RouteDecis
 
   const decision = decide(scored, cfg);
 
-  // Near-tie → try the LLM tie-break before bothering the human. A clear pick routes; unsure → disambiguate.
-  if (decision.kind === 'disambiguate' && cfg.llm?.model) {
+  // Near-tie → try the LLM tie-break before bothering the human (any resolvable LLM: Anthropic key or an
+  // OpenAI-compatible endpoint). `llmTieBreak` no-ops (returns null) when none is configured. A clear pick
+  // routes; unsure → disambiguate.
+  if (decision.kind === 'disambiguate') {
     const pick = await llmTieBreak(os, text, decision.candidates, agents);
     if (pick) {
       const c = decision.candidates.find((x) => x.agentId === pick);

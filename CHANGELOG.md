@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.288.0] — 2026-08-01
+### Added
+- **Cockpit `ask` + router tie-break can answer via first-party Claude — configured from the web UI.**
+  When an Anthropic API key is set, the `ask` tier and the router's near-tie tie-break call Claude directly
+  (`POST /v1/messages`, raw `fetch` — no SDK dependency), defaulting to **`claude-haiku-4-5`** (fastest +
+  cheapest; ample for a workspace Q&A). This is the fast, session-free middle rung between the free state
+  lookups and the key-free concierge run: **state → direct Claude (if a key is set) → concierge fallback**.
+  The key + model are set in **Settings → Integrations → "Cockpit answers (Anthropic)"**, stored in the
+  per-tenant settings table like every other integration key — **masked/write-only** (the API only ever
+  returns `{ set, source, model }`, never the key). `ANTHROPIC_API_KEY` in the server env also works (the
+  Settings value wins; the panel shows which source is active). Billed to the Anthropic org — separate from
+  any Claude Code subscription (which only the concierge, a real Claude Code session, can use). The
+  tie-break gate now fires for **any** resolvable LLM (Anthropic key or an OpenAI-compatible endpoint), not
+  just `router_config.llm`. `src/edge/llm.ts` (tagged Anthropic/OpenAI backends + `ANTHROPIC_BASE_URL`
+  override), `src/governance/settings.ts` (`anthropicKey`/`anthropicModel`/`anthropicMeta`), `src/server.ts`
+  (integrations view + PUT), `src/edge/router.ts`, `web/src/App.tsx`, `web/src/lib/api.ts`.
+
 ## [0.287.0] — 2026-08-01
 ### Changed
 - **Runtime-account validation now reads real weekly/session usage for `setup-token` accounts too — not

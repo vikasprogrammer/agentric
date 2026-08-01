@@ -16,6 +16,9 @@ const COMPANY_KEY = 'company_md';
 const REVIEW_KEY = 'code_review_md'; // the fleet-wide code-review policy (how agents review a diff/PR)
 const COMPOSIO_KEY = 'composio_api_key';
 const COMPOSIO_WEBHOOK_KEY = 'composio_webhook_secret';
+const ANTHROPIC_KEY_KEY = 'anthropic_api_key'; // first-party Claude key for the Cockpit ask tier + router tie-break
+const ANTHROPIC_MODEL_KEY = 'anthropic_model'; // which Claude model the direct-API path uses (default Haiku)
+const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-4-5'; // kept in sync with src/edge/llm.ts DEFAULT_ANTHROPIC_MODEL
 const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connections:write)
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
@@ -182,6 +185,33 @@ export class SettingsStore {
   }
   setComposioWebhookSecret(secret: string, by?: string): void {
     this.set(COMPOSIO_WEBHOOK_KEY, secret.trim(), by);
+  }
+
+  // ── Anthropic (Cockpit ask / router tie-break) ───────────────────────────────────
+  // A first-party Claude key so the `ask` tier + the router's LLM tie-break can call /v1/messages
+  // directly (fast, no session) instead of spawning the concierge. Set here in Settings, or via the
+  // ANTHROPIC_API_KEY env var (the settings value wins). See src/edge/llm.ts.
+
+  /** The workspace Anthropic API key: the Settings value first, else the `ANTHROPIC_API_KEY` env. '' when unset. */
+  anthropicKey(): string {
+    return this.getRow(ANTHROPIC_KEY_KEY)?.value?.trim() || (process.env.ANTHROPIC_API_KEY || '').trim();
+  }
+  /** The Claude model the direct-API path uses (default Haiku — fast + cheap for a workspace Q&A). */
+  anthropicModel(): string {
+    return this.getRow(ANTHROPIC_MODEL_KEY)?.value?.trim() || DEFAULT_ANTHROPIC_MODEL;
+  }
+  /** Whether a key is set + where it came from + the model — never returns the secret itself. */
+  anthropicMeta(): { set: boolean; source: 'settings' | 'env' | null; model: string; updatedAt?: number; updatedBy?: string } {
+    const row = this.getRow(ANTHROPIC_KEY_KEY);
+    const inSettings = !!row?.value?.trim();
+    const inEnv = !inSettings && !!(process.env.ANTHROPIC_API_KEY || '').trim();
+    return { set: inSettings || inEnv, source: inSettings ? 'settings' : inEnv ? 'env' : null, model: this.anthropicModel(), updatedAt: row?.updated_at, updatedBy: row?.updated_by ?? undefined };
+  }
+  setAnthropicKey(key: string, by?: string): void {
+    this.set(ANTHROPIC_KEY_KEY, key.trim(), by);
+  }
+  setAnthropicModel(model: string, by?: string): void {
+    this.set(ANTHROPIC_MODEL_KEY, model.trim() || DEFAULT_ANTHROPIC_MODEL, by);
   }
 
   // ── native Slack (Socket Mode) ───────────────────────────────────────────────────
