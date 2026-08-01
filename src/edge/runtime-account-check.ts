@@ -2,33 +2,36 @@
  * Validate a Claude Code subscription OAuth token (from `claude setup-token`, `sk-ant-oat01-…`) and read
  * its remaining usage — the add-time / Refresh check for the runtime-account pool (see `RuntimeAccountStore`).
  *
- * We hit the SAME endpoint Claude Code's own status line uses — `GET /api/oauth/usage` on api.anthropic.com,
- * with the token as a Bearer, the `oauth-2025-04-20` beta header, and a `claude-code/…` User-Agent (without
- * that UA the endpoint drops you into an aggressively rate-limited bucket → persistent 429). The call is
- * read-only and does NOT consume usage quota.
+ * WHY NOT `/api/oauth/usage`: that dedicated endpoint needs the `user:profile` scope, which a
+ * `claude setup-token` (the paste-token the fleet uses) does NOT carry — it 403s. So it only works for an
+ * interactive `claude login` credential and is useless for the fleet's tokens.
  *
- * Status code IS the validation, and there are THREE meaningful outcomes (all verified against live tokens):
- *   • 200 → valid AND the token carries the `user:profile` scope → body has the weekly/session usage numbers.
- *     This is what an interactive `claude login` credential (the `oauth` credential-dir kind) yields.
- *   • 403 `permission_error` (scope `user:profile`) → the token is VALID and authenticated, it just lacks the
- *     profile scope the usage endpoint needs. This is what `claude setup-token` mints (it can run inference
- *     but not read usage) — so the fleet's paste-token accounts land here: valid, but no usage readout.
- *   • 401 → invalid / revoked / expired — the definitively-bad case we must reject before it enters the pool.
- * A 429 or anything else is "couldn't verify" — add anyway and badge it; never wedge on a transient blip.
+ * WHAT WORKS FOR SETUP-TOKENS: a minimal `POST /v1/messages` call (cheapest model, 1 token, "hi"). Claude
+ * returns the subscription usage as `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset,status}` response
+ * HEADERS, which ride on ANY inference call — so they're readable with just the `user:inference` scope every
+ * subscription token has. (Approach cross-checked against the community "Claude Usage Tracker" and verified
+ * live against our own setup-tokens.) `utilization` is a 0.0–1.0 fraction; `reset` is a unix-seconds epoch;
+ * `status` is `allowed`/`rejected`. The headers are present even on a 429 (at-limit) response — exactly when
+ * you most want them — so we parse those too.
  *
- * Consistency with the runtime: this token exists solely to run `claude` (the launcher injects it as
- * CLAUDE_CODE_OAUTH_TOKEN), and this probe mirrors what Claude Code itself does — so validating here is in
- * the same lane as the actual use, not a side-channel. Endpoint is undocumented/reverse-engineered — never
- * let a check throw into a request handler.
+ * Outcomes: 401 → invalid/revoked/expired (reject before it enters the pool). 200/429-with-headers → valid,
+ * with usage. Anything else → "couldn't verify" (add anyway, badge it) — never wedge on a transient blip.
+ *
+ * Cost: one 1-token inference per check (add + manual Refresh only — infrequent), a fraction of a cent.
+ * Consistency: this token exists solely to run `claude`, and a 1-token probe mirrors Claude Code's own
+ * startup call — same lane as the actual use, not a side-channel. Never let a check throw into a handler.
  */
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { RuntimeUsage, RuntimeUsageWindow } from '../state/runtime-accounts';
 
-const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const OAUTH_BETA = 'oauth-2025-04-20';
-// The endpoint 429s hard without a claude-code UA prefix; the exact version isn't validated, only the prefix.
-const CLAUDE_CODE_UA = 'claude-code/2.1.0';
+const ANTHROPIC_VERSION = '2023-06-01';
+// A claude-code UA keeps us out of the aggressively-throttled bucket; only the prefix matters.
+const CLAUDE_CODE_UA = 'claude-code/2.1.5';
+// Cheapest model — we only want the rate-limit headers, so max_tokens:1 keeps the call ~free.
+const PROBE_MODEL = 'claude-haiku-4-5-20251001';
 
 export interface RuntimeCheckResult {
   /** true = authenticated (usable), false = rejected (401, definitively bad), null = couldn't verify. */
@@ -36,29 +39,37 @@ export interface RuntimeCheckResult {
   /** Short human-readable status for the console badge / the reject message. */
   note: string;
   usage?: RuntimeUsage;
-  /** When usage shows a window fully consumed, the epoch ms it resets — caller parks the account limited. */
+  /** When a usage window is fully consumed / rejected, the epoch ms it resets — caller parks it limited. */
   limitedUntil?: number;
 }
 
-const toWindow = (o: unknown): RuntimeUsageWindow | undefined => {
-  if (!o || typeof o !== 'object') return undefined;
-  const util = (o as { utilization?: unknown }).utilization;
-  const resets = (o as { resets_at?: unknown }).resets_at;
-  if (typeof util !== 'number') return undefined;
-  const resetsAt = typeof resets === 'string' ? Date.parse(resets) : NaN;
-  return { usedPct: Math.round(util), resetsAt: Number.isFinite(resetsAt) ? resetsAt : undefined };
+/** One usage window from the `anthropic-ratelimit-unified-<w>-*` headers (`5h` = session, `7d` = weekly).
+ *  `utilization` is a 0.0–1.0 fraction → 0–100%; `reset` is unix seconds → epoch ms. */
+const headerWindow = (headers: Headers, w: '5h' | '7d'): RuntimeUsageWindow | undefined => {
+  const util = headers.get(`anthropic-ratelimit-unified-${w}-utilization`);
+  if (util == null) return undefined;
+  const frac = Number.parseFloat(util);
+  const resetSec = Number.parseInt(headers.get(`anthropic-ratelimit-unified-${w}-reset`) ?? '', 10);
+  return {
+    usedPct: Number.isFinite(frac) ? Math.round(frac * 100) : undefined,
+    resetsAt: Number.isFinite(resetSec) ? resetSec * 1000 : undefined,
+  };
 };
 
-const parseUsage = (body: unknown): RuntimeUsage => ({
-  session: toWindow((body as { five_hour?: unknown })?.five_hour),
-  weekly: toWindow((body as { seven_day?: unknown })?.seven_day),
-});
+const parseUsage = (headers: Headers): RuntimeUsage | undefined => {
+  const session = headerWindow(headers, '5h');
+  const weekly = headerWindow(headers, '7d');
+  return session || weekly ? { session, weekly } : undefined;
+};
 
-/** A window counts as exhausted at ≥100% utilization; return the soonest reset among any exhausted window. */
-const exhaustedUntil = (u: RuntimeUsage): number | undefined => {
+/** A window is exhausted when its `-status` header is `rejected` or utilization ≥100%; return the soonest
+ *  reset among exhausted windows so the caller can park the account limited until then. */
+const exhaustedUntil = (headers: Headers, u: RuntimeUsage): number | undefined => {
   const hits: number[] = [];
-  for (const w of [u.weekly, u.session]) {
-    if (w && (w.usedPct ?? 0) >= 100 && w.resetsAt) hits.push(w.resetsAt);
+  for (const [w, win] of [['5h', u.session], ['7d', u.weekly]] as const) {
+    if (!win) continue;
+    const rejected = headers.get(`anthropic-ratelimit-unified-${w}-status`) === 'rejected';
+    if ((rejected || (win.usedPct ?? 0) >= 100) && win.resetsAt) hits.push(win.resetsAt);
   }
   return hits.length ? Math.min(...hits) : undefined;
 };
@@ -71,8 +82,8 @@ const describe = (u: RuntimeUsage): string => {
 };
 
 /** Best-effort read of the OAuth access token from a `claude login` credential dir's `.credentials.json`
- *  (the `oauth` account kind). These login tokens carry the `user:profile` scope, so — unlike a paste-token —
- *  they DO return usage. Returns undefined when the dir/file/shape isn't present. */
+ *  (the `oauth` account kind). `claude` keeps this token fresh on disk, so a live read is current.
+ *  Returns undefined when the dir/file/shape isn't present. */
 export function readConfigDirToken(dir: string): string | undefined {
   try {
     const j = JSON.parse(readFileSync(join(dir, '.credentials.json'), 'utf8'));
@@ -80,28 +91,33 @@ export function readConfigDirToken(dir: string): string | undefined {
   } catch { return undefined; }
 }
 
-/** Probe a Claude OAuth token. Never throws — a network/timeout/parse problem returns `ok:null`. */
-export async function checkClaudeToken(token: string, timeoutMs = 8000): Promise<RuntimeCheckResult> {
+/** Probe a Claude subscription OAuth token via a 1-token Messages call and read the usage headers. Never
+ *  throws — a network/timeout/parse problem returns `ok:null`. Works for setup-tokens AND login tokens. */
+export async function checkClaudeToken(token: string, timeoutMs = 12000): Promise<RuntimeCheckResult> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const r = await fetch(USAGE_URL, {
-      method: 'GET',
-      headers: { authorization: `Bearer ${token}`, 'anthropic-beta': OAUTH_BETA, 'user-agent': CLAUDE_CODE_UA },
+    const r = await fetch(MESSAGES_URL, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        'user-agent': CLAUDE_CODE_UA,
+        'anthropic-beta': OAUTH_BETA,
+        'anthropic-version': ANTHROPIC_VERSION,
+      },
+      body: JSON.stringify({ model: PROBE_MODEL, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
       signal: ctrl.signal,
     });
     if (r.status === 401) return { ok: false, note: 'rejected (401) — not a valid Claude subscription token; re-run `claude setup-token` and paste the full sk-ant-oat01-… value' };
-    if (r.status === 403) {
-      // Authenticated but scope-limited: valid token, no usage readout. `setup-token` accounts live here.
-      const body = await r.text().catch(() => '');
-      const scoped = /permission_error|scope/i.test(body);
-      return { ok: scoped ? true : null, note: scoped ? 'valid · usage n/a (setup-token lacks the user:profile scope)' : `could not verify (HTTP 403)` };
+    // Usage headers are present on 200 AND on a 429 (at-limit) — parse whenever we can, since an at-limit
+    // account is exactly one we want to record + park. A 403/5xx/other with no headers is "couldn't verify".
+    const usage = parseUsage(r.headers);
+    if (r.status === 200 || (r.status === 429 && usage)) {
+      return { ok: true, note: usage ? describe(usage) : (r.status === 429 ? 'valid · at rate limit' : 'valid'), usage, limitedUntil: usage ? exhaustedUntil(r.headers, usage) : undefined };
     }
-    if (r.status === 429) return { ok: null, note: 'could not verify (rate-limited) — added without a usage check; try Refresh in a few minutes' };
-    if (!r.ok) return { ok: null, note: `could not verify (HTTP ${r.status})` };
-    const body = await r.json().catch(() => null);
-    const usage = parseUsage(body);
-    return { ok: true, note: describe(usage), usage, limitedUntil: exhaustedUntil(usage) };
+    if (r.status === 429) return { ok: null, note: 'could not verify (rate-limited) — try Refresh shortly' };
+    return { ok: null, note: `could not verify (HTTP ${r.status})` };
   } catch (e) {
     const why = (e as Error)?.name === 'AbortError' ? 'timeout' : 'network error';
     return { ok: null, note: `could not verify (${why}) — added without a usage check` };
