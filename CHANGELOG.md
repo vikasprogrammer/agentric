@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.284.1] — 2026-08-01
+### Fixed
+- **Codex's "Update available" banner is now suppressed** (`check_for_update_on_startup = false` in the
+  generated config). It is an INTERACTIVE prompt drawn at TUI startup that waits on a keypress — on an
+  unattended run nobody answers it, which is the same permanent-hang class as the folder-trust and
+  hook-review prompts already pre-empted. It also silently swallows the first keystroke sent to a fresh
+  pane, which is how it was spotted. Agent OS pins the CLI deliberately, so an in-pane self-update was
+  never wanted.
+
+### Changed
+- Hook-trust hash **verified compatible with Codex 0.146.0** (derived against 0.145.0): the computed hash
+  is still accepted with no review prompt, the hook still fires, `tool_name` is still `Bash`, an allow is
+  still correctly expressed as silence, and a deny still blocks. Documented as a per-upgrade check.
+
 ## [0.284.0] — 2026-07-31
 ### Added
 - **Runtime-account tokens are validated against the provider before they enter the pool, and their

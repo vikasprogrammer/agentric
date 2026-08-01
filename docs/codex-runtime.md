@@ -166,6 +166,12 @@ Three details that are easy to get wrong, and that no amount of black-box guessi
 
 Both hashes are verified against values Codex itself wrote after an interactive `/hooks` trust.
 
+**Version compatibility.** The hash is derived from Codex internals, so it is pinned to a CLI version
+in principle. Verified compatible across **0.145.0 → 0.146.0**: the same computed hash is accepted (no
+review prompt), the hook still fires, `tool_name` is still `Bash`, an allow is still expressed as
+silence, and a deny still blocks. Re-run that check on each Codex upgrade — it takes minutes and the
+pane guard turns a miss into a stopped session rather than an ungoverned one.
+
 ### The pane guard
 
 The hash is derived from Codex internals, so a future release could change it. **That failure is not
@@ -232,6 +238,11 @@ sessions.
 > Do **not** write `[features] codex_hooks = true`. There is no such key — `codex features list` names
 > the flag `hooks`, and it is already stage=stable and enabled by default. The bogus key was silently
 > ignored and gave a false impression that hooks had been switched on.
+
+**Three interactive startup prompts must be pre-empted**, or a session hangs waiting for a keypress
+nobody will press. Two are trust gates; the third is the update banner, suppressed with
+`check_for_update_on_startup = false` (Agent OS pins the CLI deliberately, so an in-pane self-update is
+never wanted — and the banner also swallows the first keystroke sent to a fresh pane).
 
 Two trust gates have to be pre-accepted or every session hangs or dies — the same class of bug as the
 Claude lane's `~/.claude.json` seed:

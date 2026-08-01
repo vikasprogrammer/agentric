@@ -159,6 +159,13 @@ node -e '
   // Agent OS is the sole authority (see header note 4); the gate hook still blocks for approval.
   out.push(`approval_policy = "never"`);
   out.push(`sandbox_mode = "workspace-write"`);
+  // Suppress the "Update available / 1. Update now  2. Skip  3. Skip until next version" banner. It is
+  // an INTERACTIVE prompt drawn at TUI startup that waits on a keypress — on an unattended run nobody is
+  // there to answer it, which is the same permanent-hang class as the folder-trust and hook-review
+  // prompts we already pre-empt. (It also silently swallows the first keystroke sent to a fresh pane,
+  // which is how it was noticed.) Agent OS pins the CLI deliberately, so an in-pane self-update is
+  // something we never want anyway.
+  out.push("check_for_update_on_startup = false");
   out.push("");
   out.push("[sandbox_workspace_write]");
   // Structural containment for any write that does not pass through the shell tool. The workdir is
