@@ -4,6 +4,10 @@
 > leadership agents that guide other agents *and* humans toward company success? Is that a new
 > primitive, and is it something bigger than Goals?
 >
+> **Where it ships: inside the existing Insights feature** — no new plane, module, or nav entry
+> (§4.5–4.6). "Oversight plane" is a doc-level name for the collection. That it fits within an
+> existing feature is itself confirmation of the verdict below.
+>
 > **The verdict: no new primitive.** The leadership team is already built — ten pieces doing
 > exactly that work, scattered across `src/edge/` with no shared spine. What's missing is one
 > unifying concept, one genuinely primitive-shaped object (**`Intervention`**, §3.2), one governed
@@ -96,9 +100,10 @@ Three concrete deficits, each fixable and none requiring a new primitive-in-the-
   Each carries `{ what changed, expected effect, scope (fleet | agent | capability), window }` and
   earns a verdict on the same rails. Scope-aware: an agent-level rewrite is measured against **that
   agent's** sessions, not the fleet average — the current fleet-wide comparison would drown it.
-- **Touch-points:** `src/edge/measurement.ts` (source the list from an intervention record, not one
-  audit type; drop the `LIMIT 10`); a small store or an audit convention for the record; the
-  Insights page renders verdicts per intervention.
+- **Touch-points:** a new **`src/state/interventions.ts`** store (peer of `tasks.ts` / `goals.ts` /
+  `kb.ts` — *not* a module under Insights; see §4.6), written by every surface that ratifies a
+  change; `src/edge/measurement.ts` sources its list from that store rather than one audit type and
+  drops the `LIMIT 10`; the Insights page renders verdicts per intervention.
 - **Done when:** an owner can ask *"of the last 20 changes we made to this fleet, which ones
   actually helped?"* and get an honest answer, including "not enough data to say."
 - **Why this is the one worth building:** it's the difference between a leadership team and a
@@ -138,14 +143,31 @@ These are guardrails on anything built here, not preferences.
 4. **An LLM is never the final authority on a deterministic decision** (`docs/agent-os-plan.md`
    §3). "Guides other agents and humans" is authority-shaped language; the implementation must not
    be.
-5. **Surface naming is settled: this lives on Insights.** Don't mint a new nav page, and don't call
-   it "the Operator" — `operator` is already a `System` agent (Cockpit's action tier, alongside
-   `concierge` in `src/edge/concierge.ts`). *Oversight plane* is the internal/engine name; the
-   console word stays **Insights**.
+5. **This is not a new feature — it is the Insights feature.** Don't mint a new nav page, don't
+   build an `os.oversight` plane, and don't call it "the Operator" (`operator` is already a `System`
+   agent — Cockpit's action tier, alongside `concierge` in `src/edge/concierge.ts`). *Oversight
+   plane* is a **doc-level name for the collection**, nothing more; the shipped feature is
+   **Insights**. Same split already running for Dreaming: `dreaming_state` / `deriveGuidance` in the
+   engine, "Insights" on the nav.
+6. **Ownership rule — Insights owns the presentation and the controls; the data primitive and the
+   enforcement live where their peers live.** Three consequences, each structural rather than
+   cosmetic:
+   - **`Intervention` is a store, not a page.** It is *rendered* by Insights but *written by*
+     Skills (publish), Policy (approve a tightening), Agents (retire), Settings (runtime defaults).
+     Putting it under the Insights module inverts the dependency — every one of those surfaces would
+     import from a reporting feature. It belongs at `src/state/interventions.ts` alongside
+     `tasks.ts` / `goals.ts` / `kb.ts`, with Insights as its primary reader.
+   - **`fleet:read` is access-model.** A scope in `src/types.ts` + policy classification + a manifest
+     field, documented in `access-model.md`. Insights consumes it; it cannot own it.
+   - **The Tier 1 runner is a scheduler concern** — `Automations`' tick, next to `sweepStuckGoals`.
+     Insights owns the toggle and the report of what ran; the cron lives where the other crons live.
 
-## 5. Leadership mode — bounded autonomy
+## 5. Leadership mode — bounded autonomy (an **Insights** capability)
 
 > *"Master agents with more access that automatically run and fix things."*
+
+Ships as a mode *inside* Insights — its toggles, its tier list, and its report of what ran all live
+on that page (§4.5–4.6). It is not a separate feature, plane, or nav entry.
 
 The instinct is right and most of it is already built. Leadership mode decomposes into three parts,
 and **two of them ship today**:
@@ -189,6 +211,8 @@ gated:
 | `/api/insights/library/tidy` | soft-archive orphaned artifacts |
 | `/api/insights/sessions/tidy` | soft-archive old settled sessions |
 
+The runner is a **scheduler concern** — `Automations`' tick, beside `sweepStuckGoals` (§4.6) —
+while the toggle and the what-ran report live on Insights.
 **Putting these five on a schedule *is* Leadership mode v1**, and it is nearly free — the plan
 functions already produce the would-do list, so a scheduled run can log exactly what it intends
 before doing it.
@@ -254,8 +278,10 @@ available as the human-triggered button it is now. Nothing here removes a manual
 
 ## 8. Open decisions
 
-1. **Intervention storage** — a dedicated table + event log (Tasks/KB shape), or an audit-event
-   convention plus a view? Leaning table: verdicts need a stable id to attach to and to re-score.
+1. ~~**Intervention storage** — dedicated table, or an audit-event convention plus a view?~~
+   **Resolved (§4.6):** a dedicated `src/state/interventions.ts` store + table, peer of
+   `tasks.ts` / `goals.ts` / `kb.ts`. Verdicts need a stable id to attach to and to re-score, and
+   the many surfaces that write one must not depend on a reporting module.
 2. **`fleet:read` granularity** — one scope, or split `fleet:stats` (aggregates only) from
    `fleet:transcripts` (session bodies)? Leaning split — reading every transcript is a materially
    larger grant than reading counts, and the split is much easier to give than to retract.
