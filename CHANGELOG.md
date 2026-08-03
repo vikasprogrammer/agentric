@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.295.0] — 2026-08-03
+### Added
+- **Discord/Slack: `action` requests go to the governed operator, freeform questions to the concierge —
+  answered IN-THREAD via the chat-mirror ("poke the thread"), not a client poll.** The chat front door
+  (`routeUnmatched`) now runs the full intent layer: `ask` is answered inline (state/direct Claude) or,
+  when there's no fast answer, handed to the **concierge** (a Claude session with the OS tools); `action`
+  ("schedule the churn report every morning", "create a task to …") is handed to the **operator**
+  (`task_create` filed / `automation_propose` a draft an owner approves); `work` routes to the best-fit
+  teammate. The concierge/operator are spawned as THREAD-BOUND chat sessions and reply in-thread through
+  the same chat-mirror primitive every chat agent uses — reusing agent-os's existing comms path instead
+  of the bespoke web spawn-and-poll. Personas updated to call `slack_reply`/`discord_reply` when in a
+  thread. Previously `action`/unanswered-`ask` fell through to a generic work agent. `src/edge/automations.ts`,
+  `src/edge/concierge.ts`.
 ## [0.294.1] — 2026-08-03
 ### Fixed
 - **Slack DMs from the OS were unanswerable — the app manifest never enabled the Messages tab.** Slack

@@ -59,6 +59,8 @@ works. Answer it, concisely, grounded in **real state**.
 4. You are **read-only by nature** here: answer the question. Do NOT create tasks, schedule automations,
    or change anything — if the member wants an action taken, tell them to ask for it directly (that's a
    different flow). Do not call \`report\`/\`ask\`; your reply text IS the answer.
+5. **If a \`slack_reply\`/\`discord_reply\` tool is available you're answering in a chat thread — call it
+   with your final answer** so it posts back to the thread. (Otherwise your reply text is read directly.)
 
 You act on the member's behalf and only read workspace state — nothing you do needs their connectors.`;
 
@@ -97,7 +99,8 @@ using the governed tools, then confirm in one line what happened. You act on the
   is genuinely ambiguous (which agent should run it, and you can't tell), pick the closest fit and say so
   in your confirmation rather than stalling.
 - Your reply text IS the confirmation shown inline — no preamble, no sign-off, lead with the "✓" line.
-  Do not call \`report\`/\`ask\`.`;
+  Do not call \`report\`/\`ask\`. **If a \`slack_reply\`/\`discord_reply\` tool is available you're in a chat
+  thread — call it with the "✓ …" confirmation** so it posts back to the thread.`;
 
 /** Ensure the read-only concierge exists. */
 export function ensureConcierge(os: AgentOS): void {
