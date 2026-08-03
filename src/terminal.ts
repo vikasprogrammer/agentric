@@ -341,6 +341,13 @@ export interface FeedMessage {
 type GateStatus = 'pending' | 'allow' | 'deny';
 type GateResult = { decision: 'allow' | 'deny' | 'pending'; gateId?: string; note?: string };
 
+/** The automation columns the per-row label/source/authz helpers read — see `TerminalManager.withRowCache`. */
+interface AutomationLookup {
+  name: string;
+  type: string;
+  created_by: string | null;
+}
+
 interface SessionRow {
   id: string;
   agent: string;
@@ -682,6 +689,11 @@ export class TerminalManager {
    * regular member sees only sessions they spawned, plus sessions fired by an automation they created.
    */
   listSessions(viewer?: Member): Session[] {
+    // Memoize the member/automation lookups for this call — the per-row helpers below would otherwise
+    // re-query them ~2x per row. See withRowCache().
+    return this.withRowCache(() => this.listSessionsUncached(viewer));
+  }
+  private listSessionsUncached(viewer?: Member): Session[] {
     // Archived sessions are hidden from the list (reversible soft-archive via the Insights declutter tile);
     // their rows survive for every by-id reference (task-reconcile, audit, cost).
     const rows = this.db.prepare('SELECT * FROM term_sessions WHERE archived_at IS NULL ORDER BY created_at DESC').all<SessionRow>();
@@ -730,9 +742,11 @@ export class TerminalManager {
   /** The soft-archived sessions (hidden from `listSessions`) — for the "show archived / restore" view.
    *  Same viewer-visibility rule as the live list; no liveness/cost work (they're terminal + settled). */
   listArchivedSessions(viewer?: Member): Session[] {
-    const rows = this.db.prepare('SELECT * FROM term_sessions WHERE archived_at IS NOT NULL ORDER BY archived_at DESC').all<SessionRow>();
-    const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
-    return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as), sourceKind: this.sourceKind(r.spawned_by), runAsLabel: this.runAsLabel(r.run_as), ratedByLabel: this.runAsLabel(r.rated_by) }));
+    return this.withRowCache(() => {
+      const rows = this.db.prepare('SELECT * FROM term_sessions WHERE archived_at IS NOT NULL ORDER BY archived_at DESC').all<SessionRow>();
+      const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+      return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as), sourceKind: this.sourceKind(r.spawned_by), runAsLabel: this.runAsLabel(r.run_as), ratedByLabel: this.runAsLabel(r.rated_by) }));
+    });
   }
   /** Soft-archive a session — hide it from the list, keep the row + transcript (reversible). */
   archiveSession(id: string, now = Date.now()): boolean {
@@ -1042,7 +1056,7 @@ export class TerminalManager {
     if (!spawnedBy) return false;
     if (spawnedBy === viewer.id) return true;
     if (spawnedBy.startsWith('automation:')) {
-      const a = this.db.prepare('SELECT created_by FROM automations WHERE id = ?').get<{ created_by: string | null }>(spawnedBy.slice('automation:'.length));
+      const a = this.lookupAutomation(spawnedBy.slice('automation:'.length));
       return !!a?.created_by && a.created_by === viewer.id;
     }
     return false;
@@ -1165,14 +1179,68 @@ export class TerminalManager {
     return this.backend.ttydPortFor(space) ?? null;
   }
 
+  /**
+   * Memoized lookup tables for the duration of ONE synchronous list call — see {@link withRowCache}.
+   * `null` outside such a call, which is what keeps every other caller byte-identical.
+   */
+  private rowCache: { members?: Map<string, Member>; autos?: Map<string, AutomationLookup> } | null = null;
+
+  /**
+   * Run `fn` with the per-row member/automation lookups memoized.
+   *
+   * The row helpers below (`spawnedByLabel`, `sourceKind`, `runAsLabel`, `canViewSpawn`) each re-query
+   * SQLite per row. That's fine for one row and quadratic-feeling for a list: on the live globex tenant
+   * `listSessions` walks 950 sessions and fired ~1900 point lookups to resolve a grand total of **14
+   * members and 40 automations** — the lookup tables are tiny and bounded, the row count is not. Loading
+   * each table once per call replaces all of them with two queries, and was over half of `listSessions`'
+   * wall time (18 ms of 35 ms measured on that tenant's data).
+   *
+   * Safe because the whole scope is SYNCHRONOUS — no await, so no other request can interleave and no
+   * write can land mid-call — and nothing inside the scope mutates `members` or `automations`
+   * (`markCrashed`/`backfillCosts`/`stampInsights` write `term_sessions` and the audit log only).
+   * Re-entrant: a nested call reuses the outer scope rather than rebuilding, and the previous scope is
+   * always restored, so an exception can't strand a stale cache on the instance.
+   */
+  private withRowCache<T>(fn: () => T): T {
+    const outer = this.rowCache;
+    if (outer) return fn(); // already inside a scope — share it
+    this.rowCache = {};
+    try {
+      return fn();
+    } finally {
+      this.rowCache = outer;
+    }
+  }
+  /** `getMember`, served from the per-call cache when inside a {@link withRowCache} scope. */
+  private lookupMember(id: string): Member | undefined {
+    const c = this.rowCache;
+    if (!c) return this.os.team.getMember(id);
+    if (!c.members) {
+      c.members = new Map();
+      // `listMembers()` selects the same rows `getMember` does (no filter), so this is a complete index.
+      for (const m of this.os.team.listMembers()) c.members.set(m.id, m);
+    }
+    return c.members.get(id);
+  }
+  /** The automation row the label/source/authz helpers need, cached the same way. */
+  private lookupAutomation(id: string): AutomationLookup | undefined {
+    const c = this.rowCache;
+    if (!c) return this.db.prepare('SELECT name, type, created_by FROM automations WHERE id = ?').get<AutomationLookup>(id);
+    if (!c.autos) {
+      c.autos = new Map();
+      for (const a of this.db.prepare('SELECT id, name, type, created_by FROM automations').all<AutomationLookup & { id: string }>()) c.autos.set(a.id, a);
+    }
+    return c.autos.get(id);
+  }
+
   /** Resolve a session's provenance (+ run-as) to a console-friendly label: member name/email, or
    *  automation — and "Automation · X · as Alice" when it ran as a resolved member. */
   private spawnedByLabel(spawnedBy: string | null, runAs?: string | null): string | undefined {
-    const asMember = runAs ? this.os.team.getMember(runAs) : undefined;
+    const asMember = runAs ? this.lookupMember(runAs) : undefined;
     const asSuffix = asMember && asMember.id !== spawnedBy ? ` · as ${asMember.name || asMember.email}` : '';
     if (!spawnedBy) return asMember ? `as ${asMember.name || asMember.email}` : undefined;
     if (spawnedBy.startsWith('automation:')) {
-      const auto = this.db.prepare('SELECT name FROM automations WHERE id = ?').get<{ name: string }>(spawnedBy.slice('automation:'.length));
+      const auto = this.lookupAutomation(spawnedBy.slice('automation:'.length));
       return `${auto ? `Automation · ${auto.name}` : 'Automation'}${asSuffix}`;
     }
     // Generic chat-router run (`chat:<agent>`) — a Slack/Discord message addressed to an agent, no automation.
@@ -1183,7 +1251,7 @@ export class TerminalManager {
     if (spawnedBy.startsWith('ask:')) return `Ask · ${spawnedBy.slice('ask:'.length)}${asSuffix}`;
     // Async poke-back (`poke:<task>`) — this caller was resumed because a delegate it handed off finished.
     if (spawnedBy.startsWith('poke:')) return `Poke · ${spawnedBy.slice('poke:'.length)}${asSuffix}`;
-    const m = this.os.team.getMember(spawnedBy);
+    const m = this.lookupMember(spawnedBy);
     return m ? m.name || m.email : spawnedBy;
   }
 
@@ -1196,7 +1264,7 @@ export class TerminalManager {
     if (spawnedBy.startsWith('task:')) return 'task';
     if (spawnedBy.startsWith('chat:')) return 'chat';
     if (spawnedBy.startsWith('automation:')) {
-      const auto = this.db.prepare('SELECT type FROM automations WHERE id = ?').get<{ type: string }>(spawnedBy.slice('automation:'.length));
+      const auto = this.lookupAutomation(spawnedBy.slice('automation:'.length));
       switch (auto?.type) {
         case 'cron': return 'cron';
         case 'webhook': return 'webhook';
@@ -1208,14 +1276,14 @@ export class TerminalManager {
       }
     }
     // A bare principal: a console member spawned it manually, or an internal system principal.
-    return this.os.team.getMember(spawnedBy) ? 'manual' : 'system';
+    return this.lookupMember(spawnedBy) ? 'manual' : 'system';
   }
 
   /** The run-as member's display name (name → email), for the sessions-list Owner filter. Undefined
    *  when the session has no run-as identity or the member no longer exists. */
   private runAsLabel(runAs: string | null): string | undefined {
     if (!runAs) return undefined;
-    const m = this.os.team.getMember(runAs);
+    const m = this.lookupMember(runAs);
     return m ? m.name || m.email : undefined;
   }
 

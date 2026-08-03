@@ -6759,10 +6759,25 @@ const COMPRESSIBLE = /^(?:text\/|application\/(?:json|javascript|xml)|image\/svg
  */
 const GZIP_CACHE = new Map<string, Buffer>();
 const GZIP_CACHE_MAX = 64;
-function gzipFor(key: string, raw: Buffer): Buffer {
+/**
+ * Compression levels, split by how often the same bytes get compressed.
+ *
+ * A static asset is compressed ONCE per build and then served from `FILE_CACHE` forever, so its CPU
+ * cost is amortised to nothing and only the wire size matters — take the small level-6 win.
+ *
+ * A live JSON payload is the opposite. `/api/sessions` changes whenever any run does (8 concurrent runs
+ * on the live globex tenant keep `updatedAt` moving), so nearly every 1.5s poll is a cache MISS and
+ * re-compresses ~1.2 MB. Measured on that payload: level 6 costs 15.8 ms, level 4 costs 10.1 ms for
+ * 5.9% more bytes, level 1 costs 6.5 ms for 18.8% more. Level 4 is the knee — it buys back a third of
+ * the compression time (comparable to the entire list rebuild) for bytes nobody notices on a poll that
+ * is usually a 304 anyway.
+ */
+const GZIP_LEVEL_STATIC = 6;
+const GZIP_LEVEL_DYNAMIC = 4;
+function gzipFor(key: string, raw: Buffer, level: number): Buffer {
   const hit = GZIP_CACHE.get(key);
   if (hit) return hit;
-  const out = zlib.gzipSync(raw, { level: 6 });
+  const out = zlib.gzipSync(raw, { level });
   if (GZIP_CACHE.size >= GZIP_CACHE_MAX) GZIP_CACHE.delete(GZIP_CACHE.keys().next().value as string);
   GZIP_CACHE.set(key, out);
   return out;
@@ -6778,7 +6793,7 @@ function gzipFor(key: string, raw: Buffer): Buffer {
  * revalidate first" — never "serve it stale". So a 304 can only follow a fresh round-trip, and the
  * 1.5s poll degrades from a megabyte to a bodyless header when nothing changed.
  */
-function sendBody(res: http.ServerResponse, status: number, raw: Buffer, contentType: string, cacheControl: string): void {
+function sendBody(res: http.ServerResponse, status: number, raw: Buffer, contentType: string, cacheControl: string, level = GZIP_LEVEL_DYNAMIC): void {
   const req: http.IncomingMessage | undefined = res.req;
   const headers: Record<string, string> = { 'content-type': contentType, 'cache-control': cacheControl, vary: 'accept-encoding' };
   // Revalidation only makes sense for a successful GET; a 304 carries validators and no body.
@@ -6794,7 +6809,7 @@ function sendBody(res: http.ServerResponse, status: number, raw: Buffer, content
   let body = raw;
   if (raw.length >= COMPRESS_MIN && COMPRESSIBLE.test(contentType) && /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''))) {
     // Only cache keyed by a content hash; without an ETag (a POST reply, an error) compress one-off.
-    body = etag ? gzipFor(etag, raw) : zlib.gzipSync(raw, { level: 6 });
+    body = etag ? gzipFor(etag, raw, level) : zlib.gzipSync(raw, { level });
     headers['content-encoding'] = 'gzip';
   }
   headers['content-length'] = String(body.length);
@@ -6824,14 +6839,14 @@ function sendFile(res: http.ServerResponse, file: string, contentType: string): 
     const cacheControl = isFingerprinted(file) ? 'public, max-age=31536000, immutable' : 'no-cache';
     const key = `${file}:${st.mtimeMs}:${st.size}`;
     const hit = FILE_CACHE.get(key);
-    if (hit) return sendBody(res, 200, hit, contentType, cacheControl);
+    if (hit) return sendBody(res, 200, hit, contentType, cacheControl, GZIP_LEVEL_STATIC);
     fs.readFile(file, (err, data) => {
       if (err) return sendJson(res, 404, { error: `file not found: ${path.basename(file)}` });
       if (st.size <= FILE_CACHE_MAX_BYTES) {
         if (FILE_CACHE.size >= 64) FILE_CACHE.delete(FILE_CACHE.keys().next().value as string);
         FILE_CACHE.set(key, data);
       }
-      sendBody(res, 200, data, contentType, cacheControl);
+      sendBody(res, 200, data, contentType, cacheControl, GZIP_LEVEL_STATIC);
     });
   });
 }

@@ -8,6 +8,35 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.292.2] — 2026-08-03
+### Fixed
+- **`listSessions` re-queried the members and automations tables once per row.** v0.291.6 made the
+  1.5 s console poll cheap on the wire (a 304 with no body), but the server still paid the full rebuild
+  before it could decide to send that 304 — a 304 measured exactly as slow as the full response. The
+  rebuild's single largest cost turned out to be the four per-row helpers (`spawnedByLabel`,
+  `sourceKind`, `runAsLabel` and `canViewSpawn`), each of which issued its own point lookup per row: on
+  the live globex tenant that was **~1900 SQLite queries per poll to resolve 14 members and 40
+  automations**. The lookup tables are tiny and bounded; the row count (950 and growing) is not.
+  A `withRowCache` scope now loads each table **once per list call** and the helpers read from it —
+  two queries in place of ~1900.
+  - `tm.listSessions(owner)` **35 ms → 14 ms (−60%)**; internal/no-viewer 43 → 22 ms; archived 1.5 → 0.6 ms.
+  - End-to-end `GET /api/sessions` **51 ms → 32 ms**, and the idle-poll 304 path **50 ms → 30 ms** —
+    which is the one that runs 40×/minute per open tab.
+
+  The cache lives only for the duration of one **synchronous** call (no await, so nothing can interleave)
+  and nothing inside the scope mutates either table, so it cannot go stale. Outside such a scope the
+  helpers take exactly the old direct-query path, leaving every other caller untouched. The scope is
+  re-entrant and restored in a `finally`, so an exception can't strand a stale cache on the instance.
+
+  Complements #532, which stops the *client* re-rendering on an unchanged tick: together an idle poll now
+  neither rebuilds on the server nor re-renders in the browser.
+### Changed
+- **gzip level is now split by how often the same bytes get compressed.** A static asset is compressed
+  once per build and cached, so it keeps level 6. A live JSON payload is re-compressed on nearly every
+  poll (`/api/sessions` changes whenever any run does), so it drops to level 4: measured on that 1.2 MB
+  payload, **15.8 ms → 10.1 ms for 5.9% more bytes** (level 1 would be 6.5 ms but 18.8% more). The
+  compression time had become comparable to the entire list rebuild.
+
 ## [0.292.1] — 2026-08-03
 ### Changed
 - **The console's global 1.5 s poll now skips the re-render on unchanged ticks (client-side 304).**
