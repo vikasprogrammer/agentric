@@ -20,6 +20,7 @@ import { CodingRuntimeId, isCodingRuntime, Task, TaskTimelineEntry } from '../ty
 import { chooseAgent, RouterCandidate } from './router';
 import { classifyIntent } from './intent';
 import { answerAsk } from './ask';
+import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
 // Supports: * , a-b , */n , a-b/n , lists. dow 0-7 (7 ≡ 0 = Sunday).
@@ -797,21 +798,39 @@ export class Automations {
       return { sessions };
     }
 
-    // 2.5) A question ABOUT the workspace is answered INLINE — fast, no session — the same way Cockpit
-    //      does (`answerAsk`: state lookup → direct Claude). So "how do automations work?" in Discord/Slack
-    //      comes back as a threaded reply in ~1–2s instead of spawning an agent. `action`/`work` — and an
-    //      `ask` with no inline answer available (no LLM configured) — fall through to routing below.
-    if (this.os.settings.autoRouteEnabled() && classifyIntent(opts.text).intent === 'ask') {
-      const me = opts.runAs ? this.os.team.getMember(opts.runAs) : undefined;
-      const inline = await answerAsk(this.os, this.tm, this, me, opts.text);
-      if (inline) {
-        this.os.audit.append({ ts: Date.now(), runId: opts.key, tenant: this.os.tenant, principal: opts.runAs ? `member:${opts.runAs}` : 'chat', type: 'chat.answered', data: { source: inline.source, chars: inline.answer.length, runAs: opts.runAs ?? null } });
-        return { sessions, reply: inline.answer };
-      }
-    }
-
-    // 3) Auto-route (when enabled). Fails safe: confident → route; uncertain → ask; nothing → help list.
+    // 3) Auto-route (when enabled) — the intent layer, mirrored from Cockpit. For `ask`/`action` we hand
+    //    off to the read-only concierge / action operator as THREAD-BOUND chat sessions: they do the work
+    //    and reply IN-THREAD via the same chat-mirror primitive every chat agent uses (the "poke the
+    //    thread"), not a bespoke client poll. `work` routes to the best-fit teammate. Fails safe.
     if (this.os.settings.autoRouteEnabled()) {
+      const intent = classifyIntent(opts.text).intent;
+
+      if (intent === 'ask') {
+        // A question ABOUT the workspace: answer INLINE first (fast, no session) — state lookup → direct
+        // Claude. Only when there's no fast inline answer do we spawn the concierge to answer in-thread.
+        const me = opts.runAs ? this.os.team.getMember(opts.runAs) : undefined;
+        const inline = await answerAsk(this.os, this.tm, this, me, opts.text);
+        if (inline) {
+          this.os.audit.append({ ts: Date.now(), runId: opts.key, tenant: this.os.tenant, principal: opts.runAs ? `member:${opts.runAs}` : 'chat', type: 'chat.answered', data: { source: inline.source, chars: inline.answer.length, runAs: opts.runAs ?? null } });
+          return { sessions, reply: inline.answer };
+        }
+        ensureConcierge(this.os);
+        if (this.os.agents.get(CONCIERGE_ID)?.dir) {
+          spawn(CONCIERGE_ID, opts.extra, { by: 'auto' }, opts.text, opts.runAs);
+          return { sessions };
+        }
+        // Concierge unavailable → fall through to work routing (an agent can still answer conversationally).
+      } else if (intent === 'action') {
+        // "schedule … / create a task …" → the governed operator: task_create (filed) / automation_propose
+        // (a draft an owner approves). Bound to the thread; it confirms in-thread. Falls back to routing.
+        ensureOperator(this.os);
+        if (this.os.agents.get(OPERATOR_ID)?.dir) {
+          spawn(OPERATOR_ID, opts.extra, { by: 'auto' }, opts.text, opts.runAs);
+          return { sessions };
+        }
+      }
+
+      // `work` (or a concierge/operator that couldn't be provisioned) → route to the best-fit teammate.
       const decision = await chooseAgent(this.os, opts.text);
       if (decision.kind === 'route') {
         spawn(decision.agentId, opts.extra, { by: decision.method === 'llm' ? 'auto-llm' : 'auto', score: decision.score, runnerUp: decision.runnerUp?.agentId }, opts.text, opts.runAs);
