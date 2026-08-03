@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.293.0] — 2026-08-03
+### Added
+- **A ceiling on how long a session may sit blocked on an unanswered question.** The idle janitor skips a
+  session that's waiting on a person — rightly, that wait is real — but nothing expires an Inbox card, so
+  the exemption had no floor and the wait could be permanent. Live initech was holding a `support`
+  session **66 hours** after its question was asked, alongside two more questions unanswered since 07-28;
+  each such session pins a `claude` process (~300 MB) and a concurrency-cap slot indefinitely. New setting
+  **Settings → Runtime → "Close a session waiting on an unanswered question after (hours)"**, default
+  **72 h** — the same age at which `escalateStalePrompts` already gives up nagging and treats a prompt as
+  dead. Past it the session is closed and its card **cancelled**, which is also what makes the card
+  dismissable instead of hanging in the Inbox. `0` restores the old wait-for-ever.
+  - The clock runs from when the **oldest pending card was raised**, not from session idleness — the claim
+    being made is "nobody answered this in three days", and a blocked session is quiet by definition.
+  - A session with **someone attached is never cut**: a human is right there and can answer.
+  - Applies to the interactive lane. Unattended runs already had a ceiling (`unattendedMaxHours`, 24 h)
+    that overrides a pending block.
+  - Audited as `session.reaped` with `reason: 'blocked-timeout'` and how long it had waited, so this is
+    distinguishable from an ordinary idle reap. `blockedMaxHours` on `GET`/`PUT /api/settings/concurrency`.
+
 ## [0.292.5] — 2026-08-03
 ### Changed
 - **The router now uses the LLM to pick from the FULL roster when keyword routing isn't confident — not

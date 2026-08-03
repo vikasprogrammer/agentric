@@ -115,6 +115,56 @@ assert(!killed.includes('aos-' + runningBlocked), 'a still-running run blocked o
 assert(statusOf(runningBlocked) === 'running', '…and still running');
 assert(qStatus(qst) === 'pending', '…with its question still open for an answer');
 
+/* Sweep 3 — the BLOCKED ceiling. An interactive session waiting on a question/approval is exempt from the
+ * idle reaper, and nothing expires an Inbox card, so with no ceiling it waits for ever (live initech:
+ * 66 h on a question raised three days earlier). Past `blockedMaxHours`, measured from when the card was
+ * RAISED, it is closed and the card cancelled — but a recent block, and an attached session, are left. */
+console.log('\n\x1b[1m5) sweep 3: the blocked-on-a-card ceiling\x1b[0m');
+// Section 4 pinned aliveNames to its own two panes; restore the all-alive stub or sweep 0 (crash
+// detection) marks every session created below as `crashed` before the idle sweep ever sees it.
+tm.backend.aliveNames = () => new Set(aos.db.prepare('SELECT tmux FROM term_sessions').all().map((r) => r.tmux));
+aos.settings.setInteractiveIdleTimeoutHours(48);
+assert(aos.settings.blockedMaxHours() === 72, 'unset → 72h default');
+assert(aos.settings.setBlockedMaxHours(0) === 0, 'set 0 → 0 (disabled)');
+assert(aos.settings.setBlockedMaxHours(99999) === 24 * 30, 'clamps to 30 days max');
+aos.settings.setBlockedMaxHours(72);
+
+const askAt = (id, ageH) => {
+  const qid = 'qst_b_' + id;
+  aos.db.prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, created_at) VALUES (?,?,?,?,?,?,?)')
+    .run(qid, id, aos.tenant, 'website-bot', 'which one?', 'pending', Date.now() - ageH * H);
+  return qid;
+};
+// All four are far past the 48h IDLE cutoff — the only thing that differs is the block.
+const blockedOld = mkSession({ created_at: Date.now() - 96 * H });        // card raised 90h ago → reap
+const qOld = askAt(blockedOld, 90);
+const blockedFresh = mkSession({ created_at: Date.now() - 96 * H });      // card raised 2h ago → keep waiting
+const qFresh = askAt(blockedFresh, 2);
+const blockedAttached = mkSession({ created_at: Date.now() - 96 * H, tmux: 'aos-WATCHED' }); attached.add('aos-WATCHED');
+askAt(blockedAttached, 90);                                              // someone is there to answer → keep
+const blockedApproval = mkSession({ created_at: Date.now() - 96 * H });  // an APPROVAL counts the same way
+const { req: oldApr } = aos.approvals.request({ runId: blockedApproval, tenant: aos.tenant, level: 'owner',
+  reason: 'test', attempt: { capabilityId: 'shell.exec', args: {}, reasoning: '' } });
+aos.db.prepare('UPDATE approvals SET created_at = ? WHERE id = ?').run(Date.now() - 90 * H, oldApr.id);
+killed.length = 0;
+
+tm.reapIdleSessions();
+
+assert(statusOf(blockedOld) === 'stopped', 'blocked 90h on a 72h ceiling → closed');
+assert(qStatus(qOld) === 'cancelled', '…and its question cancelled, so the card is dismissable');
+assert(statusOf(blockedFresh) === 'running', 'blocked only 2h → still waiting');
+assert(qStatus(qFresh) === 'pending', '…its question still open');
+assert(statusOf(blockedAttached) === 'running', 'blocked 90h but a human is attached → left alone');
+assert(statusOf(blockedApproval) === 'stopped', 'a 90h-old pending APPROVAL blocks the same way');
+assert(aos.approvals.statusOf(oldApr.id) === 'cancelled', '…and is cancelled on teardown');
+
+console.log('\n\x1b[1m6) blocked ceiling disabled (0) restores the old wait-for-ever\x1b[0m');
+aos.settings.setBlockedMaxHours(0);
+const blockedForever = mkSession({ created_at: Date.now() - 200 * H });
+askAt(blockedForever, 150);
+tm.reapIdleSessions();
+assert(statusOf(blockedForever) === 'running', '0 → a 150h-old block is never cut');
+
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
 process.exit(fail === 0 ? 0 : 1);

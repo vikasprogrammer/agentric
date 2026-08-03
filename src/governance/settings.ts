@@ -80,6 +80,7 @@ const CHAT_IDLE_MIN_KEY = 'chat_idle_timeout_min'; // resident (warm) chat sessi
 const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency cap override; unset → RAM-derived default, 0 → unlimited
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
 const UNATTENDED_MAX_HOURS_KEY = 'unattended_max_runtime_hours'; // hard runtime ceiling for a headless/unattended run (stuck-mid-turn backstop); unset → 24h, 0 → off
+const BLOCKED_MAX_HOURS_KEY = 'blocked_max_hours'; // force-close an interactive session waiting this long on an unanswered card; unset → 72h, 0 → off
 const UNATTENDED_NO_PROGRESS_MIN_KEY = 'unattended_no_progress_minutes'; // reap a headless run that never made a tool call (never-started: rate-limit/trust-hang/lost-prompt); unset → 30m, 0 → off
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 const SUPPRESSED_BUILTINS_KEY = 'suppressed_builtins'; // built-in agent ids an admin deleted (JSON string[]); boot won't re-seed them
@@ -972,6 +973,33 @@ export class SettingsStore {
     const clamped = !Number.isFinite(n) || n < 0 ? 24 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
     this.set(UNATTENDED_MAX_HOURS_KEY, String(clamped), by);
     return this.unattendedMaxHours();
+  }
+
+  /**
+   * Hours an INTERACTIVE session may sit blocked on an unanswered question/approval before the janitor
+   * closes it anyway. The idle reaper deliberately skips a session that is waiting on a person — but
+   * nothing expires an Inbox card, so that exemption had no floor: a session blocked on a question nobody
+   * answers waits for ever, holding a `claude` process and a concurrency-cap slot (live initech: 66 h
+   * and counting on a question raised three days earlier). Past this ceiling the wait is an abandonment,
+   * so the session is closed and its card cancelled — which is also what makes the card dismissable
+   * instead of hanging in the Inbox. Measured from when the OLDEST pending card was raised.
+   *
+   * Default **72 h**, matching `STALE_PROMPT_MAX_MS` — the age at which the reminder sweep already gives
+   * up on a prompt and stops nagging. Clamped 1 h–30 d; `0` disables (restoring the old wait-for-ever).
+   * A session with someone attached is never cut by this: a human is right there to answer.
+   */
+  blockedMaxHours(): number {
+    const n = Number(this.getRow(BLOCKED_MAX_HOURS_KEY)?.value);
+    if (!Number.isFinite(n)) return 72; // unset → default
+    if (n <= 0) return 0;               // explicit 0 → disabled
+    return Math.min(Math.max(Math.round(n), 1), 24 * 30);
+  }
+
+  setBlockedMaxHours(hours: number, by?: string): number {
+    const n = Number(hours);
+    const clamped = !Number.isFinite(n) || n < 0 ? 72 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
+    this.set(BLOCKED_MAX_HOURS_KEY, String(clamped), by);
+    return this.blockedMaxHours();
   }
 
   /** Minutes after which a headless/unattended run that has made ZERO progress — never a completed turn

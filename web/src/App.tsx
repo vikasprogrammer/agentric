@@ -13618,6 +13618,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const [idle, setIdle] = useState('')      // hours; '0' = off
   const [maxRun, setMaxRun] = useState('')  // headless hard runtime ceiling, hours; '0' = off
   const [noProg, setNoProg] = useState('')  // headless no-progress reap, minutes; '0' = off
+  const [blocked, setBlocked] = useState('') // interactive blocked-on-a-card ceiling, hours; '0' = off
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   const canEdit = me.role === 'owner' || me.role === 'admin'
@@ -13629,6 +13630,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
     setIdle(String(r.idleHours))
     setMaxRun(String(r.unattendedMaxHours))
     setNoProg(String(r.unattendedNoProgressMinutes))
+    setBlocked(String(r.blockedMaxHours))
   }).catch(() => {})
   useEffect(() => { load() }, [])
 
@@ -13636,14 +13638,16 @@ function ConcurrencySettings({ me }: { me: Member }) {
   const idleDirty = data != null && idle.trim() !== String(data.idleHours)
   const maxRunDirty = data != null && maxRun.trim() !== String(data.unattendedMaxHours)
   const noProgDirty = data != null && noProg.trim() !== String(data.unattendedNoProgressMinutes)
-  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty
+  const blockedDirty = data != null && blocked.trim() !== String(data.blockedMaxHours)
+  const dirty = capDirty || idleDirty || maxRunDirty || noProgDirty || blockedDirty
   const save = async () => {
     setBusy(true); setHint('')
-    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number } = {}
+    const body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number } = {}
     if (capDirty) body.value = input.trim() === '' ? null : Number(input)
     if (idleDirty) body.idleHours = Number(idle)
     if (maxRunDirty) body.unattendedMaxHours = Number(maxRun)
     if (noProgDirty) body.unattendedNoProgressMinutes = Number(noProg)
+    if (blockedDirty) body.blockedMaxHours = Number(blocked)
     const r = await api.saveConcurrency(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
@@ -13740,6 +13744,25 @@ function ConcurrencySettings({ me }: { me: Member }) {
             The fast net for a run that never STARTED — a usage-limit refusal, a trust-dialog hang, a lost prompt — which makes no tool
             call and never signals a turn, so the ceiling above would otherwise hold it for hours. A run that has made even one tool call
             is treated as working and is never cut by this.
+          </p>
+        </div>
+        <div className="space-y-1.5 border-t pt-4">
+          <label className="text-xs font-medium text-muted-foreground">Close a session waiting on an unanswered question after (hours)</label>
+          <div className="flex items-center gap-3">
+            <Input
+              type="number" min={0} step={1} value={blocked}
+              onChange={(e) => setBlocked(e.target.value)}
+              placeholder="72"
+              disabled={!canEdit}
+              className="h-8 w-40 font-mono text-xs"
+            />
+            <span className="text-[11px] text-muted-foreground">0 = wait for ever · nobody attached</span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            A session blocked on a question or approval is normally left alone — that wait is real. But nothing expires an Inbox card, so
+            with no ceiling it waits for ever, holding a <span className="font-mono">claude</span> process and a cap slot. Past this age
+            (measured from when the card was raised) the session is closed and the card cancelled, which is what makes it dismissable
+            instead of hanging. Someone attached to the session is never cut — they can answer.
           </p>
         </div>
         <div className="flex items-center gap-3">

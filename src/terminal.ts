@@ -2258,9 +2258,20 @@ export class TerminalManager {
     // console re-open clears `blockResume`), so this is a janitor, not a guillotine. Skip claimed take-overs —
     // a human owns that lifecycle. `0` disables. Uses COALESCE(last_activity, created_at): a member session
     // rarely stamps last_activity, so age is the fallback clock.
+    //
+    // BLOCKED CEILING. "No pending human block" was an unconditional exemption, and that is the same
+    // mistake the done-orphan leak was: nothing expires an unanswered card, so a session waiting on one
+    // waits FOREVER. Live initech: a `support` session blocked on a question asked 2026-07-31 was
+    // still holding its pane 66 h later, with two more questions unanswered since 07-28. Past
+    // `blockedMaxHours` (default 72 h — the age at which `escalateStalePrompts` already stops nagging and
+    // treats a prompt as dead) the wait is not a wait, it's an abandonment, so reap and cancel the card.
+    // Measured from when the OLDEST pending card was RAISED, not from session idleness — "nobody answered
+    // this in three days" is the actual claim. Attached sessions are still skipped: someone is right there.
     const idleHours = this.os.settings.interactiveIdleTimeoutHours();
     if (idleHours > 0) {
       const idleCutoff = Date.now() - idleHours * 3600_000;
+      const blockedHours = this.os.settings.blockedMaxHours();
+      const blockedCutoff = blockedHours > 0 ? Date.now() - blockedHours * 3600_000 : null;
       const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status FROM term_sessions WHERE headless = 0 AND resident = 0 AND claimed_by IS NULL AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ?")
         .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string }>(idleCutoff);
       for (const r of stale) {
@@ -2271,14 +2282,23 @@ export class TerminalManager {
           if (r.status === 'done' && alive && !alive.has(r.tmux)) continue;
           const space = this.spaceFor(r.run_as ?? r.spawned_by);
           if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
-          if (this.hasPendingHumanBlock(r.id)) continue;               // blocked on a person — leave it
+          // Blocked on a person: leave it — unless nobody has answered inside the ceiling above, at which
+          // point it is abandoned, not waiting.
+          let reason = 'idle-interactive';
+          const blockedAt = this.oldestPendingBlockAt(r.id);
+          if (blockedAt !== undefined) {
+            if (blockedCutoff == null || blockedAt >= blockedCutoff) continue;
+            reason = 'blocked-timeout';
+          }
           this.backend.kill(space, r.tmux);
           // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.
           this.db.prepare("UPDATE term_sessions SET status = ?, updated_at = ? WHERE id = ?").run(r.status === 'done' ? 'done' : 'stopped', Date.now(), r.id);
           this.cancelPendingQuestions(r.id, 'system');
           this.cancelPendingApprovals(r.id, 'system');
           this.blockResume(r.id); // stay reaped against a ttyd auto-reconnect; a deliberate Resume clears it
-          this.audit(r.id, r.agent, 'session.reaped', { reason: 'idle-interactive', idleHours, status: r.status });
+          this.audit(r.id, r.agent, 'session.reaped', reason === 'blocked-timeout'
+            ? { reason, blockedHours, blockedForMs: Date.now() - (blockedAt as number), status: r.status }
+            : { reason, idleHours, status: r.status });
         } catch { /* one bad row must not stop the sweep */ }
       }
     }
@@ -2340,6 +2360,20 @@ export class TerminalManager {
     const q = this.db.prepare("SELECT 1 FROM questions WHERE run_id = ? AND status = 'pending' LIMIT 1").get(sessionId);
     if (q) return true;
     return this.os.approvals.pending(this.os.tenant).some((a) => a.runId === sessionId);
+  }
+
+  /** WHEN this session started waiting on a person — the creation time of its OLDEST still-pending question
+   *  or approval, or undefined when it isn't blocked. The clock for the blocked ceiling (sweep 3): what
+   *  matters is how long the CARD has gone unanswered, not how long the session has been quiet. */
+  private oldestPendingBlockAt(sessionId: string): number | undefined {
+    const q = this.db.prepare("SELECT MIN(created_at) AS at FROM questions WHERE run_id = ? AND status = 'pending'")
+      .get<{ at: number | null }>(sessionId)?.at ?? undefined;
+    const a = this.os.approvals.pending(this.os.tenant)
+      .filter((x) => x.runId === sessionId)
+      .reduce<number | undefined>((min, x) => (min === undefined || x.createdAt < min ? x.createdAt : min), undefined);
+    if (q === undefined) return a;
+    if (a === undefined) return q;
+    return Math.min(q, a);
   }
 
   /** Has this run made any real PROGRESS — i.e. attempted at least one governed tool call (a `gate.attempt`
