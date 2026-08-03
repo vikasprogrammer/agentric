@@ -21,7 +21,11 @@ export interface IntentResult {
 }
 
 // A request to stand up a recurring/scheduled run, or an explicit "create a task" → an OS primitive.
-const SCHEDULE_RE = /\b(schedul(e|ing)|automat(e|ion)|recurring|every\s+(morning|day|night|week|hour|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|daily|weekly|hourly|nightly|each\s+(day|morning|week)|set\s+up\s+a?\s*(cron|automation|schedule)|remind\s+me)\b/i;
+// A scheduling VERB or recurrence, or an explicit "create/set up an automation/cron". Deliberately does
+// NOT match the bare noun "automation(s)" — "what's an automation?" / "how do automations work?" are
+// questions (→ ask), not requests to build one (which need a verb: "schedule …", "automate …",
+// "set up an automation", or a recurrence like "every morning").
+const SCHEDULE_RE = /\b(schedul(e|ing)|automate|recurring|every\s+(morning|day|night|week|hour|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|daily|weekly|hourly|nightly|each\s+(day|morning|week)|remind\s+me)\b|\b(create|set\s*up|add|make|configure)\s+(a\s+|an\s+|the\s+)?(automation|cron(\s*job)?|schedule)\b/i;
 const TASK_RE = /\b(create|add|open|file|make|log)\s+(a\s+|an\s+|the\s+)?(task|to-?do|ticket|work\s*item)\b/i;
 
 // Meta-nouns that mean "about the agent-os / this workspace" rather than a domain topic an agent works on.

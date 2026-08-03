@@ -18,6 +18,8 @@ import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
+import { classifyIntent } from './intent';
+import { answerAsk } from './ask';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
 // Supports: * , a-b , */n , a-b/n , lists. dow 0-7 (7 ≡ 0 = Sunday).
@@ -793,6 +795,19 @@ export class Automations {
     if (explicit.agentId) {
       spawn(explicit.agentId, opts.extra, { by: 'explicit' }, opts.text, opts.runAs);
       return { sessions };
+    }
+
+    // 2.5) A question ABOUT the workspace is answered INLINE — fast, no session — the same way Cockpit
+    //      does (`answerAsk`: state lookup → direct Claude). So "how do automations work?" in Discord/Slack
+    //      comes back as a threaded reply in ~1–2s instead of spawning an agent. `action`/`work` — and an
+    //      `ask` with no inline answer available (no LLM configured) — fall through to routing below.
+    if (this.os.settings.autoRouteEnabled() && classifyIntent(opts.text).intent === 'ask') {
+      const me = opts.runAs ? this.os.team.getMember(opts.runAs) : undefined;
+      const inline = await answerAsk(this.os, this.tm, this, me, opts.text);
+      if (inline) {
+        this.os.audit.append({ ts: Date.now(), runId: opts.key, tenant: this.os.tenant, principal: opts.runAs ? `member:${opts.runAs}` : 'chat', type: 'chat.answered', data: { source: inline.source, chars: inline.answer.length, runAs: opts.runAs ?? null } });
+        return { sessions, reply: inline.answer };
+      }
     }
 
     // 3) Auto-route (when enabled). Fails safe: confident → route; uncertain → ask; nothing → help list.

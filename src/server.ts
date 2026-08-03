@@ -31,9 +31,8 @@ import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { chooseAgent } from './edge/router';
 import { classifyIntent } from './edge/intent';
-import { resolveLlm, chatComplete } from './edge/llm';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
-import { answerFromState } from './edge/ask';
+import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
 import { checkClaudeToken, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
 import { ClickupIngress } from './edge/clickup-ingress';
@@ -237,30 +236,6 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
  *  `deletable` = lives under the data home (user-created), so it can be removed; the bundled
  *  examples that ship with the software are read-only. `builtIn` = one of the agents Agent OS
  *  provisions itself, so the console can label it as shipped-with-the-software vs. user-authored. */
-/** A compact, factual snapshot of the workspace for the Cockpit `ask` tier — the ONLY ground the LLM
- *  may answer from. Kept small (agents + live counts + KB sections) and derived live, so answers reflect
- *  the real fleet, not a hallucination. Member-scoped where it matters (sessions the viewer can see). */
-function cockpitWorkspaceContext(os: AgentOS, tm: TerminalManager, autos: Automations, me: Member): string {
-  const agents = [...os.agents.values()].filter((a) => isCodingRuntime(a.runtime));
-  const agentLines = agents.map((a) => `  - ${a.id}: ${(a.description || '').replace(/\s+/g, ' ').slice(0, 140)}`).join('\n');
-  const sessions = tm.listSessions(me);
-  const live = sessions.filter((s) => s.alive).length;
-  const waiting = sessions.filter((s) => s.blocked).length;
-  const tc = os.tasks.counts(os.tenant);
-  const autoList = autos.list();
-  const autoOn = autoList.filter((a) => a.enabled);
-  const autoNames = autoOn.slice(0, 20).map((a) => a.name).join(', ');
-  const sections = os.kb.sections(os.tenant);
-  return [
-    `Workspace: ${os.tenantName} (tenant ${os.tenant}).`,
-    `Agents (${agents.length}):\n${agentLines || '  (none)'}`,
-    `Sessions: ${sessions.length} total, ${live} running, ${waiting} blocked/waiting on a human.`,
-    `Tasks: ${tc.todo} todo, ${tc.doing} in progress, ${tc.blocked} blocked, ${tc.done} done.`,
-    `Automations: ${autoList.length} total, ${autoOn.length} enabled${autoNames ? ` (${autoNames})` : ''}.`,
-    `Knowledge Base sections: ${sections.join(', ') || '(none)'}.`,
-  ].join('\n');
-}
-
 function terminalAgents(os: AgentOS): { id: string; description: string; category?: string; runtime: string; deletable: boolean; builtIn: boolean; model?: string; effort?: string; examplePrompts?: string[]; icon?: string }[] {
   const userRoot = os.paths ? path.resolve(os.paths.userAgents) + path.sep : null;
   return [...os.agents.values()].map((a) => ({
@@ -2611,19 +2586,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     }
 
     if (intent.intent === 'ask') {
-      // Band 1: structured lookups answered deterministically from state — instant, no LLM, no session.
-      const stateAnswer = answerFromState(os, tm, autos, me, text);
-      if (stateAnswer) return sendJson(res, 200, { intent: 'ask', answer: stateAnswer, source: 'state' });
-
-      // Band 2a: freeform, and a fast direct LLM IS configured → answer inline from a compact context.
-      const llm = resolveLlm(os);
-      if (llm) {
-        const answer = await chatComplete(llm, [
-          { role: 'system', content: 'You are the assistant for this Agent OS workspace. Answer the question ONLY from the CONTEXT below — the live state of this workspace. Be concise (2–5 sentences). If the answer is not in the context, say you do not have that information and suggest the relevant console page. Never invent agents, numbers, or names.' },
-          { role: 'user', content: `CONTEXT:\n${cockpitWorkspaceContext(os, tm, autos, me)}\n\nQUESTION: ${text}` },
-        ], { maxTokens: 500, timeoutMs: 15000 });
-        if (answer) return sendJson(res, 200, { intent: 'ask', answer, source: 'llm' });
-      }
+      // Band 1 (state lookup) + Band 2a (direct LLM), shared with the Slack/Discord front door.
+      const inline = await answerAsk(os, tm, autos, me, text);
+      if (inline) return sendJson(res, 200, { intent: 'ask', answer: inline.answer, source: inline.source });
 
       // Band 2b: no direct LLM → answer via a governed, ephemeral CLAUDE run (the concierge). This is the
       // native LLM in Agent OS — no separate API key needed, and it can use the OS tools to ground the
