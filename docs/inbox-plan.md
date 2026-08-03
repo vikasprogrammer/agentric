@@ -181,6 +181,29 @@ unknown senders fall through to chat. Races the console cleanly (`resolve` no-op
 only a **DM** reply decides — a reply in a mirrored *thread* still routes to `continueThread` (typed into
 the live agent), matching the question path.
 
+### 4.13 Every OTHER notice was still one-way — ✅ SHIPPED (v0.297.0)
+§4.1 and §4.12 made the two notices that carry a pending DECISION answerable from the DM. Everything else
+the OS pushes stayed one-way: an agent's **`notify`**, and the **session lifecycle** DMs (finished /
+crashed / waiting). Reported from the field — an agent DM'd a design question through `notify` ("holding
+the PR until you confirm") and the recipient had nowhere to reply: the card is an `update` with no reply
+box, and a DM reply, once Slack's Messages tab was even on, fell through to the intent router and spawned
+a **fresh** session that knew nothing about the run asking. **Fixed:** a third binding, `session_dms`,
+written by `notifyMember`/`notifySessionEvent` (via the shared `bindDmRecipients`), and
+`Automations.continueSessionDm` on the way back in — the DM-keyed analogue of thread continuity: deliver
+into the live claude, else revive the SAME transcript. Checked after both decision paths (a pending
+approval/question is the more specific claim on the same reply) and before the router.
+
+Guards, since a session has no "no longer pending" state to expire against: a **24h window**
+(`SESSION_DM_WINDOW_MS`) so a run that pinged you last month can't swallow today's unrelated DM; archived
+and unresumable rows excluded; visibility re-checked against the current member (the binding proves we
+DM'd them, not that they still work here); an explicit `/other-agent …` still redirects to the router.
+On success the run's chat egress is pointed at the DM (`bindReplyChannel`, `INSERT OR IGNORE` — it never
+steals a run already answering in a thread) so the reply comes back where the human is talking, and the
+socket acks by agent name. Also fixed alongside: all three bindings now run **after** `deliverDM`, since
+that's where a member with no linked Slack handle is auto-linked from their email — binding first
+silently skipped exactly the people just reached for the first time. Covered by
+`scripts/dm-continuity-test.cjs` (29 assertions, in `npm run test:governance`).
+
 ### 4.9 Agent can't be *pushed* an answer — ⏳ LATER
 An agent only learns its question was answered by polling `ask` or remembering to `check_inbox`. No push,
 no "N new replies since last check" cursor. Partially mitigated by `check_inbox`. **Plan:** an inbox

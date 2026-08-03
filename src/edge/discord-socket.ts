@@ -246,6 +246,24 @@ export class DiscordSocket {
       }
     }
 
+    // DM continuity: a reply to a DM we sent ABOUT a run (an agent's `notify`, "your run finished /
+    // crashed") goes back INTO that run — the DM-keyed analogue of the guild-thread continuity below, and
+    // the last one-way notification channel to be closed. After the two decision paths (a pending
+    // approval/question is the more specific claim on the same reply), before the router — which would
+    // otherwise spawn a FRESH session with none of the context the human is replying to.
+    if (ev.eventType === 'direct_message') {
+      const cont = this.autos.continueSessionDm('discord', ev.user, { actorLabel, text, channel: ev.channel }, runAsMember);
+      if (cont.status !== 'none' && cont.sessionId) {
+        void this.dmUser(ev.user, `✅ Sent to **${cont.agent}** — it'll reply here. (To start something else instead: \`/agent-name your request\`.)`);
+        this.os.audit.append({
+          ts: Date.now(), runId: cont.sessionId, tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'discord',
+          type: 'trigger.discord', data: { eventType: ev.eventType, channel: ev.channel, dm: true, continued: cont.status, runAs: runAsMember ?? null },
+        });
+        return;
+      }
+    }
+
     // Thread continuity: a message inside a guild thread already bound to a session continues THAT
     // conversation (resume the same agent + transcript) instead of firing a fresh trigger — so a plain
     // "ok, now do X" in the thread keeps talking to the agent rather than hitting the /agent router's help

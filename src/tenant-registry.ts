@@ -289,7 +289,7 @@ export class TenantRegistry {
     os.goals.setNotifier((notice) => { void notifyGoalEvent(os, tm, slack, discord, consoleOrigin, notice); });
     // Agent → teammate: when an agent uses the `notify` tool, the inbox card is written inline (addressed
     // to the target member); this sink DMs that member on their linked Slack/Discord too.
-    tm.setMemberNotifier((notice) => { void notifyMember(os, slack, discord, notice); });
+    tm.setMemberNotifier((notice) => { void notifyMember(os, tm, slack, discord, notice); });
     // Agent review requests → chat: when an agent files a credential/skill/host/policy request or proposal
     // for owner/admin review, DM the admin tier (the inbox card is written inline by postReviewCard). The
     // review-side twin of the approval/question DMs — before this a pending request only sat in the inbox.
@@ -297,7 +297,7 @@ export class TenantRegistry {
     // Session lifecycle → chat: when one of a member's sessions starts waiting / finishes / crashes, DM
     // the run's owner IF they opted into `dm` notifications (default off — the inbox bell already covers
     // it). The complete/waiting/crashed twin of the always-on approval/question DMs above.
-    tm.setSessionEventNotifier((notice) => { void notifySessionEvent(os, slack, discord, consoleOrigin, notice); });
+    tm.setSessionEventNotifier((notice) => { void notifySessionEvent(os, tm, slack, discord, consoleOrigin, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
     return { record: rec, os, tm, autos, apps, slack, discord, clickup, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
@@ -362,6 +362,21 @@ async function deliverDM(slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, 
 }
 
 /**
+ * Run `bind` once per (recipient × linked chat account) — the shared loop behind the three DM bindings
+ * (`question_dms`, `approval_dms`, `session_dms`), which turn a one-way push into something the human can
+ * REPLY to. Always call it AFTER {@link deliverDM}: that's where a member with no linked Slack handle is
+ * auto-linked from their email, so binding beforehand skips exactly the people who were just reached for
+ * the first time. Pure over the identity map; the caller decides what a binding means.
+ */
+function bindDmRecipients(os: AgentOS, recipients: Member[], bind: (provider: 'slack' | 'discord', externalId: string, memberId: string) => void): void {
+  for (const m of recipients) {
+    for (const i of os.team.externalIdsFor(m.id)) {
+      if (i.provider === 'slack' || i.provider === 'discord') bind(i.provider, i.externalId, m.id);
+    }
+  }
+}
+
+/**
  * DM a member their own freshly-minted sign-in link, on their linked Slack/Discord account — the
  * delivery half of the self-service "email me a link" recovery path (server.ts `POST
  * /api/auth/request-link`). Best-effort; the caller ALSO logs the link to server.log so an owner with
@@ -388,15 +403,6 @@ export async function notifyApprovers(os: AgentOS, tm: Pick<TerminalManager, 'bi
   // stop DMing every admin about every other admin's self-approvable session.
   const approvers = resolveRecipients(os, approvalAudience(os, notice.sessionId, notice.level));
   if (!approvers.length) return;
-  // Bind the approval to each approver's DM channel so they can resolve it by REPLYING "approve"/"deny"
-  // to the DM — the reply is matched back to this approval on inbound (TerminalManager.decideApprovalFromChat).
-  for (const a of approvers) {
-    const ids = os.team.externalIdsFor(a.id);
-    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
-    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
-    if (slackId) tm.bindApprovalDm(notice.approvalId, 'slack', slackId, a.id);
-    if (discordId) tm.bindApprovalDm(notice.approvalId, 'discord', discordId, a.id);
-  }
   // Plain text + backticks render fine in both Slack mrkdwn and Discord markdown (no */** ambiguity).
   const dot = notice.riskClass === 'red' ? '🔴' : '🟡';
   const inbox = consolePage(consoleOrigin, 'inbox');
@@ -407,6 +413,12 @@ export async function notifyApprovers(os: AgentOS, tm: Pick<TerminalManager, 'bi
     `\n\`${notice.capability}\` (${notice.level})${notice.reason ? ` — ${notice.reason}` : ''}` +
     `\n*Reply "approve" or "deny"* to decide, or open the ${chatLink(p, inbox, 'Agent OS Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, approvers, text);
+  // Bind the approval to each approver's DM channel so they can resolve it by REPLYING "approve"/"deny"
+  // to the DM — the reply is matched back to this approval on inbound (TerminalManager.decideApprovalFromChat).
+  // AFTER `deliverDM`, deliberately: that's where a member with no linked Slack handle gets auto-linked
+  // from their email, so binding first silently skipped exactly those people — DM'd, but their reply
+  // unmatched.
+  bindDmRecipients(os, approvers, (provider, externalId, memberId) => tm.bindApprovalDm(notice.approvalId, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'approval.notified', data: { capability: notice.capability, level: notice.level, approvers: approvers.length, dms } });
 }
 
@@ -421,20 +433,15 @@ export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager,
   let targets = resolveRecipients(os, notice.to ? { kind: 'member', id: notice.to } : { kind: 'sessionOwner', id: notice.sessionId });
   if (!targets.length) targets = resolveRecipients(os, { kind: 'admins' });
   if (!targets.length) return;
-  // Bind the question to each recipient's DM channel so they can answer by REPLYING to the DM (the reply
-  // is matched back to this question on inbound — see TerminalManager.answerQuestionFromChat).
-  for (const t of targets) {
-    const ids = os.team.externalIdsFor(t.id);
-    const slackId = ids.find((i) => i.provider === 'slack')?.externalId;
-    const discordId = ids.find((i) => i.provider === 'discord')?.externalId;
-    if (slackId) tm.bindQuestionDm(notice.questionId, 'slack', slackId, t.id);
-    if (discordId) tm.bindQuestionDm(notice.questionId, 'discord', discordId, t.id);
-  }
   const inbox = consolePage(consoleOrigin, 'inbox');
   const text = (p: ChatPlatform) =>
     `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
     `\n\n*Reply to this message to answer*, or open the ${chatLink(p, inbox, 'Agent OS Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
+  // Bind the question to each recipient's DM channel so they can answer by REPLYING to the DM (the reply
+  // is matched back to this question on inbound — see TerminalManager.answerQuestionFromChat). AFTER
+  // `deliverDM` for the auto-link reason described in {@link notifyApprovers}.
+  bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindQuestionDm(notice.questionId, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'question.notified', data: { agent: notice.agent, targets: targets.length, dms } });
 }
 
@@ -589,12 +596,15 @@ export async function notifyInsightAlert(os: AgentOS, slack: Pick<SlackSocket, '
  * written (addressed to that member) by {@link TerminalManager.notifyMember}; this is the out-of-band
  * push to their linked Slack/Discord. Single named recipient — never a broadcast. Best-effort, audited.
  */
-export async function notifyMember(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: MemberNotice): Promise<void> {
+export async function notifyMember(os: AgentOS, tm: Pick<TerminalManager, 'bindSessionDm'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, notice: MemberNotice): Promise<void> {
   const targets = resolveRecipients(os, { kind: 'member', id: notice.to });
   if (!targets.length) return;
   const bell = notice.important ? '❗' : '📨';
-  const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\nOpen the Agent OS console → Inbox.`;
+  const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\n_Reply here to answer ${notice.agent}_, or open the Agent OS console → Inbox.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
+  // Bind the run to this DM so a reply reaches the AGENT rather than the router (see
+  // Automations.continueSessionDm) — the reason the message above can promise "reply here".
+  bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindSessionDm(notice.sessionId, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'member.notified', data: { to: notice.to, important: notice.important, dms } });
 }
 
@@ -644,7 +654,7 @@ export async function notifyReview(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
  *   instead of failing silently (the largest silent class before this).
  * Best-effort, audited.
  */
-export async function notifySessionEvent(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: SessionEventNotice): Promise<void> {
+export async function notifySessionEvent(os: AgentOS, tm: Pick<TerminalManager, 'bindSessionDm'>, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, consoleOrigin: string, notice: SessionEventNotice): Promise<void> {
   const owner = resolveRecipients(os, { kind: 'sessionOwner', id: notice.sessionId });
   const targets = notice.kind === 'crashed'
     ? (owner.length ? owner : resolveRecipients(os, { kind: 'admins' }))
@@ -652,8 +662,11 @@ export async function notifySessionEvent(os: AgentOS, slack: Pick<SlackSocket, '
   if (!targets.length) return;
   const icon = notice.kind === 'waiting' ? '🔔' : notice.kind === 'crashed' ? '💥' : notice.kind === 'started' ? '🚀' : '✅';
   const url = consolePage(consoleOrigin, 'sessions');
-  const text = (p: ChatPlatform) => `${icon} ${notice.title}\n${notice.message}\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
+  const text = (p: ChatPlatform) => `${icon} ${notice.title}\n${notice.message}\n_Reply here to pick it back up with ${notice.agent}_, or open it in the ${chatLink(p, url, 'Agent OS console')}.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
+  // Bind the run to this DM so a reply resumes THAT conversation — "it crashed" / "it finished" is exactly
+  // the moment a human wants to say "retry it" or "now do the other half" (see Automations.continueSessionDm).
+  bindDmRecipients(os, targets, (provider, externalId, memberId) => tm.bindSessionDm(notice.sessionId, provider, externalId, memberId));
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'session.event.notified', data: { kind: notice.kind, agent: notice.agent, targets: targets.length, dms } });
 }
 

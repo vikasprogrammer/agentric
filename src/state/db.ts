@@ -290,6 +290,30 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_approval_dms_lookup ON approval_dms (provider, external_id, created_at);
 
+    -- The third DM binding, and the general one: binds a SESSION to a Slack/Discord DM we sent someone
+    -- ABOUT that run, so a reply in that DM reaches the run instead of the /agent router. question_dms
+    -- and approval_dms cover the two cases where the DM carries a pending DECISION; this covers every
+    -- other notice a run pushes at a human — an agent's notify, "your run finished / crashed" — which
+    -- were one-way: the human was pinged, replied, and their reply either vanished or spawned a FRESH
+    -- session with none of the context. Written when such a notice is DM'd (one row per recipient ×
+    -- provider); read on an inbound DM: the sender's external id → the newest recently-bound resumable
+    -- session, which the message is then delivered into (see Automations.continueSessionDm).
+    --
+    -- Unlike its two siblings there is no status column to join against — a session is never "no longer
+    -- pending" — so the match is bounded by TIME instead (SESSION_DM_WINDOW_MS in terminal.ts): a binding
+    -- goes stale rather than being cleaned up, and an out-of-the-blue DM long after the notice falls
+    -- through to the router the way it always did.
+    CREATE TABLE IF NOT EXISTS session_dms (
+      session_id  TEXT NOT NULL,
+      tenant      TEXT NOT NULL,
+      provider    TEXT NOT NULL,          -- 'slack' | 'discord'
+      external_id TEXT NOT NULL,          -- the recipient's Slack/Discord user id (the DM sender on reply)
+      member_id   TEXT,                   -- the member we DM'd (re-checked for visibility on the way back in)
+      created_at  INTEGER NOT NULL,
+      PRIMARY KEY (session_id, provider, external_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_dms_lookup ON session_dms (provider, external_id, created_at);
+
     -- The deliverables gallery: artifacts agents explicitly publish (a PDF/Markdown/image now;
     -- a multi-file site/app later). Each row is a snapshot copied into <home>/artifacts/<id>/.
     -- Carries full provenance (session + agent + source) — the SAME shape as the messages table, so

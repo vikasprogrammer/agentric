@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.297.0] — 2026-08-03
+### Added
+- **DM continuity — a reply to a DM the OS sent you about a run goes back INTO that run.** `ask_human`
+  and approvals were already answerable from the DM (`question_dms` / `approval_dms`); every other push
+  was one-way. An agent's `notify` and the session-lifecycle DMs (finished / crashed / waiting) pinged a
+  human who then had nowhere to reply — the Inbox card is an `update` with no reply box, and a DM reply
+  fell through to the intent router, spawning a **fresh** session that knew nothing about the run that
+  asked. Reported from the field: an agent asked for a design decision via `notify`, said it was holding
+  the PR, and the answer had no way back.
+  New `session_dms` binding (`src/state/db.ts`) written by `notifyMember`/`notifySessionEvent`, plus
+  `Automations.continueSessionDm` on the way back in — the DM-keyed analogue of thread continuity:
+  deliver into the live claude, else revive the SAME transcript. Checked after the approval and question
+  paths (a pending decision is the more specific claim on the same reply) and before the router. Guards,
+  since a session has no "no longer pending" state to expire against: a **24h window**
+  (`SESSION_DM_WINDOW_MS`) so an old run can't swallow an unrelated DM, archived/unresumable rows
+  excluded, visibility re-checked against the current member, and an explicit `/other-agent …` still
+  redirects. On success the run's chat egress is pointed at the DM (`bindReplyChannel`, `INSERT OR
+  IGNORE` — never steals a run already answering in a thread) so its reply lands where the human is
+  talking, and the socket acks by agent name. Both platforms (`slack-socket.ts`, `discord-socket.ts`).
+  New `scripts/dm-continuity-test.cjs` (29 assertions) in `npm run test:governance`.
+### Fixed
+- **DM bindings skipped anyone auto-linked by the delivery they were part of.** All three
+  (`question_dms`, `approval_dms`, `session_dms`) were written BEFORE `deliverDM` — but `deliverDM` is
+  where a member with no linked Slack handle gets discovered from their email and persisted to the
+  identity map. So a first-time recipient was DM'd a question or approval whose reply then matched
+  nothing. The bind loop now runs after delivery, via one shared `bindDmRecipients`
+  (`src/tenant-registry.ts`).
+
 ## [0.296.0] — 2026-08-03
 ### Changed
 - **The console's 1.5 s poll stops shipping the full ~950-row session list on most routes**

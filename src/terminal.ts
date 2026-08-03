@@ -53,6 +53,15 @@ const ASK_AGENT_GRACE_MS = 20_000;
 // long-abandoned rows in a burst (and, past MAX, a still-pending prompt is treated as dead, not nagged).
 const STALE_PROMPT_MIN_MS = 3 * 60 * 60_000;   // 3h pending → re-nudge the approver/operator once
 const STALE_PROMPT_MAX_MS = 3 * 24 * 60 * 60_000; // ignore anything pending longer than 3 days
+/**
+ * How long a `session_dms` binding keeps claiming the sender's DM replies (see {@link
+ * TerminalManager.sessionForDm}). Its two siblings (`question_dms` / `approval_dms`) self-expire — the
+ * bound row leaves `pending` and stops matching — but a session has no such terminal state, so the claim
+ * has to be bounded by time or an agent that pinged you last month would silently swallow today's
+ * unrelated "hey". A day is the shape of the real interaction: a notice you reply to at all, you reply to
+ * within a working day; past that a fresh DM means a fresh request and belongs to the router.
+ */
+const SESSION_DM_WINDOW_MS = 24 * 60 * 60_000;
 import { LauncherClient } from './edge/launcher';
 import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
@@ -3815,6 +3824,75 @@ export class TerminalManager {
     this.os.approvals.resolve(row.aid, approved, member.email); // no-op if already decided (console race)
     this.audit(row.runId, member.email, 'approval.decided.viaDm', { approvalId: row.aid, approved, provider });
     return { status: 'decided', approved, capability: row.capability };
+  }
+
+  /**
+   * Bind a SESSION to the Slack/Discord DM we just sent someone about it, so a reply in that DM reaches
+   * the run — the general-case twin of {@link bindQuestionDm}/{@link bindApprovalDm}, for the notices that
+   * carry no pending decision (an agent's `notify`, a run finished/crashed). Called by those notifiers
+   * once per recipient × provider they DM'd. Re-binding the same (session, recipient) REPLACES the row,
+   * which deliberately re-arms the staleness window: each new ping about a run makes it the live
+   * conversation again.
+   */
+  bindSessionDm(sessionId: string, provider: 'slack' | 'discord', externalId: string, memberId?: string): void {
+    if (!sessionId || !externalId) return;
+    this.db
+      .prepare('INSERT OR REPLACE INTO session_dms (session_id, tenant, provider, external_id, member_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(sessionId, this.os.tenant, provider, externalId, memberId ?? null, Date.now());
+  }
+
+  /**
+   * The session an inbound DM from this sender should continue: the most recent run we DM'd them about
+   * within {@link SESSION_DM_WINDOW_MS}, provided it's still resumable and they may still see it. The
+   * thread-continuity lookup ({@link sessionForSlackThread}) keyed on a channel+thread; a DM has no thread
+   * to key on, so the binding IS the key. Undefined → nothing claims this DM and the caller falls through
+   * to the approval/question/router path exactly as before, which is the safe default: a wrong match here
+   * would put a person's words into an agent they weren't talking to.
+   *
+   * Excludes archived runs (a filed-away session isn't a live conversation) and unresumable ones (no
+   * pinned claude id ⇒ reviving would start a blank transcript, which is what a fresh spawn already does
+   * better). Visibility is re-checked against the CURRENT member — the binding proves we DM'd them, not
+   * that they're still on the team or still assigned.
+   */
+  sessionForDm(provider: 'slack' | 'discord', externalId: string, now = Date.now()):
+    { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    if (!externalId) return undefined;
+    const row = this.db
+      .prepare(
+        `SELECT sd.session_id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId,
+                t.spawned_by AS spawnedBy
+           FROM session_dms sd JOIN term_sessions t ON t.id = sd.session_id
+          WHERE sd.provider = ? AND sd.external_id = ? AND sd.created_at >= ?
+            AND t.archived_at IS NULL AND t.claude_session_id IS NOT NULL
+          ORDER BY sd.created_at DESC LIMIT 1`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null; spawnedBy: string | null }>(
+        provider, externalId, now - SESSION_DM_WINDOW_MS,
+      );
+    if (!row) return undefined;
+    const member = this.os.team.memberByExternalId(provider, externalId);
+    if (!member || !this.canViewRow(row.spawnedBy, row.runAs, member)) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+
+  /**
+   * Point a session's native chat egress at a DM channel, so the agent's replies land where the human is
+   * actually talking. `INSERT OR IGNORE` on a `session_id`-keyed table means this NEVER steals a session
+   * that already replies somewhere — a run triggered from a channel thread keeps answering in that thread,
+   * and only a run with no chat binding at all (console-spawned, automation, task) adopts the DM. With the
+   * binding in place the chat mirror reaches the DM immediately, and the native `slack_reply`/
+   * `discord_reply` tools are exposed the next time the row relaunches (`reviveResident` derives their env
+   * flags from exactly these tables).
+   */
+  bindReplyChannel(sessionId: string, provider: 'slack' | 'discord', channel: string): void {
+    if (!sessionId || !channel) return;
+    if (provider === 'slack') {
+      this.db.prepare('INSERT OR IGNORE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)')
+        .run(sessionId, channel, '', Date.now());
+    } else {
+      this.db.prepare('INSERT OR IGNORE INTO discord_threads (session_id, channel, message_id, created_at) VALUES (?, ?, ?, ?)')
+        .run(sessionId, channel, '', Date.now());
+    }
   }
 
   /**

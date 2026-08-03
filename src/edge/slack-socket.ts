@@ -227,6 +227,24 @@ export class SlackSocket {
       }
     }
 
+    // DM continuity: a reply to a DM we sent ABOUT a run (an agent's `notify`, "your run finished /
+    // crashed") goes back INTO that run — the DM-keyed analogue of the thread continuity above, and the
+    // last one-way notification channel to be closed. Checked after the two decision paths (a pending
+    // approval/question is the more specific claim on the same reply) and before the router, which would
+    // otherwise spawn a FRESH session with none of the context the human is replying to.
+    if (isDm) {
+      const cont = this.autos.continueSessionDm('slack', ev.user, { actorLabel, text, channel: ev.channel }, runAsMember);
+      if (cont.status !== 'none' && cont.sessionId) {
+        void this.dmUser(ev.user, `✅ Sent to *${cont.agent}* — it'll reply here. (To start something else instead: \`/agent-name your request\`.)`);
+        this.os.audit.append({
+          ts: Date.now(), runId: cont.sessionId, tenant: this.os.tenant,
+          principal: runAsMember ? `member:${runAsMember}` : 'slack',
+          type: 'trigger.slack', data: { eventType: ev.eventType, channel: ev.channel, dm: true, continued: cont.status, runAs: runAsMember ?? null },
+        });
+        return;
+      }
+    }
+
     const result = await this.autos.fireSlack(
       {
         eventType: ev.eventType,

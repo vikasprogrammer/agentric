@@ -1,6 +1,6 @@
 {
   "name": "agent-os",
-  "version": "0.296.0",
+  "version": "0.297.0",
   "description": "A generic, governed operating system for running autonomous agents safely across brands. Ships with a local web console.",
   "license": "MIT",
   "type": "commonjs",
@@ -27,7 +27,8 @@
     "check-deps": "bash scripts/install-deps.sh --check",
     "dev": "ts-node src/cli.ts serve",
     "demo:dev": "ts-node src/demo.ts",
-    "test:governance": "node scripts/governance-conformance.cjs && node scripts/tier-a-policy-test.cjs && node scripts/capability-registry-test.cjs && node scripts/idle-reaper-test.cjs",
+    "test:governance": "node scripts/governance-conformance.cjs && node scripts/tier-a-policy-test.cjs && node scripts/capability-registry-test.cjs && node scripts/idle-reaper-test.cjs && node scripts/dm-continuity-test.cjs",
+    "test:dm-continuity": "node scripts/dm-continuity-test.cjs",
     "test:reaper": "node scripts/idle-reaper-test.cjs",
     "test:policy-tier-a": "node scripts/tier-a-policy-test.cjs",
     "test:capabilities": "node scripts/capability-registry-test.cjs",

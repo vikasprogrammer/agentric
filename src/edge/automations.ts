@@ -1063,6 +1063,58 @@ export class Automations {
   }
 
   /**
+   * DM continuity: a reply to a DM the OS sent someone ABOUT a run goes back INTO that run. The
+   * thread-continuity engine ({@link continueSlackThread}) keyed on channel+thread; in a DM there is no
+   * thread, so the `session_dms` binding written when we pinged them is the key.
+   *
+   * This closes the last one-way notification channel. `ask_human` and approvals were already answerable
+   * from the DM (`answerQuestionFromChat` / `decideApprovalFromChat`), but every OTHER push — an agent's
+   * `notify`, "your run finished / crashed" — left the human pinged with nowhere to reply: their answer
+   * either vanished or, worse, spawned a FRESH session that knew nothing about the run that asked. Same
+   * three outcomes as its sibling:
+   *   - **delivered**: the session is live → type the message straight into the running claude.
+   *   - **revived**:   reaped/ended → revive the SAME row, `--resume`ing the transcript, seeded with it.
+   *   - **none**:      nothing bound / stale / unresumable / an explicit `/other-agent` redirect → the
+   *     caller falls through to the approval, question and router paths exactly as before.
+   * The caller acks on success: unlike a thread (where the agent's own `slack_reply` is the visible
+   * feedback) a console-spawned run has no chat egress until it relaunches, so silence would read as the
+   * reply being swallowed all over again.
+   */
+  continueSessionDm(
+    provider: 'slack' | 'discord',
+    externalId: string,
+    event: { actorLabel: string; text: string; channel: string },
+    runAsMember?: string,
+  ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string; agent?: string } {
+    const bound = this.tm.sessionForDm(provider, externalId);
+    if (!bound || !bound.claudeSessionId) return { status: 'none' };
+    // An explicit `/other-agent …` is the human starting something else, not continuing this — let the
+    // router have it (same override thread continuity honours).
+    if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
+    const runAs = runAsMember ?? bound.runAs;
+    const msg = this.stripChatPrefix(event.text);
+    if (!msg) return { status: 'none' };
+    const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
+      ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
+      principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
+      data: { mode, via: 'dm', platform: provider, agent: bound.agent, session: bound.sessionId, runAs: runAs ?? null },
+    });
+    // Point the run's chat egress at this DM so its answer lands where the human is talking (no-op if it
+    // already replies somewhere). Warm path: bind after the fact — the mirror reads the binding at send
+    // time. Cold path: bind BEFORE the revive, because `reviveResident` derives the session's
+    // `slack_reply`/`discord_reply` env flags from exactly these tables, and env can't be changed after
+    // launch. Only a run we actually continue gets bound.
+    if (this.tm.deliverToResident(bound.sessionId, msg)) {
+      this.tm.bindReplyChannel(bound.sessionId, provider, event.channel);
+      emit('delivered');
+      return { status: 'delivered', sessionId: bound.sessionId, agent: bound.agent };
+    }
+    this.tm.bindReplyChannel(bound.sessionId, provider, event.channel);
+    if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', sessionId: bound.sessionId, agent: bound.agent }; }
+    return { status: 'none' };
+  }
+
+  /**
    * Discord thread continuity — the exact analogue of {@link continueSlackThread}. A message inside a
    * guild thread already bound to a session CONTINUES that conversation (deliver into the live claude, or
    * revive the row) instead of hitting the `/agent` router with a fresh spawn. Keyed on the thread's
