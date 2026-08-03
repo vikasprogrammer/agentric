@@ -17,6 +17,14 @@ import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
 import { TerminalManager, AGENT_OS_OPERATING_NOTES, type ProposedAutomation } from './terminal';
 import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityTarget } from './state/session-activity';
+
+/**
+ * How much long-form text a LIST endpoint ships per row. List views render a title, a badge row and at
+ * most a two-line caption; the full prose belongs to the detail fetch. Measured on the globex tenant
+ * before this cap: GET /api/sessions was 3.07 MB (2.1 MB of it session `task` prompts) and GET /api/tasks
+ * was 1.27 MB (887 KB of it task `body`) — ~3 MB of prose per console load that nothing displayed.
+ */
+const LIST_CLIP = 240;
 import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/conversation';
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
@@ -2523,7 +2531,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
 
   // ── terminal-native sessions ────────────────────────────────────────────────
   // `?archived=1` returns the soft-archived set (the Sessions "show archived / restore" view); default is live.
-  if (method === 'GET' && p === '/api/sessions') return sendJson(res, 200, url.searchParams.get('archived') === '1' ? tm.listArchivedSessions(me) : tm.listSessions(me));
+  //
+  // PAYLOAD: the full `task` prompt is CLIPPED for the list. Measured on the globex tenant (946 sessions):
+  // the response was 3.07 MB of which `task` alone was 2.1 MB — every session's complete prompt shipped to
+  // a view that never renders it in full. The console uses `task` in exactly two places: the client-side
+  // search haystack, and a `line-clamp-2` fallback caption when `title` is empty. `LIST_CLIP` chars
+  // serve both. Anything needing the whole prompt reads the session detail, not the list.
+  if (method === 'GET' && p === '/api/sessions') {
+    const rows = url.searchParams.get('archived') === '1' ? tm.listArchivedSessions(me) : tm.listSessions(me);
+    return sendJson(res, 200, rows.map((s) => (s.task ? { ...s, task: clipText(s.task, LIST_CLIP) } : s)));
+  }
   if (method === 'POST' && p === '/api/sessions') {
     const b = await readBody(req);
     const agent = String(b.agent || '').trim();
@@ -3235,7 +3252,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const taskAttachment = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)$/);
   if (method === 'GET' && p === '/api/tasks') {
     const tasks = os.tasks.list({ tenant: os.tenant, status: (url.searchParams.get('status') as TaskStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
-    return sendJson(res, 200, { tasks, counts: os.tasks.counts(os.tenant), agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me) });
+    // PAYLOAD: `body` is CLIPPED here for the same reason as the sessions list above — measured on the
+    // globex tenant (471 tasks) it was 887 KB of a 1.27 MB response, and NO list-level view renders it
+    // (the board shows title/labels; the description tab reads `detail.task.body` from GET /api/tasks/:id,
+    // which still returns the full text). Search is server-side (`?q=`), so the client needs no haystack.
+    const slim = tasks.map((t) => (t.body ? { ...t, body: clipText(t.body, LIST_CLIP) } : t));
+    return sendJson(res, 200, { tasks: slim, counts: os.tasks.counts(os.tenant), agents: terminalAgents(os).map((a) => a.id), discussions: tm.taskDiscussionSummaries(me) });
   }
   if (taskId && method === 'GET') {
     const found = os.tasks.withEvents(taskId[1]);
