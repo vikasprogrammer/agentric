@@ -81,6 +81,12 @@ need a home). Phase 2 delivers the measured perf win. Phase 3 is the largest cli
 
 ## Status
 
-- Phase 1 — in progress (this doc's companion change).
-- Phase 2 — not started.
-- Phase 3 — not started.
+- Phase 1 — **shipped** v0.294.0 (#539).
+- Phase 2 — **shipped** v0.296.0 (#542). Live globex: poll payload 265 KB → 19.5 KB gzipped (950 → 83
+  rows) off the list routes.
+- Phase 3 — **decided, deferred** (2026-08-03). Split into **3a** (client row virtualization — low-risk,
+  fixes the render jank while keeping all client-side filtering; do first) and **3b** (server-side
+  pagination — the big rewrite below, deferred until a tenant's non-archived session count clears ~3–5k,
+  since the full-list *fetch* is already gzipped-small post-Phase-2 and the acute pain is the DOM render).
+  Tracked in `TODO.md` → "Console performance". The server-pagination design in the table above remains
+  the plan of record for 3b.
