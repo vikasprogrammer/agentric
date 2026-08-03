@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.291.3] — 2026-08-03
+### Fixed
+- **Console detail pages (task · session · artifact) took seconds to open.** The detail endpoints were
+  never the problem — `GET /api/tasks/:id` answers in **1.7 ms**. The cost was the list payloads the SPA
+  loads alongside them: on the globex tenant `GET /api/sessions` was **3.02 MB** (946 rows, of which
+  **2.1 MB was the full `task` prompt of every session**) and `GET /api/tasks` was **1.24 MB** (471 rows,
+  **887 KB of it task `body`**) — ~4.3 MB of prose per console load that no list view renders. Both list
+  endpoints now clip those fields to 240 chars (`LIST_CLIP`), which is all the console uses them for: a
+  client-side search haystack and a `line-clamp-2` fallback caption. Full text is untouched on the detail
+  fetches (`GET /api/tasks/:id` still returns the whole `body`, and the Tasks description tab already read
+  it from there). **Measured on live production data: 4.26 MB → 1.65 MB, −61%.**
+
 ## [0.291.2] — 2026-08-03
 ### Fixed
 - **Five source files were invisible to `grep` and `ripgrep`.** They used a raw NUL byte as a
