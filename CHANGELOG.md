@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.293.1] — 2026-08-03
+### Fixed
+- **Router LLM pick now handles meta-phrased routing questions.** "which agent can help me build a
+  feature?" still disambiguated wrongly because `llmPick` read it as a question ABOUT routing (→ UNSURE)
+  rather than a task to route. Its prompt now tells the model that a message may be a task OR a "which/who
+  agent for X" question, and to route to the agent best suited for the underlying work either way — so
+  "which agent can help me build a feature" → `engineer`, matching the bare "build a feature". This is
+  what Cockpit's "Route to an agent instead" sends. `src/edge/router.ts`.
 ## [0.293.0] — 2026-08-03
 ### Added
 - **A ceiling on how long a session may sit blocked on an unanswered question.** The idle janitor skips a
