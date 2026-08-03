@@ -243,8 +243,11 @@ async function llmPick(os: AgentOS, text: string, agents: AgentManifest[]): Prom
   const roster = agents.map((a) => `- ${a.id}: ${(a.description || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n');
   const sys =
     'You route an incoming message to exactly one agent — the single best fit for what the person needs ' +
-    'done. Consider what each agent does (from its description), not just word overlap. Reply with ONLY ' +
-    'the agent id from the list, or the single word UNSURE if none clearly fits. No punctuation, no explanation.';
+    'done. The message may be a task ("build a feature") OR a question about who to use ("which agent can ' +
+    'help me build a feature?", "who handles billing?") — in either case route to the agent best suited ' +
+    'for the underlying work. Consider what each agent does (from its description), not just word overlap. ' +
+    'Reply with ONLY the agent id from the list, or the single word UNSURE if none clearly fits. No ' +
+    'punctuation, no explanation.';
   const user = `Agents:\n${roster}\n\nMessage:\n${text.slice(0, 1500)}\n\nBest agent id:`;
   const out = await chatComplete(llm, [{ role: 'system', content: sys }, { role: 'user', content: user }], { maxTokens: 24, timeoutMs: 8000 });
   if (!out) return null;
