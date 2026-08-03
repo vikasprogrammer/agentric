@@ -50,8 +50,11 @@ export function answerFromState(os: AgentOS, tm: TerminalManager, autos: Automat
     const on = all.filter((a) => a.enabled);
     return `${all.length} automation${all.length > 1 ? 's' : ''} (${on.length} enabled)${on.length ? `: ${fmt(on.slice(0, 15).map((a) => a.name))}` : ''}.`;
   }
-  // List agents (generic roster).
-  if ((has(/\b(list|what|which|how many|show)\b/) && has(/\bagents?\b/)) || /\bagents?\b.*\b(do i have|are there|available)\b/.test(t)) {
+  // List agents (roster) — ENUMERATION only ("list my agents", "how many agents", "what agents do I
+  // have"). Deliberately NOT "which agent can help me build a feature" / "which agent handles billing" —
+  // those are recommendation questions; they fall through to the LLM (which sees agent descriptions and
+  // recommends the right one) rather than getting a raw roster dump that ignores the task.
+  if (/\b(list|show)\b.*\bagents?\b/.test(t) || /\bhow many\s+agents?\b/.test(t) || /\bagents?\b.*\b(do i have|are there|(are\s+)?available|exist)\b/.test(t)) {
     if (!userAgents.length) return 'No agents yet.';
     return `You have ${userAgents.length} agents: ${fmt(userAgents.map((a) => a.id))}.`;
   }

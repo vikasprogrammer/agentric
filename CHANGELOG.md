@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.292.3] — 2026-08-03
+### Fixed
+- **Cockpit `ask`: "which agent can help me build a feature?" dumped the whole roster instead of
+  recommending one.** The band-1 state lookup's agent-list rule fired on any `which/what/list/how many` +
+  "agents", so a *recommendation* question got a raw 16-agent list that ignored the task. It now only
+  fires for genuine **enumeration** ("list my agents", "how many agents", "what agents do I have", "which
+  agents are available"); a "which agent can help with / handles / for <task>" question falls through to
+  the LLM (which sees the agents' descriptions and recommends the right one — e.g. `engineer`). Verified
+  8/8. `src/edge/ask.ts`.
+
 ## [0.292.2] — 2026-08-03
 ### Fixed
 - **`listSessions` re-queried the members and automations tables once per row.** v0.291.6 made the
