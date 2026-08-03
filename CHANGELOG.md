@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.292.0] — 2026-08-03
+### Added
+- **Questions in Slack/Discord now get answered inline — no session spawned.** The chat front door
+  (`Automations.routeUnmatched`, behind fireSlack/fireDiscord/fireClickup) now runs the Cockpit **intent
+  layer**: a message classified `ask` ("how do automations work?", "which agents are idle?") is answered
+  in-thread via the *same* backend Cockpit uses — a deterministic state lookup, else a direct Claude call
+  (Haiku by default) — and posted back as a threaded reply in ~1–2s, instead of routing the question to an
+  agent (a whole session). `action`/`work` messages, and an `ask` when no LLM is configured, still route to
+  an agent as before (graceful fallback). Audited `chat.answered` (source `state`/`llm`, no session row).
+  The `ask` engine is now a shared `answerAsk` in `src/edge/ask.ts` (with `cockpitWorkspaceContext` moved
+  there from `src/server.ts`), used by BOTH `/api/router/preview` and the chat front door so they answer
+  identically. `src/edge/ask.ts`, `src/edge/automations.ts`, `src/server.ts`.
+### Fixed
+- **The intent classifier mis-read questions about automations as create-requests.** "what's the
+  difference between a task and an automation" classified as **action** (→ Automations) because the bare
+  noun "automation" tripped the schedule regex. It now requires a scheduling **verb** or recurrence
+  (`schedule …`, `automate …`, `every morning`, `daily`), or an explicit "create/set up an automation/cron"
+  — so the noun alone in a question stays an **ask**. Legit action requests ("schedule the churn report
+  every morning", "create a cron job") are unaffected (verified 11/11). `src/edge/intent.ts`.
+
 ## [0.291.6] — 2026-08-03
 ### Fixed
 - **The console served every byte uncompressed and uncacheable.** Opening a detail page
