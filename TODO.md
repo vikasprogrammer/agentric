@@ -59,3 +59,46 @@ _Last updated: 2026-08-03._
 - **Don't lead with "control plane"** — the phrase is a red ocean; lead with the enforced primitive.
 - **Ship discipline:** branch → PR → squash-merge (`--repo vikasprogrammer/agent-os`); CI = `npm run
   test:governance`. Concurrent-shipping churn is heavy — **commit, then rebase right before merge.**
+
+---
+
+# Console performance — sessions list (separate workstream)
+
+Full arc + measurements in memory `console-list-payload-perf`; pagination design in
+[`docs/sessions-pagination-plan.md`](docs/sessions-pagination-plan.md).
+
+## Shipped (console-perf arc, all deployed to northwind · personal · globex)
+
+- [x] List-payload clip (#525) · gzip + ETag + 304 (#530) · client render-skip on 304 (#532) ·
+      per-row query cache (#533) · in-query task clip (#535)
+- [x] **Sessions-pagination Phase 1** (#539, v0.294.0) — `GET /api/sessions/:id` + `?ids=`; Tasks board
+      dropped its 2nd full-list poll.
+- [x] **Sessions-pagination Phase 2** (#542, v0.296.0) — `GET /api/sessions/summary`; the 1.5 s poll
+      switches source by route (full list only on the Sessions/Chat views, cheap summary everywhere
+      else). Live globex: poll payload **265 KB → 19.5 KB gzipped, 950 → 83 rows** off the list routes.
+
+## Next — Phase 3 (DECIDED: virtualize now, paginate later)
+
+Decision (2026-08-03): the Sessions LIST view is the last place that still loads the full ~950 rows
+(only when that view is open; the fetch is already gzipped-small post-Phase-2). The pain at scale is the
+**render** (all rows to the DOM), not the fetch. So:
+
+- [ ] **3a — Client row virtualization (do this first; low risk).** Render only the rows in the viewport
+      in `SessionsPage` (`web/src/App.tsx`, the `shown` list ~L3306 + the grid/list render ~L3459+),
+      keeping ALL existing client-side filter/sort/search/facets/multi-select **unchanged**. Zero API
+      change. Fixes the 950-DOM-row jank. ~small, self-contained. Watch: the terminal **tab strip**
+      (liveTabs/endedTabs ~L3417) is a separate small render — leave it; virtualize only the main list.
+      Preserve keyboard/scroll-restore and the "N of M sessions" count (M = full filtered length, still
+      known client-side).
+- [ ] **3b — Server-side pagination (DEFERRED until the corpus grows into the low thousands).** Only
+      warranted once the full-list FETCH itself is the bottleneck (not yet — ~950 rows, ~20–265 KB
+      gzipped). It's a large, higher-risk rewrite: move filter/sort/search **server-side**, cursor
+      pagination on `(created_at, id)`, server-computed facet lists, infinite scroll, and a bulk
+      **select-all-across-pages** semantic (product call — "all N matching" vs "visible page"). At that
+      point the poll can drop the route-switch and ALWAYS fetch the summary (SessionsPage/ChatPage
+      self-fetch their own paged data). Search backend: LIKE first (no `term_sessions_fts` today).
+      **Trigger to pick this up:** a tenant's non-archived session count clears ~3–5k, or the list-view
+      fetch/parse becomes a measured drag.
+
+Parallel cleanup candidate (not blocking): `FullTerminalView` (`#/term/<tmux>`, `web/src/App.tsx`
+~L5526) still pulls all ~950 rows to resolve one tmux — swap for the Phase-1 by-id fetch.
