@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.296.0] — 2026-08-03
+### Changed
+- **The console's 1.5 s poll stops shipping the full ~950-row session list on most routes**
+  (Sessions-pagination Phase 2; plan in `docs/sessions-pagination-plan.md`). A new
+  **`GET /api/sessions/summary`** returns only what the always-on surfaces need — every LIVE session +
+  the viewer's most-recent **ended** tail (capped 60) + a global **`doneToday`** count — built from
+  `aliveNames()` + a bounded id query + `listSessions(ids)`, all viewer-scoped, **never rebuilding the
+  whole table**. The global poll now switches source by route: the Sessions & Chat *list* views still
+  fetch the full `/api/sessions` (they render it), but **every other route polls the summary** — so
+  navigating the Inbox / Tasks / Overview / Agents / Settings etc. no longer pulls ~950 rows every tick.
+  Measured on a live globex snapshot (950 rows): the poll payload drops **950 → ~68 rows** off the list
+  routes, and the summary builds **~23–33 % faster** than the full list even before the row-count win.
+  `openNotification` falls back to the Phase-1 by-id fetch for an older session not in the summary;
+  Overview's "Done today" reads the summary count (it's owner-only, so a global count is correct). Badge
+  and per-session bells are unaffected (badge derives from `messages`; bells from `blocked`, which is a
+  subset of live and always present). `src/terminal.ts`, `src/server.ts`, `web/src/lib/api.ts`,
+  `web/src/App.tsx`. Verified with an in-process endpoint test (bounded / viewer-scoped / 304 / doneToday)
+  and a headless-browser smoke test (inbox polls summary with zero full-list calls; the sessions route
+  switches to the full list and renders all 950; Overview KPI renders; no console errors).
 ## [0.295.0] — 2026-08-03
 ### Added
 - **Discord/Slack: `action` requests go to the governed operator, freeform questions to the concierge —

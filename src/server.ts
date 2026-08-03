@@ -2528,6 +2528,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       : url.searchParams.get('archived') === '1' ? tm.listArchivedSessions(me, LIST_CLIP) : tm.listSessions(me, LIST_CLIP);
     return sendJson(res, 200, rows.map((s) => (s.task ? { ...s, task: clipText(s.task, LIST_CLIP) } : s)));
   }
+  // The cheap poll payload (Sessions-pagination Phase 2) — live rows + the viewer's recent-ended tail +
+  // a done-today count, instead of the full ~950-row list. The console's 1.5 s poll fetches THIS; the
+  // route-gated full-list views (Sessions, Chat) fetch `/api/sessions` themselves. MUST precede the
+  // `/:id` regex below, or `summary` matches as a session id. ETag/304 rides the shared sendJson.
+  if (method === 'GET' && p === '/api/sessions/summary') {
+    const { rows, doneToday } = tm.sessionsSummary(me, LIST_CLIP);
+    return sendJson(res, 200, { rows: rows.map((s) => (s.task ? { ...s, task: clipText(s.task, LIST_CLIP) } : s)), doneToday });
+  }
   // Single session by id (Sessions-pagination Phase 1) — the by-id fetch the console lacked (every by-id
   // read used to come from the full list array). 404 when the caller can't see it (canViewRow → no row),
   // which doubles as the not-found response — no existence leak. End-anchored so it never shadows the

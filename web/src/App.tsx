@@ -972,6 +972,10 @@ const DEFAULT_PINNED_NAV: NavKey[] = ['cockpit', 'goals', 'tasks', 'artifacts']
 function Console({ me }: { me: Member }) {
   const [state, setState] = useState<StateResp | null>(null)
   const [sessions, setSessions] = useState<Session[]>([])
+  // Done-since-server-midnight count from the Phase-2 summary poll — the one Overview KPI a live+recent
+  // set can't derive (Overview is owner-only, so a global count is correct). Only refreshed on the routes
+  // that poll the summary (not the full-list Sessions/Chat views), which is fine — Overview is one of them.
+  const [doneToday, setDoneToday] = useState(0)
   // Tabs the user "closed" from the terminal switcher: hidden from the strip, but the session keeps
   // running — reopen it from All sessions. Persisted so a refresh doesn't resurrect closed tabs.
   const [hiddenTabs, setHiddenTabs] = useState<Set<string>>(() => {
@@ -1067,12 +1071,26 @@ function Console({ me }: { me: Member }) {
     //    still flips it — the badge/bells never go stale.
     let sessEtag: string | null = null
     let msgEtag: string | null = null
+    // The sessions half switches SOURCE by route (Sessions-pagination Phase 2): the Sessions + Chat list
+    // views need the FULL list, so they poll `/api/sessions`; every other route polls the cheap
+    // `/api/sessions/summary` — live rows + the viewer's recent-ended tail + a `doneToday` count — so it
+    // stops pulling ~950 rows on the routes that don't render the list (most of them). `route` is in the
+    // deps below, so navigating re-runs this effect with the right endpoint, a fresh ETag, and an immediate
+    // poll (no stale-endpoint 304, no flash of the wrong data).
+    const needFull = route === 'sessions' || route === 'chat'
     const poll = async () => {
-      const [s, m] = await Promise.allSettled([api.sessionsFeed(sessEtag), api.messagesFeed(msgEtag)])
+      const [s, m] = await Promise.allSettled([
+        needFull ? api.sessionsFeed(sessEtag) : api.sessionsSummaryFeed(sessEtag),
+        api.messagesFeed(msgEtag),
+      ])
       if (!alive) return
       if (s.status === 'fulfilled') {
         sessEtag = s.value.etag
-        if ('data' in s.value && Array.isArray(s.value.data)) setSessions(s.value.data)
+        if ('data' in s.value) {
+          const data = s.value.data
+          if (needFull) { if (Array.isArray(data)) setSessions(data) }
+          else if (!Array.isArray(data)) { setSessions(data.rows); setDoneToday(data.doneToday ?? 0) }
+        }
       }
       if (m.status === 'fulfilled') {
         msgEtag = m.value.etag
@@ -1094,7 +1112,7 @@ function Console({ me }: { me: Member }) {
       document.removeEventListener('visibilitychange', wake)
       window.removeEventListener('focus', wake)
     }
-  }, [])
+  }, [route])
 
   // Browser-tab badge: a 🔔 + the bell's unread count (waiting + completions + crashes + approvals +
   // questions, filtered by this member's prefs), so the tab nags even when the console isn't focused.
@@ -1203,11 +1221,18 @@ function Console({ me }: { me: Member }) {
   }
   // Deep-link from an inbox 'artifact' card into the gallery, pre-opening that artifact's preview.
   const openArtifact = (id: string) => nav('artifacts', id)
+  // Reload the sessions array from the endpoint the CURRENT route uses (Phase 2): the full list on the
+  // Sessions/Chat views, else the cheap summary. Mutation handlers call this so a manual refresh matches
+  // whatever the poll feeds — never re-inflating a summary route with the full ~950-row list. Returns the
+  // rows it set so a caller can search them (e.g. for the next live tab to hop to).
+  const reloadSessions = async (): Promise<Session[]> => {
+    if (route === 'sessions' || route === 'chat') { const s = await api.sessions(); setSessions(s); return s }
+    const r = await api.sessionsSummary(); setSessions(r.rows); setDoneToday(r.doneToday); return r.rows
+  }
   const stopSession = async (id: string) => {
     const stopped = sessions.find((s) => s.id === id)
     await api.stopSession(id)
-    const fresh = await api.sessions()
-    setSessions(fresh)
+    const fresh = await reloadSessions()
     // If you stopped the session you're currently viewing, don't sit on a dead terminal:
     // hop to the next open session, or fall back to the all-sessions list when none remain.
     if (stopped && selected?.tmux === stopped.tmux) {
@@ -1220,7 +1245,7 @@ function Console({ me }: { me: Member }) {
   // Human verdict on a finished run — feeds the agent maturity score. Clicking the active thumb clears it.
   const rateSession = async (id: string, rating: 'up' | 'down' | null) => {
     await api.rateSession(id, rating)
-    setSessions(await api.sessions())
+    await reloadSessions()
   }
   // Give a session a human-chosen title (from the header pencil or a double-click on its tab). Optimistic
   // so the header/tab relabel instantly; the poll reconciles with the server's cleaned value.
@@ -1237,19 +1262,19 @@ function Console({ me }: { me: Member }) {
     setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, runAs: to, runAsLabel: members.find((m) => m.id === to)?.name ?? to } : s)))
     const r = await api.transferSession(id, to)
     if (r.error) alert(r.error)
-    setSessions(await api.sessions())
+    await reloadSessions()
   }
   const deleteSession = async (id: string, tmux: string) => {
     if (!confirm('Delete this session? Its inbox messages and transcript files are removed; the audit log is kept.')) return
     await api.deleteSession(id)
     if (selected?.tmux === tmux) nav('sessions')
-    setSessions(await api.sessions())
+    await reloadSessions()
   }
   // Bulk variants for the Sessions list — stop/delete many in one go, single confirm, one refresh.
   const stopSessions = async (ids: string[]) => {
     if (ids.length === 0) return
     await Promise.all(ids.map((id) => api.stopSession(id)))
-    setSessions(await api.sessions())
+    await reloadSessions()
   }
   const deleteSessions = async (ids: string[]) => {
     if (ids.length === 0) return
@@ -1258,14 +1283,14 @@ function Console({ me }: { me: Member }) {
     const tmuxes = new Set(sessions.filter((s) => ids.includes(s.id)).map((s) => s.tmux))
     await Promise.all(ids.map((id) => api.deleteSession(id)))
     if (selected && tmuxes.has(selected.tmux)) nav('sessions')
-    setSessions(await api.sessions())
+    await reloadSessions()
   }
   // Spawn from an agent card on the Agents page; resolves to an error string, or null on success.
   const runAgent = async (agentId: string, task: string): Promise<string | null> => {
     if (!task.trim()) return 'enter a task'
     const r = await api.run(agentId, task)
     if (r.error) return r.error
-    setSessions(await api.sessions())
+    await reloadSessions()
     openTerminal(r.tmux, agentId + ' · ' + r.id)
     return null
   }
@@ -1273,7 +1298,7 @@ function Console({ me }: { me: Member }) {
   // Click a bell item / toast → go to the thing it's about. A session-scoped kind (waiting/finished/
   // crashed) opens that session's terminal (which clears its waiting bell); an approval/question opens
   // the Inbox to act on it. Informational cards (completed/crashed) are marked read on open.
-  const openNotification = (m: Msg) => {
+  const openNotification = async (m: Msg) => {
     if (!m.read && m.type === 'completed') {
       setMessages((ms) => ms.map((x) => (x.id === m.id ? { ...x, read: true } : x)))
       void api.markRead(m.id)
@@ -1282,8 +1307,15 @@ function Console({ me }: { me: Member }) {
     const ins = insightTarget(m)
     if (ins) { nav(ins.route, ins.detail); return }
     const kind = notifyKindOf(m)
-    const sess = sessions.find((s) => s.id === m.sessionId)
-    if ((kind === 'waiting' || kind === 'completed' || kind === 'crashed') && sess) openTerminal(sess.tmux)
+    const opensTerminal = kind === 'waiting' || kind === 'completed' || kind === 'crashed'
+    let sess = sessions.find((s) => s.id === m.sessionId)
+    // The summary poll only carries live + recent-ended rows (Phase 2), so a completed/crashed card for an
+    // OLDER session may not be in `sessions` — resolve it by id (Phase 1) before falling back to the Inbox.
+    if (!sess && opensTerminal && m.sessionId) {
+      const r = await api.session(m.sessionId).catch(() => null)
+      if (r && !('error' in r)) sess = r
+    }
+    if (opensTerminal && sess) openTerminal(sess.tmux)
     else nav('inbox')
   }
   const markAllNotificationsRead = async () => {
@@ -1506,7 +1538,7 @@ function Console({ me }: { me: Member }) {
           {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
-          {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
+          {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} doneToday={doneToday} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
           {route === 'cockpit' && <CockpitPage onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
@@ -7539,16 +7571,17 @@ const fromDateInput = (v: string): number | null => (v ? new Date(v + 'T00:00:00
 /** Owner-only home. What the fleet is doing right now (live sessions + who's accountable for each) and
  *  which agents are earning trust. Pure-props: it reads the sessions/messages the Console already polls
  *  and the fleet maturity map, so it live-updates on the 1.5s tick with no fetch of its own. */
-function OverviewPage({ me, sessions, members, agents, maturity, serverTz, onOpen, nav }: {
-  me: Member; sessions: Session[]; members: Member[]; agents: AgentInfo[]
+function OverviewPage({ me, sessions, doneToday, members, agents, maturity, serverTz, onOpen, nav }: {
+  me: Member; sessions: Session[]; doneToday: number; members: Member[]; agents: AgentInfo[]
   maturity: Record<string, AgentStats>; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void
 }) {
   // A run is "blocked" when it's waiting on a human (a pending ask/approval). Read straight off the
   // server-authoritative `s.blocked` flag now, rather than re-deriving it from the message feed.
   const blockedRuns = useMemo(() => new Set(sessions.filter((s) => s.blocked).map((s) => s.id)), [sessions])
   const live = useMemo(() => sessions.filter(isLive).sort((a, b) => a.createdAt - b.createdAt), [sessions])
-  const t0 = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime() }, [])
-  const doneToday = sessions.filter((s) => s.status === 'done' && s.updatedAt >= t0).length
+  // `doneToday` is a global done-since-server-midnight count from the summary poll (Phase 2) — the live+
+  // recent-ended `sessions` array can't derive it. Overview is owner-only, so a global (unscoped) count is
+  // correct here.
   // Agents "online" = at least one live session; count sessions per agent for the chip.
   const liveByAgent = useMemo(() => { const m = new Map<string, number>(); for (const s of live) m.set(s.agent, (m.get(s.agent) ?? 0) + 1); return m }, [live])
   const onlineAgents = useMemo(() => agents.filter((a) => liveByAgent.has(a.id)), [agents, liveByAgent])

@@ -771,6 +771,41 @@ export class TerminalManager {
       return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as), sourceKind: this.sourceKind(r.spawned_by), runAsLabel: this.runAsLabel(r.run_as), ratedByLabel: this.runAsLabel(r.rated_by) }));
     });
   }
+  /**
+   * The cheap poll payload (Sessions-pagination Phase 2). Replaces the full ~950-row list the console's
+   * 1.5 s poll used to ship: returns only the rows the ALWAYS-ON surfaces need — every LIVE session
+   * (running, or with an attachable pane) plus the viewer's most-recent ENDED sessions (bounded, for the
+   * sidebar switcher) — with the same derived fields the list carries, all viewer-scoped. Plus
+   * `doneToday`, a global done-since-server-midnight count: the one always-on aggregate a live+recent set
+   * can't derive, consumed only by the owner-only Overview (so a global count is correct — no per-member
+   * scoping). Bounded by construction (≈ live-count + cap), so it never rebuilds the whole table.
+   */
+  sessionsSummary(viewer?: Member, taskClip?: number): { rows: Session[]; doneToday: number } {
+    const ENDED_CAP = 60;
+    // Live = every running row + every row whose tmux pane is alive (a `done` interactive session can keep
+    // an attachable pane). aliveNames() is null on the launcher backend / a failed poll → status alone
+    // (we never claim liveness we couldn't verify).
+    const alive = this.backend.aliveNames();
+    const aliveList = alive ? [...alive] : [];
+    const liveIds = this.db
+      .prepare(`SELECT id FROM term_sessions WHERE archived_at IS NULL AND (status = 'running'${aliveList.length ? ` OR tmux IN (${aliveList.map(() => '?').join(',')})` : ''})`)
+      .all<{ id: string }>(...aliveList)
+      .map((r) => r.id);
+    // The viewer's most-recent ended sessions — backs the sidebar switcher's "N ended" list. Scoped to the
+    // viewer's OWN runs (spawned_by / run_as); an internal caller (no viewer) gets the global recent tail.
+    const endedIds = (viewer
+      ? this.db.prepare(`SELECT id FROM term_sessions WHERE archived_at IS NULL AND status != 'running' AND (spawned_by = ? OR run_as = ?) ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?`).all<{ id: string }>(viewer.id, viewer.id, ENDED_CAP)
+      : this.db.prepare(`SELECT id FROM term_sessions WHERE archived_at IS NULL AND status != 'running' ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?`).all<{ id: string }>(ENDED_CAP)
+    ).map((r) => r.id);
+    const ids = [...new Set([...liveIds, ...endedIds])];
+    const rows = ids.length ? this.listSessions(viewer, taskClip, ids) : [];
+    const t0 = new Date();
+    t0.setHours(0, 0, 0, 0);
+    const doneToday = this.db
+      .prepare(`SELECT COUNT(*) AS c FROM term_sessions WHERE archived_at IS NULL AND status = 'done' AND updated_at >= ?`)
+      .get<{ c: number }>(t0.getTime())!.c;
+    return { rows, doneToday };
+  }
   /** Soft-archive a session — hide it from the list, keep the row + transcript (reversible). */
   archiveSession(id: string, now = Date.now()): boolean {
     return this.db.prepare('UPDATE term_sessions SET archived_at = ? WHERE id = ? AND archived_at IS NULL').run(now, id).changes > 0;
