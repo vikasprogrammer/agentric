@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.291.4] — 2026-08-03
+### Fixed
+- **Removing a runtime-account `token` account now deletes its vaulted token** instead of leaving an
+  orphaned `runtime-token:<runtime>:<name>` secret behind. `DELETE /api/runtime-accounts/:runtime/:name`
+  drops the value the add-handler sealed (a `token` account OWNS it); an `apikey` account, which only
+  REFERENCES a user-managed vault key, and an `oauth` account, which has none, are left untouched.
+  `src/server.ts`.
+
 ## [0.291.3] — 2026-08-03
 ### Fixed
 - **Console detail pages (task · session · artifact) took seconds to open.** The detail endpoints were

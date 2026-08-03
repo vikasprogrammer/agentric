@@ -4264,7 +4264,12 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const name = decodeURIComponent(m[2]);
       if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
       if (method === 'DELETE') {
+        const acct = os.runtimeAccounts.get(runtime, name);
         os.runtimeAccounts.remove(runtime, name);
+        // A 'token' account OWNS the vaulted value the add-handler sealed under this exact key — drop it so a
+        // removed account leaves no orphaned secret. An 'apikey' account only REFERENCES a user-managed vault
+        // key (apiKeyRef), and 'oauth' has none, so neither is touched.
+        if (acct?.kind === 'token') os.secrets.delete(os.tenant, `runtime-token:${runtime}:${name}`, '*');
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.removed', data: { runtime, name } });
         return sendJson(res, 200, { ok: true });
       }
