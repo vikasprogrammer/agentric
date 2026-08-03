@@ -705,15 +705,21 @@ export class TerminalManager {
    * regular member sees only sessions they spawned, plus sessions fired by an automation they created.
    * `taskClip` (list endpoint only) fetches `task` pre-truncated to that many chars — see sessionSelectCols.
    */
-  listSessions(viewer?: Member, taskClip?: number): Session[] {
+  listSessions(viewer?: Member, taskClip?: number, ids?: string[]): Session[] {
     // Memoize the member/automation lookups for this call — the per-row helpers below would otherwise
     // re-query them ~2x per row. See withRowCache().
-    return this.withRowCache(() => this.listSessionsUncached(viewer, taskClip));
+    return this.withRowCache(() => this.listSessionsUncached(viewer, taskClip, ids));
   }
-  private listSessionsUncached(viewer?: Member, taskClip?: number): Session[] {
+  private listSessionsUncached(viewer?: Member, taskClip?: number, ids?: string[]): Session[] {
     // Archived sessions are hidden from the list (reversible soft-archive via the Insights declutter tile);
     // their rows survive for every by-id reference (task-reconcile, audit, cost).
-    const rows = this.db.prepare(`SELECT ${this.sessionSelectCols(taskClip)} FROM term_sessions WHERE archived_at IS NULL ORDER BY created_at DESC`).all<SessionRow>();
+    //   `ids` = the by-id / batch fetch (Sessions-pagination Phase 1): return exactly those sessions with
+    //   the same derived fields the list carries, still viewer-scoped below. It intentionally matches by id
+    //   REGARDLESS of archived_at (so a by-id/notification-open resolves an archived session too); an empty
+    //   list short-circuits (`IN ()` is a syntax error). The unfiltered list keeps hiding archived rows.
+    if (ids && ids.length === 0) return [];
+    const where = ids ? `id IN (${ids.map(() => '?').join(',')})` : 'archived_at IS NULL';
+    const rows = this.db.prepare(`SELECT ${this.sessionSelectCols(taskClip)} FROM term_sessions WHERE ${where} ORDER BY created_at DESC`).all<SessionRow>(...(ids ?? []));
     // Lazy liveness: a row stays 'running' until its tmux session is gone. A running row whose pane
     // vanished with NO end signal (no `report`/`markEnded`/`stopSession`) died abruptly — kill/OOM/
     // reboot — so it's a `crashed`, not a clean end. Grace-period new rows (tmux may not have finished

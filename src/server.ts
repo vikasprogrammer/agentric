@@ -2518,8 +2518,25 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   //   per poll, ~33% off the query. `clipText` below is kept as the ellipsis-preserving finisher (it now
   //   operates on the ≤241-char string, so the wire output is byte-identical to before).
   if (method === 'GET' && p === '/api/sessions') {
-    const rows = url.searchParams.get('archived') === '1' ? tm.listArchivedSessions(me, LIST_CLIP) : tm.listSessions(me, LIST_CLIP);
+    // `?ids=a,b,c` → the batch by-id fetch (Sessions-pagination Phase 1): return just those sessions, so a
+    // consumer that only needs a handful (the Tasks board resolving `lastSessionId → isLive`) stops pulling
+    // the whole ~950-row list. Viewer-scoping is unchanged — `listSessions` filters via canViewRow, so an
+    // id the caller can't see simply doesn't come back.
+    const idsParam = url.searchParams.get('ids');
+    const rows = idsParam !== null
+      ? tm.listSessions(me, LIST_CLIP, idsParam ? idsParam.split(',').map((x) => x.trim()).filter(Boolean) : [])
+      : url.searchParams.get('archived') === '1' ? tm.listArchivedSessions(me, LIST_CLIP) : tm.listSessions(me, LIST_CLIP);
     return sendJson(res, 200, rows.map((s) => (s.task ? { ...s, task: clipText(s.task, LIST_CLIP) } : s)));
+  }
+  // Single session by id (Sessions-pagination Phase 1) — the by-id fetch the console lacked (every by-id
+  // read used to come from the full list array). 404 when the caller can't see it (canViewRow → no row),
+  // which doubles as the not-found response — no existence leak. End-anchored so it never shadows the
+  // `/api/sessions/:id/<subresource>` routes above.
+  const sessByIdMatch = p.match(/^\/api\/sessions\/([\w-]+)$/);
+  if (method === 'GET' && sessByIdMatch) {
+    const [row] = tm.listSessions(me, LIST_CLIP, [sessByIdMatch[1]]);
+    if (!row) return sendJson(res, 404, { error: 'unknown session' });
+    return sendJson(res, 200, row.task ? { ...row, task: clipText(row.task, LIST_CLIP) } : row);
   }
   if (method === 'POST' && p === '/api/sessions') {
     const b = await readBody(req);
