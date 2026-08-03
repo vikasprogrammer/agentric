@@ -55,7 +55,7 @@ import { planSessionTidy, applySessionTidy } from './edge/session-tidy';
 import { Strategist, STRATEGIST_ID } from './edge/strategist';
 import { readAgentCatalog, installAgentFromCatalog, BUILTIN_SEED_IDS } from './edge/agent-catalog';
 import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
-import { checkDeps, installDeps } from './edge/deps';
+import { checkDeps, checkDepUpdates, installDeps, updateNpmDep } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
@@ -4388,7 +4388,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── native system dependencies (tmux/ttyd/claude/git) — "is the box set up to run sessions?" ──
   if (method === 'GET' && p === '/api/deps') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    return sendJson(res, 200, checkDeps());
+    // Presence is local + sync; freshness asks the npm registry, cached for an hour (`?force=1` re-asks).
+    return sendJson(res, 200, await checkDepUpdates(checkDeps(), url.searchParams.get('force') === '1'));
+  }
+  // Upgrade one npm-installed dep in place (`npm install -g <pkg>@latest`). Owner-gated — it mutates the
+  // box's global node prefix — same posture as the package-manager install above.
+  if (method === 'POST' && p === '/api/deps/update') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const bin = String((await readBody(req)).bin || '');
+    if (!bin) return sendJson(res, 400, { error: 'bin required' });
+    const result = await updateNpmDep(bin);
+    const after = result.report.deps.find((d) => d.bin === bin);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'system.deps.updated', data: { bin, ok: result.ok, version: after?.version, latest: after?.latest } });
+    return sendJson(res, 200, result);
   }
   // Install the still-missing, package-manager-installable deps (brew/apt/…). Owner-gated (it runs a
   // privileged system install), same posture as the self-update apply below.
@@ -4396,7 +4408,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
     const result = installDeps();
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'system.deps.installed', data: { ok: result.ok, steps: result.steps.map((s) => ({ cmd: s.cmd, ok: s.ok })) } });
-    return sendJson(res, 200, result);
+    // Hand back a freshness-annotated report so the panel re-renders in one round-trip, same as GET.
+    return sendJson(res, 200, { ...result, report: await checkDepUpdates(result.report) });
   }
   // ── stop every running session (softer sibling of the kill switch; leaves the gate open) ──
   if (method === 'POST' && p === '/api/sessions/stop-all') {

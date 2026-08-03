@@ -12737,19 +12737,25 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
 }
 
 /**
- * Settings → System → Native dependencies — is this box set up to run agent sessions? Probes the native
- * commands Agent OS shells out to (tmux/ttyd/claude/git) via `GET /api/deps`. When something's missing it
- * shows the exact install command (copyable) + the `npm run install-deps` shortcut, and — for the owner —
- * an "Install now" button that runs the box's package manager (`POST /api/deps/install`) and re-checks.
+ * Settings → System → Native dependencies — is this box set up to run agent sessions, and is what's
+ * installed current? Probes the native commands Agent OS shells out to (tmux/ttyd/claude/git) via
+ * `GET /api/deps`. When something's missing it shows the exact install command (copyable) + the
+ * `npm run install-deps` shortcut, and — for the owner — an "Install now" button that runs the box's
+ * package manager (`POST /api/deps/install`).
+ *
+ * Presence alone was never enough: a box pinned to a months-old `claude` showed a green "all installed"
+ * while its runtime predated the current model line. So npm-installed deps also carry the registry's
+ * `latest`, and a stale one gets an amber row + an owner "Update" (`POST /api/deps/update`).
  */
 function NativeDepsPanel({ me }: { me: Member }) {
   const [report, setReport] = useState<DepsReport | null>(null)
   const [err, setErr] = useState('')
   const [installing, setInstalling] = useState(false)
+  const [updating, setUpdating] = useState('')
   const [result, setResult] = useState<DepsInstallResult | null>(null)
   const [copied, setCopied] = useState('')
 
-  const load = () => api.deps().then((r) => { setErr(''); setReport(r) }).catch(() => setErr('Could not read dependency status.'))
+  const load = (force = false) => api.deps(force).then((r) => { setErr(''); setReport(r) }).catch(() => setErr('Could not read dependency status.'))
   useEffect(() => { load() }, [])
 
   const copy = async (text: string) => { if (await copyText(text)) { setCopied(text); setTimeout(() => setCopied(''), 1500) } }
@@ -12762,8 +12768,17 @@ function NativeDepsPanel({ me }: { me: Member }) {
     setResult(r); setReport(r.report)
   }
 
+  const update = async (bin: string) => {
+    setUpdating(bin); setResult(null); setErr('')
+    const r = await api.updateDep(bin).catch(() => null)
+    setUpdating('')
+    if (!r) return setErr('Update request failed.')
+    setResult(r); setReport(r.report)
+  }
+
   const isOwner = me.role === 'owner'
   const missingRequired = report ? report.deps.filter((d) => d.required && !d.installed) : []
+  const outdated = report ? report.deps.filter((d) => d.updateAvailable) : []
 
   return (
     <Card>
@@ -12771,7 +12786,7 @@ function NativeDepsPanel({ me }: { me: Member }) {
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm font-semibold"><Boxes className="h-4 w-4" /> Native dependencies</div>
           <div className="flex items-center gap-2">
-            <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs" disabled={installing} onClick={load}>
+            <Button size="sm" variant="ghost" className="h-7 gap-1.5 px-2 text-xs" disabled={installing || !!updating} onClick={() => load(true)}>
               <RefreshCw className="h-3.5 w-3.5" /> Re-check
             </Button>
             {isOwner && report && report.installable.length > 0 && (
@@ -12783,7 +12798,7 @@ function NativeDepsPanel({ me }: { me: Member }) {
         </div>
 
         <p className="text-sm text-muted-foreground">
-          The native commands Agent OS shells out to on this box. Sessions won't start until the required ones are present.
+          The native commands Agent OS shells out to on this box. Sessions won't start until the required ones are present — and a stale runtime quietly holds sessions back to whatever it shipped with.
         </p>
 
         {err && <p className="text-sm text-red-600">{err}</p>}
@@ -12791,15 +12806,27 @@ function NativeDepsPanel({ me }: { me: Member }) {
           <p className="text-sm text-muted-foreground">Checking…</p>
         ) : (
           <>
-            {report.ok
-              ? <div className="flex items-center gap-1.5 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> All required dependencies are installed.</div>
-              : <div className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+            {!report.ok
+              ? <div className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
                   <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> {missingRequired.length} required {missingRequired.length === 1 ? 'dependency is' : 'dependencies are'} missing — agent sessions can't run.
-                </div>}
+                </div>
+              : outdated.length > 0
+                ? <div className="flex items-center gap-1.5 rounded-md bg-amber-50 px-2 py-1.5 text-xs font-medium text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-400 dark:ring-amber-500/20">
+                    <Download className="h-3.5 w-3.5 shrink-0" /> {outdated.length} {outdated.length === 1 ? 'dependency is' : 'dependencies are'} out of date — {outdated.map((d) => d.label).join(', ')}.
+                  </div>
+                : <div className="flex items-center gap-1.5 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> All required dependencies are installed and up to date.</div>}
 
             <dl className="divide-y rounded-md border">
-              {report.deps.map((d) => <DepRow key={d.bin} d={d} />)}
+              {report.deps.map((d) => (
+                <DepRow key={d.bin} d={d} canUpdate={isOwner} updating={updating === d.bin} busy={installing || !!updating} onUpdate={() => update(d.bin)} />
+              ))}
             </dl>
+
+            {outdated.length > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                Updating replaces the binary on disk. Sessions already running keep the version they launched with until they restart.
+              </p>
+            )}
 
             {(report.installCommand || !report.ok) && (
               <div className="space-y-2 rounded-md border bg-muted/40 p-3">
@@ -12819,7 +12846,7 @@ function NativeDepsPanel({ me }: { me: Member }) {
             {result && (
               <div className="space-y-1.5">
                 <p className={`text-xs font-medium ${result.ok ? 'text-emerald-600' : 'text-amber-600'}`}>
-                  {result.ok ? 'Installed — all required dependencies are present.' : (result.error || 'Install finished with problems.')}
+                  {result.ok ? 'Done — dependencies are present and up to date.' : (result.error || 'The run finished with problems.')}
                 </p>
                 {result.steps.length > 0 && (
                   <div className="max-h-48 space-y-1.5 overflow-auto rounded-md border bg-muted/40 p-2">
@@ -12843,23 +12870,44 @@ function NativeDepsPanel({ me }: { me: Member }) {
   )
 }
 
-/** One dependency row: label + purpose + present/missing badge (with version/path when installed). */
-function DepRow({ d }: { d: DepStatus }) {
+/**
+ * One dependency row: label + purpose + present/missing badge (with version/path when installed), plus
+ * the freshness line for npm-installed tools — "v2.1.220 available" and an owner-only Update button.
+ */
+function DepRow({ d, canUpdate, updating, busy, onUpdate }: { d: DepStatus; canUpdate: boolean; updating: boolean; busy: boolean; onUpdate: () => void }) {
   return (
     <div className="flex items-start gap-3 px-3 py-2">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-medium">{d.label}</span>
           {!d.required && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">optional</span>}
+          {d.offPath && <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground" title={`Not on the server's PATH — resolved at ${d.path}. Sessions still launch (the launcher checks the same fallbacks).`}>off PATH</span>}
         </div>
         <p className="text-xs text-muted-foreground">{d.purpose}</p>
         {d.installed
           ? (d.version || d.path) && <p className="truncate font-mono text-[10px] text-muted-foreground" title={d.path}>{d.version || d.path}</p>
           : d.hint && <p className="font-mono text-[10px] text-muted-foreground">install: {d.hint}</p>}
+        {d.installed && d.updateAvailable && (
+          <p className="mt-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+            v{d.latest} available{d.hint ? <> · <span className="font-mono">{d.hint}</span></> : null}
+          </p>
+        )}
+        {d.installed && d.updateError && (
+          <p className="mt-0.5 text-[10px] text-muted-foreground" title={d.updateError}>Couldn't check for updates.</p>
+        )}
       </div>
-      {d.installed
-        ? <span className="flex shrink-0 items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> installed</span>
-        : <span className={`flex shrink-0 items-center gap-1 text-xs ${d.required ? 'text-red-600' : 'text-amber-600'}`}><XCircle className="h-3.5 w-3.5" /> missing</span>}
+      <div className="flex shrink-0 items-center gap-2">
+        {d.installed && d.updateAvailable && canUpdate && (
+          <Button size="sm" variant="outline" className="h-7 gap-1.5 px-2 text-xs" disabled={busy} onClick={onUpdate}>
+            <Download className={`h-3.5 w-3.5 ${updating ? 'animate-pulse' : ''}`} /> {updating ? 'Updating…' : 'Update'}
+          </Button>
+        )}
+        {d.installed
+          ? d.updateAvailable
+            ? <span className="flex items-center gap-1 text-xs text-amber-600"><AlertTriangle className="h-3.5 w-3.5" /> outdated</span>
+            : <span className="flex items-center gap-1 text-xs text-emerald-600"><CheckCircle2 className="h-3.5 w-3.5" /> installed</span>
+          : <span className={`flex items-center gap-1 text-xs ${d.required ? 'text-red-600' : 'text-amber-600'}`}><XCircle className="h-3.5 w-3.5" /> missing</span>}
+      </div>
     </div>
   )
 }

@@ -193,6 +193,16 @@ export interface DepStatus {
   installed: boolean
   path?: string
   version?: string
+  /** Resolved only via a fallback location — not on the server's PATH (sessions still launch). */
+  offPath?: boolean
+  /** npm package this dep ships from; present ⇒ it can be version-checked and updated in place. */
+  npmPkg?: string
+  /** Latest published version, when the registry answered. */
+  latest?: string
+  /** True when the installed version is behind `latest`. */
+  updateAvailable?: boolean
+  /** Why freshness couldn't be determined (offline box, registry error) — never fatal. */
+  updateError?: string
 }
 /** Native-dependency report for Settings → System (GET /api/deps). */
 export interface DepsReport {
@@ -208,6 +218,10 @@ export interface DepsReport {
   /** Zero-dependency bootstrap shortcut (works before a build). */
   shortcut: string
   platform: string
+  /** Installed-but-stale npm deps (drives the per-row "Update" button). */
+  outdated: string[]
+  /** When the freshness probe last ran, or 0 if it hasn't. */
+  updatesCheckedAt: number
 }
 /** Result of POST /api/deps/install — per-step logs plus the re-checked report. */
 export interface DepsInstallResult {
@@ -1364,10 +1378,13 @@ export const api = {
   stopAllSessions: () => call<{ ok: boolean; halted?: number; error?: string }>('POST', '/api/sessions/stop-all'),
   /** Host resource snapshot for Settings → System (RAM / CPU / uptime). */
   system: () => call<SystemMetrics>('GET', '/api/system'),
-  /** Native-dependency check for Settings → System (tmux/ttyd/claude/git present?). */
-  deps: () => call<DepsReport>('GET', '/api/deps'),
+  /** Native-dependency check for Settings → System — present? and, for npm-installed tools, up to date?
+   *  The registry lookup is cached server-side for an hour; `force` re-asks. */
+  deps: (force = false) => call<DepsReport>('GET', `/api/deps${force ? '?force=1' : ''}`),
   /** Install the missing package-manager-installable deps (owner-only). Returns step logs + fresh report. */
   installDeps: () => call<DepsInstallResult>('POST', '/api/deps/install'),
+  /** Upgrade one npm-installed dep in place, e.g. `claude` (owner-only). Returns step logs + fresh report. */
+  updateDep: (bin: string) => call<DepsInstallResult>('POST', '/api/deps/update', { bin }),
   rateSession: (id: string, rating: 'up' | 'down' | null) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/rate`, { rating }),
   /** Give a session a human-chosen display title (overrides the auto/AI-generated one). */
   renameSession: (id: string, title: string) => call<{ ok: boolean; error?: string; title?: string }>('POST', `/api/sessions/${id}/rename`, { title }),
