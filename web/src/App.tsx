@@ -13812,6 +13812,11 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
             only when a runtime's whole pool is dry does the scheduler defer. <span className="font-medium">Empty pool = off</span> —
             the box uses its single default login, exactly as before.
           </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Rotation covers <span className="font-medium">unattended runs</span> (they exit each turn). A <span className="font-medium">resident chat</span>
+            {' '}(Slack/Discord, kept warm for days) skips paste-token accounts — an injected setup-token can't refresh in-process and would
+            hit <span className="font-mono">/login</span> mid-chat — and uses the box default (or a credential-dir account), which refreshes itself.
+          </p>
         </div>
 
         {resp && resp.accounts.length === 0 && (

@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.291.0] — 2026-08-03
+### Fixed
+- **A resident chat no longer hits `/login` mid-session when it launched under a rotation paste-token.**
+  A `token` (setup-token) / `apikey` account is injected as a static `CLAUDE_CODE_OAUTH_TOKEN` with no
+  refresh token in the process, so after its access window (~hours) a long-lived session can't renew it —
+  claude prints "OAuth access token has expired · Please run /login" and wedges. Short unattended runs
+  exit each turn and never live long enough to hit it, but a **resident** Slack/Discord chat (kept warm
+  for days) does. Fix: resident sessions rotate ONLY onto **refresh-capable** `oauth` credential-dir
+  accounts (claude refreshes within `CLAUDE_CONFIG_DIR`); with none available they fall through to the
+  box default, which carries its own refresh token. Unattended/one-off runs still rotate across ALL
+  account kinds (the zombie-during-weekly-limit protection is unchanged). `pick()` gains an optional
+  `kinds` filter; `applyRuntimeAccount` passes the session's `resident` flag. `src/state/runtime-accounts.ts`,
+  `src/terminal.ts`, `web/src/App.tsx` (panel note).
+
 ## [0.290.0] — 2026-08-01
 ### Added
 - **Quick filters on the Tasks board — a status lens and an "Unassigned" chip, both with live counts.**

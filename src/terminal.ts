@@ -1670,7 +1670,7 @@ export class TerminalManager {
     // INERT when the pool is empty — pick() returns null, we set nothing, the CLI uses the box default (i.e.
     // today's behavior). pick() also returns null when every account is limited; a member launch then still
     // proceeds on the default (better than blocking the human), while the scheduler defers cron upstream.
-    this.applyRuntimeAccount(env, o.id, o.agent, runtime);
+    this.applyRuntimeAccount(env, o.id, o.agent, runtime, o.resident);
     if (caps.pinnedSessionId) {
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
       // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
@@ -2269,10 +2269,17 @@ export class TerminalManager {
    *  (`term_sessions.runtime_account`) so limit detection at teardown can park the right one. No-op — leaving
    *  the box's default credentials in place — when the pool is empty or exhausted, or when an api-key
    *  account's vault value can't be resolved (fail-open: better to launch on the default than not at all). */
-  private applyRuntimeAccount(env: Record<string, string>, sessionId: string, agent: string, runtime: CodingRuntimeId): void {
+  private applyRuntimeAccount(env: Record<string, string>, sessionId: string, agent: string, runtime: CodingRuntimeId, resident: boolean): void {
     try {
-      const acct = this.os.runtimeAccounts.pick(runtime);
-      if (!acct) return; // empty pool (inert) or all limited → box default
+      // A RESIDENT session is kept warm for hours/days (a Discord/Slack chat), so it outlives the access
+      // window of an injected static credential. A `token` (setup-token) / `apikey` carries no refresh
+      // token into the process, so claude can't renew it in place — it hits "OAuth access token has
+      // expired" → /login mid-chat. So resident sessions rotate ONLY onto refresh-capable `oauth`
+      // credential-dirs (claude refreshes within CLAUDE_CONFIG_DIR); with none available they fall through
+      // to the box default, which has its own refresh token. Short-lived headless/one-off runs exit long
+      // before any expiry, so they keep rotating across ALL account kinds (the zombie-during-limit fix).
+      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), resident ? { kinds: ['oauth'] } : undefined);
+      if (!acct) return; // empty pool (inert), all limited, or resident with no refresh-capable account → box default
       const { configDirVar, apiKeyVar, tokenVar } = CODING_RUNTIMES[runtime].credentialEnv;
       if (acct.kind === 'oauth') {
         if (!acct.configDir) return;
