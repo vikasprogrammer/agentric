@@ -1306,6 +1306,9 @@ async function callFeed<T>(path: string, etag: string | null): Promise<FeedResul
   return { data: (await res.json()) as T, etag: next }
 }
 
+/** The Phase-2 summary poll payload: the always-on rows (live + the viewer's recent-ended tail) plus a
+ *  global done-since-server-midnight count (the one always-on aggregate a live-only set can't derive). */
+export interface SessionsSummary { rows: Session[]; doneToday: number }
 export const api = {
   /** Current member, or null if not authenticated (401). Drives the login gate. */
   me: async (): Promise<Member | null> => {
@@ -1338,6 +1341,12 @@ export const api = {
   /** Conditional variant of the live sessions feed for the global 1.5 s poll — resolves `notModified` on a
    *  304 so idle tabs skip the re-parse + re-render. Non-feed callers keep `sessions()` (always full body). */
   sessionsFeed: (etag: string | null) => callFeed<Session[]>('/api/sessions', etag),
+  /** The cheap poll payload (Sessions-pagination Phase 2): only the LIVE rows + the viewer's recent-ended
+   *  tail + a global `doneToday` count, instead of the full ~950-row list. The global poll fetches this on
+   *  every route EXCEPT the sessions/chat list views (which need the full list). */
+  sessionsSummary: () => call<SessionsSummary>('GET', '/api/sessions/summary'),
+  /** Conditional variant of `sessionsSummary` for the global poll — 304 on no change. */
+  sessionsSummaryFeed: (etag: string | null) => callFeed<SessionsSummary>('/api/sessions/summary', etag),
   unarchiveSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/unarchive`),
   sessionTidyPreview: () => call<{ ok: boolean; plan?: SessionTidyPlan; error?: string }>('GET', '/api/insights/sessions/tidy'),
   sessionTidyApply: () => call<{ ok: boolean; archived?: number; error?: string }>('POST', '/api/insights/sessions/tidy'),
