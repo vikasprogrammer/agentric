@@ -188,9 +188,14 @@ export class RuntimeAccountStore {
    *  available — and stamp its last_used_at. Returns null when there are NO accounts for the runtime (caller
    *  → box default) or every enabled one is currently limited (caller → box default for a member launch; the
    *  scheduler defers cron). Auto-recovers accounts whose limit has lapsed first. */
-  pick(runtime: CodingRuntimeId, now: number = Date.now()): RuntimeAccount | null {
+  pick(runtime: CodingRuntimeId, now: number = Date.now(), opts?: { kinds?: RuntimeAccountKind[] }): RuntimeAccount | null {
     this.recover(now);
-    const r = this.db.prepare("SELECT * FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available' ORDER BY last_used_at IS NOT NULL, last_used_at ASC LIMIT 1").get<Row>(runtime);
+    // Optional kind filter: a long-lived (resident) session may only rotate onto REFRESH-CAPABLE accounts
+    // (`oauth` credential-dirs), because a static injected `token`/`apikey` can't refresh in-process and
+    // would hit "OAuth access token has expired" → /login after its access window. See applyRuntimeAccount.
+    const kinds = opts?.kinds;
+    const kindClause = kinds && kinds.length ? ` AND kind IN (${kinds.map(() => '?').join(',')})` : '';
+    const r = this.db.prepare(`SELECT * FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available'${kindClause} ORDER BY last_used_at IS NOT NULL, last_used_at ASC LIMIT 1`).get<Row>(runtime, ...(kinds ?? []));
     if (!r) return null;
     this.db.prepare('UPDATE runtime_accounts SET last_used_at = ? WHERE runtime = ? AND name = ?').run(now, runtime, r.name);
     return toAccount({ ...r, last_used_at: now });
