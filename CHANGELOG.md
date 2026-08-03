@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.294.1] — 2026-08-03
+### Fixed
+- **Slack DMs from the OS were unanswerable — the app manifest never enabled the Messages tab.** Slack
+  ships an app with **App Home → Messages Tab OFF**, which replaces the DM composer with a dead
+  *"Sending messages to this app has been turned off."* banner. Every inbound DM path the OS has arrives
+  as a `message.im`: answering a blocking `ask_human`, approving/denying a gate inline
+  (`decideApprovalFromChat`/`answerQuestionFromChat`), or chatting 1:1 with an agent. So a human could be
+  DM'd a question or an approval and physically could not reply — the scopes and event subscriptions were
+  right, the tab was the missing half. The bundled manifest now sets
+  `features.app_home.messages_tab_enabled: true` (+ `messages_tab_read_only_enabled: false`), and the
+  Settings → Integrations setup guide calls out the toggle for **already-installed apps**, which a
+  manifest change does not reach (`web/src/App.tsx`).
+- **The `notify` tool no longer reads as a way to ask someone a question.** Its description offered
+  itself for "progress/updates/**questions**" to another teammate, but `notify` is strictly one-way (an
+  Inbox `update` card + a DM, with no reply affordance on either) — so an agent that used it to ask for a
+  design decision and then held its work waited forever. It now states the one-way contract explicitly
+  and points at `ask_human` with `to`, which blocks and is answerable from the Inbox or the DM
+  (`src/memory/memory-mcp.ts`). Schema change — a live session picks it up after a relaunch.
+
 ## [0.294.0] — 2026-08-03
 ### Added
 - **By-id session fetch — `GET /api/sessions/:id` and `GET /api/sessions?ids=a,b,c`** (Sessions-pagination

@@ -6251,9 +6251,19 @@ function CopyBlock({ text, label = 'Copy' }: { text: string; label?: string }) {
 // bot — without them Slack only delivers explicit `app_mention`s, so a thread follow-up never arrives
 // and thread-continuity can't fire. `channels:read`/`groups:read` back channel-name lookup, `channels:join`
 // lets the bot auto-join a public channel to post, and `im:write` opens DMs.
+//
+// `app_home.messages_tab_enabled` is NOT optional decoration: Slack ships an app with its Messages tab
+// OFF, which renders the DM composer as a dead "Sending messages to this app has been turned off."
+// banner. Every inbound DM path the OS has — answering a blocking `ask_human`, approving/denying a gate
+// from the DM, chatting with an agent 1:1 — arrives as a `message.im`, so with the tab off the human
+// gets pinged and physically cannot reply. The scopes/events above are necessary but not sufficient;
+// this is the other half. (`messages_tab_read_only_enabled: false` is what actually shows the composer.)
 const SLACK_MANIFEST_OBJ = {
   display_information: { name: 'Agent OS' },
-  features: { bot_user: { display_name: 'Agent OS', always_online: true } },
+  features: {
+    bot_user: { display_name: 'Agent OS', always_online: true },
+    app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+  },
   oauth_config: {
     scopes: {
       bot: [
@@ -6316,8 +6326,15 @@ function SlackSetupGuide() {
             </li>
             <li>The status badge above flips to <strong className="text-emerald-600">connected</strong> within a second or two. Then add a <strong>Slack message</strong> automation on the Automations page.</li>
           </ol>
+          <p className="rounded border border-amber-500/40 bg-amber-500/5 p-2">
+            <strong className="text-foreground">Already have the app installed?</strong> Check <strong>App Home → Show Tabs → Messages Tab</strong> is
+            ON, with <strong>"Allow users to send Slash commands and messages from the messages tab"</strong> ticked. Apps created before this
+            manifest have it OFF, and Slack then shows <em>"Sending messages to this app has been turned off"</em> under every DM — so a
+            question or approval the OS DMs you can be read but not answered. The toggle takes effect immediately; no reinstall needed.
+          </p>
           <p className="border-t pt-2">
-            The manifest already enables <strong>Socket Mode</strong> and subscribes to <code className="text-[11px]">app_mention</code> plus the
+            The manifest already enables <strong>Socket Mode</strong>, the <strong>Messages tab</strong> (so you can reply to a DM'd question or
+            approval right there) and subscribes to <code className="text-[11px]">app_mention</code> plus the
             <code className="text-[11px]"> message.*</code> events — so plain replies inside a thread reach the bot too (not just @mentions),
             which is what lets it keep a conversation going. Remember to <strong>invite the bot to the channel</strong> — <code className="text-[11px]">message.channels</code> only
             fires where it's a member. No request URL or public endpoint is needed; the server dials out to Slack.

@@ -513,11 +513,15 @@ const TOOLS = [
     name: 'notify',
     description:
       'Notify a SPECIFIC teammate — the person who should know about something on this run, when that is ' +
-      'someone OTHER than the operator you already report to. By default your progress/updates/questions ' +
-      'go only to the human who owns this session; use `notify` to deliberately loop in someone else: ' +
+      'someone OTHER than the operator you already report to. By default your progress/updates go only to ' +
+      'the human who owns this session; use `notify` to deliberately loop in someone else: ' +
       '"@alex the deploy you asked about is live", "flagging this to the on-call admin". Pass `to` (their ' +
       'name or email) and a one-line `message`. They get an Inbox card + a DM. This does NOT block — keep ' +
-      'working. Use it purposefully for the RIGHT person, not to broadcast; there is no team-wide notify.',
+      'working. Use it purposefully for the RIGHT person, not to broadcast; there is no team-wide notify. ' +
+      'IMPORTANT — `notify` is ONE-WAY: the human CANNOT reply to it. If you need an ANSWER or a decision ' +
+      'from that person, use `ask_human` with `to` set to them instead: it blocks, it is answerable from ' +
+      'their Inbox or straight from the DM, and their reply comes back to you. Never post a question via ' +
+      '`notify` and then wait — nobody can respond, so you will wait forever.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
