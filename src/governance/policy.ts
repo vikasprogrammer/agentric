@@ -305,7 +305,7 @@ function argRefPairs(before: PolicyDocument, after: PolicyDocument): Array<[stri
   for (const doc of [before, after]) {
     for (const r of doc.rules) {
       const w = r.match.when;
-      if (w?.argRef !== undefined) pairs.set(`${w.arg} ${w.argRef}`, [w.arg, w.argRef]);
+      if (w?.argRef !== undefined) pairs.set(`${w.arg}\0${w.argRef}`, [w.arg, w.argRef]);
     }
   }
   return [...pairs.values()];
@@ -322,7 +322,7 @@ function sampleArgDomains(before: PolicyDocument, after: PolicyDocument, thresho
   const add = (arg: string, v: unknown) => { (domains.get(arg) ?? domains.set(arg, new Set()).get(arg)!).add(v); };
   // A shared domain for the two sides of a cross-arg compare: numbers (order boundaries) + string sentinels
   // (equality), so (x,y) pairs include x==y and x≠y for both eq/ne and gt/lt.
-  const seedComparable = (arg: string) => { for (const v of [0, 1, 2, ' refA', ' refB']) add(arg, v); };
+  const seedComparable = (arg: string) => { for (const v of [0, 1, 2, '\0refA', '\0refB']) add(arg, v); };
   for (const doc of [before, after]) {
     for (const r of doc.rules) {
       const w = r.match.when;

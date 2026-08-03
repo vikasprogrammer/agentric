@@ -200,7 +200,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
         .all<MemoryRow & { tenant: string; recall_count: number }>();
       const groups = new Map<string, ConsolidateRow[]>();
       for (const r of rows) {
-        const key = `${r.tenant} ${r.agent_id} ${r.scope}`; // by scope too: a private + shared copy never merge
+        const key = `${r.tenant}\0${r.agent_id}\0${r.scope}`; // by scope too: a private + shared copy never merge
         const arr = groups.get(key) ?? [];
         if (!groups.has(key)) groups.set(key, arr);
         arr.push({

@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.291.2] — 2026-08-03
+### Fixed
+- **Five source files were invisible to `grep` and `ripgrep`.** They used a raw NUL byte as a
+  composite-key/sentinel separator (`` `${a.owner}<NUL>${a.key}` ``) instead of the two-character `\0`
+  escape. It compiles and runs identically — but `file` reports such a source as binary, and both grep
+  and rg then skip it **entirely and silently**. The affected files were `governance/enricher.ts`,
+  `governance/policy.ts`, `kernel.ts`, `edge/secrets.ts` and `memory/sqlite-provider.ts` — the classifier,
+  the policy engine and the composition root among them, so a search like `grep -rn computeHostFacts src/`
+  returned the declaration and never the call site, which reads as "nothing uses this". Now written as
+  `\0`; the compiled output is byte-identical once NUL and `\0` are normalised (verified against a
+  pre-change build), so this is pure source hygiene with zero behaviour change. `test:governance` gained a
+  guard that fails the build if a NUL byte reappears in `src/**/*.ts`.
+
 ## [0.291.1] — 2026-08-03
 ### Fixed
 - **An unanswered approval no longer pins a finished run's terminal open forever.** Nothing expires an

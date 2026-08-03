@@ -157,11 +157,11 @@ export function sanitizeForIntent(command: string): string {
 /** Is a single `rm` target safe to delete without human sign-off? Safe = scratch/tmp or a path inside
  *  the agent's own tree: literal `/tmp`|`/private/tmp`|`/var/folders`, or a RELATIVE path with no `..`
  *  escape. UNSAFE (keeps it destructive) = any other absolute path, `~`/`$HOME`, a `..` escape, or an
- *  unresolved variable / command-substitution (` ` marker) — we never green-light a delete we can't
+ *  unresolved variable / command-substitution (`\0` marker) — we never green-light a delete we can't
  *  see the target of. */
 function isSafeDeletePath(target: string, workdir?: string): boolean {
   const t = target.trim();
-  if (!t || t.includes(' ') || t.includes('$(') || t.includes('`')) return false; // unknown target
+  if (!t || t.includes('\0') || t.includes('$(') || t.includes('`')) return false; // unknown target
   if (t === '/' || t === '~' || t === '.' || t === '..' || t === '*') return false;
   if (/(^|\/)\.\.(\/|$)/.test(t)) return false; // escapes upward
   if (/^(\/tmp|\/private\/tmp|\/var\/folders)\//.test(t)) return true; // scratch roots
@@ -186,7 +186,7 @@ function rmTargetsAllSafe(command: string, workdir?: string): boolean {
     vars[m[1]] = m[2].replace(/^['"]|['"]$/g, '');
   }
   const expand = (tok: string): string =>
-    tok.replace(/^['"]|['"]$/g, '').replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_m, n: string) => vars[n] ?? ' ');
+    tok.replace(/^['"]|['"]$/g, '').replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (_m, n: string) => vars[n] ?? '\0');
   const calls = [...command.matchAll(/\brm\s+((?:-[A-Za-z]+\s+)*)([^\n;&|]+)/g)];
   if (!calls.length) return false;
   const targets: string[] = [];

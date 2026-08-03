@@ -254,7 +254,7 @@ export class AgentOS {
     }
     // Surface a `policyContext` that names a ruleset the engine isn't enforcing (see policyContextMismatch)
     // — a silent mismatch means the agent's declared guardrails aren't the ones actually applied.
-    const key = `${manifest.id} ${manifest.policyContext ?? ''}`;
+    const key = `${manifest.id}\0${manifest.policyContext ?? ''}`;
     if (!this.warnedPolicyContexts.has(key)) {
       const warning = policyContextMismatch(manifest.id, manifest.policyContext, this.policy.id);
       if (warning) {

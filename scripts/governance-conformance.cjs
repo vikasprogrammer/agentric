@@ -34,6 +34,30 @@ function newestMtime(dir, ext) {
   if (fs.existsSync(dir)) walk(dir);
   return newest;
 }
+/**
+ * UNGREPPABLE-SOURCE guard. A raw NUL byte in a .ts file compiles and runs fine, but `file` reports the
+ * source as binary — so grep AND ripgrep skip it ENTIRELY, and every text search over the tree returns a
+ * silent false negative. Five files carried them (a composite-key/sentinel separator written as a literal
+ * NUL instead of the `\0` escape), including `enricher.ts`, `policy.ts` and `kernel.ts` — the three most
+ * search-relevant files in the governance stack. Concretely: `grep -rn computeHostFacts src/` reported
+ * only the declaration and never the call site, which reads as "nothing uses this". Write the escape,
+ * never the byte. Runs before the dist checks so a stale build can't mask it.
+ */
+const nulSources = [];
+(function scanForNul(d) {
+  for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+    const p = path.join(d, e.name);
+    if (e.isDirectory()) scanForNul(p);
+    else if (e.name.endsWith('.ts') && fs.readFileSync(p).includes(0)) nulSources.push(path.relative(ROOT, p));
+  }
+})(path.join(ROOT, 'src'));
+if (nulSources.length) {
+  console.error('governance-conformance: raw NUL byte in source — grep/rg treat these files as binary and skip them:');
+  for (const f of nulSources) console.error(`  ${f}`);
+  console.error("  Use the two-character escape '\\0' in the literal instead of an embedded NUL byte.");
+  process.exit(2);
+}
+
 const DIST = path.join(ROOT, 'dist');
 const newestDist = newestMtime(DIST, '.js');
 if (newestDist === 0) {
