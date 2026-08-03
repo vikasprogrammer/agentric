@@ -183,14 +183,18 @@ export async function chooseAgent(os: AgentOS, text: string): Promise<RouteDecis
 
   const decision = decide(scored, cfg);
 
-  // Near-tie → try the LLM tie-break before bothering the human (any resolvable LLM: Anthropic key or an
-  // OpenAI-compatible endpoint). `llmTieBreak` no-ops (returns null) when none is configured. A clear pick
-  // routes; unsure → disambiguate.
-  if (decision.kind === 'disambiguate') {
-    const pick = await llmTieBreak(os, text, decision.candidates, agents);
+  // Low-confidence keyword routing (a near-tie, or nothing clear) → let the LLM pick from the FULL roster.
+  // The keyword scorer is weak without an embedder — a task's words rarely match an agent's description
+  // verbatim ("build a feature" doesn't lexically hit `engineer`), so it disambiguates to the wrong few.
+  // The LLM sees EVERY agent's description and picks the real best fit. A clear pick routes (method
+  // 'llm'); an UNSURE keeps the keyword decision. No-ops when no LLM is configured (Anthropic key or an
+  // OpenAI-compatible endpoint). A confident keyword `route` is left alone (no LLM cost).
+  if (decision.kind !== 'route') {
+    const pick = await llmPick(os, text, agents);
     if (pick) {
-      const c = decision.candidates.find((x) => x.agentId === pick);
-      if (c) return { kind: 'route', agentId: c.agentId, score: c.score, runnerUp: decision.candidates.find((x) => x.agentId !== pick), method: 'llm' };
+      const score = scored.find((s) => s.agentId === pick)?.score ?? 0.6;
+      const runnerUp = decision.kind === 'disambiguate' ? decision.candidates.find((c) => c.agentId !== pick) : undefined;
+      return { kind: 'route', agentId: pick, score, ...(runnerUp ? { runnerUp } : {}), method: 'llm' };
     }
   }
   return decision;
@@ -231,27 +235,19 @@ async function tryEmbeddingBlend(
   }
 }
 
-async function llmTieBreak(
-  os: AgentOS,
-  text: string,
-  candidates: RouterCandidate[],
-  agents: AgentManifest[],
-): Promise<string | null> {
+/** Ask the LLM to pick the single best-fit agent from the FULL roster (id + description). Returns the id
+ *  or null (no LLM configured, UNSURE, malformed, or an id not in the roster). */
+async function llmPick(os: AgentOS, text: string, agents: AgentManifest[]): Promise<string | null> {
   const llm = resolveLlm(os);
   if (!llm) return null;
-  const roster = candidates
-    .map((c) => {
-      const a = agents.find((x) => x.id === c.agentId);
-      return `- ${c.agentId}: ${(a?.description || '').slice(0, 200)}`;
-    })
-    .join('\n');
+  const roster = agents.map((a) => `- ${a.id}: ${(a.description || '').replace(/\s+/g, ' ').slice(0, 220)}`).join('\n');
   const sys =
-    'You route an incoming message to exactly one agent. Reply with ONLY the agent id from the list, ' +
-    'or the single word UNSURE if none clearly fits. No punctuation, no explanation.';
+    'You route an incoming message to exactly one agent — the single best fit for what the person needs ' +
+    'done. Consider what each agent does (from its description), not just word overlap. Reply with ONLY ' +
+    'the agent id from the list, or the single word UNSURE if none clearly fits. No punctuation, no explanation.';
   const user = `Agents:\n${roster}\n\nMessage:\n${text.slice(0, 1500)}\n\nBest agent id:`;
   const out = await chatComplete(llm, [{ role: 'system', content: sys }, { role: 'user', content: user }], { maxTokens: 24, timeoutMs: 8000 });
   if (!out) return null;
   const raw = out.replace(/[^A-Za-z0-9_-]/g, '');
-  const hit = candidates.find((c) => c.agentId === raw);
-  return hit ? hit.agentId : null;
+  return agents.find((a) => a.id === raw)?.id ?? null;
 }
