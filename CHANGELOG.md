@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.292.5] — 2026-08-03
+### Changed
+- **The router now uses the LLM to pick from the FULL roster when keyword routing isn't confident — not
+  just to re-rank a near-tie shortlist.** Without an embedder the keyword scorer is weak (a task's words
+  rarely match an agent's description verbatim — "build a feature" doesn't lexically hit `engineer`), so it
+  disambiguated to the wrong few or fell through to the whole-fleet list. Now, on any low-confidence
+  keyword result (`disambiguate`/`none`), if an LLM is configured (Anthropic key or an OpenAI-compatible
+  endpoint) it picks the single best-fit agent from *every* agent's description — e.g. "build a feature" /
+  "which agent can help me build a feature" → `engineer`. A confident keyword `route` is left alone (no
+  LLM cost); UNSURE keeps the keyword decision; no LLM configured → unchanged keyword-only behavior. This
+  fixes the wrong list behind Cockpit's "Route to an agent instead" and lifts routing quality across
+  Cockpit, Discord, and Slack (verified with a stubbed model: keyword-weak → full-roster LLM pick;
+  confident keyword → 0 LLM calls). `src/edge/router.ts` (`llmTieBreak` → `llmPick`).
+
 ## [0.292.4] — 2026-08-03
 ### Changed
 - **`GET /api/sessions` clips the `task` prompt IN THE QUERY** instead of `SELECT *`-ing the full text
