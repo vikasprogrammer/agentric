@@ -684,19 +684,36 @@ export class TerminalManager {
     }
   }
 
+  /** term_sessions column names, read once (PRAGMA at boot-stable schema) for the clipped projection. */
+  private termCols?: string[];
+  /**
+   * SELECT column list for a sessions query. `undefined` clip → `*` (verbatim, full `task`, for callers
+   * that read the whole prompt — e.g. `sessionsForAgent`). A numeric clip → every column verbatim EXCEPT
+   * `task`, which becomes `substr(task,1,clip+1)` so the LIST path stops materialising the full prompt
+   * (up to ~53 KB/row on globex; 2.1 MB → 0.2 MB per poll, ~33% off the query) out of SQLite just for
+   * `server.ts` to clip it to 240. The `+1` lets the downstream `clipText()` still detect truncation and
+   * keep the ellipsis, so the wire output is byte-identical.
+   */
+  private sessionSelectCols(taskClip?: number): string {
+    if (!taskClip) return '*';
+    const cols = (this.termCols ??= this.db.prepare('PRAGMA table_info(term_sessions)').all<{ name: string }>().map((c) => c.name));
+    const n = Math.max(1, Math.floor(taskClip)) + 1; // integer, in-code constant — safe to inline
+    return cols.map((c) => (c === 'task' ? `substr(task,1,${n}) AS task` : `"${c}"`)).join(', ');
+  }
   /**
    * Sessions visible to `viewer`. owner/admin (or an omitted viewer — internal callers) see all; a
    * regular member sees only sessions they spawned, plus sessions fired by an automation they created.
+   * `taskClip` (list endpoint only) fetches `task` pre-truncated to that many chars — see sessionSelectCols.
    */
-  listSessions(viewer?: Member): Session[] {
+  listSessions(viewer?: Member, taskClip?: number): Session[] {
     // Memoize the member/automation lookups for this call — the per-row helpers below would otherwise
     // re-query them ~2x per row. See withRowCache().
-    return this.withRowCache(() => this.listSessionsUncached(viewer));
+    return this.withRowCache(() => this.listSessionsUncached(viewer, taskClip));
   }
-  private listSessionsUncached(viewer?: Member): Session[] {
+  private listSessionsUncached(viewer?: Member, taskClip?: number): Session[] {
     // Archived sessions are hidden from the list (reversible soft-archive via the Insights declutter tile);
     // their rows survive for every by-id reference (task-reconcile, audit, cost).
-    const rows = this.db.prepare('SELECT * FROM term_sessions WHERE archived_at IS NULL ORDER BY created_at DESC').all<SessionRow>();
+    const rows = this.db.prepare(`SELECT ${this.sessionSelectCols(taskClip)} FROM term_sessions WHERE archived_at IS NULL ORDER BY created_at DESC`).all<SessionRow>();
     // Lazy liveness: a row stays 'running' until its tmux session is gone. A running row whose pane
     // vanished with NO end signal (no `report`/`markEnded`/`stopSession`) died abruptly — kill/OOM/
     // reboot — so it's a `crashed`, not a clean end. Grace-period new rows (tmux may not have finished
@@ -741,9 +758,9 @@ export class TerminalManager {
 
   /** The soft-archived sessions (hidden from `listSessions`) — for the "show archived / restore" view.
    *  Same viewer-visibility rule as the live list; no liveness/cost work (they're terminal + settled). */
-  listArchivedSessions(viewer?: Member): Session[] {
+  listArchivedSessions(viewer?: Member, taskClip?: number): Session[] {
     return this.withRowCache(() => {
-      const rows = this.db.prepare('SELECT * FROM term_sessions WHERE archived_at IS NOT NULL ORDER BY archived_at DESC').all<SessionRow>();
+      const rows = this.db.prepare(`SELECT ${this.sessionSelectCols(taskClip)} FROM term_sessions WHERE archived_at IS NOT NULL ORDER BY archived_at DESC`).all<SessionRow>();
       const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
       return visible.map((r) => ({ ...toSession(r), spawnedByLabel: this.spawnedByLabel(r.spawned_by, r.run_as), sourceKind: this.sourceKind(r.spawned_by), runAsLabel: this.runAsLabel(r.run_as), ratedByLabel: this.runAsLabel(r.rated_by) }));
     });

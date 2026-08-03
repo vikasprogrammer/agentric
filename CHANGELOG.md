@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.292.4] — 2026-08-03
+### Changed
+- **`GET /api/sessions` clips the `task` prompt IN THE QUERY** instead of `SELECT *`-ing the full text
+  and throwing it away. The list has always shipped `task` clipped to `LIST_CLIP` (240) — but the server
+  still pulled every session's *complete* prompt out of SQLite first (**up to 53 KB/row on globex; 2.1 MB
+  materialised per poll**) only for `server.ts` to clip it. `listSessions`/`listArchivedSessions` now take
+  an optional `taskClip`; when set (the list endpoint only) the SELECT projects `substr(task,1,241) AS task`
+  via a schema-derived column list, so SQLite stops materialising the overflow text. Measured on a live
+  globex snapshot (950 rows): task bytes **2.10 MB → 201 KB**, the raw query **5.23 → 3.53 ms (−33%)**, and
+  full `listSessions(owner)` **13.3 → 11.1 ms (−17%)** per poll, plus ~1.9 MB less string allocation each
+  1.5 s tick. Byte-identical output — the existing `clipText` still runs as the ellipsis-preserving finisher
+  on the ≤241-char string (verified across all 950 rows, 746 of them >240 chars). Internal callers that read
+  the whole prompt (`sessionsForAgent`, the Cockpit context) pass no clip and keep the full `SELECT *`.
+  `src/terminal.ts`, `src/server.ts`. Follow-on to #530/#532/#533; the structural fix (pagination) is still open.
+
 ## [0.292.3] — 2026-08-03
 ### Fixed
 - **Cockpit `ask`: "which agent can help me build a feature?" dumped the whole roster instead of
