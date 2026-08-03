@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.291.5] — 2026-08-03
+### Fixed
+- **Talking to `localhost` no longer raises an owner approval.** Host governance treated loopback as
+  egress, so an agent curling its own dev server — or the Agent OS API — paused for a human at
+  owner/admin tier. It bought nothing: anything listening on loopback is already reachable by the shell
+  the agent is holding, and `shell.exec` governs that. It cost a great deal, though — on live northwind,
+  `127.0.0.1` + `localhost` were **35 of the 49** host approvals ever raised. `computeHostFacts` now
+  reports `netEgress: false` for a pinned loopback target (`localhost`, `127.0.0.0/8`, `::1`), in
+  `allowlist` lockdown as well as `open`. Private, internal and unpinnable hosts are governed exactly as
+  before. Known limit, unchanged: an `ssh -L` tunnel on a loopback port is invisible to a policy layer.
+- **IPv6 hosts were being compared as the single character `:`.** Host normalisation stripped a `:port`
+  suffix with a regex that eats the tail of a bare IPv6 literal (`'::1'` → `':'`), so every v6 address
+  collapsed to the same string — `hostMatches('::1', '::2')` returned **true**, and a granted v6 matcher
+  would have matched any other v6 host. Normalisation is now one shared helper that unwraps `[…]`, keeps
+  a bare v6 literal intact, and strips a port only where there is one. Relatedly, `parseAuthority` failed
+  on a bracketed v6 URL with a path (`https://[::1]:9000/x`) and pinned the host as the literal `[`.
+### Changed
+- Four new conformance cases pin the loopback exemption (localhost, `127.0.0.1`, lockdown mode, and a
+  private non-loopback address that must still be governed) — 159/159.
+
 ## [0.291.4] — 2026-08-03
 ### Fixed
 - **Removing a runtime-account `token` account now deletes its vaulted token** instead of leaving an

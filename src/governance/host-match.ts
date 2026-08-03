@@ -75,6 +75,11 @@ function parseAuthority(authority: string): { host: string; port?: number } {
   let a = authority.trim();
   const at = a.lastIndexOf('@');
   if (at >= 0) a = a.slice(at + 1); // drop user[:pass]@
+  // The caller's URL match runs to the end of the token, so trim the path/query/fragment first. The
+  // IPv4 branch below stops at `/` on its own, but the bracketed-IPv6 pattern is anchored — without
+  // this, `https://[::1]:9000/x` failed it and fell through to the IPv4 branch, which pinned the host
+  // as the literal `[`.
+  a = a.split(/[/?#]/)[0];
   // Bracketed IPv6 [::1]:port
   const v6 = a.match(/^\[([^\]]+)\](?::(\d+))?$/);
   if (v6) return { host: v6[1].toLowerCase(), port: v6[2] ? Number(v6[2]) : undefined };
@@ -263,14 +268,28 @@ function cidrMatch(host: string, cidr: string): boolean {
   return (hostInt & mask) === (netInt & mask);
 }
 
+/**
+ * Normalise a host for comparison: lowercase, drop a trailing root dot, unwrap `[ipv6]`, and strip a
+ * `:port` — but NEVER from a bare IPv6 literal, where the colons are the address. `'::1'.replace(/:\d+$/)`
+ * yields `':'`, which made every IPv6 host collapse to the same string: `hostMatches('::1', '::2')` was
+ * true, and the loopback/internal checks were matching on the wreckage rather than the address.
+ */
+function normalizeHost(host: string): string {
+  const h = (host || '').trim().toLowerCase().replace(/\.$/, '');
+  const bracketed = h.match(/^\[([^\]]+)\](?::\d+)?$/);
+  if (bracketed) return bracketed[1];
+  if ((h.match(/:/g) || []).length > 1) return h; // bare IPv6 — there is no port to strip
+  return h.replace(/:\d+$/, '');
+}
+
 /** Does `host` match a granted host matcher — an exact host, a `*.wildcard`, a CIDR, or `host:port`?
  *  Port in the matcher is ignored for host comparison in v1 (the host is the blast-radius unit). */
 export function hostMatches(host: string, matcher: string): boolean {
-  const h = (host || '').toLowerCase().replace(/\.$/, '').replace(/:\d+$/, '');
+  const h = normalizeHost(host);
   const m = (matcher || '').trim().toLowerCase();
   if (!h || !m) return false;
   if (m.includes('/') && ipv4ToInt(h) !== null) return cidrMatch(h, m);
-  const mHost = m.replace(/:\d+$/, '');
+  const mHost = normalizeHost(m);
   if (mHost.includes('*')) {
     const re = new RegExp('^' + mHost.split('*').map(escapeRe).join('.*') + '$');
     return re.test(h);
@@ -278,13 +297,34 @@ export function hostMatches(host: string, matcher: string): boolean {
   return h === mHost;
 }
 
+/**
+ * True if `host` is THIS machine — loopback (`127.0.0.0/8`, `::1`) or `localhost`.
+ *
+ * Such a "reach" never leaves the box, so it isn't egress and there is nothing for host governance to
+ * protect: anything listening on loopback is already reachable by the shell the agent is holding, and
+ * `shell.exec` governs that. Treating it as egress bought no safety and cost a great deal of noise —
+ * on live northwind, `127.0.0.1` + `localhost` accounted for **35 of the 49** host approvals ever
+ * raised (an agent curling its own dev server, or the Agent OS API, at owner/admin tier).
+ *
+ * Deliberate limit: a loopback port that is an `ssh -L` tunnel to somewhere else is invisible to us.
+ * That's the same honest constraint as the rest of this module (§2 of the plan) — a policy layer, not
+ * a firewall.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const h = normalizeHost(host);
+  if (!h) return false;
+  if (h === 'localhost' || h === 'localhost.localdomain' || h === '::1' || h.startsWith('[::1')) return true;
+  return ipv4ToInt(h) !== null && cidrMatch(h, '127.0.0.0/8');
+}
+
 /** True if `host` looks internal/sensitive: private/loopback/link-local IPs, localhost, a bare
  *  single-label hostname, or an internal TLD (.internal/.local/.lan/.corp/.home/.intranet). Public
  *  FQDNs (api.stripe.com) are NOT internal — they stay ungoverned under netMode 'open'. */
 export function isInternalHost(host: string): boolean {
-  const h = (host || '').toLowerCase().replace(/\.$/, '').replace(/:\d+$/, '');
+  const h = normalizeHost(host);
   if (!h) return false;
-  if (h === 'localhost' || h === '::1' || h.startsWith('[::1')) return true;
+  if (isLoopbackHost(h)) return true;
+  if (h.includes(':')) return true; // any other IPv6 literal — treat as internal (fail toward escalation)
   const ip = ipv4ToInt(h);
   if (ip !== null) {
     return cidrMatch(h, '10.0.0.0/8') || cidrMatch(h, '172.16.0.0/12') || cidrMatch(h, '192.168.0.0/16')
@@ -328,6 +368,10 @@ export function computeHostFacts(command: string, grants: HostGrant[]): HostFact
   if (!e.egress) return { netEgress: false };
   const facts: HostFacts = { netEgress: true, netProtocol: e.protocol };
   if (e.unknown || !e.host) { facts.hostUnknown = true; facts.hostAllowed = false; return facts; }
+  // A pinned LOOPBACK target isn't a reach at all — it never leaves the box (see isLoopbackHost). Report
+  // no egress, so the gate leaves the call as plain `shell.exec` and the ordinary policy governs it.
+  // Only a PINNED host can be loopback; an unpinnable one is still unknown → escalated above.
+  if (isLoopbackHost(e.host)) return { netEgress: false };
   facts.host = e.host;
   facts.hostInternal = isInternalHost(e.host);
   const wire = e.protocol ?? 'any';

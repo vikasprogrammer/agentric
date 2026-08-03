@@ -969,6 +969,62 @@
       "expect": "ask:head"
     },
     {
+      "name": "open: loopback (localhost) is not egress — never leaves the box",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "curl -s http://localhost:3010/api/state"
+        }
+      },
+      "hostGrants": [],
+      "netMode": "open",
+      "expect": "allow",
+      "expectFacts": { "netEgress": false }
+    },
+    {
+      "name": "open: loopback (127.0.0.1) is not egress",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "psql -h 127.0.0.1 -U app -c \"select 1\""
+        }
+      },
+      "hostGrants": [],
+      "netMode": "open",
+      "expect": "allow",
+      "expectFacts": { "netEgress": false }
+    },
+    {
+      "name": "allowlist: loopback is exempt in lockdown too",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "curl -s http://127.0.0.1:8080/health"
+        }
+      },
+      "hostGrants": [],
+      "netMode": "allowlist",
+      "expect": "allow",
+      "expectFacts": { "netEgress": false }
+    },
+    {
+      "name": "open: a PRIVATE (non-loopback) address is still governed",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "curl http://192.168.1.9/x"
+        }
+      },
+      "hostGrants": [],
+      "netMode": "open",
+      "expect": "ask:head",
+      "expectFacts": { "netEgress": true }
+    },
+    {
       "name": "open: the word ssh inside a grep PATTERN is not egress",
       "capability": "shell.exec",
       "args": {
