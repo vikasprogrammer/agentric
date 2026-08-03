@@ -7909,11 +7909,16 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   }
 
   const load = async () => {
-    const [r, ss] = await Promise.all([api.tasks(q), api.sessions().catch(() => [] as Session[])])
+    const r = await api.tasks(q)
     setTasks(r.tasks ?? [])
     setDiscussions(r.discussions ?? {})
     if (r.counts) setCounts(r.counts)
-    setSessions(ss)
+    // Only the sessions a visible task points at (its `lastSessionId`) are needed here — to light up a
+    // "doing" card as live via `liveOf`. Fetch exactly those instead of the whole ~950-row list on a 5 s
+    // timer (Sessions-pagination Phase 1). Sequential after tasks (we need their ids), but the payload is
+    // a handful of rows.
+    const ids = [...new Set((r.tasks ?? []).map((t) => t.lastSessionId).filter(Boolean) as string[])]
+    setSessions(await api.sessionsByIds(ids).catch(() => [] as Session[]))
   }
   useEffect(() => { load() }, [q])
   // Live refresh so an agent closing its own loop moves the card without a manual reload. Pause while a

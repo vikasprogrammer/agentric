@@ -1329,6 +1329,12 @@ export const api = {
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
   restart: () => call<RestartResult>('POST', '/api/restart'),
   sessions: (archived?: boolean) => call<Session[]>('GET', '/api/sessions' + (archived ? '?archived=1' : '')),
+  /** One session by id, with the same derived fields the list carries. 404 → `{error}` when the caller
+   *  can't see it (viewer-scoped server-side). The by-id fetch the console lacked (Sessions-pagination P1). */
+  session: (id: string) => call<Session | { error: string }>('GET', `/api/sessions/${encodeURIComponent(id)}`),
+  /** Batch by-id fetch — just the named sessions (viewer-scoped), so a consumer needing a handful (the
+   *  Tasks board resolving `lastSessionId → isLive`) stops pulling the whole ~950-row list. Empty → []. */
+  sessionsByIds: (ids: string[]) => (ids.length ? call<Session[]>('GET', `/api/sessions?ids=${ids.map(encodeURIComponent).join(',')}`) : Promise.resolve([] as Session[])),
   /** Conditional variant of the live sessions feed for the global 1.5 s poll — resolves `notModified` on a
    *  304 so idle tabs skip the re-parse + re-render. Non-feed callers keep `sessions()` (always full body). */
   sessionsFeed: (etag: string | null) => callFeed<Session[]>('/api/sessions', etag),

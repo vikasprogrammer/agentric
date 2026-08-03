@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.294.0] — 2026-08-03
+### Added
+- **By-id session fetch — `GET /api/sessions/:id` and `GET /api/sessions?ids=a,b,c`** (Sessions-pagination
+  Phase 1; plan in `docs/sessions-pagination-plan.md`). The console had no way to read a single session —
+  every by-id lookup came from the full ~950-row list the 1.5 s poll ships. These return the same
+  derived-row shape (clipped `task`, `blocked`/`alive`/labels), reuse `listSessions`' `canViewRow` scoping
+  (an id the caller can't see → 404 / omitted, no existence leak), and match by id **regardless of
+  `archived_at`** so a notification-open resolves an archived run too. `listSessions` gained an optional
+  `ids` filter; `src/terminal.ts`, `src/server.ts`, `web/src/lib/api.ts`.
+### Changed
+- **The Tasks board stops re-fetching the whole sessions list every 5 s.** It only needs the sessions its
+  visible tasks point at (`lastSessionId`, to light a card up as live via `liveOf`); it now fetches exactly
+  those ids via `sessionsByIds` instead of all ~950 rows. First step of splitting the session poll from the
+  list — the global 1.5 s poll still ships the full list until Phase 2 (a cheap summary feed). `web/src/App.tsx`.
+
 ## [0.293.1] — 2026-08-03
 ### Fixed
 - **Router LLM pick now handles meta-phrased routing questions.** "which agent can help me build a
