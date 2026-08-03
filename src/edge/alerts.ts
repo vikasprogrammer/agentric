@@ -9,10 +9,13 @@
  * the tick posts the card + DMs. See src/edge/insights.ts, docs/inbox-plan.md.
  */
 import type { AgentOS } from '../kernel';
-import { buildInsights } from './insights';
+import { buildInsights, RECENT_DAYS } from './insights';
 import { measureLearning } from './measurement';
 
 const COOLDOWN_MS = 3 * 24 * 3_600_000; // don't re-alert the same key within 3 days
+/** Clean work runs since the last crash that count as "recovered" — enough to not be a lucky single pass,
+ *  small enough that a genuinely flaky agent (crash, pass, crash) never reaches it and keeps alerting. */
+const RECOVERED_RUNS = 3;
 
 export interface InsightAlert {
   key: string;
@@ -58,12 +61,20 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
     }
     // Crashing = the process/pane keeps dying (infra: too heavy / OOM / timeout) — a different fix than
     // "the agent does bad work". Kept distinct so it doesn't read as poor agent quality.
-    else if (a.crashed >= 3) {
+    //
+    // Read the RECENT crash count, not the 30d total, and stand down once the agent has recovered. A crash
+    // count over a fixed window only ever goes up: once a crash loop is FIXED, the 30d total stays over the
+    // threshold for the rest of the window, so the alert re-fires every cooldown for weeks about a problem
+    // that no longer exists — and the body's "scope its tasks smaller" sends the human to re-tune a healthy
+    // agent. (Real case: the consolidator's tmux-overflow crash loop was fixed after 9 crashes and then ran
+    // 12/12 green; the alert fired 3 more times across the next 10 days.) `agent-low` above needs no such
+    // guard — it's a RATE, so incoming successes dilute it and it self-heals.
+    else if (a.crashedRecent >= 3 && a.runsSinceCrash < RECOVERED_RUNS) {
       out.push({
         key: `agent-crash:${a.agent}`,
         severity: 'high',
         title: `${a.agent}'s runs keep crashing`,
-        body: `${a.crashed} of ${a.agent}'s runs crashed in the last ${ins.windowDays} days — the process died mid-run (usually too-heavy work, OOM, or a timeout), not a task failure. Scope its tasks smaller, or give it more headroom.`,
+        body: `${a.crashedRecent} of ${a.agent}'s runs crashed in the last ${RECENT_DAYS} days — the process died mid-run (usually too-heavy work, OOM, or a timeout), not a task failure. Scope its tasks smaller, or give it more headroom.`,
         route: 'insights',
       });
     }

@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.297.1] — 2026-08-03
+### Fixed
+- **Insight alerts kept re-firing about problems that were already fixed.** Both repeat-offender alerts
+  were monotonic counters over a fixed window, so once a condition healed the count stayed above the
+  threshold and the alert re-fired every 3-day cooldown until the rows aged out — training the owner to
+  ignore the channel, and pointing them at healthy agents to "fix".
+  - `agent-crash:<agent>` counted crashes over **30 days**. On the live northwind tenant the consolidator
+    crashed 9× between 2026-07-20 and 07-24 (the `TASK_B64` tmux-overflow bug fixed in v0.265.2), then ran
+    **12/12 green** — and the alert still fired on 07-28, 07-31 and 08-03, with a body telling the owner to
+    scope its tasks smaller. It now reads a 7-day `crashedRecent` count and stands down once the agent has
+    logged 3 clean runs since its last crash (`runsSinceCrash`), so a fixed crash loop goes quiet
+    immediately instead of ~4 weeks later. The 30d `crashed` total stays on the scorecard — that surface
+    is history, and only the alert claims the present tense.
+  - `friction:<capability>` counted rejections over **all time** — no window at all, so it could never
+    stop. `stripe.refund` (30 rejections, all between 2026-06-12 and 07-04) had alerted 7× in the previous
+    30 days and would have kept going forever. Rejections are now windowed to the same 30 days as the
+    scorecard, which also drops stale entries off the Insights **Friction** card.
+  - `agent-low` is deliberately left alone: it's a *rate*, so incoming successes dilute it and it
+    self-heals. New `scripts/alert-staleness-test.cjs` (in `npm run test:governance`) pins all of it —
+    ongoing loops still alert, healed ones don't.
+
 ## [0.297.0] — 2026-08-03
 ### Added
 - **DM continuity — a reply to a DM the OS sent you about a run goes back INTO that run.** `ask_human`
