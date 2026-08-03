@@ -1285,6 +1285,25 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return res.json() as Promise<T>
 }
 
+/** Result of a conditional feed GET: either fresh `data`, or `notModified` (the server 304'd because
+ *  nothing changed since our last ETag). Both carry the ETag to thread into the next call. */
+export type FeedResult<T> = { notModified: true; etag: string | null } | { data: T; etag: string | null }
+/** Conditional GET for the hot list feeds (sessions/messages) the global console poll re-fetches every
+ *  1.5 s. The server already tags every response with an ETag (sendBody) and gzips it; here we take the
+ *  extra step of handling the 304 IN THE CLIENT — sending our last ETag explicitly and, on a 304,
+ *  resolving as `notModified` so the poll can skip setState. That's the piece browser auto-revalidation
+ *  can't give us: without it a 304 still serves the cached body to JS and we'd re-parse + re-render the
+ *  full ~1.6 MB list every tick. `cache:'no-store'` keeps the browser cache out of the loop so our
+ *  explicit `If-None-Match` is authoritative (gzip still applies on a 200 — accept-encoding is
+ *  independent of cache mode). An error tick (401/5xx → `{error}`) falls through as `data` with a null
+ *  etag; the caller's array-shape guard drops it and the next poll retries unconditionally. */
+async function callFeed<T>(path: string, etag: string | null): Promise<FeedResult<T>> {
+  const res = await fetch(path, { cache: 'no-store', headers: etag ? { 'if-none-match': etag } : undefined })
+  const next = res.headers.get('etag')
+  if (res.status === 304) return { notModified: true, etag: next ?? etag }
+  return { data: (await res.json()) as T, etag: next }
+}
+
 export const api = {
   /** Current member, or null if not authenticated (401). Drives the login gate. */
   me: async (): Promise<Member | null> => {
@@ -1308,12 +1327,17 @@ export const api = {
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
   restart: () => call<RestartResult>('POST', '/api/restart'),
   sessions: (archived?: boolean) => call<Session[]>('GET', '/api/sessions' + (archived ? '?archived=1' : '')),
+  /** Conditional variant of the live sessions feed for the global 1.5 s poll — resolves `notModified` on a
+   *  304 so idle tabs skip the re-parse + re-render. Non-feed callers keep `sessions()` (always full body). */
+  sessionsFeed: (etag: string | null) => callFeed<Session[]>('/api/sessions', etag),
   unarchiveSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/unarchive`),
   sessionTidyPreview: () => call<{ ok: boolean; plan?: SessionTidyPlan; error?: string }>('GET', '/api/insights/sessions/tidy'),
   sessionTidyApply: () => call<{ ok: boolean; archived?: number; error?: string }>('POST', '/api/insights/sessions/tidy'),
   /** Inbox feed. `scope='all'` is the owner/admin oversight view (every session's cards); the default
    *  `mine` is the personal feed — only cards addressed to you, so overseers aren't flooded. */
   messages: (scope: 'mine' | 'all' = 'mine') => call<Msg[]>('GET', `/api/messages${scope === 'all' ? '?scope=all' : ''}`),
+  /** Conditional variant of the inbox feed for the global 1.5 s poll — `notModified` on a 304. */
+  messagesFeed: (etag: string | null, scope: 'mine' | 'all' = 'mine') => callFeed<Msg[]>(`/api/messages${scope === 'all' ? '?scope=all' : ''}`, etag),
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
   /** Restart a session's agent process in place (keeps the transcript, resumes the same claude id) so a

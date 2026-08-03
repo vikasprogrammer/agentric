@@ -1059,11 +1059,25 @@ function Console({ me }: { me: Member }) {
     //    tailscale/nginx hop), which read as "notifications only show after a page reload".
     //  • ignore a non-array payload — an error tick returns `{error}`, not a list; don't clobber good
     //    state with garbage.
+    //  • CONDITIONAL fetch (ETag/If-None-Match): each feed carries its last ETag; when nothing changed
+    //    the server 304s and we SKIP setState entirely, so an idle tab stops re-parsing + re-rendering the
+    //    ~1.6 MB sessions list every 1.5 s. (The server already gzips + 304s at the wire; this is the
+    //    client half — browser auto-revalidation alone would still hand JS the cached body and re-render.)
+    //    The ETag covers the fully-computed response, so any derived change (blocked/crashed/cost/new card)
+    //    still flips it — the badge/bells never go stale.
+    let sessEtag: string | null = null
+    let msgEtag: string | null = null
     const poll = async () => {
-      const [s, m] = await Promise.allSettled([api.sessions(), api.messages()])
+      const [s, m] = await Promise.allSettled([api.sessionsFeed(sessEtag), api.messagesFeed(msgEtag)])
       if (!alive) return
-      if (s.status === 'fulfilled' && Array.isArray(s.value)) setSessions(s.value)
-      if (m.status === 'fulfilled' && Array.isArray(m.value)) setMessages(m.value)
+      if (s.status === 'fulfilled') {
+        sessEtag = s.value.etag
+        if ('data' in s.value && Array.isArray(s.value.data)) setSessions(s.value.data)
+      }
+      if (m.status === 'fulfilled') {
+        msgEtag = m.value.etag
+        if ('data' in m.value && Array.isArray(m.value.data)) setMessages(m.value.data)
+      }
     }
     poll()
     const t = setInterval(poll, 1500)

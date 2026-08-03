@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.292.1] — 2026-08-03
+### Changed
+- **The console's global 1.5 s poll now skips the re-render on unchanged ticks (client-side 304).**
+  #530 gave every response a wire-level ETag + gzip, so an idle tab already stops re-*downloading* the
+  ~1.65 MB sessions list. But browser auto-revalidation still hands the *cached* body back to JS, so the
+  console kept re-parsing and re-rendering the whole list every 1.5 s regardless. The global feed poll
+  now sends its last ETag explicitly (`sessionsFeed`/`messagesFeed` → `callFeed`, `cache: 'no-store'`)
+  and, on a **304**, resolves `notModified` so the poll **skips `setState`** — no re-parse, no React
+  re-render. The tag covers the fully-computed response, so a derived change (a run going
+  `blocked`/`crashed`, a cost backfill, a new inbox card) still flips it and the tab-title badge /
+  waiting bells never go stale. Complements #530 (which keeps the transfer + gzip on the ticks that *do*
+  change). `web/src/lib/api.ts`, `web/src/App.tsx`.
+
 ## [0.292.0] — 2026-08-03
 ### Added
 - **Questions in Slack/Discord now get answered inline — no session spawned.** The chat front door
