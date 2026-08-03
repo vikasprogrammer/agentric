@@ -19,6 +19,16 @@ lacks natively: image/video **generation** (`image_generate`, `video_generate` i
 cost-metered, and hardened with timeouts + retry (`src/edge/vendor-fetch.ts`). All other grades +
 narratives still hold. Live v1 milestone tracker: `docs/v1-mvp-scope.md`.
 
+**Updated 2026-08-03:** **§10 Dreaming / Self-learning regraded 🟡 → ✅** — the measurement arm
+(`src/edge/measurement.ts`) whose absence set the 🟡 has shipped, as have the consolidation gardener
+(the "planned LLM kb-gardener" the old Gaps paragraph still listed as pending), the owner-intelligence
+layer (`insights.ts` / `improvements.ts` + the `analyst` / `improver` / `skill-scout` generative
+halves), and the daily digest. Its detail section had drifted a full release behind the table row and
+is rewritten; what remains is depth (breadth of measurement via the `Intervention` primitive, and
+Leadership-mode auto-apply), tracked in the new [`oversight-plane.md`](./oversight-plane.md). **§7
+Automations** gains a pointer to [`voice-channel-plan.md`](./voice-channel-plan.md) (voice as the
+fourth chat ingress — planned, unbuilt).
+
 **Cross-cutting:** how agents are *granted* reach — the relationship between §3 Connectors, §5 Policy,
 and §8 Secrets — is mapped in [`access-model.md`](./access-model.md) (`Creds → Connections →
 Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`](./governance-model.md).
@@ -39,7 +49,7 @@ Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`]
 | 7 | Automations | ✅ | Cron + webhook + native **Slack & Discord** triggers spawn governed sessions, run-as the sending member; a **generic `/agent` chat router** reaches any agent by name with no per-agent automation (replies threaded); **agent-scheduled one-shots** (`schedule`/`unschedule` MCP tools → `type:'once'`, bounded + human-cancellable) let an agent defer a future run of itself; email inbound still out |
 | 8 | Secrets | 🟡 | Encrypted-at-rest vault (AES-256-GCM) + console UI; connectors resolve `secret:` refs at launch; agents get shell env vars via manifest `shellSecrets` or per-secret agent assignment; no key rotation yet |
 | 9 | Memory layer | 🟡 | Per-agent + **shared workspace-wide** `remember`/`recall` (+ agent self-correction via `revise`/`forget`, recall returns ids) MCP server + console **Memory hub** (the store; the self-learning surface moved to its own top-level **Insights** page) live; three backends — sqlite (keyword, or hybrid keyword+vector with embeddings), libsql (native vectors), automem — switchable live in Settings → Memory backend. **Episodic↔semantic encoding loop** ships: graded auto session-end **episodes** (salience-weighted by effort+friction+outcome), deliberate **lessons** (the `report` `lessons` field), **retrieval reinforcement** (rank ↑ frequently-recalled, recency from last-use, prune the never-recalled), prune+dedupe maintenance, and tenant-scoped sharing; ANN still pending. See [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) |
-| 10 | Dreaming / Self-learning | 🟡 | A periodic Dreamer reflects on recent episodes + outcomes + friction, **compounds** them into persisted cumulative state (growing KB page + shared memory Insight), and closes the loop two ways: (a) distilled **guidance injected into every agent's prompt** at launch, and (b) **approval-gated config recommendations** a human Applies/Dismisses. Plus the **consolidation gardener** (a governed headless `consolidator` agent that abstracts recent episodes+lessons into shared memories + KB pages) — now the second half of one **"reflect"** pass (deterministic tally then gardener), surfaced in the top-level **Insights** page (`#/insights`) via a single **Reflect now** button. The whole system is framed by four verbs (Capture · Recall · Distil · Apply) in [`memory-model.md`](./memory-model.md); mechanism in [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) |
+| 10 | Dreaming / Self-learning | ✅ | **Regraded 🟡 → ✅ 2026-08-03** — the loop now has all four arms, including the one whose absence set the 🟡: **measurement** (`src/edge/measurement.ts` — success-rate trend + per-intervention before/after with an `improved/declined/flat/insufficient` verdict, honestly correlational, withheld below `MIN_N`). Also shipped since: the **owner-intelligence layer** (`insights.ts` scorecard + friction map, `improvements.ts` per-domain fix tiles) and its **generative** halves (`analyst` root-cause, `improver` prompt rewrite, `skill-scout`), plus the daily **digest**. A periodic Dreamer reflects on recent episodes + outcomes + friction, **compounds** them into persisted cumulative state (growing KB page + shared memory Insight), and closes the loop two ways: (a) distilled **guidance injected into every agent's prompt** at launch, and (b) **approval-gated config recommendations** a human Applies/Dismisses. Plus the **consolidation gardener** (a governed headless `consolidator` agent that abstracts recent episodes+lessons into shared memories + KB pages) — now the second half of one **"reflect"** pass (deterministic tally then gardener), surfaced in the top-level **Insights** page (`#/insights`) via a single **Reflect now** button. The whole system is framed by four verbs (Capture · Recall · Distil · Apply) in [`memory-model.md`](./memory-model.md); mechanism in [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md); the roster consolidation, the `Intervention` primitive and **Leadership mode** (bounded autonomy) in [`oversight-plane.md`](./oversight-plane.md) |
 | 11 | Company Settings | 🟡 | Company context (markdown) edited in console, appended to every claude-code agent's system prompt. Tenant branding not folded in yet |
 | 12 | Skills of agents | ✅ | Global skills library (native `.claude/skills`) edited in console, synced into claude-code agents at launch, with per-agent audience assignment. **Imported** from a bundled catalog or any public GitHub repo / the skills.sh directory. **Agent-driven, human-gated:** agents `skill_find` (own library + catalog + skills.sh) and `skill_request` a catalog/remote skill — an owner/admin installs it (agents never self-install); approval delivers **same-session** to a live interactive run (materialise + `/reload-skills`) or next launch. **Procedural memory (Lever 6):** the fleet drafts its OWN skills — `skill_propose` (+ the consolidation gardener) stages a `.aos-proposed` draft that `materialize()` skips until a human **Publishes** it (a `skill.proposed` inbox card notifies owner/admins). See [`procedural-skills-plan.md`](./procedural-skills-plan.md) |
 | 13 | Tools / Apps | 🟡 | **Apps hosting + authoring shipped** ([`apps-plan.md`](./apps-plan.md)): small server-side apps (mini-CRM / mini-tools) run as supervised child Node+SQLite processes reached at `/apps/<slug>` via the existing terminal reverse-proxy — `AppStore` (disk manifest + base-path scaffold), `AppSupervisor` (spawn + readiness + scale-to-zero idle-reap + resident restart + per-launch `AOS_APP_TOKEN`), and a login-gated proxy that strips the mount prefix + injects trusted `X-Aos-Member`. **Authored by humans** (console **Apps** page — create · manifest + capability editor · source editor · publish/unpublish · open · stop · delete, owner/admin) **and agents** (`app_create`/`app_list`/`app_update`, single-file for v1, lands proposed → an owner publishes; editing a live app unpublishes it for re-review). Capabilities default-deny; a proposed app is inert until published; **no seed apps**. A dedicated **`app-builder`** library agent teaches the whole workflow. **Background dispatch** (`POST /api/app/dispatch`, per-app-secret gated): an app triggers an agent it declares in `capabilities.dispatchAgents` (default-deny) → a governed `TaskStore` task (`createdBy=app:<slug>`, run-as = the current UI member), auto-dispatched, optional synchronous `wait`; `GET /api/app/dispatches` polls results. **Multi-file apps** (an app is a normal Node project dir — the entry `require()`s siblings): sandboxed store file-ops + agent tools `app_files`/`app_write_file`/`app_delete_file` + a console **file-tree editor** and a **sandboxed pre-publish preview iframe** (owner/admin reach an unpublished app via the proxy). **Secrets** (default-deny `capabilities.secrets`): a value a human sets (Settings tab, sealed under `app:<slug>`) is injected as `process.env.KEY` at launch + re-readable via `POST /api/app/secret/get`; the value never leaves the vault into audit/GET. **Custom domains**: a published app binds hostnames (`my.tool.com`) — a request whose `Host` matches serves it at the domain **root**, a **separate origin** from the console, **public** (no login); `TenantRegistry.appForHost` resolves Host→app (cached, published-only), reserved-host + uniqueness guarded — this is also the separate-origin isolation for that path (DNS/TLS external). Follow-ups: Linux uid-isolation (`launcher.ts` `start_app`), `app_history`/`app_revert`, same-origin `/apps/<slug>` hardening |
@@ -275,7 +285,10 @@ good for babysitting, but a cron trigger won't re-fire while its last run is sti
 the UI). Mode is `terminal.createSession(..., headless)` → `HEADLESS=1` to `claude-launch.sh`, which
 branches to the `-p` lane and tees a transcript to `<home>/connectors/session-<id>.log`.
 
-**Gaps.** Email inbound (Mailgun) still out; agent-spawns-agent;
+**Gaps.** Email inbound (Mailgun) still out; **voice** ingress is planned but unbuilt — it is the
+*fourth* instance of this same pattern (Slack → Discord → ClickUp), designed in
+[`voice-channel-plan.md`](./voice-channel-plan.md), which also records the hard constraint that voice
+identity must never resolve an approval (`approval_dms`); agent-spawns-agent;
 retry/backoff policies; catch-up for schedules missed while the server was down; firing history view
 (today: `lastFiredAt` + the audit stream); a long headless run blocked on an approval holds the guard
 until resolved or the hook times out.
@@ -369,9 +382,11 @@ path at scale). No full **KB plane** (documents, revisions, multi-writer editing
 memory is the cheaper bet until that demand is real. automem is **parked** (carries `scope` but doesn't share);
 its ops doc is unwritten.
 
-## 10. Dreaming / Self-learning — 🟡 Partial
+## 10. Dreaming / Self-learning — ✅ Working
 
-**Plan: [`self-learning-plan.md`](./self-learning-plan.md).**
+**Plans: [`self-learning-plan.md`](./self-learning-plan.md) (the engine) ·
+[`oversight-plane.md`](./oversight-plane.md) (the roster, `Intervention`, Leadership mode) ·
+[`daily-digest-plan.md`](./daily-digest-plan.md) (the daily render).**
 
 **Today.** `src/edge/dreaming.ts` is a periodic, deterministic, **compounding** pass. Each run reflects
 on activity since the last pass — the per-session **episodes** agents wrote, run **outcomes**
@@ -387,10 +402,35 @@ reversible, audited settings change. Both are visible/toggleable in the **Insigh
 driven by `GET/PUT /api/dreaming` + `POST /api/dreaming/run`. Deterministic and zero-cost — the
 always-on baseline. `HealthMonitor` (`src/observability/monitor.ts`) tracks liveness separately.
 
-**Gaps.** The deterministic pass only counts/dedupes/recommends from structured signals — it doesn't
-write prose insight. The richer **LLM "kb-gardener"** (a scheduled agent that distils narrative
-learnings via `kb_write`) is the planned follow-up. Policy/budget recommendations are advisory; no
-auto-apply.
+**Since the 🟡 grade (what closed it).** Four things shipped, and together they complete the loop:
+
+- **The LLM gardener** the old Gaps paragraph listed as "planned" — it exists as the **consolidation
+  gardener** (`src/edge/consolidation.ts`): a governed headless `consolidator` agent that abstracts
+  recent episodes + lessons into shared memories + KB pages. It is the second half of one "reflect"
+  pass, not a separate button.
+- **Measurement** (`src/edge/measurement.ts`) — the arm whose absence *was* the 🟡 (audit finding
+  G1: "the loop runs, but nothing checked whether Apply moved outcomes"). It computes a
+  success-rate trend plus, per intervention, the before/after rate with a verdict
+  (`improved | declined | flat | insufficient`). Deliberately honest: correlational, not a
+  controlled A/B, sample sizes ride along, and no verdict is issued below `MIN_N = 8`.
+- **The owner-intelligence layer** — `insights.ts` (per-agent scorecard, friction map) and
+  `improvements.ts` (per-domain "what to fix" tiles), plus the **generative** halves that draft the
+  fix: `analyst` (root-cause a struggling agent), `improver` (propose a better `CLAUDE.md`),
+  `skill-scout` (draft a skill from a recurring manual procedure). All propose; a human applies.
+- **The daily digest** (`src/edge/digest.ts`) and the v0.280.0 **signal-quality corrections** — two
+  wrong signals found by reading a real posted digest on a live tenant. The durable rule from that:
+  *a signal riding in every agent's prompt needs a denominator and a shape test*, not a threshold on
+  a raw count plus a blocklist.
+
+**Remaining (depth, not missing arms — tracked in [`oversight-plane.md`](./oversight-plane.md)).**
+The measurement arm is narrow: it recognises only `recommendation.applied` (and caps at 10), so a
+published skill, an applied prompt rewrite, an approved policy tightening or a retired agent earn no
+verdict — the **`Intervention`** primitive (§3.2 there) generalises it. Policy/budget recommendations
+stay advisory; auto-apply is planned only as **Leadership mode Tier 2** (§5), gated on `Intervention`
+landing first. The ten pieces above are still presented one button at a time rather than as one
+standing function (§2). And the pass is **opt-in** — `dreamingEveryHours` defaults to `0` (manual
+"Reflect now" only), the same deliberate off-by-default posture as `digestEnabled` and
+`autoPlanGoals`, since a pass spawns sessions.
 
 ## 11. Company Settings — 🟡 Partial
 
