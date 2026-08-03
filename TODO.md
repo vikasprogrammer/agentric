@@ -8,6 +8,9 @@ _Last updated: 2026-08-03._
 
 ## Shipped
 
+- [x] **Second coding runtime (Codex)** — `runtime: "codex"` runs a real, governed Codex TUI at parity
+      with Claude Code (attachable + resident via pre-seeded hook trust, one shared gate hook, sandbox
+      write containment, transcript/cost reader, runtime picker) · v0.272.0–v0.284.1 · PR #478–#510
 - [x] **Canonical plan doc** — `docs/agent-os-plan.md` (thesis + landscape + roadmap) · PR #493, #506
 - [x] **§4.3 Policy v2 — Tier A** — set-membership (`in`/`nin`) + cross-arg (`argRef`) conditions in the
       pure rule engine; monotonicity proof kept sound · v0.284.0 · PR #498
