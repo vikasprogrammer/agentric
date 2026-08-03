@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.291.6] — 2026-08-03
+### Fixed
+- **The console served every byte uncompressed and uncacheable.** Opening a detail page
+  (`#/tasks/<id>`, a session, an artifact) felt slow, but the detail endpoints were never the problem —
+  `GET /api/tasks/tsk_…` answers in **3 ms / 6.5 KB**. The cost was the shell around it. Measured on the
+  live globex tenant: the app bundle is **1.13 MB of JavaScript** (plus 592 KB of xterm and 100 KB of
+  CSS) sent with **no `content-encoding` and no `cache-control` at all**, so every reload re-downloaded
+  ~1.8 MB, and the SPA then polls `/api/sessions` (3.07 MB) + `/api/messages` every **1.5 s** forever —
+  twice over on the Tasks page, which polls sessions again on its own 5 s timer. Nothing in front covered
+  it: the Mac Mini tenants run behind `tailscale serve` with no nginx, and the nginx box has `gzip on`
+  but left `gzip_types` commented out, which defaults to `text/html` only.
+  `sendJson`/`sendFile` now funnel through one `sendBody` that:
+  - **gzips** responses over ~1 MTU whose type is worth compressing — app bundle **1115 KB → 299 KB
+    (−73%)**, `/api/sessions` 3.0 MB → 851 KB, `/api/tasks` 1.25 MB → 453 KB;
+  - attaches an **ETag** to cacheable GETs, so the 1.5 s poll answers **304 with an empty body** when
+    nothing changed instead of re-sending a megabyte;
+  - marks Vite's content-hashed `/assets/*` **`immutable` for a year** (they can't change under their own
+    URL) while `index.html` stays `no-cache`, so a deploy is still picked up on the next load;
+  - reads and compresses each static asset **once per build**, keyed by `path:mtime:size`.
+
+  Compression is **opt-in by the client** — we only gzip when the request advertised
+  `accept-encoding: gzip`. The gate hook's loopback calls, the MCP tools and plain `curl` send no such
+  header and keep receiving identity bytes, so nothing on the agent side changes. `no-cache` (not
+  `no-store`) pairs with the ETag: a client may reuse a body only after revalidating, never stale.
+
 ## [0.291.5] — 2026-08-03
 ### Fixed
 - **Talking to `localhost` no longer raises an owner approval.** Host governance treated loopback as

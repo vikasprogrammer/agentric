@@ -8,6 +8,7 @@ import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as zlib from 'zlib';
 import * as nodeOs from 'node:os';
 import { AgentOS, loadAgentOS } from './kernel';
 import { VERSION } from './version';
@@ -6675,7 +6676,9 @@ function redirect(res: http.ServerResponse, location: string): void {
   res.end();
 }
 function sendHtml(res: http.ServerResponse, status: number, html: string): void {
-  res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+  // The one caller is the magic-link interstitial, whose URL carries a one-time token — never let it
+  // sit in a cache. Small enough that compression is pointless, so it skips `sendBody`.
+  res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
   res.end(html);
 }
 function escapeHtml(s: string): string {
@@ -6771,15 +6774,100 @@ function relOf(root: string, abs: string): string {
 }
 
 // ── http helpers ─────────────────────────────────────────────────────────────
+//
+// TRANSPORT: every in-memory response body funnels through `sendBody`, which adds the two things this
+// server shipped without for its whole life — compression and revalidation. Measured on the live
+// globex tenant (949 sessions / 473 tasks), one console load moved ~4.7 MB of JSON plus 1.82 MB of
+// uncompressed app bundle, and the SPA re-polls sessions+messages every 1.5s forever. Nothing in front
+// covers it either: the Mac Mini tenants run behind `tailscale serve` with no nginx at all, and the
+// nginx box has `gzip on` but the default `gzip_types` (text/html only), so JS/CSS/JSON went out raw.
+// Fixing it here means it holds on every deployment shape.
+
+/** Below ~1 MTU, compressing costs more (CPU + headers) than the bytes it saves. */
+const COMPRESS_MIN = 1400;
+/** Worth compressing. Everything else we serve (woff2, png, ico) is already compressed. */
+const COMPRESSIBLE = /^(?:text\/|application\/(?:json|javascript|xml)|image\/svg)/;
+/**
+ * Compressed bytes keyed by the body's ETag (its content hash), so identical payloads compress once.
+ * The console polls from every open tab; without this a multi-tab session would re-gzip the same
+ * ~1 MB sessions payload per tab per tick. Bounded FIFO — a hot-path cache, not a store.
+ */
+const GZIP_CACHE = new Map<string, Buffer>();
+const GZIP_CACHE_MAX = 64;
+function gzipFor(key: string, raw: Buffer): Buffer {
+  const hit = GZIP_CACHE.get(key);
+  if (hit) return hit;
+  const out = zlib.gzipSync(raw, { level: 6 });
+  if (GZIP_CACHE.size >= GZIP_CACHE_MAX) GZIP_CACHE.delete(GZIP_CACHE.keys().next().value as string);
+  GZIP_CACHE.set(key, out);
+  return out;
+}
+/**
+ * Write a complete in-memory body, negotiating `content-encoding` and (for a cacheable GET) an ETag.
+ *
+ * Compression is strictly opt-in by the CLIENT: we only gzip when the request advertised
+ * `accept-encoding: gzip`. A plain `curl`, the gate hook's loopback calls and the MCP tools send no
+ * such header, so they keep receiving identity bytes and are unaffected by this whole path.
+ *
+ * The ETag is paired with `cache-control: no-cache`, which means "you may reuse this, but ALWAYS
+ * revalidate first" — never "serve it stale". So a 304 can only follow a fresh round-trip, and the
+ * 1.5s poll degrades from a megabyte to a bodyless header when nothing changed.
+ */
+function sendBody(res: http.ServerResponse, status: number, raw: Buffer, contentType: string, cacheControl: string): void {
+  const req: http.IncomingMessage | undefined = res.req;
+  const headers: Record<string, string> = { 'content-type': contentType, 'cache-control': cacheControl, vary: 'accept-encoding' };
+  // Revalidation only makes sense for a successful GET; a 304 carries validators and no body.
+  let etag = '';
+  if (status === 200 && req?.method === 'GET') {
+    etag = `W/"${crypto.createHash('sha1').update(raw).digest('base64url')}"`;
+    headers.etag = etag;
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, { etag, 'cache-control': cacheControl, vary: 'accept-encoding' });
+      return void res.end();
+    }
+  }
+  let body = raw;
+  if (raw.length >= COMPRESS_MIN && COMPRESSIBLE.test(contentType) && /\bgzip\b/.test(String(req?.headers['accept-encoding'] || ''))) {
+    // Only cache keyed by a content hash; without an ETag (a POST reply, an error) compress one-off.
+    body = etag ? gzipFor(etag, raw) : zlib.gzipSync(raw, { level: 6 });
+    headers['content-encoding'] = 'gzip';
+  }
+  headers['content-length'] = String(body.length);
+  res.writeHead(status, headers);
+  res.end(req?.method === 'HEAD' ? undefined : body);
+}
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
+  sendBody(res, status, Buffer.from(JSON.stringify(body) ?? 'null', 'utf8'), 'application/json; charset=utf-8', 'no-cache, private');
+}
+/**
+ * Static console assets, read + compressed ONCE per build and served from memory thereafter.
+ *
+ * `web/dist` is immutable between deploys, so the cache is keyed by `path:mtime:size` — a rebuild
+ * changes the mtime and invalidates it with no restart needed. Vite content-hashes asset filenames
+ * (`main-OWHvPakq.js`), so those can be marked `immutable` for a year: today the browser re-downloads
+ * the full 1.13 MB bundle on every single reload because nothing sends a caching header at all.
+ */
+const FILE_CACHE = new Map<string, Buffer>();
+const FILE_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+/** A content-hashed build artifact (`name-8dGk2xQ1.js`) can never change under its own URL. */
+function isFingerprinted(file: string): boolean {
+  return /-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/.test(path.basename(file));
 }
 function sendFile(res: http.ServerResponse, file: string, contentType: string): void {
-  fs.readFile(file, (err, data) => {
-    if (err) return sendJson(res, 404, { error: `file not found: ${path.basename(file)}` });
-    res.writeHead(200, { 'content-type': contentType });
-    res.end(data);
+  fs.stat(file, (statErr, st) => {
+    if (statErr || !st.isFile()) return sendJson(res, 404, { error: `file not found: ${path.basename(file)}` });
+    const cacheControl = isFingerprinted(file) ? 'public, max-age=31536000, immutable' : 'no-cache';
+    const key = `${file}:${st.mtimeMs}:${st.size}`;
+    const hit = FILE_CACHE.get(key);
+    if (hit) return sendBody(res, 200, hit, contentType, cacheControl);
+    fs.readFile(file, (err, data) => {
+      if (err) return sendJson(res, 404, { error: `file not found: ${path.basename(file)}` });
+      if (st.size <= FILE_CACHE_MAX_BYTES) {
+        if (FILE_CACHE.size >= 64) FILE_CACHE.delete(FILE_CACHE.keys().next().value as string);
+        FILE_CACHE.set(key, data);
+      }
+      sendBody(res, 200, data, contentType, cacheControl);
+    });
   });
 }
 function end(res: http.ServerResponse, status: number): void {
