@@ -2148,7 +2148,17 @@ export class TerminalManager {
         // anyway — teardownUnattended cancels its dangling question/approval so nothing is left waiting. A
         // no-progress run CAN legitimately be blocked (it may have called `ask` — an MCP tool, no gate.attempt),
         // so it keeps the block-skip; only overMaxAge overrides it.
-        if (!overMaxAge && this.hasPendingHumanBlock(r.id)) continue;
+        //
+        // A `done` ORPHAN is the third override, and the one that leaked. An unattended run whose gate hit
+        // the 180s fail-closed deny (or whose `ask` parked) is TOLD to wrap up: it calls `report`, the row
+        // flips to 'done' — while the approval/question row stays `pending` forever, because nothing expires
+        // an unanswered card. So the block-skip fired on a run whose turn was already OVER, markTurnIdle had
+        // already bailed on the same check, and neither force-reap could reach it (both require
+        // status='running'). Net effect on live northwind (2026-08): five `done` rows still holding a live
+        // tmux pane + ~430MB of `claude` each, the oldest 3 days old, pinned open by cards nobody could
+        // deliver an answer to. A finished run cannot consume one — reap it and let teardownUnattended cancel
+        // the card, which is what makes it dismissable in the Inbox instead of hanging there.
+        if (!overMaxAge && r.status !== 'done' && this.hasPendingHumanBlock(r.id)) continue;
         this.teardownUnattended(r.id, space, r.tmux, overMaxAge ? 'max-runtime' : noProgress ? 'stuck-no-progress' : r.status === 'done' ? 'done-orphan' : 'idle-backstop');
       } catch { /* one bad row must not stop the sweep */ }
     }

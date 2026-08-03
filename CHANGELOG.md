@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.291.1] — 2026-08-03
+### Fixed
+- **An unanswered approval no longer pins a finished run's terminal open forever.** Nothing expires an
+  Inbox card, and that was load-bearing in the wrong place: an unattended run whose gate hit the 180s
+  fail-closed deny (or whose `ask` parked) is told to wrap up, calls `report` — the row flips to `done`
+  while the approval stays `pending`. Every teardown path then skipped it as "blocked on a person":
+  `markTurnIdle` bailed, the idle backstop bailed, and neither force-reap could reach it because both
+  require `status = 'running'`. Live northwind was holding **five `done` sessions with a live tmux pane
+  and ~430MB of `claude` each, the oldest three days old** — ~2.1GB pinned by cards nobody could deliver
+  an answer to. A finished run cannot consume an answer, so the done-orphan sweep now reaps it and
+  cancels the card (which is also what makes it dismissable in the Inbox instead of hanging). A
+  still-*running* blocked run is untouched — that wait is real.
+- **The egress parser no longer reads the word `ssh` in a grep pattern as an ssh.** Verbs were matched
+  anywhere in the command line, so `grep -i "cmd\|exec\|ssh\|sprintf"` and `ssh -i ~/.ssh/id_rsa` both
+  registered as egress with an unpinnable host — an owner approval for a local grep. 10 of the last 15
+  host approvals on northwind were this "host could not be identified" shape. `host-match.ts` now splits
+  the line into command invocations (quote-aware, so a `|` inside a quoted pattern is data) and matches
+  the verb against the **head token**, seeing through wrapper prefixes (`sudo -u deploy ssh box`),
+  leading paths (`/usr/bin/ssh`) and one level of quoted assignment / `sh -c` / `find -exec` nesting.
+  Real egress keeps escalating, and `SSH="ssh … root@box"` now *pins* `box` instead of escalating as
+  unknown — so it can be granted in Settings → Connections and stop asking.
+### Changed
+- `npm run test:governance` (what CI runs) now also runs the idle-reaper suite, and that suite's tmux
+  stub reports panes as alive — an empty stub made crash detection claim every row first, which had
+  quietly left 8 of its 12 assertions failing.
+
 ## [0.291.0] — 2026-08-03
 ### Fixed
 - **A resident chat no longer hits `/login` mid-session when it launched under a rotation paste-token.**

@@ -25,7 +25,10 @@ let attached = new Set();               // tmux names with a "client" attached
 const killed = [];
 tm.backend.hasClient = (_space, tmux) => attached.has(tmux);
 tm.backend.kill = (_space, tmux) => { killed.push(tmux); };
-tm.backend.aliveNames = () => new Set(); // sweeps 1/2 no-op; we're testing sweep 3
+// Every session's pane reports ALIVE by default. `reapIdleSessions` runs crash detection first (sweep 0),
+// so a stub returning an empty set marks every row `crashed` before the idle sweeps ever look at it — the
+// whole file went red that way when that sweep was folded in. Sections that care override this.
+tm.backend.aliveNames = () => new Set(aos.db.prepare('SELECT tmux FROM term_sessions').all().map((r) => r.tmux));
 
 const H = 3600_000;
 let n = 0;
@@ -47,6 +50,10 @@ assert(aos.settings.setInteractiveIdleTimeoutHours(99999) === 24 * 30, 'clamps t
 
 console.log('\n\x1b[1m2) reaper sweep (timeout = 48h)\x1b[0m');
 aos.settings.setInteractiveIdleTimeoutHours(48);
+// Isolate sweep 3: the unattended backstops (24h hard ceiling, 30m no-progress) would otherwise claim
+// this section's 96h-old headless control row themselves, which is sweep 2's job, not what we assert here.
+aos.settings.setUnattendedMaxHours(0);
+aos.settings.setUnattendedNoProgressMinutes(0);
 
 const stale = mkSession({ created_at: Date.now() - 96 * H });                 // 4 days idle → reap
 const recent = mkSession({ created_at: Date.now() - 2 * H });                 // 2h → keep
@@ -70,6 +77,43 @@ aos.settings.setInteractiveIdleTimeoutHours(0);
 const stale2 = mkSession({ created_at: Date.now() - 200 * H });
 tm.reapIdleSessions();
 assert(statusOf(stale2) === 'running', 'timeout 0 → even a 200h-idle session is left alone');
+
+/* Sweep 2 — the done-orphan pane leak. An unattended run whose gate hit the fail-closed deny (or whose
+ * `ask` parked) wraps up with `report`: the row goes 'done' while the approval/question stays pending
+ * forever, because nothing expires an unanswered card. The block-skip used to fire on that finished run
+ * and pin its tmux pane + `claude` process open indefinitely. A done run cannot consume an answer, so it
+ * is reaped and its card cancelled; a still-RUNNING blocked run is untouched. */
+console.log('\n\x1b[1m4) sweep 2: a done orphan blocked on an unanswered card\x1b[0m');
+aos.settings.setInteractiveIdleTimeoutHours(48);
+const pendingApprovalFor = (id) => {
+  const { req } = aos.approvals.request({ runId: id, tenant: aos.tenant, level: 'owner', reason: 'test',
+    attempt: { capabilityId: 'ssh.exec', args: {}, reasoning: '' } });
+  return req.id;
+};
+const pendingQuestionFor = (id) => {
+  const qid = 'qst_' + id;
+  aos.db.prepare('INSERT INTO questions (id, run_id, tenant, agent, prompt, status, created_at) VALUES (?,?,?,?,?,?,?)')
+    .run(qid, id, aos.tenant, 'website-bot', 'which one?', 'pending', Date.now());
+  return qid;
+};
+const qStatus = (qid) => aos.db.prepare('SELECT status s FROM questions WHERE id=?').get(qid).s;
+
+const doneOrphan = mkSession({ headless: 1, status: 'done', spawned_by: 'automation:a1', last_activity: Date.now() - 5 * H });
+const apr = pendingApprovalFor(doneOrphan);
+const runningBlocked = mkSession({ headless: 1, status: 'running', spawned_by: 'automation:a1', last_activity: Date.now() - 5 * H });
+const qst = pendingQuestionFor(runningBlocked);
+// Sweep 2 only reaps a done orphan whose pane is genuinely still alive, so report both as live.
+tm.backend.aliveNames = () => new Set(['aos-' + doneOrphan, 'aos-' + runningBlocked]);
+killed.length = 0;
+
+tm.reapIdleSessions();
+
+assert(killed.includes('aos-' + doneOrphan), 'done orphan with a pending approval → pane killed');
+assert(statusOf(doneOrphan) === 'done', 'its outcome is preserved (stays done)');
+assert(aos.approvals.statusOf(apr) === 'cancelled', 'the undeliverable approval is cancelled, not left hanging');
+assert(!killed.includes('aos-' + runningBlocked), 'a still-running run blocked on a question → left alone');
+assert(statusOf(runningBlocked) === 'running', '…and still running');
+assert(qStatus(qst) === 'pending', '…with its question still open for an answer');
 
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}

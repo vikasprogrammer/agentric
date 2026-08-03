@@ -30,23 +30,41 @@ export interface Egress {
   unknown: boolean;
 }
 
-// Outbound-connection verbs → the protocol they imply. Word-boundary matched so `sync`≠`nc`, `func`≠`nc`.
-const EGRESS_VERBS: { re: RegExp; protocol: EgressProtocol }[] = [
-  { re: /\bssh\b/i, protocol: 'ssh' },
-  { re: /\bscp\b/i, protocol: 'ssh' },
-  { re: /\bsftp\b/i, protocol: 'ssh' },
-  { re: /\brsync\b/i, protocol: 'ssh' },
-  { re: /\bcurl\b/i, protocol: 'http' },
-  { re: /\bwget\b/i, protocol: 'http' },
-  { re: /\bpsql\b/i, protocol: 'postgres' },
-  { re: /\bpg_dump\b/i, protocol: 'postgres' },
-  { re: /\bmysql\b/i, protocol: 'any' },
-  { re: /\bmongosh?\b/i, protocol: 'any' },
-  { re: /\bredis-cli\b/i, protocol: 'any' },
-  { re: /\bncat\b/i, protocol: 'any' },
-  { re: /\bnc\b/i, protocol: 'any' },
-  { re: /\btelnet\b/i, protocol: 'any' },
+/**
+ * Outbound-connection verbs → the protocol they imply, matched against the EXECUTABLE NAME of a
+ * command invocation (see {@link egressHead}) — never as a bare substring of the whole line.
+ *
+ * That distinction is the whole point. A `\bssh\b` search over the command text fires on
+ * `grep -i "cmd\|exec\|ssh\|sprintf"` and on `ssh -i ~/.ssh/id_rsa` twice over: the word appears, no
+ * host can be pinned, and a purely local grep is escalated to an OWNER approval. Live northwind data
+ * (2026-08): 10 of the last 15 host approvals were "host could not be identified", most of them this
+ * shape. Matching the head token instead keeps the same governance reach (every real invocation still
+ * has its verb in command position) while the word-in-a-string cases stop paging a human.
+ *
+ * `positional` marks the verbs whose destination is a bare token rather than a URL or -h flag
+ * (`ssh box`, `nc host 22`, `telnet host`) — rule 4 below.
+ */
+interface EgressVerb { name: RegExp; protocol: EgressProtocol; positional?: boolean }
+const EGRESS_VERBS: EgressVerb[] = [
+  { name: /^ssh$/i, protocol: 'ssh', positional: true },
+  { name: /^scp$/i, protocol: 'ssh', positional: true },
+  { name: /^sftp$/i, protocol: 'ssh', positional: true },
+  { name: /^rsync$/i, protocol: 'ssh', positional: true },
+  { name: /^curl$/i, protocol: 'http' },
+  { name: /^wget$/i, protocol: 'http' },
+  { name: /^psql$/i, protocol: 'postgres' },
+  { name: /^pg_dump$/i, protocol: 'postgres' },
+  { name: /^mysql$/i, protocol: 'any' },
+  { name: /^mongosh?$/i, protocol: 'any' },
+  { name: /^redis-cli$/i, protocol: 'any' },
+  { name: /^ncat$/i, protocol: 'any', positional: true },
+  { name: /^nc$/i, protocol: 'any', positional: true },
+  { name: /^telnet$/i, protocol: 'any', positional: true },
 ];
+
+/** Shell words that PREFIX a command without being it — the token after them (and after their flag
+ *  arguments) is still in command position, so `sudo -u deploy ssh box` is still an ssh. */
+const COMMAND_PREFIX = /^(sudo|doas|env|time|timeout|nohup|exec|command|builtin|nice|ionice|stdbuf|xargs|if|then|else|elif|do|while|until|not|!)$/i;
 
 const SCHEME_PROTOCOL: Record<string, EgressProtocol> = {
   http: 'http', https: 'http', postgres: 'postgres', postgresql: 'postgres',
@@ -75,15 +93,102 @@ function looksLikeHost(tok: string): boolean {
 }
 
 /**
+ * Split a command line into candidate INVOCATIONS — the pieces whose first token sits in the
+ * executable slot. Splits on the shell's command separators (`| ; & && || newline` and the
+ * subshell/group punctuation `( ) { } $( \``), but is QUOTE-AWARE: a separator inside a quoted string
+ * is data, not a separator. That matters — `grep -i "cmd|exec|ssh|sprintf"` must stay ONE invocation
+ * headed by `grep`, or the split alone would manufacture a segment that looks like an `ssh` command.
+ *
+ * Not a shell parser, and deliberately not trying to be: an approximation that keeps every real
+ * invocation's verb in head position (see the module note on parsing conservatively).
+ */
+function splitSegments(command: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote: string | null = null;
+  const flush = (): void => { if (cur.trim()) out.push(cur.trim()); cur = ''; };
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      cur += ch;
+      // A backslash escape only suppresses the closing quote inside double quotes; in single quotes
+      // the shell takes it literally.
+      if (ch === '\\' && quote === '"' && i + 1 < command.length) { cur += command[++i]; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; cur += ch; continue; }
+    if (ch === '\\' && i + 1 < command.length) { cur += ch + command[++i]; continue; }
+    if (ch === '|' || ch === ';' || ch === '&' || ch === '\n' || ch === '(' || ch === ')' || ch === '{' || ch === '}' || ch === '`') { flush(); continue; }
+    cur += ch;
+  }
+  flush();
+  return out;
+}
+
+/** Sub-command lines hidden one level DOWN inside a segment: the quoted value of a variable assignment
+ *  (`SSH="ssh -i k root@box"` — then invoked as `$SSH`), a `sh -c '…'` payload, and a `find -exec` tail.
+ *  Each is its own command line, so we recurse into it rather than lose the egress it performs. */
+function descend(segment: string): string[] {
+  const inner: string[] = [];
+  for (const m of segment.matchAll(/(?:^|\s)(?:[A-Za-z_][A-Za-z0-9_]*=|-c[=\s]+)(["'])([\s\S]*?)\1/g)) inner.push(m[2]);
+  const exec = segment.match(/(?:^|\s)-exec(?:dir)?\s+([\s\S]+)$/);
+  if (exec) inner.push(exec[1]);
+  return inner;
+}
+
+/** The egress verb this segment INVOKES, plus the segment text from that verb onward (what the host
+ *  rules below parse). Skips wrapper/keyword prefixes, their flags and flag arguments, and inline
+ *  `VAR=value` prefixes. Returns null the moment a non-egress executable owns the head slot — that's
+ *  what stops `grep … "ssh"` from reading as an ssh. */
+function egressHead(segment: string): { verb: EgressVerb; text: string } | null {
+  const tokens = segment.split(/\s+/).filter(Boolean);
+  let sawPrefix = false;
+  let prevWasFlag = false;
+  for (let i = 0; i < tokens.length; i++) {
+    // Strip surrounding quotes (`bash -c "ssh box"` leaves a leading `"`) and any leading path, so
+    // `/usr/bin/ssh` is still ssh.
+    const t = tokens[i].replace(/^['"]+/, '').replace(/['"]+$/, '').replace(/^.*\//, '');
+    if (!t) continue;
+    const verb = EGRESS_VERBS.find((v) => v.name.test(t));
+    if (verb) return { verb, text: tokens.slice(i).join(' ') };
+    if (COMMAND_PREFIX.test(t)) { sawPrefix = true; prevWasFlag = false; continue; }
+    if (t.startsWith('-')) { prevWasFlag = !t.includes('='); continue; }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) { prevWasFlag = false; continue; } // inline env assignment
+    if (/^\d+[smhd]?$/i.test(t)) { prevWasFlag = false; continue; }            // `timeout 30 ssh …`
+    if (sawPrefix && prevWasFlag) { prevWasFlag = false; continue; }           // a wrapper flag's argument
+    return null; // a real command, and it isn't an egress verb
+  }
+  return null;
+}
+
+/**
  * Does this Bash command reach out to a host, and which one? Best-effort; `unknown:true` when egress
- * is clear but the host isn't pinnable. Only the FIRST target is extracted (v1).
+ * is clear but the host isn't pinnable. Only the FIRST invocation that reaches out is extracted (v1) —
+ * first, not best, so a later pinnable-but-public target can never mask an earlier unpinnable one.
  */
 export function extractEgress(command: string): Egress {
   const cmd = (command || '').trim();
   if (!cmd) return { egress: false, unknown: false };
-  const verb = EGRESS_VERBS.find((v) => v.re.test(cmd));
-  if (!verb) return { egress: false, unknown: false };
+  return findEgress(cmd, 0) ?? { egress: false, unknown: false };
+}
 
+function findEgress(command: string, depth: number): Egress | null {
+  for (const seg of splitSegments(command)) {
+    const head = egressHead(seg);
+    if (head) return extractTarget(head.text, head.verb);
+    if (depth < 3) {
+      for (const inner of descend(seg)) {
+        const found = findEgress(inner, depth + 1);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
+/** Pin the destination of ONE invocation (`cmd` starts at the verb). */
+function extractTarget(cmd: string, verb: EgressVerb): Egress {
   // 1. URL form (curl/wget/psql/redis/mongo): scheme://[user:pass@]host[:port]/…
   const url = cmd.match(/\b([a-z][a-z0-9+.-]*):\/\/([^\s'"`|;&<>]+)/i);
   if (url) {
@@ -108,15 +213,14 @@ export function extractEgress(command: string): Egress {
     return { egress: true, host: userAt[2].toLowerCase(), port: userAt[3] ? Number(userAt[3]) : undefined, protocol: 'ssh', unknown: false };
   }
 
-  // 4. ssh/telnet positional host: the first non-flag, non-verb token that looks like a host.
-  if (verb.protocol === 'ssh' || verb.re.source.includes('telnet') || verb.re.source.includes('\\bnc')) {
-    const tokens = cmd.split(/\s+/);
-    let seenVerb = false;
+  // 4. ssh/telnet/nc positional host: the first non-flag token after the verb that looks like a host.
+  if (verb.positional) {
+    const tokens = cmd.split(/\s+/).slice(1); // `cmd` starts at the verb
     for (const raw of tokens) {
       const t = raw.replace(/^['"]|['"]$/g, '');
-      if (!seenVerb) { if (EGRESS_VERBS.some((v) => v.re.test(t))) seenVerb = true; continue; }
       if (t.startsWith('-')) continue; // an option
       if (/^\d+$/.test(t)) continue;   // a bare port (nc host port) handled by the token before it
+      if (/^[.~/]/.test(t)) continue;  // a local path — `scp ./file box:/tmp/` puts the source first
       if (looksLikeHost(t)) {
         const host = t.replace(/:\d+$/, '').replace(/:.*/, '').toLowerCase();
         const portM = t.match(/:(\d+)$/);

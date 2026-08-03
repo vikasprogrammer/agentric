@@ -103,6 +103,19 @@ already are (the enricher is pure/no-I/O); `gate()` fetches them and threads the
 > **parse conservatively, fail loud.** We do not try to be a shell interpreter — we detect the common
 > forms and, when we *can't* be sure (`hostUnknown`), we escalate rather than wave through (see §3d).
 
+**Verbs are matched in COMMAND POSITION, not anywhere in the line** (v0.290.1). The first cut searched
+the whole command for `\bssh\b`, which fires on `grep -i "cmd\|exec\|ssh\|sprintf"` and on
+`ssh -i ~/.ssh/id_rsa` — the word is there, no host can be pinned, and a local grep becomes an OWNER
+approval. Live northwind: 10 of 15 host approvals in the fortnight to 2026-08-02 were "host could not be
+identified", mostly this shape, and almost all were approved — the false-positive tax the fleet was
+paying. `host-match.ts` now splits the line into invocations (quote-aware, so a separator inside a quoted
+string is data), skips wrapper prefixes and their flag arguments (`sudo -u deploy ssh box`), strips a
+leading path (`/usr/bin/ssh`), and matches the verb against the **head token**. It also descends one
+level into a quoted assignment value (`SSH="ssh -i k root@box"`, then invoked as `$SSH`), a `sh -c '…'`
+payload and a `find -exec` tail — which both preserves the escalation for real egress hidden there and
+*pins* a host that used to read as unknown. Un-pinnable egress still escalates; only the
+never-was-egress cases stop paging a human.
+
 ### 3c. Capability reclassification — in `gate()` (`src/terminal.ts`)
 
 Mirroring the `email.send` rewrite at `terminal.ts:1169`: after enrichment, if `netEgress`, rewrite

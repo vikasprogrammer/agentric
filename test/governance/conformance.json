@@ -969,6 +969,82 @@
       "expect": "ask:head"
     },
     {
+      "name": "open: the word ssh inside a grep PATTERN is not egress",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "grep -rn certbot --include=*.go internal/ | grep -i \"cmd\\|exec\\|ssh\\|sprintf\" | head -20"
+        }
+      },
+      "hostGrants": [],
+      "netMode": "open",
+      "expect": "allow",
+      "expectFacts": { "netEgress": false }
+    },
+    {
+      "name": "open: reading ~/.ssh locally is not egress",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "ls -la ~/.ssh"
+        }
+      },
+      "hostGrants": [],
+      "netMode": "open",
+      "expect": "allow",
+      "expectFacts": { "netEgress": false }
+    },
+    {
+      "name": "open: ssh in a quoted var assignment still pins its host",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "SSH=\"ssh -i ~/.ssh/id_rsa -o ConnectTimeout=15 deploy@web.prod.internal\"\n$SSH uptime"
+        }
+      },
+      "hostGrants": [
+        { "match": "*.prod.internal", "protocol": "ssh", "posture": "ask" }
+      ],
+      "netMode": "open",
+      "expect": "ask:owner",
+      "expectFacts": { "netEgress": true, "hostListed": true }
+    },
+    {
+      "name": "open: a wrapper (sudo -u) does not hide the ssh",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "sudo -u deploy ssh web.prod.internal uptime"
+        }
+      },
+      "hostGrants": [
+        { "match": "*.prod.internal", "protocol": "ssh", "posture": "ask" }
+      ],
+      "netMode": "open",
+      "expect": "ask:owner",
+      "expectFacts": { "netEgress": true, "hostListed": true }
+    },
+    {
+      "name": "open: egress inside a subshell is still found",
+      "capability": "shell.exec",
+      "args": {
+        "tool": "Bash",
+        "input": {
+          "command": "CODE=$(curl -s -o /tmp/f -w \"%{http_code}\" http://10.0.4.4/status)"
+        }
+      },
+      "hostGrants": [
+        { "match": "10.0.0.0/8", "protocol": "any", "posture": "ask" }
+      ],
+      "netMode": "open",
+      "expect": "ask:head",
+      "expectFacts": { "netEgress": true, "hostListed": true }
+    },
+    {
       "name": "rm -rf /tmp scratch is allowed (not destructive)",
       "capability": "shell.exec",
       "args": {
