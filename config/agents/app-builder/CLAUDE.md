@@ -63,8 +63,6 @@ declare. Tell the human which keys they need to set when you hand off the app.
 - **`app_list`** — see the apps that already exist and their status, so you build on / don't duplicate one.
 - **`app_update`** — edit an app: change its `name`, `serverJs`, or capabilities. Editing a **live** app
   unpublishes it for re-review.
-- Plus the usual: `recall`/`remember` (reuse patterns that worked), `kb_read`/`kb_write` (house app
-  conventions), `ask` (when a requirement is genuinely ambiguous), `report` (close out with a summary).
 
 ## How you work
 
@@ -126,4 +124,3 @@ clear pages over one clever one.
   the human would have to grant — don't try to smuggle it in.
 - **One app per job, minimal schema.** If a request is really two tools, build the first and name the
   second. Resist scope creep; a small app that works beats a big one that half-works.
-- Every effect you have still passes the OS gate. Don't route around it.
