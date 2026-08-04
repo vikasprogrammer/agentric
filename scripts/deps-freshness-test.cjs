@@ -62,16 +62,21 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   assert(stripped.path === FAKE, 'path is the fallback location', stripped.path);
 
   console.log('\n\x1b[1m4) freshness marks a present-but-stale dep\x1b[0m');
-  // Seed the module's registry cache so the assertion is deterministic and offline.
   const seeded = await deps.checkDepUpdates(base).catch(() => null);
   const net = seeded && seeded.deps.find((d) => d.bin === 'claude');
+  // Whatever the registry currently publishes — never hardcode it. A new claude-code lands every few
+  // days, and pinning a literal here makes section 6's "upgraded" stub stale the moment one ships.
+  const LATEST = net && net.latest;
   if (!net || (!net.latest && net.updateError)) {
     console.log('  \x1b[33m·\x1b[0m registry unreachable — skipping the live-lookup assertions');
   } else {
     assert(!!net.latest, 'registry answered with a latest version', net.updateError);
     assert(net.updateAvailable === true, 'v2.1.100 vs latest → updateAvailable', `latest=${net.latest}`);
     assert(seeded.outdated.includes('claude'), 'listed in report.outdated');
-    assert(seeded.ok === true, 'report.ok stays true — stale is not missing');
+    // `ok` means "every required dep is PRESENT" and must be untouched by staleness. Compare against the
+    // pre-freshness report rather than asserting `true` outright — a CI runner without ttyd is legitimately
+    // not-ok, and hardcoding `true` tests the runner's box instead of the property.
+    assert(seeded.ok === base.ok, 'report.ok is unchanged by freshness — stale is not missing', `base=${base.ok} after=${seeded.ok}`);
     assert(seeded.updatesCheckedAt > 0, 'stamps updatesCheckedAt');
     const tmux = seeded.deps.find((d) => d.bin === 'tmux');
     assert(tmux.latest === undefined && tmux.updateAvailable === undefined, 'a non-npm dep is never version-checked');
@@ -121,24 +126,29 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
   assert((tmuxBody.steps || []).length === 0, 'refusal runs no install steps');
 
   console.log('\n\x1b[1m6) update applies + re-checks (stubbed npm — no real global install)\x1b[0m');
-  // A fake `npm` sitting BESIDE the fake claude, which "upgrades" it by rewriting the version it prints.
-  // This also pins the sibling-npm preference: on an nvm box the PATH npm may belong to a different node
-  // prefix, and installing there would leave the binary we actually run untouched.
-  const stubNpm = path.join(BIN, 'npm');
-  fs.writeFileSync(stubNpm, `#!/bin/sh\nprintf '#!/bin/sh\\necho "2.1.220 (Claude Code)"\\n' > ${FAKE}\nchmod +x ${FAKE}\necho "stub npm ran: $@"\n`);
-  fs.chmodSync(stubNpm, 0o755);
+  if (!LATEST) {
+    console.log('  \x1b[33m·\x1b[0m registry unreachable — skipping the update round-trip');
+  } else {
+    // A fake `npm` sitting BESIDE the fake claude, which "upgrades" it by rewriting the version it prints
+    // to whatever the registry actually publishes. This also pins the sibling-npm preference: on an nvm
+    // box the PATH npm may belong to a different node prefix, and installing there would leave the binary
+    // we actually run untouched.
+    const stubNpm = path.join(BIN, 'npm');
+    fs.writeFileSync(stubNpm, `#!/bin/sh\nprintf '#!/bin/sh\\necho "${LATEST} (Claude Code)"\\n' > ${FAKE}\nchmod +x ${FAKE}\necho "stub npm ran: $@"\n`);
+    fs.chmodSync(stubNpm, 0o755);
 
-  const upd = await call('POST', '/api/deps/update', ownerSid, { bin: 'claude' });
-  const updBody = await upd.json();
-  const after = updBody.report.deps.find((d) => d.bin === 'claude');
-  assert(upd.status === 200, 'POST /api/deps/update → 200 for owner', String(upd.status));
-  assert((updBody.steps[0] || {}).cmd === `${stubNpm} install -g @anthropic-ai/claude-code@latest`, 'ran the sibling npm, not the PATH one', (updBody.steps[0] || {}).cmd);
-  assert(after.version === '2.1.220 (Claude Code)', 're-probes the upgraded binary', after.version);
-  assert(after.updateAvailable === false, 'no longer flagged outdated');
-  assert(updBody.ok === true, 'reports ok', JSON.stringify(updBody.error));
-  assert(!updBody.report.outdated.includes('claude'), 'dropped out of report.outdated');
-  const audited = aos.db.prepare("SELECT data FROM audit_events WHERE type='system.deps.updated' ORDER BY ts DESC LIMIT 1").get();
-  assert(!!audited && JSON.parse(audited.data).bin === 'claude', 'audited system.deps.updated');
+    const upd = await call('POST', '/api/deps/update', ownerSid, { bin: 'claude' });
+    const updBody = await upd.json();
+    const after = updBody.report.deps.find((d) => d.bin === 'claude');
+    assert(upd.status === 200, 'POST /api/deps/update → 200 for owner', String(upd.status));
+    assert((updBody.steps[0] || {}).cmd === `${stubNpm} install -g @anthropic-ai/claude-code@latest`, 'ran the sibling npm, not the PATH one', (updBody.steps[0] || {}).cmd);
+    assert(after.version === `${LATEST} (Claude Code)`, 're-probes the upgraded binary', after.version);
+    assert(after.updateAvailable === false, 'no longer flagged outdated');
+    assert(updBody.ok === true, 'reports ok', JSON.stringify(updBody.error));
+    assert(!updBody.report.outdated.includes('claude'), 'dropped out of report.outdated');
+    const audited = aos.db.prepare("SELECT data FROM audit_events WHERE type='system.deps.updated' ORDER BY ts DESC LIMIT 1").get();
+    assert(!!audited && JSON.parse(audited.data).bin === 'claude', 'audited system.deps.updated');
+  }
 
   server.close();
   registry.shutdown?.();
