@@ -67,6 +67,7 @@ import { parseSecretRef } from './edge/secrets';
 import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
+import { credentialDirHasLogin } from './edge/runtime-account-check';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
 
 /** OS-owned operating notes appended to every claude system prompt (after the user's Company context).
@@ -2502,33 +2503,52 @@ export class TerminalManager {
   /** Select a rotation-pool account for this runtime and point the session's credentials at it, via the
    *  runtime's own env vars (`CODING_RUNTIMES[runtime].credentialEnv`). Records which account the run used
    *  (`term_sessions.runtime_account`) so limit detection at teardown can park the right one. No-op — leaving
-   *  the box's default credentials in place — when the pool is empty or exhausted, or when an api-key
-   *  account's vault value can't be resolved (fail-open: better to launch on the default than not at all). */
+   *  the box's default credentials in place — when the pool is empty or exhausted, or when the selected
+   *  account's credential can't be resolved (fail-open: better to launch on the default than not at all).
+   *
+   *  `runtime_account` is stamped ONLY once the credential has actually been put in the environment in a
+   *  form the runtime honours. It is read back as ground truth (teardown parks the limited account; the
+   *  console shows which account a run burned), so a stamp for a credential that silently didn't apply is
+   *  worse than no stamp: it hides the box default being drained and sends limit-parking to the wrong row. */
   private applyRuntimeAccount(env: Record<string, string>, sessionId: string, agent: string, runtime: CodingRuntimeId, resident: boolean): void {
     try {
-      // A RESIDENT session is kept warm for hours/days (a Discord/Slack chat), so it outlives the access
-      // window of an injected static credential. A `token` (setup-token) / `apikey` carries no refresh
-      // token into the process, so claude can't renew it in place — it hits "OAuth access token has
-      // expired" → /login mid-chat. So resident sessions rotate ONLY onto refresh-capable `oauth`
-      // credential-dirs (claude refreshes within CLAUDE_CONFIG_DIR); with none available they fall through
-      // to the box default, which has its own refresh token. Short-lived headless/one-off runs exit long
-      // before any expiry, so they keep rotating across ALL account kinds (the zombie-during-limit fix).
-      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), resident ? { kinds: ['oauth'] } : undefined);
-      if (!acct) return; // empty pool (inert), all limited, or resident with no refresh-capable account → box default
+      // `pick` already restricts to the kinds this runtime's launch lane authenticates with
+      // (`liveCredentialKinds`). A RESIDENT session narrows further: kept warm for hours/days (a
+      // Discord/Slack chat), it outlives the access window of a static injected `token`, which carries no
+      // refresh token into the process — claude can't renew it in place and hits "OAuth access token has
+      // expired" → /login mid-chat. Credential dirs refresh themselves, and an api key doesn't expire.
+      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), resident ? { kinds: ['oauth', 'apikey'] } : undefined);
+      if (!acct) {
+        // Distinguish "no pool" (inert by design, silent) from "a pool exists but nothing in it is usable
+        // here" — the latter looks like working rotation in the console while every run quietly lands on the
+        // box account, which is exactly the failure this audit line exists to make visible.
+        if (this.os.runtimeAccounts.enabledCount(runtime, { anyKind: true }) > 0 && this.os.runtimeAccounts.enabledCount(runtime) === 0) {
+          this.audit(sessionId, agent, 'runtime.account.unusable', { runtime, resident, kinds: CODING_RUNTIMES[runtime].liveCredentialKinds, reason: 'no enabled account of a kind this runtime can launch with — using the box default' });
+        }
+        return;
+      }
       const { configDirVar, apiKeyVar, tokenVar } = CODING_RUNTIMES[runtime].credentialEnv;
+      let varName: string | undefined;
       if (acct.kind === 'oauth') {
-        if (!acct.configDir) return;
+        // Require the credential FILE, not just the path: an empty/never-logged-in dir doesn't fall back to
+        // the box login, it drops the session onto the CLI's interactive login picker, where it hangs until
+        // the reaper. Falling through to the box default is the strictly better failure.
+        if (!acct.configDir || !credentialDirHasLogin(runtime, acct.configDir)) {
+          this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, kind: acct.kind, dir: acct.configDir ?? null, reason: 'no readable .credentials.json in the credential dir' });
+          return;
+        }
+        varName = configDirVar;
         env[configDirVar] = acct.configDir;
       } else {
         // apikey | token: the value lives in the vault; the KIND picks which env var carries it (a usage-billed
         // API key vs. a long-lived OAuth token). A runtime that has no tokenVar can't honour a token account.
-        const varName = acct.kind === 'token' ? tokenVar : apiKeyVar;
+        varName = acct.kind === 'token' ? tokenVar : apiKeyVar;
         const value = varName && acct.apiKeyRef ? this.os.secrets.getSync(this.os.tenant, agent, acct.apiKeyRef) : undefined;
         if (!value) { this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, kind: acct.kind, ref: acct.apiKeyRef, var: varName ?? null }); return; }
         env[varName!] = value;
       }
       this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
-      this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind });
+      this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind, via: varName });
     } catch { /* rotation must never break a launch — fall through to the box default */ }
   }
 

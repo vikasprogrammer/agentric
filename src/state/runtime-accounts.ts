@@ -10,7 +10,9 @@
  * This store lets an operator register MORE than one account PER RUNTIME. At launch the selector hands out
  * an available account for that runtime, exported via the runtime's own credential env vars
  * (`CodingRuntimeSpec.credentialEnv` — `CLAUDE_CONFIG_DIR`/`ANTHROPIC_API_KEY` for claude,
- * `AOS_REAL_CODEX_HOME`/`OPENAI_API_KEY` for codex). When one is detected as limited it's parked until its
+ * `AOS_REAL_CODEX_HOME`/`OPENAI_API_KEY` for codex) — but ONLY for the kinds that runtime's launch lane
+ * genuinely authenticates with (`CodingRuntimeSpec.liveCredentialKinds`; for claude-code, credential dirs
+ * only — its TUI ignores an injected `CLAUDE_CODE_OAUTH_TOKEN`). When one is detected as limited it's parked until its
  * reset and the next launch rotates to another of the SAME runtime; only when every account for that
  * runtime is limited does the scheduler defer. A future runtime slots in with zero changes here — it just
  * declares its two env vars in the spec.
@@ -20,9 +22,15 @@
  * Per-workspace DB = the tenant boundary (no tenant column, like HostStore / AutoApprovalStore).
  */
 import { Db } from './db';
-import { CodingRuntimeId } from '../types';
+import { CodingRuntimeId, CODING_RUNTIMES, RuntimeAccountKind } from '../types';
 
-export type RuntimeAccountKind = 'oauth' | 'apikey' | 'token';
+export type { RuntimeAccountKind };
+
+/** The kinds a runtime can ACTUALLY be launched with (see `CodingRuntimeSpec.liveCredentialKinds`). Every
+ *  selection path funnels through this, so a kind the launch lane can't honour is unselectable by
+ *  construction rather than by each caller remembering to filter. */
+const liveKinds = (runtime: CodingRuntimeId): RuntimeAccountKind[] =>
+  [...(CODING_RUNTIMES[runtime]?.liveCredentialKinds ?? ['oauth'])];
 
 /** A single usage window (subscription session = ~5h, weekly = 7d) as reported by the runtime provider.
  *  `usedPct` is 0..100 of the window consumed; `resetsAt` is when it rolls over. Either may be absent when
@@ -45,7 +53,9 @@ export interface RuntimeAccount {
   name: string;
   /** 'oauth' → a credential DIRECTORY (configDir); 'apikey' → a usage-billed key held in the vault;
    *  'token' → a long-lived OAuth token held in the vault, exported via the runtime's `tokenVar`
-   *  (the `claude setup-token` path — no config dir, cleanest to rotate). */
+   *  (the `claude setup-token` path). Only kinds in the runtime's `liveCredentialKinds` are ever
+   *  SELECTED — for claude-code that is 'oauth' alone, because its interactive TUI ignores an injected
+   *  token. A row of any other kind stays in the table (visible + badged) but is never launched with. */
   kind: RuntimeAccountKind;
   /** kind=oauth: dir exported via the runtime's `configDirVar` (holds .credentials.json / auth.json). */
   configDir?: string;
@@ -120,9 +130,15 @@ export class RuntimeAccountStore {
   }
 
   /** Number of ENABLED accounts for a runtime — the "is rotation active?" flag the launcher gates on
-   *  (0 → inert, use the box default). */
-  enabledCount(runtime: CodingRuntimeId): number {
-    const r = this.db.prepare('SELECT COUNT(*) AS n FROM runtime_accounts WHERE runtime = ? AND enabled = 1').get<{ n: number }>(runtime);
+   *  (0 → inert, use the box default). Counts only kinds this runtime can actually launch with unless
+   *  `anyKind` is set; the raw count is what tells "you configured a pool, but none of it is usable"
+   *  apart from "no pool at all". */
+  enabledCount(runtime: CodingRuntimeId, opts?: { anyKind?: boolean }): number {
+    const kinds = liveKinds(runtime);
+    const sql = opts?.anyKind
+      ? 'SELECT COUNT(*) AS n FROM runtime_accounts WHERE runtime = ? AND enabled = 1'
+      : `SELECT COUNT(*) AS n FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND kind IN (${kinds.map(() => '?').join(',')})`;
+    const r = this.db.prepare(sql).get<{ n: number }>(runtime, ...(opts?.anyKind ? [] : kinds));
     return r?.n ?? 0;
   }
 
@@ -185,17 +201,19 @@ export class RuntimeAccountStore {
   }
 
   /** Select the account to launch the next `runtime` session under — least-recently-used among enabled +
-   *  available — and stamp its last_used_at. Returns null when there are NO accounts for the runtime (caller
-   *  → box default) or every enabled one is currently limited (caller → box default for a member launch; the
-   *  scheduler defers cron). Auto-recovers accounts whose limit has lapsed first. */
+   *  available — and stamp its last_used_at. Returns null when there are NO usable accounts for the runtime
+   *  (caller → box default) or every enabled one is currently limited (caller → box default for a member
+   *  launch; the scheduler defers cron). Auto-recovers accounts whose limit has lapsed first. */
   pick(runtime: CodingRuntimeId, now: number = Date.now(), opts?: { kinds?: RuntimeAccountKind[] }): RuntimeAccount | null {
     this.recover(now);
-    // Optional kind filter: a long-lived (resident) session may only rotate onto REFRESH-CAPABLE accounts
-    // (`oauth` credential-dirs), because a static injected `token`/`apikey` can't refresh in-process and
-    // would hit "OAuth access token has expired" → /login after its access window. See applyRuntimeAccount.
-    const kinds = opts?.kinds;
-    const kindClause = kinds && kinds.length ? ` AND kind IN (${kinds.map(() => '?').join(',')})` : '';
-    const r = this.db.prepare(`SELECT * FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available'${kindClause} ORDER BY last_used_at IS NOT NULL, last_used_at ASC LIMIT 1`).get<Row>(runtime, ...(kinds ?? []));
+    // The kind filter is ALWAYS on: a runtime's `liveCredentialKinds` are the only ones its launch lane
+    // actually authenticates with (a claude `token` account, e.g., is silently ignored by the interactive
+    // TUI — see the spec field). A caller may narrow further (a resident session drops static `token`
+    // credentials, which can't refresh in-process and would hit /login mid-chat) but can never widen.
+    const kinds = liveKinds(runtime).filter((k) => !opts?.kinds || opts.kinds.includes(k));
+    if (!kinds.length) return null;
+    const kindClause = ` AND kind IN (${kinds.map(() => '?').join(',')})`;
+    const r = this.db.prepare(`SELECT * FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available'${kindClause} ORDER BY last_used_at IS NOT NULL, last_used_at ASC LIMIT 1`).get<Row>(runtime, ...kinds);
     if (!r) return null;
     this.db.prepare('UPDATE runtime_accounts SET last_used_at = ? WHERE runtime = ? AND name = ?').run(now, runtime, r.name);
     return toAccount({ ...r, last_used_at: now });
@@ -206,10 +224,15 @@ export class RuntimeAccountStore {
    *  is empty (rotation inert) or at least one account is available. */
   allLimited(runtime: CodingRuntimeId, now: number = Date.now()): { limited: boolean; until: number | null } {
     this.recover(now);
+    // Same kind filter as pick(): an account the launcher can't authenticate with is not "an account the
+    // scheduler can fall back on". Without this, one unusable-but-available row would mask an exhausted
+    // pool and every deferred run would spawn onto the box default instead.
+    const kinds = liveKinds(runtime);
+    const inKinds = `kind IN (${kinds.map(() => '?').join(',')})`;
     if (this.enabledCount(runtime) === 0) return { limited: false, until: null };
-    const avail = this.db.prepare("SELECT COUNT(*) AS n FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available'").get<{ n: number }>(runtime);
+    const avail = this.db.prepare(`SELECT COUNT(*) AS n FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available' AND ${inKinds}`).get<{ n: number }>(runtime, ...kinds);
     if ((avail?.n ?? 0) > 0) return { limited: false, until: null };
-    const soonest = this.db.prepare("SELECT MIN(limited_until) AS t FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'limited'").get<{ t: number | null }>(runtime);
+    const soonest = this.db.prepare(`SELECT MIN(limited_until) AS t FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'limited' AND ${inKinds}`).get<{ t: number | null }>(runtime, ...kinds);
     return { limited: true, until: soonest?.t ?? null };
   }
 }

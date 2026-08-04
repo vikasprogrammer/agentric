@@ -13955,7 +13955,7 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
   const [hint, setHint] = useState('')
   const [runtime, setRuntime] = useState('claude-code')
   const [name, setName] = useState('')
-  const [kind, setKind] = useState<RuntimeAccountKind>('token')
+  const [kind, setKind] = useState<RuntimeAccountKind>('oauth')
   const [cred, setCred] = useState('')   // configDir (oauth) or vault key ref (apikey)
   const [token, setToken] = useState('') // raw setup-token value (token kind)
   const canEdit = me.role === 'owner'
@@ -13965,9 +13965,11 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
 
   const runtimes = resp?.runtimes ?? []
   const spec = runtimes.find((r) => r.id === runtime)
-  const hasToken = !!spec?.credentialEnv.tokenVar
-  // A runtime with no token env (codex) can't offer the paste-token option; fall back to a dir/key.
-  const effKind: RuntimeAccountKind = kind === 'token' && !hasToken ? 'oauth' : kind
+  // Only kinds this runtime can actually be launched with are offered — the server refuses the rest, and a
+  // credential that's accepted but never used is the failure mode this whole surface exists to avoid.
+  const liveKinds = spec?.liveCredentialKinds ?? ['oauth']
+  const usable = (a: RuntimeAccount) => (runtimes.find((r) => r.id === a.runtime)?.liveCredentialKinds ?? ['oauth']).includes(a.kind)
+  const effKind: RuntimeAccountKind = liveKinds.includes(kind) ? kind : (liveKinds[0] ?? 'oauth')
   const credVar = spec ? (effKind === 'oauth' ? spec.credentialEnv.configDirVar : effKind === 'token' ? (spec.credentialEnv.tokenVar ?? '') : spec.credentialEnv.apiKeyVar) : ''
   const add = async () => {
     setBusy(true); setHint('')
@@ -14006,9 +14008,9 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
             the box uses its single default login, exactly as before.
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Rotation covers <span className="font-medium">unattended runs</span> (they exit each turn). A <span className="font-medium">resident chat</span>
-            {' '}(Slack/Discord, kept warm for days) skips paste-token accounts — an injected setup-token can't refresh in-process and would
-            hit <span className="font-mono">/login</span> mid-chat — and uses the box default (or a credential-dir account), which refreshes itself.
+            Claude accounts must be <span className="font-medium">credential directories</span> (one <span className="font-mono">claude login</span> per
+            account). A pasted <span className="font-mono">setup-token</span> works in <span className="font-mono">claude -p</span> only — the interactive
+            session the OS launches ignores it and silently runs on this box's own login, so those are no longer accepted.
           </p>
         </div>
 
@@ -14038,7 +14040,9 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                     <td className="py-1.5 pr-3">{labelFor(a.runtime)}</td>
                     <td className="py-1.5 pr-3 font-mono text-muted-foreground">{a.kind === 'oauth' ? a.configDir : `secret:${a.apiKeyRef}`}</td>
                     <td className="py-1.5 pr-3">
-                      {a.checkOk === false
+                      {!usable(a)
+                        ? <Badge variant="outline" className="border-red-500/40 text-red-600 dark:text-red-400" title={`A ${a.kind} credential can't launch a ${labelFor(a.runtime)} session — it is never selected, and runs use this box's default login instead. Replace it with a credential dir.`}>never used</Badge>
+                        : a.checkOk === false
                         ? <Badge variant="outline" className="border-red-500/40 text-red-600 dark:text-red-400" title={a.checkNote}>invalid</Badge>
                         : a.status === 'limited'
                         ? <Badge variant="outline" className="border-amber-500/40 text-amber-600 dark:text-amber-400">limited{a.limitedUntil ? ` · resets ${new Date(a.limitedUntil).toLocaleString()}` : ''}</Badge>
@@ -14076,9 +14080,9 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
               <Select value={effKind} onValueChange={(v) => setKind((v as RuntimeAccountKind) ?? 'token')}>
                 <SelectTrigger className="h-8 w-44 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {hasToken && <SelectItem value="token">Subscription token (recommended)</SelectItem>}
-                  <SelectItem value="apikey">API key</SelectItem>
-                  <SelectItem value="oauth">Credential dir</SelectItem>
+                  {liveKinds.includes('oauth') && <SelectItem value="oauth">Credential dir (recommended)</SelectItem>}
+                  {liveKinds.includes('apikey') && <SelectItem value="apikey">API key</SelectItem>}
+                  {liveKinds.includes('token') && <SelectItem value="token">Subscription token</SelectItem>}
                 </SelectContent>
               </Select>
               {effKind === 'token'
@@ -14091,7 +14095,7 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
               {effKind === 'token'
                 ? <>On your own computer run <span className="font-mono">claude setup-token</span>, authorize in the browser (it completes there — no code to copy back), then paste the printed token here. It's sealed in the vault and injected as <span className="font-mono">{credVar || 'CLAUDE_CODE_OAUTH_TOKEN'}</span> — valid ~1 year. Nothing to install on this box.</>
                 : effKind === 'oauth'
-                ? <>A directory holding this account's credentials, exported to the session as <span className="font-mono">{credVar || 'the config dir'}</span> (for Claude, a full <span className="font-mono">CLAUDE_CONFIG_DIR</span> from <span className="font-mono">CLAUDE_CONFIG_DIR=&lt;dir&gt; claude login</span>).</>
+                ? <>On <em>this</em> box run <span className="font-mono">{spec?.credentialEnv.configDirVar ?? 'CLAUDE_CONFIG_DIR'}=&lt;dir&gt; {spec?.id === 'codex' ? 'codex' : 'claude'} login</span> once per account (any path — e.g. <span className="font-mono">~/.claude-accounts/overflow-1</span>), then give that dir here. It's exported to the session as <span className="font-mono">{credVar || 'the config dir'}</span>, and the login inside it refreshes itself, so it keeps working for resident chats too.</>
                 : <>A key already in the secrets vault whose value is this account's API key, exported as <span className="font-mono">{credVar || 'the API-key var'}</span>. Store the value in Settings → Secrets first.</>}
             </p>
           </div>

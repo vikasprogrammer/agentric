@@ -21,9 +21,10 @@
  * Consistency: this token exists solely to run `claude`, and a 1-token probe mirrors Claude Code's own
  * startup call — same lane as the actual use, not a side-channel. Never let a check throw into a handler.
  */
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { RuntimeUsage, RuntimeUsageWindow } from '../state/runtime-accounts';
+import { CodingRuntimeId, CODING_RUNTIMES } from '../types';
 
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
 const OAUTH_BETA = 'oauth-2025-04-20';
@@ -89,6 +90,15 @@ export function readConfigDirToken(dir: string): string | undefined {
     const j = JSON.parse(readFileSync(join(dir, '.credentials.json'), 'utf8'));
     return j?.claudeAiOauth?.accessToken ?? j?.accessToken ?? undefined;
   } catch { return undefined; }
+}
+
+/** Does this credential DIR actually hold the runtime's login (`.credentials.json` / `auth.json`, per the
+ *  runtime's `credentialEnv.configDirFile`)? Runtime-agnostic, unlike {@link readConfigDirToken}, which
+ *  parses Claude's file shape. A dir that fails this is not a usable account: pointing a session at it
+ *  doesn't fall back to the box login, it drops the CLI into its interactive login picker and the run hangs
+ *  there until the reaper — so both the add handler and the launcher refuse it. */
+export function credentialDirHasLogin(runtime: CodingRuntimeId, dir: string): boolean {
+  try { return existsSync(join(dir, CODING_RUNTIMES[runtime].credentialEnv.configDirFile)); } catch { return false; }
 }
 
 /** Probe a Claude subscription OAuth token via a 1-token Messages call and read the usage headers. Never

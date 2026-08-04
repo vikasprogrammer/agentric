@@ -1090,6 +1090,12 @@ export interface RuntimeCapabilities {
   steerOnAllow: boolean;
 }
 
+/** How a pooled runtime account carries its credential: 'oauth' → a credential DIRECTORY produced by the
+ *  CLI's own login; 'apikey' → a usage-billed key in the vault; 'token' → a long-lived OAuth token in the
+ *  vault. Declared here (not in the store) because {@link CodingRuntimeSpec.liveCredentialKinds} is what
+ *  decides which of them a runtime can actually be launched with. */
+export type RuntimeAccountKind = 'oauth' | 'apikey' | 'token';
+
 /** Static description of a coding runtime: which binary drives it, which launch script + gate hook
  *  wire it to the gateway, and what it supports. The single place a new CLI is declared. */
 export interface CodingRuntimeSpec {
@@ -1111,7 +1117,24 @@ export interface CodingRuntimeSpec {
    *  own two vars — no rotation code changes. `tokenVar` (optional) is a long-lived OAuth-token env the
    *  runtime accepts for headless auth (claude: `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) — the
    *  cleanest rotation credential (a vault-stored token, no config dir); a runtime without one (codex) omits it. */
-  credentialEnv: { configDirVar: string; apiKeyVar: string; tokenVar?: string };
+  credentialEnv: { configDirVar: string; apiKeyVar: string; tokenVar?: string;
+    /** The credential file the config dir must actually contain (`.credentials.json` / `auth.json`).
+     *  A dir naming a file that isn't there is not a usable account: the CLI doesn't fall back to the
+     *  box login, it opens its interactive login picker and the session hangs there. */
+    configDirFile: string };
+  /**
+   * Which account KINDS actually authenticate this runtime **in the lane the OS launches it in** — an
+   * attachable interactive TUI for every run, unattended included (see `attachableUnattended`). Declaring a
+   * credential env var is NOT the same as that credential working: `claude` honours
+   * `CLAUDE_CODE_OAUTH_TOKEN` in print mode (`claude -p`) only. In the TUI it ignores the env token and
+   * silently runs on whatever `~/.claude/.credentials.json` holds — while its splash still prints
+   * "Claude API", so the substitution looks like it worked. Verified on the globex box 2026-08-04 against a
+   * pool token at weekly 9% and a box account at weekly 100%: print mode answered, the TUI refused with the
+   * BOX account's limit + reset time, and token-plus-empty-config-dir dropped to the login picker (so there
+   * is no env-token auth path at all). `pick()` filters on this, so an account of an unlisted kind is never
+   * selected — better an honest box-default launch than a stamped rotation that didn't happen.
+   */
+  liveCredentialKinds: readonly RuntimeAccountKind[];
   /** A few known-good model ids, offered as suggestions in the console. NOT an allowlist — a custom or
    *  newer id must still be settable, so validation only rejects ids that clearly belong to ANOTHER
    *  runtime (see `foreignModel`). */
@@ -1131,7 +1154,11 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     bin: 'claude',
     launchScript: 'claude-launch.sh',
     gateHook: 'gate-hook.sh',
-    credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY', tokenVar: 'CLAUDE_CODE_OAUTH_TOKEN' },
+    credentialEnv: { configDirVar: 'CLAUDE_CONFIG_DIR', apiKeyVar: 'ANTHROPIC_API_KEY', tokenVar: 'CLAUDE_CODE_OAUTH_TOKEN', configDirFile: '.credentials.json' },
+    // Credential-dir ONLY. `tokenVar` stays declared because `claude -p` honours it (and the add-time probe
+    // uses the same token), but no OS lane runs print mode — see liveCredentialKinds. `ANTHROPIC_API_KEY` is
+    // left out for the same reason it was never proven: an unverified kind must not be silently selectable.
+    liveCredentialKinds: ['oauth'],
     suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
     foreignModel: /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i,
     capabilities: {
@@ -1154,7 +1181,11 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     gateHook: 'gate-hook.sh',
     // Codex reads auth.json from the dir the launcher symlinks (AOS_REAL_CODEX_HOME → $CODEX_HOME/auth.json);
     // OPENAI_API_KEY is the usage-billed alternative the launcher already accepts.
-    credentialEnv: { configDirVar: 'AOS_REAL_CODEX_HOME', apiKeyVar: 'OPENAI_API_KEY' },
+    credentialEnv: { configDirVar: 'AOS_REAL_CODEX_HOME', apiKeyVar: 'OPENAI_API_KEY', configDirFile: 'auth.json' },
+    // Both are read by codex-launch.sh itself (it symlinks auth.json from AOS_REAL_CODEX_HOME and passes
+    // OPENAI_API_KEY through), so unlike claude's token var these are wired by OUR launcher rather than
+    // hoped for from the CLI. No tokenVar to list.
+    liveCredentialKinds: ['oauth', 'apikey'],
     suggestedModels: ['gpt-5-codex', 'gpt-5.6-sol'],
     // Bare ALIASES matter as much as full ids: the workspace default is often just `opus`,
     // and Codex answers `The 'opus' model is not supported` — seen live. Anchor on a word

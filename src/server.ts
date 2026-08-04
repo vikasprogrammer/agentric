@@ -34,7 +34,7 @@ import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
-import { checkClaudeToken, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
+import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
@@ -4195,7 +4195,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/runtime-accounts') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
     const accounts = os.runtimeAccounts.list();
-    const runtimes = Object.values(CODING_RUNTIMES).map((s) => ({ id: s.id, label: s.label, credentialEnv: s.credentialEnv }));
+    // `liveCredentialKinds` rides along so the console offers only kinds that actually launch, and badges any
+    // pre-existing row of a kind that doesn't (added before the launcher knew the difference) as never-used.
+    const runtimes = Object.values(CODING_RUNTIMES).map((s) => ({ id: s.id, label: s.label, credentialEnv: s.credentialEnv, liveCredentialKinds: s.liveCredentialKinds }));
     return sendJson(res, 200, { accounts, runtimes });
   }
   if (method === 'POST' && p === '/api/runtime-accounts') {
@@ -4206,6 +4208,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const name = String(b.name ?? '').trim();
     const kind = b.kind === 'apikey' ? 'apikey' : b.kind === 'token' ? 'token' : 'oauth';
     let apiKeyRef = b.apiKeyRef ? String(b.apiKeyRef) : undefined;
+    // Refuse a credential the launcher can't actually authenticate this runtime with, BEFORE it enters the
+    // pool. The provider probe below is not this check: it proves Anthropic accepts the value, not that the
+    // interactive TUI the OS launches will use it (it won't — see CodingRuntimeSpec.liveCredentialKinds).
+    // Adding one anyway produces the worst outcome: a console showing healthy rotation while every session
+    // quietly runs on, and drains, the box's own account.
+    const live = CODING_RUNTIMES[runtime].liveCredentialKinds;
+    if (!live.includes(kind)) {
+      const how = kind === 'token'
+        ? `${CODING_RUNTIMES[runtime].label} only honours a pasted subscription token in print mode (\`claude -p\`), never in the interactive session the OS launches — it silently falls back to this box's own login.`
+        : `${CODING_RUNTIMES[runtime].label} sessions can't be launched with a ${kind} credential.`;
+      const fix = live.includes('oauth')
+        ? ` Use a credential dir instead: run \`${CODING_RUNTIMES[runtime].credentialEnv.configDirVar}=<dir> ${CODING_RUNTIMES[runtime].bin} login\` once on this box, then add that <dir>.`
+        : '';
+      return sendJson(res, 400, { error: how + fix });
+    }
     try {
       // A 'token' account carries the raw long-lived OAuth token (from `claude setup-token`): seal it in the
       // vault HERE (never stored on the row, never in audit) and hand the account only its key ref. The value
@@ -4227,6 +4244,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         const key = `runtime-token:${runtime}:${name}`;
         os.secrets.set(os.tenant, key, token, { principal: '*', updatedBy: me.email });
         apiKeyRef = key;
+      }
+      // A credential dir with no login in it is the one add-time mistake that reads as success and fails at
+      // launch (the CLI opens its login picker and the session hangs), so reject it here with the exact
+      // command that fixes it — the path is almost always right but `<runtime> login` was never run into it.
+      if (kind === 'oauth') {
+        const dir = b.configDir ? String(b.configDir) : '';
+        if (!dir) return sendJson(res, 400, { error: 'credential dir path required' });
+        if (!credentialDirHasLogin(runtime, dir)) {
+          const { configDirVar, configDirFile } = CODING_RUNTIMES[runtime].credentialEnv;
+          return sendJson(res, 400, { error: `no ${configDirFile} in ${dir} — run \`${configDirVar}=${dir} ${CODING_RUNTIMES[runtime].bin} login\` on this box first, then add it` });
+        }
       }
       const acct = os.runtimeAccounts.add({ runtime, name, kind, configDir: b.configDir ? String(b.configDir) : undefined, apiKeyRef });
       // An oauth credential-dir carries a login token WITH the usage scope — probe it too so its usage shows

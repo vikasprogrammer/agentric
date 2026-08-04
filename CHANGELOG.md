@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.308.0] — 2026-08-04
+### Fixed
+- **Account rotation only ever hands a session a credential the runtime will actually authenticate with.**
+  `claude` honours `CLAUDE_CODE_OAUTH_TOKEN` in **print mode only**. The interactive TUI the OS launches —
+  which is every lane now, unattended included — ignores it and runs on the box's own
+  `~/.claude/.credentials.json`, while its splash still prints "Claude API" and the console still showed
+  the pooled account as selected. So a pool of pasted `claude setup-token` accounts was a silent no-op:
+  on the globex box every session for a day drained one account that was already at **weekly 100%**,
+  and only the busiest agent surfaced it by hitting the limit. Verified with a discriminating pair
+  (pool token at weekly 9%, box account at 100%): `claude -p` + the token answered; the TUI + the same
+  token refused with the *box* account's limit and reset time; token plus an empty config dir dropped to
+  the login picker, so there is no env-token auth path at all. Three changes:
+  - `CodingRuntimeSpec.liveCredentialKinds` declares, per runtime, which account kinds its launch lane
+    can authenticate with (claude-code: credential dirs only; codex keeps its api-key lane, which its own
+    launcher wires). `pick()` and `allLimited()` filter on it centrally, so no caller can widen it — and
+    an unusable-but-available row no longer masks an exhausted pool from the scheduler.
+  - Adding such a credential is refused up front, with the command that works
+    (`CLAUDE_CONFIG_DIR=<dir> claude login`), instead of being accepted and then ignored. Add-time
+    validation probing the provider proves Anthropic accepts a value, never that the launcher can use it.
+    A credential *dir* with no login inside it is refused the same way — pointing a session at one doesn't
+    fall back to the box login, it hangs the run on the CLI's login picker.
+  - `term_sessions.runtime_account` is stamped only once the credential is really in the session env; a
+    launch that fell through to the box default is left unstamped and audited (`runtime.account.unusable`
+    / `.unresolved`). It's read back as ground truth — a false stamp hid the box account being drained and
+    would have parked the limit on the wrong row. Existing pool rows of an unusable kind are badged
+    "never used" in Settings → Runtime accounts rather than silently disappearing.
+  - New `scripts/runtime-account-test.cjs` (24 assertions) in `npm run test:governance`.
+
 ## [0.307.2] — 2026-08-04
 ### Fixed
 - **The `run_as` cleanup now also catches the email-shaped rows.** v0.307.1 swept provenance strings out

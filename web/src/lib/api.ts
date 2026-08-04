@@ -88,7 +88,14 @@ export interface RuntimeAccount {
   checkNote?: string
   usage?: RuntimeUsage
 }
-export interface RuntimeSpecInfo { id: string; label: string; credentialEnv: { configDirVar: string; apiKeyVar: string; tokenVar?: string } }
+export interface RuntimeSpecInfo {
+  id: string
+  label: string
+  credentialEnv: { configDirVar: string; apiKeyVar: string; tokenVar?: string; configDirFile: string }
+  /** Kinds this runtime can actually be LAUNCHED with — the others are refused on add and never selected
+   *  (claude ignores an injected CLAUDE_CODE_OAUTH_TOKEN outside print mode, so it's credential-dir only). */
+  liveCredentialKinds: RuntimeAccountKind[]
+}
 export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; error?: string }
 
 export interface AgentInfo {
