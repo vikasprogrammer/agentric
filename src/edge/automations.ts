@@ -18,7 +18,7 @@ import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
 import { CodingRuntimeId, isCodingRuntime, Task, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
-import { classifyIntent } from './intent';
+import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
 
@@ -653,7 +653,9 @@ export class Automations {
   }
 
   private routeChat(text: string): { agentId?: string; help?: string } {
-    const claudeAgents = [...this.os.agents.values()].filter((a) => isCodingRuntime(a.runtime));
+    // Exclude the code-provisioned System machinery (concierge/operator/consolidator/…) — not user-facing
+    // teammates, so never addressable or listed in the help roster.
+    const claudeAgents = [...this.os.agents.values()].filter((a) => isCodingRuntime(a.runtime) && a.category !== 'System');
     // Only agents opted-in to the open chat front door (`chatReachable !== false`) are addressable here.
     const chatAgents = claudeAgents.filter((a) => a.chatReachable !== false).map((a) => a.id);
     const m = this.normalizeChatCommand(text).trim().match(/^\/([A-Za-z0-9][\w-]*)\b\s*([\s\S]*)$/);
@@ -804,6 +806,11 @@ export class Automations {
     //    thread"), not a bespoke client poll. `work` routes to the best-fit teammate. Fails safe.
     if (this.os.settings.autoRouteEnabled()) {
       const intent = classifyIntent(opts.text).intent;
+
+      if (intent === 'social') {
+        // A bare "hey"/"thanks" — reply conversationally instead of routing or dumping the roster.
+        return { sessions, reply: SOCIAL_REPLY };
+      }
 
       if (intent === 'ask') {
         // A question ABOUT the workspace: answer INLINE first (fast, no session) — state lookup → direct

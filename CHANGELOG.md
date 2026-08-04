@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.298.0] — 2026-08-04
+### Added
+- **Chat front door: greetings get a friendly reply, and the help/`/name` roster drops System agents.**
+  A bare "hey" / "thanks" / "good morning" (a new `social` intent — short, no OS noun, no task) now gets a
+  one-line "👋 Happy to help — ask me a question about your workspace, or tell me what you need done"
+  instead of dumping the whole agent list. A greeting that wraps a real request ("hello, I need help
+  reviewing a PR") still routes as work (length + OS-noun guards). And the addressable/help roster now
+  excludes `category:'System'` machinery (concierge/operator/consolidator) — they were being listed as
+  `/agent`-addressable. Applies to Slack/Discord (`routeUnmatched`/`routeChat`) and Cockpit web
+  (`/api/router/preview` renders the greeting inline like an `ask` answer). `src/edge/intent.ts`,
+  `src/edge/automations.ts`, `src/server.ts`.
+
 ## [0.297.1] — 2026-08-03
 ### Fixed
 - **Insight alerts kept re-firing about problems that were already fixed.** Both repeat-offender alerts

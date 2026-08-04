@@ -30,7 +30,7 @@ import { type ChatArtifactRef, type ChatKbRef, type ChatAppRef } from './edge/co
 import { summarizeConversation } from './edge/summarize';
 import { Automation, Automations, nextCronRun, derivedConcurrencyCap, chatTitle } from './edge/automations';
 import { chooseAgent } from './edge/router';
-import { classifyIntent } from './edge/intent';
+import { classifyIntent, SOCIAL_REPLY } from './edge/intent';
 import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './edge/concierge';
 import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
@@ -2609,6 +2609,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     };
 
     const intent = b.force === 'work' ? { intent: 'work' as const } : classifyIntent(text);
+
+    // A bare greeting / thanks → a friendly reply, rendered inline like an `ask` answer (no session).
+    if (intent.intent === 'social') {
+      return sendJson(res, 200, { intent: 'ask', answer: SOCIAL_REPLY, source: 'state' });
+    }
 
     if (intent.intent === 'action' && intent.surface) {
       return sendJson(res, 200, { intent: 'action', surface: intent.surface });
