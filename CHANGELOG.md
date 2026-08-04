@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.306.0] — 2026-08-04
+### Changed
+- **Context-engineering pass, part 2 — trim the always-on operating notes.** Follow-up to #554. The
+  `AGENT_OS_OPERATING_NOTES` block rides in every session's system prompt (~2k tokens); this relocates
+  the mechanical file-plumbing out of it. The `publish`/scratchpad rule (a ~150-word paragraph) is
+  shortened to the one instruction that matters and its mechanics moved into the `publish` tool's own
+  description — where the model reads them at call time, not on every launch (MCP tool descriptions load
+  with the tool, so nothing is lost). The PR-linkback section is tightened to the instruction. No
+  guidance removed; ~8% (~160 tokens) off every session, fleet-wide on next launch.
+
 ## [0.305.0] — 2026-08-04
 ### Added
 - **Telegram helper commands: `/help`, `/agents`, `/whoami`.** The bot is now self-explanatory — all
