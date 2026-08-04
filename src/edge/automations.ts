@@ -1385,6 +1385,20 @@ export class Automations {
     return { status: 'none' };
   }
 
+  /**
+   * End the conversation bound to a Telegram chat (+ forum topic) — the `/new` reset. Stops any live run
+   * and detaches every reply binding for the chat, so the caller's NEXT message starts a FRESH session
+   * instead of continuing/reviving the last one. Returns whether a session was actually closed (for the ack).
+   */
+  resetTelegramChat(chat: string, messageThreadId: string): { closed: boolean; agent?: string } {
+    const bound = this.tm.sessionForTelegramThread(chat, messageThreadId || '');
+    if (bound) {
+      try { this.tm.stopSession(bound.sessionId, 'telegram', 'user started a new conversation'); } catch { /* going away regardless */ }
+    }
+    this.tm.clearTelegramBinding(chat, messageThreadId || '');
+    return { closed: !!bound, agent: bound?.agent };
+  }
+
   // ── scheduler ──────────────────────────────────────────────────────────────────
   /** Check every ~20s; fire each due cron automation at most once per matching minute. */
   start(intervalMs = 20_000): void {

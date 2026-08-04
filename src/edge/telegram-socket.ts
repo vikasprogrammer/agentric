@@ -154,7 +154,29 @@ export class TelegramSocket {
     // Strip a leading @botusername (and the `@bot` appended to a `/cmd@bot` command) so the message — and
     // the `/agent` router prefix — starts clean, then map a registered Telegram command name back to its
     // real (possibly hyphenated) agent id so a tapped `/agent_author` reaches `agent-author`.
-    const text = this.resolveCommand(this.stripMention(ev.text));
+    let text = this.resolveCommand(this.stripMention(ev.text));
+
+    // `/new` (or `/reset`) — end the current conversation in this chat and start fresh. Detected before
+    // continuity so the command itself never gets delivered into the live session. `/new` alone acks and
+    // returns; `/new <request>` resets then falls through with the request as a fresh spawn. Skipped if an
+    // agent is literally named `new`/`reset` (resolveCommand would already have rewritten a tapped one).
+    const reset = text.match(/^\/(new|reset|newchat)(?:@\w+)?\b\s*/i);
+    if (reset && !this.os.agents.has(reset[1].toLowerCase())) {
+      const r = this.autos.resetTelegramChat(ev.chatId, ev.messageThreadId);
+      this.os.audit.append({
+        ts: Date.now(), runId: '-', tenant: this.os.tenant,
+        principal: runAsMember ? `member:${runAsMember}` : 'telegram',
+        type: 'telegram.chat.reset', data: { chat: ev.chatId, closed: r.closed, agent: r.agent ?? null },
+      });
+      text = text.slice(reset[0].length).trim();
+      if (!text) {
+        void this.dmUser(ev.chatId, r.closed
+          ? `🆕 Ended the conversation with ${r.agent}. Send your next request, or tap /command to pick an agent.`
+          : `🆕 Fresh start — send your next request, or tap /command to pick an agent.`);
+        return;
+      }
+      // else: fall through with the remaining text as a brand-new request.
+    }
 
     // Inline approve/deny: a private-chat reply from someone with a pending approval we sent them resolves
     // the gate directly (no trip to the web Inbox). Only for private chats (where the ping was sent).
@@ -327,7 +349,10 @@ export class TelegramSocket {
     const token = this.os.settings.telegramBotToken();
     if (!token) return;
     const seen = new Set<string>();
-    const commands: { command: string; description: string }[] = [];
+    // `/new` first — the reset gesture, always available (see the `/new` branch in dispatch).
+    const commands: { command: string; description: string }[] = [
+      { command: 'new', description: 'End this conversation and start a fresh one' },
+    ];
     for (const a of this.chatAgents()) {
       const command = telegramCommandName(a.id);
       if (!command || seen.has(command)) continue;

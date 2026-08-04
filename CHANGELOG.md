@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.304.0] — 2026-08-04
+### Added
+- **Telegram `/new` — end the current conversation and start a fresh one.** Now that a Telegram DM is
+  threaded (a follow-up continues the last run), there was no way to reset it — a console Stop even got
+  *revived* on the next message. `/new` (aliases `/reset`, `/newchat`) stops the live run bound to the
+  chat and detaches its reply bindings, so the next message starts a brand-new session
+  (`Automations.resetTelegramChat` + `TerminalManager.clearTelegramBinding`). `/new` alone acks and
+  waits; `/new <request>` resets and immediately starts the new thing. Registered in the bot's `/command`
+  menu (first entry) so it's discoverable. Audited `telegram.chat.reset`. `src/edge/telegram-socket.ts`,
+  `src/edge/automations.ts`, `src/terminal.ts`.
+
 ## [0.303.0] — 2026-08-04
 ### Added
 - **Mark a Composio connection "available to the team" — or take it back to just me.** Connections →
