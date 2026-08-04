@@ -67,7 +67,7 @@ function migrate(db: Db): void {
     -- guarantees one external id resolves to at most ONE member, so run-as is never ambiguous. Cleaned
     -- up when the member is removed (TeamStore.removeMember).
     CREATE TABLE IF NOT EXISTS member_identities (
-      provider    TEXT NOT NULL,          -- slack | discord | email | github
+      provider    TEXT NOT NULL,          -- slack | discord | telegram | email | github
       external_id TEXT NOT NULL,          -- the provider-side id/handle
       member_id   TEXT NOT NULL,
       created_at  INTEGER NOT NULL,
@@ -256,6 +256,20 @@ function migrate(db: Db): void {
       comment_id TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+
+    -- Native Telegram egress binding (the analogue of discord_threads): the chat (+ forum topic +
+    -- triggering message) a Telegram-triggered session should reply into. Written when a telegram
+    -- automation / chat run spawns a session; read by the agentos telegram_reply tool so the agent posts
+    -- back to the SAME chat as a reply, without ever being handed (or able to spoof) a chat id.
+    -- message_thread_id is the supergroup forum-topic id ('' when none); message_id is the reply target.
+    CREATE TABLE IF NOT EXISTS telegram_threads (
+      session_id        TEXT PRIMARY KEY,
+      chat_id           TEXT NOT NULL,
+      message_thread_id TEXT NOT NULL,
+      message_id        TEXT NOT NULL,
+      created_at        INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_telegram_threads_chat ON telegram_threads (chat_id, message_thread_id);
 
     -- Binds an ask_human question to the Slack/Discord DM we sent about it, so the human can answer by
     -- REPLYING in that DM (not just via the web Inbox). Written when the question is DM'd (one row per

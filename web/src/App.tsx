@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -234,6 +234,7 @@ const ORIGIN_META: Record<NonNullable<Session['sourceKind']>, { icon: LucideIcon
   webhook: { icon: Webhook, label: 'Webhook' },
   slack: { icon: MessageSquare, label: 'Slack' },
   discord: { icon: Hash, label: 'Discord' },
+  telegram: { icon: Send, label: 'Telegram' },
   composio: { icon: Plug, label: 'Composio' },
   scheduled: { icon: CalendarClock, label: 'Scheduled' },
   task: { icon: ListChecks, label: 'Task' },
@@ -6426,6 +6427,49 @@ function DiscordSetupGuide() {
   )
 }
 
+// Telegram's analogue of the Discord setup guide. Telegram has the simplest setup of the three — one
+// token from @BotFather, no privileged-intent toggle. Group Privacy is the one gotcha to call out: with
+// it ON (the default) the bot only sees @mentions/commands, so thread continuity on plain follow-ups
+// needs it turned OFF. The server long-polls out to api.telegram.org — no public URL.
+function TelegramSetupGuide() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="rounded-md border">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-muted/40"
+      >
+        {open ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+        Setup steps — create the Telegram bot (~2 min)
+      </button>
+      {open && (
+        <div className="space-y-3 border-t px-4 py-3 text-xs text-muted-foreground">
+          <ol className="list-decimal space-y-2 pl-4">
+            <li>
+              <strong className="text-foreground">Talk to @BotFather.</strong> Open
+              <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="mx-1 font-medium text-foreground underline">@BotFather</a>
+              in Telegram → send <code className="text-[11px]">/newbot</code> → pick a name + username.
+            </li>
+            <li>Copy the <strong>HTTP API token</strong> it gives you (<code className="text-[11px]">123456:ABC-DEF…</code>) into <strong>Bot token</strong> below and save. The status badge flips to <strong className="text-emerald-600">connected</strong> within a second or two.</li>
+            <li>
+              <strong>DM the bot</strong> (search its @username, press Start) — or, to use it in a group, add it to the group.
+              For a group you must also turn <strong>Group Privacy OFF</strong> in @BotFather (<code className="text-[11px]">/mybots</code> → your bot →
+              Bot Settings → Group Privacy → Turn off) so it can see plain follow-up messages for thread continuity. With privacy ON
+              it still receives @mentions and <code className="text-[11px]">/commands</code>, just not plain replies.
+            </li>
+            <li>Finally, add a <strong>Telegram message</strong> automation on the Automations page — or just address any agent by name (<code className="text-[11px]">/agent-name …</code>) once the chat router is on.</li>
+          </ol>
+          <p className="border-t pt-2">
+            The bot connects by <strong>long polling</strong> (the server dials out to <code className="text-[11px]">api.telegram.org</code>) and routes
+            <code className="text-[11px]"> mention</code> + <code className="text-[11px]">direct_message</code> events — no request URL or public endpoint needed.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // GitHub's analogue of the Slack/Discord setup guides — but built around GitHub's **App-manifest**
 // one-click flow: we POST a pre-filled manifest to GitHub, the admin confirms, GitHub creates the App
 // and hands its client id + secret straight back to the server. So there's no manual copy-paste and no
@@ -6500,6 +6544,7 @@ function GithubSetupGuide() {
 const PROVIDER_META: Record<IdentityProvider, { label: string; placeholder: string }> = {
   slack: { label: 'Slack user ID', placeholder: 'U0123ABCD' },
   discord: { label: 'Discord user ID', placeholder: '123456789012345678' },
+  telegram: { label: 'Telegram user ID', placeholder: '123456789' },
   email: { label: 'Alt email', placeholder: 'name@other.com' },
   github: { label: 'GitHub login', placeholder: 'octocat' },
 }
@@ -6631,7 +6676,7 @@ function ProfilePage({ me, prefs, onSavePrefs, onProfileChange }: {
   const hasAvatar = !!me.avatar
   const hasContext = savedContext.trim().length > 0
   const hasGithub = identities.some((i) => i.provider === 'github')
-  const hasChat = identities.some((i) => i.provider === 'slack' || i.provider === 'discord')
+  const hasChat = identities.some((i) => i.provider === 'slack' || i.provider === 'discord' || i.provider === 'telegram')
   const steps = [
     { key: 'avatar', done: hasAvatar, label: 'Add a profile picture', hint: 'So teammates recognise you across sessions and the inbox.', to: 'pf-avatar' },
     { key: 'chat', done: hasChat, label: 'Link a chat account (Slack / Discord)', hint: 'A message from you runs its agent as you — and task & approval DMs reach you.', to: 'pf-chat' },
@@ -9148,6 +9193,7 @@ const TRIGGER_ITEMS: Record<string, string> = {
   webhook: 'Webhook',
   slack: 'Slack message (native)',
   discord: 'Discord message (native)',
+  telegram: 'Telegram message (native)',
   composio: 'Composio event',
 }
 
@@ -9158,6 +9204,7 @@ function triggerIcon(type: Automation['type']): LucideIcon {
     case 'webhook': return Webhook
     case 'slack': return Hash
     case 'discord': return MessageSquare
+    case 'telegram': return Send
     case 'once': return Clock
     default: return Zap
   }
@@ -9169,6 +9216,7 @@ function triggerSummary(a: Automation): string {
     case 'webhook': return 'Webhook'
     case 'slack': return `Slack · ${a.filter || 'any message'}`
     case 'discord': return `Discord · ${a.filter || 'any message'}`
+    case 'telegram': return `Telegram · ${a.filter || 'any message'}`
     case 'composio': return `Composio · ${a.filter || 'any event'}`
     case 'once': return 'One-shot'
     default: return a.type
@@ -9243,7 +9291,7 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { m
   // create / edit form
   const [name, setName] = useState('')
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
-  const [type, setType] = useState<'cron' | 'webhook' | 'composio' | 'slack' | 'discord'>('cron')
+  const [type, setType] = useState<'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram'>('cron')
   const [mode, setMode] = useState<'interactive' | 'headless'>('headless')
   const [schedule, setSchedule] = useState('*/30 * * * *')
   const [scheduleCustom, setScheduleCustom] = useState(false)
@@ -9287,10 +9335,10 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { m
     setHint('')
     if (editId) {
       // agentId + type are immutable on edit; everything else is patchable. filter only for event triggers.
-      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task, runAs })
+      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' || type === 'telegram' ? filter : undefined, task, runAs })
       if (r.error) return setHint('⚠ ' + r.error)
     } else {
-      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' ? filter : undefined, task, runAs: runAs || undefined })
+      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' || type === 'telegram' ? filter : undefined, task, runAs: runAs || undefined })
       if (r.error) return setHint('⚠ ' + r.error)
     }
     closeForm()
@@ -9402,13 +9450,14 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { m
                   </Select>
                 </Field>
                 <Field label="Trigger" help={editId ? "The trigger type can't be changed after creation — delete and recreate to switch." : undefined}>
-                  <Select items={TRIGGER_ITEMS} value={type} disabled={!!editId} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord')}>
+                  <Select items={TRIGGER_ITEMS} value={type} disabled={!!editId} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram')}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="cron">Schedule (cron)</SelectItem>
                       <SelectItem value="webhook">Webhook</SelectItem>
                       <SelectItem value="slack">Slack message (native)</SelectItem>
                       <SelectItem value="discord">Discord message (native)</SelectItem>
+                      <SelectItem value="telegram">Telegram message (native)</SelectItem>
                       <SelectItem value="composio">Composio event</SelectItem>
                     </SelectContent>
                   </Select>
@@ -9450,6 +9499,10 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { m
                 ) : type === 'discord' ? (
                   <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a channel id. Blank = any Discord message the bot receives. Needs a bot token in Connections → Creds.">
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="mention  ·  or a channel id  (blank = any)" />
+                  </Field>
+                ) : type === 'telegram' ? (
+                  <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a chat id. Blank = any Telegram message the bot receives. Needs a bot token in Connections → Creds.">
+                    <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="mention  ·  or a chat id  (blank = any)" />
                   </Field>
                 ) : (
                   <Field label="Trigger filter" help="Composio trigger slug to match — e.g. SLACK_DIRECT_MESSAGE_RECEIVED. Blank = any Composio event. Needs a webhook secret in Connections → Creds.">
@@ -14494,6 +14547,8 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [slackState, setSlackState] = useState<SlackStatus | null>(null)
   const [discord, setDiscord] = useState<IntegrationsResp['discord']>({ botToken: false, configured: false })
   const [discordState, setDiscordState] = useState<DiscordStatus | null>(null)
+  const [telegram, setTelegram] = useState<IntegrationsResp['telegram']>({ botToken: false, configured: false })
+  const [telegramState, setTelegramState] = useState<TelegramStatus | null>(null)
   const [clickup, setClickup] = useState<IntegrationsResp['clickup']>({ token: false, hint: '', webhookSecret: false, configured: false, hookPath: '' })
   const [github, setGithub] = useState<IntegrationsResp['github']>({ clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false })
   const [ghId, setGhId] = useState('')
@@ -14522,6 +14577,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const [botTok, setBotTok] = useState('')
   const [discordTok, setDiscordTok] = useState('')
   const [discordAppId, setDiscordAppId] = useState('')
+  const [telegramTok, setTelegramTok] = useState('')
   const [clickupTok, setClickupTok] = useState('')
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
@@ -14529,6 +14585,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   // Defensive defaults so an older backend (one that predates a field) never white-screens the page.
   const SLACK_DEFAULT = { appToken: false, botToken: false, configured: false }
   const DISCORD_DEFAULT = { botToken: false, configured: false }
+  const TELEGRAM_DEFAULT = { botToken: false, configured: false }
   const CLICKUP_DEFAULT = { token: false, hint: '', webhookSecret: false, configured: false, hookPath: '' }
   const GITHUB_DEFAULT = { clientId: false, clientSecret: false, configured: false, slug: '', installUrl: '', appId: false, privateKey: false, botReady: false }
   const IMAGE_DEFAULT = { openRouter: false, atlas: false, backend: null, defaultModel: '', configured: false } as const
@@ -14539,6 +14596,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
     if (r.webhook) setWebhook(r.webhook)
     setSlack(r.slack ?? SLACK_DEFAULT)
     setDiscord(r.discord ?? DISCORD_DEFAULT)
+    setTelegram(r.telegram ?? TELEGRAM_DEFAULT)
     setClickup(r.clickup ?? CLICKUP_DEFAULT)
     setGithub(r.github ?? GITHUB_DEFAULT)
     setImage(r.image ?? IMAGE_DEFAULT)
@@ -14554,6 +14612,7 @@ function IntegrationsSettings({ me }: { me: Member }) {
   const loadStatus = () => {
     api.slackStatus().then((s) => { if (s && !s.error) setSlackState(s) }).catch(() => {})
     api.discordStatus().then((s) => { if (s && !s.error) setDiscordState(s) }).catch(() => {})
+    api.telegramStatus().then((s) => { if (s && !s.error) setTelegramState(s) }).catch(() => {})
   }
   // Pull the Atlas model catalog (best-effort — empty lists just mean the picker is plain free text).
   const loadAtlasModels = () => {
@@ -14564,12 +14623,12 @@ function IntegrationsSettings({ me }: { me: Member }) {
   // catch a mid-handshake "Disconnected" and make the panel look broken (and tempt a needless server
   // restart). So poll with backoff until the touched platform(s) settle: connected, or intentionally
   // cleared (unconfigured stays down = terminal).
-  const pollReconnect = (want: { slack: boolean; discord: boolean }) => {
+  const pollReconnect = (want: { slack: boolean; discord: boolean; telegram: boolean }) => {
     let tries = 0
     const settled = (s?: { configured: boolean; connected: boolean } | null) => !!s && (!s.configured || s.connected)
     const tick = async () => {
       tries++
-      let slackDone = !want.slack, discordDone = !want.discord
+      let slackDone = !want.slack, discordDone = !want.discord, telegramDone = !want.telegram
       if (want.slack) {
         const s = await api.slackStatus().catch(() => null)
         if (s && !s.error) { setSlackState(s); slackDone = settled(s) }
@@ -14578,7 +14637,11 @@ function IntegrationsSettings({ me }: { me: Member }) {
         const d = await api.discordStatus().catch(() => null)
         if (d && !d.error) { setDiscordState(d); discordDone = settled(d) }
       }
-      if ((slackDone && discordDone) || tries >= 8) return
+      if (want.telegram) {
+        const t = await api.telegramStatus().catch(() => null)
+        if (t && !t.error) { setTelegramState(t); telegramDone = settled(t) }
+      }
+      if ((slackDone && discordDone && telegramDone) || tries >= 8) return
       setTimeout(tick, 1500)
     }
     setTimeout(tick, 800)
@@ -14601,19 +14664,20 @@ function IntegrationsSettings({ me }: { me: Member }) {
     }
   }, [])
 
-  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; anthropicApiKey?: string; anthropicModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
+  const save = async (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; telegramBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; anthropicApiKey?: string; anthropicModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }, label: string) => {
     setBusy(true); setHint('')
     const r = await api.saveIntegrations(body)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setClickupTok(''); setGhId(''); setGhSecret(''); setGhAppId(''); setGhPem(''); setGhSlug(''); setAtKey(''); setFalKey('')
+    setKey(''); setWh(''); setAppTok(''); setBotTok(''); setDiscordTok(''); setTelegramTok(''); setClickupTok(''); setGhId(''); setGhSecret(''); setGhAppId(''); setGhPem(''); setGhSlug(''); setAtKey(''); setFalKey('')
     apply(r)
     setHint(label); setTimeout(() => setHint(''), 1500)
-    // The Socket-Mode / Gateway connection re-dials on the server when tokens change — poll until the
-    // reconnect settles so the panel reflects reality rather than a mid-handshake "Disconnected".
+    // The Socket-Mode / Gateway / long-poll connection re-dials on the server when tokens change — poll
+    // until the reconnect settles so the panel reflects reality rather than a mid-handshake "Disconnected".
     const wantSlack = body.slackAppToken !== undefined || body.slackBotToken !== undefined
     const wantDiscord = body.discordBotToken !== undefined
-    if (wantSlack || wantDiscord) pollReconnect({ slack: wantSlack, discord: wantDiscord })
+    const wantTelegram = body.telegramBotToken !== undefined
+    if (wantSlack || wantDiscord || wantTelegram) pollReconnect({ slack: wantSlack, discord: wantDiscord, telegram: wantTelegram })
     // A new/removed Atlas key changes which catalog we can fetch — refresh the pickers.
     if (body.atlasKey !== undefined) loadAtlasModels()
   }
@@ -14846,6 +14910,48 @@ function IntegrationsSettings({ me }: { me: Member }) {
               </div>
             )
           })()}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-3 p-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              Telegram (native, long poll)
+              {telegramState && (telegramState.connected
+                ? <Badge variant="secondary" className="px-1.5 py-0 text-[10px] text-emerald-600">connected{telegramState.username ? ` · @${telegramState.username}` : ''}</Badge>
+                : telegram.configured
+                  ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] text-amber-600">configured · not connected</Badge>
+                  : <Badge variant="outline" className="px-1.5 py-0 text-[10px]">not configured</Badge>)}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              One company Telegram bot, configured once and shared across the workspace — no public URL needed (the server
+              long-polls out to Telegram). DM the bot or @-mention it in a group and matching <strong>Telegram</strong>
+              automations run. <span className="text-foreground">Note:</span> Telegram exposes no email, so triggered runs act
+              as the member whose <strong>Telegram user id</strong> is linked on the Team page (else the company identity). For
+              group thread continuity, turn <strong>Group Privacy OFF</strong> in @BotFather.
+            </p>
+            {telegramState?.lastError && <p className="mt-1 font-mono text-[11px] text-destructive">last error: {telegramState.lastError}</p>}
+          </div>
+          <TelegramSetupGuide />
+          <Field label="Bot token" help="@BotFather → /newbot (or /mybots → API Token). Format 123456:ABC-DEF…">
+            <Input
+              type="password"
+              value={telegramTok}
+              onChange={(e) => setTelegramTok(e.target.value)}
+              placeholder={telegram.botToken ? '•••• (saved) — type a new token to replace' : 'bot token (123456:ABC…)'}
+              className="font-mono text-xs"
+            />
+          </Field>
+          <div className="flex items-center gap-3">
+            <Button
+              onClick={() => save({ telegramBotToken: telegramTok.trim() }, 'saved')}
+              disabled={busy || !telegramTok.trim()}
+            >Save</Button>
+            {telegram.botToken && (
+              <Button variant="ghost" onClick={() => save({ telegramBotToken: '' }, 'removed')} disabled={busy}>Remove</Button>
+            )}
+          </div>
         </CardContent>
       </Card>
 

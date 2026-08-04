@@ -37,6 +37,7 @@ import { SlackSocket } from './edge/slack-socket';
 import { checkClaudeToken, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
+import { TelegramSocket } from './edge/telegram-socket';
 import { AppSupervisor } from './edge/app-supervisor';
 import { DreamingEngine, recommendationResolved, guidanceStale } from './edge/dreaming';
 import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
@@ -302,7 +303,7 @@ export function createHttpServer(registry: TenantRegistry): http.Server {
     }
     const rt = resolveRuntime(registry, req);
     if (!rt) return sendJson(res, 404, { error: 'no such workspace' });
-    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack, rt.discord, rt.apps, rt.clickup).catch((err) =>
+    handle(rt.os, rt.tm, rt.autos, req, res, rt.ttydPort, rt.slack, rt.discord, rt.apps, rt.clickup, rt.telegram).catch((err) =>
       sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }),
     );
   });
@@ -447,7 +448,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   return server;
 }
 
-async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket, appSup?: AppSupervisor, clickup?: ClickupIngress): Promise<void> {
+async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req: http.IncomingMessage, res: http.ServerResponse, ttydPort?: number, slack?: SlackSocket, discord?: DiscordSocket, appSup?: AppSupervisor, clickup?: ClickupIngress, telegram?: TelegramSocket): Promise<void> {
   const url = new URL(req.url || '/', 'http://localhost');
   const p = url.pathname;
   const method = req.method || 'GET';
@@ -1300,6 +1301,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     if (!discord) return sendJson(res, 503, { error: 'discord not available' });
     const out = await discord.reply(session, String(b.text || ''));
+    return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
+  }
+  // native Telegram egress: the analogue of discord/reply. Chat/thread/message come from the server-side
+  // binding (telegram_threads) — the agent only sends text.
+  if (method === 'POST' && p === '/api/agent/telegram/reply') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    if (!telegram) return sendJson(res, 503, { error: 'telegram not available' });
+    const out = await telegram.reply(session, String(b.text || ''));
     return sendJson(res, out.ok ? 200 : 400, out.ok ? { ok: true } : { ok: false, error: out.error });
   }
   // native ClickUp egress: the analogue of slack/reply. The task comes from the server-side binding
@@ -4489,6 +4501,17 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
     }
     if (discordTouched && discord) void discord.restart();
+    // Telegram: one bot token (<botid>:<hash> from @BotFather). Clearing it removes orphaned telegram
+    // automations (they can never fire again) and re-dials the long-poll — the exact analogue of Discord.
+    const telegramTouched = typeof b.telegramBotToken === 'string';
+    if (typeof b.telegramBotToken === 'string') os.settings.setTelegramBotToken(b.telegramBotToken, me.email);
+    let removedTelegramAutomations = 0;
+    if (telegramTouched && !os.settings.telegramConfigured()) {
+      for (const a of autos.list()) {
+        if (a.type === 'telegram' && autos.remove(a.id)) removedTelegramAutomations++;
+      }
+    }
+    if (telegramTouched && telegram) void telegram.restart();
     // ClickUp: an API token (pk_…) + a webhook secret (the `?key=` on the inbound Automation POST). Unlike
     // Slack/Discord there's no socket to (re)dial — the company just points a ClickUp Automation at the hook
     // URL. Setting the token with no secret yet auto-generates one so the URL shown in Settings is complete.
@@ -4541,7 +4564,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (typeof b.chatRouter === 'boolean') os.settings.setChatRouterEnabled(b.chatRouter, me.email);
     // Warm (resident) Slack thread session idle-kill, minutes (0 = disable residence → cold replies).
     if (b.chatIdleTimeoutMin !== undefined && Number.isFinite(Number(b.chatIdleTimeoutMin))) os.settings.setChatIdleTimeoutMinutes(Number(b.chatIdleTimeoutMin), me.email);
-    return sendJson(res, 200, { ok: true, removedSlackAutomations, removedDiscordAutomations, removedClickupAutomations, ...integrationsView(os) });
+    return sendJson(res, 200, { ok: true, removedSlackAutomations, removedDiscordAutomations, removedTelegramAutomations, removedClickupAutomations, ...integrationsView(os) });
   }
   // Live Slack Socket-Mode connection status (owner/admin) — for the Integrations panel.
   if (method === 'GET' && p === '/api/settings/slack/status') {
@@ -4552,6 +4575,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/settings/discord/status') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
     return sendJson(res, 200, discord ? discord.status() : { configured: os.settings.discordConfigured(), connected: false, botUserId: '' });
+  }
+  // Live Telegram long-poll connection status (owner/admin) — for the Integrations panel.
+  if (method === 'GET' && p === '/api/settings/telegram/status') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    return sendJson(res, 200, telegram ? telegram.status() : { configured: os.settings.telegramConfigured(), connected: false, botUserId: '', username: '' });
   }
 
   // ── per-member GitHub (user-to-server OAuth) — any member links their OWN account ──────────────
@@ -5508,6 +5536,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         connected: discord ? discord.status().connected : false,
         botUserId: discord ? discord.status().botUserId : '',
       },
+      telegram: {
+        configured: os.settings.telegramConfigured(),
+        connected: telegram ? telegram.status().connected : false,
+        username: telegram ? telegram.status().username : '',
+      },
       custom: os.connectors
         .list()
         .filter((c) => c.scope === 'org')
@@ -6416,6 +6449,7 @@ function integrationsView(os: AgentOS): {
   webhook: { set: boolean };
   slack: { appToken: boolean; botToken: boolean; configured: boolean };
   discord: { botToken: boolean; configured: boolean };
+  telegram: { botToken: boolean; configured: boolean };
   clickup: { token: boolean; hint: string; webhookSecret: boolean; configured: boolean; hookPath: string };
   github: { clientId: boolean; clientSecret: boolean; configured: boolean; slug: string; installUrl: string; appId: boolean; privateKey: boolean; botReady: boolean };
   image: { openRouter: boolean; atlas: boolean; backend: 'openrouter' | 'atlas' | null; defaultModel: string; configured: boolean };
@@ -6429,6 +6463,7 @@ function integrationsView(os: AgentOS): {
   const meta = os.settings.composioMeta();
   const slack = os.settings.slackMeta();
   const discord = os.settings.discordMeta();
+  const telegram = os.settings.telegramMeta();
   const clickup = os.settings.clickupMeta();
   const gh = new GithubIdentity(os);
   const image = os.settings.imageGenMeta();
@@ -6438,6 +6473,7 @@ function integrationsView(os: AgentOS): {
     webhook: { set: os.settings.composioWebhookSet() },
     slack: { appToken: slack.appToken, botToken: slack.botToken, configured: os.settings.slackConfigured() },
     discord: { botToken: discord.botToken, configured: os.settings.discordConfigured() },
+    telegram: { botToken: telegram.botToken, configured: os.settings.telegramConfigured() },
     clickup: { token: clickup.token, hint: redactSecret(os.settings.clickupToken()), webhookSecret: clickup.webhookSecret, configured: os.settings.clickupConfigured(), hookPath: os.settings.clickupWebhookSecret() ? `/hooks/clickup?key=${os.settings.clickupWebhookSecret()}` : '' },
     github: { clientId: !!gh.clientId(), clientSecret: !!gh.clientSecret(), configured: gh.configured(), slug: gh.appSlug(), installUrl: gh.appSlug() ? `https://github.com/apps/${gh.appSlug()}/installations/new` : '', appId: !!gh.appId(), privateKey: !!gh.privateKey(), botReady: !!gh.loadBotToken() },
     image: { openRouter: image.openRouter, atlas: image.atlas, backend: image.backend, defaultModel: image.defaultModel, configured: os.settings.imageGenConfigured() },

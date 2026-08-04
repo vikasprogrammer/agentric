@@ -16,7 +16,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Plug, Globe, Plus, Trash2, X, Search, Building2, User as UserIcon, ExternalLink, Server, SquareTerminal, Database, Pencil } from 'lucide-react'
 import type { IconType } from 'react-icons'
 import {
-  SiGmail, SiGithub, SiGoogledrive, SiDiscord, SiResend, SiHetzner, SiNotion, SiLinear,
+  SiGmail, SiGithub, SiGoogledrive, SiDiscord, SiTelegram, SiResend, SiHetzner, SiNotion, SiLinear,
   SiJira, SiHubspot, SiGooglesheets, SiGooglecalendar, SiGooglecloud, SiStripe, SiAsana,
   SiTrello, SiZendesk, SiClickup, SiAirtable, SiGoogle,
 } from 'react-icons/si'
@@ -40,6 +40,7 @@ const BRAND: Record<string, { Icon: IconType; color: string }> = {
   github: { Icon: SiGithub, color: '#181717' },
   googledrive: { Icon: SiGoogledrive, color: '#0066DA' },
   discord: { Icon: SiDiscord, color: '#5865F2' },
+  telegram: { Icon: SiTelegram, color: '#26A5E4' },
   resend: { Icon: SiResend, color: '#000000' },
   hetzner: { Icon: SiHetzner, color: '#D50C2D' },
   notion: { Icon: SiNotion, color: '#000000' },
@@ -636,6 +637,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
           </div>
           <NativeRow name="slack" title="Slack" s={ov?.slack} isAdmin={isAdmin} />
           <NativeRow name="discord" title="Discord" s={ov?.discord} isAdmin={isAdmin} />
+          <NativeRow name="telegram" title="Telegram" s={ov?.telegram ? { configured: ov.telegram.configured, connected: ov.telegram.connected, botUserId: ov.telegram.username ? `@${ov.telegram.username}` : '' } : undefined} isAdmin={isAdmin} />
           {companyApps.map((a) => (
             <ComposioRow key={a.id} app={a} canRemove={isAdmin} busy={busy === a.id} onRemove={() => onDisconnectComposio(a.id, 'company', a.toolkit)} />
           ))}

@@ -22,6 +22,7 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-4-5'; // kept in sync with src/edg
 const SLACK_APP_TOKEN_KEY = 'slack_app_token'; // xapp-… (Socket Mode, connections:write)
 const SLACK_BOT_TOKEN_KEY = 'slack_bot_token'; // xoxb-… (chat.postMessage, users.info)
 const DISCORD_BOT_TOKEN_KEY = 'discord_bot_token'; // Bot … (Gateway connect + post messages)
+const TELEGRAM_BOT_TOKEN_KEY = 'telegram_bot_token'; // <botid>:<hash> from @BotFather (long-poll + post messages)
 const CLICKUP_TOKEN_KEY = 'clickup_api_token'; // pk_… (read task comments + post replies)
 const CLICKUP_WEBHOOK_KEY = 'clickup_webhook_secret'; // the ?key= that authenticates the inbound ClickUp Automation POST
 const GITHUB_CLIENT_ID_KEY = 'github_client_id'; // the company GitHub App / OAuth App client id (per-member OAuth)
@@ -267,6 +268,28 @@ export class SettingsStore {
   }
   setDiscordBotToken(token: string, by?: string): void {
     this.set(DISCORD_BOT_TOKEN_KEY, token.trim(), by);
+  }
+
+  // ── native Telegram (long polling) ─────────────────────────────────────────────
+  // One company Telegram bot, configured once here, shared across the whole workspace. The single bot
+  // token both opens the outbound long-poll (`getUpdates`, no public URL needed) and posts replies. Like
+  // Discord there is no separate app-level token — @BotFather issues one `<botid>:<hash>` token for both.
+
+  /** Bot token (`<botid>:<hash>`) for long-polling + posting messages, or '' when unset. */
+  telegramBotToken(): string {
+    return this.getRow(TELEGRAM_BOT_TOKEN_KEY)?.value?.trim() ?? '';
+  }
+  /** The bot token present — the minimum to long-poll and reply. */
+  telegramConfigured(): boolean {
+    return !!this.telegramBotToken();
+  }
+  /** Whether the Telegram token is set + who last touched it (never returns the token itself). */
+  telegramMeta(): { botToken: boolean; updatedAt?: number; updatedBy?: string } {
+    const bot = this.getRow(TELEGRAM_BOT_TOKEN_KEY);
+    return { botToken: !!bot?.value, updatedAt: bot?.updated_at ?? undefined, updatedBy: bot?.updated_by ?? undefined };
+  }
+  setTelegramBotToken(token: string, by?: string): void {
+    this.set(TELEGRAM_BOT_TOKEN_KEY, token.trim(), by);
   }
 
   // ── native ClickUp (webhook ingress) ───────────────────────────────────────────
