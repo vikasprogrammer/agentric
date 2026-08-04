@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.305.0] — 2026-08-04
+### Added
+- **Telegram helper commands: `/help`, `/agents`, `/whoami`.** The bot is now self-explanatory — all
+  read-only, reply-and-return, detected before routing so they're never mistaken for an agent:
+  - **`/help`** (and Telegram's implicit **`/start`**) — how to drive the bot.
+  - **`/agents`** — the reachable fleet as tappable `/name` commands + one-line descriptions.
+  - **`/whoami`** — which member the sender resolves to for run-as, or the unmapped-→-company-identity
+    fallback (with the Telegram id to map).
+  All four (plus `/new`) are registered in the `/command` menu ahead of the agents, and seeded into the
+  dedupe set so an agent can't shadow a helper. `src/edge/telegram-socket.ts`.
+
 ## [0.304.0] — 2026-08-04
 ### Added
 - **Telegram `/new` — end the current conversation and start a fresh one.** Now that a Telegram DM is
