@@ -8,6 +8,37 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.299.0] — 2026-08-04
+### Added
+- **Settings → System now catches a dependency that is present but STALE, not just missing.** Found the
+  hard way: a tenant's box sat on `claude` 2.1.216 for weeks, so `/model` couldn't list Opus 5 and the
+  `opus` family alias resolved to 4.8 — while the console showed a green *"All required dependencies are
+  installed."* the whole time. Presence was the only thing `checkDeps()` ever asked, and the `claude` dep
+  deliberately carries no package-manager `pkg`, so it sat outside the install path entirely.
+  Deps may now name an `npmPkg`; the new `checkDepUpdates()` (`src/edge/deps.ts`) asks the npm registry
+  for `latest` via the abbreviated `/latest` endpoint (global `fetch`, no `npm` shell-out, no new dep),
+  caches for an hour, and flags a behind-version install. `checkDeps()` stays sync + network-free, so
+  freshness is a layer on top rather than a slower probe: `GET /api/deps` (`?force=1` re-asks) annotates
+  the report, and a stale row goes amber with the published version, an owner-only **Update** button, and
+  a note that live sessions keep their binary until they restart. `POST /api/deps/update` runs
+  `npm install -g <pkg>@latest` — owner-gated, audited `system.deps.updated`, never via sudo (a
+  permissions failure surfaces the manual command instead of leaving root-owned files in the prefix), and
+  it prefers the `npm` beside the resolved binary so an nvm box can't install into a different prefix
+  than the one it runs from. CLI parity: `agent-os deps` shows `↑ … → v2.1.220 available`, and
+  `agent-os deps update <bin>` applies it.
+
+### Fixed
+- **A `claude` reachable only off PATH no longer reports as MISSING.** `deps.ts` resolved binaries with a
+  bare `command -v`, but `claude-cli.ts` walks `$CLAUDE_BIN` → PATH → `~/.local/bin/claude` because a
+  launchd/systemd parent ships a minimal PATH — so on such a box the panel claimed the runtime was absent
+  while sessions launched fine. Both now share `claudeBinCandidates()` and honour the same order
+  (`$CLAUDE_BIN` first — resolving PATH first would report the version of a binary sessions never run).
+  A dep found only via a fallback is version-probed at its resolved path and marked `offPath` in the UI.
+- New `scripts/deps-freshness-test.cjs` (38 assertions: version comparison, resolution order, the
+  off-PATH case, stale detection, the route authz — owner-only update, non-npm deps refused before any
+  shell-out — and a full update round-trip against a stubbed `npm`, which also pins the sibling-npm
+  preference) wired into `npm run test:governance`.
+
 ## [0.298.0] — 2026-08-04
 ### Added
 - **Chat front door: greetings get a friendly reply, and the help/`/name` roster drops System agents.**

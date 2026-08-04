@@ -13,11 +13,20 @@ import * as path from 'path';
 
 let cachedVersion: number[] | null | undefined;
 
+/**
+ * Candidate locations for the `claude` binary, in resolution order — `$CLAUDE_BIN`, then a bare PATH
+ * lookup, then the documented `~/.local/bin/claude`. Resolved lazily (env + homedir are read per call)
+ * and shared with `src/edge/deps.ts`, so the Settings → System probe and the launcher agree on which
+ * binary is "installed" instead of drifting apart.
+ */
+export function claudeBinCandidates(): string[] {
+  return [process.env.CLAUDE_BIN, 'claude', path.join(os.homedir(), '.local/bin/claude')].filter(Boolean) as string[];
+}
+
 /** The installed `claude` version as `[major, minor, patch]`, or null if no binary resolves. Cached. */
 export function claudeVersion(): number[] | null {
   if (cachedVersion !== undefined) return cachedVersion;
-  const candidates = [process.env.CLAUDE_BIN, 'claude', path.join(os.homedir(), '.local/bin/claude')].filter(Boolean) as string[];
-  for (const bin of candidates) {
+  for (const bin of claudeBinCandidates()) {
     try {
       const out = execFileSync(bin, ['--version'], { encoding: 'utf8', timeout: 5000 });
       const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
@@ -28,6 +37,13 @@ export function claudeVersion(): number[] | null {
   }
   cachedVersion = null; // no `claude` resolvable (tests/demo)
   return cachedVersion;
+}
+
+/** First `x.y.z` in a version string as `[maj,min,patch]`, or null — tolerates trailing noise like
+ *  `2.1.220 (Claude Code)`. Shared with the dependency-freshness probe. */
+export function parseVersion(s: string | undefined): number[] | null {
+  const m = (s || '').match(/(\d+)\.(\d+)\.(\d+)/);
+  return m ? [+m[1], +m[2], +m[3]] : null;
 }
 
 /** True when `v` (a `[maj,min,patch]`) is ≥ `min`. */

@@ -20,7 +20,7 @@ import { TenantStore } from './state/control';
 import { reconcileTenant } from './governance/policy-reconcile';
 import { Role } from './types';
 import { VERSION } from './version';
-import { checkDeps, installDeps, type DepsReport } from './edge/deps';
+import { checkDeps, checkDepUpdates, installDeps, updateNpmDep, type DepsReport } from './edge/deps';
 
 // `node:sqlite` is stable enough to depend on but still emits an ExperimentalWarning on first
 // use. Swallow just that one line so the console output stays clean; surface every other warning.
@@ -58,10 +58,11 @@ async function main(): Promise<void> {
       policy(rest);
       break;
     case 'deps':
-      deps(false);
+      if (rest[0] === 'update') await depsUpdate(rest[1] || '');
+      else await deps(false);
       break;
     case 'install-deps':
-      deps(true);
+      await deps(true);
       break;
     case 'demo':
       await import('./demo');
@@ -89,19 +90,27 @@ async function main(): Promise<void> {
 }
 
 /** Check (and optionally install) the native tools a running instance shells out to. No server needed. */
-function deps(install: boolean): void {
+async function deps(install: boolean): Promise<void> {
   const print = (r: DepsReport): void => {
     for (const d of r.deps) {
-      const mark = d.installed ? '✓' : d.required ? '✗' : '·';
+      const mark = d.installed ? (d.updateAvailable ? '↑' : '✓') : d.required ? '✗' : '·';
       const tail = d.installed ? (d.version || d.path || '') : (d.pkg ? '(missing)' : `(missing — ${d.hint || 'install manually'})`);
-      console.log(`  ${mark} ${d.label.padEnd(12)} ${tail}`);
+      const stale = d.updateAvailable ? `  → v${d.latest} available` : '';
+      const off = d.offPath ? '  (off PATH)' : '';
+      console.log(`  ${mark} ${d.label.padEnd(12)} ${tail}${off}${stale}`);
     }
     console.log(r.ok ? '\nAll required dependencies are installed.' : '\nSome required dependencies are missing.');
     if (!r.ok && r.installCommand) console.log(`Install them with:\n  ${r.installCommand}`);
     else if (!r.ok) console.log('No supported package manager found — install the missing tools by hand (see hints above).');
+    for (const d of r.deps.filter((x) => x.updateAvailable)) {
+      console.log(`\n${d.label} is out of date (v${d.latest} available). Update it with:\n  agent-os deps update ${d.bin}`);
+    }
   };
 
-  if (!install) { const r = checkDeps(); print(r); process.exitCode = r.ok ? 0 : 1; return; }
+  // Freshness is best-effort — an offline box still gets its presence report.
+  const annotate = (r: DepsReport): Promise<DepsReport> => checkDepUpdates(r).catch(() => r);
+
+  if (!install) { const r = await annotate(checkDeps()); print(r); process.exitCode = r.ok ? 0 : 1; return; }
 
   const pre = checkDeps();
   if (pre.ok && !pre.installable.length) { console.log('All required dependencies are already installed.'); return; }
@@ -109,7 +118,20 @@ function deps(install: boolean): void {
   const result = installDeps();
   for (const s of result.steps) console.log(`${s.ok ? '✓' : '✗'} ${s.cmd}${s.out ? `\n${s.out}` : ''}`);
   console.log('');
-  print(result.report);
+  print(await annotate(result.report));
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+/** `agent-os deps update <bin>` — upgrade one npm-installed dependency (today: `claude`) in place. */
+async function depsUpdate(bin: string): Promise<void> {
+  if (!bin) { console.log('usage: agent-os deps update <bin>   (e.g. `claude`)'); process.exitCode = 1; return; }
+  console.log(`Updating ${bin}…\n`);
+  const result = await updateNpmDep(bin);
+  for (const s of result.steps) console.log(`${s.ok ? '✓' : '✗'} ${s.cmd}${s.out ? `\n${s.out}` : ''}`);
+  const after = result.report.deps.find((d) => d.bin === bin);
+  if (result.ok) console.log(`\n✓ ${after?.label || bin} is now ${after?.version || 'up to date'}.`);
+  else console.log(`\n✗ ${result.error || 'update failed'}`);
+  console.log('\nNote: sessions already running keep the old binary until they restart.');
   process.exitCode = result.ok ? 0 : 1;
 }
 
@@ -316,7 +338,8 @@ function usage(): void {
   invite <email> [role] mint a magic-link to invite a teammate (role: admin | member)
   login-link <email>    print a fresh login link for an existing member (recovery)
   members               list workspace members and their roles
-  deps                   check the native tools sessions need (tmux/ttyd/claude/git)
+  deps                   check the native tools sessions need (tmux/ttyd/claude/git) + their freshness
+  deps update <bin>      upgrade an npm-installed tool in place (e.g. deps update claude)
   install-deps           install the missing native tools via the box's package manager
   tenant <sub>          multi-tenant admin: list | create <slug> --owner <email> | remove <slug>
   policy reconcile      align agents' policyContext to the enforced ruleset (--tenant <slug> | --all; --yes to apply)
