@@ -32,8 +32,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-/** Per-directory and server configuration — not first-run UI state, and not ours to copy between accounts. */
-const SKIP_INHERIT = new Set(['projects', 'mcpServers']);
+/** Never inherited. `projects`/`mcpServers` are per-directory and server configuration rather than UI
+ *  state. `oauthAccount`/`userID` are WHO THE ACCOUNT IS: a dir written by `claude login` carries its own
+ *  (so gap-fill leaves them alone anyway), but a dir holding only a credentials file would otherwise take
+ *  the box's identity while authenticating as a different account — claude would label the session with
+ *  the wrong account and key its per-account caches off the wrong uuid. It repopulates both from the
+ *  token, so leaving them absent is strictly better than guessing. */
+const SKIP_INHERIT = new Set(['projects', 'mcpServers', 'oauthAccount', 'userID']);
 
 const readJson = (p) => {
   try {

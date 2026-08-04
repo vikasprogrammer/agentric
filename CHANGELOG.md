@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.309.2] — 2026-08-04
+### Fixed
+- **First-run inheritance no longer copies the box account's identity.** v0.309.1 gap-fills a credential
+  dir's `.claude.json` from the box's so a rotated session inherits every "seen/dismissed" flag. A dir
+  written by `claude login` carries its own `oauthAccount`/`userID`, so those were already left alone — but
+  a dir holding only a `.credentials.json` has none, and would have taken the box's identity while
+  authenticating as a different account, labelling the session with the wrong account and keying its
+  per-account caches off the wrong uuid. Both are now never inherited; claude repopulates them from the
+  token, so absent beats guessed. Caught by probing the deployed seeder against a bare dir.
+
+
 ## [0.309.1] — 2026-08-04
 ### Fixed
 - **A rotated session no longer parks on claude's first-run prompts.** Claude keeps its UI state in

@@ -56,6 +56,18 @@ console.log('\n\x1b[1m2) Inheriting never overwrites the account\x1b[0m');
 assert(seeded.userID === 'pool-user' && seeded.oauthAccount.accountUuid === 'pool-account',
   'the account\'s own identity keys win over the box\'s', JSON.stringify({ u: seeded.userID, a: seeded.oauthAccount }));
 assert(seeded.mcpServers === undefined, 'box-level mcpServers is not copied into an account dir');
+// The identity keys must not be inherited even when the target has none — a credential dir holding only
+// a .credentials.json (no .claude.json yet) would otherwise authenticate as one account while claiming
+// the box's identity, and key its per-account caches off the wrong uuid.
+const bare = path.join(TMP, 'bare-credentials');
+fs.mkdirSync(bare, { recursive: true });
+const bareR = seedClaudeConfig({ home, configDir: bare, projectDir: agentDir });
+const bareCfg = read(path.join(bare, '.claude.json'));
+assert(bareCfg.oauthAccount === undefined && bareCfg.userID === undefined,
+  'a dir with no config of its own does NOT inherit the box account\'s identity', JSON.stringify({ o: bareCfg.oauthAccount, u: bareCfg.userID }));
+assert(bareCfg.fullscreenUpsellSeenCount === 3 && bareCfg.hasCompletedOnboarding === true,
+  'while still inheriting the first-run flags that keep it from prompting');
+assert(bareR.inherited > 0, 'and it reports what it inherited');
 assert(seeded.projects['/somewhere/else'] === undefined, 'nor are the box\'s other project entries');
 
 console.log('\n\x1b[1m3) Idempotent — several sessions can launch at once\x1b[0m');
