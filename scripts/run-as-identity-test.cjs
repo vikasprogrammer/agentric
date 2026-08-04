@@ -95,6 +95,9 @@ async function main() {
   row('s_task', 'task:tsk_1', 'task:tsk_1');
   row('s_ok', memberId, memberId);
   row('s_null', 'automation:a1', null);
+  row('s_email', 'owner@test', 'owner@test');       // the second shape: an email, no colon
+  row('s_EMAIL', 'Owner@Test', 'Owner@Test');       // …and mixed case (members store lowercased)
+  row('s_gone', 'ex-staff@test', 'ex-staff@test');  // resolves to nobody — recoverable info, left as-is
 
   const { openDb } = require(path.join(ROOT, 'dist/state/db.js'));
   openDb(path.join(HOME, 'agent-os.db')); // re-runs migrate() over the same file
@@ -104,6 +107,9 @@ async function main() {
   assert(runAsOf('s_task') === null, 'migration NULLs a `task:` run_as');
   assert(runAsOf('s_ok') === memberId, 'migration LEAVES a real member id alone');
   assert(runAsOf('s_null') === null, 'an already-NULL run_as stays NULL');
+  assert(runAsOf('s_email') === memberId, 'migration CANONICALISES an email run_as to the member id');
+  assert(runAsOf('s_EMAIL') === memberId, 'email canonicalisation is case-insensitive');
+  assert(runAsOf('s_gone') === 'ex-staff@test', 'an email matching no member is left alone (not discarded)');
   assert(db.prepare('SELECT spawned_by FROM term_sessions WHERE id = ?').get('s_chat').spawned_by === 'chat:triage',
     'provenance (spawned_by) is untouched — only the identity column is cleaned');
 

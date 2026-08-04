@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.307.2] — 2026-08-04
+### Fixed
+- **The `run_as` cleanup now also catches the email-shaped rows.** v0.307.1 swept provenance strings out
+  of the identity column, but a second shape survives it: an **email** (a caller handed `createSession`
+  an email as provenance). It has no colon, so the sweep missed it, and it matches no member id — the
+  same silent identity loss. Found while verifying the 0.307.1 deploy: 2 rows on northwind
+  (`owner@localhost`), 1 on personal. The human is recoverable here, so the migration canonicalises
+  rather than NULLs — email → member id, lowercased to match `TeamStore.getMemberByEmail`. An email
+  resolving to nobody is left alone: it may be the only trace of a since-removed member, and unlike a
+  provenance string it isn't structurally impossible for a human to have owned that run. New rows were
+  already prevented by `resolveActingMember`, which canonicalises an id-or-email `runAs`.
+
 ## [0.307.1] — 2026-08-04
 ### Fixed
 - **A session's provenance can no longer leak into its identity column, silently costing the run its

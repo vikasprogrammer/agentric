@@ -1028,6 +1028,15 @@ function migrate(db: Db): void {
   // said all along. Scoped to colon-bearing values so a legitimate id can never be caught by it (a
   // member id never contains ':'), and so the sweep is a no-op on every already-clean workspace.
   db.exec("UPDATE term_sessions SET run_as = NULL WHERE run_as IS NOT NULL AND instr(run_as, ':') > 0");
+  // Second shape of the same bug: an EMAIL in the identity column (a caller handed `createSession` an
+  // email as provenance). It has no colon, so the sweep above misses it, and it matches no member id —
+  // the same silent identity loss. Here the human IS recoverable, so canonicalise rather than NULL:
+  // resolve the email to its member id (lowercased, matching TeamStore.getMemberByEmail). An email that
+  // resolves to nobody is left alone — it may be the only trace of a since-removed member, and unlike a
+  // provenance string it isn't structurally impossible for a human to have owned that run.
+  db.exec(`UPDATE term_sessions SET run_as = (SELECT m.id FROM members m WHERE m.email = lower(term_sessions.run_as))
+             WHERE run_as IS NOT NULL AND instr(run_as, '@') > 0
+               AND EXISTS (SELECT 1 FROM members m WHERE m.email = lower(term_sessions.run_as))`);
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */
