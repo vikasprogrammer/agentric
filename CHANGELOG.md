@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.307.1] — 2026-08-04
+### Fixed
+- **A session's provenance can no longer leak into its identity column, silently costing the run its
+  human's credentials.** `spawned_by` is provenance (a bare member id OR a prefixed system trigger —
+  `automation:` / `task:` / `chat:` / `poke:` / `ask:` / `goal:`); `run_as` is the accountable human.
+  `createSession` derived the second from the first with a one-entry blocklist — anything not starting
+  `automation:` was taken as the identity — so a chat-routed run or an ownerless task stored
+  `run_as = 'chat:triage'` / `'task:<id>'`: a value no consumer can match. The failure is entirely
+  silent. That run loses the run-as member's GitHub token (its PRs land as the App bot instead of the
+  human), Composio/connector identity, member-scoped secret resolution (`ref.principal ?? actingMember`),
+  granted SSH host keys, and inbox ownership — with no error anywhere. Measured on the globex tenant:
+  **23 sessions** carrying `chat:docs-bot`, `chat:triage`, `task:tsk_…`, plus a matching
+  `github.token.refresh_failed` logged against `principal: "chat:triage"`.
+  The fallback now resolves against the team (`resolveActingMember` — the single place `run_as` is
+  derived, shared by `createSession`/`forkSession`/`reviveResident`/`chatSend`) instead of blocklisting
+  prefixes, so a future provenance kind can't leak by being forgotten, and an explicit `runAs` is
+  canonicalised (id or email → id). No accountable human now correctly yields NULL — the company
+  identity — rather than a string that impersonates one. A one-time migration NULLs the colon-bearing
+  `run_as` rows already on disk (`spawned_by` untouched); `scripts/run-as-identity-test.cjs` covers it.
+
 ## [0.307.0] — 2026-08-04
 ### Fixed
 - **A delegate that ends its run without closing the task no longer strands the caller forever.** The

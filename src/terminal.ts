@@ -1156,6 +1156,32 @@ export class TerminalManager {
   }
 
   /**
+   * Resolve a session's **run-as identity** — the ONE place `term_sessions.run_as` is derived, and the
+   * guarantee that the column only ever holds a real member id.
+   *
+   * `spawnedBy` is PROVENANCE and may be a bare member id OR a prefixed system trigger
+   * (`automation:` / `task:` / `chat:` / `poke:` / `ask:` / `goal:`). Only the bare-member case is a
+   * human to act as, so the fallback resolves against the team rather than blocklisting prefixes — a
+   * new provenance kind can't leak into the identity column by being forgotten here. An explicit
+   * `runAs` is canonicalised the same way (id or email → id), so a caller that hands over an email or
+   * a stale member never writes a value the rest of the system silently fails to match.
+   *
+   * Returning undefined (→ NULL) is the correct answer for a run with no accountable human: it degrades
+   * to the company identity, which is exactly what an ownerless automation/task run should use. The old
+   * behavior instead stored the provenance string itself, so `run_as = 'chat:triage'` looked like an
+   * identity to every consumer and matched none — silently costing that run the member's GitHub token,
+   * connectors, member-scoped secrets and inbox ownership.
+   */
+  private resolveActingMember(runAs?: string, spawnedBy?: string): string | undefined {
+    const asMember = (v?: string): string | undefined => {
+      const raw = (v ?? '').trim();
+      if (!raw) return undefined;
+      return (this.os.team.getMember(raw) ?? this.os.team.getMemberByEmail(raw))?.id;
+    };
+    return asMember(runAs) ?? asMember(spawnedBy);
+  }
+
+  /**
    * Is a message ADDRESSED to `viewer` (vs merely visible via an oversight role)? This is the `mine`
    * inbox scope — the fix for owner/admin being flooded by every session's cards. An explicit audience
    * routes by REAL membership: a named `member`/`sessionOwner` by id, an `approvers`/`admins` card to
@@ -1649,7 +1675,7 @@ export class TerminalManager {
     //   `actingMember`  = whose IDENTITY the agent acts under (connectors / Composio / inbox / uid).
     //                     `runAs` when a trigger resolved a member, else the console member who spawned.
     // When no runAs is given this collapses to today's behavior (identity = the spawning member).
-    const actingMember = runAs ?? (spawnedBy && !spawnedBy.startsWith('automation:') ? spawnedBy : undefined);
+    const actingMember = this.resolveActingMember(runAs, spawnedBy);
     // Per-session bearer (0d): exported into the session env and required on the loopback agent
     // endpoints, so one session's runtime can't gate/recall/report AS another by forging its id.
     const secret = randomBytes(24).toString('hex');
@@ -1738,7 +1764,7 @@ export class TerminalManager {
     const claudeSessionId = runtimeSupports(manifest.runtime, 'pinnedSessionId') ? randomUUID() : null;
     // Inherit the branch identity (connectors/Composio/uid follow run_as); fall back to the forker when
     // the parent had none. Provenance (`spawned_by`) is the forking member — this fork was console-driven.
-    const actingMember = src.run_as ?? (by || undefined);
+    const actingMember = this.resolveActingMember(src.run_as ?? undefined, by);
     const secret = randomBytes(24).toString('hex');
     const seed = (task || '').trim();
     const title = `fork of ${sourceId}${seed ? ' · ' + (seed.length > 48 ? seed.slice(0, 47) + '…' : seed) : ''}`;
@@ -2025,13 +2051,13 @@ export class TerminalManager {
     if (this.isAlive(sessionId)) return false; // caller should have delivered instead
     const body = (text || '').trim();
     if (!body) return false;
-    const actingMember = runAs ?? row.run_as ?? undefined;
+    const actingMember = this.resolveActingMember(runAs ?? row.run_as ?? undefined);
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
     this.db.prepare("UPDATE term_sessions SET status = 'running', resident = 1, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
-      .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
+      .run(body, actingMember ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.revived', { runAs: actingMember ?? null });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
@@ -2061,13 +2087,13 @@ export class TerminalManager {
     const body = (message || '').trim();
     if (!body) return 'error';
     if (this.isAlive(sessionId)) return 'busy'; // a turn is still generating — don't launch a competing run
-    const actingMember = runAs ?? row.run_as ?? undefined;
+    const actingMember = this.resolveActingMember(runAs ?? row.run_as ?? undefined);
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
     this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 1, resident = 0, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
-      .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
+      .run(body, actingMember ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),

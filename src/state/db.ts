@@ -1020,6 +1020,14 @@ function migrate(db: Db): void {
   // Private-to-owners agents: when 1, ONLY the owner role runs/sees the agent (admins excluded, the
   // role/member grants void) — the tightest tier below the owner+admin default. NULL/0 = default floor.
   addColumn(db, 'assignments', 'owner_only', 'INTEGER');       // 1 = owner-role-only
+
+  // One-time cleanup: `term_sessions.run_as` must hold a MEMBER id, but the old createSession fallback
+  // took any non-`automation:` provenance, so prefixed system triggers (`chat:<agent>`, `task:<id>`, …)
+  // were written into the identity column — a value no consumer can match. `resolveActingMember` now
+  // prevents new ones; this NULLs the ones already stored, which is what an ownerless run should have
+  // said all along. Scoped to colon-bearing values so a legitimate id can never be caught by it (a
+  // member id never contains ':'), and so the sweep is a no-op on every already-clean workspace.
+  db.exec("UPDATE term_sessions SET run_as = NULL WHERE run_as IS NOT NULL AND instr(run_as, ':') > 0");
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */
