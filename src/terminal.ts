@@ -1485,6 +1485,12 @@ export class TerminalManager {
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
   }
+  /** Detach every session bound to a Telegram chat (+ forum topic), so the NEXT message in that chat
+   *  starts a FRESH run instead of continuing/reviving the last one — the `/new` reset. Removes only the
+   *  reply bindings; the session rows themselves stay for history (the caller stops the live one first). */
+  clearTelegramBinding(chatId: string, messageThreadId: string): void {
+    this.db.prepare('DELETE FROM telegram_threads WHERE chat_id = ? AND message_thread_id = ?').run(chatId, messageThreadId || '');
+  }
   listMessages(viewer?: Member, scope: 'mine' | 'all' = 'mine'): FeedMessage[] {
     // Approval messages take their live status from the approvals table, so the inbox stays
     // correct even after a restart (when the in-memory resolution waiter is gone). We also pull each
