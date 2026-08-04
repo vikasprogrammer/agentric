@@ -157,10 +157,10 @@ export function sanitizePromptShortcuts(input: unknown): PromptShortcut[] {
  * trigger (Slack/Discord) run AS the right person. One external id maps to at most one member
  * (enforced by the table's `(provider, external_id)` primary key), so run-as is never ambiguous.
  */
-export type IdentityProvider = 'slack' | 'discord' | 'email' | 'github';
+export type IdentityProvider = 'slack' | 'discord' | 'telegram' | 'email' | 'github';
 
 /** The set of providers the identity map accepts — used to validate API input. */
-export const IDENTITY_PROVIDERS: readonly IdentityProvider[] = ['slack', 'discord', 'email', 'github'];
+export const IDENTITY_PROVIDERS: readonly IdentityProvider[] = ['slack', 'discord', 'telegram', 'email', 'github'];
 
 export interface MemberIdentity {
   memberId: string;
@@ -220,7 +220,7 @@ export interface Cost {
 }
 
 export interface TriggerRef {
-  type: 'cron' | 'webhook' | 'slack' | 'email' | 'agent' | 'manual';
+  type: 'cron' | 'webhook' | 'slack' | 'telegram' | 'email' | 'agent' | 'manual';
   ref?: string;
   /** Dedupe key for exactly-once side effects (e.g. email Message-Id, webhook delivery id). */
   idempotencyKey?: string;

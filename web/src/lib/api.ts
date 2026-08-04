@@ -19,8 +19,8 @@ export interface PromptShortcut {
   label: string
   prompt: string
 }
-export type IdentityProvider = 'slack' | 'discord' | 'email' | 'github'
-export const IDENTITY_PROVIDERS: IdentityProvider[] = ['slack', 'discord', 'email', 'github']
+export type IdentityProvider = 'slack' | 'discord' | 'telegram' | 'email' | 'github'
+export const IDENTITY_PROVIDERS: IdentityProvider[] = ['slack', 'discord', 'telegram', 'email', 'github']
 export interface MemberIdentity {
   memberId: string
   provider: IdentityProvider
@@ -253,7 +253,7 @@ export interface Session {
    *  automation family splits by trigger (`cron`/`webhook`/`slack`/`discord`/`composio`/`scheduled`);
    *  `task` = the Tasks dispatcher; `chat` = the `/agent` chat router; `system` = an internal principal.
    *  Server-resolved (the automation sub-type needs a join the raw `spawnedBy` can't give). */
-  sourceKind?: 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system'
+  sourceKind?: 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'telegram' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system'
   /** True for a `category:'System'` machinery agent (the Cockpit concierge/operator, consolidator, …).
    *  Hidden from the Chat + Sessions lists to reduce clutter; still openable by id + in Audit. */
   system?: boolean
@@ -735,7 +735,7 @@ export interface Automation {
   agentId: string
   name: string
   /** `once` = a one-shot deferred run scheduled by an agent (not creatable from the console). */
-  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord'
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram'
   mode: ExecMode
   schedule?: string
   /** composio: trigger slug. slack: event type (app_mention/message) or channel id. '' = any. */
@@ -783,7 +783,7 @@ export interface AgentUpdateProposal {
 export interface AddAutomationReq {
   agentId: string
   name: string
-  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord'
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram'
   mode: ExecMode
   schedule?: string
   filter?: string
@@ -1085,6 +1085,8 @@ export interface IntegrationsResp {
   slack: { appToken: boolean; botToken: boolean; configured: boolean }
   /** Native Discord (Gateway) — whether the bot token is set; never the token. */
   discord: { botToken: boolean; configured: boolean }
+  /** Native Telegram (long poll) — whether the bot token is set; never the token. */
+  telegram: { botToken: boolean; configured: boolean }
   /** Native ClickUp (webhook) — token/secret set flags + the hook path (with key) to paste into a
    *  ClickUp Automation. `hookPath` is admin-only (it carries the inbound secret); '' until configured. */
   clickup: { token: boolean; hint: string; webhookSecret: boolean; configured: boolean; hookPath: string }
@@ -1133,6 +1135,11 @@ export interface SlackStatus {
 /** Live Discord Gateway status — same shape as SlackStatus. */
 export type DiscordStatus = SlackStatus
 
+/** Live Telegram long-poll status — SlackStatus + the bot's @username. */
+export interface TelegramStatus extends SlackStatus {
+  username: string
+}
+
 export interface ComposioConnection {
   id: string
   toolkit: string
@@ -1156,6 +1163,7 @@ export interface IntegrationsOverview {
   composio: { keySet: boolean; entity: string; apps: { id: string; toolkit: string; status: string }[] }
   slack: { configured: boolean; connected: boolean; botUserId: string }
   discord: { configured: boolean; connected: boolean; botUserId: string }
+  telegram: { configured: boolean; connected: boolean; username: string }
   custom: { label: string; type: string; enabled: boolean }[]
   error?: string
 }
@@ -1655,7 +1663,7 @@ export const api = {
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/requests/' + encodeURIComponent(id) + '/dismiss'),
   integrations: () => call<IntegrationsResp>('GET', '/api/settings/integrations'),
   atlasModels: () => call<{ configured: boolean; image: { id: string; label: string; priceUsd: number | null }[]; video: { id: string; label: string; priceUsd: number | null }[]; error?: string }>('GET', '/api/integrations/atlas/models'),
-  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; anthropicApiKey?: string; anthropicModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
+  saveIntegrations: (body: { composioApiKey?: string; composioWebhookSecret?: string; slackAppToken?: string; slackBotToken?: string; discordBotToken?: string; telegramBotToken?: string; clickupToken?: string; clickupWebhookSecret?: string; githubClientId?: string; githubClientSecret?: string; githubAppId?: string; githubPrivateKey?: string; githubAppSlug?: string; openRouterKey?: string; atlasKey?: string; imageDefaultModel?: string; falKey?: string; videoDefaultModel?: string; anthropicApiKey?: string; anthropicModel?: string; chatRouter?: boolean; chatIdleTimeoutMin?: number }) => call<IntegrationsResp & { ok: boolean }>('PUT', '/api/settings/integrations', body),
   // Per-member GitHub (user-to-server OAuth): each member links their OWN account so run-as sessions
   // push / open PRs as the actual human. `connect` returns the authorize URL to navigate to.
   githubMe: () => call<GithubMe>('GET', '/api/github/me'),
@@ -1665,6 +1673,7 @@ export const api = {
   githubManifest: (org?: string) => call<{ postUrl?: string; manifest?: string; error?: string }>('GET', `/api/github/manifest${org ? `?org=${encodeURIComponent(org)}` : ''}`),
   slackStatus: () => call<SlackStatus>('GET', '/api/settings/slack/status'),
   discordStatus: () => call<DiscordStatus>('GET', '/api/settings/discord/status'),
+  telegramStatus: () => call<TelegramStatus>('GET', '/api/settings/telegram/status'),
 
   skills: () => call<SkillsResp>('GET', '/api/skills'),
   skill: (name: string) => call<SkillDetail & { error?: string }>('GET', '/api/skills/' + encodeURIComponent(name)),

@@ -10,7 +10,7 @@
  * for both is built per-platform (see `deliverDM`'s text builder).
  */
 
-export type ChatPlatform = 'slack' | 'discord' | 'clickup';
+export type ChatPlatform = 'slack' | 'discord' | 'telegram' | 'clickup';
 
 /** Absolute deep-link into a tenant's console (hash router `<origin>/#/<page>[/<detail>]`). */
 export function consolePage(origin: string, page: string, detail?: string): string {
@@ -22,6 +22,8 @@ export function consolePage(origin: string, page: string, detail?: string): stri
  *  markdown rendering), so there the label + bare url are shown side by side rather than masked. */
 export function chatLink(platform: ChatPlatform, url: string, label: string): string {
   if (platform === 'slack') return `<${url}|${label}>`;
-  if (platform === 'clickup') return `${label}: ${url}`;
+  // ClickUp comments and our Telegram messages (sent without a parse_mode) are PLAIN TEXT, so show the
+  // label + bare url side by side rather than a masked hyperlink.
+  if (platform === 'clickup' || platform === 'telegram') return `${label}: ${url}`;
   return `[${label}](${url})`;
 }

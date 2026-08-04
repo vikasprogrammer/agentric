@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.300.0] — 2026-08-04
+### Added
+- **Native Telegram integration (ingress + reply) — the third chat channel alongside Slack and Discord.**
+  One company bot (a single `<botid>:<hash>` token from @BotFather) connects by **long polling** — the
+  server dials OUT to `api.telegram.org`, so no public URL is needed (works on the Tailscale-private box,
+  the same posture as Slack Socket Mode / the Discord Gateway). DM the bot or @-mention it in a group and
+  matching `telegram` automations run as governed sessions; unmatched messages fall through to the generic
+  `/agent` chat router. Thread continuity is keyed on the chat id (+ forum-topic id), the Discord
+  per-channel model — Telegram bots can't branch a thread, so replies post back into the same chat as a
+  reply to the triggering message. The agent answers with the new **`telegram_reply`** MCP tool
+  (exposed only for Telegram-triggered sessions, `TELEGRAM_REPLY=1`), bound server-side to
+  `telegram_threads` so it can't be handed (or spoof) a chat id. Run-as resolves the Telegram user id via
+  the identity map (`member_identities` provider `telegram`; no email, so an unmapped sender → company
+  identity — the Discord model). Configured in **Settings → Integrations** (token field, live connection
+  badge, `@BotFather` setup guide) and surfaced in Connections → the native-bot rows. Chat-mirror also
+  reflects a chat-triggered run's completions/questions back into the Telegram chat.
+  - New: `src/connectors/telegram.ts` (Bot API client), `src/edge/telegram-socket.ts` (`TelegramSocket`
+    long-poll loop), `telegram_threads` table.
+  - Wired through: `settings.ts` (token accessor), `types.ts` (identity provider + trigger unions),
+    `automations.ts` (`telegram` trigger, `fireTelegram`, `continueTelegramThread`), `terminal.ts`
+    (session binding, `sessionForTelegramThread`, `TELEGRAM_REPLY` env, `bindReplyChannel`),
+    `memory-mcp.ts` (`telegram_reply`), `server.ts` (`/api/agent/telegram/reply`, settings save +
+    status), `tenant-registry.ts` (socket lifecycle + chat-mirror), `chat-links.ts`, and the web console.
+  - **Setup note:** for group thread continuity on plain follow-ups, turn **Group Privacy OFF** in
+    @BotFather — with it on the bot still receives @mentions and `/commands`, just not plain replies.
+  - Not yet included (follow-up): proactive egress (`telegram_send`/`telegram_dm`), the end-of-day digest
+    to Telegram, and the approval/question/task notifier fan-out over Telegram DMs.
+
 ## [0.299.0] — 2026-08-04
 ### Added
 - **Settings → System now catches a dependency that is present but STALE, not just missing.** Found the

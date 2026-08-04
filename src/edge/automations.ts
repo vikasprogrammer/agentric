@@ -146,7 +146,7 @@ export interface Automation {
   id: string;
   agentId: string;
   name: string;
-  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'clickup';
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup';
   /** How the fired session runs (interactive TUI vs headless `claude -p`). */
   mode: ExecMode;
   /** Cron expression (cron type only). */
@@ -177,7 +177,7 @@ interface AutomationRow {
   id: string;
   agent_id: string;
   name: string;
-  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'clickup';
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup';
   mode: ExecMode | null;
   schedule: string | null;
   secret: string | null;
@@ -218,7 +218,7 @@ function toAutomation(r: AutomationRow): Automation {
 export interface AddAutomationInput {
   agentId: string;
   name: string;
-  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'clickup';
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup';
   mode?: ExecMode;
   schedule?: string;
   /** composio: trigger slug to match. slack: event type / channel id to match. ('' / omitted = any). */
@@ -367,8 +367,11 @@ export class Automations {
     } else if (input.type === 'discord') {
       filter = (input.filter || '').trim(); // event type (mention/direct_message) or channel id; '' = any
       if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
+    } else if (input.type === 'telegram') {
+      filter = (input.filter || '').trim(); // event type (mention/direct_message) or chat id; '' = any
+      if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
     } else {
-      throw new Error('type must be cron, webhook, composio, slack, or discord');
+      throw new Error('type must be cron, webhook, composio, slack, discord, or telegram');
     }
     const a: Automation = {
       id: newId('automation'),
@@ -502,7 +505,7 @@ export class Automations {
     if (patch.schedule !== undefined && a.type === 'cron') parseCron(patch.schedule);
     // `filter` is only meaningful for the event-driven triggers; ignore it on cron/webhook/once so an
     // edit can't stamp a stray filter onto a type that never reads one. composio uppercases its slug.
-    const filterTypes = a.type === 'composio' || a.type === 'slack' || a.type === 'discord';
+    const filterTypes = a.type === 'composio' || a.type === 'slack' || a.type === 'discord' || a.type === 'telegram';
     const nextFilter = !filterTypes
       ? a.filter ?? null
       : patch.filter === undefined
@@ -547,7 +550,7 @@ export class Automations {
    * Spawn the automation's session. `guard: true` skips when the previous spawn is still alive —
    * the no-pile-ups rule for cron/webhook; "Run now" from the console passes guard: false.
    */
-  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; clickup?: { taskId: string; commentId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
+  fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; telegram?: { chat: string; messageThreadId?: string; messageId: string }; clickup?: { taskId: string; commentId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
     if (opts.guard && a.lastSessionId && this.tm.isAlive(a.lastSessionId)) {
       return { ok: false, reason: 'previous session still running' };
     }
@@ -569,7 +572,7 @@ export class Automations {
     const mode: ExecMode = opts.mode ?? a.mode;
     // `resumeClaudeId` (a self-scheduled follow-up) makes the run `--resume` the scheduling session's
     // transcript — the launcher's UNATTENDED lane restores it and injects `task` as the next turn.
-    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs, opts.resumeClaudeId, false, undefined, opts.clickup);
+    const s = this.tm.createSession(a.agentId, a.name, task, spawnedBy, mode === 'headless', opts.slack, opts.discord, opts.runAs, opts.resumeClaudeId, false, undefined, opts.clickup, opts.telegram);
     this.db.prepare('UPDATE automations SET last_fired_at = ?, last_session_id = ? WHERE id = ?').run(Date.now(), s.id, a.id);
     this.os.audit.append({
       ts: Date.now(),
@@ -682,6 +685,7 @@ export class Automations {
       runAs?: string;
       slack?: { channel: string; threadTs: string };
       discord?: { channel: string; messageId: string };
+      telegram?: { chat: string; messageThreadId?: string; messageId: string };
       clickup?: { taskId: string; commentId: string };
       title?: string;
       resident?: boolean;
@@ -692,7 +696,7 @@ export class Automations {
     // otherwise the classic one-shot headless run. `title` is the meaningful, message-derived label.
     const s = this.tm.createSession(
       agentId, opts.title || `Chat → ${agentId}`, task, `chat:${agentId}`,
-      !opts.resident, opts.slack, opts.discord, opts.runAs, undefined, !!opts.resident, undefined, opts.clickup,
+      !opts.resident, opts.slack, opts.discord, opts.runAs, undefined, !!opts.resident, undefined, opts.clickup, opts.telegram,
     );
     this.os.audit.append({
       ts: Date.now(),
@@ -703,7 +707,7 @@ export class Automations {
       data: {
         agent: agentId,
         runAs: opts.runAs ?? null,
-        channel: opts.slack?.channel ?? opts.discord?.channel ?? opts.clickup?.taskId ?? null,
+        channel: opts.slack?.channel ?? opts.discord?.channel ?? opts.telegram?.chat ?? opts.clickup?.taskId ?? null,
         resident: !!opts.resident,
         routedBy: opts.route?.by ?? 'explicit',
         score: opts.route?.score ?? null,
@@ -771,11 +775,12 @@ export class Automations {
     runAs?: string;
     slack?: { channel: string; threadTs: string };
     discord?: { channel: string; messageId: string };
+    telegram?: { chat: string; messageThreadId?: string; messageId: string };
     clickup?: { taskId: string; commentId: string };
   }): Promise<{ sessions: string[]; reply?: string }> {
     const sessions: string[] = [];
     const spawn = (agentId: string, task: string, route: NonNullable<Parameters<Automations['spawnChatAgent']>[2]['route']>, text: string, runAs?: string) => {
-      const r = this.spawnChatAgent(agentId, task, { runAs, slack: opts.slack, discord: opts.discord, clickup: opts.clickup, title: chatTitle(text, agentId), resident: true, route });
+      const r = this.spawnChatAgent(agentId, task, { runAs, slack: opts.slack, discord: opts.discord, telegram: opts.telegram, clickup: opts.clickup, title: chatTitle(text, agentId), resident: true, route });
       if (r.ok) sessions.push(r.sessionId);
     };
 
@@ -1088,7 +1093,7 @@ export class Automations {
    * reply being swallowed all over again.
    */
   continueSessionDm(
-    provider: 'slack' | 'discord',
+    provider: 'slack' | 'discord' | 'telegram',
     externalId: string,
     event: { actorLabel: string; text: string; channel: string },
     runAsMember?: string,
@@ -1232,7 +1237,7 @@ export class Automations {
    * asking agent. `null` → nothing pending is bound to them, so the caller falls through to the normal chat
    * router (a DM that isn't answering a question is just a chat). The socket posts the ack.
    */
-  answerQuestionFromChat(provider: 'slack' | 'discord', externalId: string, text: string): { agent: string } | null {
+  answerQuestionFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string): { agent: string } | null {
     return this.tm.answerQuestionFromChat(provider, externalId, text);
   }
 
@@ -1243,7 +1248,7 @@ export class Automations {
    * `unclear`/`forbidden` → bound but the socket should nudge instead of falling through. The socket posts
    * the ack. See {@link TerminalManager.decideApprovalFromChat}.
    */
-  decideApprovalFromChat(provider: 'slack' | 'discord', externalId: string, text: string) {
+  decideApprovalFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string) {
     return this.tm.decideApprovalFromChat(provider, externalId, text);
   }
 
@@ -1306,6 +1311,78 @@ export class Automations {
       reply = r.reply;
     }
     return { fired: sessions.length, sessions, reply };
+  }
+
+  /**
+   * Inbound native Telegram message (long poll; the bot was @-mentioned / commanded in a group or sent a
+   * private-chat message). The exact analogue of {@link fireDiscord}: fire every enabled `telegram`
+   * automation whose `filter` matches the event type or chat id ('' / '*' = any). `runAsMember` runs the
+   * session AS that member (Telegram user id → member via the identity map); absent → the company identity.
+   * No pile-up guard. Telegram bots can't branch a thread off a message, so the run is bound to the chat
+   * (+ forum topic) and replies land there as a reply to the triggering message.
+   */
+  async fireTelegram(
+    event: { eventType: string; chat: string; messageThreadId: string; messageId: string; user: string; actorLabel: string; text: string; raw: unknown },
+    runAsMember?: string,
+  ): Promise<{ fired: number; sessions: string[]; reply?: string }> {
+    const sessions: string[] = [];
+    const bind = { chat: event.chat, messageThreadId: event.messageThreadId, messageId: event.messageId };
+    const extra =
+      `Triggered from Telegram by ${event.actorLabel} (${event.eventType}) in chat ${event.chat}.\n` +
+      `Message:\n${event.text}\n\n` +
+      `When you're done, call the \`telegram_reply\` tool with your answer — it posts back to this exact ` +
+      `Telegram chat as a reply (you don't need a chat id). Keep it concise.\n\n` +
+      `Event payload:\n${JSON.stringify(event.raw, null, 2).slice(0, MAX_PAYLOAD_CHARS)}`;
+    for (const a of this.list()) {
+      if (!a.enabled || a.type !== 'telegram') continue;
+      const f = (a.filter || '').trim().toLowerCase();
+      if (f && f !== '*' && f !== event.eventType.toLowerCase() && f !== event.chat.toLowerCase()) continue;
+      const r = this.fire(a, { guard: false, extra, runAs: runAsMember, telegram: bind });
+      if (r.ok) sessions.push(r.sessionId);
+    }
+    // No specific automation matched → the shared chat front door (auto-route / disambiguate / help).
+    // Telegram threads are keyed by chat id (+ forum topic); a plain follow-up continues via continueTelegramThread.
+    let reply: string | undefined;
+    if (sessions.length === 0) {
+      const r = await this.routeUnmatched({
+        key: `telegram:${event.chat}:${event.messageThreadId}`,
+        text: event.text,
+        extra,
+        runAs: runAsMember,
+        telegram: bind,
+      });
+      sessions.push(...r.sessions);
+      reply = r.reply;
+    }
+    return { fired: sessions.length, sessions, reply };
+  }
+
+  /**
+   * Telegram thread continuity — the analogue of {@link continueDiscordThread}, keyed on the chat id (+
+   * forum topic id). A follow-up message in a group chat already bound to a session CONTINUES that
+   * conversation (deliver into the live claude, or revive the row) instead of hitting the `/agent` router
+   * with a fresh spawn. `none` → nothing resumable is bound → the caller falls through to a fresh spawn.
+   * The socket posts no ack; the agent's own `telegram_reply` is the feedback. (Requires Group Privacy
+   * disabled in @BotFather for the plain follow-up to reach the bot at all.)
+   */
+  continueTelegramThread(
+    event: { chat: string; messageThreadId: string; actorLabel: string; text: string; raw: unknown },
+    runAsMember?: string,
+  ): { status: 'delivered' | 'revived' | 'none'; sessionId?: string } {
+    const bound = this.tm.sessionForTelegramThread(event.chat, event.messageThreadId);
+    if (!bound || !bound.claudeSessionId) return { status: 'none' }; // unbound / unresumable → fresh spawn
+    if (this.redirectsToOtherAgent(event.text, bound.agent)) return { status: 'none' };
+    const runAs = runAsMember ?? bound.runAs;
+    const msg = this.stripChatPrefix(event.text);
+    if (!msg) return { status: 'none' };
+    const emit = (mode: 'delivered' | 'revived') => this.os.audit.append({
+      ts: Date.now(), runId: bound.sessionId, tenant: this.os.tenant,
+      principal: runAs ? `member:${runAs}` : 'chat', type: 'chat.continued',
+      data: { mode, platform: 'telegram', agent: bound.agent, session: bound.sessionId, chat: event.chat, runAs: runAs ?? null },
+    });
+    if (this.tm.deliverToResident(bound.sessionId, msg)) { emit('delivered'); return { status: 'delivered', sessionId: bound.sessionId }; }
+    if (this.tm.reviveResident(bound.sessionId, msg, runAs)) { emit('revived'); return { status: 'revived', sessionId: bound.sessionId }; }
+    return { status: 'none' };
   }
 
   // ── scheduler ──────────────────────────────────────────────────────────────────

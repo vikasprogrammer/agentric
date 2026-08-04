@@ -192,7 +192,7 @@ export type SessionStatus = 'running' | 'done' | 'stopped' | 'crashed';
  * member (e.g. the consolidation gardener).
  */
 export type SessionSourceKind =
-  | 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system';
+  | 'manual' | 'cron' | 'webhook' | 'slack' | 'discord' | 'telegram' | 'composio' | 'scheduled' | 'task' | 'chat' | 'system';
 
 export interface Session {
   id: string;
@@ -1337,6 +1337,7 @@ export class TerminalManager {
         case 'webhook': return 'webhook';
         case 'slack': return 'slack';
         case 'discord': return 'discord';
+        case 'telegram': return 'telegram';
         case 'composio': return 'composio';
         case 'once': return 'scheduled';
         default: return 'cron'; // deleted/unknown automation → treat as a generic scheduled trigger
@@ -1462,6 +1463,25 @@ export class TerminalManager {
           ORDER BY t.created_at DESC LIMIT 1`,
       )
       .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(taskId);
+    if (!row) return undefined;
+    return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
+  }
+  /**
+   * The MOST RECENT session bound to a Telegram chat (+ forum topic) — the thread-continuity twin of
+   * {@link sessionForDiscordThread}. Telegram bots can't branch a thread off a message, so continuity is
+   * keyed on the chat id (+ the supergroup forum-topic id when present, so distinct topics stay distinct).
+   * A plain follow-up in that chat resumes the same agent + claude conversation. Undefined when nothing is
+   * bound (the first mention) or the newest run predates the claude-id column (unresumable → fresh spawn).
+   */
+  sessionForTelegramThread(chatId: string, messageThreadId: string): { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT t.id AS id, t.agent AS agent, t.run_as AS runAs, t.claude_session_id AS claudeSessionId
+           FROM telegram_threads g JOIN term_sessions t ON t.id = g.session_id
+          WHERE g.chat_id = ? AND g.message_thread_id = ?
+          ORDER BY t.created_at DESC LIMIT 1`,
+      )
+      .get<{ id: string; agent: string; runAs: string | null; claudeSessionId: string | null }>(chatId, messageThreadId || '');
     if (!row) return undefined;
     return { sessionId: row.id, agent: row.agent, runAs: row.runAs ?? undefined, claudeSessionId: row.claudeSessionId ?? undefined };
   }
@@ -1608,7 +1628,7 @@ export class TerminalManager {
    * the automations pile-up guard releases. Interactive (the default, e.g. manual spawns) opens a
    * normal attachable TUI that stays live until closed.
    */
-  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }): Session {
+  createSession(agent: string, title: string, task: string, spawnedBy?: string, headless = false, slack?: { channel: string; threadTs: string }, discord?: { channel: string; messageId: string }, runAs?: string, resumeClaudeId?: string, resident = false, tuning?: RuntimeTuning, clickup?: { taskId: string; commentId: string }, telegram?: { chat: string; messageThreadId?: string; messageId: string }): Session {
     const id = newId('session');
     const tmux = `aos-${id}`;
     // The conversation this run drives. A thread follow-up passes the PRIOR run's id so the launcher
@@ -1658,6 +1678,12 @@ export class TerminalManager {
       this.db.prepare('INSERT OR REPLACE INTO clickup_threads (session_id, task_id, comment_id, created_at) VALUES (?, ?, ?, ?)')
         .run(id, clickup.taskId, clickup.commentId || '', Date.now());
     }
+    // Native Telegram egress: bind the chat (+ forum topic + triggering message) for telegram_reply — the
+    // agent posts its answer back into the SAME chat as a reply, without supplying (or spoofing) a chat id.
+    if (telegram?.chat) {
+      this.db.prepare('INSERT OR REPLACE INTO telegram_threads (session_id, chat_id, message_thread_id, message_id, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(id, telegram.chat, telegram.messageThreadId || '', telegram.messageId || '', Date.now());
+    }
 
     // Pick the runtime from the agent's manifest: a coding runtime (claude-code / codex) → that real
     // CLI in the agent's folder; anything else (incl. unknown/demo names) → the scripted mock runner.
@@ -1677,7 +1703,7 @@ export class TerminalManager {
     }
 
     if (isCodingRuntime(runtime) && manifest?.dir) {
-      this.launchAgentRuntime({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, hasClickup: !!clickup?.taskId, headless, resident, resume: !!resumeClaudeId, claudeSessionId, tuning });
+      this.launchAgentRuntime({ id, agent, task, secret, actingMember, spawnedBy, hasSlack: !!slack?.channel, hasDiscord: !!discord?.channel, hasClickup: !!clickup?.taskId, hasTelegram: !!telegram?.chat, headless, resident, resume: !!resumeClaudeId, claudeSessionId, tuning });
     } else {
       this.backend.spawn(this.spaceFor(actingMember ?? spawnedBy), { sessionId: id, agent, tmuxName: tmux, env: this.sessionEnv(id, agent, task, secret), argv: ['bash', this.runner] });
     }
@@ -1724,7 +1750,7 @@ export class TerminalManager {
     this.audit(id, src.agent, 'session.forked', { from: sourceId, fromClaudeId: src.claude_session_id, claudeSessionId, runAs: actingMember ?? null, by });
     this.launchAgentRuntime({
       id, agent: src.agent, task: seed, secret, actingMember, spawnedBy: by,
-      hasSlack: false, hasDiscord: false, hasClickup: false, headless: false, resident: false, resume: false,
+      hasSlack: false, hasDiscord: false, hasClickup: false, hasTelegram: false, headless: false, resident: false, resume: false,
       claudeSessionId, forkFrom: src.claude_session_id,
     });
     return { ok: true, session };
@@ -1739,7 +1765,7 @@ export class TerminalManager {
    */
   private launchAgentRuntime(o: {
     id: string; agent: string; task: string; secret: string;
-    actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean; hasClickup: boolean;
+    actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean; hasClickup: boolean; hasTelegram: boolean;
     headless: boolean; resident: boolean; resume: boolean;
     /** The transcript id to pin. NULL for a runtime that mints its own (Codex) — the launcher
      *  discovers it and reports it back via /api/runtime-session instead. */
@@ -1760,7 +1786,7 @@ export class TerminalManager {
     // An ask_agent delegate (provenance `ask:<caller>`) gets the `answer` tool to close the loop back to
     // its caller — keyed on provenance so no other session is cluttered by it.
     const askAnswer = (o.spawnedBy ?? '').startsWith('ask:');
-    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup);
+    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup, o.hasTelegram);
     const companyMd = this.buildCompanyMd(o.agent, o.actingMember);
     const runtime: CodingRuntimeId = isCodingRuntime(manifest.runtime) ? manifest.runtime : 'claude-code';
     const caps = CODING_RUNTIMES[runtime].capabilities;
@@ -2003,12 +2029,13 @@ export class TerminalManager {
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
+    const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
     this.db.prepare("UPDATE term_sessions SET status = 'running', resident = 1, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
       .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.revived', { runAs: actingMember ?? null });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
+      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup, hasTelegram,
       headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
     });
     return true;
@@ -2038,12 +2065,13 @@ export class TerminalManager {
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
+    const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
     this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 1, resident = 0, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
       .run(body, actingMember ?? row.run_as ?? null, Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
+      actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup, hasTelegram,
       headless: true, resident: false, resume: true, claudeSessionId: row.claude_session_id,
     });
     return 'sent';
@@ -2122,10 +2150,11 @@ export class TerminalManager {
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
+    const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'takeover-resume' });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
+      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup, hasTelegram,
       headless: false, resident: false, resume: true, claudeSessionId: row.claude_session_id,
     });
     return { ok: true };
@@ -2161,10 +2190,11 @@ export class TerminalManager {
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
+    const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
     this.audit(sessionId, by, 'session.claimed', { agent: row.agent, via: 'chat-takeover' });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: '', secret: row.secret ?? randomBytes(24).toString('hex'),
-      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup,
+      actingMember: row.run_as ?? undefined, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup, hasTelegram,
       headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
     });
     return { ok: true };
@@ -2889,7 +2919,7 @@ export class TerminalManager {
    * session can read it: the app's connectors dir (local), or the member's home (launcher). The
    * memory server is ALWAYS included and scoped to this session+agent. '' when there's no data home.
    */
-  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false, askAnswer = false, clickupReply = false): string {
+  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false, askAnswer = false, clickupReply = false, telegramReply = false): string {
     if (!this.os.paths) return '';
     // `actingMember` is the identity the session runs AS (runAs ?? the spawning member). Undefined for a
     // pure automation/system spawn → org + shared connectors only, never a person's private credentials.
@@ -2944,6 +2974,10 @@ export class TerminalManager {
         // sessions (which have a bound task), so the agent posts its answer back as a comment on the
         // SAME task without being handed (or able to spoof) a task id.
         ...(clickupReply ? { CLICKUP_REPLY: '1' } : {}),
+        // TELEGRAM_REPLY: '1' exposes the native `telegram_reply` tool — only for Telegram-triggered
+        // sessions (which have a bound chat), so the agent posts its answer back into the SAME chat
+        // without being handed (or able to spoof) a chat id.
+        ...(telegramReply ? { TELEGRAM_REPLY: '1' } : {}),
         // ASK_ANSWER: '1' exposes the `answer` tool — only on an ask_agent delegate, so it can return its
         // result to the agent that asked. Other sessions never see it.
         ...(askAnswer ? { ASK_ANSWER: '1' } : {}),
@@ -3735,7 +3769,7 @@ export class TerminalManager {
 
   /** Bind a pending question to a Slack/Discord DM recipient, so a reply in that DM can answer it (the
    *  inbound-reply path). Called by the question notifier once per provider it DM'd. */
-  bindQuestionDm(questionId: string, provider: 'slack' | 'discord', externalId: string, memberId?: string): void {
+  bindQuestionDm(questionId: string, provider: 'slack' | 'discord' | 'telegram', externalId: string, memberId?: string): void {
     if (!questionId || !externalId) return;
     this.db
       .prepare('INSERT OR REPLACE INTO question_dms (question_id, tenant, provider, external_id, member_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -3749,7 +3783,7 @@ export class TerminalManager {
    * answered question's agent on success, or `null` when nothing pending is bound to this sender (so the
    * caller falls through to the normal chat router — a DM that isn't answering a question is just a chat).
    */
-  answerQuestionFromChat(provider: 'slack' | 'discord', externalId: string, answer: string): { agent: string } | null {
+  answerQuestionFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, answer: string): { agent: string } | null {
     const body = (answer || '').trim();
     if (!body || !externalId) return null;
     const row = this.db
@@ -3778,7 +3812,7 @@ export class TerminalManager {
   /** Bind a pending approval to a Slack/Discord DM recipient, so a reply in that DM can resolve it — the
    *  approval-side twin of {@link bindQuestionDm}. Called by the approval notifier once per approver ×
    *  provider it DM'd. Keyed on (approval, provider, external_id) so several approvers can each be bound. */
-  bindApprovalDm(approvalId: string, provider: 'slack' | 'discord', externalId: string, memberId?: string): void {
+  bindApprovalDm(approvalId: string, provider: 'slack' | 'discord' | 'telegram', externalId: string, memberId?: string): void {
     if (!approvalId || !externalId) return;
     this.db
       .prepare('INSERT OR REPLACE INTO approval_dms (approval_id, tenant, provider, external_id, member_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -3798,7 +3832,7 @@ export class TerminalManager {
    *  - `{ status:'forbidden' }` — bound, but the sender can no longer approve this level (role changed).
    *  - `{ status:'decided', … }` — the gate was settled; `approved` + `capability` for the ack.
    */
-  decideApprovalFromChat(provider: 'slack' | 'discord', externalId: string, text: string):
+  decideApprovalFromChat(provider: 'slack' | 'discord' | 'telegram', externalId: string, text: string):
     | { status: 'decided'; approved: boolean; capability: string }
     | { status: 'unclear' }
     | { status: 'forbidden' }
@@ -3834,7 +3868,7 @@ export class TerminalManager {
    * which deliberately re-arms the staleness window: each new ping about a run makes it the live
    * conversation again.
    */
-  bindSessionDm(sessionId: string, provider: 'slack' | 'discord', externalId: string, memberId?: string): void {
+  bindSessionDm(sessionId: string, provider: 'slack' | 'discord' | 'telegram', externalId: string, memberId?: string): void {
     if (!sessionId || !externalId) return;
     this.db
       .prepare('INSERT OR REPLACE INTO session_dms (session_id, tenant, provider, external_id, member_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -3854,7 +3888,7 @@ export class TerminalManager {
    * better). Visibility is re-checked against the CURRENT member — the binding proves we DM'd them, not
    * that they're still on the team or still assigned.
    */
-  sessionForDm(provider: 'slack' | 'discord', externalId: string, now = Date.now()):
+  sessionForDm(provider: 'slack' | 'discord' | 'telegram', externalId: string, now = Date.now()):
     { sessionId: string; agent: string; runAs?: string; claudeSessionId?: string } | undefined {
     if (!externalId) return undefined;
     const row = this.db
@@ -3884,11 +3918,16 @@ export class TerminalManager {
    * `discord_reply` tools are exposed the next time the row relaunches (`reviveResident` derives their env
    * flags from exactly these tables).
    */
-  bindReplyChannel(sessionId: string, provider: 'slack' | 'discord', channel: string): void {
+  bindReplyChannel(sessionId: string, provider: 'slack' | 'discord' | 'telegram', channel: string): void {
     if (!sessionId || !channel) return;
     if (provider === 'slack') {
       this.db.prepare('INSERT OR IGNORE INTO slack_threads (session_id, channel, thread_ts, created_at) VALUES (?, ?, ?, ?)')
         .run(sessionId, channel, '', Date.now());
+    } else if (provider === 'telegram') {
+      // `channel` is the Telegram chat id (a private chat → the sender's user id). No forum topic /
+      // reply-target on a DM adoption, so both are ''.
+      this.db.prepare('INSERT OR IGNORE INTO telegram_threads (session_id, chat_id, message_thread_id, message_id, created_at) VALUES (?, ?, ?, ?, ?)')
+        .run(sessionId, channel, '', '', Date.now());
     } else {
       this.db.prepare('INSERT OR IGNORE INTO discord_threads (session_id, channel, message_id, created_at) VALUES (?, ?, ?, ?)')
         .run(sessionId, channel, '', Date.now());

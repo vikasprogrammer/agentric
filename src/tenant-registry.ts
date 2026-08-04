@@ -21,6 +21,7 @@ import { InsightAlert } from './edge/alerts';
 import { SlackSocket } from './edge/slack-socket';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
+import { TelegramSocket } from './edge/telegram-socket';
 import { Member, Task } from './types';
 import { TaskNotice } from './state/tasks';
 import { GoalNotice } from './state/goals';
@@ -37,6 +38,7 @@ export interface TenantRuntime {
   apps: AppSupervisor;
   slack: SlackSocket;
   discord: DiscordSocket;
+  telegram: TelegramSocket;
   clickup: ClickupIngress;
   ttyd: ChildProcess | null;
   ttydPort: number;
@@ -189,6 +191,7 @@ export class TenantRegistry {
       try { rt.ttyd?.kill(); } catch { /* best-effort */ }
       try { rt.slack.stop(); } catch { /* best-effort */ }
       try { rt.discord.stop(); } catch { /* best-effort */ }
+      try { rt.telegram.stop(); } catch { /* best-effort */ }
       try { rt.autos.stop(); } catch { /* best-effort */ }
       try { rt.apps.stop(); } catch { /* best-effort */ }
       this.runtimes.delete(slug);
@@ -202,6 +205,7 @@ export class TenantRegistry {
       try { rt.ttyd?.kill(); } catch { /* best-effort */ }
       try { rt.slack.stop(); } catch { /* best-effort */ }
       try { rt.discord.stop(); } catch { /* best-effort */ }
+      try { rt.telegram.stop(); } catch { /* best-effort */ }
       try { rt.autos.stop(); } catch { /* best-effort */ }
       try { rt.apps.stop(); } catch { /* best-effort */ }
     }
@@ -248,6 +252,10 @@ export class TenantRegistry {
     void slack.start();
     const discord = new DiscordSocket(os, autos);
     void discord.start();
+    // Native Telegram ingress (long poll — dials OUT to api.telegram.org, no public URL): the exact
+    // analogue of the Discord Gateway socket. Fires `telegram` automations / the /agent chat router.
+    const telegram = new TelegramSocket(os, autos);
+    void telegram.start();
     // Native ClickUp ingress (webhook, not a socket — nothing to start/dial): the `/hooks/clickup` route
     // calls clickup.dispatch(); clickup.reply() posts an agent's answer back on the bound task.
     const clickup = new ClickupIngress(os, autos);
@@ -264,6 +272,7 @@ export class TenantRegistry {
       const render = (p: ChatPlatform) => (typeof text === 'function' ? text(p) : text);
       void slack.reply(sessionId, render('slack'));
       void discord.reply(sessionId, render('discord'));
+      void telegram.reply(sessionId, render('telegram'));
       void clickup.reply(sessionId, render('clickup'));
     });
     // Deadline notifications: when a task passes its due date, DM its owner (the human it runs as) once,
@@ -300,7 +309,7 @@ export class TenantRegistry {
     tm.setSessionEventNotifier((notice) => { void notifySessionEvent(os, tm, slack, discord, consoleOrigin, notice); });
     const ttyd = launchTtyd(paths.tmuxSocket, ttydPort, paths.connectors);
     console.log(`  [tenant:${rec.slug}] home=${paths.home}  ttyd=:${ttydPort}`);
-    return { record: rec, os, tm, autos, apps, slack, discord, clickup, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
+    return { record: rec, os, tm, autos, apps, slack, discord, telegram, clickup, ttyd, ttydPort, firstLogin: firstLogin ?? undefined };
   }
 
   /** Build a tenant's accept-link. Default tenant → apex localhost; others → its subdomain. */
