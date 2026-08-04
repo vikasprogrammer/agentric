@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -13996,6 +13996,42 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
   }
   const labelFor = (id: string) => runtimes.find((r) => r.id === id)?.label ?? id
 
+  // ── guided sign-in: the console drives the runtime's own login, so nobody has to ssh to the box ──
+  const [login, setLogin] = useState<RuntimeLogin | null>(null)
+  const [code, setCode] = useState('')
+  const [advanced, setAdvanced] = useState(false)
+  const guided = runtimes.some((r) => r.guidedLogin)
+  const startLogin = async () => {
+    setBusy(true); setHint('')
+    const r = await api.startRuntimeLogin(runtime, name.trim())
+    setBusy(false)
+    if (r.error || !r.login) return setHint('⚠ ' + (r.error ?? 'could not start'))
+    setLogin(r.login)
+  }
+  const submitCode = async () => {
+    setBusy(true)
+    const r = await api.submitRuntimeLoginCode(login!.id, code.trim())
+    setBusy(false)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setCode(''); if (r.login) setLogin(r.login)
+  }
+  const cancelLogin = async () => { if (login) await api.cancelRuntimeLogin(login.id); setLogin(null); setCode('') }
+  // The flow only advances while the console polls it (no server-side timer), so this interval IS the
+  // state machine's clock: it presses Enter on the CLI's prompts, surfaces the URL, and detects the
+  // credential file landing. Stops the moment the login settles.
+  useEffect(() => {
+    if (!login || login.phase === 'done' || login.phase === 'failed') return
+    const t = setInterval(async () => {
+      const r = await api.pollRuntimeLogin(login.id)
+      if (!r.login) return
+      setLogin(r.login)
+      if (r.login.phase === 'done') {
+        setLogin(null); setName(''); setHint(r.account?.checkNote ? `added · ${r.account.checkNote}` : 'added'); setTimeout(() => setHint(''), 6000); load()
+      }
+    }, 2000)
+    return () => clearInterval(t)
+  }, [login?.id, login?.phase])
+
   return (
     <Card>
       <CardContent className="space-y-4 p-4">
@@ -14068,9 +14104,65 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
           </div>
         )}
 
-        {canEdit && (
+        {canEdit && guided && (
           <div className="space-y-2 border-t pt-4">
             <label className="text-xs font-medium text-muted-foreground">Add an account</label>
+            {!login && (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={runtime} onValueChange={(v) => setRuntime(v ?? 'claude-code')}>
+                    <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="Runtime" /></SelectTrigger>
+                    <SelectContent>{runtimes.filter((r) => r.guidedLogin).map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="name (e.g. overflow-1)" className="h-8 w-44 font-mono text-xs" />
+                  <Button onClick={startLogin} disabled={busy || !name.trim()}>{busy ? 'Starting…' : `Sign in to ${spec?.label ?? 'the runtime'}`}</Button>
+                  {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Signs in on <em>this</em> box and stores the account's own credential directory — the only credential
+                  a session can actually launch with. You'll get a link to authorize in your browser; sign in as the
+                  account you want to add (use a private window so it doesn't reuse the one you're already signed into).
+                </p>
+              </>
+            )}
+
+            {login && (
+              <div className="space-y-3 rounded-md border bg-muted/30 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-medium">Signing in as <span className="font-mono">{login.name}</span></span>
+                  <button className="text-xs text-muted-foreground hover:text-foreground" onClick={cancelLogin}>Cancel</button>
+                </div>
+                {login.phase === 'starting' && <p className="text-xs text-muted-foreground">Starting the runtime's sign-in — the authorization link appears here in a moment…</p>}
+                {login.phase === 'awaiting-code' && login.url && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      1. Open this link and authorize as the account you're adding, then 2. paste the code it gives you.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <a href={login.url} target="_blank" rel="noreferrer" className="truncate text-xs text-blue-600 underline dark:text-blue-400">{login.url}</a>
+                      {/* Plain-HTTP tenants have no navigator.clipboard (insecure context), so fall back. */}
+                      <button className="shrink-0 text-xs text-muted-foreground hover:text-foreground" onClick={() => copyText(login.url!)}>Copy</button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder="paste the code from the browser" autoComplete="off" className="h-8 w-80 font-mono text-xs" />
+                      <Button onClick={submitCode} disabled={busy || !code.trim()}>Finish</Button>
+                    </div>
+                  </div>
+                )}
+                {login.phase === 'exchanging' && <p className="text-xs text-muted-foreground">Completing sign-in and writing the credential directory…</p>}
+                {login.phase === 'failed' && <p className="text-xs text-red-600 dark:text-red-400">⚠ {login.error}</p>}
+              </div>
+            )}
+          </div>
+        )}
+
+        {canEdit && (
+          <div className="space-y-2 border-t pt-4">
+            <button className="text-xs font-medium text-muted-foreground hover:text-foreground" onClick={() => setAdvanced(!advanced)}>
+              {advanced ? '▾' : '▸'} Add by path {guided && <span className="font-normal">(advanced — for a directory you signed in yourself, or another runtime)</span>}
+            </button>
+            {advanced && (
+            <div className="mt-2 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Select value={runtime} onValueChange={(v) => setRuntime(v ?? 'claude-code')}>
                 <SelectTrigger className="h-8 w-40 text-xs"><SelectValue placeholder="Runtime" /></SelectTrigger>
@@ -14098,6 +14190,8 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                 ? <>On <em>this</em> box run <span className="font-mono">{spec?.credentialEnv.configDirVar ?? 'CLAUDE_CONFIG_DIR'}=&lt;dir&gt; {spec?.id === 'codex' ? 'codex' : 'claude'} login</span> once per account (any path — e.g. <span className="font-mono">~/.claude-accounts/overflow-1</span>), then give that dir here. It's exported to the session as <span className="font-mono">{credVar || 'the config dir'}</span>, and the login inside it refreshes itself, so it keeps working for resident chats too.</>
                 : <>A key already in the secrets vault whose value is this account's API key, exported as <span className="font-mono">{credVar || 'the API-key var'}</span>. Store the value in Settings → Secrets first.</>}
             </p>
+            </div>
+            )}
           </div>
         )}
       </CardContent>

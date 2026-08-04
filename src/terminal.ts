@@ -68,6 +68,7 @@ import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
 import { credentialDirHasLogin } from './edge/runtime-account-check';
+import { RuntimeLoginManager } from './edge/runtime-login';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
 
 /** OS-owned operating notes appended to every claude system prompt (after the user's Company context).
@@ -558,6 +559,9 @@ export class TerminalManager {
   /** Where sessions actually run: the shared local socket (default) or per-member uids via the
    *  launcher when AOS_UID_ISOLATION=1 (Phase A). Selected once at construction. */
   private readonly backend: SessionBackend;
+  /** Guided runtime-account login — the console-driven `claude login` that produces a credential dir.
+   *  Public: the API routes drive it directly (see `src/edge/runtime-login.ts`). */
+  readonly logins: RuntimeLoginManager;
   /** Phase A flag — when on, per-session files are handed to the launcher (written in the member
    *  home) rather than the app dir, and resurrect/.env (a local-ttyd feature) is skipped. */
   private readonly uidIsolation = process.env.AOS_UID_ISOLATION === '1';
@@ -656,6 +660,17 @@ export class TerminalManager {
     this.backend = process.env.AOS_UID_ISOLATION === '1'
       ? new LauncherSessionBackend(new LauncherClient(process.env.AOS_LAUNCHER_SOCK || '/run/aos/launcher.sock'), onError)
       : new LocalSessionBackend(this.tmuxSocket, onError);
+    // Guided runtime-account login (Settings → Runtime accounts): short-lived panes running the runtime's
+    // OWN login so an operator never has to ssh in to produce a credential dir. It lives here because
+    // this is what owns the tmux backend — it has nothing to do with agent sessions and never spawns one.
+    this.logins = new RuntimeLoginManager({
+      backend: this.backend,
+      // Empty when this instance has no data home (demo/in-memory) — the manager refuses to start there
+      // rather than scattering credential dirs in the process's cwd.
+      accountsDir: os.paths ? path.join(os.paths.home, 'runtime-accounts') : '',
+      accounts: os.runtimeAccounts,
+      audit: (type, data) => this.audit('-', 'system', type, data),
+    });
   }
 
   /** The launcher "space" (member-uid identity) a session runs in: the spawning member, or a shared

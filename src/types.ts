@@ -1135,6 +1135,11 @@ export interface CodingRuntimeSpec {
    * selected — better an honest box-default launch than a stamped rotation that didn't happen.
    */
   liveCredentialKinds: readonly RuntimeAccountKind[];
+  /** Can the console drive this runtime's own login to PRODUCE a credential dir (see
+   *  `src/edge/runtime-login.ts`)? True only where the flow has been walked end to end — it presses Enter
+   *  on prompts it recognises, so claiming it for an unverified CLI would strand operators mid-flow.
+   *  False → the console still accepts a credential dir added by path. */
+  guidedLogin: boolean;
   /** A few known-good model ids, offered as suggestions in the console. NOT an allowlist — a custom or
    *  newer id must still be settable, so validation only rejects ids that clearly belong to ANOTHER
    *  runtime (see `foreignModel`). */
@@ -1159,6 +1164,7 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // uses the same token), but no OS lane runs print mode — see liveCredentialKinds. `ANTHROPIC_API_KEY` is
     // left out for the same reason it was never proven: an unverified kind must not be silently selectable.
     liveCredentialKinds: ['oauth'],
+    guidedLogin: true,
     suggestedModels: ['claude-opus-4-8', 'claude-sonnet-4-8', 'claude-haiku-4-5'],
     foreignModel: /^(gpt|o[0-9]|codex|glm|kimi|deepseek)\b/i,
     capabilities: {
@@ -1186,6 +1192,8 @@ export const CODING_RUNTIMES: Readonly<Record<CodingRuntimeId, CodingRuntimeSpec
     // OPENAI_API_KEY through), so unlike claude's token var these are wired by OUR launcher rather than
     // hoped for from the CLI. No tokenVar to list.
     liveCredentialKinds: ['oauth', 'apikey'],
+    // `codex login` has its own prompt sequence; nobody has walked it through this flow yet.
+    guidedLogin: false,
     suggestedModels: ['gpt-5-codex', 'gpt-5.6-sol'],
     // Bare ALIASES matter as much as full ids: the workspace default is often just `opus`,
     // and Codex answers `The 'opus' model is not supported` — seen live. Anchor on a word

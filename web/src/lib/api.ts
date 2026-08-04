@@ -95,8 +95,15 @@ export interface RuntimeSpecInfo {
   /** Kinds this runtime can actually be LAUNCHED with — the others are refused on add and never selected
    *  (claude ignores an injected CLAUDE_CODE_OAUTH_TOKEN outside print mode, so it's credential-dir only). */
   liveCredentialKinds: RuntimeAccountKind[]
+  /** Can the console produce a credential dir itself by driving the runtime's own sign-in on this box? */
+  guidedLogin?: boolean
 }
-export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; error?: string }
+
+/** A guided sign-in in flight: the console starts it, shows `url` for the human to authorize, takes the
+ *  code back, and the runtime's own CLI writes the credential dir. */
+export type LoginPhase = 'starting' | 'awaiting-code' | 'exchanging' | 'done' | 'failed'
+export interface RuntimeLogin { id: string; runtime: string; name: string; phase: LoginPhase; url?: string; error?: string; startedAt: number }
+export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; error?: string }
 
 export interface AgentInfo {
   id: string
@@ -1640,6 +1647,10 @@ export const api = {
   addRuntimeAccount: (body: { runtime: string; name: string; kind: RuntimeAccountKind; configDir?: string; apiKeyRef?: string; token?: string }) => call<{ ok: boolean; error?: string; account?: RuntimeAccount }>('POST', '/api/runtime-accounts', body),
   setRuntimeAccountEnabled: (runtime: string, name: string, enabled: boolean) => call<{ ok: boolean; error?: string }>('PATCH', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`, { enabled }),
   removeRuntimeAccount: (runtime: string, name: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}`),
+  startRuntimeLogin: (runtime: string, name: string) => call<{ ok: boolean; error?: string; login?: RuntimeLogin }>('POST', '/api/runtime-accounts/login', { runtime, name }),
+  pollRuntimeLogin: (id: string) => call<{ ok: boolean; error?: string; login?: RuntimeLogin; account?: RuntimeAccount | null }>('GET', `/api/runtime-accounts/login/${encodeURIComponent(id)}`),
+  submitRuntimeLoginCode: (id: string, code: string) => call<{ ok: boolean; error?: string; login?: RuntimeLogin }>('POST', `/api/runtime-accounts/login/${encodeURIComponent(id)}/code`, { code }),
+  cancelRuntimeLogin: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/runtime-accounts/login/${encodeURIComponent(id)}`),
   checkRuntimeAccount: (runtime: string, name: string) => call<{ ok: boolean; error?: string; account?: RuntimeAccount; check?: { ok: boolean | null; note: string } }>('POST', `/api/runtime-accounts/${encodeURIComponent(runtime)}/${encodeURIComponent(name)}/check`),
 
   governance: () => call<GovernanceThresholds & { hostGovernanceEnabled?: boolean; semanticGuardEnabled?: boolean; fileWriteGuardEnabled?: boolean; updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/governance'),

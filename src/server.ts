@@ -4197,8 +4197,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const accounts = os.runtimeAccounts.list();
     // `liveCredentialKinds` rides along so the console offers only kinds that actually launch, and badges any
     // pre-existing row of a kind that doesn't (added before the launcher knew the difference) as never-used.
-    const runtimes = Object.values(CODING_RUNTIMES).map((s) => ({ id: s.id, label: s.label, credentialEnv: s.credentialEnv, liveCredentialKinds: s.liveCredentialKinds }));
-    return sendJson(res, 200, { accounts, runtimes });
+    const runtimes = Object.values(CODING_RUNTIMES).map((s) => ({
+      id: s.id, label: s.label, credentialEnv: s.credentialEnv, liveCredentialKinds: s.liveCredentialKinds,
+      // Whether the console can produce a credential dir itself on THIS box (the flag is per-runtime,
+      // but uid isolation rules it out per-deployment), so the UI offers the guided path only when it works.
+      guidedLogin: tm.logins.supported(s.id).ok,
+    }));
+    return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list() });
   }
   if (method === 'POST' && p === '/api/runtime-accounts') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
@@ -4272,6 +4277,40 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.added', data: { runtime, name: acct.name, kind, check: check ? { ok: check.ok, note: check.note } : undefined } });
       return sendJson(res, 200, { ok: true, account: os.runtimeAccounts.get(runtime, acct.name) });
     } catch (e) { return sendJson(res, 400, { error: (e as Error).message }); }
+  }
+  // ── Guided login: the console drives the runtime's OWN sign-in to produce a credential dir ──────
+  // Owner-only, like every other pool mutation. The pasted OAuth code is a one-time credential: it goes
+  // straight into the waiting pane and is never audited, logged or stored.
+  if (method === 'POST' && p === '/api/runtime-accounts/login') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const b = await readBody(req) as { runtime?: unknown; name?: unknown };
+    const runtime = String(b.runtime ?? '') as RuntimeId;
+    if (!isCodingRuntime(runtime)) return sendJson(res, 400, { error: `unknown runtime: ${runtime}` });
+    try {
+      const login = tm.logins.start(runtime, String(b.name ?? ''));
+      return sendJson(res, 200, { ok: true, login });
+    } catch (e) { return sendJson(res, 400, { error: (e as Error).message }); }
+  }
+  {
+    const ml = /^\/api\/runtime-accounts\/login\/([^/]+)(\/code)?$/.exec(p);
+    if (ml) {
+      if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+      const id = decodeURIComponent(ml[1]);
+      if (method === 'GET' && !ml[2]) {
+        const login = tm.logins.poll(id);
+        if (!login) return sendJson(res, 404, { error: 'login not found' });
+        // A finished login has just registered its account — hand it back so the console can show the
+        // new row (with its usage badge) without a second round trip.
+        const account = login.phase === 'done' ? os.runtimeAccounts.get(login.runtime, login.name) : null;
+        return sendJson(res, 200, { ok: true, login, account });
+      }
+      if (method === 'POST' && ml[2]) {
+        const b = await readBody(req) as { code?: unknown };
+        try { return sendJson(res, 200, { ok: true, login: tm.logins.submitCode(id, String(b.code ?? '')) }); }
+        catch (e) { return sendJson(res, 400, { error: (e as Error).message }); }
+      }
+      if (method === 'DELETE' && !ml[2]) { tm.logins.cancel(id); return sendJson(res, 200, { ok: true }); }
+    }
   }
   {
     // Re-validate an existing token account on demand (the console's Refresh) — re-probe the vaulted token,

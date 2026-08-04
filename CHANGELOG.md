@@ -8,6 +8,40 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.309.0] — 2026-08-04
+### Added
+- **Add a runtime account by signing in from the console** — Settings → Runtime accounts now runs the
+  runtime's own login for you and keeps the credential directory it produces. v0.308.0 established that a
+  credential dir is the only credential a session can actually launch with, but producing one still meant
+  ssh'ing to the box and running `CLAUDE_CONFIG_DIR=<dir> claude` by hand — which is precisely why the
+  paste-a-token box, the one that silently did nothing, was the path everyone took. Now: type a name, hit
+  **Sign in**, open the link it shows, paste the code back. Adding a dir by path stays available under
+  **Add by path** for a login you ran yourself or a runtime with no guided flow.
+  - It **drives the real CLI** rather than speaking OAuth itself. We could mint our own PKCE pair and
+    write `.credentials.json` directly, but that means owning an undocumented client id, token endpoint
+    and file shape — and getting any of them wrong reproduces this whole bug class: a credential file the
+    runtime silently rejects. The runtime's own binary performs the exchange and writes its own file; the
+    console only relays the URL out and the code back.
+  - Completion is therefore a **filesystem fact** — the credential file appearing — never a screen scrape.
+    Scraping decides only when to press Enter and which URL to show, so a future change to the CLI's
+    prompts times the flow out with the manual instructions instead of registering a broken account.
+  - Fails closed everywhere else too: a dead pane, a rejected code, a name already in the pool, a name
+    that would escape the accounts dir, or a directory that already holds someone else's login are all
+    refused, and an abandoned attempt has its pane killed and its half-built dir removed. The pasted
+    OAuth code is a one-time credential — it goes straight into the waiting pane and is never audited,
+    logged or stored. Owner-only, like every pool mutation.
+  - `CodingRuntimeSpec.guidedLogin` gates it per runtime (claude-code only — codex's login has its own
+    prompt sequence nobody has walked yet), and it's unavailable under `AOS_UID_ISOLATION`, whose
+    uid-private tmux socket the app can't read.
+  - `SpawnSpec.cols` lets a pane the app only ever READS be spawned wide. Found by running the flow
+    against the real CLI, not by the stubbed test: a TUI hard-wraps to its terminal width and emits real
+    newlines, which `capture-pane -J` cannot rejoin, so at the default 203 columns the ~400-char authorize
+    URL came back truncated. The pane is now 900 columns, and a URL that still arrives clipped (no
+    trailing `state=`) is refused rather than shown — sending someone to a truncated authorize request
+    fails in the browser and reads as a product bug.
+  - New `scripts/runtime-login-test.cjs` (32 assertions, stubbed backend — offline and deterministic) in
+    `npm run test:governance`; the live path was verified separately against the real `claude`.
+
 ## [0.308.0] — 2026-08-04
 ### Fixed
 - **Account rotation only ever hands a session a credential the runtime will actually authenticate with.**

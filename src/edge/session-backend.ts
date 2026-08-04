@@ -30,6 +30,12 @@ export interface SpawnSpec {
    *  member uid can write claude's `.claude/`/scratch); the local backend ignores it (claude runs as
    *  the app uid directly in the source dir, as today). */
   agentSrc?: string;
+  /** Override the pane's column count. Agent sessions never set it (a human attaches to them, and the
+   *  default matches the console terminal), but a pane the app only ever READS wants to be wide enough
+   *  that the TUI doesn't hard-wrap what we're scraping: a CLI wraps to ITS terminal width and emits real
+   *  line breaks, which `capture-pane -J` cannot rejoin (it only rejoins tmux's own soft wraps). The
+   *  guided-login flow sets it so the OAuth URL arrives in one piece. */
+  cols?: number;
 }
 export type SpawnErrorSink = (sessionId: string, agent: string, error: string) => void;
 
@@ -100,7 +106,8 @@ export class LocalSessionBackend implements SessionBackend {
     const cmd = spec.argv.map((a, i) => (i === 0 ? a : sq(a))).join(' '); // argv[0] (bash) bare, rest quoted
     const full = envPrefix ? `${envPrefix} ${cmd}` : cmd;
     // -u: assert the terminal is UTF-8 regardless of the locale tmux itself was started under.
-    const args = ['-u', '-S', this.tmuxSocket, 'new-session', '-d', '-s', spec.tmuxName, ...TMUX_GEOMETRY, full];
+    const geometry = spec.cols ? ['-x', String(spec.cols), '-y', '50'] : TMUX_GEOMETRY;
+    const args = ['-u', '-S', this.tmuxSocket, 'new-session', '-d', '-s', spec.tmuxName, ...geometry, full];
     const child = spawn('tmux', args, { stdio: 'ignore' });
     child.on('error', (e) => this.onError(spec.sessionId, spec.agent, String(e)));
     // Server-wide tmux tuning recommended for the claude TUI: allow-passthrough lets the agent's
