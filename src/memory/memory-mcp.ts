@@ -559,6 +559,11 @@ const TOOLS = [
       'folder, e.g. "report.pdf"), a short `title`, and an optional one-line `description`. The file is ' +
       'snapshotted on publish, so you can keep editing your working copy freely. An inbox notification ' +
       'is posted automatically. Use this for real outputs the human should see — NOT for scratch files. ' +
+      'A file left in the scratchpad CANNOT be published (it is outside your working folder, and is ' +
+      'deleted when the session ends), so write deliverables into your working folder — and when a skill ' +
+      'or tool renders an image/PDF/chart into the scratchpad by default, move it into your working folder ' +
+      'first, then publish. (Images from `image_generate` are auto-published; this is for media you write ' +
+      'yourself.) ' +
       'Re-publishing the SAME filename into the SAME folder UPDATES that deliverable in place (its id and ' +
       'shareable link are preserved) instead of creating a duplicate — so you can refresh a living ' +
       'deliverable by just publishing it again.',
