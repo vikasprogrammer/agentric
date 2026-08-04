@@ -4,7 +4,7 @@ Working checklist for the plan in [`docs/agent-os-plan.md`](docs/agent-os-plan.m
 **mediation plane behind existing MCP gateways** — own the enforced primitive (suspend-for-a-human +
 budget + tamper-evident record), don't build a competing gateway. Keep this file current as work ships.
 
-_Last updated: 2026-08-03._
+_Last updated: 2026-08-04._
 
 ## Shipped
 
@@ -102,3 +102,46 @@ Decision (2026-08-03): the Sessions LIST view is the last place that still loads
 
 Parallel cleanup candidate (not blocking): `FullTerminalView` (`#/term/<tmux>`, `web/src/App.tsx`
 ~L5526) still pulls all ~950 rows to resolve one tmux — swap for the Phase-1 by-id fetch.
+
+
+# Telegram chat channel (separate workstream)
+
+Native Telegram bot as the **third chat ingress** after Slack/Discord — part of the fleet-reachability
+story in [`docs/agent-os-plan.md`](docs/agent-os-plan.md) (an agent is reachable from every channel a
+human already lives in, all through the same gate + run-as). Long-poll (`getUpdates`), no public URL, one
+@BotFather token. Mirrors the Discord path; see CLAUDE.md → `src/edge/telegram-socket.ts` /
+`src/connectors/telegram.ts`.
+
+## Shipped (all deployed to northwind · personal)
+
+- [x] **Ingress + `telegram_reply` MVP** — long-poll socket, run-as via identity map (provider
+      `telegram`), chat-id thread continuity, bound-chat reply tool, Settings→Integrations panel ·
+      v0.300.0 · PR #552
+- [x] **`/command` menu + DM threading** — agents as slash-commands (`setMyCommands`; hyphenated id →
+      `_` for the menu, reversed on tap) + a private-chat follow-up continues the last run · v0.301.0 · PR #553
+- [x] **`/new`** — end a conversation / start fresh (stop + unbind) · v0.304.0 · PR #556
+- [x] **Helper commands** — `/help` · `/agents` · `/whoami` · v0.305.0 · PR #557
+
+## Deferred (Telegram parity with Slack/Discord — the MVP boundary)
+
+- [ ] **Proactive egress** — `telegram_send` / `telegram_dm` MCP tools (an agent messages a chat/person
+      unprompted, e.g. a cron posting a daily summary). Gate on a `TELEGRAM_EGRESS` env flag; mirror
+      `slack_send`/`slack_dm` (connector `sendToChannel`/`dmUser` + `/api/agent/telegram/{send,dm}` +
+      the memory-mcp tools).
+- [ ] **Approval + question DMs over Telegram** — the notifier fan-out: thread `telegram` through
+      `deliverDM` + the `notify*` functions in `tenant-registry.ts`, and the `bindQuestionDm` /
+      `bindApprovalDm` / `bindSessionDm` writers, so a gated action or an `ask_human` can be resolved
+      right from the chat. The DM-binding provider unions are **already widened** for `telegram`, so this
+      is a small addition. ⚠ **Identity-map trust only** — never resolve `canApprove` from a spoofable
+      Telegram id (same hard constraint as [[voice-channel-plan]]): questions yes, approvals only for a
+      mapped member whose role clears the level.
+- [ ] **End-of-day digest → Telegram** — `digest.ts` platform union (`'slack'|'discord'` → add
+      `'telegram'`) + a Telegram digest-channel setting.
+- [ ] **Live command-menu refresh** — `setMyCommands` currently re-syncs only on (re)connect; refresh it
+      when the agent roster changes (agent create/update/delete) so new agents appear without a bounce.
+
+## Notes
+
+- Live bot: **personal** tenant `@VikAgentricBot`; owner Telegram id `7024650475` → `owner@example.com`.
+  **northwind** has the code but no token (socket `start()` no-ops until one is set).
+- Group thread continuity needs **Group Privacy OFF** in @BotFather (mentions/commands work either way).
