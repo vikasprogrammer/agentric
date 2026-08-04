@@ -21,8 +21,9 @@
  * Zero-dependency: the global `fetch` (Node 22+) handles the wire.
  */
 import { AgentOS } from '../kernel';
+import { isCodingRuntime } from '../types';
 import { Automations } from './automations';
-import { getMe, getUpdates, parseTelegramUpdate, sendMessage } from '../connectors/telegram';
+import { getMe, getUpdates, parseTelegramUpdate, sendMessage, setMyCommands, telegramCommandName } from '../connectors/telegram';
 
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -98,6 +99,8 @@ export class TelegramSocket {
     this.reconnectMs = RECONNECT_MIN_MS;
     this.connected = true;
     this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'telegram', type: 'telegram.connected', data: { botId: this.botId, username: this.botUsername } });
+    // Register the chat-reachable fleet as the bot's `/command` menu (best-effort, off the hot path).
+    void this.syncCommands();
     // Drain the backlog: fetch only the latest queued update and advance the offset past it WITHOUT
     // processing, so a restart never replays hours-old messages (Telegram re-sends everything above the
     // last confirmed offset, and a fresh process starts at offset 0).
@@ -149,8 +152,9 @@ export class TelegramSocket {
     const actorLabel = ev.username || ev.user || 'someone';
     const isDM = ev.eventType === 'direct_message';
     // Strip a leading @botusername (and the `@bot` appended to a `/cmd@bot` command) so the message — and
-    // the `/agent` router prefix — starts clean.
-    const text = this.stripMention(ev.text);
+    // the `/agent` router prefix — starts clean, then map a registered Telegram command name back to its
+    // real (possibly hyphenated) agent id so a tapped `/agent_author` reaches `agent-author`.
+    const text = this.resolveCommand(this.stripMention(ev.text));
 
     // Inline approve/deny: a private-chat reply from someone with a pending approval we sent them resolves
     // the gate directly (no trip to the web Inbox). Only for private chats (where the ping was sent).
@@ -199,17 +203,20 @@ export class TelegramSocket {
       }
     }
 
-    // Thread continuity: a message in a group chat already bound to a session continues THAT conversation
+    // Thread continuity: a message in a chat already bound to a session continues THAT conversation
     // (resume the same agent + transcript) instead of firing a fresh trigger. Keyed on chat id (+ forum
-    // topic). Group-only; a private chat is covered by the DM-continuity path above. Only the first
-    // @mention (nothing bound yet) falls through to a fresh spawn below.
-    if (!isDM) {
+    // topic). Runs for BOTH a group AND a private chat — a Telegram DM is one persistent 1:1 conversation
+    // (chat id == the user id), so a plain follow-up continues the last run rather than spawning a fresh
+    // one. The `continueSessionDm` path above is the narrower case (a run the OS proactively DM'd about);
+    // this is the general "keep talking in this chat". Only the first message (nothing bound yet) falls
+    // through to a fresh spawn below.
+    {
       const cont = this.autos.continueTelegramThread({ chat: ev.chatId, messageThreadId: ev.messageThreadId, actorLabel, text, raw: ev.raw }, runAsMember);
       if (cont.status !== 'none') {
         this.os.audit.append({
           ts: Date.now(), runId: cont.sessionId ?? '-', tenant: this.os.tenant,
           principal: runAsMember ? `member:${runAsMember}` : 'telegram', type: 'trigger.telegram',
-          data: { eventType: ev.eventType, chat: ev.chatId, thread: true, continued: cont.status, runAs: runAsMember ?? null },
+          data: { eventType: ev.eventType, chat: ev.chatId, thread: true, dm: isDM, continued: cont.status, runAs: runAsMember ?? null },
         });
         return;
       }
@@ -300,5 +307,52 @@ export class TelegramSocket {
   private resolveMember(userId: string): string | undefined {
     if (!userId) return undefined;
     return this.os.team.memberByExternalId('telegram', userId)?.id;
+  }
+
+  /** The chat-reachable claude-code fleet — the same set the `/agent` router addresses. */
+  private chatAgents(): { id: string; description?: string }[] {
+    return [...this.os.agents.values()]
+      .filter((a: any) => isCodingRuntime(a.runtime) && a.category !== 'System' && a.chatReachable !== false)
+      .map((a: any) => ({ id: a.id, description: a.description }));
+  }
+
+  /**
+   * Register the fleet as the bot's `/command` menu (`setMyCommands`) so a user sees the agents when they
+   * type `/`. Each agent id is normalised to a Telegram-safe command name (`telegramCommandName`), deduped
+   * on collision (first wins), and capped at Telegram's 100-command limit. `resolveCommand` reverses the
+   * mapping on an inbound tap. Best-effort — a failure is audited and the bot still works via typed names.
+   * Re-run on every (re)connect, so a token re-save (or restart) refreshes the menu after the roster changes.
+   */
+  private async syncCommands(): Promise<void> {
+    const token = this.os.settings.telegramBotToken();
+    if (!token) return;
+    const seen = new Set<string>();
+    const commands: { command: string; description: string }[] = [];
+    for (const a of this.chatAgents()) {
+      const command = telegramCommandName(a.id);
+      if (!command || seen.has(command)) continue;
+      seen.add(command);
+      const desc = (a.description || `Chat with ${a.id}`).replace(/\s+/g, ' ').trim().slice(0, 256) || `Chat with ${a.id}`;
+      commands.push({ command, description: desc });
+      if (commands.length >= 100) break;
+    }
+    const res = await setMyCommands(token, commands);
+    this.os.audit.append({
+      ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'telegram',
+      type: 'error' in res ? 'telegram.commands.failed' : 'telegram.commands.synced',
+      data: 'error' in res ? { error: res.error } : { count: commands.length },
+    });
+  }
+
+  /** Reverse `telegramCommandName`: a leading `/token` (a tapped menu command) whose normalised form
+   *  matches a real agent id is rewritten to `/<real-id> …` so the downstream `/agent` router resolves it.
+   *  A `/token` that IS already a known agent id, or matches none, is left untouched. */
+  private resolveCommand(text: string): string {
+    const m = text.match(/^\/([A-Za-z0-9_]+)(?:@\w+)?/);
+    if (!m) return text;
+    const tok = m[1];
+    if (this.os.agents.has(tok)) return text; // already the real id
+    const hit = [...this.os.agents.values()].find((a: any) => telegramCommandName(a.id) === tok.toLowerCase());
+    return hit ? `/${hit.id}${text.slice(m[0].length)}` : text;
   }
 }
