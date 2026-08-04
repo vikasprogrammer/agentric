@@ -46,6 +46,9 @@ const TERMINAL: ReadonlySet<TaskStatus> = new Set<TaskStatus>(['done', 'cancelle
 const STATUSES: readonly TaskStatus[] = ['todo', 'doing', 'blocked', 'done', 'cancelled'];
 /** Sentinel body for the one-time "went overdue" event that dedupes the overdue notification. */
 const OVERDUE_MARK = '⏰ went overdue';
+/** Sentinel body for the one-time "its run ended without closing this" event, per stranding SESSION — so a
+ *  task stranded twice (re-dispatched, stranded again) wakes its caller once per dead run, not once ever. */
+const strandedMark = (sessionId: string): string => `⚠️ run ended without closing this (${sessionId})`;
 
 /**
  * What the {@link TaskStore} notifier sink receives on a meaningful task change. The store stays
@@ -301,6 +304,22 @@ export class TaskStore {
       .get<{ 1: number }>(id, OVERDUE_MARK);
     if (existing) return false;
     this.addEvent(id, 'status', OVERDUE_MARK, 'system');
+    return true;
+  }
+
+  /**
+   * Record a one-time "the dispatched run ended with this task still open" marker for `sessionId`; returns
+   * true only the FIRST time, so the stranded sweep wakes the delegating caller exactly once per dead run
+   * (not every tick). Keyed on the SESSION, not the task, so a re-dispatch that strands again is a fresh
+   * signal. The marker also reads in the task timeline as the reason the board stopped moving.
+   */
+  markStranded(id: string, sessionId: string): boolean {
+    const mark = strandedMark(sessionId);
+    const existing = this.db
+      .prepare(`SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'status' AND body = ? LIMIT 1`)
+      .get<{ 1: number }>(id, mark);
+    if (existing) return false;
+    this.addEvent(id, 'status', mark, 'system', sessionId);
     return true;
   }
 

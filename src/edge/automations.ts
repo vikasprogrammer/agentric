@@ -21,6 +21,7 @@ import { chooseAgent, RouterCandidate } from './router';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
+import { sweepStrandedTasks } from './task-reconcile';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
 // Supports: * , a-b , */n , a-b/n , lists. dow 0-7 (7 ≡ 0 = Sunday).
@@ -1485,6 +1486,7 @@ export class Automations {
       this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'scheduler', type: 'scheduler.deferred', data: { deferred, cap, running } });
     }
     this.sweepOverdue(now);
+    this.sweepStranded(now, cap > 0 ? Math.max(0, cap - running) : Infinity);
     this.sweepStuckGoals(now);
     this.sweepCompletedGoals();
     this.sweepExpiredShares(now);
@@ -1567,6 +1569,25 @@ export class Automations {
    * lives in the DB (`markOverdueNotified`), so a restart never re-alarms. Wrapped so a bad row never
    * kills the scheduler; a no-op when no overdue notifier is wired.
    */
+  /**
+   * Close the delegation loop when a delegate's RUN ends but its TASK doesn't. The poke-back that wakes a
+   * delegating caller hangs off the task reaching done/blocked, so a delegate that finishes (or dies)
+   * without calling `task_update` strands the task AND leaves the caller waiting forever — 14% of
+   * agent→agent hand-offs on a busy tenant. This is the fallback: reconcile a run that reported success,
+   * and wake the caller for everything else. Shares the tick's concurrency headroom, since a poke to a
+   * caller with no live session resumes it in a fresh run. See {@link sweepStrandedTasks}.
+   */
+  private sweepStranded(now: Date, budget: number): void {
+    try {
+      const r = sweepStrandedTasks(this.os, this, { now: now.getTime(), budget });
+      if (r.poked || r.closed) {
+        this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'scheduler', type: 'tasks.reconciled', data: { closed: r.closed, poked: r.poked, marked: r.marked } });
+      }
+    } catch {
+      // never let the stranded-task sweep take down the automation scheduler
+    }
+  }
+
   private sweepOverdue(now: Date): void {
     if (!this.overdueNotifier) return;
     try {

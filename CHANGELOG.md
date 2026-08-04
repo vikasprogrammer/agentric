@@ -8,6 +8,38 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.307.0] — 2026-08-04
+### Fixed
+- **A delegate that ends its run without closing the task no longer strands the caller forever.** The
+  poke-back that wakes a delegating agent hangs off the TASK reaching `done`/`blocked`, not off the
+  delegate's session ending — so a delegate that finished (or died) without calling `task_update` left
+  the task inert in `doing` **and** the caller waiting with no signal, ever. Nothing re-dispatched it
+  either (`dispatchable()` only selects `todo`). Measured on the globex tenant: **43 of 307 (14%)** of
+  agent→agent hand-offs over 30 days ended exactly that way — `engineer → qa`, `engineer →
+  release-orchestrator`, `qa → engineer`. The existing Insights reconcile tile could not have rescued
+  one of them: it only auto-closes runs graded `success`, and 15 of the 16 stranded runs ended
+  `outcome = 'unknown'` (the agent closed neither loop), which it parks in a review-only bucket.
+  A new `sweepStrandedTasks` runs each scheduler tick over every non-terminal task whose dispatched
+  session has settled, and splits on what the run actually reported:
+  - **`success`** → close the task `done` (the Insights tile's `apply`, now automatic). The store
+    notifier then fires the ordinary "✅ Really done" poke, so the caller hears the real result through
+    the normal path — one wake-up, not two.
+  - **anything else** → leave the status **alone** and wake the caller with the delegate's last note.
+    Never auto-marks done: a run legitimately ends mid-flight (waiting on CI, a human go/no-go), and
+    calling that "finished" would be a lie.
+
+  Bounded so enabling it can't stampede a backlog: once per dead *run* (marker keyed on the session, so
+  a re-dispatch that strands again is a fresh signal), ≤3 wake-ups per tick sharing the dispatcher's
+  concurrency headroom, nothing older than 3 days ever woken (cold strandings are marked silently), and
+  a row skipped for budget stays unmarked so the next tick still owes it. Replayed over the live globex
+  backlog: settles in 3 ticks (~60s) — 8 callers woken, 1 task auto-closed, 12 cold ones marked quietly.
+  Audited `task.stranded` / `task.reconciled` / `tasks.reconciled`.
+- **Reconcile settles on when a run ENDED, not when it started.** `planTaskReconcile`/`applyTaskReconcile`
+  gated their 10-minute grace on the session's `created_at`, so a long run that started an hour ago but
+  ended seconds ago counted as settled and could be reconciled out from under an agent about to post its
+  `task_update`. Both now gate on `updated_at` (stamped when the session reaches a terminal state), as
+  does the new sweep; `endedDaysAgo` in the Insights tile is now genuinely the end date.
+
 ## [0.306.0] — 2026-08-04
 ### Changed
 - **Context-engineering pass, part 2 — trim the always-on operating notes.** Follow-up to #554. The

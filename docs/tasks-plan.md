@@ -318,6 +318,36 @@ Agents do **not** get a dispatch MCP tool in v1 (spawning a *new* session is the
 frontier). They participate by `task_claim`-ing work into their *own* running session and by `task_create`
 for sub-tasks. Pool auto-assignment + agent-triggered dispatch are §9 futures.
 
+### 3.4 When the loop does NOT close itself — the stranded sweep
+
+§3.2's self-closing loop rests on the delegate actually calling `task_update`. When it doesn't, the damage
+is bigger than an untidy board: **the poke-back that wakes a delegating caller hangs off the TASK reaching
+`done`/`blocked`** (`maybePokeCaller`, `tenant-registry.ts`), not off the delegate's session ending. So a
+delegate whose run ends with the task still open strands the task in `doing` *and* leaves the caller
+waiting forever — the delegation silently never completes. Nothing re-dispatches it either:
+`dispatchable()` only selects `status='todo'`, so once a task is `doing` with a dead session it is inert.
+
+Measured on the globex tenant (30 days): **43 of 307 poke-on-done hand-offs (14%)** ended that way, and
+15 of the 16 stranded runs ended `outcome='unknown'` — the bucket the Insights reconcile tile deliberately
+never touches — so the manual tile could not have rescued one of them.
+
+`sweepStrandedTasks` (`edge/task-reconcile.ts`, run each tick) is the fallback. Over every non-terminal
+task whose dispatched session has settled (`SETTLE_MS` after the session's **end**, not its start):
+
+- **run reported `success`** → close the task `done`. This is the Insights tile's `apply`, now automatic;
+  the store notifier then fires the ordinary "✅ Really done" poke, so the caller hears the real result
+  through the normal path — one wake-up, not two.
+- **anything else** (`unknown` / partial / failure / crashed / stopped) → leave the status **alone** and
+  wake the caller with the delegate's last note. Never auto-marks done: a run legitimately ends mid-flight
+  (waiting on CI, a human go/no-go), and calling that "finished" would be a lie.
+
+Bounded so switching it on can't stampede a backlog: once per dead *run* (`markStranded`, keyed on the
+session id, so a re-dispatch that strands again is a fresh signal), ≤3 wake-ups per tick sharing the
+dispatcher's concurrency headroom, and nothing older than 3 days is ever woken — a cold stranding gets its
+marker silently so it can never fire later. A row skipped for budget stays **unmarked**, so the next tick
+still owes it. Replayed over the live globex backlog: settles in 3 ticks (~60s), 8 callers woken, 1 task
+auto-closed, 12 cold ones marked silently.
+
 ---
 
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`
