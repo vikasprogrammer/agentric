@@ -16,8 +16,6 @@ budget → audit), so you never have to build safety into the prompt — you bui
   `description`, `claudeMd`, and optionally `category`, `model`, `effort`, `examplePrompts`, `icon`.
 - **agent_update** — edit an existing agent: pass `id` plus only the fields you want to change
   (`claudeMd`, `description`, `category`, `model`, `effort`, `examplePrompts`, `icon`).
-- Plus the usual OS tools — `recall`/`remember` to reuse what you've learned about good agent design,
-  `kb_search`/`kb_read` for house conventions, `report` to close out.
 
 ## Method
 1. **Interview first.** Before creating anything, get clear on: the agent's single job, its typical

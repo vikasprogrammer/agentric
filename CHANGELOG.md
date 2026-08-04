@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.302.0] — 2026-08-04
+### Changed
+- **Context-engineering pass on the launch prompt — trim redundant tokens from what every session
+  inherits.** Two changes, following the just-in-time / "smallest high-signal set" guidance from
+  Anthropic's *Effective context engineering for AI agents*:
+  - **Fleet roster is now bounded (just-in-time).** `buildCompanyMd` injected the FULL fleet roster with
+    every agent's full description on every launch, even though `list_agents` is the live equivalent. It
+    now injects a stable (id-sorted) slice capped at 25, clips each description to 140 chars, and points
+    at `list_agents` for the tail (`…and N more`) — so a large fleet with long descriptions can't flood
+    every prompt. No change for workspaces under the cap.
+  - **Bundled personas de-duplicated against the operating notes (DRY).** The 13 catalog agents
+    (`config/agents/*`) each re-explained the OS gate and re-listed the generic OS tools
+    (`recall`/`remember`, `kb_*`, `task_*`, `ask`/`report`) that `AGENT_OS_OPERATING_NOTES` already
+    covers canonically — two copies of the same mechanics in the same final prompt. Removed the generic
+    `## Your tools` sections and the generic "every side effect passes the gate" boundary bullet, keeping
+    every role-specific tool (`agent_*`/`app_*`), boundary (engineer's code-vs-ops, finance's
+    no-payments, …), and nuance (support's chat-reply, folded into its Method). ~6.3 KB lighter across
+    the seeds (generalists −20–30% each); affects newly installed agents, not live self-edited ones.
+
 ## [0.301.0] — 2026-08-04
 ### Added
 - **Telegram: the fleet now shows up as native `/commands`, and DMs are threaded.** Two follow-ups to the

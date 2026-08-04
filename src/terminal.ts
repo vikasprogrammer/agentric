@@ -2750,19 +2750,31 @@ export class TerminalManager {
       ? this.os.settings.learnedGuidance().trim()
       : '';
     // The fleet roster — WHO this agent can delegate to. Injected so "hand off to the right agent" is
-    // answerable straight from the prompt without a discovery round-trip (`list_agents` is the live
-    // equivalent). Excludes self and mock agents, so it only lists peers this agent can actually dispatch.
-    const roster = [...this.os.agents.values()]
+    // answerable straight from the prompt without a discovery round-trip. But `list_agents` is the live
+    // equivalent, so we don't pay to embed an unbounded roster on every launch: cap the list, clip each
+    // description, and point at the tool for the tail (the just-in-time contract — a high-value slice in
+    // the prompt, the rest one tool-call away). Sorted by id so the injected slice is STABLE across
+    // launches (predictable prompt → better caching). Excludes self and mock agents.
+    const FLEET_CAP = 25;
+    const peers = [...this.os.agents.values()]
       .filter((a) => isCodingRuntime(a.runtime) && a.id !== selfAgent)
-      .map((a) => `- \`agent:${a.id}\`${a.category ? ` (${a.category})` : ''} — ${a.description}`)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const roster = peers
+      .slice(0, FLEET_CAP)
+      .map((a) => {
+        const desc = a.description.replace(/\s+/g, ' ').trim();
+        return `- \`agent:${a.id}\`${a.category ? ` (${a.category})` : ''} — ${desc.length > 140 ? desc.slice(0, 139) + '…' : desc}`;
+      })
       .join('\n');
-    const fleet = roster
+    const overflow = peers.length - FLEET_CAP;
+    const fleet = peers.length
       ? '# Your fleet — who you can delegate to\n\n' +
         'These are the other agents in this workspace. To hand work to one, `task_create({ title, ' +
         'assignee: "agent:<id>", autoDispatch: true })` — it spawns that agent as a governed run under ' +
         'the same accountable human. Assign specialised work to the right agent rather than doing it ' +
         'poorly yourself or filing an unassigned task (which nobody picks up).\n\n' +
-        roster
+        roster +
+        (overflow > 0 ? `\n- …and ${overflow} more — \`list_agents\` for the full roster.` : '')
       : '';
     // The team roster — WHO this agent works for and with. Injected so an agent can loop in the right
     // person (roles set who can approve what) without a `directory_lookup` round-trip. Capped: past a
