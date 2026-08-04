@@ -178,6 +178,19 @@ export class TelegramSocket {
       // else: fall through with the remaining text as a brand-new request.
     }
 
+    // Helper commands — read-only, reply-and-return. Detected before continuity/routing so they never get
+    // delivered into a live session or mistaken for an agent. `/start` is Telegram's implicit first-open
+    // command; we treat it as help. Guarded so an agent literally named help/agents/whoami still wins.
+    const meta = text.match(/^\/(help|start|agents|whoami)(?:@\w+)?\b/i);
+    if (meta && !this.os.agents.has(meta[1].toLowerCase())) {
+      const cmd = meta[1].toLowerCase();
+      const reply = cmd === 'agents' ? this.agentsText()
+        : cmd === 'whoami' ? this.whoamiText(ev.user, actorLabel)
+        : this.helpText();
+      void this.dmUser(ev.chatId, reply);
+      return;
+    }
+
     // Inline approve/deny: a private-chat reply from someone with a pending approval we sent them resolves
     // the gate directly (no trip to the web Inbox). Only for private chats (where the ping was sent).
     // Checked first: while an approval is pending, a "yes"/"no" here is a decision, not chat.
@@ -338,6 +351,47 @@ export class TelegramSocket {
       .map((a: any) => ({ id: a.id, description: a.description }));
   }
 
+  /** The `/help` (and `/start`) reply — how to drive the bot. Plain text (messages are sent without a
+   *  parse_mode), so no markdown. */
+  private helpText(): string {
+    return [
+      '🤖 Agent OS — how to use this bot:',
+      '',
+      '• Address an agent by name:  /agent_name your request',
+      "• …or just describe what you need and I'll route it to the best-fit agent.",
+      '• Follow-up messages continue the same conversation.',
+      '',
+      'Commands:',
+      '• /agents — list the agents you can reach',
+      '• /new — end this conversation and start a fresh one',
+      '• /whoami — how I identify you',
+      '• /help — this message',
+    ].join('\n');
+  }
+
+  /** The `/agents` reply — the reachable fleet as tappable command names + one-line descriptions. */
+  private agentsText(): string {
+    const agents = this.chatAgents();
+    if (!agents.length) return 'No agents are reachable from chat right now.';
+    const lines = agents.map((a) => {
+      const desc = (a.description || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+      return `• /${telegramCommandName(a.id)}${desc ? ` — ${desc}` : ''}`;
+    });
+    return ['Agents you can reach:', ...lines, '', 'Address one with /name <request>, or just describe your task.'].join('\n');
+  }
+
+  /** The `/whoami` reply — which member the sender resolves to (run-as), or the unmapped fallback. */
+  private whoamiText(userId: string, actorLabel: string): string {
+    const member = this.os.team.memberByExternalId('telegram', userId);
+    if (member) {
+      return `You're linked as ${member.name || member.email} (${member.email} · ${member.role}). Runs act as you — your connectors and inbox.`;
+    }
+    return [
+      `You're not linked to a member yet, so runs use the shared company identity (not your personal connectors).`,
+      `Your Telegram id is ${userId}${actorLabel ? ` (${actorLabel})` : ''} — an owner/admin can map it on the Team page (Chat identities → Telegram) so runs act as you.`,
+    ].join('\n');
+  }
+
   /**
    * Register the fleet as the bot's `/command` menu (`setMyCommands`) so a user sees the agents when they
    * type `/`. Each agent id is normalised to a Telegram-safe command name (`telegramCommandName`), deduped
@@ -348,11 +402,15 @@ export class TelegramSocket {
   private async syncCommands(): Promise<void> {
     const token = this.os.settings.telegramBotToken();
     if (!token) return;
-    const seen = new Set<string>();
-    // `/new` first — the reset gesture, always available (see the `/new` branch in dispatch).
+    // Built-in helper commands first (see the meta/`/new` branches in dispatch). Seed `seen` with their
+    // names so an agent that normalises to one of them can't override the helper.
     const commands: { command: string; description: string }[] = [
+      { command: 'agents', description: 'List the agents you can reach' },
       { command: 'new', description: 'End this conversation and start a fresh one' },
+      { command: 'whoami', description: 'Show how I identify you' },
+      { command: 'help', description: 'How to use this bot' },
     ];
+    const seen = new Set<string>(commands.map((c) => c.command));
     for (const a of this.chatAgents()) {
       const command = telegramCommandName(a.id);
       if (!command || seen.has(command)) continue;
