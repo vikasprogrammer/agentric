@@ -100,6 +100,44 @@ export async function sendMessage(
   }
 }
 
+/**
+ * Normalise an agent id into a Telegram bot-command name. Telegram commands are constrained to
+ * `[a-z0-9_]{1,32}` (BotFather + `setMyCommands` reject anything else, and the client stops parsing a
+ * command at the first out-of-set char), so a hyphenated agent id like `agent-author` can't be a command
+ * verbatim. We lowercase, map every disallowed char to `_`, collapse/trim underscores, and cap at 32.
+ * The socket registers these names via `setMyCommands` and reverses the mapping on an inbound `/name`,
+ * so tapping the menu entry reaches the real agent. Returns '' when nothing usable survives (skip it).
+ */
+export function telegramCommandName(agentId: string): string {
+  return (agentId || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 32);
+}
+
+/** Register the bot's command menu (the list Telegram shows when a user types `/`). Replaces the whole
+ *  set each call. `description` is 1–256 chars. Returns `{ error }` (never throws). */
+export async function setMyCommands(
+  botToken: string,
+  commands: { command: string; description: string }[],
+): Promise<{ ok: true } | { error: string }> {
+  if (!botToken) return { error: 'no Telegram bot token' };
+  try {
+    const res = await fetch(`${TELEGRAM_API}/bot${botToken}/setMyCommands`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commands }),
+    });
+    const j: any = await res.json().catch(() => ({}));
+    if (res.ok && j?.ok) return { ok: true };
+    return { error: String(j?.description || `setMyCommands failed (${res.status})`) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'setMyCommands failed' };
+  }
+}
+
 /** A normalized inbound Telegram message, parsed from an `update.message` payload. */
 export interface TelegramMessageEvent {
   /** The event kind for filtering/labels: `direct_message` (private chat) or `mention` (group). */

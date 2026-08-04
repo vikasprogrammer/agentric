@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.301.0] — 2026-08-04
+### Added
+- **Telegram: the fleet now shows up as native `/commands`, and DMs are threaded.** Two follow-ups to the
+  Telegram integration (#552):
+  - **`/command` menu.** On connect the bot registers its chat-reachable claude-code agents via
+    `setMyCommands`, so typing `/` in Telegram lists them (name + description). Telegram command names are
+    limited to `[a-z0-9_]{1,32}`, so a hyphenated id like `agent-author` is normalised to `agent_author`
+    for the menu (`telegramCommandName`) and reversed on an inbound tap (`resolveCommand`), so
+    `/agent_author …` reaches the real `agent-author`. Deduped on collision, capped at Telegram's 100.
+    Re-runs on every (re)connect, so re-saving the token refreshes the menu after the roster changes.
+    Audited `telegram.commands.synced` / `.failed`.
+  - **DM threading.** A Telegram private chat is one persistent 1:1 conversation (chat id == user id), so
+    a plain follow-up now CONTINUES the last run in that chat (deliver into the live claude / revive the
+    row) instead of spawning a fresh session every message — the group thread-continuity path, now applied
+    to DMs too. `src/connectors/telegram.ts`, `src/edge/telegram-socket.ts`.
+
 ## [0.300.0] — 2026-08-04
 ### Added
 - **Native Telegram integration (ingress + reply) — the third chat channel alongside Slack and Discord.**
