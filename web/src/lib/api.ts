@@ -1148,11 +1148,25 @@ export interface ComposioConnection {
   userId: string
   /** Distinguishing label for this connection (user alias, else Composio's auto handle). */
   name: string
+  /** Mine only: the owner marked it available to the whole team (composio_shares). */
+  shared?: boolean
+}
+/** A teammate's connection they marked available to the team — borrowed, not owned. */
+export interface SharedConnection {
+  id: string
+  toolkit: string
+  status: string
+  name: string
+  /** The Composio entity it lives under = the sharing member's email. */
+  ownerEmail: string
+  ownerMemberId: string
 }
 export interface ConnectionsResp {
   keySet: boolean
   company: ComposioConnection[]
   mine: ComposioConnection[]
+  /** Connections other members shared with the team (empty when nobody has shared). */
+  teamShared?: SharedConnection[]
   me?: string
   companyEntity?: string
   error?: string
@@ -1654,6 +1668,10 @@ export const api = {
     call<{ redirectUrl?: string; error?: string }>('POST', '/api/connections/connect', body),
   disconnectApp: (body: { id: string; scope: 'company' | 'personal' }) =>
     call<{ ok?: boolean; error?: string }>('POST', '/api/connections/disconnect', body),
+  // Mark one of MY Composio apps available to the team (or take it back). Nothing moves on Composio —
+  // the launcher mints a toolkit-allowlisted, account-pinned session under my entity for teammates.
+  shareConnection: (body: { id: string; shared: boolean }) =>
+    call<{ ok?: boolean; shared?: boolean; error?: string }>('POST', '/api/connections/share', body),
   // Agent connection requests (`connection_request`). List: admin sees all open; a member sees their own
   // personal ones. Fulfilling initiates the Composio OAuth and returns the hosted link to finish.
   connectionRequests: () => call<ConnectionRequestsResp>('GET', '/api/connections/requests'),

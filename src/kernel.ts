@@ -24,6 +24,7 @@ import {
 import { createMemoryProvider } from './memory';
 import { CapabilityRegistry } from './capabilities/registry';
 import { ConnectorStore } from './connectors/connectors';
+import { ComposioShareStore } from './connectors/composio-shares';
 import { HostStore } from './hosts/hosts';
 import { AutoApprovalStore } from './state/auto-approvals';
 import { Gateway } from './gateway/gateway';
@@ -116,6 +117,8 @@ export class AgentOS {
   private readonly warnedPolicyContexts = new Set<string>();
   /** User-registered connectors (MCP servers) the claude-code runtime exposes to agents. */
   readonly connectors: ConnectorStore;
+  /** Composio connections their owner marked available to the whole team (composio-shares.ts). */
+  readonly composioShares: ComposioShareStore;
   /** Host connections — governed reachable destinations (SSH / internal HTTP / DB). See host-connections-plan.md. */
   readonly hosts: HostStore;
   /** "Always approve THIS action" list, keyed on the decision-brief signature (auto-approvals.ts). */
@@ -140,6 +143,7 @@ export class AgentOS {
     this.db = openDb(opts.paths?.db ?? ':memory:');
     this.secrets = new SqliteSecretsVault(this.db, resolveMasterKey(opts.paths?.home), new EnvSecretsVault());
     this.connectors = new ConnectorStore(this.db);
+    this.composioShares = new ComposioShareStore(this.db);
     this.hosts = new HostStore(this.db);
     this.autoApprovals = new AutoApprovalStore(this.db);
     this.approvals = new SqliteApprovals(this.db);

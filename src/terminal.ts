@@ -14,7 +14,7 @@ import { newId } from './id';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
-import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId } from './connectors/composio';
+import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, TaskDiscussionSummary, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { resolveCapability } from './capabilities/normalize';
@@ -2954,13 +2954,32 @@ export class TerminalManager {
       // `composio` → the running member's OWN connected apps (their email as user_id); `composio-company`
       // → apps connected under the shared service entity, usable by every agent. Automation/system spawns
       // get only the company entity (no person's personal credentials).
-      const sessions = [{ id: 'composio-company', userId: serviceUserId(this.os.tenant), scope: 'company' }];
+      const sessions: Array<{ id: string; userId: string; scope: string; opts?: MintOptions }> = [
+        { id: 'composio-company', userId: serviceUserId(this.os.tenant), scope: 'company' },
+      ];
       if (memberId) sessions.unshift({ id: 'composio', userId: this.composioUserId(memberId, agent), scope: 'personal' });
+      // Connections a TEAMMATE marked "available to the team". A connected account's owning entity is
+      // immutable on Composio's side, so sharing is a marker we enforce here: one extra session per
+      // sharing owner, minted under THEIR entity but allowlisted to the shared toolkits and pinned to
+      // the shared account ids — so the borrower reaches exactly what was shared and nothing else of
+      // that person's Composio account. Connection management is off: a borrower must not be able to
+      // add or revoke connections under an entity that isn't theirs.
+      for (const m of this.os.composioShares.mintsFor(memberId)) {
+        sessions.push({
+          id: `composio-shared-${m.ownerMemberId}`,
+          userId: m.userId,
+          scope: 'shared',
+          opts: { toolkits: m.toolkits, connectedAccounts: m.connectedAccounts, manageConnections: false },
+        });
+      }
       for (const s of sessions) {
-        const res = mintToolRouterSession(apiKey, s.userId);
+        const res = mintToolRouterSession(apiKey, s.userId, s.opts);
         if ('url' in res) {
           config.mcpServers[s.id] = { type: 'http', url: res.url, headers: { [COMPOSIO_KEY_HEADER]: apiKey } };
-          this.audit(sessionId, agent, 'connector.minted', { connector: s.id, scope: s.scope, userId: s.userId });
+          this.audit(sessionId, agent, 'connector.minted', {
+            connector: s.id, scope: s.scope, userId: s.userId,
+            ...(s.opts?.toolkits ? { toolkits: s.opts.toolkits } : {}),
+          });
         } else {
           this.audit(sessionId, agent, 'connector.mint.failed', { connector: s.id, scope: s.scope, error: res.error });
         }

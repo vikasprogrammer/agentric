@@ -373,26 +373,48 @@ function ConnectorRow({ c, me, busy, onToggle, onRemove, onShare }: {
 }
 
 /** A live Composio-connected app row (company or personal). Shows the connection's distinguishing
- *  handle/alias so multiple accounts of the same app (e.g. two Gmails) are told apart. */
-function ComposioRow({ app, canRemove, busy, onRemove }: {
-  app: { id: string; toolkit: string; status: string; name?: string }
-  canRemove: boolean; busy: boolean; onRemove: () => void
+ *  handle/alias so multiple accounts of the same app (e.g. two Gmails) are told apart.
+ *  `onShare` is passed for a row the viewer owns — the "available to the team / just me" toggle. */
+function ComposioRow({ app, canRemove, busy, onRemove, onShare, sharedBy }: {
+  app: { id: string; toolkit: string; status: string; name?: string; shared?: boolean }
+  canRemove: boolean; busy: boolean; onRemove?: () => void
+  onShare?: (shared: boolean) => void
+  /** Set on a BORROWED row (a teammate shared it) — shown instead of the share control. */
+  sharedBy?: string
 }) {
   // The auto handle is like `gmail_comma-hugh`; drop the redundant toolkit prefix for display. A
   // user-set alias (which won't carry the prefix) is shown as-is.
   const handle = app.name && app.name !== app.toolkit
     ? app.name.replace(new RegExp(`^${app.toolkit}[_-]`, 'i'), '')
     : ''
+  const detail = [handle, sharedBy ? `shared by ${sharedBy}` : '', 'via Composio'].filter(Boolean).join(' · ')
   return (
     <Row
       name={app.toolkit}
       title={app.toolkit}
-      subtitle={handle ? `${handle} · via Composio` : 'via Composio'}
-      badges={statusBadge(app.status.toLowerCase(), app.status === 'ACTIVE' ? 'ok' : 'warn')}
-      right={canRemove ? (
-        <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy} onClick={onRemove} title="disconnect">
-          <X className="h-4 w-4" />
-        </Button>
+      subtitle={detail}
+      badges={
+        <>
+          {statusBadge(app.status.toLowerCase(), app.status === 'ACTIVE' ? 'ok' : 'warn')}
+          {app.shared && statusBadge('shared with team', 'ok')}
+        </>
+      }
+      right={(onShare || onRemove) ? (
+        <>
+          {onShare && (
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => onShare(!app.shared)}
+              title={app.shared
+                ? 'Take it back: only sessions you start will load it'
+                : 'Let every agent use this app — they get only this connection, not the rest of your Composio account'}>
+              {app.shared ? 'Just me' : 'Share with team'}
+            </Button>
+          )}
+          {canRemove && onRemove && (
+            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" disabled={busy} onClick={onRemove} title="disconnect">
+              <X className="h-4 w-4" />
+            </Button>
+          )}
+        </>
       ) : undefined}
     />
   )
@@ -566,7 +588,7 @@ export function GithubMineCard() {
   )
 }
 
-function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
+function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRemove, onShare, onDisconnectComposio, onShareComposio, onToggleHost, onRemoveHost, onShareHost, onEditHost, onPublishHost }: {
   me: Member | null
   connectors: Connector[]
   hosts: Host[]
@@ -577,6 +599,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
   onRemove: (id: string) => void
   onShare: (id: string, shared: boolean) => void
   onDisconnectComposio: (id: string, scope: 'company' | 'personal', label: string) => void
+  onShareComposio: (id: string, shared: boolean, label: string) => void
   onToggleHost: (id: string, enabled: boolean) => void
   onRemoveHost: (id: string) => void
   onShareHost: (id: string, shared: boolean) => void
@@ -590,6 +613,9 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
   // apps come from /api/connections (carries each connection's distinguishing name), not the overview.
   const orgConnectors = connectors.filter((c) => c.scope === 'org' || (c.scope === 'personal' && c.shared))
   const companyApps = conns?.company ?? []
+  // Apps a teammate marked available to the team. They still live under that person's Composio
+  // entity — the launcher lends only the shared connection, pinned, into everyone else's sessions.
+  const sharedApps = (conns?.teamShared ?? []).filter((a) => a.ownerEmail !== conns?.me)
   const orgHosts = hosts.filter((h) => !h.proposed && (h.scope === 'org' || (h.scope === 'personal' && h.shared)))
   // Mine = the viewer's own personal connectors + their own Composio apps + their own hosts.
   const myConnectors = connectors.filter((c) => c.scope === 'personal' && c.ownerMemberId === me?.id)
@@ -598,7 +624,7 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
   // Agent-proposed hosts awaiting review (admin-only action).
   const proposedHosts = isAdmin ? hosts.filter((h) => h.proposed) : []
 
-  const companyCount = orgConnectors.length + companyApps.length + orgHosts.length + 2 // +2 for the native bot rows
+  const companyCount = orgConnectors.length + companyApps.length + sharedApps.length + orgHosts.length + 2 // +2 for the native bot rows
   const mineCount = myConnectors.length + myApps.length + myHosts.length
   const showCompany = filter === 'all' || filter === 'company'
   const showMine = filter === 'all' || filter === 'mine'
@@ -641,6 +667,17 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
           {companyApps.map((a) => (
             <ComposioRow key={a.id} app={a} canRemove={isAdmin} busy={busy === a.id} onRemove={() => onDisconnectComposio(a.id, 'company', a.toolkit)} />
           ))}
+          {sharedApps.map((a) => (
+            <ComposioRow
+              key={a.id}
+              app={a}
+              canRemove={false}
+              busy={busy === a.id}
+              sharedBy={a.ownerEmail}
+              // An admin can revoke a share for governance; the owner does it from their own Mine row.
+              onShare={isAdmin ? () => onShareComposio(a.id, false, a.toolkit) : undefined}
+            />
+          ))}
           {orgConnectors.map((c) => <ConnectorRow key={c.id} c={c} {...cardProps} />)}
           {orgHosts.map((h) => <HostRow key={h.id} h={h} {...hostProps} />)}
         </div>
@@ -660,7 +697,14 @@ function ConnectedList({ me, connectors, hosts, ov, conns, busy, onToggle, onRem
             <p className="text-xs text-muted-foreground">You haven’t connected any personal apps or servers yet.</p>
           )}
           {myApps.map((a) => (
-            <ComposioRow key={a.id} app={a} canRemove busy={busy === a.id} onRemove={() => onDisconnectComposio(a.id, 'personal', a.toolkit)} />
+            <ComposioRow
+              key={a.id}
+              app={a}
+              canRemove
+              busy={busy === a.id}
+              onRemove={() => onDisconnectComposio(a.id, 'personal', a.toolkit)}
+              onShare={(shared) => onShareComposio(a.id, shared, a.toolkit)}
+            />
           ))}
           {myConnectors.map((c) => <ConnectorRow key={c.id} c={c} {...cardProps} />)}
           {myHosts.map((h) => <HostRow key={h.id} h={h} {...hostProps} />)}
@@ -1015,6 +1059,20 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
     setBusy('')
     if (r.error) return window.alert('Could not disconnect: ' + r.error)
     scope === 'company' ? loadOverview() : loadConnections()
+    loadConnections()
+  }
+
+  // "Available to the team" / "just me". Nothing moves on Composio (an account's owner is immutable
+  // there) — the flag makes the launcher lend THIS connection, pinned, into everyone else's sessions.
+  const shareComposio = async (id: string, shared: boolean, label: string) => {
+    if (shared && !window.confirm(
+      `Let every agent use your ${label}?\n\nThey act as you on that account. Only this connection is lent out — the rest of your Composio apps stay private.`,
+    )) return
+    setBusy(id)
+    const r = await api.shareConnection({ id, shared })
+    setBusy('')
+    if (r.error) return window.alert('Could not update sharing: ' + r.error)
+    loadConnections()
   }
 
   const keySet = !!(ov?.composio.keySet || conns?.keySet)
@@ -1058,6 +1116,7 @@ export function ConnectorsPage({ me }: { me: Member | null }) {
         onRemove={remove}
         onShare={share}
         onDisconnectComposio={disconnectComposio}
+        onShareComposio={shareComposio}
         onToggleHost={toggleHost}
         onRemoveHost={removeHost}
         onPublishHost={publishHost}

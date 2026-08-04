@@ -95,6 +95,21 @@ function migrate(db: Db): void {
       created_at  INTEGER NOT NULL
     );
 
+    -- Composio connections a member has marked "available to the team" (composio-shares.ts). A
+    -- connected account's owning entity is immutable on Composio's side, so sharing can't be a move —
+    -- it's this marker, enforced at launch by minting an extra Tool Router session under the OWNER's
+    -- entity that is allowlisted to its toolkit and pinned to its id. One row = one shared connection.
+    CREATE TABLE IF NOT EXISTS composio_shares (
+      id              TEXT PRIMARY KEY,       -- the Composio connected-account id (ca_…)
+      toolkit         TEXT NOT NULL,          -- toolkit slug (gmail, linkedin, …) — the allowlist entry
+      user_id         TEXT NOT NULL,          -- the Composio entity that owns it (the owner's email)
+      owner_member_id TEXT NOT NULL,          -- our member id for that owner (prunes with the member)
+      name            TEXT NOT NULL DEFAULT '', -- handle/alias at share time, for display
+      shared_by       TEXT NOT NULL,          -- email of whoever flipped the switch
+      created_at      INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_composio_shares_owner ON composio_shares (owner_member_id);
+
     -- Host connections — reachable destinations (SSH box / internal HTTP / DB) an agent may talk to,
     -- as a first-class governed thing (docs/host-connections-plan.md). Phase 2a stores them; the
     -- governance that reads them (net.connect/ssh.exec + allow-list) is Phase 2b. Mirrors connectors'

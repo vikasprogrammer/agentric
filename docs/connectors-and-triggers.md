@@ -219,6 +219,38 @@ minted to its own identity (P3). **Personal connectors should prefer Composio** 
 lands on disk — only a short-lived minted URL — which keeps the pre-Tier-A privacy gap small (see
 scoping doc Decision #5).
 
+### Sharing a single Composio app with the team (`composio_shares`)
+
+The P3 `shared` flag above is per *connector row*. A **Composio** app isn't a connector row — it's a
+connected account living on composio.dev under a `user_id` — so "make my Gmail available to the team"
+needed its own mechanism. Two constraints, both verified against the live API:
+
+- a connected account's **`user_id` is immutable** (`PATCH /api/v3/connected_accounts/{id}` exposes
+  `alias`, credentials and the shared-ACL block — no owner field), so sharing **cannot be a move**;
+- a Tool Router session may **only pin accounts belonging to its own `user_id`** ("Could not find
+  connected account(s) … belonging to user …"), so a teammate's app can't be pulled into your session.
+
+Hence sharing is a **local marker** (`composio_shares`: connection id, toolkit, owning entity) that the
+launcher enforces. `ComposioShareStore.mintsFor(actingMember)` groups every OTHER member's shares by
+owner, and `buildMcpConfigJson` mints one extra Tool Router session per owner — under **that owner's**
+entity, but `{toolkits:{enable:[…]}, connected_accounts:{…}, manage_connections:{enable:false}}`. So a
+borrower reaches exactly the shared connections, nothing else of that person's Composio account, and
+cannot add or revoke connections under an entity that isn't theirs. Confirmed live: asked to "list files
+in Google Drive", an unrestricted session offers `googledrive` tools while the borrowed one can only
+offer the shared `gmail`.
+
+Consequences worth keeping:
+- **Nothing changes on composio.dev in either direction** — sharing and un-sharing are reversible and
+  need no re-authorisation. `POST /api/connections/share {id, shared}`.
+- **Sharing is owner-only and verified remotely** (the account must appear under the caller's own
+  entity), so nobody publishes a teammate's — or the company's — connection by guessing an id.
+- **Revoking is local-only and never gated on the key**, so a cleared/broken Composio key can't leave
+  the team stuck with a share they can't take back. Owner or admin may revoke; only the owner may grant.
+- A share dies with its connection (disconnect), with its owner (member removal), and is pruned when
+  the account is revoked straight on composio.dev.
+- An automation/system spawn (no run-as member) **does** get shared apps — same rule as a
+  `personal + shared` connector: the owner opted in explicitly.
+
 ---
 
 ## The five use cases

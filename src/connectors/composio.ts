@@ -192,15 +192,39 @@ export async function initiateConnection(
 }
 
 /**
+ * Narrowing options for a minted session. Used for a BORROWED session — one minted under a teammate's
+ * entity because they shared a connection — so the borrower reaches exactly what was shared:
+ *   - `toolkits`          → the session's toolkit allowlist (`toolkits.enable`).
+ *   - `connectedAccounts` → per-toolkit account pins. Composio only accepts pins that belong to the
+ *     session's OWN `user_id` (verified against the live API), which is precisely why sharing mints
+ *     under the owner's entity rather than pulling their account into someone else's session.
+ *   - `manageConnections: false` → drops COMPOSIO_MANAGE_CONNECTIONS, so a borrower can neither add
+ *     nor revoke connections under an entity that isn't theirs.
+ * Omit all three for the normal, unrestricted mint.
+ */
+export interface MintOptions {
+  toolkits?: string[];
+  connectedAccounts?: Record<string, string[]>;
+  manageConnections?: boolean;
+}
+
+/**
  * Mint a Tool Router session for `userId` and return its MCP endpoint URL. The session is scoped to
  * that user, so the agent only sees the apps that user has connected on composio.dev — and Tool
  * Router auto-selects the relevant tools from them. Returns `{ error }` (never throws) so a flaky
  * network or a bad key degrades to "this connector is skipped this launch", not a dead session.
  */
-export function mintToolRouterSession(apiKey: string, userId: string): MintResult {
+export function mintToolRouterSession(apiKey: string, userId: string, opts: MintOptions = {}): MintResult {
   if (!apiKey) return { error: 'no Composio API key' };
   const url = `${apiBase()}/api/v3.1/tool_router/session`;
-  const body = JSON.stringify({ user_id: userId });
+  const body = JSON.stringify({
+    user_id: userId,
+    ...(opts.toolkits?.length ? { toolkits: { enable: opts.toolkits } } : {}),
+    ...(opts.connectedAccounts && Object.keys(opts.connectedAccounts).length
+      ? { connected_accounts: opts.connectedAccounts }
+      : {}),
+    ...(opts.manageConnections === false ? { manage_connections: { enable: false } } : {}),
+  });
   const res = spawnSync(
     'curl',
     ['-sS', '--max-time', '20', '-X', 'POST', url,

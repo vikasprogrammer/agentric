@@ -2305,8 +2305,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // not outlive the account. Sessions, invites and assignment grants were cleared in removeMember.
     const connectorsRemoved = os.connectors.removeByOwner(teamMember[1]).length;
     const hostsRemoved = os.hosts.removeByOwner(teamMember[1]).length;
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.removed', data: { member: teamMember[1], connectorsRemoved, hostsRemoved } });
-    return sendJson(res, 200, { ...out, connectorsRemoved, hostsRemoved });
+    // Same rule for their shared Composio apps: the team borrowed those through THEIR entity, so the
+    // grant dies with the account rather than leaving the fleet minting under a departed member.
+    const sharesRemoved = os.composioShares.removeByOwner(teamMember[1]).length;
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'member.removed', data: { member: teamMember[1], connectorsRemoved, hostsRemoved, sharesRemoved } });
+    return sendJson(res, 200, { ...out, connectorsRemoved, hostsRemoved, sharesRemoved });
   }
   const teamAssign = p.match(/^\/api\/team\/assignments\/([\w.-]+)$/);
   if (method === 'PUT' && teamAssign) {
@@ -5506,12 +5509,72 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // Live Composio connections (read from composio.dev): the member's own apps + the company entity's.
   if (method === 'GET' && p === '/api/connections') {
     const key = os.settings.composioApiKey();
-    if (!key) return sendJson(res, 200, { keySet: false, company: [], mine: [] });
-    const [company, mine] = await Promise.all([
+    if (!key) return sendJson(res, 200, { keySet: false, company: [], mine: [], teamShared: [] });
+    // Plus every connection a TEAMMATE marked available to the team: one live read per sharing owner
+    // (normally none or one) so the row carries a real status, not a stale one cached at share time.
+    const shares = os.composioShares.list().filter((s) => s.userId !== me.email);
+    const owners = [...new Set(shares.map((s) => s.userId))];
+    const [company, mine, ...borrowed] = await Promise.all([
       listConnectedAccounts(key, serviceUserId(os.tenant)),
       listConnectedAccounts(key, me.email),
+      ...owners.map((u) => listConnectedAccounts(key, u)),
     ]);
-    return sendJson(res, 200, { keySet: true, company, mine, me: me.email, companyEntity: serviceUserId(os.tenant) });
+    const live = new Map(borrowed.flat().map((a) => [a.id, a]));
+    const teamShared = shares.map((s) => {
+      const a = live.get(s.id);
+      return {
+        id: s.id,
+        toolkit: s.toolkit,
+        // A share whose account was revoked straight on composio.dev shows as gone rather than
+        // silently pretending to work; the row is pruned on the owner's next share toggle.
+        status: a?.status ?? 'REVOKED',
+        name: a?.name ?? s.name,
+        ownerEmail: s.userId,
+        ownerMemberId: s.ownerMemberId,
+      };
+    });
+    // `mine` rows carry their own share state so the row can render Share / Unshare directly.
+    const sharedIds = os.composioShares.sharedIdsFor(me.email);
+    return sendJson(res, 200, {
+      keySet: true,
+      company,
+      mine: mine.map((a) => ({ ...a, shared: sharedIds.has(a.id) })),
+      teamShared,
+      me: me.email,
+      companyEntity: serviceUserId(os.tenant),
+    });
+  }
+  // Mark one of MY Composio connections available to the whole team — or take it back to just me.
+  // Composio can't move an account between entities (its `user_id` is immutable and a session may only
+  // pin accounts of its own user), so this is a marker the launcher enforces: a shared connection is
+  // minted into other members' sessions under MY entity, allowlisted to its toolkit and pinned to its
+  // id. Only the owner may share; an owner/admin may also UNSHARE anyone's (governance override).
+  if (method === 'POST' && p === '/api/connections/share') {
+    const b = await readBody(req);
+    const id = String(b.id || '').trim();
+    const shared = b.shared !== false;
+    if (!id) return sendJson(res, 400, { error: 'id is required' });
+    // Revoking is purely local and must ALWAYS be possible — it talks to no remote, so a cleared or
+    // broken Composio key can never leave the team stuck with a share they can't take back.
+    if (!shared) {
+      const existing = os.composioShares.get(id);
+      if (!existing) return sendJson(res, 404, { error: 'that connection is not shared' });
+      if (existing.userId !== me.email && !isAdmin(me)) return sendJson(res, 403, { error: 'only the owner or an admin can unshare a connection' });
+      os.composioShares.unshare(id);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.unshared', data: { id, toolkit: existing.toolkit, owner: existing.userId } });
+      return sendJson(res, 200, { ok: true, shared: false });
+    }
+    // Sharing is owner-only, and verified against Composio: you can only share an account that really
+    // is yours, so no one can publish a teammate's (or the company's) connection by guessing an id.
+    const key = os.settings.composioApiKey();
+    if (!key) return sendJson(res, 400, { error: 'no Composio API key' });
+    const owned = await listConnectedAccounts(key, me.email);
+    const app = owned.find((a) => a.id === id);
+    if (!app) return sendJson(res, 404, { error: 'that connection is not one of yours' });
+    os.composioShares.pruneEntity(me.email, new Set(owned.map((a) => a.id)));
+    os.composioShares.share({ id, toolkit: app.toolkit, userId: me.email, ownerMemberId: me.id, name: app.name, sharedBy: me.email });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.shared', data: { id, toolkit: app.toolkit, owner: me.email } });
+    return sendJson(res, 200, { ok: true, shared: true });
   }
   // Read-only company-integration overview (any member): what's wired at the COMPANY level —
   // Composio company apps, the native Slack app, and org-scoped custom MCP servers. No secrets, just
@@ -5585,6 +5648,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!owned.some((a) => a.id === id)) return sendJson(res, 404, { error: 'connection not found for this scope' });
     const r = await deleteConnectedAccount(key, id);
     if ('error' in r) return sendJson(res, 502, { error: r.error });
+    // Disconnecting also revokes any team share of it — the account it pinned no longer exists.
+    os.composioShares.unshare(id);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'connector.disconnect', data: { id, scope, entity } });
     return sendJson(res, 200, { ok: true });
   }

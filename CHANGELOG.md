@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.303.0] — 2026-08-04
+### Added
+- **Mark a Composio connection "available to the team" — or take it back to just me.** Connections →
+  Mine now carries a **Share with team / Just me** toggle on each of your Composio apps, and shared apps
+  appear in the Company section attributed to their owner (`shared by alice@…`). Nothing moves on
+  composio.dev in either direction, so the switch is instant and reversible with no re-authorisation.
+  - **Why it isn't a move.** A connected account's `user_id` is immutable (the update endpoint exposes
+    `alias`, credentials and the shared-ACL block — no owner field), and a Tool Router session may only
+    pin accounts belonging to its own `user_id`. Both verified against the live API.
+  - **How it's enforced.** Sharing records a local marker (`composio_shares`); at launch the fleet mints
+    one extra Tool Router session per sharing owner — under **that owner's** entity but allowlisted to
+    the shared toolkits, pinned to the shared account ids, and with connection management disabled. A
+    borrower therefore reaches exactly what was shared, **not** the rest of that person's Composio
+    account, and can neither add nor revoke connections under an entity that isn't theirs. Verified
+    live: asked to "list files in Google Drive", an unrestricted session offers `googledrive` tools
+    while the borrowed one can only offer the shared `gmail`.
+  - **Governance.** Only the owner may grant (the account is verified to be theirs first, so no one can
+    publish a teammate's or the company's connection by guessing an id); owner or admin may revoke.
+    Revoking is local-only and never gated on the Composio key, so a cleared key can't strand a share.
+    A share dies with its connection, dies with its owner (member removal), and is pruned when the
+    account is revoked straight on composio.dev. Audited `connector.shared` / `connector.unshared`, and
+    each borrowed mint records its toolkit allowlist on `connector.minted`.
+  - New: `src/connectors/composio-shares.ts`, the `composio_shares` table, `MintOptions` on
+    `mintToolRouterSession`, `POST /api/connections/share`, `teamShared` on `GET /api/connections`.
+
 ## [0.302.0] — 2026-08-04
 ### Changed
 - **Context-engineering pass on the launch prompt — trim redundant tokens from what every session
