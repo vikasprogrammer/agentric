@@ -299,6 +299,15 @@ export interface Session {
   /** True for a `category:'System'` machinery agent (the Cockpit concierge/operator, consolidator, …).
    *  Hidden from the Chat + Sessions lists to reduce clutter; still openable by id + in Audit. */
   system?: boolean
+  /** CONVERSATION key — the claude transcript this run belongs to (its own id when there is none). A
+   *  poke-back RESUMES a transcript, so several rows share one `threadId`; the list groups by it so a
+   *  resumed conversation reads as ONE entry with N runs instead of N unrelated ones. */
+  threadId?: string
+  /** The `threadId` of the caller that delegated this run — the edge that turns the flat list into the
+   *  hand-off tree. Equal to `threadId` for a poke (a caller waking itself) = treat as no parent. */
+  parentThreadId?: string
+  /** The task this run works (`task:`/`poke:`/`ask:` provenance) — the hand-off it belongs to. */
+  taskId?: string
   /** True when the run launched unattended (an automation/cron/task run). These now run as an attachable
    *  interactive TUI a human can take over live; the list badges them as unattended vs. a member session. */
   headless?: boolean
@@ -1387,6 +1396,63 @@ async function callFeed<T>(path: string, etag: string | null): Promise<FeedResul
 /** The Phase-2 summary poll payload: the always-on rows (live + the viewer's recent-ended tail) plus a
  *  global done-since-server-midnight count (the one always-on aggregate a live-only set can't derive). */
 export interface SessionsSummary { rows: Session[]; doneToday: number }
+
+/** Something in a chain node that can't move without a person: an unanswered `ask`, or an approval gate
+ *  holding a run open. The rail resolves it in place via the same routes the Inbox uses. */
+export interface ChainPending {
+  kind: 'question' | 'approval'
+  /** Question / approval id — `api.answerQuestion(id, …)` or `api.resolve(id, approved)`. */
+  id: string
+  sessionId: string
+  agent: string
+  /** The question text, or the policy's reason this action needs sign-off. */
+  text: string
+  capability?: string
+  level?: string
+  createdAt: number
+}
+
+/** One CONVERSATION in a hand-off chain: every run sharing a claude transcript folded into one entry
+ *  (`runs` of them), placed in the delegation tree by `parentThreadId` + `depth`. */
+export interface ChainNode {
+  threadId: string
+  parentThreadId?: string
+  depth: number
+  /** Newest run of the conversation — what opening this node attaches to. */
+  sessionId: string
+  tmux: string
+  agent: string
+  title: string
+  summary?: string
+  status: Session['status']
+  alive?: boolean
+  outcome?: string
+  /** Session rows this conversation spans (>1 = it was resumed by pokes/continuations). */
+  runs: number
+  costUsd?: number
+  createdAt: number
+  updatedAt: number
+  /** `root` = where the chain starts; `delegate` = dispatched for a task; `answer` = an ephemeral
+   *  quick-answer run that never took the task over. */
+  kind: 'root' | 'delegate' | 'answer'
+  taskId?: string
+  taskTitle?: string
+  taskStatus?: TaskStatus
+  /** Set when an earlier sibling already handed the SAME work to the SAME agent — holds that task id. */
+  duplicateOf?: string
+  pending: ChainPending[]
+}
+
+/** The hand-off tree a session belongs to. `nodes` is flat and in walk order (parents before children). */
+export interface SessionChain {
+  rootThreadId: string
+  nodes: ChainNode[]
+  agents: number
+  totalCostUsd?: number
+  startedAt: number
+  updatedAt: number
+}
+
 export const api = {
   /** Current member, or null if not authenticated (401). Drives the login gate. */
   me: async (): Promise<Member | null> => {
@@ -1410,6 +1476,9 @@ export const api = {
   /** Owner-only: plain restart, no pull/rebuild. The process bounces ~1.5s after the response. */
   restart: () => call<RestartResult>('POST', '/api/restart'),
   sessions: (archived?: boolean) => call<Session[]>('GET', '/api/sessions' + (archived ? '?archived=1' : '')),
+  /** The hand-off chain this session belongs to — the tree the chain rail renders (who delegated to whom,
+   *  what came back, what's still waiting on a person). Derived server-side; viewer-scoped like the list. */
+  sessionChain: (id: string) => call<SessionChain | { error: string }>('GET', `/api/sessions/${encodeURIComponent(id)}/chain`),
   /** One session by id, with the same derived fields the list carries. 404 → `{error}` when the caller
    *  can't see it (viewer-scoped server-side). The by-id fetch the console lacked (Sessions-pagination P1). */
   session: (id: string) => call<Session | { error: string }>('GET', `/api/sessions/${encodeURIComponent(id)}`),

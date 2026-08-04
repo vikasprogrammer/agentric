@@ -15,7 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { resolveCapability } from './capabilities/normalize';
 import { briefFor } from './governance/briefer';
@@ -233,6 +233,18 @@ export interface Session {
    *  Sessions lists to keep them uncluttered; the row still exists for by-id opens (Cockpit's "Open full
    *  session") + Audit. */
   system?: boolean;
+  /** CONVERSATION key — the claude transcript this run belongs to, falling back to the session id when
+   *  there is none. A poke-back / thread continuation RESUMES a transcript, so several session rows share
+   *  one `threadId`: it is the identity the console groups the list by, so a resumed conversation reads as
+   *  one entry with N runs instead of N unrelated entries. */
+  threadId?: string;
+  /** The `threadId` of the CALLER that delegated this run — set when the run was dispatched by a task
+   *  (`task:` / `ask:` / `poke:` provenance) whose `caller_claude_id` is known. Equal to `threadId` for a
+   *  poke (a caller waking itself), which the console reads as "no parent". The one edge that turns the
+   *  flat session list into the hand-off tree. */
+  parentThreadId?: string;
+  /** The task this run works (`task:`/`poke:`/`ask:` provenance) — the hand-off it belongs to. */
+  taskId?: string;
   /** True when the run launched unattended (an automation/cron/task run). These now run as an attachable
    *  interactive TUI (not `claude -p`) that a human can take over live; the console badges them as
    *  unattended vs. a member's own interactive session. */
@@ -305,6 +317,93 @@ export interface Session {
   blockedMs?: number;
   /** How many deliverables the run published to the Library (`artifacts` rows). Undefined until stamped. */
   artifacts?: number;
+}
+
+/** Something in a chain node that can't proceed without a person: an unanswered `ask`, or an approval
+ *  gate holding a run open. Carries the id its resolve route takes, so the rail answers in place. */
+export interface ChainPending {
+  kind: 'question' | 'approval';
+  /** The question / approval id — `POST /api/questions/:id` or `POST /api/approvals/:id`. */
+  id: string;
+  sessionId: string;
+  agent: string;
+  /** The question text, or the policy's reason this action needs sign-off. */
+  text: string;
+  capability?: string;
+  level?: ApprovalLevel;
+  createdAt: number;
+}
+
+/** One CONVERSATION in a hand-off chain — every run sharing a claude transcript folded into a single
+ *  entry (`runs` of them), positioned in the delegation tree by `parentThreadId` + `depth`. */
+export interface ChainNode {
+  threadId: string;
+  /** The conversation that delegated this one. Absent on the root. */
+  parentThreadId?: string;
+  depth: number;
+  /** The newest run of the conversation — what "open this node" attaches to. */
+  sessionId: string;
+  tmux: string;
+  agent: string;
+  title: string;
+  summary?: string;
+  status: SessionStatus;
+  alive?: boolean;
+  outcome?: string;
+  /** How many session rows this conversation spans (>1 = it was resumed by pokes/continuations). */
+  runs: number;
+  /** Cost summed across every run of the conversation. */
+  costUsd?: number;
+  createdAt: number;
+  updatedAt: number;
+  /** `root` = the conversation the chain starts at; `delegate` = dispatched for a task; `answer` = an
+   *  ephemeral quick-answer run (`ask:` provenance) that never took the task over. */
+  kind: 'root' | 'delegate' | 'answer';
+  taskId?: string;
+  taskTitle?: string;
+  taskStatus?: TaskStatus;
+  /** Set when an earlier sibling already handed the SAME work to the SAME agent — the duplicate
+   *  re-dispatch a flat list hides. Holds the task id it repeats. */
+  duplicateOf?: string;
+  pending: ChainPending[];
+}
+
+/** The hand-off tree a session belongs to — see {@link TerminalManager.sessionChain}. */
+export interface SessionChain {
+  rootThreadId: string;
+  /** Flat, in walk order (parents before children); render as a tree via `parentThreadId`/`depth`. */
+  nodes: ChainNode[];
+  /** Distinct agents taking part — the chain's headline "3 agents". */
+  agents: number;
+  totalCostUsd?: number;
+  startedAt: number;
+  updatedAt: number;
+}
+
+/** Chain-walk bounds. Deep enough for any real hand-off (the deepest observed in the fleet is 3), tight
+ *  enough that a cyclic or pathological graph can't turn one request into an unbounded crawl. */
+const CHAIN_MAX_DEPTH = 8;
+const CHAIN_MAX_NODES = 60;
+
+/** The task id behind a dispatched run's provenance — `task:<id>` (working it), `ask:<id>` (quick answer
+ *  on it), or `poke:<id>` (the caller woken because it finished). Undefined for every other origin. */
+function taskOfProvenance(spawnedBy: string | null | undefined): string | undefined {
+  const m = spawnedBy ? /^(?:task|poke|ask):(.+)$/.exec(spawnedBy) : null;
+  return m ? m[1] : undefined;
+}
+
+/** Flag re-dispatches: among siblings of one caller, a delegate to the same agent for the same task
+ *  title is the SECOND (or third) attempt at work already handed off. First one wins; the rest carry
+ *  `duplicateOf`. Mutates in place — the nodes are already in walk (chronological) order. */
+function markDuplicateDispatches(nodes: ChainNode[]): void {
+  const firstSeen = new Map<string, string>();
+  for (const n of nodes) {
+    if (!n.taskId || !n.parentThreadId || n.kind === 'root') continue;
+    const key = `${n.parentThreadId}|${n.agent}|${(n.taskTitle ?? n.title).trim().toLowerCase().replace(/\s+/g, ' ')}`;
+    const first = firstSeen.get(key);
+    if (first && first !== n.taskId) n.duplicateOf = first;
+    else if (!first) firstSeen.set(key, n.taskId);
+  }
 }
 
 export interface FeedMessage {
@@ -772,8 +871,10 @@ export class TerminalManager {
     // One query resolves the whole list's blocked-on-human state (a pending ask/approval), instead of a
     // per-row check — so the console gets an authoritative `blocked` without re-deriving it from the feed.
     const blocked = this.blockedSessionIds();
+    const links = this.chainLinks(visible);
     return visible.map((r) => ({
       ...toSession(r),
+      ...links.get(r.id),
       alive: alive ? alive.has(r.tmux) : undefined,
       blocked: r.status === 'running' && blocked.has(r.id),
       resumable: resumable.has(r.id),
@@ -1090,6 +1191,181 @@ export class TerminalManager {
     for (const q of this.db.prepare("SELECT DISTINCT run_id FROM questions WHERE status = 'pending'").all<{ run_id: string }>()) ids.add(q.run_id);
     for (const a of this.os.approvals.pending(this.os.tenant)) ids.add(a.runId);
     return ids;
+  }
+
+  /**
+   * The delegation edge for a page of rows: session → the task that dispatched it, and that task's CALLER
+   * conversation. Resolved in ONE batched query over `tasks` (chunked under SQLite's variable cap) rather
+   * than per row — the sessions list is a hot poll path, and an N+1 here would cost a query per delegated
+   * run. Rows with no `task:`/`poke:`/`ask:` provenance simply aren't in the map.
+   */
+  private chainLinks(rows: SessionRow[]): Map<string, { taskId: string; parentThreadId?: string }> {
+    const out = new Map<string, { taskId: string; parentThreadId?: string }>();
+    for (const r of rows) {
+      const taskId = taskOfProvenance(r.spawned_by);
+      if (taskId) out.set(r.id, { taskId });
+    }
+    if (!out.size) return out;
+    const ids = [...new Set([...out.values()].map((v) => v.taskId))];
+    const callers = new Map<string, string>();
+    for (let i = 0; i < ids.length; i += 400) {
+      const page = ids.slice(i, i + 400);
+      for (const c of this.db
+        .prepare(`SELECT id, caller_claude_id FROM tasks WHERE id IN (${page.map(() => '?').join(',')})`)
+        .all<{ id: string; caller_claude_id: string | null }>(...page)) {
+        if (c.caller_claude_id) callers.set(c.id, c.caller_claude_id);
+      }
+    }
+    for (const link of out.values()) link.parentThreadId = callers.get(link.taskId);
+    return out;
+  }
+
+  /**
+   * The HAND-OFF CHAIN a session belongs to — the tree the console's chain rail renders, and the answer
+   * to "where is this piece of work right now?" that a flat session list can't give.
+   *
+   * Three identities are collapsed into one view here, all of them already recorded:
+   *   - a **run** is a `term_sessions` row (one pane);
+   *   - a **conversation** is every run sharing a `claude_session_id` — a poke-back RESUMES a transcript,
+   *     so one conversation routinely spans several rows;
+   *   - the **chain** is the delegation tree over conversations: `tasks.caller_claude_id` (the caller)
+   *     → the runs dispatched for that task (`task:` / `ask:` provenance).
+   *
+   * We walk UP from `sessionId` to the chain root, then DOWN over every descendant, folding each
+   * conversation into a single node (runs counted, cost summed, newest run representative). Sibling
+   * delegates to the same agent with the same task title are flagged `duplicate` — the re-dispatch that
+   * is invisible in a flat list. Depth and breadth are capped so a pathological graph can't wedge the
+   * request. Viewer-scoped by the same `canViewRow` rule as the list: a node the viewer can't see is
+   * omitted (its subtree with it), never leaked.
+   */
+  sessionChain(sessionId: string, viewer?: Member): SessionChain | null {
+    const seed = this.db.prepare('SELECT * FROM term_sessions WHERE id = ?').get<SessionRow>(sessionId);
+    if (!seed) return null;
+    if (viewer && !this.canViewRow(seed.spawned_by, seed.run_as, viewer)) return null;
+
+    const threadOf = (r: SessionRow): string => r.claude_session_id ?? r.id;
+    const rowsOfThread = (threadId: string): SessionRow[] => {
+      const rows = this.db
+        .prepare('SELECT * FROM term_sessions WHERE claude_session_id = ? OR (claude_session_id IS NULL AND id = ?) ORDER BY created_at ASC')
+        .all<SessionRow>(threadId, threadId);
+      return viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
+    };
+    // The task a conversation was dispatched FOR (its first `task:`/`ask:` run), and from it the caller
+    // conversation one level up.
+    const dispatchOf = (rows: SessionRow[]): { taskId: string; callerThreadId?: string } | undefined => {
+      for (const r of rows) {
+        const taskId = taskOfProvenance(r.spawned_by);
+        if (!taskId || r.spawned_by?.startsWith('poke:')) continue; // a poke resumes the CALLER, not a delegate
+        const t = this.db.prepare('SELECT caller_claude_id FROM tasks WHERE id = ?').get<{ caller_claude_id: string | null }>(taskId);
+        return { taskId, callerThreadId: t?.caller_claude_id ?? undefined };
+      }
+      return undefined;
+    };
+
+    // ── walk up to the root conversation ──
+    let rootThread = threadOf(seed);
+    const climbed = new Set<string>([rootThread]);
+    for (let hop = 0; hop < CHAIN_MAX_DEPTH; hop++) {
+      const up = dispatchOf(rowsOfThread(rootThread))?.callerThreadId;
+      if (!up || up === rootThread || climbed.has(up)) break;
+      if (!rowsOfThread(up).length) break; // caller invisible to this viewer / pruned → stop here
+      rootThread = up;
+      climbed.add(up);
+    }
+
+    // ── walk down over every descendant ──
+    const nodes: ChainNode[] = [];
+    const seen = new Set<string>();
+    const alive = this.backend.aliveNames(); // one tmux poll for the whole walk, not one per node
+    const visit = (threadId: string, depth: number, parentThreadId?: string): void => {
+      if (seen.has(threadId) || nodes.length >= CHAIN_MAX_NODES || depth > CHAIN_MAX_DEPTH) return;
+      const rows = rowsOfThread(threadId);
+      if (!rows.length) return;
+      seen.add(threadId);
+      const latest = rows[rows.length - 1];
+      const dispatch = dispatchOf(rows);
+      const task = dispatch ? this.os.tasks.get(dispatch.taskId) : undefined;
+      // Cost is per-TRANSCRIPT and cumulative: every resumed row re-parses the same conversation and
+      // stores the running total, so the conversation's cost is the largest of them — summing would
+      // multiply one bill by the number of resumes.
+      const cost = rows.reduce((n, r) => Math.max(n, r.cost_usd ?? 0), 0);
+      // A resumed row's title is machine-written ("Poke ← … done: …") and its summary usually empty, so
+      // the newest row is the wrong label for the conversation. Prefer the freshest real verdict — and
+      // take the outcome from the SAME run as the summary, or a conversation whose last resume ended
+      // quietly reads "no report" right beside the report it filed.
+      const voice = [...rows].reverse();
+      const reported = voice.find((r) => r.report_summary?.trim());
+      const summary = reported?.report_summary ?? undefined;
+      const title = voice.find((r) => !r.spawned_by?.startsWith('poke:'))?.title ?? latest.title;
+      nodes.push({
+        threadId,
+        parentThreadId,
+        depth,
+        sessionId: latest.id,
+        tmux: latest.tmux,
+        agent: latest.agent,
+        title,
+        summary,
+        status: latest.status,
+        alive: alive ? alive.has(latest.tmux) : undefined,
+        outcome: reported?.outcome ?? latest.outcome ?? undefined,
+        runs: rows.length,
+        costUsd: cost || undefined,
+        createdAt: rows[0].created_at,
+        updatedAt: latest.updated_at ?? latest.created_at,
+        kind: depth === 0 ? 'root' : rows.some((r) => r.spawned_by?.startsWith('ask:')) ? 'answer' : 'delegate',
+        taskId: dispatch?.taskId,
+        taskTitle: task?.title,
+        taskStatus: task?.status,
+        pending: this.chainPending(rows),
+      });
+      // Children: every task this conversation delegated, and the runs dispatched for it.
+      const tasks = this.db
+        .prepare('SELECT id FROM tasks WHERE caller_claude_id = ? ORDER BY created_at ASC')
+        .all<{ id: string }>(threadId);
+      for (const t of tasks) {
+        const runs = this.db
+          .prepare("SELECT * FROM term_sessions WHERE spawned_by = ? OR spawned_by = ? ORDER BY created_at ASC")
+          .all<SessionRow>(`task:${t.id}`, `ask:${t.id}`);
+        for (const child of runs) {
+          const childThread = threadOf(child);
+          if (childThread === threadId) continue; // defensive: never nest a conversation under itself
+          visit(childThread, depth + 1, threadId);
+        }
+      }
+    };
+    visit(rootThread, 0);
+    markDuplicateDispatches(nodes);
+
+    return {
+      rootThreadId: rootThread,
+      nodes,
+      agents: new Set(nodes.map((n) => n.agent)).size,
+      totalCostUsd: nodes.reduce((n, x) => n + (x.costUsd ?? 0), 0) || undefined,
+      startedAt: Math.min(...nodes.map((n) => n.createdAt)),
+      updatedAt: Math.max(...nodes.map((n) => n.updatedAt)),
+    };
+  }
+
+  /** What a chain node is waiting on a human for: its unanswered `ask` questions and unresolved approval
+   *  gates, over every run of the conversation. This is what makes the rail actionable — a delegate's
+   *  question is answered from the CALLER's pane, instead of being hunted down in the Inbox. */
+  private chainPending(rows: SessionRow[]): ChainPending[] {
+    const ids = rows.map((r) => r.id);
+    if (!ids.length) return [];
+    const out: ChainPending[] = [];
+    const marks = ids.map(() => '?').join(',');
+    for (const q of this.db
+      .prepare(`SELECT id, run_id, agent, prompt, created_at FROM questions WHERE status = 'pending' AND run_id IN (${marks}) ORDER BY created_at ASC`)
+      .all<{ id: string; run_id: string; agent: string; prompt: string; created_at: number }>(...ids)) {
+      out.push({ kind: 'question', id: q.id, sessionId: q.run_id, agent: q.agent, text: q.prompt, createdAt: q.created_at });
+    }
+    const own = new Set(ids);
+    for (const a of this.os.approvals.pending(this.os.tenant)) {
+      if (!own.has(a.runId)) continue;
+      out.push({ kind: 'approval', id: a.id, sessionId: a.runId, agent: rows.find((r) => r.id === a.runId)?.agent ?? '', text: a.reason || a.attempt.capabilityId, capability: a.attempt.capabilityId, level: a.level, createdAt: a.createdAt });
+    }
+    return out.sort((a, b) => a.createdAt - b.createdAt);
   }
 
   /**
@@ -5914,7 +6190,7 @@ function buildAskAgentPrompt(id: string, callerAgent: string, question: string, 
 }
 
 function toSession(r: SessionRow): Session {
-  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, verbosity: r.verbosity ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
+  return { id: r.id, agent: r.agent, title: r.title, task: r.task, tmux: r.tmux, status: r.status, threadId: r.claude_session_id ?? r.id, spawnedBy: r.spawned_by ?? undefined, runAs: r.run_as ?? undefined, headless: !!r.headless, claimedBy: r.claimed_by ?? undefined, createdAt: r.created_at, updatedAt: r.updated_at ?? r.created_at, rating: r.rating === 'up' || r.rating === 'down' ? r.rating : undefined, ratedBy: r.rated_by ?? undefined, ratedAt: r.rated_at ?? undefined, costUsd: r.cost_usd ?? undefined, tokens: r.cost_usd != null ? { input: r.input_tokens ?? 0, output: r.output_tokens ?? 0, cacheRead: r.cache_read_tokens ?? 0, cacheWrite: r.cache_write_tokens ?? 0 } : undefined, outcome: r.outcome ?? undefined, summary: r.report_summary ?? undefined, activeMs: r.active_ms ?? undefined, turns: r.turns ?? undefined, toolCalls: r.tool_calls ?? undefined, insights: r.gov_approvals != null ? { actions: r.gov_actions ?? 0, approvals: r.gov_approvals, denied: r.gov_denied ?? 0, errors: r.gov_errors ?? 0 } : undefined, model: r.model ?? undefined, effort: r.effort ?? undefined, verbosity: r.verbosity ?? undefined, blockedMs: r.blocked_ms ?? undefined, artifacts: r.artifacts ?? undefined };
 }
 
 function toMessage(r: MessageRow): FeedMessage {
