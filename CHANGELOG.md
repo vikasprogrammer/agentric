@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.309.1] — 2026-08-04
+### Fixed
+- **A rotated session no longer parks on claude's first-run prompts.** Claude keeps its UI state in
+  `.claude.json` **inside `$CLAUDE_CONFIG_DIR`**, falling back to the home root only when that isn't set.
+  Account rotation sets `CLAUDE_CONFIG_DIR` per session, which moved that file out from under the
+  launcher's pre-seed: the seed kept writing `~/.claude.json` while claude read the account's copy. So the
+  first session on a credential-dir account met the theme picker, then the folder-trust dialog, then the
+  current upsell — and an unattended TUI has nobody to answer any of them, so it sat there until the
+  reaper. Hit globex live, minutes after its first credential-dir account went in. (The bug is as old as
+  the `oauth` account kind; nothing had reached it before, because until v0.308.0 every pooled account on
+  every box was a `token` account that never took effect.)
+  - The seed now targets `${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json` — the file claude will actually read —
+    and covers all three gates: `hasCompletedOnboarding`, per-folder `hasTrustDialogAccepted`, and the
+    "seen/dismissed" counters.
+  - Those counters are **inherited from the box's own config** rather than set from a known list:
+    `fullscreenUpsellSeenCount`, `effortCalloutDismissed`, `remoteDialogSeen` … the list grows with every
+    claude release, and a missed key is another hung session. Gap-fill only — a key the target already has
+    always wins, so the account's identity (`oauthAccount`, `userID`, per-account caches) is untouched, and
+    `projects`/`mcpServers` are skipped as per-directory/server config rather than UI state.
+  - Seeding moved out of an inline `node -e` in `claude-launch.sh` into `terminal/seed-config.js` so it can
+    be tested: `scripts/claude-config-seed-test.cjs` (18 assertions) in `npm run test:governance`, the first
+    of which is "the seed lands in the file claude will read". Nothing tested it against a config dir,
+    which is exactly how this shipped. Existing credential dirs heal themselves on the next launch.
+
+
 ## [0.309.0] — 2026-08-04
 ### Added
 - **Add a runtime account by signing in from the console** — Settings → Runtime accounts now runs the

@@ -169,38 +169,22 @@ cat > .claude/aos-settings.json <<JSON
 }
 JSON
 
-# Pre-accept the workspace-TRUST dialog for this agent folder. Freshly-created agent folders have
-# never been trusted, so claude would open with "Do you trust the files in this folder?" — and BOTH
-# lanes need this seed to dodge it. (--dangerously-skip-permissions does NOT dodge the trust dialog;
-# it only suppresses per-tool permission PROMPTS. The pre-attachable `claude -p` headless lane
-# sidestepped the dialog because print-mode never shows it, but the current UNATTENDED lane is an
-# attachable interactive TUI, so a missing seed hangs it exactly like interactive — verified 2026-07-20.)
-# Trust is stored per-directory in ~/.claude.json under projects["<dir>"].hasTrustDialogAccepted; seed
-# it so the dialog never fires. The key MUST be the path claude actually opens: if $AGENT_DIR is a
-# symlink (e.g. a macOS scratch home under /var → /private/var), claude resolves it to the real path,
-# so seed under the realpath or the dialog still fires. Keyed off the REAL $HOME of whatever user/lane
-# runs this (local or uid-isolated).
-# Idempotent (only writes on first launch of each agent), atomic (temp+rename), and never fatal —
-# a failure here must not block the session. NOTE: this only bypasses the one-time TRUST gate; the
-# PreToolUse gate hook + deny rules above still govern every effect, so security posture is unchanged.
+# Pre-accept every first-run gate for this session: the folder-TRUST dialog for this agent folder, the
+# onboarding/theme picker, and whatever upsell claude is currently showing. Freshly-created agent folders
+# have never been trusted, so claude would open with "Do you trust the files in this folder?" — and BOTH
+# lanes need this seed to dodge it. (--dangerously-skip-permissions does NOT dodge the trust dialog; it
+# only suppresses per-tool permission PROMPTS. The pre-attachable `claude -p` headless lane sidestepped
+# the dialog because print-mode never shows it, but the current UNATTENDED lane is an attachable
+# interactive TUI, so a missing seed hangs it exactly like interactive — verified 2026-07-20.)
+#
+# The seeding itself lives in seed-config.js so it can be unit-tested — it got this wrong once, in a way
+# that only showed up on a live box: it wrote `~/.claude.json` while a rotated session (CLAUDE_CONFIG_DIR
+# set to a pooled credential dir) read the account's own copy, so every prompt fired anyway. Idempotent,
+# atomic, and never fatal — a failure here must not block the session. NOTE: this only bypasses one-time
+# UI gates; the PreToolUse gate hook + deny rules above still govern every effect.
+SEED_CONFIG="$(dirname "$HOOK")/seed-config.js"
 if command -v node >/dev/null 2>&1; then
-  AOS_TRUST_DIR="$AGENT_DIR" node -e '
-    const fs = require("fs"), os = require("os"), path = require("path");
-    const dir = process.env.AOS_TRUST_DIR;
-    if (!dir) process.exit(0);
-    const p = path.join(os.homedir(), ".claude.json");
-    let cfg = {};
-    try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch (_) { /* missing/empty/corrupt → start fresh */ }
-    if (typeof cfg !== "object" || cfg === null) cfg = {};
-    cfg.projects = cfg.projects || {};
-    const cur = cfg.projects[dir] || {};
-    if (cur.hasTrustDialogAccepted === true) process.exit(0);   // already trusted — nothing to do
-    cur.hasTrustDialogAccepted = true;
-    cfg.projects[dir] = cur;
-    const tmp = p + ".aos-" + process.pid + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, p);   // atomic replace
-  ' 2>/dev/null || true
+  node "$SEED_CONFIG" "$AGENT_DIR" 2>/dev/null || true
 fi
 
 clear
