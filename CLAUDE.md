@@ -121,7 +121,16 @@ Key modules:
   default) and exports `CLAUDE_MODEL`/`CLAUDE_EFFORT`/`CLAUDE_PERMISSION_MODE`, which `claude-launch.sh`
   maps onto `--model`/`--effort`/`--permission-mode` (model+effort both lanes; permission-mode interactive
   only — headless keeps `--dangerously-skip-permissions`; unset → `auto`, which only tunes the fallback for
-  tools the gate hook doesn't govern, never the gate itself). It also resolves the agent's opt-in
+  tools the gate hook doesn't govern, never the gate itself). A fourth knob, **`verbosity`**
+  (`normal` | `terse`, same precedence chain), is NOT a CLI flag — `terse` appends `TERSE_OUTPUT_BRIEF`
+  (`src/edge/verbosity.ts`) to the system prompt via `buildCompanyMd`, so it reaches both runtimes. It
+  compresses the agent's NARRATION only; code/errors and every durable artifact (`report`, `remember`,
+  `kb_write`, task notes, chat replies) are explicitly exempt, because terse prose there would degrade the
+  learning loop and the human-facing surface far from the flag that caused it. It's a prompt instruction,
+  not an enforced transform, so it ships with its own falsifier: the resolved level is stamped onto
+  `term_sessions.verbosity` and `verbositySavings()` compares terse vs normal **per turn, per agent**
+  (Settings → Runtime defaults). Never quote a saving from the fleet-wide pair — it mixes different work.
+  It also resolves the agent's opt-in
   **`shellSecrets`** (manifest list of vault keys, e.g. `["GH_TOKEN"]`) via `injectShellSecrets` and
   exports each as a shell env var (so a plain CLI like `gh` authenticates); connectors still get theirs
   via the MCP bag. Agent-scoped principal (widening to `*`), audited `shell.secret.injected`/`unresolved`.

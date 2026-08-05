@@ -44,6 +44,7 @@ import { Consolidation, CONSOLIDATOR_ID } from './edge/consolidation';
 import { Digest } from './edge/digest';
 import { measureLearning } from './edge/measurement';
 import { buildInsights } from './edge/insights';
+import { verbositySavings } from './edge/verbosity';
 import { buildImprovements } from './edge/improvements';
 import { Diagnosis, ANALYST_ID } from './edge/diagnosis';
 import { Improver, proposalSlug, IMPROVER_ID } from './edge/improver';
@@ -150,7 +151,7 @@ function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentConfigSna
   return {
     description: ag.description ?? '',
     category: ag.category, icon: ag.icon,
-    model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode,
+    model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity,
     examplePrompts: ag.examplePrompts ?? [], shellSecrets: ag.shellSecrets ?? [],
     claudeMd,
   };
@@ -222,7 +223,7 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
   const next: AgentManifest = {
     ...ag,
     description: snap.description, category: snap.category, icon: snap.icon,
-    model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode,
+    model: snap.model, effort: snap.effort, permissionMode: snap.permissionMode, verbosity: snap.verbosity,
     examplePrompts: snap.examplePrompts.length ? snap.examplePrompts : undefined,
     shellSecrets: snap.shellSecrets.length ? snap.shellSecrets : undefined,
   };
@@ -1863,7 +1864,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Only agents that live under the data home are editable (the read-only bundled examples are not).
     const userRoot = path.resolve(os.paths.userAgents) + path.sep;
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
-    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in b ? b.model : ag.model, effort: 'effort' in b ? b.effort : ag.effort });
+    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in b ? b.model : ag.model, effort: 'effort' in b ? b.effort : ag.effort, verbosity: 'verbosity' in b ? b.verbosity : ag.verbosity });
     if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
     const before = readAgentSnapshot(ag);
     // Only fields present in the body are changed; everything else is preserved.
@@ -1872,14 +1873,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const examplePrompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
     const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, category, icon, examplePrompts, shellSecrets };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, icon, examplePrompts, shellSecrets };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     if ('claudeMd' in b) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(b.claudeMd ?? ''));
     os.registerAgent(next);
     const after = manifestToSnapshot(next, 'claudeMd' in b ? String(b.claudeMd ?? '') : before.claudeMd);
     const rev = os.agentRevisions.commit(os.tenant, id, before, after, 'agent self-edit', `agent:${agent}`);
-    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: tuning.model, effort: tuning.effort, category, claudeMd: 'claudeMd' in b, rev, by: `agent:${agent}` } });
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, claudeMd: 'claudeMd' in b, rev, by: `agent:${agent}` } });
     return sendJson(res, 200, { ok: true, id, rev });
   }
   // Agent reads its OWN revision history (self-scoped) — pick a rev to revert to.
@@ -2431,14 +2432,14 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const userRoot = path.resolve(os.paths.userAgents) + path.sep;
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
     const f = card.fields; // the proposed field delta (only present keys are applied — same shape as the self-edit body)
-    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in f ? f.model : ag.model, effort: 'effort' in f ? f.effort : ag.effort });
+    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in f ? f.model : ag.model, effort: 'effort' in f ? f.effort : ag.effort, verbosity: 'verbosity' in f ? f.verbosity : ag.verbosity });
     if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
     const before = readAgentSnapshot(ag);
     const description = 'description' in f ? String(f.description ?? '').trim() : ag.description;
     const category = 'category' in f ? sanitizeCategory(f.category) : ag.category;
     const icon = 'icon' in f ? sanitizeIcon(f.icon) : ag.icon;
     const examplePrompts = 'examplePrompts' in f ? sanitizeExamplePrompts(f.examplePrompts) : ag.examplePrompts;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, category, icon, examplePrompts };
+    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, icon, examplePrompts };
     const { dir: _dir, ...onDisk } = next;
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     if ('claudeMd' in f) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(f.claudeMd ?? ''));
@@ -4027,7 +4028,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const runtimes = Object.values(CODING_RUNTIMES).map((r) => ({
         id: r.id, label: r.label, suggestedModels: r.suggestedModels, capabilities: r.capabilities,
       }));
-      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     // Runtime change (owner/admin). Validate BEFORE the tuning, so the tuning is checked against the
@@ -4067,13 +4068,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);
     const rev = os.agentRevisions.commit(os.tenant, ag.id, before, manifestToSnapshot(next, before.claudeMd), 'edited config', me.email);
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, category, shellSecrets: shellSecrets ?? [], netMode: netMode ?? 'open', rev } });
-    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, examplePrompts: prompts, shellSecrets, netMode: netMode ?? 'open', category, icon });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.config.updated', data: { agent: ag.id, runtime, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, category, shellSecrets: shellSecrets ?? [], netMode: netMode ?? 'open', rev } });
+    return sendJson(res, 200, { ok: true, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, netMode: netMode ?? 'open', category, icon });
   }
 
   // ── agent config revision history + revert (owner/admin) — the human rollback for a self-editing agent ──
@@ -4113,6 +4114,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const saved = os.settings.setRuntimeDefaults(tuning, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.runtimeDefaults.updated', data: { ...tuning } });
     return sendJson(res, 200, { ok: true, ...saved });
+  }
+
+  // ── did terse output actually cost less? The measurement that ships WITH the verbosity flag, so the
+  //    claim can be checked against this workspace's own traffic instead of taken on faith. Read-only,
+  //    owner/admin (it exposes fleet-wide spend). `days` widens the trailing window.
+  if (method === 'GET' && p === '/api/settings/verbosity-savings') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const days = Math.max(1, Math.min(Math.floor(Number(url.searchParams.get('days')) || 30), 365));
+    return sendJson(res, 200, { windowDays: days, ...verbositySavings(os.db, days) });
   }
 
   // ── fleet-wide sub-agent posture ('all' | 'none') — owner/admin only ──

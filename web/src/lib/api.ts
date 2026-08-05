@@ -39,12 +39,40 @@ export const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 /** `claude --permission-mode` choices. Interactive lane only; the gate hook governs regardless. */
 export type PermissionMode = 'auto' | 'plan' | 'acceptEdits' | 'manual' | 'dontAsk' | 'bypassPermissions'
 export const PERMISSION_MODES: PermissionMode[] = ['auto', 'plan', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions']
+/** How much prose a session spends narrating itself. `terse` appends a compression brief to the system
+ *  prompt — narration only; code, errors and every human-facing artifact stay in full. */
+export type Verbosity = 'normal' | 'terse'
+export const VERBOSITIES: Verbosity[] = ['normal', 'terse']
 /** Per-agent / workspace runtime tuning for claude-code sessions. Each field optional → inherit
- *  (permissionMode's floor is `auto`). */
+ *  (permissionMode's floor is `auto`, verbosity's is `normal`). */
 export interface RuntimeTuning {
   model?: string
   effort?: Effort
   permissionMode?: PermissionMode
+  verbosity?: Verbosity
+}
+
+/** One arm of the terse-vs-normal comparison, normalised per TURN (a longer run costs more because it
+ *  did more, not because it was wordy). */
+export interface VerbosityArm {
+  sessions: number
+  turns: number
+  outputPerTurn: number
+  usdPerTurn: number
+}
+export interface VerbosityComparison {
+  normal: VerbosityArm
+  terse: VerbosityArm
+  /** Percent reduction terse vs normal (positive = cheaper). Null until both arms have enough runs. */
+  outputDelta: number | null
+  usdDelta: number | null
+  comparable: boolean
+}
+/** `byAgent` holds the agent fixed and is the number to trust; the top-line pair mixes different work. */
+export interface VerbositySavings extends VerbosityComparison {
+  windowDays: number
+  byAgent: Array<{ agent: string } & VerbosityComparison>
+  error?: string
 }
 
 /** Whole-box concurrency cap state (Settings → Runtime). `value` = operator override (null = unset);
@@ -1638,6 +1666,7 @@ export const api = {
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),
   saveRuntimeDefaults: (tuning: RuntimeTuning) => call<{ ok: boolean; error?: string } & RuntimeTuning>('PUT', '/api/settings/runtime-defaults', tuning),
+  verbositySavings: (days = 30) => call<VerbositySavings>('GET', `/api/settings/verbosity-savings?days=${days}`),
   subagentDefault: () => call<{ mode: 'all' | 'none'; error?: string }>('GET', '/api/settings/subagent-default'),
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
   saveSessionMetrics: (value: SessionMetrics) => call<{ ok: boolean; sessionMetrics?: SessionMetrics; error?: string }>('PUT', '/api/settings/session-metrics', { value }),

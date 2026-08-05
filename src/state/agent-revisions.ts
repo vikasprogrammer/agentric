@@ -12,7 +12,7 @@
  */
 import { newId } from '../id';
 import { Db } from './db';
-import { Effort, PermissionMode } from '../types';
+import { Effort, PermissionMode, Verbosity } from '../types';
 
 /** The full editable surface of an agent — everything a revert must restore. */
 export interface AgentConfigSnapshot {
@@ -22,6 +22,7 @@ export interface AgentConfigSnapshot {
   model?: string;
   effort?: Effort;
   permissionMode?: PermissionMode;
+  verbosity?: Verbosity;
   examplePrompts: string[];
   shellSecrets: string[];
   claudeMd: string;
@@ -39,7 +40,7 @@ export interface AgentRevision extends AgentConfigSnapshot {
 interface RevRow {
   id: string; tenant: string; agent_id: string; rev: number;
   description: string; category: string | null; icon: string | null;
-  model: string | null; effort: string | null; permission_mode: string | null;
+  model: string | null; effort: string | null; permission_mode: string | null; verbosity: string | null;
   example_prompts: string; shell_secrets: string; claude_md: string;
   summary: string | null; author: string; created_at: number;
 }
@@ -53,6 +54,7 @@ function toRevision(r: RevRow): AgentRevision {
     model: r.model ?? undefined,
     effort: (r.effort as Effort) ?? undefined,
     permissionMode: (r.permission_mode as PermissionMode) ?? undefined,
+    verbosity: (r.verbosity as Verbosity) ?? undefined,
     examplePrompts: safeArray(r.example_prompts),
     shellSecrets: safeArray(r.shell_secrets),
     claudeMd: r.claude_md,
@@ -72,6 +74,7 @@ function sameSnapshot(a: AgentConfigSnapshot, b: AgentConfigSnapshot): boolean {
     && (a.model ?? '') === (b.model ?? '')
     && (a.effort ?? '') === (b.effort ?? '')
     && (a.permissionMode ?? '') === (b.permissionMode ?? '')
+    && (a.verbosity ?? '') === (b.verbosity ?? '')
     && JSON.stringify(a.examplePrompts ?? []) === JSON.stringify(b.examplePrompts ?? [])
     && JSON.stringify(a.shellSecrets ?? []) === JSON.stringify(b.shellSecrets ?? [])
     && a.claudeMd === b.claudeMd;
@@ -124,12 +127,12 @@ export class AgentRevisions {
   private insert(tenant: string, agentId: string, rev: number, s: AgentConfigSnapshot, summary: string, author: string, ts: number): void {
     this.db
       .prepare(`INSERT INTO agent_revisions
-        (id, tenant, agent_id, rev, description, category, icon, model, effort, permission_mode, example_prompts, shell_secrets, claude_md, summary, author, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        (id, tenant, agent_id, rev, description, category, icon, model, effort, permission_mode, verbosity, example_prompts, shell_secrets, claude_md, summary, author, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         newId('agentRevision'), tenant, agentId, rev,
         s.description, s.category ?? null, s.icon ?? null,
-        s.model ?? null, s.effort ?? null, s.permissionMode ?? null,
+        s.model ?? null, s.effort ?? null, s.permissionMode ?? null, s.verbosity ?? null,
         JSON.stringify(s.examplePrompts ?? []), JSON.stringify(s.shellSecrets ?? []), s.claudeMd,
         summary || null, author, ts,
       );

@@ -1017,6 +1017,15 @@ function migrate(db: Db): void {
   addColumn(db, 'approvals', 'escalated_at', 'INTEGER');       // when the stale-approval reminder fired
   addColumn(db, 'questions', 'escalated_at', 'INTEGER');       // when the stale-question reminder fired
 
+  // Narration verbosity the run LAUNCHED with ('normal' | 'terse'), stamped from the `session.tuning`
+  // audit alongside model/effort. It's the join key the savings comparison groups on — without it on the
+  // row, "did terse actually cost less" needs a JSON scan of the audit stream per session. NULL = a run
+  // from before the flag existed: attributable to neither arm, and deliberately excluded from both.
+  addColumn(db, 'term_sessions', 'verbosity', 'TEXT');
+  // …and on the revision snapshot, so reverting an agent restores the verbosity it was saved with
+  // rather than silently leaving the current one in place.
+  addColumn(db, 'agent_revisions', 'verbosity', 'TEXT');
+
   // Private-to-owners agents: when 1, ONLY the owner role runs/sees the agent (admins excluded, the
   // role/member grants void) — the tightest tier below the owner+admin default. NULL/0 = default floor.
   addColumn(db, 'assignments', 'owner_only', 'INTEGER');       // 1 = owner-role-only

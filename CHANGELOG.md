@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.310.0] — 2026-08-05
+### Added
+- **Terse output — a verbosity knob on the runtime-tuning chain, with the measurement that can
+  contradict it.** `RuntimeTuning.verbosity` (`normal` | `terse`) joins model/effort/permission-mode, so
+  it inherits the precedence that already exists: per-run override → agent manifest → workspace default
+  (Settings → Runtime defaults) → `normal`. An agent can pin `normal` to opt OUT of a terse fleet default,
+  which matters for the ones whose prose people actually read. Unlike the others it is not a CLI flag —
+  `terse` appends a compression brief to the system prompt (`buildCompanyMd`), so it applies to Claude
+  Code and Codex alike. It compresses NARRATION only: code, commands, errors and logs stay byte-exact,
+  and every durable artifact (`report`, `remember`, `kb_write`, task notes, `ask`, and every chat reply)
+  is explicitly exempt — those feed consolidation, recall, and human readers, where terse phrasing costs
+  far more than it saves. Deliberately not per-member: a member is the identity a run acts *as*, and
+  unattended runs frequently have no `run_as` at all, so a per-member flag would silently miss exactly
+  the runs that burn the tokens.
+- **Verbosity savings (`GET /api/settings/verbosity-savings`, owner/admin).** Terse is a prompt
+  instruction, not an enforced transform, so the flag ships with its own falsifier rather than a claimed
+  percentage. The resolved level is stamped onto `term_sessions.verbosity` (from the `session.tuning`
+  audit, alongside model/effort), and the query compares the two arms **per turn** — a longer run costs
+  more because it did more, not because it was wordy. Surfaced in Settings → Runtime defaults, with the
+  per-agent rows (an agent that has run BOTH ways) called out as the numbers to trust; the fleet-wide
+  pair is labelled confounded, since flipping particular agents makes the two sides different *work*.
+  Pre-flag rows (NULL verbosity) and uncosted/live rows count toward neither arm. `npm run test:verbosity`
+  (32 assertions, wired into `test:governance`) covers the precedence, the brief's carve-outs, and the
+  ways the comparison could be fooled.
+
 ## [0.309.2] — 2026-08-04
 ### Fixed
 - **First-run inheritance no longer copies the box account's identity.** v0.309.1 gap-fills a credential

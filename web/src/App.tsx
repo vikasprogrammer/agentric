@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -635,6 +635,18 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
           <p className="text-[11px] text-muted-foreground">Interactive only — headless stays fully skipped. The gate hook governs regardless.</p>
         </div>
       )}
+      <div className="space-y-1">
+        <label className="text-xs font-medium">Output</label>
+        <select className={selCls} value={tuning.verbosity ?? ''} onChange={(e) => onChange({ ...tuning, verbosity: (e.target.value || undefined) as Verbosity | undefined })}>
+          <option value="">{inheritLabel}</option>
+          <option value="normal">normal</option>
+          <option value="terse">terse — compress narration</option>
+        </select>
+        <p className="text-[11px] text-muted-foreground">
+          Terse trims the agent's own commentary (output tokens are the priciest, and are re-billed as input each turn).
+          Code, errors, reports, KB pages and chat replies are never compressed.
+        </p>
+      </div>
     </div>
   )
 }
@@ -13690,6 +13702,62 @@ function KillSwitchCard({ me }: { me: Member }) {
   )
 }
 
+/** Did terse output actually cost less, on THIS workspace's traffic? Terse is a prompt instruction, not
+ *  an enforced transform — the model can ignore it and compliance drifts by model and task — so the flag
+ *  ships next to the number that can contradict it. Renders nothing until both arms have real runs. */
+function VerbositySavingsPanel() {
+  const [data, setData] = useState<VerbositySavings | null>(null)
+  useEffect(() => { api.verbositySavings().then((r) => { if (!r.error) setData(r) }).catch(() => {}) }, [])
+  if (!data) return null
+  const { normal, terse } = data
+  if (!normal.sessions && !terse.sessions) return null // nothing has run under the flag yet
+
+  const pct = (v: number | null) => (v == null ? '—' : `${v > 0 ? '−' : '+'}${Math.abs(v)}%`)
+  const tone = (v: number | null) => (v == null ? 'text-muted-foreground' : v > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400')
+
+  return (
+    <div className="space-y-2 border-t pt-4">
+      <label className="text-sm font-medium">Terse output — measured, last {data.windowDays} days</label>
+      {!data.comparable ? (
+        <p className="text-sm text-muted-foreground">
+          {terse.sessions} terse and {normal.sessions} normal costed sessions so far — not enough of both to compare yet.
+          Numbers appear once each side has a handful of runs.
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+            <span className="text-muted-foreground">Output tokens / turn: <span className="font-mono">{normal.outputPerTurn.toLocaleString()} → {terse.outputPerTurn.toLocaleString()}</span> <span className={tone(data.outputDelta)}>{pct(data.outputDelta)}</span></span>
+            <span className="text-muted-foreground">USD / turn: <span className="font-mono">${normal.usdPerTurn.toFixed(3)} → ${terse.usdPerTurn.toFixed(3)}</span> <span className={tone(data.usdDelta)}>{pct(data.usdDelta)}</span></span>
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Fleet-wide, this pair is <strong>confounded</strong>: if you flipped particular agents to terse, the two sides
+            are made of different work. The per-agent rows below hold the agent fixed — trust those.
+          </p>
+        </>
+      )}
+      {data.byAgent.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-muted-foreground">
+              <tr className="text-left"><th className="py-1 pr-4 font-medium">Agent</th><th className="py-1 pr-4 font-medium">Runs (normal/terse)</th><th className="py-1 pr-4 font-medium">Output / turn</th><th className="py-1 font-medium">USD / turn</th></tr>
+            </thead>
+            <tbody>
+              {data.byAgent.map((a) => (
+                <tr key={a.agent} className="border-t">
+                  <td className="py-1 pr-4 font-mono">{a.agent}</td>
+                  <td className="py-1 pr-4 text-muted-foreground">{a.normal.sessions}/{a.terse.sessions}</td>
+                  <td className="py-1 pr-4"><span className="font-mono">{a.normal.outputPerTurn.toLocaleString()} → {a.terse.outputPerTurn.toLocaleString()}</span> <span className={tone(a.outputDelta)}>{pct(a.outputDelta)}</span></td>
+                  <td className="py-1"><span className="font-mono">${a.normal.usdPerTurn.toFixed(3)} → ${a.terse.usdPerTurn.toFixed(3)}</span> <span className={tone(a.usdDelta)}>{pct(a.usdDelta)}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Settings → Runtime defaults — the fleet-wide model / effort that every
  *  claude-code agent inherits unless its own manifest overrides the field. Retune the whole fleet
  *  from one place; per-agent overrides live on each agent's page. */
@@ -13706,7 +13774,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
   useEffect(() => {
     api.runtimeDefaults().then((r) => {
       if (r.error) return
-      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode }
+      const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
       setTuning(t); setSaved(t); setMeta({ updatedAt: r.updatedAt, updatedBy: r.updatedBy })
     }).catch(() => {})
     api.subagentDefault().then((r) => { if (!r.error) setSubMode(r.mode) }).catch(() => {})
@@ -13725,7 +13793,9 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
     const r = await api.saveRuntimeDefaults(tuning)
     setBusy(false)
     if (r.error) return setHint('⚠ ' + r.error)
-    const t: RuntimeTuning = { model: r.model, effort: r.effort }
+    // Mirror back every field the server echoes — a partial copy here silently blanks the other knobs
+    // in the form until the next reload, which reads as "my setting didn't save".
+    const t: RuntimeTuning = { model: r.model, effort: r.effort, permissionMode: r.permissionMode, verbosity: r.verbosity }
     setTuning(t); setSaved(t); setHint('saved — applies to every agent that doesn\'t override the field'); setTimeout(() => setHint(''), 3000)
   }
 
@@ -13744,6 +13814,7 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
           {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
           {!hint && meta.updatedBy && <span className="text-[11px] text-muted-foreground">last set by {meta.updatedBy}</span>}
         </div>
+        <VerbositySavingsPanel />
         <div className="space-y-1 border-t pt-4">
           <label className="text-sm font-medium">Sub-agents</label>
           <p className="text-sm text-muted-foreground">

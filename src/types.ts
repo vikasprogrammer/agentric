@@ -1021,6 +1021,15 @@ export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'ma
 export type PermissionMode = 'auto' | 'plan' | 'acceptEdits' | 'manual' | 'dontAsk' | 'bypassPermissions';
 export const PERMISSION_MODES: readonly PermissionMode[] = ['auto', 'plan', 'acceptEdits', 'manual', 'dontAsk', 'bypassPermissions'];
 
+/** How much prose a session spends on its own narration. `normal` is the runtime's own voice;
+ *  `terse` appends a compression brief to the system prompt (see `TERSE_OUTPUT_BRIEF`) that strips
+ *  filler from the agent's reasoning and commentary while leaving code, commands, errors and every
+ *  durable artifact byte-exact. Output tokens are the priciest per token AND become input + cache-write
+ *  on the next turn, so terser narration compounds — but it is a PROMPT instruction, not an enforced
+ *  transform: treat the saving as measured (Settings → Runtime defaults), never as assumed. */
+export type Verbosity = 'normal' | 'terse';
+export const VERBOSITIES: readonly Verbosity[] = ['normal', 'terse'];
+
 /** The knobs that tune a claude-code session — settable per-agent (manifest) with a workspace-wide
  *  fallback (Settings → runtime defaults). An undefined field means "inherit". `model`/`effort` apply
  *  to both lanes; `permissionMode` is interactive-only (the headless lane keeps
@@ -1033,6 +1042,9 @@ export interface RuntimeTuning {
   effort?: Effort;
   /** Permission mode (`claude --permission-mode`), interactive lane only. Undefined → `auto`. */
   permissionMode?: PermissionMode;
+  /** Narration verbosity. Undefined → `normal` once resolved. Rides the appended system prompt (both
+   *  runtimes), not a CLI flag — so it applies wherever `buildCompanyMd` reaches. */
+  verbosity?: Verbosity;
 }
 
 /** Every runtime an agent manifest may declare. `mock` is the in-process demo adapter (no CLI, no
@@ -1451,6 +1463,13 @@ export function sanitizeRuntimeTuning(
     }
     tuning.permissionMode = mode as PermissionMode;
   }
+  const verbosity = typeof input.verbosity === 'string' ? input.verbosity.trim() : '';
+  if (verbosity) {
+    if (!VERBOSITIES.includes(verbosity as Verbosity)) return { tuning, error: `verbosity must be one of: ${VERBOSITIES.join(', ')}` };
+    // An explicit `normal` is kept, not folded back to "inherit": with a terse workspace default it's
+    // the only way an agent whose prose humans actually read opts OUT. Empty string is still inherit.
+    tuning.verbosity = verbosity as Verbosity;
+  }
   return { tuning };
 }
 
@@ -1607,6 +1626,9 @@ export function resolveRuntimeTuning(
     model,
     effort: override?.effort ?? agent.effort ?? defaults.effort,
     permissionMode: override?.permissionMode ?? agent.permissionMode ?? defaults.permissionMode ?? 'auto',
+    // Same precedence as the rest, resolved (never left undefined) so callers branch on a real value
+    // and the session row records what the run actually launched with — the join key for measurement.
+    verbosity: override?.verbosity ?? agent.verbosity ?? defaults.verbosity ?? 'normal',
   };
 }
 
