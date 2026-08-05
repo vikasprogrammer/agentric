@@ -51,6 +51,15 @@ export interface RuntimeTuning {
   permissionMode?: PermissionMode
   verbosity?: Verbosity
 }
+/** Wire form of a PARTIAL tuning edit (the agent-config route): an omitted key keeps the agent's current
+ *  value, `''` clears the knob to inherit. Distinct from RuntimeTuning, whose `undefined` already means
+ *  "inherit" — `JSON.stringify` drops undefined, so it can't express "clear this" over the wire. */
+export type RuntimeTuningPatch = {
+  model?: string
+  effort?: Effort | ''
+  permissionMode?: PermissionMode | ''
+  verbosity?: Verbosity | ''
+}
 
 /** One arm of the terse-vs-normal comparison, normalised per TURN (a longer run costs more because it
  *  did more, not because it was wordy). */
@@ -1730,7 +1739,7 @@ export const api = {
   agentClaude: (id: string) => call<{ agent: string; runtime: string; exists: boolean; content: string; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/claude`),
   saveAgentClaude: (id: string, content: string) => call<{ ok: boolean; error?: string }>('PUT', `/api/agents/${encodeURIComponent(id)}/claude`, { content }),
   agentConfig: (id: string) => call<{ agent: string; error?: string; runtime?: string; runtimes?: { id: string; label: string; suggestedModels: string[]; capabilities: Record<string, boolean> }[]; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string } & RuntimeTuning>('GET', `/api/agents/${encodeURIComponent(id)}/config`),
-  saveAgentConfig: (id: string, patch: RuntimeTuning & { runtime?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string; runtime?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
+  saveAgentConfig: (id: string, patch: RuntimeTuningPatch & { runtime?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string }) => call<{ ok: boolean; error?: string; description?: string; examplePrompts?: string[]; shellSecrets?: string[]; usableSubagents?: string[]; spawnableAsSubagent?: boolean; chatReachable?: boolean; netMode?: 'open' | 'allowlist'; category?: string; icon?: string; runtime?: string } & RuntimeTuning>('PUT', `/api/agents/${encodeURIComponent(id)}/config`, patch),
   agentRevisions: (id: string) => call<{ agent: string; revisions: AgentRevision[]; error?: string }>('GET', `/api/agents/${encodeURIComponent(id)}/revisions`),
   agentRevert: (id: string, rev: number) => call<{ ok: boolean; id?: string; toRev?: number; rev?: number; error?: string }>('POST', `/api/agents/${encodeURIComponent(id)}/revert`, { rev }),
   runtimeDefaults: () => call<RuntimeTuning & { updatedAt?: number; updatedBy?: string; error?: string }>('GET', '/api/settings/runtime-defaults'),

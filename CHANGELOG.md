@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.311.1] — 2026-08-05
+### Fixed
+- **A partial agent-config save no longer wipes the tuning knobs it didn't mention.** `PUT
+  /api/agents/:id/config` replaced model/effort/permissionMode/verbosity **wholesale** while every other
+  field on the same route patched by presence (`'examplePrompts' in b ? … : ag.examplePrompts`). So any
+  body that omitted a knob silently cleared it: a one-knob `{verbosity:'terse'}` save unpinned the
+  agent's model and dropped it onto the fleet default, and — wider than it first looked — so did a
+  **description-only save**, since that carries no tuning either. Nothing in the response said so; the
+  agent just quietly started running on a different model. Caught on the live northwind consolidator,
+  which is pinned to `opus` and for a few minutes wasn't.
+  The contract is now the same as the rest of the route: **absent key → keep, present key → replace,
+  `''` → clear to inherit**. Clearing is therefore explicit rather than a side effect of omission, which
+  matters over the wire because `JSON.stringify` drops `undefined` — the console's runtime card now
+  states all four knobs (empties included) instead of spreading a `RuntimeTuning` whose cleared fields
+  would vanish from the payload. The merge lives in one place (`runtimeTuningPatch` in `src/types.ts`)
+  and is shared by the owner/admin route, the agent self-edit, and the cross-agent proposal apply — the
+  latter two already had these semantics hand-rolled. A runtime switch still drops a pinned model the
+  body doesn't re-state, so moving an agent to Codex doesn't 400 on the `claude-*` model it's leaving.
+  `npm run test:tuning-patch` (20 assertions, in `test:governance`) covers the merge and drives the real
+  route end to end; it fails 5 ways against the old code.
+
 ## [0.311.0] — 2026-08-05
 ### Added
 - **Agent-to-agent work reads as one thread: the chain rail + a collapsed sessions list.** A delegated

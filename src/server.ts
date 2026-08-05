@@ -68,7 +68,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 
@@ -1864,7 +1864,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Only agents that live under the data home are editable (the read-only bundled examples are not).
     const userRoot = path.resolve(os.paths.userAgents) + path.sep;
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
-    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in b ? b.model : ag.model, effort: 'effort' in b ? b.effort : ag.effort, verbosity: 'verbosity' in b ? b.verbosity : ag.verbosity });
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(b, ag, { fields: ['model', 'effort', 'verbosity'] }));
     if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
     const before = readAgentSnapshot(ag);
     // Only fields present in the body are changed; everything else is preserved.
@@ -2432,7 +2432,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const userRoot = path.resolve(os.paths.userAgents) + path.sep;
     if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
     const f = card.fields; // the proposed field delta (only present keys are applied — same shape as the self-edit body)
-    const { tuning, error: tErr } = sanitizeRuntimeTuning({ model: 'model' in f ? f.model : ag.model, effort: 'effort' in f ? f.effort : ag.effort, verbosity: 'verbosity' in f ? f.verbosity : ag.verbosity });
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(f, ag, { fields: ['model', 'effort', 'verbosity'] }));
     if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
     const before = readAgentSnapshot(ag);
     const description = 'description' in f ? String(f.description ?? '').trim() : ag.description;
@@ -4052,13 +4052,15 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       }
       runtime = want;
     }
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(b, runtime);
+    // Tuning is PATCHED, not replaced: a key the body omits keeps its current value, a key it carries
+    // (`''` = clear to inherit) replaces it. Sending one knob used to blank the others — see
+    // runtimeTuningPatch. On a runtime switch a model the body doesn't re-state is dropped, since a
+    // pinned model belongs to the family being left.
+    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(b, ag, { dropModel: runtime !== ag.runtime }), runtime);
     if (tErr) return sendJson(res, 400, { error: tErr });
     const before = readAgentSnapshot(ag);
-    // Replace the tuning fields wholesale (sanitize already dropped empties to undefined → those
-    // become "inherit"). Starter prompts + shell secrets + category + icon are only touched when the
-    // body carries the field (a tuning-only save from the runtime card leaves them as-is). Preserve
-    // everything else.
+    // Starter prompts + shell secrets + category + icon are only touched when the body carries the field
+    // (a tuning-only save from the runtime card leaves them as-is). Preserve everything else.
     const prompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
     const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
     // Which fleet teammates this agent may spawn as native sub-agents. Amplification-sensitive but not a

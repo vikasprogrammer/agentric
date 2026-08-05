@@ -1430,6 +1430,40 @@ export function sanitizeAppDomains(input: unknown): string[] {
   return out.slice(0, 10);
 }
 
+/**
+ * Build the sanitize input for a PARTIAL tuning edit: **an absent key keeps the agent's current value;
+ * a present one (including `''`/null) replaces it.** Every other field on the agent-config route already
+ * works this way (`'examplePrompts' in b ? … : ag.examplePrompts`); the tuning fields did not, so a body
+ * carrying one knob silently cleared the rest — a `{verbosity:'terse'}` save unpinned an agent's model
+ * and dropped it onto the fleet default, with nothing in the response to say so. Found live on the
+ * northwind consolidator.
+ *
+ * "Clear to inherit" still works, and is now explicit rather than a side effect of omission: send the
+ * key as `''`. Callers that render a whole form (the console's runtime card) should send every field
+ * they own, empties included — note `JSON.stringify` DROPS `undefined` values, so spreading a
+ * `RuntimeTuning` with cleared fields transmits no key at all and would otherwise read as "don't touch".
+ *
+ * `fields` limits which knobs a caller may patch: the agent self-edit path passes model/effort/verbosity
+ * only, so an agent can't hand itself a permission mode (governance-sensitive — humans set that).
+ * `dropModel` covers the runtime switch: a pinned `claude-*` model can't run on Codex, so when the
+ * runtime changes and the body doesn't name a replacement, the inherited one is dropped rather than
+ * carried into a validation error the human didn't cause.
+ */
+export function runtimeTuningPatch(
+  body: Partial<Record<keyof RuntimeTuning, unknown>>,
+  current: RuntimeTuning,
+  opts: { fields?: ReadonlyArray<keyof RuntimeTuning>; dropModel?: boolean } = {},
+): Partial<Record<keyof RuntimeTuning, unknown>> {
+  const fields = opts.fields ?? (['model', 'effort', 'permissionMode', 'verbosity'] as const);
+  const out: Partial<Record<keyof RuntimeTuning, unknown>> = {};
+  for (const f of fields) {
+    if (f in body) out[f] = body[f];
+    else if (f === 'model' && opts.dropModel) continue; // switching runtime — don't carry a foreign model
+    else out[f] = current[f];
+  }
+  return out;
+}
+
 /** Normalize+validate a runtime-tuning payload (from an API body or config file): drops empty
  *  strings to undefined and rejects out-of-set effort values. Returns the clean tuning plus any
  *  validation error (so callers can 400). Unknown model strings pass through — the CLI validates
