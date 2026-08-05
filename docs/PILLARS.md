@@ -40,7 +40,7 @@ Capabilities`), the taxonomy north-star that sits beside [`governance-model.md`]
 
 | # | Pillar | Status | One-liner |
 |---|--------|--------|-----------|
-| 1 | Agents & Sessions | ✅ | Manifest-driven agents, real Claude in tmux, persisted sessions |
+| 1 | Agents & Sessions | ✅ | Manifest-driven agents, real Claude in tmux, persisted sessions. The console reads them at three levels: a **run** (one pane), a **conversation** (every run sharing a claude transcript — a poke-back resumes one rather than starting one), and the **chain** (the hand-off tree over `tasks.caller_claude_id`). The sessions list collapses runs into conversations and nests delegates under their caller; a **chain rail** beside the terminal shows the tree, flags a re-dispatch of work already handed off, and answers a delegate's pending `ask`/approval in place |
 | 2 | Inbox | ✅ | Tasks · updates · approval/question cards, SQLite-backed, role-aware; per-member read/dismiss; out-of-band DMs for approvals **and** questions + chat-thread mirroring. See [`inbox-plan.md`](./inbox-plan.md) |
 | 3 | Connectors | ✅ | MCP catalog → per-session `.mcp.json`, every call still gated |
 | 4 | Team | ✅ | Roles (owner/admin/member), magic-link login, agent assignment, identity map (external accounts → member) |

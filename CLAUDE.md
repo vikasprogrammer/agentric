@@ -339,6 +339,15 @@ Key modules:
   **episodic↔semantic learning loop** — graded episodes (`episodeSalience` in `terminal.ts`), deliberate
   `report` **lessons**, and **retrieval reinforcement** (`rerank` `weightByUsage` + last-use recency in
   `src/memory/embedding.ts`) — is documented in `docs/memory-encoding-and-consolidation.md`.
+- `src/terminal.ts` also derives the **hand-off chain** (`sessionChain` → `GET /api/sessions/:id/chain`,
+  the console's chain rail): runs fold into CONVERSATIONS by `claude_session_id` (a `poke:` run RESUMES a
+  transcript, so several rows are one conversation), and conversations nest under the caller that
+  delegated them (`tasks.caller_claude_id` → the `task:`/`ask:` runs dispatched for it). Nothing new is
+  stored. Two folding rules the live data forced: a conversation's cost is the **max** of its runs (cost
+  is per-transcript and cumulative — summing multiplies one bill by the number of resumes), and its
+  verdict + summary come from the SAME reporting run. `listSessions` stamps `threadId`/`parentThreadId`/
+  `taskId` on every row (one batched query) so the sessions list can collapse the same way. Tested by
+  `scripts/chain-model-test.cjs`.
 - `src/state/db.ts` — the per-workspace SQLite database + migrations.
 - `src/tenant-registry.ts` — the **multi-tenant registry**: builds + caches one full runtime per tenant
   (`AgentOS` + `TerminalManager` + `Automations` + `SlackSocket` + ttyd) and resolves the request's

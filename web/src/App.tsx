@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -3143,6 +3143,268 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
   )
 }
 
+// ── Chain collapse ─────────────────────────────────────────────────────────────
+/** A CONVERSATION in the sessions list — every run sharing a claude transcript (`runs`), shown as one
+ *  entry, with the conversations it delegated to nested beneath it. */
+interface SessionGroup {
+  /** The row the entry renders as: the newest run, relabelled with the conversation's best title +
+   *  freshest verdict (a poke-back's own title is machine-written and its summary usually empty). */
+  rep: Session
+  /** Every run of this conversation, oldest first. `runs.length > 1` = it was resumed. */
+  runs: Session[]
+  children: SessionGroup[]
+}
+
+const threadOf = (s: Session): string => s.threadId ?? s.id
+/** The caller conversation that delegated this run, if any. A poke carries its own thread as the parent
+ *  (a caller waking itself) — that's not a hand-off, so it reads as no parent. */
+const parentOf = (s: Session): string | undefined =>
+  s.parentThreadId && s.parentThreadId !== threadOf(s) ? s.parentThreadId : undefined
+
+/**
+ * Fold a sorted, filtered session list into hand-off chains: runs → conversations → tree.
+ *
+ * Roots keep the incoming order (so the page's sort still drives the list); children are chronological.
+ * A conversation whose caller isn't in this list — filtered out, or not visible to this viewer — is
+ * promoted to a root, so nothing is ever hidden by grouping. Cycles are impossible by construction
+ * (a node is attached only to an EARLIER-seen parent), and a self-parent is dropped.
+ */
+function buildChainGroups(rows: Session[]): SessionGroup[] {
+  const byThread = new Map<string, Session[]>()
+  const order: string[] = []
+  for (const s of rows) {
+    const t = threadOf(s)
+    if (!byThread.has(t)) { byThread.set(t, []); order.push(t) }
+    byThread.get(t)!.push(s)
+  }
+  const groups = new Map<string, SessionGroup>()
+  for (const t of order) {
+    const runs = [...byThread.get(t)!].sort((a, b) => a.createdAt - b.createdAt)
+    const newest = runs.reduce((a, b) => (b.updatedAt > a.updatedAt ? b : a))
+    // Prefer the freshest REAL verdict + a human-written title over a resume's machine label.
+    const back = [...runs].reverse()
+    const title = back.find((r) => !r.spawnedBy?.startsWith('poke:'))?.title ?? newest.title
+    // Verdict and summary come from the SAME run — the freshest one that actually reported. Taking the
+    // outcome off the newest row instead would label a conversation "no report" whenever its last resume
+    // ended quietly, contradicting the summary printed beside it.
+    const reported = back.find((r) => r.summary?.trim())
+    groups.set(t, { rep: { ...newest, title, summary: reported?.summary, outcome: reported?.outcome ?? newest.outcome }, runs, children: [] })
+  }
+  const roots: SessionGroup[] = []
+  for (const t of order) {
+    const g = groups.get(t)!
+    const parent = g.runs.map(parentOf).find(Boolean)
+    const under = parent && parent !== t ? groups.get(parent) : undefined
+    if (under) under.children.push(g)
+    else roots.push(g)
+  }
+  const sortKids = (g: SessionGroup): void => {
+    g.children.sort((a, b) => a.rep.createdAt - b.rep.createdAt)
+    g.children.forEach(sortKids)
+  }
+  roots.forEach(sortKids)
+  return roots
+}
+
+/** The chain a list entry heads, as inline chips: who it handed off to and how each came out, plus a
+ *  marker when the conversation itself spans several runs. This is what makes a re-dispatch or a stalled
+ *  delegate visible from the list, instead of only after opening the session. */
+const MAX_CHAIN_CHIPS = 3
+function ChainStrip({ group, runs, onOpen, className = '' }: {
+  group: SessionGroup; runs: number; onOpen: (tmux: string, title: string) => void; className?: string
+}) {
+  const kids = group.children
+  if (!kids.length && runs < 2) return null
+  return (
+    <div className={`flex flex-wrap items-center gap-1 ${className}`}>
+      {runs > 1 && (
+        <span className="rounded-full border px-1.5 text-[10px] text-muted-foreground" title={`${runs} runs — this conversation was resumed (poke-backs / continuations)`}>
+          {runs} runs
+        </span>
+      )}
+      {kids.slice(0, MAX_CHAIN_CHIPS).map((k, i) => (
+        <span key={k.rep.id} className="flex items-center gap-1">
+          {i > 0 && <span className="text-[10px] text-muted-foreground/50">·</span>}
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpen(k.rep.tmux, `${k.rep.agent} · ${k.rep.id}`) }}
+            title={k.rep.summary || k.rep.title}
+            className="flex items-center gap-1 rounded-full border px-1.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(k.rep)}`} />
+            <span className="max-w-[9rem] truncate">{k.rep.agent}</span>
+          </button>
+        </span>
+      ))}
+      {kids.length > MAX_CHAIN_CHIPS && (
+        <span className="text-[10px] text-muted-foreground" title={kids.slice(MAX_CHAIN_CHIPS).map((k) => k.rep.agent).join(', ')}>
+          +{kids.length - MAX_CHAIN_CHIPS}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/** Flatten a group for rendering: the root, then (when expanded) its descendants with a depth. */
+function flattenGroup(g: SessionGroup, expanded: Set<string>, depth = 0): Array<{ g: SessionGroup; depth: number }> {
+  const out = [{ g, depth }]
+  if (expanded.has(threadOf(g.rep))) for (const c of g.children) out.push(...flattenGroup(c, expanded, depth + 1))
+  return out
+}
+
+/** Total conversations a chain contains below its root — the "+N" the collapsed row advertises. */
+const countDescendants = (g: SessionGroup): number =>
+  g.children.reduce((n, c) => n + 1 + countDescendants(c), 0)
+
+// ── Chain rail ─────────────────────────────────────────────────────────────────
+/** Is this conversation working right now? (Same rule as `isLive` for a session row.) */
+const nodeLive = (n: ChainNode): boolean => Boolean(n.alive) || n.status === 'running'
+
+/** The chain node's state word + tone, priority-ordered by what needs a human: waiting first, then a
+ *  duplicate re-dispatch, then live, then the agent's own verdict, then how the process ended. */
+const nodeState = (n: ChainNode): { label: string; tone: string; dot: string } => {
+  if (n.pending.length) return { label: 'waiting on you', tone: 'text-amber-600', dot: 'bg-amber-400 animate-pulse' }
+  if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', dot: 'bg-amber-500' }
+  if (nodeLive(n)) return { label: 'live', tone: 'text-emerald-600', dot: 'bg-emerald-500' }
+  if (n.status === 'crashed') return { label: 'crashed', tone: 'text-red-600', dot: 'bg-red-500' }
+  if (n.outcome === 'success') return { label: 'pass', tone: 'text-emerald-600', dot: 'bg-emerald-500/60' }
+  if (n.outcome === 'failure' || n.outcome === 'error') return { label: 'failed', tone: 'text-red-600', dot: 'bg-red-500' }
+  if (n.outcome === 'partial') return { label: 'partial', tone: 'text-amber-600', dot: 'bg-amber-500' }
+  if (n.status === 'stopped') return { label: 'stopped', tone: 'text-amber-600', dot: 'bg-amber-500' }
+  return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground', dot: 'bg-muted-foreground/40' }
+}
+
+/** One pending item — a delegate's unanswered `ask`, or an approval gate — resolved WITHOUT leaving the
+ *  pane you're watching. This is the rail's reason to exist: today a question raised three hand-offs deep
+ *  surfaces only in the Inbox, detached from the work that raised it. */
+function ChainAction({ item, onDone }: { item: ChainPending; onDone: () => void }) {
+  const [answer, setAnswer] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const run = async (fn: () => Promise<{ ok?: boolean; error?: string }>) => {
+    setBusy(true); setErr('')
+    const r = await fn()
+    setBusy(false)
+    if (r.error) setErr(r.error)
+    else { setAnswer(''); onDone() }
+  }
+  return (
+    <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-amber-600">
+        <Bot className="h-3 w-3 shrink-0" />
+        <span className="truncate">{item.agent}</span>
+        <span className="opacity-60">{item.kind === 'approval' ? 'needs approval' : 'asked you'}</span>
+      </div>
+      <p className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground">{item.text}</p>
+      {item.capability && <p className="mt-0.5 font-mono text-[10px] text-muted-foreground">{item.capability}</p>}
+      {item.kind === 'approval' ? (
+        <div className="mt-2 flex gap-1.5">
+          <Button size="xs" disabled={busy} onClick={() => run(() => api.resolve(item.id, true))}>Approve</Button>
+          <Button size="xs" variant="outline" disabled={busy} onClick={() => run(() => api.resolve(item.id, false))}>Reject</Button>
+        </div>
+      ) : (
+        <form className="mt-2 flex gap-1.5" onSubmit={(e) => { e.preventDefault(); if (answer.trim()) run(() => api.answerQuestion(item.id, answer.trim())) }}>
+          <Input value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Answer…" className="h-7 text-xs" disabled={busy} />
+          <Button size="xs" type="submit" disabled={busy || !answer.trim()}><Send className="h-3 w-3" /></Button>
+        </form>
+      )}
+      {err && <p className="mt-1 text-[11px] text-red-600">{err}</p>}
+    </div>
+  )
+}
+
+/**
+ * The hand-off tree beside the terminal — "where is this piece of work, and who is blocked?".
+ *
+ * A delegated run is its own session row, so a three-agent delivery reads as a handful of unrelated
+ * entries scattered through the list (plus one more per poke-back). The rail puts the whole chain in the
+ * pane the human is already watching: each CONVERSATION once (its resumes folded in), the agent's own
+ * verdict, a duplicate re-dispatch called out, and anything waiting on a person answerable in place.
+ *
+ * Renders nothing when the open session has no hand-offs — a solo run keeps the full-width terminal it
+ * has today. Collapsed state persists per browser.
+ */
+function ChainRail({ session, onOpen }: { session?: Session; onOpen: (tmux: string, title: string) => void }) {
+  const [chain, setChain] = useState<SessionChain | null>(null)
+  const [open, setOpen] = useState(() => localStorage.getItem('aos_chain_rail') !== '0')
+  const id = session?.id
+  const load = useCallback(() => {
+    if (!id) { setChain(null); return }
+    api.sessionChain(id).then((r) => setChain(r && 'nodes' in r ? r : null)).catch(() => {})
+  }, [id])
+  useEffect(() => {
+    load()
+    // The chain is derived per request (~15 ms), so a slow poll is enough to keep a live hand-off and a
+    // freshly-raised question current without adding load to the 1.5 s session poll.
+    const t = setInterval(load, 6000)
+    return () => clearInterval(t)
+  }, [load])
+
+  const nodes = chain?.nodes ?? []
+  // A single node isn't a chain — nothing was handed off, so there's nothing to show.
+  if (nodes.length < 2) return null
+  const pending = nodes.flatMap((n) => n.pending)
+  const toggle = () => setOpen((v) => { localStorage.setItem('aos_chain_rail', v ? '0' : '1'); return !v })
+
+  if (!open) {
+    return (
+      <button onClick={toggle} title="show the hand-off chain"
+        className="flex w-8 shrink-0 flex-col items-center gap-2 border-l bg-muted/30 py-3 text-muted-foreground hover:bg-muted hover:text-foreground">
+        <GitBranch className="h-4 w-4 shrink-0" />
+        <span className="text-[10px] tabular-nums">{nodes.length}</span>
+        {pending.length > 0 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 motion-safe:animate-pulse" />}
+      </button>
+    )
+  }
+
+  return (
+    <aside className="flex w-[19rem] shrink-0 flex-col overflow-hidden border-l bg-muted/20">
+      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+        <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-[13px] font-semibold">Chain</span>
+        <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground" title="agents in this chain · total cost">
+          {chain!.agents} agent{chain!.agents === 1 ? '' : 's'}
+          {chain!.totalCostUsd ? ` · $${chain!.totalCostUsd.toFixed(2)}` : ''}
+        </span>
+        <button onClick={toggle} title="hide the chain" className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground">
+          <ChevronRight className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2.5">
+        {pending.map((p) => <ChainAction key={p.id} item={p} onDone={load} />)}
+        {nodes.map((n) => {
+          const st = nodeState(n)
+          const here = n.threadId === (session?.threadId ?? session?.id)
+          return (
+            <div key={n.threadId} className={n.depth ? 'border-l pl-1.5' : ''} style={{ marginLeft: `${Math.min(n.depth, 3) * 8}px` }}>
+            <button onClick={() => onOpen(n.tmux, `${n.agent} · ${n.sessionId}`)}
+              title={n.taskTitle ?? n.title}
+              className={`block w-full rounded-md border px-2.5 py-2 text-left transition-colors ${here ? 'border-primary/40 bg-background' : 'border-transparent hover:border-border hover:bg-background'}`}>
+              <div className="flex items-center gap-1.5">
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.dot}`} />
+                <span className="truncate text-[13px] font-medium">{n.agent}</span>
+                <span className={`ml-auto shrink-0 text-[10px] ${st.tone}`}>{st.label}</span>
+              </div>
+              <p className="mt-0.5 line-clamp-3 text-[11.5px] leading-snug text-muted-foreground">{n.summary || n.taskTitle || n.title}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground/80">
+                <span title={new Date(n.createdAt).toLocaleString()}>{timeAgo(n.createdAt)} ago</span>
+                {n.runs > 1 && <span title={`${n.runs} runs — this conversation was resumed (poke-backs / continuations)`}>{n.runs} runs</span>}
+                {n.costUsd != null && <span>${n.costUsd.toFixed(2)}</span>}
+                {n.taskId && <span className="truncate" title={n.taskTitle}>{n.taskId}</span>}
+              </div>
+              {n.duplicateOf && (
+                <p className="mt-1 flex items-start gap-1 text-[10px] text-amber-600">
+                  <AlertTriangle className="mt-px h-3 w-3 shrink-0" />
+                  <span>re-dispatch of work already handed to {n.agent}</span>
+                </p>
+              )}
+            </button>
+            </div>
+          )
+        })}
+      </div>
+    </aside>
+  )
+}
+
 function SessionsPage({
   me, members, sessions, waiting, selected, hiddenTabs, metrics, onOpen, onCloseTab, onActivity, onSpawn, onStop, onDelete, onRate, onRename, onTransfer, onBulkStop, onBulkDelete, urlQuery, onFiltersChange,
 }: {
@@ -3324,6 +3586,21 @@ function SessionsPage({
     })
   }, [filtered, sortKey, sortDir])
 
+  // ── Collapse: runs → conversations → chains ──────────────────────────────────
+  // The list used to show one row per RUN, which double-counts two ways: a resumed conversation (every
+  // poke-back adds a row to the same claude transcript) and a hand-off (each delegate is its own row,
+  // stranded among unrelated work). So we fold rows into conversations (`threadId`), then nest each
+  // conversation under the caller that delegated it (`parentThreadId`). Grouping runs over the FILTERED
+  // set, so filters keep their meaning: a delegate whose caller was filtered out is promoted to a root
+  // rather than disappearing with it.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const toggleExpand = (threadId: string) =>
+    setExpanded((p) => { const n = new Set(p); n.has(threadId) ? n.delete(threadId) : n.add(threadId); return n })
+  const groups = useMemo(() => buildChainGroups(shown), [shown])
+  // Every run behind a group (its own conversation + all descendants) — what the row's checkbox selects
+  // and what "N runs" counts, since the row now stands for more than one session.
+  const groupRuns = (g: SessionGroup): Session[] => [...g.runs, ...g.children.flatMap(groupRuns)]
+
   // Multi-select for bulk stop/delete. Kept in sync with the live list: ids that vanish (deleted
   // elsewhere, or by our own bulk delete) are pruned so the toolbar count never lies. Select-all and
   // the header count operate over the FILTERED view, so bulk actions never touch hidden rows.
@@ -3335,8 +3612,10 @@ function SessionsPage({
       return next.size === prev.size ? prev : next
     })
   }, [sessions])
-  const toggle = (id: string) =>
-    setSel((p) => { const n = new Set(p); n.has(id) ? n.delete(id) : n.add(id); return n })
+  /** A row now stands for a whole conversation (and, at the root, its chain) — so its checkbox selects
+   *  every run behind it, and a bulk stop/delete acts on all of them rather than the newest alone. */
+  const toggleRuns = (runs: Session[], checked: boolean) =>
+    setSel((p) => { const n = new Set(p); runs.forEach((r) => (checked ? n.delete(r.id) : n.add(r.id))); return n })
   const allSelected = filtered.length > 0 && filtered.every((s) => sel.has(s.id))
   const toggleAll = () => setSel((prev) => {
     const n = new Set(prev)
@@ -3460,8 +3739,13 @@ function SessionsPage({
             )}
           </div>
         </div>
-        <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity}
-          ops={{ members, me, onOpen, onStop, onDelete, onTransfer, onActivity: setInspect }} />
+        {/* Terminal + the hand-off chain, side by side: the pane keeps its height, the rail takes width
+            only when this session actually delegated (it renders nothing for a solo run). */}
+        <div className="flex min-h-0 flex-1">
+          <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity}
+            ops={{ members, me, onOpen, onStop, onDelete, onTransfer, onActivity: setInspect }} />
+          <ChainRail session={sessions.find((s) => s.tmux === selected.tmux)} onOpen={onOpen} />
+        </div>
         {/* Activity side panel — mounted here too so the Operations→Activity shortcut works from the
             terminal-tabs view, not just the list view (this branch early-returns before the list's copy). */}
         {inspect && <SessionActivity session={inspect} onClose={() => setInspect(null)} />}
@@ -3503,11 +3787,12 @@ function SessionsPage({
         <div className="flex items-center gap-3">
           <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground" title={allSelected ? 'clear selection' : 'select all'}>
             <input type="checkbox" checked={allSelected} onChange={toggleAll} className="h-3.5 w-3.5 cursor-pointer accent-primary" />
+            {/* Counts the ENTRIES on screen, with the underlying runs alongside whenever grouping folded
+                any (resumes + hand-offs) — so the number never contradicts what's rendered. */}
             {sel.size > 0
               ? `${sel.size} selected`
-              : filtersActive
-                ? `${filtered.length} of ${sessions.length} session${sessions.length === 1 ? '' : 's'}`
-                : `${sessions.length} session${sessions.length === 1 ? '' : 's'}`}
+              : `${filtersActive ? `${filtered.length} of ${sessions.length}` : sessions.length} session${sessions.length === 1 ? '' : 's'}`
+                + (groups.length !== filtered.length ? ` · ${groups.length} conversations` : '')}
           </label>
           {sel.size > 0 && (
             <div className="flex items-center gap-1">
@@ -3603,14 +3888,18 @@ function SessionsPage({
         </div>
       ) : view === 'grid' ? (
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-          {shown.map((s) => (
-            <div key={s.id} className={`group relative flex flex-col rounded-lg border p-3 hover:bg-muted ${sel.has(s.id) ? 'ring-1 ring-primary' : ''}`}>
+          {groups.map((g) => {
+          const s = g.rep
+          const runs = groupRuns(g)
+          const checked = runs.every((r) => sel.has(r.id))
+          return (
+            <div key={s.id} className={`group relative flex flex-col rounded-lg border p-3 hover:bg-muted ${checked ? 'ring-1 ring-primary' : ''}`}>
               <input
                 type="checkbox"
-                checked={sel.has(s.id)}
-                onChange={() => toggle(s.id)}
-                title="select"
-                className={`absolute right-2 top-2 h-3.5 w-3.5 cursor-pointer accent-primary transition-opacity ${sel.has(s.id) ? '' : 'opacity-0 group-hover:opacity-100'}`}
+                checked={checked}
+                onChange={() => toggleRuns(runs, checked)}
+                title={runs.length > 1 ? `select all ${runs.length} runs in this chain` : 'select'}
+                className={`absolute right-2 top-2 h-3.5 w-3.5 cursor-pointer accent-primary transition-opacity ${checked ? '' : 'opacity-0 group-hover:opacity-100'}`}
               />
               <a href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} className="block pr-6 text-left text-foreground no-underline">
                 <div className="flex items-center gap-2">
@@ -3638,6 +3927,7 @@ function SessionsPage({
                   <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
                 </div>
               </a>
+              <ChainStrip group={g} runs={g.runs.length} onOpen={onOpen} />
               {/* Human verdict — only for finished runs; stays visible once rated, faint-until-hover otherwise. */}
               {!isLive(s) && (
                 <div className={`mt-1.5 transition-opacity ${s.rating ? '' : 'opacity-40 group-hover:opacity-100'}`}>
@@ -3660,7 +3950,7 @@ function SessionsPage({
                 <RowActionsMenu session={s} members={members} me={me} onOpen={onOpen} onStop={onStop} onDelete={onDelete} onTransfer={onTransfer} onActivity={setInspect} />
               </div>
             </div>
-          ))}
+          )})}
         </div>
       ) : (
         <div className="divide-y overflow-hidden rounded-lg border">
@@ -3686,18 +3976,41 @@ function SessionsPage({
             </div>
             <span className="w-20 shrink-0" aria-hidden />
           </div>
-          {shown.map((s) => (
-            <div key={s.id} className={`group relative flex items-center gap-3 px-3 py-2 hover:bg-muted ${sel.has(s.id) ? 'bg-muted' : ''}`}>
+          {groups.flatMap((g) => flattenGroup(g, expanded)).map(({ g, depth }) => {
+          const s = g.rep
+          const runs = groupRuns(g)
+          const checked = runs.every((r) => sel.has(r.id))
+          const kids = countDescendants(g)
+          const isOpen = expanded.has(threadOf(s))
+          return (
+            <div key={s.id} className={`group relative flex items-center gap-3 px-3 py-2 hover:bg-muted ${checked ? 'bg-muted' : ''} ${depth ? 'bg-muted/20' : ''}`}>
               <input
                 type="checkbox"
-                checked={sel.has(s.id)}
-                onChange={() => toggle(s.id)}
-                title="select"
+                checked={checked}
+                onChange={() => toggleRuns(runs, checked)}
+                title={runs.length > 1 ? `select all ${runs.length} runs in this chain` : 'select'}
                 className="h-3.5 w-3.5 shrink-0 cursor-pointer accent-primary"
               />
               <button onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                {depth > 0 && <span className="shrink-0" style={{ width: `${Math.min(depth, 3) * 14}px` }} aria-hidden />}
+                {/* Chain expander — only on an entry that actually delegated. Stops propagation so
+                    expanding never opens the terminal by accident. */}
+                {kids > 0 ? (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => { e.stopPropagation(); toggleExpand(threadOf(s)) }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleExpand(threadOf(s)) } }}
+                    title={isOpen ? 'collapse the chain' : `show ${kids} hand-off${kids === 1 ? '' : 's'}`}
+                    className="-ml-1 shrink-0 rounded p-0.5 text-muted-foreground hover:bg-background hover:text-foreground">
+                    <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                  </span>
+                ) : (
+                  <span className="w-[1.125rem] shrink-0" aria-hidden />
+                )}
                 <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot(s)}`} />
                 <span className="min-w-[7rem] flex-1 truncate text-sm font-medium">{s.title}</span>
+                {!isOpen && <ChainStrip group={g} runs={g.runs.length} onOpen={onOpen} className="hidden shrink-0 lg:flex" />}
                 {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5 shrink-0" />}
                 <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground xl:block">{s.agent}</span>
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground 2xl:block" title={s.id}>{s.id}</span>
@@ -3726,7 +4039,7 @@ function SessionsPage({
                 <RowActionsMenu session={s} members={members} me={me} onOpen={onOpen} onStop={onStop} onDelete={onDelete} onTransfer={onTransfer} onActivity={setInspect} className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100" />
               </div>
             </div>
-          ))}
+          )})}
         </div>
       )}
       {inspect && <SessionActivity session={inspect} onClose={() => setInspect(null)} />}

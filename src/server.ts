@@ -2752,6 +2752,16 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // Session activity: "which agent-os primitives did this run use?" — the session's audit stream,
   // classified into a chronological timeline + a grouped count summary. Same visibility as the terminal
   // (canViewSession), so a member sees the activity of the runs they can attach to, not just admins.
+  // The hand-off chain this session belongs to — the tree behind the console's chain rail: who delegated
+  // to whom, what came back, and what is still waiting on a person. Derived, not stored (see
+  // TerminalManager.sessionChain); viewer-scoped by the same rule as the sessions list.
+  const chainMatch = p.match(/^\/api\/sessions\/([\w-]+)\/chain$/);
+  if (method === 'GET' && chainMatch) {
+    const chain = tm.sessionChain(chainMatch[1], me);
+    if (!chain) return sendJson(res, 404, { error: 'unknown session' });
+    return sendJson(res, 200, chain);
+  }
+
   const activityMatch = p.match(/^\/api\/sessions\/([\w-]+)\/activity$/);
   if (method === 'GET' && activityMatch) {
     const id = activityMatch[1];

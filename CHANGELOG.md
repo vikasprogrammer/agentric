@@ -8,6 +8,37 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.311.0] — 2026-08-05
+### Added
+- **Agent-to-agent work reads as one thread: the chain rail + a collapsed sessions list.** A delegated
+  run was its own session row, so a three-agent delivery scattered across the list — and every
+  poke-back added one more row for a conversation that already existed. Shipping client-app PR #2773
+  on the globex tenant produced **nine rows across three agents in 70 minutes**, interleaved with
+  unrelated work, four of them the same engineer transcript resumed with machine-written titles
+  (`Poke ← release-orchestrator done: …`). Nobody could see that release-orchestrator had been
+  dispatched **twice** for the same promotion — the second run's own summary reads "PR #2778 was
+  already open from a prior run".
+  Two surfaces, one read model, no new storage — the console simply reads three identities the DB
+  already records: a **run** (`term_sessions.id`), a **conversation** (every run sharing a
+  `claude_session_id` — a poke RESUMES a transcript), and the **chain** (`tasks.caller_claude_id` →
+  the runs dispatched for that task).
+  - **Chain rail** (`GET /api/sessions/:id/chain` → `TerminalManager.sessionChain`): the hand-off tree
+    beside the terminal — each conversation once with its own verdict, cost and run count, a
+    re-dispatch of the same work to the same agent flagged, and **anything waiting on a human**
+    (a delegate's open `ask`, an approval gate) answerable **in place**, instead of being hunted down
+    in the Inbox detached from the work that raised it. Renders nothing for a solo run; collapsible to
+    a spine, persisted per browser. Viewer-scoped by the same rule as the sessions list.
+  - **Sessions list collapse**: rows fold into conversations, and delegates nest under the caller that
+    dispatched them, with an inline chain strip (`qa · release-orch ×2`) so a stalled or duplicated
+    hand-off is visible without opening anything. Grouping runs over the FILTERED set, so a delegate
+    whose caller is filtered out is promoted rather than hidden; a row's checkbox now selects every run
+    behind it.
+  Two folding rules the live data forced: a conversation's cost is the **max** of its runs, not the sum
+  (cost is per-transcript and cumulative, so summing multiplies one bill by the number of resumes), and
+  its verdict + summary come from the **same** reporting run (else a conversation whose last resume
+  ended quietly reads "no report" beside the report it filed). Covered by
+  `scripts/chain-model-test.cjs` (36 assertions, wired into `npm run test:governance`).
+
 ## [0.310.0] — 2026-08-05
 ### Added
 - **Terse output — a verbosity knob on the runtime-tuning chain, with the measurement that can
