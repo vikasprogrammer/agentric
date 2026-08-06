@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -3329,6 +3329,34 @@ function ChainAction({ item, onDone }: { item: ChainPending; onDone: () => void 
   )
 }
 
+/** Steer a delegate you are not attached to: type into its live pane from the caller's rail. The lever a
+ *  chain was missing — until now the only way to stop a running delegate was to open its terminal (or
+ *  file a task comment, which reached a NEW run rather than the working one). */
+function ChainSay({ node, onSent }: { node: ChainNode; onSent: () => void }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const send = async () => {
+    const body = text.trim()
+    if (!body) return
+    setBusy(true); setErr('')
+    const r = await api.injectToSession(node.sessionId, body)
+    setBusy(false)
+    if (r.error) setErr(r.error)
+    else { setText(''); onSent() }
+  }
+  return (
+    <form className="mt-1.5 flex gap-1" onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); void send() }}>
+      <Input value={text} onChange={(e) => setText(e.target.value)} disabled={busy}
+        placeholder={`Message ${node.agent}…`} className="h-6 text-[11px]" />
+      <Button size="xs" type="submit" disabled={busy || !text.trim()} title={`type this into ${node.agent}'s live session`}>
+        <Send className="h-3 w-3" />
+      </Button>
+      {err && <span className="text-[10px] text-red-600">{err}</span>}
+    </form>
+  )
+}
+
 /**
  * The hand-off tree beside the terminal — "where is this piece of work, and who is blocked?".
  *
@@ -3419,6 +3447,7 @@ function ChainRail({ chain, session, open, onToggle, onReload, onOpen }: {
                 </p>
               )}
             </button>
+            {st.live && !here && <div className="px-2.5 pb-2"><ChainSay node={n} onSent={load} /></div>}
             </div>
           )
         })}
@@ -8310,9 +8339,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const openTask = (id: string) => nav('tasks', id)
   const openTaskTab = (id: string, tab: 'discussion' | 'description' | 'session') => nav('tasks', tab === 'discussion' ? id : `${id}/${tab}`)
   const closeTask = () => { setEditing(false); nav('tasks') }
-  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; runs: TaskRun[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
+  // Which run from the task's history the room's Session tab is showing ('' = the live/last one).
+  const [runSel, setRunSel] = useState('')
   // view + filters
   const [view, setView] = useState<'board' | 'list' | 'focus'>(() => { const v = localStorage.getItem('aos_tasks_view'); return v === 'list' || v === 'focus' ? v : 'board' })
   useEffect(() => { localStorage.setItem('aos_tasks_view', view) }, [view])
@@ -8431,9 +8462,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) })
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) })
   }, [selId, tasks, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false) }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setRunSel('') }, [selId]) // fresh drawer per selection
 
   // Client-side filtering over the (≤500) board — cheap, and keeps the lens shareable via UI state.
   const labelsPresent = [...new Set((tasks ?? []).flatMap((t) => t.labels))].sort()
@@ -8513,10 +8544,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
     setEditing(false); setBusy(false)
     await load()
-    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] })
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] })
   }
   // Re-pull the open task's detail (events + attachments + dependency edges) after a mutation that doesn't move columns.
-  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
+  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -8593,8 +8624,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
   // The task detail — shared by the inline Focus panel and the full-page room's sidebar. `withDiscussion`
   // (default true) inlines the Discussion; the room renders the Discussion as its own main column instead,
-  // so it passes `withDiscussion:false` here. Guards on `detail` being loaded.
-  const detailBody = (opts?: { withDiscussion?: boolean }) => {
+  // so it passes `withDiscussion:false` here. `onRun`/`selectedRun` let the room route a click in the run
+  // history to its own Session tab instead of the terminal drawer. Guards on `detail` being loaded.
+  const detailBody = (opts?: { withDiscussion?: boolean; selectedRun?: string; onRun?: (id: string) => void }) => {
     if (!detail) return null
     const live = liveOf(detail.task)
     // In the narrow room sidebar (withDiscussion:false) stack fields single-column — a viewport-based
@@ -8701,10 +8733,14 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
           </Button>
         )}
-        {opts?.withDiscussion !== false && detail.task.lastSessionId && !live && (
-          <Button size="sm" variant="outline" className="w-full" onClick={() => onOpen('aos-' + detail.task.lastSessionId, 'Task · ' + detail.task.title)}>
-            <TerminalSquare className="mr-1 h-3.5 w-3.5" />View session
-          </Button>
+        {detail.runs.length > 0 && (
+          <TaskRuns
+            runs={detail.runs}
+            selected={opts?.selectedRun}
+            // In the room, picking a run swaps the Session tab to THAT run's pane; in the inline Focus
+            // panel (no session tab of its own) it opens the terminal the way "View session" always did.
+            onOpen={opts?.onRun ?? ((id) => onOpen('aos-' + id, 'Task · ' + detail.task.title))}
+          />
         )}
         {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
 
@@ -8757,7 +8793,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     const t = detail.task
     const parts = discussions[t.id]?.participants ?? []
     const live = liveOf(t)
-    const sessTmux = live?.tmux || (t.lastSessionId ? 'aos-' + t.lastSessionId : '')
+    // The Session tab shows the run you picked from the history, defaulting to the live/last one — so a
+    // task that crashed twice can be read attempt by attempt without leaving the room.
+    const picked = runSel ? detail.runs.find((r) => r.id === runSel) : undefined
+    const sessTmux = picked ? 'aos-' + picked.id : live?.tmux || (t.lastSessionId ? 'aos-' + t.lastSessionId : '')
+    const sessLive = picked ? (picked.alive ? sessionById.get(picked.id) : undefined) : live ?? undefined
     const activeTab: 'discussion' | 'description' | 'session' = roomTab === 'session' && !sessTmux ? 'discussion' : roomTab
     const roomTab_btn = (id: 'discussion' | 'description' | 'session', label: ReactNode) => (
       <a href={navHref('tasks', id === 'discussion' ? t.id : `${t.id}/${id}`)} onClick={onNavClick(() => openTaskTab(t.id, id))} className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium no-underline transition-colors ${activeTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</a>
@@ -8806,11 +8846,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                     : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description. <button className="text-primary underline" onClick={() => setEditing(true)}>Add one</button></div>}
                 </div>
               )}
-              {activeTab === 'session' && sessTmux && <div className="flex h-full min-h-0 flex-col"><TerminalFrame session={live ?? undefined} tmux={sessTmux} standalone /></div>}
+              {activeTab === 'session' && sessTmux && <div className="flex h-full min-h-0 flex-col"><TerminalFrame session={sessLive} tmux={sessTmux} standalone /></div>}
             </div>
           </div>
           <div className="overflow-y-auto bg-muted/20 p-4">
-            {detailBody({ withDiscussion: false })}
+            {detailBody({ withDiscussion: false, selectedRun: runSel || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
           </div>
         </div>
       </div>
@@ -9454,6 +9494,74 @@ function fmtBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   if (n < 1024 ** 3) return `${(n / (1024 * 1024)).toFixed(1)} MB`
   return `${(n / 1024 ** 3).toFixed(1)} GB`
+}
+
+/** The tone + label a run's end state earns. A live pane wins over whatever the row last recorded; then
+ *  the run's OWN verdict (`outcome`, from its `report`) if it filed one; then how the process ended. */
+function runVerdict(r: TaskRun): { label: string; cls: string } {
+  if (r.alive) return { label: 'live', cls: 'text-sky-600' }
+  const o = (r.outcome || '').toLowerCase()
+  if (o === 'success') return { label: 'success', cls: 'text-emerald-600' }
+  if (o === 'failure') return { label: 'failure', cls: 'text-destructive' }
+  if (o === 'partial') return { label: 'partial', cls: 'text-amber-600' }
+  if (r.status === 'crashed') return { label: 'crashed', cls: 'text-destructive' }
+  if (r.status === 'stopped') return { label: 'stopped', cls: 'text-amber-600' }
+  if (r.status === 'running') return { label: 'ended', cls: 'text-muted-foreground' }
+  return { label: o || r.status, cls: 'text-muted-foreground' }
+}
+
+/**
+ * Run history of a task — every session that worked it, oldest-first, not just the newest.
+ *
+ * A task is the unit of work and a session is one ATTEMPT at it, so "crashed, re-dispatched, then
+ * succeeded" is the normal shape. The console only ever linked `lastSessionId`, which made that story
+ * read as a single clean run; each attempt is now openable, with its own verdict, duration and cost.
+ * Long histories collapse to the last three so a much-retried task doesn't push the rest of the drawer
+ * off screen.
+ */
+function TaskRuns({ runs, selected, onOpen }: { runs: TaskRun[]; selected?: string; onOpen: (id: string) => void }) {
+  const [all, setAll] = useState(false)
+  const hidden = all ? 0 : Math.max(0, runs.length - 3)
+  const shown = hidden ? runs.slice(hidden) : runs
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Runs · {runs.length}</div>
+        {hidden > 0 && <button onClick={() => setAll(true)} className="text-[11px] text-muted-foreground hover:text-foreground">show {hidden} earlier</button>}
+      </div>
+      <div className="space-y-1">
+        {shown.map((r, i) => {
+          const n = hidden + i + 1
+          const v = runVerdict(r)
+          const ms = (r.endedAt ?? Date.now()) - r.createdAt
+          return (
+            <button
+              key={r.id}
+              onClick={() => onOpen(r.id)}
+              title={r.summary || `${r.agent} · ${r.id}`}
+              className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-muted/50 ${selected === r.id ? 'border-primary bg-primary/5' : r.current ? 'bg-muted/20' : 'border-dashed'}`}
+            >
+              <span className="w-5 shrink-0 font-mono text-[10px] text-muted-foreground/70">#{n}</span>
+              {r.alive ? <LiveBars /> : <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="truncate text-xs font-medium">{r.agent}</span>
+                  <span className={`font-mono text-[10px] uppercase tracking-wide ${v.cls}`}>{v.label}</span>
+                  {r.link === 'linked' && <span className="font-mono text-[10px] text-muted-foreground/70" title="a session that touched this task from elsewhere (claim / discussion), not one dispatched for it">linked</span>}
+                  {r.archived && <span className="font-mono text-[10px] text-muted-foreground/70" title="archived out of the Sessions list — still part of this task's history">archived</span>}
+                </span>
+                {r.summary && <span className="block truncate text-[10px] text-muted-foreground">{r.summary}</span>}
+              </span>
+              <span className="shrink-0 text-right font-mono text-[10px] leading-tight text-muted-foreground">
+                <span className="block tabular-nums">{fmtElapsed(ms)}</span>
+                <span className="block">{r.costUsd != null ? fmtCost(r.costUsd) : timeAgo(r.createdAt)}</span>
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 /** Attachments section of the task drawer: upload (button/drop), list with download, delete. */

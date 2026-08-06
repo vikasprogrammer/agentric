@@ -291,6 +291,8 @@ export class TenantRegistry {
       // Async poke-back: a delegate that closed a `poke_on_done` hand-off resumes the CALLER agent's
       // transcript with the outcome, so a fire-and-forget delegation wakes the caller (no polling).
       maybePokeCaller(autos, os, notice);
+      // A HOLD/cancel has to reach the agent DOING the work, not just the task row.
+      maybeHoldDelegate(tm, os, notice);
     });
     // Goal lifecycle → Inbox. Same sink shape as Tasks, one rung up the ladder: a goal whose work all
     // finished (the tick's completion sweep) or that someone closed reaches the human accountable for it.
@@ -560,6 +562,31 @@ async function notifyGoalEvent(os: AgentOS, tm: Pick<TerminalManager, 'postGoalC
 }
 
 /**
+ * Park the RUN, not just the row. A task moved to `blocked`/`cancelled` by anyone other than the agent
+ * executing it (a manager calling HOLD, a human hitting stop) has to reach the live dispatched session —
+ * otherwise the row reads "blocked" while the agent keeps building. Delivered into the pane by the same
+ * send-keys channel a thread follow-up uses; a dead/finished run is simply skipped.
+ */
+function maybeHoldDelegate(tm: TerminalManager, os: AgentOS, notice: TaskNotice): void {
+  if (notice.kind !== 'status') return;
+  const t = notice.task;
+  if (t.status !== 'blocked' && t.status !== 'cancelled') return;
+  if (!t.lastSessionId) return;
+  if (notice.by === t.assignee) return;               // the delegate parked itself — it already knows
+  if (!tm.isAlive(t.lastSessionId)) return;           // nothing running to interrupt
+  const note = os.tasks.latestNote(t.id) || '(no reason given)';
+  const who = notice.by.startsWith('agent:') ? notice.by.slice('agent:'.length) : (os.team.getMember(notice.by)?.name ?? 'a teammate');
+  const verb = t.status === 'cancelled' ? 'CANCELLED' : 'put on HOLD';
+  const ok = tm.deliverToResident(t.lastSessionId,
+    `⛔ ${who} ${verb} the task you are working (${t.id}). Reason: ${note} — stop what you are doing, do not deploy or publish anything, and confirm you have stood down.`);
+  os.audit.append({
+    ts: Date.now(), runId: t.lastSessionId, tenant: os.tenant,
+    principal: notice.by.startsWith('agent:') ? notice.by : `member:${notice.by}`,
+    type: 'task.hold.delivered', data: { task: t.id, status: t.status, delivered: ok },
+  });
+}
+
+/**
  * Async poke-back. When a delegate closes a `poke_on_done` hand-off — the task reaches a terminal-for-now
  * state (done, or blocked and handed back) — resume the CALLER agent's transcript with the outcome, so a
  * fire-and-forget delegation wakes the caller instead of making it poll. No-op unless the task carries a
@@ -572,6 +599,10 @@ function maybePokeCaller(autos: Automations, os: AgentOS, notice: TaskNotice): v
   const t = notice.task;
   if (!t.pokeOnDone || !t.callerAgent || !t.callerClaudeId) return;
   if (t.status !== 'done' && t.status !== 'blocked') return;
+  // The delegate is USUALLY the actor — but not always: a caller that parks or closes its own hand-off
+  // (a manager blocking work it just delegated) would otherwise wake ITSELF with news it authored. 14 of
+  // these self-pokes across the fleet in 30 days, each one a spurious session. The actor decides.
+  if (notice.by === t.callerAgent) return;
   const delegate = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : (t.assignee ?? 'the delegate');
   const note = os.tasks.latestNote(t.id) || '(no note left)';
   const goal = t.criteria ? ` — goal "${t.criteria}"` : '';

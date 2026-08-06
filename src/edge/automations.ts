@@ -601,6 +601,11 @@ export class Automations {
     const t = this.os.tasks.get(id);
     if (!t) return { ok: false, reason: 'task not found' };
     if (t.status === 'done' || t.status === 'cancelled') return { ok: false, reason: `task is ${t.status}` };
+    // `blocked` means someone parked this deliberately. The tick never selects it (dispatchable() is
+    // todo-only), but every DIRECT path — task_dispatch, task_wait's polling kick, an app dispatch —
+    // used to sail past, re-spawning work a human or a caller had just stopped. A human forcing it from
+    // the console (guard:false) is still allowed: that IS the un-park.
+    if (guard && t.status === 'blocked') return { ok: false, reason: 'task is blocked — unblock it before dispatching' };
     const agentId = (t.assignee || '').startsWith('agent:') ? t.assignee!.slice('agent:'.length) : '';
     if (!agentId) return { ok: false, reason: 'task has no agent assignee' };
     if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown agent: ${agentId}` };
@@ -1026,6 +1031,10 @@ export class Automations {
     if (boundId && boundAgent === agentId) {
       if (this.tm.deliverToResident(boundId, liveMsg)) { emit('delivered', boundId); return { status: 'delivered', sessionId: boundId }; }
       if (this.tm.reviveResident(boundId, liveMsg, runAs)) { emit('revived', boundId); return { status: 'revived', sessionId: boundId }; }
+      // Delivery failed but the run is STILL WORKING: spawning a second agent onto the same task is how a
+      // "stand down" ends up executed by a fresh run while the original keeps building (northwind
+      // 2026-08-06). Report the failure instead of duplicating the worker.
+      if (this.tm.isAlive(boundId)) { emit('undeliverable', boundId); return { status: 'none', sessionId: boundId }; }
     }
     const seed = buildTaskPrompt({ id: t.id, title: t.title, body: t.body, criteria: t.criteria }) +
       `\n\nA teammate pulled you into the discussion:\n${authorLabel}: ${text}\n\nReply in the discussion with task_say({ id: "${t.id}", message: "…" }).`;
