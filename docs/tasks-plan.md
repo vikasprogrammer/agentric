@@ -472,9 +472,34 @@ Done; cancelled folds under Done) of priority-sorted cards (title · assignee ·
 drawer** with the markdown body, the **activity timeline** (`task_events`), status/assignee/priority controls,
 a **Run mode** selector (headless / interactive — shown when the assignee is an agent), a **Dispatch now**
 button (only for `todo` / `blocked`, so it doesn't linger after auto-dispatch flips a task to `doing`; reads
-"Re-dispatch" on a `blocked` task), and a **View session** shortcut (opens the dispatched run's terminal via
-`last_session_id`). The create form exposes title / details / assignee / priority / auto-dispatch / run mode.
+"Re-dispatch" on a `blocked` task), and the **run history** (see below). The create form exposes title /
+details / assignee / priority / auto-dispatch / run mode.
 Reuse the imported `Card`/`Input`/`Textarea`/`Button`/`Badge`/`Field`/`Select` primitives.
+
+### Run history — a task has MANY sessions
+
+The task↔session relation is one-to-**many** and always was: a task is the durable unit of work, a session
+is one **attempt** at it. A crash re-dispatches, an agent `task_claim`s from its own run, a `@mention`
+spawns, a human takes over. Only the newest attempt was ever reachable — `tasks.last_session_id`, the
+pointer the pile-up guard and `task-reconcile` keep — so a task that failed twice before succeeding read as
+one clean run, and its cost read as the last attempt's rather than the sum. (Measured on the live northwind
+tenant: 7 tasks with more than one run, 5 of them with a bad earlier attempt, **$60.33** of attempt cost the
+console never linked.)
+
+`TerminalManager.taskRuns(taskId)` returns the whole list, oldest-first, on `GET /api/tasks/:id` as `runs:
+TaskRun[]`. **Nothing new is stored** — the runs are recovered from the two traces they already leave:
+
+- **`dispatch`** — provenance `spawned_by = 'task:<id>'`: the session was spawned FOR this task.
+- **`linked`** — a session that touched the task from elsewhere and logged a `task_events` row against it
+  (an agent's `task_claim` from its own run, a Discussion-continued thread).
+
+Each run carries its own verdict (`outcome`/`summary` from its `report`), wall duration, cost, turns,
+`current` (is this the `lastSessionId` the guard tracks), `alive` (one tmux poll for the whole list), and
+`archived`. **Archived rows stay in the history** — the soft-archive declutters the Sessions list, it does
+not rewrite what happened to a task. The drawer renders them as a **Runs · N** list (collapsed to the last
+three); in the full-page room, picking a run swaps the **Session** tab to that run's pane, so a much-retried
+task can be read attempt by attempt. Reads are tenant-wide like the rest of the detail payload; *attaching*
+to any run is still gated by the terminal's own authz. Pinned by `scripts/task-runs-test.cjs`.
 
 > Web-only changes: `cd web && npm run build`, reload — no server restart. But Tasks needs new `/api/*`
 > routes, so a full `npm run build` + server bounce is required regardless (locally
@@ -560,8 +585,12 @@ session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME
   in v1 (mirrors the KB policy-brake future).
 - **Dependencies & scheduling.** `blocked_by` edges (a task can't dispatch until its blockers are `done`),
   `due_at`-driven prioritisation, recurring tasks (a cron Automation that files a task).
-- **Richer board.** Projects/epics, swimlanes, saved filters, per-member "my tasks" lens, a burndown, and
-  a Sessions↔Task backlink (the `last_session_id` + `task:<id>` provenance already support it).
+- **Richer board.** Projects/epics, swimlanes, saved filters, per-member "my tasks" lens, a burndown.
+  *(The Task→Sessions direction shipped — see "Run history" in §7. The reverse leg, a Task backlink on a
+  session row in the Sessions list, is still open; `sourceKind`/`task:<id>` already support it.)*
+- **Concurrent runs on one task.** The run history is retrospective — one live session per task is still
+  enforced by the pile-up guard. Fanning a task out across several simultaneous sessions (sharded work)
+  needs `last_session_id` to become a set, and an answer to which run's `task_update(done)` closes it.
 - **Inbox integration.** A `blocked` task surfaces an Inbox card (like an approval) so a human is pinged to
   unblock, reusing the Slack/Discord approver-notify path.
 </content>
