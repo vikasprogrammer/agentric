@@ -8,6 +8,33 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.313.1] — 2026-08-06
+### Fixed
+- **Starting a chat no longer blocks — on the server or on screen.** Sessions and tasks got fast; chat
+  didn't. Three causes, measured on the live northwind tenant (time from `session.created` to the first
+  assistant block: 3.7–16.3s, median ~6s):
+  - **~1.5s of the wait happened before the HTTP response, with the event loop stopped.** A launch mints
+    a Composio Tool Router session per identity (personal + company, plus any shared), and each mint was a
+    **blocking `spawnSync curl`** run one after another, inside the request handler. So `POST
+    /api/chat/start` couldn't answer until every mint had, and — this being a single-threaded server —
+    *no other request could be served either*: one chat start briefly froze the whole console. Mints now
+    run **concurrently over `fetch`** (`mintToolRouterSessionAsync`), and the runtime launch as a whole is
+    **scheduled rather than awaited** — the caller writes the session row and returns. Measured with an
+    800ms-per-mint stub: `createSession` **1678ms → 1ms**, same two mints, same `.mcp.json`.
+  - **The launch window could be misread as a crash.** A scheduled launch leaves a `running` row with no
+    tmux pane for a moment, and a re-launch (a chat turn, a revive) reuses an old row, so the crash
+    sweep's `created_at` grace didn't cover it. Launching sessions are now tracked in memory: `isAlive`
+    counts them as live (so a fast second turn can't start a competing run on the same transcript) and
+    both crash sweeps skip them.
+  - **The window looked empty even once it had started.** The timeline was polled every 2s and a new chat
+    showed neither the message just sent nor a working indicator until the transcript existed — several
+    seconds of a chat that looked like it hadn't started. The sent turn now appears immediately (retired
+    when the transcript echoes it back), and the poll runs at 600ms while waiting on a first transcript
+    or a pending reply, falling back to 2s once the conversation is idle.
+
+  What this does **not** fix: every chat turn is still a full runtime cold start by design
+  (`TerminalManager.chatSend`), which is the remaining ~3–5s and the reason follow-ups take 3.7–6.7s.
+
 ## [0.313.0] — 2026-08-06
 ### Added
 - **A cross-agent edit is now worth what the proposing agent has earned — `agent_propose_update` is

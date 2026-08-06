@@ -4611,23 +4611,42 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
   const [sentAt, setSentAt] = useState<number | null>(null)
   const [awaitBase, setAwaitBase] = useState(0)
   const [lastSent, setLastSent] = useState('')
+  // The turn we just sent, shown as a bubble until the transcript echoes it back. A runtime takes seconds
+  // to boot and write its first line, so without this a sent message (and a whole started chat) leaves the
+  // window looking empty — the wait reads as a failure rather than as work starting.
+  const [pendingUser, setPendingUser] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  // Switching conversations drops the previous one's turns immediately — the poll below only ever ADDS
+  // server truth, so without this reset the old chat would linger on screen while the new one loads.
+  useEffect(() => { setConvo([]); setFound(false); if (!selected) { setSentAt(null); setPendingUser('') } }, [selected])
+
+  // Poll the timeline. The interval ADAPTS: while we're waiting on something the human can see (no
+  // transcript yet, or a sent turn with no reply back) we poll fast, because that gap IS the perceived
+  // latency; an idle conversation falls back to the calm 2s cadence.
   useEffect(() => {
-    if (!selected) { setConvo([]); setFound(false); setSentAt(null); return }
+    if (!selected) return
     let stop = false
     const poll = async () => {
       const r = await api.conversation(selected)
       if (stop) return
-      if (!r.error) { setConvo(r.turns || []); setFound(!!r.found) }
+      if (r.error) return
+      setConvo(r.turns || [])
+      setFound(!!r.found)
     }
     poll()
-    const t = setInterval(poll, 2000)
+    const waiting = !found || sentAt != null
+    const t = setInterval(poll, waiting ? 600 : 2000)
     return () => { stop = true; clearInterval(t) }
-  }, [selected])
+  }, [selected, found, sentAt != null])
+
+  // Retire the optimistic bubble once the transcript carries that same message.
+  useEffect(() => {
+    if (pendingUser && convo.some((t) => t.kind === 'user' && t.text.trim() === pendingUser.trim())) setPendingUser('')
+  }, [convo, pendingUser])
 
   // Keep pinned to the newest turn.
-  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [convo.length, selected])
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' }) }, [convo.length, pendingUser, selected])
 
   const pending = messages.filter((m) => m.sessionId === selected && (m.type === 'approval' || m.type === 'question') && (m.status ?? 'pending') === 'pending')
   const agentOf = (id?: string) => chatAgents.find((a) => a.id === id) || agents.find((a) => a.id === id)
@@ -4654,8 +4673,13 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
     setBusy(true); setErr('')
     const r = await api.startChat(agent, message)
     setBusy(false)
-    if (r.error || !r.id) { setErr(r.error || 'could not start the chat'); return }
+    if (r.error || !r.id) { setErr(r.error || 'could not start the chat'); setDraft(message); return }
     setDraft('')
+    // Open the conversation with the human's turn ALREADY on screen and the "thinking…" indicator running.
+    setPendingUser(message)
+    setLastSent(message)
+    setAwaitBase(0)
+    setSentAt(Date.now())
     onSelect(r.id)
   }
 
@@ -4663,13 +4687,13 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
     const message = draft.trim()
     if (!message || !selected || busy) return
     setBusy(true); setErr('')
-    // Optimistically show the human's turn immediately.
-    setConvo((c) => [...c, { kind: 'user', text: message, ts: Date.now() }])
+    // Optimistically show the human's turn immediately (retired when the transcript echoes it back).
+    setPendingUser(message)
     setDraft('')
     const r = await api.reply(selected, message)
     setBusy(false)
-    if (r.status === 'busy') { setErr('The agent is still working — resend in a moment.'); setDraft(message); return }
-    if (r.error) { setErr(r.error); return }
+    if (r.status === 'busy') { setErr('The agent is still working — resend in a moment.'); setDraft(message); setPendingUser(''); return }
+    if (r.error) { setErr(r.error); setPendingUser(''); return }
     // Sent: begin awaiting a reply (baseline = agent turns so far).
     setLastSent(message)
     setAwaitBase(convo.filter((t) => t.kind !== 'user').length)
@@ -4799,12 +4823,13 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
 
             {/* Timeline */}
             <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-1 py-2">
-              {!found && <p className="pt-6 text-center text-sm text-muted-foreground">Getting started…</p>}
+              {!found && !pendingUser && convo.length === 0 && <p className="pt-6 text-center text-sm text-muted-foreground">Getting started…</p>}
               {convo.map((t, i) =>
                 t.kind === 'activity'
                   ? <ActivityCard key={i} turn={t} />
                   : <ChatBubble key={i} turn={t} agentIcon={activeAgent?.icon} />,
               )}
+              {pendingUser && <ChatBubble turn={{ kind: 'user', text: pendingUser, ts: sentAt ?? Date.now() }} agentIcon={activeAgent?.icon} />}
               {stalled ? (
                 <div className="flex items-center gap-2 pl-1 text-xs text-muted-foreground">
                   <span>No reply came back.</span>
