@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.314.0] — 2026-08-06
+### Added
+- **A task's full run history — every session that worked it, not just the last one.** The task↔session
+  relation has always been one-to-**many** (a task is the durable unit of work; a session is one *attempt*
+  at it — a crash re-dispatches, an agent `task_claim`s from its own run, a `@mention` spawns, a human
+  takes over), but only `tasks.last_session_id` was reachable. So a task that crashed, was re-dispatched
+  and then succeeded read as a single clean run, and its cost read as the last attempt's rather than the
+  sum. On the live northwind tenant that hid **7** multi-run tasks — 5 with a bad earlier attempt — and
+  **$60.33** of attempt cost the console never linked (one task: `unknown $8.41` then `success $15.52`,
+  showing only the second).
+  - `TerminalManager.taskRuns(taskId)` returns the list oldest-first on `GET /api/tasks/:id` as `runs`.
+    **Nothing new is stored** — runs are recovered from traces that already existed: `dispatch` (provenance
+    `task:<id>`, spawned FOR the task) and `linked` (a session that touched it from elsewhere and logged a
+    `task_events` row). Each carries its own verdict (`outcome`/`summary`), duration, cost, turns, `current`
+    (the pointer the pile-up guard tracks), `alive` (one tmux poll for the whole list) and `archived`.
+  - **Archived runs stay in a task's history** — the soft-archive declutters the Sessions list, it does not
+    rewrite what happened to a task.
+  - Console: the single **View session** button becomes a **Runs · N** list (collapsed to the last three,
+    each with its verdict, duration and cost). In the full-page task room, picking a run swaps the
+    **Session** tab to that run's pane, so a much-retried task can be read attempt by attempt.
+  - Reads stay tenant-wide like the rest of the task detail; *attaching* to a run is still gated by the
+    terminal's own authz. One live session per task is unchanged — this is retrospective, not concurrency.
+  - Pinned by `scripts/task-runs-test.cjs` (19 assertions, in `npm run test:governance`): ordering, the
+    `current` pointer, dispatch-vs-linked, archived rows surviving, no double-counting across the OR-ed
+    predicates, and liveness not claiming a running row is dead when the tmux poll can't run.
+
 ## [0.313.0] — 2026-08-06
 ### Added
 - **A cross-agent edit is now worth what the proposing agent has earned — `agent_propose_update` is

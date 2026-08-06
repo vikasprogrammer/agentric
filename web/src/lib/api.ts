@@ -657,6 +657,23 @@ export interface TaskAttachment {
   uploadedBy: string
   createdAt: number
 }
+/** One session that worked a task — a task's run history is one-to-many (retries, crashes, take-overs),
+ *  where `Task.lastSessionId` only ever pointed at the newest. See TerminalManager.taskRuns. */
+export interface TaskRun {
+  id: string
+  agent: string
+  status: string
+  outcome?: string
+  summary?: string
+  createdAt: number
+  endedAt?: number
+  costUsd?: number
+  turns?: number
+  link: 'dispatch' | 'linked'
+  current: boolean
+  alive: boolean
+  archived: boolean
+}
 /** One entry in a task's Discussion timeline (chat message or state event) — see docs/task-rooms-plan.md. */
 export type TaskTimelineEntry =
   | { kind: 'chat'; id: string; author: string; agentId?: string; body: string; mentions: string[]; at: number }
@@ -1683,7 +1700,7 @@ export const api = {
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
   tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
-  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
+  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; runs?: TaskRun[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
   postTaskMessage: (id: string, body: string) => call<{ ok: boolean; entry?: TaskTimelineEntry; mentioned?: string[]; agents?: { agent: string; status: string }[]; error?: string }>('POST', `/api/tasks/${id}/messages`, { body }),
   readTaskDiscussion: (id: string) => call<{ ok: boolean }>('POST', `/api/tasks/${id}/read`),
   resolveTaskMention: (msgId: string, action: 'answer' | 'session' | 'dismiss') => call<{ ok: boolean; error?: string }>('POST', `/api/tasks/mention/${msgId}`, { action }),

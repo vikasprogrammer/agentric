@@ -848,6 +848,31 @@ export interface TaskDiscussionSummary {
   participants: string[]; // member id | 'agent:<id>' | 'system'
 }
 
+/**
+ * One RUN of a task — a session that worked it. A task is a durable unit of work and a session is one
+ * attempt at it, so the relationship has always been one-to-MANY: every dispatch, re-dispatch after a
+ * crash, mention-spawned run and human take-over spawns its own session. Only the newest was reachable
+ * (`Task.lastSessionId`, the pile-up guard's pointer), so a task that succeeded on attempt #3 looked
+ * like it had always been fine. This is the full list, oldest-first — see {@link TerminalManager.taskRuns}.
+ */
+export interface TaskRun {
+  id: string; // session id
+  agent: string;
+  status: string; // running | done | stopped | crashed
+  outcome?: string; // success | failure | partial | … (from the run's own `report`)
+  summary?: string; // the report's one-line summary
+  createdAt: number;
+  endedAt?: number; // last activity (undefined while running)
+  costUsd?: number;
+  turns?: number;
+  /** How this session came to work the task: `dispatch` = spawned FOR it (`task:<id>` provenance);
+   *  `linked` = a session that touched it from elsewhere (an agent's `task_claim`, a discussion run). */
+  link: 'dispatch' | 'linked';
+  current: boolean; // this is the task's `lastSessionId` — the run the guard/reconciler tracks
+  alive: boolean; // its pane is still live right now
+  archived: boolean; // soft-archived out of the Sessions list (still part of the task's history)
+}
+
 /** A file attached to a task — a durable on-disk snapshot (mirrors {@link Artifact}, keyed to a task). */
 export interface TaskAttachment {
   id: string;

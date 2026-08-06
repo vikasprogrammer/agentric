@@ -17,7 +17,7 @@ import { containedPath, mimeOf } from './state/artifacts';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit } from './state/agent-edit';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
-import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
+import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { resolveCapability } from './capabilities/normalize';
 import { briefFor } from './governance/briefer';
@@ -4006,6 +4006,55 @@ export class TerminalManager {
       if (r.read_at === null && r.source !== viewer.id) e.unread++;
     }
     return out;
+  }
+
+  /**
+   * Every session that has worked a task, oldest-first — the task's RUN HISTORY.
+   *
+   * A task is the durable unit of work; a session is one ATTEMPT at it. The relation has always been
+   * one-to-many (a crash re-dispatches, a mention spawns, a human takes over), but only the newest run
+   * was reachable — `tasks.last_session_id`, the pointer the pile-up guard and the reconciler keep — so a
+   * task that failed twice before succeeding read as if it had gone cleanly the first time. Nothing new is
+   * stored: the runs are recovered from the two places they already leave a trace.
+   *   · `dispatch` — provenance `task:<id>`, i.e. the session was spawned FOR this task.
+   *   · `linked`   — a session that touched the task from elsewhere and logged an event against it (an
+   *                  agent's `task_claim` from its own run, a Discussion-continued thread).
+   * Archived rows are INCLUDED: soft-archiving declutters the Sessions list, it doesn't rewrite what
+   * happened to a task. Liveness is one tmux poll for the whole list, not one per row.
+   */
+  taskRuns(taskId: string): TaskRun[] {
+    const current = this.os.tasks.get(taskId)?.lastSessionId;
+    const rows = this.db
+      .prepare(`SELECT id, agent, tmux, status, spawned_by, outcome, report_summary, created_at, updated_at,
+                       cost_usd, turns, archived_at
+                  FROM term_sessions
+                 WHERE spawned_by = ?
+                    OR id IN (SELECT session_id FROM task_events WHERE task_id = ? AND session_id IS NOT NULL)
+                    OR id = ?
+                 ORDER BY created_at ASC`)
+      .all<{
+        id: string; agent: string; tmux: string; status: string; spawned_by: string | null;
+        outcome: string | null; report_summary: string | null; created_at: number; updated_at: number | null;
+        cost_usd: number | null; turns: number | null; archived_at: number | null;
+      }>(`task:${taskId}`, taskId, current ?? '');
+    // `aliveNames()` is null on the launcher backend / a failed poll — liveness unknown, so we trust the
+    // row's own status rather than claiming a running session is dead (same rule as listSessions).
+    const alive = rows.length ? this.backend.aliveNames() : null;
+    return rows.map((r) => ({
+      id: r.id,
+      agent: r.agent,
+      status: r.status,
+      outcome: r.outcome ?? undefined,
+      summary: r.report_summary ?? undefined,
+      createdAt: r.created_at,
+      endedAt: r.status === 'running' ? undefined : r.updated_at ?? undefined,
+      costUsd: r.cost_usd ?? undefined,
+      turns: r.turns ?? undefined,
+      link: r.spawned_by === `task:${taskId}` ? 'dispatch' : 'linked',
+      current: r.id === current,
+      alive: r.status === 'running' && (alive ? alive.has(r.tmux) : true),
+      archived: r.archived_at != null,
+    }));
   }
 
   /** Record a pending "how should @agent respond?" choice when a NON-owner agent is @mentioned — the

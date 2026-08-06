@@ -3266,6 +3266,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!found) return sendJson(res, 404, { error: 'task not found' });
     return sendJson(res, 200, {
       ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id),
+      // Every session that worked this task, not just `lastSessionId` — the retries and crashes that
+      // preceded the current run are part of the task's story. Same tenant-wide read as the rest of the
+      // detail payload; ATTACHING to any of those sessions is still gated by the terminal's own authz.
+      runs: tm.taskRuns(found.task.id),
       discussion: tm.discussionTimeline(found.task.id), unread: tm.discussionUnread(found.task.id, me),
       choices: tm.taskMentionChoices(found.task.id),
     });
