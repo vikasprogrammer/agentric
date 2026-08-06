@@ -42,6 +42,9 @@ import { readConversation, Conversation } from './edge/conversation';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
+/** How long a just-delivered message keeps an unattended run's pane alive at turn-end, so a HOLD or a
+ *  correction typed in seconds before the Stop hook fired still gets read instead of dying with the pane. */
+const DELIVERY_GRACE_MS = 90_000;
 const VIDEO_MAX_DURATION_SEC = 60;         // clamp the requested clip length
 const VIDEO_JOB_TTL_MS = 20 * 60_000;      // give up on a render after 20 minutes
 const VIDEO_MAX_POLLS = 200;               // poll-attempt ceiling (belt-and-suspenders with the TTL)
@@ -2320,7 +2323,12 @@ export class TerminalManager {
   deliverToResident(sessionId: string, text: string): boolean {
     const row = this.db.prepare('SELECT tmux, status, resident, run_as, spawned_by FROM term_sessions WHERE id = ?')
       .get<{ tmux: string; status: string; resident: number; run_as: string | null; spawned_by: string | null }>(sessionId);
-    if (!row || !row.resident || row.status !== 'running') return false;
+    // Any LIVE claude pane can be typed into — `resident` marks a warm chat session, not "reachable".
+    // Gating on it made every unattended (task/automation) run unreachable: a task-discussion HOLD could
+    // not reach the agent executing the task, and `continueTaskThread` fell through to spawning a SECOND
+    // agent on the same task while the first kept working. Observed live on northwind 2026-08-06
+    // (tsk_67de2dfe): the stand-down went to a fresh run, the real one ran on for 25+ minutes.
+    if (!row || row.status !== 'running') return false;
     if (!this.isAlive(sessionId)) return false;
     const body = (text || '').replace(/\r?\n+/g, ' ').trim(); // one-line: a stray newline would submit early
     if (!body) return false;
@@ -2752,11 +2760,24 @@ export class TerminalManager {
     this.db.prepare('UPDATE term_sessions SET last_activity = ? WHERE id = ?').run(Date.now(), sessionId);
     if (r.claimed_by) return;                       // taken over → sticky, the human owns its lifecycle
     if (this.hasPendingHumanBlock(sessionId)) return; // waiting on an answer/approval → keep the pane alive
+    // A message was typed in moments ago (a HOLD, a correction, a thread follow-up) — tearing the pane
+    // down now would silently swallow it. Give it one grace window to start the turn that reads it.
+    if (this.deliveredWithin(sessionId, DELIVERY_GRACE_MS)) return;
     const space = this.spaceFor(r.run_as ?? r.spawned_by);
     const alive = this.backend.aliveNames();
     if (alive && !alive.has(r.tmux)) return;         // pane already gone (already reaped) — nothing to do
     if (this.backend.hasClient(space, r.tmux) === true) return; // a human is watching live → don't close on them
     this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
+  }
+
+  /** Was text delivered into this session within `ms`? Reads the `chat.delivered` / `session.inject`
+   *  audit rows the two delivery paths already write, so nothing new is stored. Guards the turn-end
+   *  teardown against swallowing a message that arrived a second before the Stop hook fired. */
+  private deliveredWithin(sessionId: string, ms: number): boolean {
+    const row = this.db
+      .prepare("SELECT 1 AS hit FROM audit_events WHERE run_id = ? AND type IN ('chat.delivered','session.inject') AND ts > ? LIMIT 1")
+      .get<{ hit: number }>(sessionId, Date.now() - ms);
+    return !!row;
   }
 
   /** Close a finished unattended run: snapshot its pane for the console transcript view, mark it done

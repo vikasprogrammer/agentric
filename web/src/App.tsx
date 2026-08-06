@@ -3329,6 +3329,34 @@ function ChainAction({ item, onDone }: { item: ChainPending; onDone: () => void 
   )
 }
 
+/** Steer a delegate you are not attached to: type into its live pane from the caller's rail. The lever a
+ *  chain was missing — until now the only way to stop a running delegate was to open its terminal (or
+ *  file a task comment, which reached a NEW run rather than the working one). */
+function ChainSay({ node, onSent }: { node: ChainNode; onSent: () => void }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const send = async () => {
+    const body = text.trim()
+    if (!body) return
+    setBusy(true); setErr('')
+    const r = await api.injectToSession(node.sessionId, body)
+    setBusy(false)
+    if (r.error) setErr(r.error)
+    else { setText(''); onSent() }
+  }
+  return (
+    <form className="mt-1.5 flex gap-1" onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); void send() }}>
+      <Input value={text} onChange={(e) => setText(e.target.value)} disabled={busy}
+        placeholder={`Message ${node.agent}…`} className="h-6 text-[11px]" />
+      <Button size="xs" type="submit" disabled={busy || !text.trim()} title={`type this into ${node.agent}'s live session`}>
+        <Send className="h-3 w-3" />
+      </Button>
+      {err && <span className="text-[10px] text-red-600">{err}</span>}
+    </form>
+  )
+}
+
 /**
  * The hand-off tree beside the terminal — "where is this piece of work, and who is blocked?".
  *
@@ -3419,6 +3447,7 @@ function ChainRail({ chain, session, open, onToggle, onReload, onOpen }: {
                 </p>
               )}
             </button>
+            {st.live && !here && <div className="px-2.5 pb-2"><ChainSay node={n} onSent={load} /></div>}
             </div>
           )
         })}

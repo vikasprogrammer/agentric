@@ -162,6 +162,56 @@ assert(row(qaRun).parentThreadId === 'cs_eng' && row(qaRun).taskId === tQa.id, '
 assert(row(engRun2).parentThreadId === 'cs_eng', 'a poke resolves to its OWN thread (no parent = not a hand-off)');
 assert(row(engRun1).parentThreadId === undefined && row(engRun1).taskId === undefined, 'a member-spawned run has no chain edge');
 
+// ── steering a live hand-off: the northwind 2026-08-06 incident (tsk_67de2dfe) ──
+// A manager put its own delegated task on HOLD. The stand-down reached a NEWLY SPAWNED run while the
+// agent actually executing kept going for 25+ minutes, and the manager poked itself for the transition.
+console.log('\n\x1b[1msteering a live delegate\x1b[0m');
+{
+  const { Automations } = require(path.join(ROOT, 'dist/edge/automations.js'));
+  const autos = new Automations(aos, tm);
+  const injected = [];
+  tm.backend.injectText = (space, tmuxName, body) => { injected.push({ tmux: tmuxName, body }); return true; };
+  tm.isAlive = (id) => id === liveDelegate;
+
+  const held = mkTask({ title: 'ship batch 1', assignee: 'agent:builder', callerAgent: 'agent:manager', callerClaudeId: 'cs_mgr' });
+  var liveDelegate = mkRun({ agent: 'builder', claude_session_id: 'cs_build', spawned_by: `task:${held.id}`, status: 'running', title: 'Task: ship batch 1' });
+  aos.db.prepare('UPDATE term_sessions SET headless = 1, resident = 0 WHERE id = ?').run(liveDelegate);   // unattended: the case that was unreachable
+  aos.tasks.markDispatched(held.id, liveDelegate);
+
+  // An unattended run is an attachable TUI — delivery must reach it (this is what was broken).
+  assert(tm.deliverToResident(liveDelegate, 'stand down') === true, 'a live UNATTENDED run can be messaged');
+  assert(tm.deliverToResident(mkRun({ status: 'done' }), 'x') === false, 'a finished run cannot');
+
+  // A HOLD by the caller reaches the run that is doing the work.
+  injected.length = 0;
+  const notices = [];
+  aos.tasks.setNotifier((n) => notices.push(n));
+  aos.tasks.update(held.id, { status: 'blocked', note: 'HOLD - auto-dispatch was unintended', by: 'agent:manager' });
+  const notice = notices.find((n) => n.kind === 'status');
+  assert(!!notice && notice.by === 'agent:manager', 'the notice names the actor');
+  // (the tenant-registry wiring is what calls maybeHoldDelegate; assert the pieces it depends on)
+  assert(aos.tasks.get(held.id).lastSessionId === liveDelegate, 'the task still points at the RUNNING delegate');
+  assert(aos.tasks.latestNote(held.id).startsWith('HOLD'), 'the reason is available to forward');
+
+  // A parked task is not re-dispatchable by any guarded path.
+  const blocked = autos.dispatchTask(held.id, { guard: true, by: 'test' });
+  assert(blocked.ok === false && /blocked/.test(blocked.reason), 'a blocked task refuses a guarded dispatch', blocked.reason);
+  // …but a human forcing it from the console still gets PAST the park (it stops on this scratch home's
+  // missing agent manifest, not on the block — spawning a real one would start a real tmux session).
+  tm.isAlive = () => false;
+  const forced = autos.dispatchTask(held.id, { guard: false, by: 'human' });
+  assert(!/blocked/.test(forced.reason || ''), 'a human forcing it is not refused for being blocked', forced.reason);
+
+  // And a still-working delegate is never given a rival by the discussion path.
+  tm.isAlive = (id) => id === liveDelegate;
+  tm.deliverToResident = () => false;   // simulate an undeliverable pane
+  tm.reviveResident = () => false;
+  const before = aos.db.prepare('SELECT COUNT(*) AS c FROM term_sessions').get().c;
+  const r = autos.continueTaskThread(held.id, 'manager', 'stand down', 'builder');
+  assert(r.status === 'none', 'an undeliverable LIVE run is reported, not duplicated', r.status);
+  assert(aos.db.prepare('SELECT COUNT(*) AS c FROM term_sessions').get().c === before, 'no rival session was spawned');
+}
+
 console.log(`\n${fail ? '\x1b[31m' : '\x1b[32m'}${pass} passed, ${fail} failed\x1b[0m`);
 fs.rmSync(HOME, { recursive: true, force: true });
 process.exit(fail ? 1 : 0);
