@@ -1188,21 +1188,54 @@ const TOOLS = [
     },
   },
   {
+    name: 'agent_get',
+    description:
+      "Read an agent's current editable config — its CLAUDE.md system prompt (in full), description, " +
+      'category, icon, tuning and starter prompts. Defaults to YOU; pass an id to read a teammate you could ' +
+      'propose edits to. ALWAYS call this before agent_update or agent_propose_update: those tools replace ' +
+      'the whole document, so editing without reading it first overwrites everything you did not retype. ' +
+      'Returns a baseHash — pass it back as baseHash on the edit call and the edit is refused if the ' +
+      'document changed in between, instead of silently clobbering the newer text.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: { id: { type: 'string', description: 'Optional — defaults to you. Any user-created claude-code agent.' } },
+    },
+  },
+  {
     name: 'agent_update',
     description:
       'Improve YOUR OWN listing — pass only the fields you want to change (your CLAUDE.md system prompt, ' +
       'description, category, model, effort, example prompts, or icon). This is how you self-improve: when ' +
       "you notice a recurring gap in your instructions or a better way to describe what you do, refine it " +
-      'here. Takes effect on your next session. Every edit is snapshotted — inspect them with agent_history ' +
-      'and undo with agent_revert. You can only edit yourself (the id defaults to you); to edit ANOTHER ' +
-      'agent, use agent_propose_update (an owner approves it).',
+      'here. Read your current prompt with agent_get FIRST, then prefer claudeMdEdits/claudeMdAppend over ' +
+      'retyping the whole document — a hand-retyped claudeMd silently loses whatever you forget. Takes ' +
+      'effect on your next session. Every edit is snapshotted — inspect them with agent_history and undo ' +
+      'with agent_revert. You can only edit yourself (the id defaults to you); to edit ANOTHER agent, use ' +
+      'agent_propose_update.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         id: { type: 'string', description: 'Optional — defaults to you. Must be your own id; to edit another agent use agent_propose_update.' },
         description: { type: 'string', description: 'New one-line description of what you do.' },
-        claudeMd: { type: 'string', description: "Replacement CLAUDE.md (your full system prompt). Send the complete new text, not a diff." },
+        claudeMd: { type: 'string', description: "Replacement CLAUDE.md — REPLACES YOUR WHOLE SYSTEM PROMPT with this exact text. Anything you don't include is deleted. Use claudeMdEdits/claudeMdAppend unless you really are rewriting from scratch." },
+        claudeMdEdits: {
+          type: 'array',
+          description: 'Anchored patch — the safe way to change part of your prompt. Each oldString must appear EXACTLY once in the current CLAUDE.md and is replaced by newString; everything else is untouched. Applied in order.',
+          items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              oldString: { type: 'string', description: 'Exact text to find (include enough context to be unique).' },
+              newString: { type: 'string', description: 'What it becomes (empty string deletes it).' },
+            },
+            required: ['oldString', 'newString'],
+          },
+        },
+        claudeMdAppend: { type: 'string', description: 'Text to add at the end of your CLAUDE.md — the safest way to add a new section. Combines with claudeMdEdits; cannot be combined with claudeMd.' },
+        baseHash: { type: 'string', description: 'The baseHash from agent_get. If your CLAUDE.md changed since you read it, the edit is refused instead of clobbering the newer text.' },
+        confirmRewrite: { type: 'boolean', description: 'Required to go through with a destructive rewrite (one that deletes >20% of the prompt or drops an existing section heading). Only pass it when you genuinely mean to remove that content.' },
+        dryRun: { type: 'boolean', description: 'Write nothing — just report what would change (fields, before/after size, whether it would be refused as destructive).' },
         category: { type: 'string', description: 'New grouping label (empty string clears it → Uncategorized).' },
         model: { type: 'string', description: 'Model override (empty string clears → inherit the workspace default).' },
         effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning-effort override.' },
@@ -1215,15 +1248,15 @@ const TOOLS = [
     name: 'agent_propose_update',
     description:
       "Propose an edit to ANOTHER agent's listing or CLAUDE.md system prompt — the cross-agent counterpart " +
-      'to agent_update (which only edits you). Pass only the fields to change, plus a rationale a human ' +
-      'will read. Use it when you spot a concrete, well-justified improvement to a teammate agent (a stale ' +
-      'instruction, a missing convention, a better description). The target must be a user-created ' +
-      'claude-code agent (not a bundled example), and must not be you. What happens next depends on YOUR ' +
-      'maturity score (earned from completed runs that needed few approvals and hit no denials): below the ' +
+      'to agent_update (which only edits you). Read the target with agent_get FIRST and prefer ' +
+      'claudeMdEdits/claudeMdAppend: claudeMd replaces the target\'s ENTIRE prompt, so submitting only the ' +
+      'part you want added deletes everything else. Never submit a fragment expecting a human to merge it. ' +
+      'Pass a rationale a human will read. The target must be a user-created claude-code agent (not a ' +
+      'bundled example), and must not be you. What happens next depends on YOUR maturity score: below the ' +
       "workspace floor the proposal is refused; in the middle it waits in an owner's inbox and changes " +
-      'nothing until they approve; at the top it applies immediately and the owner is notified after the ' +
-      'fact. Write every proposal as if a human will read it — usually one does, and the reply tells you ' +
-      'which happened.',
+      'nothing until they approve; at the top it applies IMMEDIATELY with the owner notified afterwards — ' +
+      'except that a destructive rewrite or your first-ever edit of that agent always waits for a human. ' +
+      'The reply states plainly which of those happened; report that, not what you expected.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1231,7 +1264,22 @@ const TOOLS = [
         id: { type: 'string', description: 'The agent to edit (required; must differ from you).' },
         rationale: { type: 'string', description: 'Why this change is worth making — shown to the approving owner (required).' },
         description: { type: 'string', description: 'New one-line description of what the target does.' },
-        claudeMd: { type: 'string', description: "Replacement CLAUDE.md (the target's full system prompt). Send the complete new text, not a diff — the owner sees a full before→after." },
+        claudeMd: { type: 'string', description: "Replacement CLAUDE.md — REPLACES THE TARGET'S WHOLE SYSTEM PROMPT with this exact text. Anything you don't include is deleted. Use claudeMdEdits/claudeMdAppend unless you are deliberately rewriting it from scratch." },
+        claudeMdEdits: {
+          type: 'array',
+          description: "Anchored patch against the target's CURRENT CLAUDE.md — the safe way to change part of it. Each oldString must appear EXACTLY once and is replaced by newString. Applied in order.",
+          items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              oldString: { type: 'string', description: 'Exact text to find (include enough context to be unique).' },
+              newString: { type: 'string', description: 'What it becomes (empty string deletes it).' },
+            },
+            required: ['oldString', 'newString'],
+          },
+        },
+        claudeMdAppend: { type: 'string', description: "Text to add at the end of the target's CLAUDE.md — the safest way to add a section. Combines with claudeMdEdits; cannot be combined with claudeMd." },
+        baseHash: { type: 'string', description: 'The baseHash from agent_get. If the target changed since you read it, the proposal is refused instead of being built on a stale copy.' },
+        dryRun: { type: 'boolean', description: 'Write nothing and post no card — just report what would change and which lane it would take (apply now vs wait for an owner).' },
         category: { type: 'string', description: 'New grouping label (empty string clears it → Uncategorized).' },
         model: { type: 'string', description: 'Model override (empty string clears → inherit the workspace default).' },
         effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: 'Reasoning-effort override.' },
@@ -2469,48 +2517,98 @@ async function agentCreate(args: Record<string, unknown>): Promise<string> {
   return `Created agent "${d.id}". It's live in the console now (grouped under ${args.category ? String(args.category) : 'Uncategorized'}); a human can run or assign it, and refine it from its console page. (agent_update only edits your own listing, not other agents.)`;
 }
 
+/**
+ * The edit tools' reply is composed SERVER-SIDE (`message`) and echoed here verbatim.
+ *
+ * This is not a style choice. An MCP server is spawned per session and lives as long as that session,
+ * while the lane the call actually takes is decided by the long-running server — so a client that
+ * composes its own outcome sentence keeps asserting the OLD behaviour after the server is upgraded
+ * beneath it. That is exactly how a live session came to report "NOTHING changes until an owner
+ * approves" about an edit the (newer) server had already applied. Composing the sentence where the
+ * decision is made means a stale session can only be silent about a new outcome, never wrong about it.
+ */
+function outcomeText(d: { message?: string }, fallback: string): string {
+  return d.message ?? fallback;
+}
+
+async function agentGet(args: Record<string, unknown>): Promise<string> {
+  // The read counterpart the edit tools depend on. Without it, "replace the whole document" is being
+  // asked of a caller that cannot see the document.
+  const res = await fetch(AOS_URL + '/api/agents/get', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({ session: SESSION, id: args.id !== undefined ? String(args.id) : undefined }),
+  });
+  const d = (await res.json()) as {
+    ok?: boolean; id?: string; self?: boolean; description?: string; category?: string; icon?: string;
+    model?: string; effort?: string; verbosity?: string; examplePrompts?: string[];
+    claudeMd?: string; chars?: number; baseHash?: string; latestRev?: number | null; error?: string;
+  };
+  if (!d.ok) return `Could not read that agent: ${d.error ?? 'unknown error'}`;
+  const meta = [
+    `agent: ${d.id}${d.self ? ' (you)' : ''}`,
+    `description: ${d.description || '(none)'}`,
+    d.category ? `category: ${d.category}` : null,
+    d.model ? `model: ${d.model}` : null,
+    d.effort ? `effort: ${d.effort}` : null,
+    d.examplePrompts?.length ? `starter prompts: ${d.examplePrompts.map((p) => `"${p}"`).join(', ')}` : null,
+    `CLAUDE.md: ${d.chars} chars${d.latestRev ? ` · latest rev ${d.latestRev}` : ''}`,
+    `baseHash: ${d.baseHash}  ← pass this as baseHash when you edit, so a stale copy is refused instead of clobbering`,
+  ].filter(Boolean).join('\n');
+  return `${meta}\n\n----- CLAUDE.md (verbatim) -----\n${d.claudeMd ?? ''}\n----- end CLAUDE.md -----\n\nTo change part of this, use claudeMdEdits (anchored) or claudeMdAppend — NOT a hand-retyped claudeMd.`;
+}
+
+/** The CLAUDE.md change shapes + preconditions both edit tools share, copied onto the request body. */
+function copyEditArgs(args: Record<string, unknown>, body: Record<string, unknown>): void {
+  for (const k of ['description', 'claudeMd', 'claudeMdAppend', 'baseHash', 'category', 'model', 'effort', 'icon'] as const) {
+    if (args[k] !== undefined) body[k] = String(args[k]);
+  }
+  if (Array.isArray(args.claudeMdEdits)) {
+    body.claudeMdEdits = args.claudeMdEdits.map((e) => {
+      const o = (e ?? {}) as Record<string, unknown>;
+      return { oldString: String(o.oldString ?? ''), newString: String(o.newString ?? '') };
+    });
+  }
+  if (Array.isArray(args.examplePrompts)) body.examplePrompts = args.examplePrompts.map(String);
+  if (args.dryRun === true) body.dryRun = true;
+}
+
 async function agentUpdate(args: Record<string, unknown>): Promise<string> {
   // Self-only: an agent refines its OWN listing. Default the target to this session's agent; the server
   // rejects any other id. Every change is snapshotted (see agent_history / agent_revert) so it's reversible.
   const id = String(args.id ?? AGENT).trim().toLowerCase();
   const body: Record<string, unknown> = { session: SESSION, id };
-  for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
-    if (args[k] !== undefined) body[k] = String(args[k]);
-  }
-  if (Array.isArray(args.examplePrompts)) body.examplePrompts = args.examplePrompts.map(String);
+  copyEditArgs(args, body);
+  if (args.confirmRewrite === true) body.confirmRewrite = true;
   const res = await fetch(AOS_URL + '/api/agents/update', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; id?: string; rev?: number | null; error?: string };
+  const d = (await res.json()) as { ok?: boolean; id?: string; rev?: number | null; message?: string; error?: string };
   if (!d.ok) return `Could not update the agent: ${d.error ?? 'unknown error'}`;
-  return `Updated your listing "${id}"${d.rev ? ` (saved as rev ${d.rev} — revert with agent_revert)` : ''}. The next session you run will use it.`;
+  return outcomeText(d, `Updated your listing "${id}"${d.rev ? ` (saved as rev ${d.rev} — revert with agent_revert)` : ''}. The next session you run will use it.`);
 }
 
 async function agentProposeUpdate(args: Record<string, unknown>): Promise<string> {
-  // Cross-agent + gated: propose an edit to ANOTHER agent. Nothing changes until an owner approves the card.
+  // Cross-agent: what happens depends on the proposer's maturity AND the shape of the edit. The server
+  // decides and says which — never assert an outcome from here (see outcomeText).
   const id = String(args.id ?? '').trim().toLowerCase();
   if (!id) return 'agent_propose_update needs id — the agent you want to edit.';
   if (!String(args.rationale ?? '').trim()) return 'agent_propose_update needs a rationale — the owner sees it on the review card.';
   const body: Record<string, unknown> = { session: SESSION, id, rationale: String(args.rationale) };
-  for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
-    if (args[k] !== undefined) body[k] = String(args[k]);
-  }
-  if (Array.isArray(args.examplePrompts)) body.examplePrompts = args.examplePrompts.map(String);
+  copyEditArgs(args, body);
   const res = await fetch(AOS_URL + '/api/agent/agent/propose', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; error?: string };
+  const d = (await res.json()) as { ok?: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; message?: string; error?: string };
   if (!d.ok) return `Could not propose the edit: ${d.error ?? 'unknown error'}`;
   const what = d.preview ? ` (${d.preview})` : '';
-  // Two very different outcomes — say which one plainly, so the agent doesn't tell a human "it's awaiting
-  // review" when the edit is already live, or go looking for an effect that hasn't happened yet.
-  return d.applied
-    ? `Applied your edit to "${id}"${what} — your maturity (${Math.round((d.maturity ?? 0) * 100)}/100) is at or above this workspace's auto-apply bar, so it took effect without waiting for a human.${d.rev ? ` Saved as rev ${d.rev}.` : ''} An owner has been notified and can revert it. "${id}" picks it up on its next session.`
-    : `Proposed an edit to "${id}"${what} — it's in an owner's inbox for review. NOTHING changes until an owner who can run "${id}" approves it; the target picks it up on its next session once applied.`;
+  return outcomeText(d, d.applied
+    ? `APPLIED your edit to "${id}"${what} — it took effect immediately, without a human approving it.${d.rev ? ` Saved as rev ${d.rev}.` : ''} An owner has been notified and can revert it.`
+    : `Proposed an edit to "${id}"${what} — it's in an owner's inbox for review. NOTHING changes until an owner who can run "${id}" approves it.`);
 }
 
 async function agentHistory(): Promise<string> {
@@ -3035,6 +3133,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'goal_get' ? await goalGet(args)
         : name === 'goal_propose' ? await goalPropose(args)
         : name === 'agent_create' ? await agentCreate(args)
+        : name === 'agent_get' ? await agentGet(args)
         : name === 'agent_update' ? await agentUpdate(args)
         : name === 'agent_propose_update' ? await agentProposeUpdate(args)
         : name === 'agent_history' ? await agentHistory()

@@ -71,7 +71,7 @@ import { parseBundle } from './governance/bundle-import';
 import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
-import { agentEditable, applyAgentEdit, manifestToSnapshot, readAgentSnapshot } from './state/agent-edit';
+import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, manifestToSnapshot, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 
 /** Sum busy + idle CPU tick counters across all cores (for a sampled utilization %). */
 function cpuTicks(): { idle: number; total: number } {
@@ -1830,6 +1830,36 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.created', data: { agent: id, runtime: 'claude-code', dir: folder, by: `agent:${agent}` } });
     return sendJson(res, 200, { ok: true, id });
   }
+  // An agent READS an agent's current editable config (`agent_get`) — the counterpart that makes safe
+  // editing possible at all. Without it the edit tools ask a caller to overwrite a document it is not
+  // permitted to see, and a partial submission silently becomes the whole prompt. Defaults to the caller;
+  // any target the propose lane could edit is readable (its prompt is fleet configuration, not a secret),
+  // and a cross-agent read is audited so the reach stays visible.
+  if (method === 'POST' && p === '/api/agents/get') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const id = String(b.id ?? agent).trim().toLowerCase() || agent;
+    const editable = agentEditable(os, id);
+    if (!editable.ok) return sendJson(res, 200, { ok: false, error: editable.error });
+    const ag = editable.ag;
+    const snap = readAgentSnapshot(ag);
+    if (id !== agent) {
+      os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.read', data: { agent: id, by: `agent:${agent}` } });
+    }
+    const revs = os.agentRevisions.list(id);
+    return sendJson(res, 200, {
+      ok: true, id, self: id === agent,
+      description: snap.description, category: snap.category, icon: snap.icon,
+      model: snap.model, effort: snap.effort, verbosity: snap.verbosity,
+      examplePrompts: snap.examplePrompts,
+      claudeMd: snap.claudeMd, chars: snap.claudeMd.length,
+      baseHash: contentHash(snap.claudeMd),
+      latestRev: revs[0]?.rev ?? null,
+    });
+  }
   if (method === 'POST' && p === '/api/agents/update') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -1843,30 +1873,58 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const id = agent;
     if (b.id !== undefined && String(b.id).trim().toLowerCase() !== id)
       return sendJson(res, 200, { ok: false, error: `you can only edit your own listing ("${id}"), not "${String(b.id).trim().toLowerCase()}"` });
-    const ag = os.agents.get(id);
-    if (!ag?.dir) return sendJson(res, 200, { ok: false, error: `unknown agent "${id}"` });
-    if (!isCodingRuntime(ag.runtime)) return sendJson(res, 200, { ok: false, error: 'only CLI-backed agents can be edited' });
-    // Only agents that live under the data home are editable (the read-only bundled examples are not).
-    const userRoot = path.resolve(os.paths.userAgents) + path.sep;
-    if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(b, ag, { fields: ['model', 'effort', 'verbosity'] }));
-    if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
+    // Same editability check as every other lane (claude-code, under the user-agents root).
+    const editable = agentEditable(os, id);
+    if (!editable.ok) return sendJson(res, 200, { ok: false, error: editable.error });
+    const ag = editable.ag;
     const before = readAgentSnapshot(ag);
-    // Only fields present in the body are changed; everything else is preserved.
-    const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
-    const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
-    const examplePrompts = 'examplePrompts' in b ? sanitizeExamplePrompts(b.examplePrompts) : ag.examplePrompts;
-    const shellSecrets = 'shellSecrets' in b ? sanitizeShellSecrets(b.shellSecrets) : ag.shellSecrets;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, icon, examplePrompts, shellSecrets };
-    const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
-    fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
-    if ('claudeMd' in b) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(b.claudeMd ?? ''));
-    os.registerAgent(next);
-    const after = manifestToSnapshot(next, 'claudeMd' in b ? String(b.claudeMd ?? '') : before.claudeMd);
-    const rev = os.agentRevisions.commit(os.tenant, id, before, after, 'agent self-edit', `agent:${agent}`);
-    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, claudeMd: 'claudeMd' in b, rev, by: `agent:${agent}` } });
-    return sendJson(res, 200, { ok: true, id, rev });
+    // ── read-before-write: the caller's copy must still be the current one ──
+    if (b.baseHash !== undefined && String(b.baseHash) !== contentHash(before.claudeMd)) {
+      return sendJson(res, 200, {
+        ok: false, outcome: 'refused', conflict: true, baseHash: contentHash(before.claudeMd),
+        error: `your baseHash is stale — "${id}"'s CLAUDE.md has changed since you read it (now ${contentHash(before.claudeMd)}, ${before.claudeMd.length} chars). Re-read it with agent_get and redo your edit on the current text.`,
+      });
+    }
+    // ── patch, append, or full replacement — resolved into one final text ──
+    const resolved = resolveClaudeMd(before.claudeMd, b);
+    if (!resolved.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: resolved.error });
+    const risk = resolved.text !== undefined ? assessClaudeMdEdit(before.claudeMd, resolved.text) : undefined;
+    const fields: Record<string, unknown> = {};
+    for (const k of ['description', 'category', 'model', 'effort', 'icon', 'verbosity', 'examplePrompts', 'shellSecrets'] as const) {
+      if (k in b) fields[k] = b[k];
+    }
+    if (resolved.text !== undefined) fields.claudeMd = resolved.text;
+    if (!Object.keys(fields).length) return sendJson(res, 200, { ok: false, outcome: 'refused', error: 'nothing to change — pass at least one field' });
+    // ── dry run: say what WOULD happen, write nothing ──
+    // Deliberately BEFORE the shrink guard: a dry run exists to make that guard discoverable, so it has
+    // to report "this would be refused" rather than being refused itself.
+    if (b.dryRun === true) {
+      return sendJson(res, 200, {
+        ok: true, id, outcome: 'dry_run', fields: Object.keys(fields),
+        ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter, droppedHeadings: risk.droppedHeadings, destructive: risk.destructive } : {}),
+        message: `Dry run — nothing was written. This would change ${Object.keys(fields).join(', ')}${risk ? `; CLAUDE.md ${diffStat(risk)}` : ''}${risk?.destructive ? `. It is DESTRUCTIVE (${risk.reason}) and would be REFUSED unless you pass confirmRewrite: true` : ''}.`,
+      });
+    }
+    // ── the shrink guard: an accidental fragment looks exactly like this ──
+    if (risk?.destructive && b.confirmRewrite !== true) {
+      return sendJson(res, 200, {
+        ok: false, outcome: 'refused', destructive: true,
+        bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter, droppedHeadings: risk.droppedHeadings,
+        error: `refused: ${risk.reason}. If you meant to submit only part of the prompt, don't — claudeMd REPLACES the whole file; use claudeMdEdits/claudeMdAppend to change part of it. If you really mean to remove that much, pass confirmRewrite: true.`,
+      });
+    }
+    const out = applyAgentEdit(os, ag, fields, { summary: 'agent self-edit', author: `agent:${agent}` });
+    if (!out.ok) return sendJson(res, 200, { ok: false, outcome: 'refused', error: out.error });
+    const now = os.agents.get(id) ?? ag; // applyAgentEdit re-registered the manifest — log what it IS now
+    os.audit.append({ ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`, type: 'agent.config.updated', data: { agent: id, model: now.model, effort: now.effort, verbosity: now.verbosity, category: now.category, claudeMd: resolved.text !== undefined, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter, destructive: risk?.destructive ?? false, rev: out.rev, by: `agent:${agent}` } });
+    // The revert hint names the revision that holds the state we just replaced, so "undo this" is one call.
+    const undo = out.rev && out.rev > 1 ? ` Saved as rev ${out.rev}; undo with agent_revert { rev: ${out.rev - 1} }.` : out.rev ? ` Saved as rev ${out.rev}.` : ' Nothing actually changed (identical to the current config).';
+    return sendJson(res, 200, {
+      ok: true, id, rev: out.rev, outcome: 'applied',
+      ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter } : {}),
+      baseHash: resolved.text !== undefined ? contentHash(resolved.text) : contentHash(before.claudeMd),
+      message: `Applied to your listing "${id}" (${Object.keys(fields).join(', ')})${risk ? ` — CLAUDE.md ${diffStat(risk)}` : ''}.${undo} The next session you run will use it.`,
+    });
   }
   // Agent reads its OWN revision history (self-scoped) — pick a rev to revert to.
   if (method === 'POST' && p === '/api/agents/history') {
@@ -2418,14 +2476,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, { ok: false, error: editable.error });
     }
     const f = card.fields; // the proposed field delta (only present keys are applied — same shape as the self-edit body)
+    // A card carries a FULL replacement text resolved when it was proposed. If the target's prompt moved
+    // while the card sat in the queue, approving it silently reverts that later change — so say so rather
+    // than blocking (the owner may well still want it, and the revision is revertable either way).
+    const staleBase = !!(card.baseHash && 'claudeMd' in f && contentHash(readAgentSnapshot(editable.ag).claudeMd) !== card.baseHash);
     // Author = the approving owner; the summary preserves who proposed it, so the revision log names both
     // parties. Shares one write path with the auto-apply tier (see src/state/agent-edit.ts).
     const applied = applyAgentEdit(os, editable.ag, f, { summary: `proposed by ${card.agent}, approved by ${me.email}`, author: me.email });
     if (!applied.ok) return sendJson(res, 200, { ok: false, error: applied.error });
     const rev = applied.rev;
     tm.setAgentUpdateProposalStatus(card.id, 'approved');
-    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.update.proposal.approved', data: { target: card.target, proposer: card.agent, by: me.email, fields: Object.keys(f), claudeMd: 'claudeMd' in f, rev } });
-    return sendJson(res, 200, { ok: true, target: card.target, rev });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.update.proposal.approved', data: { target: card.target, proposer: card.agent, by: me.email, fields: Object.keys(f), claudeMd: 'claudeMd' in f, staleBase, rev } });
+    return sendJson(res, 200, { ok: true, target: card.target, rev, staleBase, ...(staleBase ? { warning: `"${card.target}"'s CLAUDE.md changed after this edit was proposed, so applying it replaced that newer text. Rev ${rev} is revertable from the agent's History.` } : {}) });
   }
   const agUpdReject = p.match(/^\/api\/agents\/proposals\/([\w.-]+)\/reject$/);
   if (method === 'POST' && agUpdReject) {

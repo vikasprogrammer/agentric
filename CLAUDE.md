@@ -223,7 +223,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 59 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 60 always-on tools
   + 11 conditional (chat-reply / egress / media, each exposed only when its env flag is set; full list
   in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
@@ -293,7 +293,19 @@ Key modules:
   `applyAgentEdit` in `src/state/agent-edit.ts` — so every outcome snapshots a revertable revision (author
   `agent:<proposer>` on the auto lane, the approver on the gated one). The top tier is the only place an
   agent changes another agent with no human in the loop; it's hard to reach by construction (maturity is
-  damped by `volumeConfidence`, so ~32+ clean autonomous runs), and it's revertable, not undoable-only. Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
+  damped by `volumeConfidence`, so ~32+ clean autonomous runs), and it's revertable, not undoable-only.
+  **`claudeMd` REPLACES the whole prompt**, which produced two clobbering incidents in one live session
+  (a *fragment* submitted over a teammate's 9.5KB prompt; a hand-retyped self-edit that dropped a
+  section). So both write lanes now share the guards in `src/state/agent-edit.ts`: a read counterpart
+  (`agent_get`, returning the prompt verbatim + a `baseHash`), anchored **patch mode**
+  (`claudeMdEdits`/`claudeMdAppend` — `resolveClaudeMd`, harness-`Edit` uniqueness), a `baseHash`
+  precondition so a stale read is a **conflict** not a clobber, `dryRun`, and `assessClaudeMdEdit` — a
+  rewrite deleting >20% or dropping a `#` heading needs `confirmRewrite` on the self lane and **forces
+  the gated lane whatever the maturity tier** on the cross-agent one (as does a proposer's first edit of
+  that target: maturity predicts intent, not correctness of transcription). Both tools echo the
+  **server-composed `message`** rather than writing their own outcome sentence — an MCP process outlives
+  a server upgrade, which is how a live session reported "NOTHING changes until an owner approves" about
+  an already-applied edit. Pinned by `scripts/agent-edit-guard-test.cjs`. Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
   guardrail proposes a **TIGHTEN-ONLY** ruleset change (`tighten` a rule stricter, `reorder` a conditional
   rule above the unconditional allows — the first-match ordering fix, or `add` a new `ask`/`never`
   guardrail). `applyProposal` (`src/governance/policy.ts`) refuses any loosening (by construction + an

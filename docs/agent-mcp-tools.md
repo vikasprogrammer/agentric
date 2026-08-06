@@ -54,8 +54,9 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `goal_get` | `GET /api/goals/get` | `GoalStore.withEvents` + `.progress` + `TaskStore.tasksForGoal` | R | one goal + its full activity timeline + **derived progress** (% from linked tasks) + the linked tasks |
 | `goal_propose` | `POST /api/goals/propose` | `GoalStore.create` (status `draft`) + `TerminalManager.postGoalCard` | W | drafts a NOT-YET-ACTIVE goal + posts a `goal.proposed` inbox card to admins; owner = run-as; auto-apply + audited `goal.proposed`. Agents READ + PROPOSE only — activating/editing a goal is a human owner/admin console action (no agent write path) |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
-| `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; snapshots a revision; audited `agent.config.updated` |
-| `agent_propose_update` | `POST /api/agent/agent/propose` | `TerminalManager.proposeAgentUpdate` | W(tiered) | **cross-agent** — proposes an edit to ANOTHER agent's listing/CLAUDE.md, routed by the **proposer's maturity** against the workspace `AgentProposalTrust` (Settings → Runtime): below `minMaturity` (0.4) **refused** (audited `agent.update.proposal.blocked`); middle band = propose-don't-apply, an owner-addressed `agent.update.proposed` card applied only when an **owner who can run the target** approves (`POST /api/agents/proposals/:id/approve`); at/above `autoApplyAt` (0.8, switchable off) **applied immediately** by `applyAgentEdit` with an admin-addressed notice after the fact (audited `agent.update.applied`). All lanes share one write path (`src/state/agent-edit.ts`) + `AgentRevisions.commit`, so every outcome is revertable; user-home claude-code targets only; 10-open cap + identical-delta dedupe |
+| `agent_get` | `POST /api/agents/get` | `readAgentSnapshot` | R | reads an agent's current editable config **including the full CLAUDE.md** + a `baseHash`; defaults to self, any user-home claude-code agent is readable (the same set `agent_propose_update` can target); a cross-agent read is audited `agent.config.read` |
+| `agent_update` | `POST /api/agents/update` | `applyAgentEdit` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; accepts `claudeMdEdits`/`claudeMdAppend` (anchored patch) as well as a full `claudeMd`; `baseHash` precondition, `dryRun`, and a destructive-rewrite guard needing `confirmRewrite`; snapshots a revision; audited `agent.config.updated` |
+| `agent_propose_update` | `POST /api/agent/agent/propose` | `TerminalManager.proposeAgentUpdate` | W(tiered) | **cross-agent** — proposes an edit to ANOTHER agent's listing/CLAUDE.md, routed by the **proposer's maturity** against the workspace `AgentProposalTrust` (Settings → Runtime): below `minMaturity` (0.4) **refused** (audited `agent.update.proposal.blocked`); middle band = propose-don't-apply, an owner-addressed `agent.update.proposed` card applied only when an **owner who can run the target** approves (`POST /api/agents/proposals/:id/approve`); at/above `autoApplyAt` (0.8, switchable off) **applied immediately** by `applyAgentEdit` with an admin-addressed notice after the fact (audited `agent.update.applied`) — **unless the edit's SHAPE demotes it** (a destructive rewrite, or the proposer's first-ever edit of that target, always waits for a human). Same patch/`baseHash`/`dryRun` surface as `agent_update`. All lanes share one write path (`src/state/agent-edit.ts`) + `AgentRevisions.commit`, so every outcome is revertable; user-home claude-code targets only; 10-open cap + identical-delta dedupe |
 | `agent_history` | `POST /api/agents/history` | `AgentRevisions.list` | R | the caller's own listing revisions (rev/author/summary/date), newest first |
 | `agent_revert` | `POST /api/agents/revert` | `AgentRevisions` + `AgentOS.registerAgent` | W | **self-only**; restores a prior revision (description/prompts/tuning/CLAUDE.md), records the revert as a new revision; audited `agent.config.reverted` |
 | `app_create` | `POST /api/apps/create` | `AppStore.scaffold` | W | builds a hosted app (single-file `server.js` for v1) under `<home>/apps/<slug>/`; lands **proposed** (`published:false`, inert until a human publishes); posts an `app.proposed` review card; audited `app.created` |
@@ -83,7 +84,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `video_generate` | `POST /api/agent/video/generate` | `TerminalManager.generateVideo` → `VideoBackend` + `VideoJobStore` + `ArtifactStore.ingest` | W | text→video (async). Governed as capability `video.generate` with `amountUsd`=per-second×duration estimate (money-cap rule applies), then SUBMITS to the vendor (fal.ai default / Atlas alt, `resolveVideoBackend`) and persists an opaque job handle to `video_jobs`. Renders take minutes: a brief in-call poll catches the fast case, else returns `{status:'rendering', jobId}`; the **Automations-tick poller** (`pollVideoJobs`) finishes it — downloads the mp4, `ingest`s it (`kind:'video'`, folder `generated-videos`) + an owner inbox card, audits `video.generated` (cost = estimate; video is per-second, rarely in-band). Only when `VIDEO_GEN=1` (fal/Atlas key set) |
 | `video_understand` | `POST /api/agent/video/understand` | `TerminalManager.understandVideo` → `VideoBackend` (multimodal) | W | WATCH a video and return a TEXT answer (video→text) — Claude can't see video natively; also handles a still with `kind:"image"`. `video` = a Library artifact id, a working-folder file, or an http(s) URL; optional `prompt` for what to find out ("summarise", "transcribe on-screen text"). No artifact produced. Governed as capability `video.understand` (`amountUsd` estimate, money-cap rule); audited `video.understood`. Only when `VIDEO_UNDERSTAND=1` (set when an **Atlas** multimodal key is configured) |
 
-59 always-on tools + 12 conditional (the conditional ones — `answer`, `slack_reply`/`discord_reply`/`telegram_reply`,
+60 always-on tools + 12 conditional (the conditional ones — `answer`, `slack_reply`/`discord_reply`/`telegram_reply`,
 `slack_send`/`slack_dm`, `discord_send`/`discord_dm`, `image_generate`/`image_edit`, `video_generate`,
 `video_understand` — are exposed only when their env flag is set, i.e. the run is chat-triggered or the
 backend/integration is configured). Read-only tools carry `annotations.readOnlyHint`; `forget`
@@ -208,7 +209,7 @@ scheduler `tick()` fires it once when due, then disables it. Recurring (cron) sc
 human-only. A future tightening could classify `schedule` through Policy for workspaces that want
 sign-off on deferred runs.
 
-### `agent_create` / `agent_update` / `agent_propose_update` / `agent_history` / `agent_revert` — governance model
+### `agent_create` / `agent_get` / `agent_update` / `agent_propose_update` / `agent_history` / `agent_revert` — governance model
 
 `agent_create` is the **agent-author's** build tool (the default *System* agent provisioned by
 `src/edge/agent-author.ts`), though — like the Tasks tools — it's the general **delegation surface**
@@ -228,6 +229,49 @@ revision into `agent_revisions` (`src/state/agent-revisions.ts`), so any change 
 **agent page → Revision history** panel is the human rollback. `agent_update` only touches agents under the
 data home (bundled examples can't be edited) and rewrites only the fields the caller supplied. A future
 tightening could classify CLAUDE.md/model self-edits through Policy for workspaces that want sign-off.
+
+#### Editing a prompt safely — what the write tools enforce (shared by both lanes)
+
+`claudeMd` REPLACES the entire system prompt. Until v0.316.0 that was the only way to change it, and there
+was no way for an agent to READ the document it was replacing — a combination that produced two
+prompt-clobbering incidents in one live session: a cross-agent proposal that submitted a 3,145-char
+*fragment* over a 9,493-char prompt (with a note asking the owner to merge it by hand, which the API has
+no way to honour), and a self-edit that retyped a 240-line prompt and silently dropped a section. Both were
+recovered from `agent_revisions` — that safety net is the reason they were an inconvenience rather than a
+loss. Four guards now stop them at the source, in `src/state/agent-edit.ts` and shared by `agent_update`,
+`agent_propose_update` and the owner-approve route:
+
+- **A read counterpart.** `agent_get` returns the target's current CLAUDE.md verbatim. Safe editing was
+  previously impossible *by construction* unless the agent happened to know the on-disk path and have
+  filesystem access — incidental knowledge, not part of the tool contract.
+- **Patch mode, preferred over replacement.** `claudeMdEdits: [{oldString, newString}]` (harness-`Edit`
+  semantics: each anchor must match **exactly once**, else refused as ambiguous or stale) and
+  `claudeMdAppend`. Most real edits are additive; full replacement is now the escape hatch, not the only
+  door. `resolveClaudeMd` returns `text: undefined` for a request that touches no prompt at all — callers
+  must not confuse that with "replace it with the empty string".
+- **Optimistic concurrency.** `agent_get` hands out a `baseHash`; passing it back makes a stale or
+  concurrent read a **conflict** rather than a silent clobber. Cross-agent proposals additionally pin the
+  `baseHash` onto the review card, so approving a card whose target has moved returns `staleBase` + a
+  warning (it still applies — the owner may want it — but is never silent about it).
+- **A destructive-edit guard, on shape not authorship.** `assessClaudeMdEdit` flags a rewrite that deletes
+  **>20%** of the prompt or drops an existing `#` heading. On the self-edit lane that's refused unless the
+  caller passes `confirmRewrite: true`; on the cross-agent lane it **forces the gated lane regardless of
+  maturity tier**, as does a proposer's first-ever edit of that particular target. Maturity predicts
+  *intent*, not correctness of transcription — a maxed-out proposer submitting a fragment looks exactly
+  like an accident. The diff stat (`−6,348 chars`, dropped section names) rides on the approval card so a
+  human sees the damage without opening the document. `dryRun: true` reports the lane and the diff stat
+  while writing nothing, which is what makes these rules discoverable instead of surprising.
+
+**The reply is composed server-side.** Both write tools return the server's `message` verbatim rather than
+composing their own sentence. An MCP server is spawned per session and lives as long as it, while the lane
+is chosen by the long-running server — so a client that writes its own outcome text keeps asserting the
+*old* behaviour after a server upgrade. That is precisely how a live session reported "NOTHING changes
+until an owner approves it" about an edit the newer server had already applied: the truthful branch had
+shipped, but that session's MCP process predated it. Composing the sentence where the decision is made
+means a stale session can only be *silent* about a new outcome, never *wrong* about it — the worst failure
+here is not a bad edit (those are revertable) but an agent confidently telling a human the wrong thing
+about system state. Every response also carries a typed `outcome`
+(`applied` | `pending_approval` | `dry_run` | `refused`) plus `bytesBefore`/`bytesAfter`/`rev`.
 
 `agent_propose_update` is the **cross-agent** counterpart. Rewriting **another** agent's system prompt is a
 genuine side effect on a different principal — a lateral-privilege / prompt-injection vector if left

@@ -15,7 +15,7 @@ import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { computeAgentStat } from './state/agent-stats';
-import { agentEditable, applyAgentEdit } from './state/agent-edit';
+import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
@@ -176,6 +176,11 @@ lever to pull:
   notice a recurring gap in your own setup: a step you always have to redo, a convention you should
   always follow, a better description of what you do. It takes effect next session and every edit is
   reversible (\`agent_history\` / \`agent_revert\`).
+  **Read before you write:** call \`agent_get\` first (it returns your prompt in full, plus a
+  \`baseHash\` to pass back), then change it with \`claudeMdEdits\` / \`claudeMdAppend\`. A hand-retyped
+  \`claudeMd\` REPLACES the whole document, so anything you forget to retype is deleted — the same is
+  true of \`agent_propose_update\`, where the deleted text belongs to a teammate. Never submit part of a
+  prompt hoping a human will merge it; nothing merges it.
 - Often you want **both**: \`remember\` the one-off fact now, AND — if it reveals a standing rule you'll
   need on every run — fold that rule into your CLAUDE.md with \`agent_update\`. Rule of thumb: a fact
   about THIS task → memory; a change to how you ALWAYS operate → your CLAUDE.md.
@@ -5198,22 +5203,40 @@ export class TerminalManager {
    *                          snapshots a revision like every other edit, so an owner can revert it.
    * Maturity is computed per call from the audit/session history — a full-history scan, but this is a
    * rare, human-speed tool call, not a hot path.
+   *
+   * Maturity predicts INTENT, not correctness of transcription, so it is not the only thing that picks the
+   * lane. A destructive rewrite (see {@link assessClaudeMdEdit}) and a proposer's first-ever edit of this
+   * particular target both force the gated lane whatever the tier says — the two shapes where "a trusted
+   * agent meant well" and "a teammate's prompt was just clobbered" are indistinguishable from the score.
    */
-  proposeAgentUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; error?: string } {
+  proposeAgentUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; outcome?: string; message?: string; error?: string; conflict?: boolean; baseHash?: string; bytesBefore?: number; bytesAfter?: number; droppedHeadings?: string[]; destructive?: boolean } {
     const target = String(body.id ?? '').trim().toLowerCase();
-    if (!target) return { ok: false, error: 'id (the agent to edit) is required' };
-    if (target === proposer) return { ok: false, error: 'use agent_update to edit your own listing' };
-    if (!String(body.rationale ?? '').trim()) return { ok: false, error: 'a rationale is required — the approver sees it on the card' };
+    if (!target) return { ok: false, outcome: 'refused', error: 'id (the agent to edit) is required' };
+    if (target === proposer) return { ok: false, outcome: 'refused', error: 'use agent_update to edit your own listing' };
+    if (!String(body.rationale ?? '').trim()) return { ok: false, outcome: 'refused', error: 'a rationale is required — the approver sees it on the card' };
     const editable = agentEditable(this.os, target);
-    if (!editable.ok) return { ok: false, error: editable.error };
+    if (!editable.ok) return { ok: false, outcome: 'refused', error: editable.error };
     const ag = editable.ag;
+    const current = readAgentSnapshot(ag).claudeMd;
+    // ── read-before-write: refuse a write built on a stale copy of the target ──
+    if (body.baseHash !== undefined && String(body.baseHash) !== contentHash(current)) {
+      return {
+        ok: false, outcome: 'refused', conflict: true, baseHash: contentHash(current),
+        error: `your baseHash is stale — "${target}"'s CLAUDE.md has changed since you read it (now ${contentHash(current)}, ${current.length} chars). Re-read it with agent_get and redo your edit on the current text.`,
+      };
+    }
+    // ── patch, append, or full replacement — resolved against the target's CURRENT text ──
+    const resolved = resolveClaudeMd(current, body);
+    if (!resolved.ok) return { ok: false, outcome: 'refused', error: resolved.error };
+    const risk = resolved.text !== undefined ? assessClaudeMdEdit(current, resolved.text) : undefined;
     // Only the fields actually present become the delta; store them verbatim on the card for the approve route.
     const fields: Record<string, unknown> = {};
-    for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
+    for (const k of ['description', 'category', 'model', 'effort', 'icon'] as const) {
       if (k in body) fields[k] = String(body[k] ?? '');
     }
+    if (resolved.text !== undefined) fields.claudeMd = resolved.text;
     if ('examplePrompts' in body && Array.isArray(body.examplePrompts)) fields.examplePrompts = body.examplePrompts.map(String);
-    if (!Object.keys(fields).length) return { ok: false, error: 'nothing to change — pass at least one field (description, claudeMd, category, model, effort, icon, examplePrompts)' };
+    if (!Object.keys(fields).length) return { ok: false, outcome: 'refused', error: 'nothing to change — pass at least one field (description, claudeMd/claudeMdEdits/claudeMdAppend, category, model, effort, icon, examplePrompts)' };
     // ── the trust tier: what this proposer's track record earns it ──────────────────────────────
     const trust = this.os.settings.agentProposalTrust();
     const maturity = computeAgentStat(this.db, proposer).maturity;
@@ -5221,59 +5244,108 @@ export class TerminalManager {
     if (maturity < trust.minMaturity) {
       this.audit(sessionId, proposer, 'agent.update.proposal.blocked', { target, maturity, floor: trust.minMaturity, fields: Object.keys(fields) });
       return {
-        ok: false, maturity,
+        ok: false, outcome: 'refused', maturity,
         error: `your maturity is ${pct}/100 and this workspace requires ${Math.round(trust.minMaturity * 100)}/100 to propose edits to another agent. Maturity comes from completed runs that needed few approvals and hit no denials — keep doing your own work well, and tell a human directly if "${target}" needs changing.`,
       };
     }
     const rationaleText = String(body.rationale).trim();
     const previewText = Object.keys(fields).map((k) => (k === 'claudeMd' ? 'CLAUDE.md (system prompt)' : k)).join(', ');
-    if (trust.autoApply && maturity >= trust.autoApplyAt) {
+    const diffLine = risk ? `\n\nCLAUDE.md: ${diffStat(risk)}${risk.droppedHeadings.length ? ` — DROPS ${risk.droppedHeadings.length} existing section${risk.droppedHeadings.length === 1 ? '' : 's'}: ${risk.droppedHeadings.slice(0, 5).map((h) => `"${h}"`).join(', ')}${risk.droppedHeadings.length > 5 ? ', …' : ''}` : ''}` : '';
+    // ── shape beats score: two edits a maturity tier must not wave through ──
+    // A destructive rewrite is the fingerprint of a caller that submitted a fragment, and a first edit of
+    // THIS target has no track record behind it however good the proposer's average is. Either one demotes
+    // the call to the gated lane; neither can be waved off by the proposer (confirmRewrite is a self-edit
+    // affordance — here a human reads the diff stat instead).
+    const firstEditOfTarget = !this.hasEditedAgentBefore(proposer, target);
+    const forceGate = (risk?.destructive ?? false) || firstEditOfTarget;
+    const forceReason = risk?.destructive
+      ? `it ${risk.reason}`
+      : 'this is your first edit of this agent';
+    // ── dry run: name the lane and the damage, write nothing ──
+    if (body.dryRun === true) {
+      const lane = trust.autoApply && maturity >= trust.autoApplyAt && !forceGate ? 'apply immediately' : 'wait for an owner to approve';
+      return {
+        ok: true, outcome: 'dry_run', preview: previewText, maturity,
+        ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter, droppedHeadings: risk.droppedHeadings, destructive: risk.destructive } : {}),
+        message: `Dry run — nothing was written. This would change ${previewText} on "${target}" and would ${lane}${forceGate && trust.autoApply && maturity >= trust.autoApplyAt ? ` (demoted to review because ${forceReason})` : ''}.${diffLine}`,
+      };
+    }
+    if (trust.autoApply && maturity >= trust.autoApplyAt && !forceGate) {
       // Top tier: apply now, tell the owner afterwards. The revision snapshot is what makes this safe to
       // undo — the notification card names the rev so an owner can revert it in one step.
       const applied = applyAgentEdit(this.os, ag, fields, {
         summary: `auto-applied from ${proposer} (maturity ${pct}/100): ${rationaleText}`,
         author: `agent:${proposer}`,
       });
-      if (!applied.ok) return { ok: false, error: applied.error };
+      if (!applied.ok) return { ok: false, outcome: 'refused', error: applied.error };
       this.addMessage({
         type: 'notification', sessionId, agent: proposer,
         title: `${proposer} edited ${target}`,
-        body: `${rationaleText}\n\nChanges to \`${target}\`: ${previewText}\n\nApplied automatically — ${proposer} is at maturity ${pct}/100, at or above this workspace's ${Math.round(trust.autoApplyAt * 100)}/100 auto-apply bar.${applied.rev ? ` Saved as rev ${applied.rev}; revert it from the agent's History if it's wrong.` : ''}`,
+        body: `${rationaleText}\n\nChanges to \`${target}\`: ${previewText}${diffLine}\n\nApplied automatically — ${proposer} is at maturity ${pct}/100, at or above this workspace's ${Math.round(trust.autoApplyAt * 100)}/100 auto-apply bar.${applied.rev ? ` Saved as rev ${applied.rev}; revert it from the agent's History if it's wrong.` : ''}`,
         status: 'open',
-        args: { target, fields, rationale: rationaleText, preview: previewText, maturity, rev: applied.rev, autoApplied: true },
+        args: { target, fields, rationale: rationaleText, preview: previewText, maturity, rev: applied.rev, autoApplied: true, ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter } : {}) },
         audienceKind: 'admins',
       });
-      this.audit(sessionId, proposer, 'agent.update.applied', { target, fields: Object.keys(fields), maturity, bar: trust.autoApplyAt, rev: applied.rev, auto: true });
-      return { ok: true, preview: previewText, applied: true, rev: applied.rev, maturity };
+      this.audit(sessionId, proposer, 'agent.update.applied', { target, fields: Object.keys(fields), maturity, bar: trust.autoApplyAt, rev: applied.rev, auto: true, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter });
+      return {
+        ok: true, preview: previewText, applied: true, rev: applied.rev, maturity, outcome: 'applied',
+        ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter } : {}),
+        message: `APPLIED your edit to "${target}" (${previewText}) — your maturity (${pct}/100) is at or above this workspace's auto-apply bar, so it took effect immediately WITHOUT a human approving it.${risk ? ` CLAUDE.md ${diffStat(risk)}.` : ''}${applied.rev ? ` Saved as rev ${applied.rev}.` : ''} An owner has been notified and can revert it. "${target}" picks it up on its next session. Do NOT tell anyone this is awaiting review — it is already live.`,
+      };
     }
     // Cap the queue + dedupe an identical open proposal from this agent for this target (mirrors proposeAutomation).
     const open = this.db.prepare(`SELECT args FROM messages WHERE type = 'agent.update.proposed' AND status = 'open' AND agent = ?`).all<{ args: string | null }>(proposer);
-    if (open.length >= 10) return { ok: false, error: 'you already have 10 open edit proposals awaiting review — wait for a human to act on them first' };
+    if (open.length >= 10) return { ok: false, outcome: 'refused', error: 'you already have 10 open edit proposals awaiting review — wait for a human to act on them first' };
     const deltaKey = JSON.stringify({ target, fields });
     if (open.some((o) => { try { const a = JSON.parse(o.args || '{}') as { target?: string; fields?: unknown }; return JSON.stringify({ target: a.target, fields: a.fields }) === deltaKey; } catch { return false; } })) {
-      return { ok: false, error: 'an identical edit proposal from you is already awaiting review' };
+      return { ok: false, outcome: 'refused', error: 'an identical edit proposal from you is already awaiting review' };
     }
-    // Middle band — the owner decides. The proposer's maturity rides on the card so the reviewer weighs
-    // the proposal against its author's track record instead of on prose alone.
+    // Middle band (or a demoted top-tier call) — the owner decides. The proposer's maturity rides on the
+    // card so the reviewer weighs the proposal against its author's track record instead of on prose alone,
+    // and the diff stat puts a −6,348/+0 rewrite in front of them without opening the document.
+    const demoted = forceGate && trust.autoApply && maturity >= trust.autoApplyAt;
     this.postReviewCard({
       type: 'agent.update.proposed', sessionId, agent: proposer,
       title: `Edit proposed for ${target}`,
-      body: `${rationaleText}\n\nChanges to \`${target}\`: ${previewText}\n\nProposed by ${proposer} — maturity ${pct}/100.`,
-      args: { target, fields, rationale: rationaleText, preview: previewText, maturity },
+      body: `${rationaleText}\n\nChanges to \`${target}\`: ${previewText}${diffLine}\n\nProposed by ${proposer} — maturity ${pct}/100.${demoted ? ` Above the auto-apply bar but held for review because ${forceReason}.` : ''}`,
+      // baseHash pins the text this delta was written against, so the approve route can tell the owner when
+      // the target moved while the card sat in the queue (a full replacement would silently undo the change).
+      args: { target, fields, rationale: rationaleText, preview: previewText, maturity, demoted, baseHash: contentHash(current), ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter, droppedHeadings: risk.droppedHeadings } : {}) },
       summary: `${proposer} (maturity ${pct}/100) proposes editing ${target} (${previewText})`,
     });
-    this.audit(sessionId, proposer, 'agent.update.proposed', { target, fields: Object.keys(fields), maturity });
-    return { ok: true, preview: previewText, applied: false, maturity };
+    this.audit(sessionId, proposer, 'agent.update.proposed', { target, fields: Object.keys(fields), maturity, demoted, destructive: risk?.destructive ?? false, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter });
+    return {
+      ok: true, preview: previewText, applied: false, maturity, outcome: 'pending_approval',
+      ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter, destructive: risk.destructive } : {}),
+      message: `Proposed an edit to "${target}" (${previewText}) — it is in an owner's inbox for review. NOTHING has changed yet; an owner who can run "${target}" must approve it first, and the target picks it up on its next session once applied.${risk ? ` CLAUDE.md would go ${diffStat(risk)}.` : ''}${demoted ? ` (Your maturity is above the auto-apply bar, but this one is held for review because ${forceReason}.)` : ''}`,
+    };
+  }
+
+  /**
+   * Has this proposer successfully edited this target before? The question the "first edit of a given
+   * agent waits for a human" rule turns on.
+   *
+   * It cannot be answered from revision AUTHORSHIP alone: an owner-approved proposal is attributed to the
+   * approving owner (that's who took responsibility for it), so counting only `agent:<proposer>` revisions
+   * would mean approval never builds a track record and the auto-apply tier stays permanently unreachable
+   * for every target the proposer hasn't already auto-applied to. So a human's YES counts too.
+   */
+  private hasEditedAgentBefore(proposer: string, target: string): boolean {
+    if (this.os.agentRevisions.list(target).some((r) => r.author === `agent:${proposer}`)) return true;
+    return this.db
+      .prepare(`SELECT args FROM messages WHERE type = 'agent.update.proposed' AND status = 'approved' AND agent = ?`)
+      .all<{ args: string | null }>(proposer)
+      .some((r) => { try { return String((JSON.parse(r.args || '{}') as { target?: unknown }).target ?? '') === target; } catch { return false; } });
   }
 
   /** The proposed agent-edit review card by id (its target + field delta + status) — for the approve/reject routes. */
-  agentUpdateProposalCard(id: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; status: string } | undefined {
+  agentUpdateProposalCard(id: string): { id: string; agent: string; target: string; fields: Record<string, unknown>; rationale?: string; preview?: string; baseHash?: string; status: string } | undefined {
     const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'agent.update.proposed'`).get<{ agent: string; args: string | null; status: string }>(id);
     if (!row) return undefined;
     let a: Record<string, unknown> = {};
     try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
     if (!a.target || !a.fields) return undefined;
-    return { id, agent: row.agent, target: String(a.target), fields: a.fields as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+    return { id, agent: row.agent, target: String(a.target), fields: a.fields as Record<string, unknown>, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, baseHash: a.baseHash ? String(a.baseHash) : undefined, status: row.status };
   }
   setAgentUpdateProposalStatus(id: string, status: 'approved' | 'rejected'): void {
     this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'agent.update.proposed'`).run(status, id);

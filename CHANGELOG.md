@@ -8,6 +8,47 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.317.0] — 2026-08-06
+### Added
+- **`agent_get` — agents can finally READ a prompt before replacing it.** `agent_update` /
+  `agent_propose_update` require `claudeMd` to be the complete new system prompt, and there was no tool
+  that returned the current one. Safe editing was therefore impossible *by construction* unless an agent
+  happened to know the on-disk path and have filesystem access — incidental knowledge, not part of the
+  tool contract. `agent_get` returns the full CLAUDE.md, the listing fields and a `baseHash`; it defaults
+  to the caller and accepts any user-home claude-code agent (the same set `agent_propose_update` can
+  target), auditing cross-agent reads as `agent.config.read`.
+- **Patch mode on both edit lanes.** `claudeMdEdits: [{oldString, newString}]` (harness-`Edit` semantics —
+  each anchor must match exactly once, else refused as ambiguous or stale) and `claudeMdAppend`. The
+  overwhelmingly common edit is "add a section", which previously had to be expressed as "retype 20KB
+  perfectly"; full replacement is now the escape hatch rather than the only door.
+- **`baseHash` preconditions and `dryRun`.** Passing the `baseHash` from `agent_get` turns a stale or
+  concurrent read into a **conflict** instead of a silent clobber; the cross-agent lane also pins it onto
+  the review card, so approving a proposal whose target has since moved returns `staleBase` + a warning
+  rather than quietly reverting the newer text. `dryRun: true` reports the fields, the diff stat and the
+  lane the call would take while writing nothing.
+- `scripts/agent-edit-guard-test.cjs` (wired into `npm run test:governance`) replays both incidents and
+  pins every guard.
+
+### Changed
+- **A destructive prompt rewrite is now judged by its SHAPE, not just the proposer's maturity.**
+  `assessClaudeMdEdit` flags a rewrite that deletes >20% of a prompt or drops an existing `#` heading —
+  the fingerprint of a caller that submitted a fragment. On the self-edit lane it is refused unless
+  `confirmRewrite: true`; on the cross-agent lane it **forces the owner-review lane regardless of the
+  maturity tier**, as does a proposer's first-ever edit of that particular target. Maturity predicts
+  *intent*, not correctness of transcription: a maxed-out proposer submitting a fragment is
+  indistinguishable from an accident by score alone. Approval cards now carry the diff stat and the names
+  of the dropped sections, so a human sees `−6,348 chars` without opening the document.
+- **The edit tools now echo a server-composed `message` instead of writing their own outcome sentence,
+  and return a typed `outcome`** (`applied` | `pending_approval` | `dry_run` | `refused`) with
+  `bytesBefore`/`bytesAfter`/`rev`. An MCP server is spawned per session and lives as long as it, while
+  the lane is decided by the long-running server — so a client that composes its own text keeps asserting
+  the *old* behaviour after a server upgrade. That is exactly how a live session reported "NOTHING changes
+  until an owner approves it" about an edit the newer server had already applied (the truthful branch had
+  shipped in 0.312.0; that session's MCP process predated it). Composing the sentence where the decision
+  is made means a stale session can only be silent about a new outcome, never wrong about it.
+- The agent self-edit route now shares `applyAgentEdit` with the approve and auto-apply lanes, so all
+  three validate, write and snapshot identically.
+
 ## [0.316.0] — 2026-08-06
 ### Changed
 - **Console chat keeps the runtime warm between turns — a follow-up no longer pays a cold start.** Every
