@@ -8,6 +8,39 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.316.0] — 2026-08-06
+### Changed
+- **Console chat keeps the runtime warm between turns — a follow-up no longer pays a cold start.** Every
+  console chat turn relaunched `claude` (a headless `--resume` seeded with the message): measured on the
+  live tenant, 3.7–6.7s to first token, paid again for every "and one more thing". Chat sessions now spawn
+  **resident** (the warm lane Slack threads already used) and a turn is delivered into the live pane by
+  send-keys; only a session whose pane is gone (idle-reaped, crashed) relaunches, and it relaunches
+  resident, so the turn after that is warm again.
+
+  The cold-per-turn design was a deliberate trade, not an accident — it bought two properties, and both
+  are kept by other means rather than given back:
+  - **"Working" is no longer inferred from "a pane exists."** A warm pane outlives the turn it answered,
+    which is exactly how the 2026-07-14 stuck-"thinking…" bug happened. The runtime now says so directly:
+    `term_sessions.busy_since` is set when a turn starts and cleared by the Stop-hook turn-end beacon
+    (`markTurnIdle`, which for a resident run stamps and returns instead of tearing the pane down),
+    surfacing as `Session.working`. The chat window spins on that; `alive` goes back to meaning only
+    "there is a pane".
+  - **A keystroke that doesn't take is repaired, not lost.** `confirmWarmTurn` re-checks the transcript
+    12s after delivery; if nothing was written the turn never started, so the pane is killed and the
+    message relaunched cold (audited `chat.deliver.unconfirmed` / `chat.deliver.recovered`). A newer
+    message, a growing transcript, or a deliberate teardown all cancel it, so it can only fire on a turn
+    that genuinely went nowhere.
+
+  Two consequences worth stating plainly. A warm chat holds a live `claude` (hundreds of MB) between
+  turns, so the **idle reaper is what bounds it** (Settings → chat idle timeout, default 30 min); that
+  sweep now also reaps a `done` resident row — a chat that ended its turn with `report` kept a live pane
+  that no sweep owned, which would have leaked one process per conversation. And a message typed while a
+  turn is generating is now **delivered and queued** by claude rather than refused with "still working —
+  resend", matching how Slack threads have always behaved.
+
+  `chat.turn` is audited with `mode: warm | cold`, so the split is measurable rather than assumed.
+  `scripts/warm-chat-test.cjs` (in `npm run test:governance`) covers all of it against a stubbed backend.
+
 ## [0.315.2] — 2026-08-06
 ### Added
 - **`scripts/make-live.sh` — the northwind deploy, as a script instead of a retyped sequence.** "Make it

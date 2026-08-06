@@ -11,8 +11,14 @@ detached **tmux** pane, seeds each turn as a resume prompt, and **reads the inte
 for display. That works, but it inherits three structural limits:
 
 1. **Fragile driver.** Keeping a live TUI pane warm and injecting turns is racy (the 2026-07-14 stuck
-   "thinking…" bug). v1 hardens this by making every turn a self-terminating headless resume — reliable,
-   but it **cold-starts Claude per turn** (no warm latency) and can never token-stream.
+   "thinking…" bug). v1 first hardened this by making every turn a self-terminating headless resume —
+   reliable, but it **cold-started Claude per turn** (3.7–6.7s to first token, measured live). v0.316.0
+   took the warmth back without the raciness, by naming the two failure modes and handling each:
+   the stuck spinner (a warm pane outliving its turn) is fixed by `busy_since` + the Stop-hook turn-end
+   beacon, so "working" is a signal the runtime sends rather than an inference from "a pane exists"; and
+   a swallowed keystroke is repaired by `confirmWarmTurn`, which relaunches cold when the transcript
+   shows the turn never started. What remains structurally out of reach here is **token streaming** —
+   send-keys into a TUI can't produce deltas.
 2. **No streaming.** Display is message-level polling (2 s). Non-technical users read a chat app; live
    typing would feel materially better.
 3. **Volatile display source.** The transcript JSONL under `~/.claude/projects/**` is undocumented and

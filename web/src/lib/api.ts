@@ -291,6 +291,9 @@ export interface Session {
   /** True when the tmux pane is alive now, regardless of the stored lifecycle `status` (an interactive
    *  session that reported `done` keeps a live pane). Undefined when the server couldn't poll tmux. */
   alive?: boolean
+  /** True when a TURN is in flight. A warm chat session keeps its pane between turns, so `alive` no
+   *  longer implies "working" — this does. Cleared by the runtime's turn-end beacon. */
+  working?: boolean
   /** True when this session can be resurrected in place via `claude --resume` on re-open (interactive
    *  session with a persisted launch env). Headless runs are never resumable. */
   resumable?: boolean
