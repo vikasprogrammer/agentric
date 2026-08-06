@@ -36,9 +36,13 @@ running such a script, or you will pollute live data.
   `northwind` tenant runs under launchd as `com.agentos.northwind` (`~/Library/LaunchAgents/com.agentos.northwind.plist`,
   KeepAlive, home `~/agent-os-data/northwind` (kept OUTSIDE the repo checkout so a spawned agent's
   parent-dir CLAUDE.md walk can't pick up this repo's own CLAUDE.md; new tenants go alongside as
-  `~/agent-os-data/<slug>`), on :3010, fronted by `tailscale serve` http→3010): rebuild + bounce with
-  `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at `~/agent-os-data/northwind/server.log`;
-  load/unload with `launchctl load -w|unload <plist>`.)
+  `~/agent-os-data/<slug>`), on :3010, fronted by `tailscale serve` http→3010): **"make it live" is
+  `scripts/make-live.sh`** — it syncs the dedicated live checkout (`~/agent-os-live`) to `origin/main`,
+  installs only if a lockfile moved, builds both bundles, gates on `npm run test:governance`, restarts
+  via `launchctl kickstart` (never `pkill`), and verifies `/health` reports the version it just built,
+  printing the rollback command if it doesn't. `--dry-run` shows what would deploy. The manual
+  equivalent is `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at
+  `~/agent-os-data/northwind/server.log`; load/unload with `launchctl load -w|unload <plist>`.)
 - **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`revise`/`forget`, the
   `kb_*` tools, `ask`/`check_inbox`/`report`/`update`/`publish`/`library_list`, `schedule`/`unschedule`,
   …; full list in `docs/agent-mcp-tools.md`):** changing a tool's SCHEMA needs `npm run build` **+ relaunch

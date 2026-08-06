@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.315.2] — 2026-08-06
+### Added
+- **`scripts/make-live.sh` — the northwind deploy, as a script instead of a retyped sequence.** "Make it
+  live" was five manual steps against the dedicated live checkout (`~/agent-os-live`), and the manual
+  version skipped verification often enough to matter: nothing checked that the running process actually
+  reported the version just built — the difference between "the change is live" and "a long-running
+  server is still holding the old code in memory". The script syncs to `origin/main` (refusing to
+  `reset --hard` over local changes without `--force`), installs dependencies only when a lockfile
+  actually moved, builds both bundles, gates on `npm run test:governance`, restarts with
+  `launchctl kickstart` — never `pkill -f "dist/cli.js serve"`, which is shared by every tenant on the
+  box and took prod down on 2026-08-01 — then polls `/health` until it reports the built version, and
+  prints the exact rollback command if it never does. A build or test failure aborts BEFORE the restart,
+  so a bad commit leaves the running server untouched. `--dry-run` shows what would deploy.
+  Northwind-specific by design (paths/label/port are env-overridable); other tenants have their own
+  service and home.
+
 ## [0.315.1] — 2026-08-06
 ### Fixed
 - **Starting a chat no longer blocks — on the server or on screen.** Sessions and tasks got fast; chat
