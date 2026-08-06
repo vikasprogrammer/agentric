@@ -7,9 +7,10 @@
  * us their Composio API key — at each agent-session launch we exchange it (scoped to the launching
  * member) for a fresh session URL and write THAT into the per-session `.mcp.json`.
  *
- * This module is deliberately Composio-specific (a connector plugin, not core). The blocking
- * `curl` call mirrors `terminal/gate-hook.sh`: it keeps the launch path synchronous — no async
- * ripple through createSession / the server / automations — and adds no runtime dependency.
+ * This module is deliberately Composio-specific (a connector plugin, not core). Two transports for
+ * the same mint: a blocking `curl` (mirrors `terminal/gate-hook.sh`, for callers already off the hot
+ * path) and a `fetch` one for the session-launch path, where blocking the event loop for ~1.5s per
+ * launch stalled every other request on this single-threaded server.
  */
 import { spawnSync } from 'child_process';
 import { createHmac, timingSafeEqual } from 'crypto';
@@ -208,16 +209,9 @@ export interface MintOptions {
   manageConnections?: boolean;
 }
 
-/**
- * Mint a Tool Router session for `userId` and return its MCP endpoint URL. The session is scoped to
- * that user, so the agent only sees the apps that user has connected on composio.dev — and Tool
- * Router auto-selects the relevant tools from them. Returns `{ error }` (never throws) so a flaky
- * network or a bad key degrades to "this connector is skipped this launch", not a dead session.
- */
-export function mintToolRouterSession(apiKey: string, userId: string, opts: MintOptions = {}): MintResult {
-  if (!apiKey) return { error: 'no Composio API key' };
-  const url = `${apiBase()}/api/v3.1/tool_router/session`;
-  const body = JSON.stringify({
+/** The request body a mint sends — shared by the sync and async paths so they can never diverge. */
+function mintBody(userId: string, opts: MintOptions): string {
+  return JSON.stringify({
     user_id: userId,
     ...(opts.toolkits?.length ? { toolkits: { enable: opts.toolkits } } : {}),
     ...(opts.connectedAccounts && Object.keys(opts.connectedAccounts).length
@@ -225,26 +219,67 @@ export function mintToolRouterSession(apiKey: string, userId: string, opts: Mint
       : {}),
     ...(opts.manageConnections === false ? { manage_connections: { enable: false } } : {}),
   });
-  const res = spawnSync(
-    'curl',
-    ['-sS', '--max-time', '20', '-X', 'POST', url,
-     '-H', `${COMPOSIO_KEY_HEADER}: ${apiKey}`, '-H', 'content-type: application/json',
-     '-d', body],
-    { encoding: 'utf8' },
-  );
-  if (res.error) return { error: `curl failed: ${res.error.message}` };
-  if (res.status !== 0) return { error: `curl exited ${res.status}: ${(res.stderr || '').trim()}` };
+}
+
+/** Turn a mint response body into `{ url }` or `{ error }`. Shared by both transports. */
+function mintResult(text: string): MintResult {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(res.stdout || '{}');
+    parsed = JSON.parse(text || '{}');
   } catch {
-    return { error: `unexpected response: ${(res.stdout || '').slice(0, 200)}` };
+    return { error: `unexpected response: ${(text || '').slice(0, 200)}` };
   }
   const mcpUrl = (parsed as { mcp?: { url?: string } })?.mcp?.url;
   if (typeof mcpUrl === 'string' && mcpUrl) return { url: mcpUrl };
   const apiErr = (parsed as { error?: { message?: string }; message?: string })?.error?.message
     || (parsed as { message?: string })?.message;
   return { error: apiErr || `no mcp.url in response: ${JSON.stringify(parsed).slice(0, 200)}` };
+}
+
+/**
+ * Mint a Tool Router session for `userId` and return its MCP endpoint URL. The session is scoped to
+ * that user, so the agent only sees the apps that user has connected on composio.dev — and Tool
+ * Router auto-selects the relevant tools from them. Returns `{ error }` (never throws) so a flaky
+ * network or a bad key degrades to "this connector is skipped this launch", not a dead session.
+ *
+ * BLOCKING. Prefer {@link mintToolRouterSessionAsync} on any path that runs inside a request: a mint
+ * costs ~0.5–1s of wall clock, and `spawnSync` spends all of it with the event loop stopped — so two
+ * mints on a session launch froze the WHOLE server for ~1.5s. This variant is kept for the one caller
+ * (connection setup) that is already off the hot path.
+ */
+export function mintToolRouterSession(apiKey: string, userId: string, opts: MintOptions = {}): MintResult {
+  if (!apiKey) return { error: 'no Composio API key' };
+  const url = `${apiBase()}/api/v3.1/tool_router/session`;
+  const res = spawnSync(
+    'curl',
+    ['-sS', '--max-time', '20', '-X', 'POST', url,
+     '-H', `${COMPOSIO_KEY_HEADER}: ${apiKey}`, '-H', 'content-type: application/json',
+     '-d', mintBody(userId, opts)],
+    { encoding: 'utf8' },
+  );
+  if (res.error) return { error: `curl failed: ${res.error.message}` };
+  if (res.status !== 0) return { error: `curl exited ${res.status}: ${(res.stderr || '').trim()}` };
+  return mintResult(res.stdout || '');
+}
+
+/**
+ * The non-blocking mint (global `fetch`, Node 18+). Same contract as {@link mintToolRouterSession} —
+ * never throws, `{ error }` on any failure — but it yields the event loop while Composio answers, so
+ * a launch's several mints run CONCURRENTLY and the server keeps serving other requests meanwhile.
+ */
+export async function mintToolRouterSessionAsync(apiKey: string, userId: string, opts: MintOptions = {}): Promise<MintResult> {
+  if (!apiKey) return { error: 'no Composio API key' };
+  try {
+    const res = await fetch(`${apiBase()}/api/v3.1/tool_router/session`, {
+      method: 'POST',
+      headers: { [COMPOSIO_KEY_HEADER]: apiKey, 'content-type': 'application/json' },
+      body: mintBody(userId, opts),
+      signal: AbortSignal.timeout(20_000),
+    });
+    return mintResult(await res.text());
+  } catch (e) {
+    return { error: `mint failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 // ── ingress: Composio Webhook Triggers V2 ───────────────────────────────────────────

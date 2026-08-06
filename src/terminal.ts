@@ -16,7 +16,7 @@ import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
 import { computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit } from './state/agent-edit';
-import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
+import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
 import { resolveCapability } from './capabilities/normalize';
@@ -657,6 +657,24 @@ export interface SessionEventNotice {
   message: string;
 }
 
+/** Everything the runtime launcher needs for ONE launch of a session row. Named (rather than inline)
+ *  because the launch is now scheduled and executed in two steps — see `launchAgentRuntime`. */
+interface LaunchSpec {
+  id: string; agent: string; task: string; secret: string;
+  actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean; hasClickup: boolean; hasTelegram: boolean;
+  headless: boolean; resident: boolean; resume: boolean;
+  /** The transcript id to pin. NULL for a runtime that mints its own (Codex) — the launcher
+   *  discovers it and reports it back via /api/runtime-session instead. */
+  claudeSessionId: string | null;
+  /** Per-launch tuning override (highest priority over the agent manifest + workspace default) — e.g. a
+   *  delegated task pinning the model/effort of its dispatched session. Undefined → resolve as before. */
+  tuning?: RuntimeTuning;
+  /** Fork: branch this NEW session (claudeSessionId) off an existing conversation (forkFrom). The
+   *  launcher's FORK_FROM branch runs `claude --resume <forkFrom> --fork-session --session-id
+   *  <claudeSessionId>` on first launch; a reattach (resume:true) resumes the fork's own branch. */
+  forkFrom?: string;
+}
+
 export class TerminalManager {
   /** Scripted demo runner — for `runtime: mock` agents. */
   private readonly runner = path.resolve(__dirname, '../terminal/agent-runner.sh');
@@ -687,6 +705,11 @@ export class TerminalManager {
    *  agent via an `instruct` (allow + advisory note). In-memory per session. Off when AOS_RELIABILITY=0. */
   private readonly reliability = new ReliabilityMonitor();
   private readonly reliabilityOn = process.env.AOS_RELIABILITY !== '0';
+  /** Sessions whose runtime launch is SCHEDULED but whose pane doesn't exist yet (see
+   *  `launchAgentRuntime`). `isAlive` counts them as live so the window between "row written" and
+   *  "tmux up" can't be read as "nothing is running" — which would let a second turn launch a
+   *  competing claude on the same transcript. */
+  private readonly launching = new Set<string>();
   /** Optional sink notified when an approval card lands, so an out-of-band channel (Slack/Discord DM)
    *  can ping the approver. Set by the registry once the chat sockets exist; absent = no notifications. */
   private approvalNotifier?: (notice: ApprovalNotice) => void;
@@ -868,7 +891,10 @@ export class TerminalManager {
     if (alive) {
       const cutoff = Date.now() - 10_000;
       for (const r of rows) {
-        if (r.status === 'running' && !alive.has(r.tmux) && r.created_at < cutoff) this.markCrashed(r);
+        // `launching` shields a run whose pane is still being brought up — a RE-launch (a chat turn, a
+        // revive) reuses an old row, so `created_at` grace doesn't cover it and the poll would otherwise
+        // read the gap as a crash.
+        if (r.status === 'running' && !alive.has(r.tmux) && r.created_at < cutoff && !this.launching.has(r.id)) this.markCrashed(r);
       }
     }
     const visible = viewer ? rows.filter((r) => this.canViewRow(r.spawned_by, r.run_as, viewer)) : rows;
@@ -887,7 +913,7 @@ export class TerminalManager {
     return visible.map((r) => ({
       ...toSession(r),
       ...links.get(r.id),
-      alive: alive ? alive.has(r.tmux) : undefined,
+      alive: this.launching.has(r.id) ? true : alive ? alive.has(r.tmux) : undefined,
       blocked: r.status === 'running' && blocked.has(r.id),
       resumable: resumable.has(r.id),
       forkable: !!r.claude_session_id && runtimeSupports(this.os.agents.get(r.agent)?.runtime, 'fork'),
@@ -1157,7 +1183,7 @@ export class TerminalManager {
     const cutoff = Date.now() - 10_000;
     const rows = this.db.prepare("SELECT * FROM term_sessions WHERE status = 'running'").all<SessionRow>();
     for (const r of rows) {
-      if (!alive.has(r.tmux) && r.created_at < cutoff) {
+      if (!alive.has(r.tmux) && r.created_at < cutoff && !this.launching.has(r.id)) {
         try { this.markCrashed(r); } catch { /* one bad row must not stop the sweep */ }
       } else if (alive.has(r.tmux)) {
         try { this.guardHookTrust(r); } catch { /* one bad row must not stop the sweep */ }
@@ -1739,6 +1765,8 @@ export class TerminalManager {
 
   /** Is this session's tmux shell still alive? (The automations guard against pile-ups.) */
   isAlive(sessionId: string): boolean {
+    // A launch that is scheduled but hasn't reached tmux yet IS a live run — see `launching`.
+    if (this.launching.has(sessionId)) return true;
     const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);
     if (!r) return false;
     if (r.status !== 'running') return false; // already marked dead by a previous check
@@ -2100,27 +2128,38 @@ export class TerminalManager {
   }
 
   /**
+   * Start the runtime for a session row WITHOUT blocking the caller. Every caller (createSession, a
+   * chat turn, a revive, a fork) has already written the row and has nothing left to decide, so the
+   * actual launch — which does real I/O (Composio mints, file materialisation, tmux) — is handed to
+   * the next tick and the caller returns immediately. That is what lets `POST /api/chat/start` answer
+   * in milliseconds instead of after the mints, and it keeps one launch from stalling other requests.
+   *
+   * The row is registered in {@link launching} for the gap between "scheduled" and "pane exists", so
+   * `isAlive` reports the session as live throughout and the busy/pile-up guards that depend on it
+   * (chatSend, dispatchTask) can't double-launch into the same transcript. Errors are audited rather
+   * than thrown: there is no caller left to catch them.
+   */
+  private launchAgentRuntime(o: LaunchSpec): void {
+    if (!this.os.agents.get(o.agent)?.dir) return;
+    this.launching.add(o.id);
+    setImmediate(() => {
+      void this.launchAgentRuntimeNow(o)
+        .catch((e) => {
+          this.audit(o.id, o.agent, 'session.launch.failed', { error: e instanceof Error ? e.message : String(e) });
+          this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(Date.now(), o.id);
+        })
+        .finally(() => this.launching.delete(o.id));
+    });
+  }
+
+  /**
    * Spawn the claude-code runtime for a session row (in its agent folder, governed by the gate hook).
    * Factored out of `createSession` so `reviveResident` can re-launch the SAME row (same id/tmux/secret/
    * claude id) after the warm session was reaped — with `resume: true` it continues the transcript.
    * Memory + connectors are delivered purely as MCP tools via the per-session `.mcp.json`; the
    * orchestrator injects nothing into the prompt.
    */
-  private launchAgentRuntime(o: {
-    id: string; agent: string; task: string; secret: string;
-    actingMember?: string; spawnedBy?: string; hasSlack: boolean; hasDiscord: boolean; hasClickup: boolean; hasTelegram: boolean;
-    headless: boolean; resident: boolean; resume: boolean;
-    /** The transcript id to pin. NULL for a runtime that mints its own (Codex) — the launcher
-     *  discovers it and reports it back via /api/runtime-session instead. */
-    claudeSessionId: string | null;
-    // Per-launch tuning override (highest priority over the agent manifest + workspace default) — e.g. a
-    // delegated task pinning the model/effort of its dispatched session. Undefined → resolve as before.
-    tuning?: RuntimeTuning;
-    // Fork: branch this NEW session (claudeSessionId) off an existing conversation (forkFrom). The
-    // launcher's FORK_FROM branch runs `claude --resume <forkFrom> --fork-session --session-id
-    // <claudeSessionId>` on first launch; a reattach (resume:true) resumes the fork's own branch.
-    forkFrom?: string;
-  }): void {
+  private async launchAgentRuntimeNow(o: LaunchSpec): Promise<void> {
     const manifest = this.os.agents.get(o.agent);
     if (!manifest?.dir) return;
     const tmux = `aos-${o.id}`;
@@ -2129,7 +2168,7 @@ export class TerminalManager {
     // An ask_agent delegate (provenance `ask:<caller>`) gets the `answer` tool to close the loop back to
     // its caller — keyed on provenance so no other session is cluttered by it.
     const askAnswer = (o.spawnedBy ?? '').startsWith('ask:');
-    const mcpJson = this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup, o.hasTelegram);
+    const mcpJson = await this.buildMcpConfigJson(o.id, o.agent, o.actingMember, o.secret, o.hasSlack, o.hasDiscord, askAnswer, o.hasClickup, o.hasTelegram);
     const runtime: CodingRuntimeId = isCodingRuntime(manifest.runtime) ? manifest.runtime : 'claude-code';
     const caps = CODING_RUNTIMES[runtime].capabilities;
     // Resolved BEFORE the company payload is built: `verbosity` rides the appended system prompt rather
@@ -3318,7 +3357,7 @@ export class TerminalManager {
    * session can read it: the app's connectors dir (local), or the member's home (launcher). The
    * memory server is ALWAYS included and scoped to this session+agent. '' when there's no data home.
    */
-  private buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false, askAnswer = false, clickupReply = false, telegramReply = false): string {
+  private async buildMcpConfigJson(sessionId: string, agent: string, actingMember: string | undefined, secret: string, slackReply = false, discordReply = false, askAnswer = false, clickupReply = false, telegramReply = false): Promise<string> {
     if (!this.os.paths) return '';
     // `actingMember` is the identity the session runs AS (runAs ?? the spawning member). Undefined for a
     // pure automation/system spawn → org + shared connectors only, never a person's private credentials.
@@ -3359,8 +3398,14 @@ export class TerminalManager {
           opts: { toolkits: m.toolkits, connectedAccounts: m.connectedAccounts, manageConnections: false },
         });
       }
-      for (const s of sessions) {
-        const res = mintToolRouterSession(apiKey, s.userId, s.opts);
+      // Minted CONCURRENTLY, not one after another: each mint is a ~0.5–1s round trip to Composio, so
+      // a launch with a personal + company (+ shared) session used to serialise into ~1.5s of dead time
+      // — and, on the old `spawnSync` transport, ~1.5s with the event loop stopped, which stalled every
+      // other request on this single-threaded server. Failures stay per-session (audited, that connector
+      // dropped), exactly as before.
+      const minted = await Promise.all(sessions.map((s) => mintToolRouterSessionAsync(apiKey, s.userId, s.opts)));
+      for (const [i, s] of sessions.entries()) {
+        const res = minted[i];
         if ('url' in res) {
           config.mcpServers[s.id] = { type: 'http', url: res.url, headers: { [COMPOSIO_KEY_HEADER]: apiKey } };
           this.audit(sessionId, agent, 'connector.minted', {
