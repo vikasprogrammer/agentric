@@ -1026,6 +1026,12 @@ function migrate(db: Db): void {
   // rather than silently leaving the current one in place.
   addColumn(db, 'agent_revisions', 'verbosity', 'TEXT');
 
+  // WHEN the current turn started (epoch ms), NULL between turns. For a WARM chat session the pane stays
+  // alive across turns, so `alive` stops meaning "working" — this is the honest replacement: set when a
+  // turn is handed to the runtime (launch or send-keys delivery), cleared by the Stop-hook turn-end
+  // beacon (`markTurnIdle`). Drives `Session.working`, which is what the chat UI spins on.
+  addColumn(db, 'term_sessions', 'busy_since', 'INTEGER');
+
   // Private-to-owners agents: when 1, ONLY the owner role runs/sees the agent (admins excluded, the
   // role/member grants void) — the tightest tier below the owner+admin default. NULL/0 = default floor.
   addColumn(db, 'assignments', 'owner_only', 'INTEGER');       // 1 = owner-role-only

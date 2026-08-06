@@ -38,13 +38,21 @@ import { understandMedia } from './edge/media-understand';
 import { readSessionCost } from './edge/session-cost';
 import { TERSE_OUTPUT_BRIEF } from './edge/verbosity';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
-import { readConversation, Conversation } from './edge/conversation';
+import { readConversation, findTranscript, Conversation } from './edge/conversation';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
 /** How long a just-delivered message keeps an unattended run's pane alive at turn-end, so a HOLD or a
  *  correction typed in seconds before the Stop hook fired still gets read instead of dying with the pane. */
 const DELIVERY_GRACE_MS = 90_000;
+/** How long after a WARM chat delivery we re-check that a turn actually started. Long enough for claude
+ *  to read the keystrokes and write its first transcript line (a cold relaunch alone takes ~4s), short
+ *  enough that a swallowed message is repaired while the human is still looking at the window. */
+const WARM_CONFIRM_MS = 12_000;
+/** How long a turn may claim to be in flight before the idle reaper stops believing it. Real turns run
+ *  for minutes; one still "busy" after this is wedged, and protecting it would mean never reclaiming
+ *  its pane. */
+const MID_TURN_MAX_MS = 2 * 3600_000;
 const VIDEO_MAX_DURATION_SEC = 60;         // clamp the requested clip length
 const VIDEO_JOB_TTL_MS = 20 * 60_000;      // give up on a render after 20 minutes
 const VIDEO_MAX_POLLS = 200;               // poll-attempt ceiling (belt-and-suspenders with the TTL)
@@ -210,6 +218,13 @@ export interface Session {
    * (launcher backend, or the tmux poll failed): consumers then fall back to `status`.
    */
   alive?: boolean;
+  /**
+   * Whether a TURN is in flight right now. For a cold-per-turn run `alive` answered this by accident (the
+   * process only existed while it worked); a WARM chat session keeps its pane between turns, so liveness
+   * and working came apart. Set when a turn is handed to the runtime, cleared by the Stop-hook turn-end
+   * beacon. This — not `alive` — is what the chat window spins on.
+   */
+  working?: boolean;
   /**
    * Whether this session can be resurrected in place via `claude --resume` when its terminal is
    * re-opened (the ttyd attach wrapper sources its persisted `session-<id>.env`). True only for
@@ -497,6 +512,7 @@ interface SessionRow {
   turns: number | null;
   tool_calls: number | null;
   archived_at?: number | null;
+  busy_since: number | null;
   gov_actions: number | null;
   gov_approvals: number | null;
   gov_denied: number | null;
@@ -710,6 +726,9 @@ export class TerminalManager {
    *  "tmux up" can't be read as "nothing is running" — which would let a second turn launch a
    *  competing claude on the same transcript. */
   private readonly launching = new Set<string>();
+  /** Pending "did that warm turn actually start?" checks, keyed by session — see `confirmWarmTurn`.
+   *  Held so a newer message can cancel the previous check instead of racing it. */
+  private readonly warmChecks = new Map<string, ReturnType<typeof setTimeout>>();
   /** Optional sink notified when an approval card lands, so an out-of-band channel (Slack/Discord DM)
    *  can ping the approver. Set by the registry once the chat sockets exist; absent = no notifications. */
   private approvalNotifier?: (notice: ApprovalNotice) => void;
@@ -914,6 +933,10 @@ export class TerminalManager {
       ...toSession(r),
       ...links.get(r.id),
       alive: this.launching.has(r.id) ? true : alive ? alive.has(r.tmux) : undefined,
+      // A turn is in flight only if one was started AND the runtime is still there to run it — a pane
+      // that died mid-turn leaves `busy_since` set, and reporting that as "working" is the perpetual
+      // spinner the cold-per-turn design was chosen to avoid.
+      working: r.busy_since != null && (this.launching.has(r.id) || !alive || alive.has(r.tmux)),
       blocked: r.status === 'running' && blocked.has(r.id),
       resumable: resumable.has(r.id),
       forkable: !!r.claude_session_id && runtimeSupports(this.os.agents.get(r.agent)?.runtime, 'fork'),
@@ -2026,8 +2049,8 @@ export class TerminalManager {
     const secret = randomBytes(24).toString('hex');
     const session: Session = { id, agent, title, task, tmux, status: 'running', createdAt: Date.now(), updatedAt: Date.now() };
     this.db
-      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, resident, last_activity, headless, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, resident ? 1 : 0, resident ? session.createdAt : null, headless ? 1 : 0, session.createdAt, session.createdAt);
+      .prepare('INSERT INTO term_sessions (id, agent, title, task, tmux, status, spawned_by, run_as, secret, claude_session_id, resident, last_activity, headless, busy_since, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(session.id, agent, title, task, tmux, 'running', spawnedBy ?? null, actingMember ?? null, secret, claudeSessionId, resident ? 1 : 0, resident ? session.createdAt : null, headless ? 1 : 0, session.createdAt, session.createdAt, session.createdAt);
     // No spawn card — the Inbox is a feed of agent-authored signals (progress / questions / approvals /
     // completions / artifacts), not a session lifecycle log. A run that never speaks stays off the feed
     // and lives only on the Sessions page.
@@ -2376,7 +2399,11 @@ export class TerminalManager {
       this.hasPendingHumanBlock(sessionId) ? 'blocked' : this.residentTurnState(space, row.tmux);
     const ok = this.backend.injectText(space, row.tmux, body, true);
     if (ok) {
-      this.db.prepare('UPDATE term_sessions SET last_activity = ?, updated_at = ? WHERE id = ?').run(Date.now(), Date.now(), sessionId);
+      // `busy_since` = a turn is in flight. On a WARM session the pane outlives the turn, so this (not
+      // pane liveness) is what "working" means; the Stop-hook beacon clears it. Set on delivery even when
+      // the message QUEUES behind a running turn — the session is busy either way.
+      this.db.prepare('UPDATE term_sessions SET last_activity = ?, busy_since = COALESCE(busy_since, ?), updated_at = ? WHERE id = ?')
+        .run(Date.now(), Date.now(), Date.now(), sessionId);
       const agent = this.sessionAgent(sessionId) ?? '';
       // `queued` = the message will wait for claude to finish the current turn before it's read.
       this.audit(sessionId, agent, 'chat.delivered', { chars: body.length, turn, queued: turn === 'busy' || turn === 'blocked' });
@@ -2420,8 +2447,8 @@ export class TerminalManager {
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
-    this.db.prepare("UPDATE term_sessions SET status = 'running', resident = 1, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
-      .run(body, actingMember ?? null, Date.now(), Date.now(), sessionId);
+    this.db.prepare("UPDATE term_sessions SET status = 'running', resident = 1, task = ?, run_as = ?, last_activity = ?, busy_since = ?, updated_at = ? WHERE id = ?")
+      .run(body, actingMember ?? null, Date.now(), Date.now(), Date.now(), sessionId);
     this.audit(sessionId, row.agent, 'chat.revived', { runAs: actingMember ?? null });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
@@ -2432,39 +2459,125 @@ export class TerminalManager {
   }
 
   /**
-   * Send the human's next turn into a NATIVE-CONSOLE chat session. Unlike Slack's warm send-keys path
-   * (`deliverToResident`), every turn here is a clean, SELF-TERMINATING governed run: a HEADLESS in-place
-   * resume of the same transcript, seeded with the message as the prompt. This is the deliberate trade the
-   * "harden" pass makes over the warm-pane model — the message is the launch prompt (reliably starts a
-   * turn, vs. injected keystrokes that may not), and the run tears itself down at turn-end so `alive`
-   * reflects reality (no perpetual "thinking…" when a pane dies silently). Cost: a cold start per turn;
-   * v2 (Agent SDK runtime) removes that. The PreToolUse gate hook still governs every effect.
+   * Send the human's next turn into a NATIVE-CONSOLE chat session — WARM when the pane is still up.
    *
-   * Returns: 'busy' (a prior turn is still running — the caller asks the human to resend shortly, so we
-   * never double-launch two claudes on one transcript), 'sent' (a fresh resume run was launched), or
-   * 'error' (unknown / non-resumable session).
+   * Console chat used to relaunch the runtime for every turn (a headless `--resume` seeded with the
+   * message). That was a deliberate trade at the time: the message-as-launch-prompt reliably starts a
+   * turn where injected keystrokes might not, and a run that tears itself down keeps `alive` honest.
+   * It also cost a full cold start on EVERY turn — measured 3.7–6.7s to first token on the live tenant,
+   * paid again for every "and one more thing".
+   *
+   * So this now takes Slack's warm path first (`deliverToResident` — send-keys into the live claude,
+   * which is why chat sessions are spawned RESIDENT) and keeps the two properties that motivated the
+   * cold design:
+   *  - **`alive` stays honest** because it is no longer the signal: `busy_since` marks a turn in flight
+   *    and the Stop-hook beacon (`markTurnIdle`) clears it, so the console spins on `working`, not on
+   *    "a pane exists".
+   *  - **A keystroke that doesn't take is repaired, not lost**: `confirmWarmTurn` re-checks the
+   *    transcript shortly after delivery and falls back to the cold relaunch if nothing started.
+   *
+   * A message typed while a turn is generating is DELIVERED, not refused — claude queues it and reads it
+   * at the turn boundary (the same hand-off Slack threads rely on), so 'busy' is no longer returned for
+   * a live pane. Returns 'sent', or 'error' for an unknown / non-resumable session.
    */
   chatSend(sessionId: string, message: string, runAs?: string): 'sent' | 'busy' | 'error' {
-    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by FROM term_sessions WHERE id = ?')
-      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, tmux FROM term_sessions WHERE id = ?')
+      .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; tmux: string }>(sessionId);
     if (!row || !row.claude_session_id) return 'error';
     const body = (message || '').trim();
     if (!body) return 'error';
-    if (this.isAlive(sessionId)) return 'busy'; // a turn is still generating — don't launch a competing run
     const actingMember = this.resolveActingMember(runAs ?? row.run_as ?? undefined);
+
+    // WARM — the pane is still up, so the turn costs nothing but the model. Checked on the PANE, not on
+    // `isAlive`: a chat session that ended its last turn with `report` reads `done` while its claude is
+    // very much alive, and a new human turn is exactly what makes it running again.
+    if (this.paneAlive(row.tmux)) {
+      const before = this.transcriptMark(row.claude_session_id);
+      this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, resident = 1, task = ?, run_as = ?, updated_at = ? WHERE id = ?")
+        .run(body, actingMember ?? null, Date.now(), sessionId);
+      if (this.deliverToResident(sessionId, body)) {
+        this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null, mode: 'warm' });
+        this.confirmWarmTurn(sessionId, body, before, runAs);
+        return 'sent';
+      }
+      // Delivery failed on a live pane (a wedged TUI, an unreadable socket). Kill it before relaunching —
+      // two claudes on one transcript is the one outcome worse than a slow turn.
+      this.audit(sessionId, row.agent, 'chat.deliver.failed', { action: 'relaunch' });
+      this.backend.kill(this.spaceFor(actingMember ?? row.spawned_by), row.tmux);
+    }
+
+    // COLD — no pane (reaped, crashed, or just killed above): relaunch in place, resuming the same
+    // transcript and seeded with the message. Stays RESIDENT, so the NEXT turn is warm again.
     const hasSlack = !!this.db.prepare('SELECT 1 FROM slack_threads WHERE session_id = ?').get(sessionId);
     const hasDiscord = !!this.db.prepare('SELECT 1 FROM discord_threads WHERE session_id = ?').get(sessionId);
     const hasClickup = !!this.db.prepare('SELECT 1 FROM clickup_threads WHERE session_id = ?').get(sessionId);
     const hasTelegram = !!this.db.prepare('SELECT 1 FROM telegram_threads WHERE session_id = ?').get(sessionId);
-    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 1, resident = 0, task = ?, run_as = ?, last_activity = ?, updated_at = ? WHERE id = ?")
-      .run(body, actingMember ?? null, Date.now(), Date.now(), sessionId);
-    this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null });
+    this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, resident = 1, task = ?, run_as = ?, last_activity = ?, busy_since = ?, updated_at = ? WHERE id = ?")
+      .run(body, actingMember ?? null, Date.now(), Date.now(), Date.now(), sessionId);
+    this.audit(sessionId, row.agent, 'chat.turn', { runAs: actingMember ?? null, mode: 'cold' });
     this.launchAgentRuntime({
       id: sessionId, agent: row.agent, task: body, secret: row.secret ?? randomBytes(24).toString('hex'),
       actingMember, spawnedBy: row.spawned_by ?? undefined, hasSlack, hasDiscord, hasClickup, hasTelegram,
-      headless: true, resident: false, resume: true, claudeSessionId: row.claude_session_id,
+      headless: false, resident: true, resume: true, claudeSessionId: row.claude_session_id,
     });
     return 'sent';
+  }
+
+  /** Is this tmux pane up? Unlike {@link isAlive} this asks ONLY about the pane, ignoring the row's
+   *  status — a chat session that ended a turn with `report` is `done` with a live claude still in it.
+   *  `aliveNames()` is null when liveness can't be polled (launcher backend / failed poll); we then
+   *  answer false so the caller takes the cold path, which is correct-by-relaunch rather than a
+   *  send-keys into the dark. */
+  private paneAlive(tmux: string): boolean {
+    const alive = this.backend.aliveNames();
+    return alive ? alive.has(tmux) : false;
+  }
+
+  /** Size + mtime of a transcript, or null when it doesn't exist yet. The cheap "did anything happen"
+   *  probe behind {@link confirmWarmTurn} — parsing the file would cost more and answer the same. */
+  private transcriptMark(claudeSessionId: string): { size: number; mtime: number } | null {
+    const file = findTranscript(claudeSessionId);
+    if (!file) return null;
+    try {
+      const st = fs.statSync(file);
+      return { size: st.size, mtime: st.mtimeMs };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The warm path's safety net. Keystrokes are typed into a TUI, and a TUI can be in a state that
+   * swallows them (mid-render, a stray modal, a pane that died between the liveness poll and the
+   * send) — the exact failure mode that justified relaunching for every turn. So we check: a short
+   * while after delivery, has the transcript grown? If not, the turn never started, and we relaunch
+   * cold with the same message rather than leave the human watching a spinner that will never resolve.
+   *
+   * Deliberately conservative — a growing transcript, a killed session, or a newer message all cancel
+   * the recovery, so it can only ever fire on a turn that genuinely went nowhere.
+   */
+  private confirmWarmTurn(sessionId: string, body: string, before: { size: number; mtime: number } | null, runAs?: string): void {
+    const timer = setTimeout(() => {
+      this.warmChecks.delete(sessionId);
+      try {
+        const row = this.db.prepare('SELECT agent, claude_session_id, task, status, tmux, run_as, spawned_by FROM term_sessions WHERE id = ?')
+          .get<{ agent: string; claude_session_id: string | null; task: string | null; status: string; tmux: string; run_as: string | null; spawned_by: string | null }>(sessionId);
+        if (!row || !row.claude_session_id) return;
+        if (row.task !== body) return;                       // a newer message superseded this one
+        if (row.status === 'stopped' || row.status === 'crashed') return; // deliberately torn down meanwhile
+        const after = this.transcriptMark(row.claude_session_id);
+        // Anything at all landed → the turn started. (A brand-new transcript counts: before was null.)
+        if (after && (!before || after.size > before.size || after.mtime > before.mtime)) return;
+        this.audit(sessionId, row.agent, 'chat.deliver.unconfirmed', { afterMs: WARM_CONFIRM_MS });
+        if (this.paneAlive(row.tmux)) this.backend.kill(this.spaceFor(row.run_as ?? row.spawned_by), row.tmux);
+        // Re-enter the cold branch of chatSend: the pane is gone now, so it relaunches with this message.
+        if (this.chatSend(sessionId, body, runAs) === 'sent') this.audit(sessionId, row.agent, 'chat.deliver.recovered', {});
+      } catch { /* a failed self-heal must never take the server down */ }
+    }, WARM_CONFIRM_MS);
+    timer.unref?.();
+    const prev = this.warmChecks.get(sessionId);
+    if (prev) clearTimeout(prev);
+    this.warmChecks.set(sessionId, timer);
   }
 
   /**
@@ -2615,13 +2728,24 @@ export class TerminalManager {
     // `crashed` and fire its (always-on) notification NOW, instead of waiting for the next console poll.
     this.sweepCrashed(alive);
 
-    // (1) resident warm-chat idle reap — unchanged behavior.
-    const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status = 'running' AND COALESCE(last_activity, created_at) < ?")
-      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff);
+    // (1) resident warm-chat idle reap. This is what BOUNDS the warm-pane model: a chat session holds a
+    // live claude (hundreds of MB) between turns, so it must give the box back when the conversation
+    // goes quiet — the next message revives it in place, resuming the same transcript.
+    //   - `status IN ('running','done')`: a chat turn that ends by calling `report` flips the row to
+    //     `done` while its pane keeps running. Reaping only `running` left those panes alive forever
+    //     (sweep 3, the interactive janitor, excludes `resident = 1`), which is precisely the leak the
+    //     cold-per-turn design never had.
+    //   - `busy_since`: never reap a turn that is actually generating. A long turn's `last_activity` is
+    //     the moment the message was delivered, so a slow one would otherwise be killed mid-answer. The
+    //     ceiling keeps that from becoming a way to never reap: a "turn" still running after
+    //     MID_TURN_MAX_MS is wedged, not working.
+    const midTurnFloor = Date.now() - MID_TURN_MAX_MS;
+    const residents = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent FROM term_sessions WHERE resident = 1 AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ? AND (busy_since IS NULL OR busy_since < ?)")
+      .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string }>(cutoff, midTurnFloor);
     for (const r of residents) {
       try {
         this.backend.kill(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
-        this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+        this.db.prepare("UPDATE term_sessions SET status = 'stopped', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), r.id);
         this.cancelPendingQuestions(r.id, 'system');
         this.cancelPendingApprovals(r.id, 'system');
         // A reaped session must stay reaped — otherwise ttyd's reconnect on the still-open tab would
@@ -2792,7 +2916,17 @@ export class TerminalManager {
   markTurnIdle(sessionId: string): void {
     const r = this.db.prepare('SELECT tmux, status, headless, resident, claimed_by, run_as, spawned_by FROM term_sessions WHERE id = ?')
       .get<{ tmux: string; status: string; headless: number; resident: number; claimed_by: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
-    if (!r || !r.headless || r.resident) return;                       // only unattended, non-resident runs
+    // A RESIDENT (warm chat) run is never torn down here — its whole point is to stay up for the next
+    // turn. But its turn-end IS the signal the console needs: clear `busy_since` so "working" stops, and
+    // stamp `last_activity` so the idle reaper's clock runs from the end of the turn, not its start.
+    if (r?.resident) {
+      if (r.status !== 'running' && r.status !== 'done') return;
+      this.db.prepare('UPDATE term_sessions SET busy_since = NULL, last_activity = ?, updated_at = ? WHERE id = ?')
+        .run(Date.now(), Date.now(), sessionId);
+      this.audit(sessionId, this.sessionAgent(sessionId) ?? '', 'chat.turn.idle', {});
+      return;
+    }
+    if (!r || !r.headless) return;                                     // only unattended, non-resident runs
     if (r.status !== 'running' && r.status !== 'done') return;         // stopped/crashed are already torn down
     // Record the turn-end time regardless of the decision below — it's the idle backstop's clock and the
     // signal that this run has completed at least one turn (so the backstop won't reap a mid-turn run).

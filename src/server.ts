@@ -2559,10 +2559,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const message = String(b.message || '').trim();
     if (!agent || !message) return sendJson(res, 400, { error: 'agent and message are required' });
     if (!os.team.canRun(me, agent)) return sendJson(res, 403, { error: `you are not assigned to run "${agent}"` });
-    // Provenance chat:me, runAs=me (accountable human). HEADLESS one-shot (not resident): the greeting
-    // turn runs then tears itself down, so every subsequent turn is a clean headless resume (chatSend) —
-    // no warm pane to race/reap, and `alive` stays honest. See TerminalManager.chatSend.
-    const s = tm.createSession(agent, chatTitle(message, agent), message, `chat:${me.id}`, true, undefined, undefined, me.id, undefined, false);
+    // Provenance chat:me, runAs=me (accountable human). RESIDENT: the runtime stays warm between turns
+    // (like a Slack thread), so a follow-up is delivered by send-keys instead of paying a cold start —
+    // the difference between a ~4s reply and an instant one. `alive` no longer doubles as "working"; the
+    // row's `busy_since` does, cleared by the turn-end beacon. See TerminalManager.chatSend.
+    const s = tm.createSession(agent, chatTitle(message, agent), message, `chat:${me.id}`, false, undefined, undefined, me.id, undefined, true);
     return sendJson(res, 200, { id: s.id, tmux: s.tmux });
   }
 
