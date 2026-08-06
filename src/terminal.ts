@@ -349,6 +349,13 @@ export interface ChainNode {
   summary?: string;
   status: SessionStatus;
   alive?: boolean;
+  /** True when the newest run launched unattended (automation/task dispatch) — the rail draws it as a
+   *  hollow ring, exactly like the sessions list, so "the fleet is doing this" reads differently from
+   *  "someone is driving this". */
+  headless?: boolean;
+  /** True when this conversation is LIVE and blocked on a human right now (its own pending ask/approval).
+   *  The one state that must not read as "working". */
+  blocked?: boolean;
   outcome?: string;
   /** How many session rows this conversation spans (>1 = it was resumed by pokes/continuations). */
   runs: number;
@@ -1293,6 +1300,7 @@ export class TerminalManager {
       // the newest row is the wrong label for the conversation. Prefer the freshest real verdict — and
       // take the outcome from the SAME run as the summary, or a conversation whose last resume ended
       // quietly reads "no report" right beside the report it filed.
+      const pending = this.chainPending(rows);
       const voice = [...rows].reverse();
       const reported = voice.find((r) => r.report_summary?.trim());
       const summary = reported?.report_summary ?? undefined;
@@ -1308,6 +1316,8 @@ export class TerminalManager {
         summary,
         status: latest.status,
         alive: alive ? alive.has(latest.tmux) : undefined,
+        headless: !!latest.headless,
+        blocked: latest.status === 'running' && pending.length > 0,
         outcome: reported?.outcome ?? latest.outcome ?? undefined,
         runs: rows.length,
         costUsd: cost || undefined,
@@ -1317,7 +1327,7 @@ export class TerminalManager {
         taskId: dispatch?.taskId,
         taskTitle: task?.title,
         taskStatus: task?.status,
-        pending: this.chainPending(rows),
+        pending,
       });
       // Children: every task this conversation delegated, and the runs dispatched for it.
       const tasks = this.db

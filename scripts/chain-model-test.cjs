@@ -122,6 +122,21 @@ assert(after.nodes.filter((x) => x.pending.length).length === 1, 'and only on th
 tm.answerQuestion(q.id, 'chromium + firefox', owner.email);
 assert(tm.sessionChain(engRun1).nodes.every((x) => !x.pending.length), 'answering clears it');
 
+console.log('\n\x1b[1mlive state\x1b[0m');
+// The rail draws its dot with the sessions list's semantics, so the node has to carry the same two
+// facts: unattended vs. driven, and blocked-on-a-human vs. working.
+aos.db.prepare("UPDATE term_sessions SET status='running', headless=1 WHERE id=?").run(relRun1);
+let live = tm.sessionChain(engRun1).nodes.find((x) => x.threadId === 'cs_rel1');
+assert(live.status === 'running' && live.headless === true, 'a live unattended delegate reports running + headless');
+assert(live.blocked === false, 'and is not blocked while nothing waits on a human');
+const q2 = tm.askQuestion(relRun1, 'release', 'Merge to main?');
+live = tm.sessionChain(engRun1).nodes.find((x) => x.threadId === 'cs_rel1');
+assert(live.blocked === true && live.pending.length === 1, 'asking a question flips it to blocked');
+tm.answerQuestion(q2.id, 'yes', owner.email);
+assert(tm.sessionChain(engRun1).nodes.find((x) => x.threadId === 'cs_rel1').blocked === false, 'answering clears blocked');
+aos.db.prepare("UPDATE term_sessions SET status='done', headless=0 WHERE id=?").run(relRun1);
+assert(tm.sessionChain(engRun1).nodes.find((x) => x.threadId === 'cs_rel1').blocked === false, 'an ended run is never blocked');
+
 console.log('\n\x1b[1mvisibility\x1b[0m');
 assert(tm.sessionChain(engRun1, owner).nodes.length === 6, 'owner sees the whole chain');
 assert(tm.sessionChain(engRun1, alice).nodes.length === 6, 'the member who owns the runs sees it');
