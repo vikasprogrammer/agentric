@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.312.0] — 2026-08-06
+### Added
+- **The sessions list now advertises hand-off chains instead of hiding them, and the rail says what's
+  running.** v0.311.0 shipped the chain rail but no way to *find* it: the rail lives inside an opened
+  session, renders nothing for a solo run (~72% of rows), and its only in-list signal was `lg:`-gated —
+  so on a narrower window nothing pointed at the 28% of sessions (122 of 437 on northwind) that are part
+  of a chain. Four fixes:
+  - a **Hand-offs** option in the sessions status filter — narrows to sessions that delegated or were
+    delegated to, resolved over the whole list so a delegate whose caller is filtered out still matches;
+  - the chain chip strip shows at **every width** and leads with a `⑂ N` hand-off count;
+  - that count also joins the **Activity** cluster, so it reads on every grid card and in the list column;
+  - a **Chain N** toggle in the session's top bar — present only when the session actually handed work
+    off, so it doubles as the signal that there is a chain, and badges amber when something waits on a
+    human / emerald when a delegate is working. It replaces the 32px collapsed spine, so a hidden rail
+    now gives the terminal its full width back.
+- **Live state in the rail.** A chain node carries `headless` + `blocked`, so its dot uses the sessions
+  list's exact semantics — a live unattended run is a hollow ring, a live driven one is filled, blocked
+  pulses amber — and a working node reads `running` with `unattended · 12m in` rather than a bare word.
+  The rail header counts what's running alongside the agents and cost.
+
 ## [0.311.1] — 2026-08-05
 ### Fixed
 - **A partial agent-config save no longer wipes the tuning knobs it didn't mention.** `PUT

@@ -122,10 +122,12 @@ const tuningLabel = (s: Session): string => [modelShort(s.model), s.effort].filt
  *  always there — governed actions only count the gate-mediated subset, legitimately 0 for many runs),
  *  then the friction/output chips. Zero-valued chips are dropped so the common case stays quiet and an
  *  approval/denial/artifact actually catches the eye. */
-function SessionInsights({ s, className = '' }: { s: Session; className?: string }) {
+function SessionInsights({ s, chain = 0, className = '' }: { s: Session; chain?: number; className?: string }) {
   const g = s.insights
   const tuning = tuningLabel(s)
   const chips: Array<{ key: string; text: string; cls: string; title: string }> = []
+  // Hand-offs first — "this run delegated" is the fact that decides whether the row is worth opening.
+  if (chain) chips.push({ key: 'chain', text: `${chain}⑂`, cls: 'text-foreground/70', title: `${chain} hand-off${chain === 1 ? '' : 's'} — open it to see the chain` })
   if (s.toolCalls != null) chips.push({ key: 'tools', text: `${s.toolCalls}⚙`, cls: 'text-muted-foreground', title: `${s.toolCalls} tool calls${s.turns != null ? ` · ${s.turns} turn${s.turns === 1 ? '' : 's'}` : ''}` })
   if (g?.approvals) chips.push({ key: 'appr', text: `${g.approvals}✋`, cls: 'text-sky-600', title: `${g.approvals} approval${g.approvals === 1 ? '' : 's'} needed a human${s.blockedMs ? ` · waited ${formatDuration(s.blockedMs)} on people` : ''}` })
   if (s.blockedMs != null && s.blockedMs >= 1000) chips.push({ key: 'blk', text: `${formatDuration(s.blockedMs)}⏳`, cls: 'text-amber-600', title: `blocked ${formatDuration(s.blockedMs)} waiting on a human (approvals + questions)` })
@@ -203,9 +205,12 @@ const sessionSource = (s: Session): SessionSource => {
  *  status); `blocked` narrows to live runs waiting on a human (a pending ask/approval); the terminal
  *  states match only when NOT live, so a live pane reporting `done` reads as Live, never Done — the same
  *  rule `statusLabel` uses for the dot. */
-type SessionStatusFilter = 'all' | 'live' | 'blocked' | 'done' | 'stopped' | 'crashed'
+// `chains` is not a lifecycle state — it narrows to sessions that took part in a HAND-OFF (a caller
+// that delegated, or a delegate). It rides in this filter because that's where people already look to
+// cut the list down, and it's resolved in `filtered` (it needs the whole list to know who called whom).
+type SessionStatusFilter = 'all' | 'live' | 'blocked' | 'chains' | 'done' | 'stopped' | 'crashed'
 const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
-  f === 'all' ? true
+  f === 'all' || f === 'chains' ? true   // `chains` is applied separately — it needs the whole list
     : f === 'live' ? isLive(s)
       : f === 'blocked' ? isLive(s) && Boolean(s.blocked)
         : !isLive(s) && s.status === f
@@ -213,7 +218,7 @@ const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
 // Filter labels — shared by the dropdown options AND the collapsed trigger (base-ui's SelectValue
 // renders the raw value unless given a formatter, so the two must read from one source).
 const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
-  { all: 'All statuses', live: 'Live', blocked: 'Blocked', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
+  { all: 'All statuses', live: 'Live', blocked: 'Blocked', chains: 'Hand-offs', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
@@ -3217,6 +3222,12 @@ function ChainStrip({ group, runs, onOpen, className = '' }: {
   if (!kids.length && runs < 2) return null
   return (
     <div className={`flex flex-wrap items-center gap-1 ${className}`}>
+      {kids.length > 0 && (
+        <span className="flex items-center gap-0.5 rounded-full border border-foreground/20 px-1.5 text-[10px] font-medium text-foreground/70"
+          title={`${kids.length} hand-off${kids.length === 1 ? '' : 's'} — ${kids.map((k) => k.rep.agent).join(', ')}`}>
+          <GitBranch className="h-2.5 w-2.5 shrink-0" />{kids.length}
+        </span>
+      )}
       {runs > 1 && (
         <span className="rounded-full border px-1.5 text-[10px] text-muted-foreground" title={`${runs} runs — this conversation was resumed (poke-backs / continuations)`}>
           {runs} runs
@@ -3260,10 +3271,14 @@ const nodeLive = (n: ChainNode): boolean => Boolean(n.alive) || n.status === 'ru
 
 /** The chain node's state word + tone, priority-ordered by what needs a human: waiting first, then a
  *  duplicate re-dispatch, then live, then the agent's own verdict, then how the process ended. */
-const nodeState = (n: ChainNode): { label: string; tone: string; dot: string } => {
-  if (n.pending.length) return { label: 'waiting on you', tone: 'text-amber-600', dot: 'bg-amber-400 animate-pulse' }
+const nodeState = (n: ChainNode): { label: string; tone: string; dot: string; live?: boolean } => {
+  // Dot semantics are the sessions list's, deliberately: blocked pulses amber, a live UNATTENDED run is
+  // a hollow ring and a live interactive one is filled, so "is anything actually working right now?" is
+  // answerable from the rail at a glance instead of only from the verdict words.
+  if (n.blocked || (nodeLive(n) && n.pending.length)) return { label: 'waiting on you', tone: 'text-amber-600', dot: 'bg-amber-400 motion-safe:animate-pulse', live: true }
+  if (n.pending.length) return { label: 'waiting on you', tone: 'text-amber-600', dot: 'bg-amber-400 motion-safe:animate-pulse' }
+  if (nodeLive(n)) return { label: 'running', tone: 'text-emerald-600', dot: `${n.headless ? 'border border-emerald-500' : 'bg-emerald-500'} motion-safe:animate-pulse`, live: true }
   if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', dot: 'bg-amber-500' }
-  if (nodeLive(n)) return { label: 'live', tone: 'text-emerald-600', dot: 'bg-emerald-500' }
   if (n.status === 'crashed') return { label: 'crashed', tone: 'text-red-600', dot: 'bg-red-500' }
   if (n.outcome === 'success') return { label: 'pass', tone: 'text-emerald-600', dot: 'bg-emerald-500/60' }
   if (n.outcome === 'failure' || n.outcome === 'error') return { label: 'failed', tone: 'text-red-600', dot: 'bg-red-500' }
@@ -3271,6 +3286,9 @@ const nodeState = (n: ChainNode): { label: string; tone: string; dot: string } =
   if (n.status === 'stopped') return { label: 'stopped', tone: 'text-amber-600', dot: 'bg-amber-500' }
   return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground', dot: 'bg-muted-foreground/40' }
 }
+
+/** Conversations working right now — what the Chain toggle badges when nothing needs a human. */
+const chainLive = (c: SessionChain | null): number => (c?.nodes ?? []).filter(nodeLive).length
 
 /** One pending item — a delegate's unanswered `ask`, or an approval gate — resolved WITHOUT leaving the
  *  pane you're watching. This is the rail's reason to exist: today a question raised three hand-offs deep
@@ -3322,49 +3340,51 @@ function ChainAction({ item, onDone }: { item: ChainPending; onDone: () => void 
  * Renders nothing when the open session has no hand-offs — a solo run keeps the full-width terminal it
  * has today. Collapsed state persists per browser.
  */
-function ChainRail({ session, onOpen }: { session?: Session; onOpen: (tmux: string, title: string) => void }) {
+/** The open session's hand-off chain. Lifted out of the rail: the session's top bar needs the same data
+ *  to show a Chain toggle at all (and badge it when something is waiting on a human). Polled slowly —
+ *  the walk is derived per request (~15 ms), so it stays off the 1.5 s session poll. */
+function useSessionChain(sessionId?: string): { chain: SessionChain | null; reload: () => void } {
   const [chain, setChain] = useState<SessionChain | null>(null)
-  const [open, setOpen] = useState(() => localStorage.getItem('aos_chain_rail') !== '0')
-  const id = session?.id
-  const load = useCallback(() => {
-    if (!id) { setChain(null); return }
-    api.sessionChain(id).then((r) => setChain(r && 'nodes' in r ? r : null)).catch(() => {})
-  }, [id])
+  const reload = useCallback(() => {
+    if (!sessionId) { setChain(null); return }
+    api.sessionChain(sessionId).then((r) => setChain(r && 'nodes' in r ? r : null)).catch(() => {})
+  }, [sessionId])
   useEffect(() => {
-    load()
-    // The chain is derived per request (~15 ms), so a slow poll is enough to keep a live hand-off and a
-    // freshly-raised question current without adding load to the 1.5 s session poll.
-    const t = setInterval(load, 6000)
+    reload()
+    const t = setInterval(reload, 6000)
     return () => clearInterval(t)
-  }, [load])
+  }, [reload])
+  return { chain, reload }
+}
 
+/** A chain is only a chain once something was handed off — one node is just a session. */
+const hasChain = (c: SessionChain | null): boolean => (c?.nodes.length ?? 0) > 1
+const chainPending = (c: SessionChain | null): number => (c?.nodes ?? []).reduce((n, x) => n + x.pending.length, 0)
+
+function ChainRail({ chain, session, open, onToggle, onReload, onOpen }: {
+  chain: SessionChain | null
+  session?: Session
+  open: boolean
+  onToggle: () => void
+  onReload: () => void
+  onOpen: (tmux: string, title: string) => void
+}) {
   const nodes = chain?.nodes ?? []
-  // A single node isn't a chain — nothing was handed off, so there's nothing to show.
-  if (nodes.length < 2) return null
+  if (!open || !hasChain(chain)) return null   // closed, or nothing was handed off → the terminal keeps the width
   const pending = nodes.flatMap((n) => n.pending)
-  const toggle = () => setOpen((v) => { localStorage.setItem('aos_chain_rail', v ? '0' : '1'); return !v })
-
-  if (!open) {
-    return (
-      <button onClick={toggle} title="show the hand-off chain"
-        className="flex w-8 shrink-0 flex-col items-center gap-2 border-l bg-muted/30 py-3 text-muted-foreground hover:bg-muted hover:text-foreground">
-        <GitBranch className="h-4 w-4 shrink-0" />
-        <span className="text-[10px] tabular-nums">{nodes.length}</span>
-        {pending.length > 0 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 motion-safe:animate-pulse" />}
-      </button>
-    )
-  }
+  const load = onReload
 
   return (
     <aside className="flex w-[19rem] shrink-0 flex-col overflow-hidden border-l bg-muted/20">
       <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
         <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="text-[13px] font-semibold">Chain</span>
-        <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground" title="agents in this chain · total cost">
+        <span className="ml-auto truncate font-mono text-[10px] text-muted-foreground" title="agents in this chain · conversations working right now · total cost">
           {chain!.agents} agent{chain!.agents === 1 ? '' : 's'}
+          {chainLive(chain) > 0 && <span className="text-emerald-600"> · {chainLive(chain)} running</span>}
           {chain!.totalCostUsd ? ` · $${chain!.totalCostUsd.toFixed(2)}` : ''}
         </span>
-        <button onClick={toggle} title="hide the chain" className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground">
+        <button onClick={onToggle} title="hide the chain" className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground">
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -3385,7 +3405,9 @@ function ChainRail({ session, onOpen }: { session?: Session; onOpen: (tmux: stri
               </div>
               <p className="mt-0.5 line-clamp-3 text-[11.5px] leading-snug text-muted-foreground">{n.summary || n.taskTitle || n.title}</p>
               <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground/80">
-                <span title={new Date(n.createdAt).toLocaleString()}>{timeAgo(n.createdAt)} ago</span>
+                {st.live
+                  ? <span className="text-emerald-600" title={`started ${new Date(n.createdAt).toLocaleString()} — still open`}>{n.headless ? 'unattended · ' : ''}{timeAgo(n.createdAt)} in</span>
+                  : <span title={new Date(n.createdAt).toLocaleString()}>{timeAgo(n.createdAt)} ago</span>}
                 {n.runs > 1 && <span title={`${n.runs} runs — this conversation was resumed (poke-backs / continuations)`}>{n.runs} runs</span>}
                 {n.costUsd != null && <span>${n.costUsd.toFixed(2)}</span>}
                 {n.taskId && <span className="truncate" title={n.taskTitle}>{n.taskId}</span>}
@@ -3563,11 +3585,23 @@ function SessionsPage({
   // All for members), so the default view doesn't spuriously show the Clear-filters affordance.
   const filtersActive = query.trim() !== '' || statusFilter !== 'all' || agentFilter !== 'all' || sourceFilter !== 'all' || modeFilter !== 'all' || ownerFilter !== 'all' || mine !== isFleetViewer
   const clearFilters = () => { setQuery(''); setStatusFilter('all'); setAgentFilter('all'); setSourceFilter('all'); setModeFilter('all'); setOwnerFilter('all'); setMine(isFleetViewer) }
+  // Threads that took part in a hand-off — they delegated, or were delegated to. Computed over the WHOLE
+  // list (a delegate's caller may be filtered out) so the `Hand-offs` filter answers "was this session
+  // part of a chain?" and not "is its caller currently on screen?".
+  const chainThreads = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of sessions) {
+      const p = parentOf(s)
+      if (p) { set.add(threadOf(s)); set.add(p) }
+    }
+    return set
+  }, [sessions])
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return sessions.filter((s) =>
       !s.system && // OS machinery (Cockpit concierge/operator, …) stays out of the sessions list
       matchesStatus(s, statusFilter) &&
+      (statusFilter !== 'chains' || chainThreads.has(threadOf(s))) &&
       (agentFilter === 'all' || s.agent === agentFilter) &&
       (sourceFilter === 'all' || sessionSource(s) === sourceFilter) &&
       (modeFilter === 'all' || (modeFilter === 'headless' ? !!s.headless : !s.headless)) &&
@@ -3575,7 +3609,7 @@ function SessionsPage({
       (!mine || s.spawnedBy === me.id || s.runAs === me.id) &&
       (needle === '' || `${s.title} ${s.agent} ${s.id} ${s.task} ${s.spawnedByLabel ?? ''} ${s.runAsLabel ?? ''}`.toLowerCase().includes(needle)),
     )
-  }, [sessions, query, statusFilter, agentFilter, sourceFilter, modeFilter, ownerFilter, mine, me.id])
+  }, [sessions, query, statusFilter, agentFilter, sourceFilter, modeFilter, ownerFilter, mine, me.id, chainThreads])
   // Sorted view (both grid + list render this). A stable tiebreak on createdAt keeps equal keys in a
   // deterministic order rather than letting the sort shuffle them.
   const shown = useMemo(() => {
@@ -3623,6 +3657,13 @@ function SessionsPage({
     else filtered.forEach((s) => n.add(s.id))
     return n
   })
+  // The open session's chain — shared by the top-bar toggle and the rail itself, so the button can exist
+  // (and badge) even while the rail is hidden. Collapsed state persists per browser.
+  const openSession = selected ? sessions.find((s) => s.tmux === selected.tmux) : undefined
+  const { chain, reload: reloadChain } = useSessionChain(openSession?.id)
+  const [railOpen, setRailOpen] = useState(() => localStorage.getItem('aos_chain_rail') !== '0')
+  const toggleRail = () => setRailOpen((v) => { localStorage.setItem('aos_chain_rail', v ? '0' : '1'); return !v })
+
   const selectedRunning = sessions.filter((s) => sel.has(s.id) && isLive(s))
   const bulkStop = () => onBulkStop(selectedRunning.map((s) => s.id))
   const bulkDelete = () => { onBulkDelete([...sel]); setSel(new Set()) }
@@ -3738,13 +3779,27 @@ function SessionsPage({
               </>
             )}
           </div>
+          {/* Chain toggle — the discoverable way in and out of the rail. Present only when this session
+              actually handed work off, so it doubles as the signal that there IS a chain to look at. */}
+          {hasChain(chain) && (
+            <button
+              onClick={toggleRail}
+              title={railOpen ? 'hide the hand-off chain' : `show the hand-off chain — ${chain!.nodes.length} conversations across ${chain!.agents} agents`}
+              className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 ${railOpen ? 'bg-neutral-700 text-neutral-100' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'}`}>
+              <GitBranch className="h-3.5 w-3.5 shrink-0" />
+              <span className="whitespace-nowrap">Chain {chain!.nodes.length}</span>
+              {chainPending(chain) > 0
+                ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 motion-safe:animate-pulse" title="waiting on you" />
+                : chainLive(chain) > 0 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse" title={`${chainLive(chain)} running`} />}
+            </button>
+          )}
         </div>
         {/* Terminal + the hand-off chain, side by side: the pane keeps its height, the rail takes width
             only when this session actually delegated (it renders nothing for a solo run). */}
         <div className="flex min-h-0 flex-1">
-          <TerminalFrame key={selected.tmux} session={sessions.find((s) => s.tmux === selected.tmux)} tmux={selected.tmux} onActivity={onActivity}
+          <TerminalFrame key={selected.tmux} session={openSession} tmux={selected.tmux} onActivity={onActivity}
             ops={{ members, me, onOpen, onStop, onDelete, onTransfer, onActivity: setInspect }} />
-          <ChainRail session={sessions.find((s) => s.tmux === selected.tmux)} onOpen={onOpen} />
+          <ChainRail chain={chain} session={openSession} open={railOpen} onToggle={toggleRail} onReload={reloadChain} onOpen={onOpen} />
         </div>
         {/* Activity side panel — mounted here too so the Operations→Activity shortcut works from the
             terminal-tabs view, not just the list view (this branch early-returns before the list's copy). */}
@@ -3919,7 +3974,7 @@ function SessionsPage({
                 )}
                 <div className="mt-1 flex items-center gap-2 text-[11px] tabular-nums text-muted-foreground">
                   {s.activeMs != null && <span title={`${formatDuration(s.activeMs)} of engaged work — idle gaps excluded`}>{formatDuration(s.activeMs)}</span>}
-                  <SessionInsights s={s} className="text-[11px]" />
+                  <SessionInsights s={s} chain={countDescendants(g)} className="text-[11px]" />
                   {(s.costUsd != null || (metrics === 'tokens' && s.tokens)) && <span title={tokenBreakdown(s.tokens)}><MetricsValue s={s} m={metrics} /></span>}
                 </div>
                 <div className="mt-1 flex items-center justify-between gap-2">
@@ -4010,7 +4065,7 @@ function SessionsPage({
                 )}
                 <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot(s)}`} />
                 <span className="min-w-[7rem] flex-1 truncate text-sm font-medium">{s.title}</span>
-                {!isOpen && <ChainStrip group={g} runs={g.runs.length} onOpen={onOpen} className="hidden shrink-0 lg:flex" />}
+                {!isOpen && <ChainStrip group={g} runs={g.runs.length} onOpen={onOpen} className="shrink-0" />}
                 {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5 shrink-0" />}
                 <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground xl:block">{s.agent}</span>
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground 2xl:block" title={s.id}>{s.id}</span>
@@ -4020,7 +4075,7 @@ function SessionsPage({
                 {/* Engaged time, not wall-clock — the tooltip spells out the difference, which is often
                     hours for an interactive session that sat idle between turns. */}
                 <span className="hidden w-14 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground xl:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
-                <SessionInsights s={s} className="hidden w-32 shrink-0 overflow-hidden 2xl:flex" />
+                <SessionInsights s={s} chain={kids} className="hidden w-32 shrink-0 overflow-hidden 2xl:flex" />
                 {/* Money column follows the workspace preference: cost, tokens, or both (tokens dim). */}
                 <span className={`hidden ${metrics === 'both' ? 'w-24' : 'w-16'} shrink-0 items-baseline justify-end text-right text-xs tabular-nums text-muted-foreground lg:flex`} title={s.tokens ? tokenBreakdown(s.tokens) : 'not yet computed'}>
                   <MetricsValue s={s} m={metrics} />

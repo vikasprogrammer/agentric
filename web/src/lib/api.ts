@@ -1435,6 +1435,10 @@ export interface ChainNode {
   summary?: string
   status: Session['status']
   alive?: boolean
+  /** The newest run launched unattended — drawn as a hollow ring, like the sessions list. */
+  headless?: boolean
+  /** Live AND blocked on a human right now (its own pending ask/approval). Must not read as "working". */
+  blocked?: boolean
   outcome?: string
   /** Session rows this conversation spans (>1 = it was resumed by pokes/continuations). */
   runs: number
