@@ -1214,12 +1214,16 @@ const TOOLS = [
   {
     name: 'agent_propose_update',
     description:
-      "Propose an edit to ANOTHER agent's listing or CLAUDE.md system prompt — the gated counterpart to " +
-      'agent_update (which only edits you). You CANNOT change another agent directly: this posts a review ' +
-      'card to an owner and changes nothing until they approve. Pass only the fields to change, plus a ' +
-      'rationale the owner will read. Use it when you spot a concrete, well-justified improvement to a ' +
-      'teammate agent (a stale instruction, a missing convention, a better description). The target must be ' +
-      'a user-created claude-code agent (not a bundled example), and must not be you.',
+      "Propose an edit to ANOTHER agent's listing or CLAUDE.md system prompt — the cross-agent counterpart " +
+      'to agent_update (which only edits you). Pass only the fields to change, plus a rationale a human ' +
+      'will read. Use it when you spot a concrete, well-justified improvement to a teammate agent (a stale ' +
+      'instruction, a missing convention, a better description). The target must be a user-created ' +
+      'claude-code agent (not a bundled example), and must not be you. What happens next depends on YOUR ' +
+      'maturity score (earned from completed runs that needed few approvals and hit no denials): below the ' +
+      "workspace floor the proposal is refused; in the middle it waits in an owner's inbox and changes " +
+      'nothing until they approve; at the top it applies immediately and the owner is notified after the ' +
+      'fact. Write every proposal as if a human will read it — usually one does, and the reply tells you ' +
+      'which happened.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -2499,10 +2503,14 @@ async function agentProposeUpdate(args: Record<string, unknown>): Promise<string
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify(body),
   });
-  const d = (await res.json()) as { ok?: boolean; preview?: string; error?: string };
-  return d.ok
-    ? `Proposed an edit to "${id}"${d.preview ? ` (${d.preview})` : ''} — it's in an owner's inbox for review. NOTHING changes until an owner who can run "${id}" approves it; the target picks it up on its next session once applied.`
-    : `Could not propose the edit: ${d.error ?? 'unknown error'}`;
+  const d = (await res.json()) as { ok?: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; error?: string };
+  if (!d.ok) return `Could not propose the edit: ${d.error ?? 'unknown error'}`;
+  const what = d.preview ? ` (${d.preview})` : '';
+  // Two very different outcomes — say which one plainly, so the agent doesn't tell a human "it's awaiting
+  // review" when the edit is already live, or go looking for an effect that hasn't happened yet.
+  return d.applied
+    ? `Applied your edit to "${id}"${what} — your maturity (${Math.round((d.maturity ?? 0) * 100)}/100) is at or above this workspace's auto-apply bar, so it took effect without waiting for a human.${d.rev ? ` Saved as rev ${d.rev}.` : ''} An owner has been notified and can revert it. "${id}" picks it up on its next session.`
+    : `Proposed an edit to "${id}"${what} — it's in an owner's inbox for review. NOTHING changes until an owner who can run "${id}" approves it; the target picks it up on its next session once applied.`;
 }
 
 async function agentHistory(): Promise<string> {

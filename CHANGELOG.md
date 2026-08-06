@@ -8,6 +8,38 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.313.0] — 2026-08-06
+### Added
+- **A cross-agent edit is now worth what the proposing agent has earned — `agent_propose_update` is
+  tiered by the proposer's maturity.** Any agent could already propose an edit to any other agent's
+  listing/CLAUDE.md, and every proposal landed the same way: an owner card, regardless of whether the
+  proposer had 200 clean runs or was on its first. Both ends of that were wrong — a brand-new agent could
+  fill an owner's queue with prompt rewrites for teammates, and a long-proven one couldn't fix an obvious
+  stale instruction without a human round-trip. The proposer's **maturity score**
+  (`src/state/agent-stats.ts` — autonomy × (1 − denialRate) × volumeConfidence) now routes the call
+  against workspace-configurable tiers (`AgentProposalTrust`, **Settings → Runtime → Cross-agent edits**,
+  `GET`/`PUT /api/settings/agent-proposal-trust`):
+  - **below `minMaturity`** (default 0.40) — refused, with a message telling the agent what earns the
+    right and to raise it with a human instead. No write, and no card either. Audited
+    `agent.update.proposal.blocked`.
+  - **middle band** — unchanged propose-don't-apply: an owner-addressed `agent.update.proposed` card,
+    applied only by an **owner who can run the target**. The card now also carries the proposer's maturity,
+    so the reviewer weighs the proposal against its author's record, not the prose alone.
+  - **at/above `autoApplyAt`** (default 0.80) — **applied immediately, with no human in the loop**; an
+    admin-addressed notice reports it after the fact and names the revision to revert. Audited
+    `agent.update.applied`. This tier is the deliberate trade: it's hard to reach by construction (maturity
+    is damped by `volumeConfidence = runs/(runs+8)`, so 0.80 needs ~32+ runs at near-perfect autonomy with
+    a clean denial record), it's fully revertable, and `autoApply:false` turns it off entirely — which
+    restores exactly the old owner-gated behaviour while keeping the floor.
+  All three lanes were unified onto ONE write path, `applyAgentEdit` in the new `src/state/agent-edit.ts`
+  (extracted verbatim from the owner-approve route: same sanitizers, same `agent.json`/`CLAUDE.md` write,
+  same `os.registerAgent`, same `AgentRevisions.commit`) — so an auto-applied edit is validated and
+  snapshotted exactly like a human-approved one, and shows up in the same Revision history panel.
+  Authorship distinguishes them (`agent:<proposer>` vs the approving owner). `src/types.ts`
+  (`AgentProposalTrust` + `sanitizeAgentProposalTrust`), `src/governance/settings.ts`, `src/terminal.ts`,
+  `src/server.ts`, `src/memory/memory-mcp.ts` (the tool now tells the agent which tier it landed in),
+  `web/src/App.tsx`. Docs: `docs/agent-mcp-tools.md`, CLAUDE.md.
+
 ## [0.312.0] — 2026-08-06
 ### Added
 - **The sessions list now advertises hand-off chains instead of hiding them, and the rail says what's

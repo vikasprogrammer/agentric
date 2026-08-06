@@ -1595,6 +1595,48 @@ export function sanitizeUsableSubagents(input: unknown): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+/**
+ * How much the CROSS-AGENT edit path (`agent_propose_update`) trusts the PROPOSING agent, keyed off its
+ * maturity score (`src/state/agent-stats.ts`: autonomy × (1 − denialRate) × volumeConfidence).
+ *
+ * Three tiers, low to high:
+ *   maturity < `minMaturity`   → the proposal is REFUSED outright (an unproven agent doesn't get to
+ *                                rewrite a teammate's system prompt, not even into a human's queue).
+ *   in between                 → today's behaviour: an owner-addressed review card, applied only on
+ *                                owner approval.
+ *   ≥ `autoApplyAt` (+ `autoApply`) → applied IMMEDIATELY, owner notified after the fact, revertable
+ *                                from the revision it snapshots.
+ *
+ * The top tier deliberately removes the human from the loop, so note what makes it hard to reach:
+ * maturity multiplies in `volumeConfidence = runs/(runs+8)`, so 0.8 is unreachable below ~32 runs and
+ * needs near-perfect autonomy and a clean denial record on top. Set `autoApply:false` to keep every
+ * proposal owner-gated (the two lower tiers still apply).
+ */
+export interface AgentProposalTrust {
+  /** Floor to propose at all (0..1). Default 0.4. 0 lets any agent propose. */
+  minMaturity: number;
+  /** Maturity at/above which a proposal self-applies (0..1). Default 0.8. Ignored when `autoApply` is off. */
+  autoApplyAt: number;
+  /** Master switch for the auto-apply tier. Default true. */
+  autoApply: boolean;
+}
+
+export const DEFAULT_AGENT_PROPOSAL_TRUST: AgentProposalTrust = { minMaturity: 0.4, autoApplyAt: 0.8, autoApply: true };
+
+/** Normalize a stored/API `AgentProposalTrust`: clamp both thresholds to 0..1, and keep the floor at or
+ *  below the auto-apply bar (an inverted pair would make a band that refuses and self-applies at once —
+ *  raise the auto-apply bar to the floor rather than silently reordering the tiers). */
+export function sanitizeAgentProposalTrust(input: unknown): AgentProposalTrust {
+  const b = (input ?? {}) as Partial<Record<keyof AgentProposalTrust, unknown>>;
+  const num = (v: unknown, fallback: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback;
+  };
+  const minMaturity = num(b.minMaturity, DEFAULT_AGENT_PROPOSAL_TRUST.minMaturity);
+  const autoApplyAt = Math.max(minMaturity, num(b.autoApplyAt, DEFAULT_AGENT_PROPOSAL_TRUST.autoApplyAt));
+  return { minMaturity, autoApplyAt, autoApply: b.autoApply === undefined ? DEFAULT_AGENT_PROPOSAL_TRUST.autoApply : !!b.autoApply };
+}
+
 /** Normalize an agent category label (from an API body or config file): trim, collapse internal
  *  whitespace, cap at 40 chars. Returns undefined when empty so an uncategorised agent's manifest
  *  carries no `category` key at all. */

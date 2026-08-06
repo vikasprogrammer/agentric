@@ -14,6 +14,8 @@ import { newId } from './id';
 import { AgentOS } from './kernel';
 import { Db } from './state/db';
 import { containedPath, mimeOf } from './state/artifacts';
+import { computeAgentStat } from './state/agent-stats';
+import { agentEditable, applyAgentEdit } from './state/agent-edit';
 import { mintToolRouterSession, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
@@ -4928,25 +4930,34 @@ export class TerminalManager {
   }
 
   /**
-   * An agent PROPOSES an edit to ANOTHER agent's listing / CLAUDE.md — the cross-agent, gated sibling of
-   * the self-only `agent_update`. Nothing is written here (an unapproved prompt edit must not take effect):
-   * the field delta lives in the review card's args, and the approve route applies it only once an OWNER
-   * who can run the target signs off. Validates the target the SAME way the self-edit route does
-   * (claude-code only, under the user-agents root, not a bundled example), so an agent can't propose edits
-   * to something a human couldn't edit either. Same queue-cap + identical-delta dedupe as the other propose
+   * An agent PROPOSES an edit to ANOTHER agent's listing / CLAUDE.md — the cross-agent sibling of the
+   * self-only `agent_update`. Validates the target the SAME way the self-edit route does (claude-code
+   * only, under the user-agents root, not a bundled example), so an agent can't propose edits to
+   * something a human couldn't edit either. Same queue-cap + identical-delta dedupe as the other propose
    * lanes; `id === proposer` is refused (that's what `agent_update` is for).
+   *
+   * What happens to a VALID proposal is decided by the PROPOSER's maturity score against the workspace
+   * {@link AgentProposalTrust} tiers (Settings → Agents):
+   *   below `minMaturity`  → refused here. An unproven agent doesn't get to rewrite a teammate's prompt,
+   *                          and doesn't get to fill a human's queue asking to.
+   *   middle band          → the original behaviour: nothing is written, the field delta rides in an
+   *                          owner-addressed review card, and only the approve route applies it.
+   *   ≥ `autoApplyAt`      → APPLIED NOW by {@link applyAgentEdit}, with the owner notified after the
+   *                          fact. This is the one path where an agent changes another agent with no
+   *                          human in the loop, so it is deliberately expensive to reach (maturity
+   *                          multiplies in volumeConfidence — ~32+ clean, autonomous runs) and it
+   *                          snapshots a revision like every other edit, so an owner can revert it.
+   * Maturity is computed per call from the audit/session history — a full-history scan, but this is a
+   * rare, human-speed tool call, not a hot path.
    */
-  proposeAgentUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; preview?: string; error?: string } {
+  proposeAgentUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; preview?: string; applied?: boolean; rev?: number | null; maturity?: number; error?: string } {
     const target = String(body.id ?? '').trim().toLowerCase();
     if (!target) return { ok: false, error: 'id (the agent to edit) is required' };
     if (target === proposer) return { ok: false, error: 'use agent_update to edit your own listing' };
     if (!String(body.rationale ?? '').trim()) return { ok: false, error: 'a rationale is required — the approver sees it on the card' };
-    if (!this.os.paths) return { ok: false, error: 'editing agents requires a data home' };
-    const ag = this.os.agents.get(target);
-    if (!ag?.dir) return { ok: false, error: `unknown agent "${target}"` };
-    if (!isCodingRuntime(ag.runtime)) return { ok: false, error: 'only CLI-backed agents can be edited' };
-    const userRoot = path.resolve(this.os.paths.userAgents) + path.sep;
-    if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return { ok: false, error: 'built-in agents cannot be edited' };
+    const editable = agentEditable(this.os, target);
+    if (!editable.ok) return { ok: false, error: editable.error };
+    const ag = editable.ag;
     // Only the fields actually present become the delta; store them verbatim on the card for the approve route.
     const fields: Record<string, unknown> = {};
     for (const k of ['description', 'claudeMd', 'category', 'model', 'effort', 'icon'] as const) {
@@ -4954,6 +4965,38 @@ export class TerminalManager {
     }
     if ('examplePrompts' in body && Array.isArray(body.examplePrompts)) fields.examplePrompts = body.examplePrompts.map(String);
     if (!Object.keys(fields).length) return { ok: false, error: 'nothing to change — pass at least one field (description, claudeMd, category, model, effort, icon, examplePrompts)' };
+    // ── the trust tier: what this proposer's track record earns it ──────────────────────────────
+    const trust = this.os.settings.agentProposalTrust();
+    const maturity = computeAgentStat(this.db, proposer).maturity;
+    const pct = Math.round(maturity * 100);
+    if (maturity < trust.minMaturity) {
+      this.audit(sessionId, proposer, 'agent.update.proposal.blocked', { target, maturity, floor: trust.minMaturity, fields: Object.keys(fields) });
+      return {
+        ok: false, maturity,
+        error: `your maturity is ${pct}/100 and this workspace requires ${Math.round(trust.minMaturity * 100)}/100 to propose edits to another agent. Maturity comes from completed runs that needed few approvals and hit no denials — keep doing your own work well, and tell a human directly if "${target}" needs changing.`,
+      };
+    }
+    const rationaleText = String(body.rationale).trim();
+    const previewText = Object.keys(fields).map((k) => (k === 'claudeMd' ? 'CLAUDE.md (system prompt)' : k)).join(', ');
+    if (trust.autoApply && maturity >= trust.autoApplyAt) {
+      // Top tier: apply now, tell the owner afterwards. The revision snapshot is what makes this safe to
+      // undo — the notification card names the rev so an owner can revert it in one step.
+      const applied = applyAgentEdit(this.os, ag, fields, {
+        summary: `auto-applied from ${proposer} (maturity ${pct}/100): ${rationaleText}`,
+        author: `agent:${proposer}`,
+      });
+      if (!applied.ok) return { ok: false, error: applied.error };
+      this.addMessage({
+        type: 'notification', sessionId, agent: proposer,
+        title: `${proposer} edited ${target}`,
+        body: `${rationaleText}\n\nChanges to \`${target}\`: ${previewText}\n\nApplied automatically — ${proposer} is at maturity ${pct}/100, at or above this workspace's ${Math.round(trust.autoApplyAt * 100)}/100 auto-apply bar.${applied.rev ? ` Saved as rev ${applied.rev}; revert it from the agent's History if it's wrong.` : ''}`,
+        status: 'open',
+        args: { target, fields, rationale: rationaleText, preview: previewText, maturity, rev: applied.rev, autoApplied: true },
+        audienceKind: 'admins',
+      });
+      this.audit(sessionId, proposer, 'agent.update.applied', { target, fields: Object.keys(fields), maturity, bar: trust.autoApplyAt, rev: applied.rev, auto: true });
+      return { ok: true, preview: previewText, applied: true, rev: applied.rev, maturity };
+    }
     // Cap the queue + dedupe an identical open proposal from this agent for this target (mirrors proposeAutomation).
     const open = this.db.prepare(`SELECT args FROM messages WHERE type = 'agent.update.proposed' AND status = 'open' AND agent = ?`).all<{ args: string | null }>(proposer);
     if (open.length >= 10) return { ok: false, error: 'you already have 10 open edit proposals awaiting review — wait for a human to act on them first' };
@@ -4961,17 +5004,17 @@ export class TerminalManager {
     if (open.some((o) => { try { const a = JSON.parse(o.args || '{}') as { target?: string; fields?: unknown }; return JSON.stringify({ target: a.target, fields: a.fields }) === deltaKey; } catch { return false; } })) {
       return { ok: false, error: 'an identical edit proposal from you is already awaiting review' };
     }
-    const rationale = String(body.rationale).trim();
-    const preview = Object.keys(fields).map((k) => (k === 'claudeMd' ? 'CLAUDE.md (system prompt)' : k)).join(', ');
+    // Middle band — the owner decides. The proposer's maturity rides on the card so the reviewer weighs
+    // the proposal against its author's track record instead of on prose alone.
     this.postReviewCard({
       type: 'agent.update.proposed', sessionId, agent: proposer,
       title: `Edit proposed for ${target}`,
-      body: `${rationale}\n\nChanges to \`${target}\`: ${preview}`,
-      args: { target, fields, rationale, preview },
-      summary: `${proposer} proposes editing ${target} (${preview})`,
+      body: `${rationaleText}\n\nChanges to \`${target}\`: ${previewText}\n\nProposed by ${proposer} — maturity ${pct}/100.`,
+      args: { target, fields, rationale: rationaleText, preview: previewText, maturity },
+      summary: `${proposer} (maturity ${pct}/100) proposes editing ${target} (${previewText})`,
     });
-    this.audit(sessionId, proposer, 'agent.update.proposed', { target, fields: Object.keys(fields) });
-    return { ok: true, preview };
+    this.audit(sessionId, proposer, 'agent.update.proposed', { target, fields: Object.keys(fields), maturity });
+    return { ok: true, preview: previewText, applied: false, maturity };
   }
 
   /** The proposed agent-edit review card by id (its target + field delta + status) — for the approve/reject routes. */

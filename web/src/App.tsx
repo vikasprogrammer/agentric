@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -14204,8 +14204,64 @@ function RuntimeDefaultsSettings({ me }: { me: Member }) {
             {subHint && <span className="font-mono text-xs text-muted-foreground">{subHint}</span>}
           </div>
         </div>
+        <AgentProposalTrustSettings canEdit={canEdit} />
       </CardContent>
     </Card>
+  )
+}
+
+/** Settings → Runtime → what an agent's track record earns it on the CROSS-AGENT edit path
+ *  (`agent_propose_update`). Three tiers keyed on the PROPOSER's maturity score: refused below the floor,
+ *  owner review in the middle, self-applied at the top. The top tier is the only path where one agent
+ *  rewrites another with no human in the loop, so the copy says so plainly and the switch turns it off. */
+function AgentProposalTrustSettings({ canEdit }: { canEdit: boolean }) {
+  const [trust, setTrust] = useState<AgentProposalTrust | null>(null)
+  const [hint, setHint] = useState('')
+
+  useEffect(() => { api.agentProposalTrust().then((r) => { if (!r.error) setTrust(r.trust) }).catch(() => {}) }, [])
+
+  const save = async (patch: Partial<AgentProposalTrust>) => {
+    const next = { ...(trust ?? { minMaturity: 0.4, autoApplyAt: 0.8, autoApply: true }), ...patch }
+    setTrust(next); setHint('')
+    const r = await api.saveAgentProposalTrust(patch)
+    if (r.error) return setHint('⚠ ' + r.error)
+    if (r.trust) setTrust(r.trust)  // the server clamps + keeps the floor ≤ the bar; show what it stored
+    setHint('saved'); setTimeout(() => setHint(''), 2000)
+  }
+
+  if (!trust) return null
+  const pct = (n: number) => String(Math.round(n * 100))
+  return (
+    <div className="space-y-1 border-t pt-4">
+      <label className="text-sm font-medium">Cross-agent edits</label>
+      <p className="text-sm text-muted-foreground">
+        An agent can propose an edit to <em>another</em> agent's description or system prompt. What its proposal is worth depends on its{' '}
+        <span className="font-medium">maturity</span> score — earned from completed runs that needed few approvals and hit no denials.
+      </p>
+      <div className="flex flex-wrap items-center gap-3 pt-2">
+        <label className="text-sm text-muted-foreground">Refuse below</label>
+        <input type="number" min={0} max={100} step={5} value={pct(trust.minMaturity)} disabled={!canEdit}
+          onChange={(e) => save({ minMaturity: Math.min(100, Math.max(0, Number(e.target.value) || 0)) / 100 })}
+          className="w-20 rounded-md border bg-background px-2 py-1.5 text-sm" />
+        <span className="text-sm text-muted-foreground">/100 — under this, the agent can't propose at all.</span>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 pt-2">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={trust.autoApply} disabled={!canEdit} onChange={(e) => save({ autoApply: e.target.checked })} />
+          Let a highly mature agent apply its edit immediately, at or above
+        </label>
+        <input type="number" min={0} max={100} step={5} value={pct(trust.autoApplyAt)} disabled={!canEdit || !trust.autoApply}
+          onChange={(e) => save({ autoApplyAt: Math.min(100, Math.max(0, Number(e.target.value) || 0)) / 100 })}
+          className="w-20 rounded-md border bg-background px-2 py-1.5 text-sm" />
+        <span className="text-sm text-muted-foreground">/100</span>
+        {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+      </div>
+      <p className="pt-1 text-[11px] text-muted-foreground">
+        {trust.autoApply
+          ? <>Above the bar, one agent rewrites another <strong>with no human in the loop</strong> — you're notified after the fact and every edit is a revertable revision. Maturity is hard to reach by design (it's damped by run volume, so it takes ~30+ clean, autonomous runs). Turn the checkbox off to keep every proposal owner-approved.</>
+          : <>Every proposal between the floor and 100 waits for an owner who can run the target agent. Nothing is written until they approve.</>}
+      </p>
+    </div>
   )
 }
 

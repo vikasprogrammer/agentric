@@ -10,7 +10,7 @@
  * so adding more instance-level settings later is just another key.
  */
 import { Db } from '../state/db';
-import { Branding, EnrichPattern, MemoryConfig, Recommendation, RouterConfig, RuntimeTuning, sanitizeBranding, sanitizeRuntimeTuning } from '../types';
+import { AgentProposalTrust, Branding, EnrichPattern, MemoryConfig, Recommendation, RouterConfig, RuntimeTuning, sanitizeAgentProposalTrust, sanitizeBranding, sanitizeRuntimeTuning } from '../types';
 
 const COMPANY_KEY = 'company_md';
 const REVIEW_KEY = 'code_review_md'; // the fleet-wide code-review policy (how agents review a diff/PR)
@@ -39,6 +39,7 @@ const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active externa
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
 const SUBAGENT_DEFAULT_KEY = 'subagent_default'; // fleet-wide sub-agent posture: 'all' (default) | 'none'
 const SESSION_METRICS_KEY = 'session_metrics'; // sessions-list money column: 'cost' | 'tokens' | 'both'
+const AGENT_PROPOSAL_TRUST_KEY = 'agent_proposal_trust'; // cross-agent edit tiers keyed on proposer maturity (JSON AgentProposalTrust)
 
 /** What the sessions list shows in its money column: dollar cost, token total, or both. */
 export type SessionMetrics = 'cost' | 'tokens' | 'both';
@@ -527,6 +528,28 @@ export class SettingsStore {
   setRuntimeDefaults(tuning: RuntimeTuning, by?: string): RuntimeTuning {
     this.set(RUNTIME_DEFAULTS_KEY, JSON.stringify(tuning), by);
     return this.runtimeDefaults();
+  }
+
+  // ── cross-agent edit trust (agent_propose_update) ──────────────────────────────
+  // How much the cross-agent propose path trusts the PROPOSER, keyed on its maturity score: refuse
+  // below the floor, owner review in the middle band, self-apply at the top (see AgentProposalTrust).
+  // Unset → the shipped defaults, so a tenant that never opens this gets floor 0.4 / auto-apply 0.8.
+
+  /** The live tiers (stored JSON, else the defaults). Always fully populated — never partial. */
+  agentProposalTrust(): AgentProposalTrust {
+    const raw = this.getRow(AGENT_PROPOSAL_TRUST_KEY)?.value;
+    if (!raw) return sanitizeAgentProposalTrust({});
+    try {
+      return sanitizeAgentProposalTrust(JSON.parse(raw) as Record<string, unknown>);
+    } catch {
+      return sanitizeAgentProposalTrust({});
+    }
+  }
+
+  setAgentProposalTrust(cfg: Partial<AgentProposalTrust>, by?: string): AgentProposalTrust {
+    const clean = sanitizeAgentProposalTrust({ ...this.agentProposalTrust(), ...cfg });
+    this.set(AGENT_PROPOSAL_TRUST_KEY, JSON.stringify(clean), by);
+    return this.agentProposalTrust();
   }
 
   /** Fleet-wide sub-agent posture. `'all'` (default): every claude-code agent may spawn every WILLING

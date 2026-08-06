@@ -55,7 +55,7 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `goal_propose` | `POST /api/goals/propose` | `GoalStore.create` (status `draft`) + `TerminalManager.postGoalCard` | W | drafts a NOT-YET-ACTIVE goal + posts a `goal.proposed` inbox card to admins; owner = run-as; auto-apply + audited `goal.proposed`. Agents READ + PROPOSE only — activating/editing a goal is a human owner/admin console action (no agent write path) |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
 | `agent_update` | `POST /api/agents/update` | `AgentOS.registerAgent` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; snapshots a revision; audited `agent.config.updated` |
-| `agent_propose_update` | `POST /api/agent/agent/propose` | `TerminalManager.proposeAgentUpdate` | W(gated) | **cross-agent, propose-don't-apply** — proposes an edit to ANOTHER agent's listing/CLAUDE.md; writes nothing, posts an owner-addressed `agent.update.proposed` review card; applied only when an **owner who can run the target** approves (`POST /api/agents/proposals/:id/approve`, then the self-edit apply + `AgentRevisions.commit`, author = approver); user-home claude-code targets only; 10-open cap + identical-delta dedupe; audited `agent.update.proposed` / `agent.update.proposal.approved`/`rejected` |
+| `agent_propose_update` | `POST /api/agent/agent/propose` | `TerminalManager.proposeAgentUpdate` | W(tiered) | **cross-agent** — proposes an edit to ANOTHER agent's listing/CLAUDE.md, routed by the **proposer's maturity** against the workspace `AgentProposalTrust` (Settings → Runtime): below `minMaturity` (0.4) **refused** (audited `agent.update.proposal.blocked`); middle band = propose-don't-apply, an owner-addressed `agent.update.proposed` card applied only when an **owner who can run the target** approves (`POST /api/agents/proposals/:id/approve`); at/above `autoApplyAt` (0.8, switchable off) **applied immediately** by `applyAgentEdit` with an admin-addressed notice after the fact (audited `agent.update.applied`). All lanes share one write path (`src/state/agent-edit.ts`) + `AgentRevisions.commit`, so every outcome is revertable; user-home claude-code targets only; 10-open cap + identical-delta dedupe |
 | `agent_history` | `POST /api/agents/history` | `AgentRevisions.list` | R | the caller's own listing revisions (rev/author/summary/date), newest first |
 | `agent_revert` | `POST /api/agents/revert` | `AgentRevisions` + `AgentOS.registerAgent` | W | **self-only**; restores a prior revision (description/prompts/tuning/CLAUDE.md), records the revert as a new revision; audited `agent.config.reverted` |
 | `app_create` | `POST /api/apps/create` | `AppStore.scaffold` | W | builds a hosted app (single-file `server.js` for v1) under `<home>/apps/<slug>/`; lands **proposed** (`published:false`, inert until a human publishes); posts an `app.proposed` review card; audited `app.created` |
@@ -229,20 +229,33 @@ revision into `agent_revisions` (`src/state/agent-revisions.ts`), so any change 
 data home (bundled examples can't be edited) and rewrites only the fields the caller supplied. A future
 tightening could classify CLAUDE.md/model self-edits through Policy for workspaces that want sign-off.
 
-`agent_propose_update` is the **cross-agent** counterpart, deliberately kept *gated* rather than an open
-widening of `agent_update`. Rewriting **another** agent's system prompt is a genuine side effect on a
-different principal — a lateral-privilege / prompt-injection vector if left ungated (agents don't share a
-trust level; the target may hold different `shellSecrets`/assignments) — so it follows the **propose-don't-apply**
-pattern of `policy_propose` / `automation_propose`: the agent's loopback call writes **nothing**, it only
-posts an owner-addressed `agent.update.proposed` card carrying the field delta + rationale. Application is
-**owner-only, and the owner must be able to run the target** (`os.team.canRun`; owners run everything, so
-this also future-proofs a narrower run model) — an admin cannot approve. On approval the server runs the
-**same** apply path as the self-edit route (sanitizers + disk write + `AgentRevisions.commit`, author = the
-approving owner, summary naming the proposer), so accountability captures both parties and the result is
-one-click revertable in the same Revision history panel. Same target guards as `agent_update` (user-home
-claude-code agents only, never `id === self`), plus a 10-open queue cap and identical-delta dedupe. The
-console surfaces open proposals on the **agent page → "Proposed edits from other agents"** card (owner-only,
-with a full CLAUDE.md before→after).
+`agent_propose_update` is the **cross-agent** counterpart. Rewriting **another** agent's system prompt is a
+genuine side effect on a different principal — a lateral-privilege / prompt-injection vector if left
+ungated (agents don't share a trust level; the target may hold different `shellSecrets`/assignments). What
+a proposal is *worth* is therefore decided by the **proposer's own track record**: its maturity score
+(`src/state/agent-stats.ts` — autonomy × (1 − denialRate) × volumeConfidence) is compared against the
+workspace `AgentProposalTrust` tiers (`src/types.ts`, stored in settings, edited in **Settings → Runtime →
+Cross-agent edits**, `GET`/`PUT /api/settings/agent-proposal-trust`):
+
+| proposer maturity | outcome |
+| --- | --- |
+| `< minMaturity` (default 0.40) | **refused** at `TerminalManager.proposeAgentUpdate` — no write, and no card either (an unproven agent doesn't get to fill a human's queue). Audited `agent.update.proposal.blocked`. |
+| between | **propose-don't-apply**, the `policy_propose` / `automation_propose` pattern: the loopback call writes **nothing**, it posts an owner-addressed `agent.update.proposed` card carrying the field delta + rationale + the proposer's maturity. Application is **owner-only, and the owner must be able to run the target** (`os.team.canRun`) — an admin cannot approve. |
+| `≥ autoApplyAt` (default 0.80, `autoApply` switchable off) | **applied immediately**, no human in the loop; an admin-addressed `notification` card reports it after the fact and names the revision to revert. Audited `agent.update.applied`. |
+
+The top tier is deliberately expensive to reach: maturity multiplies in `volumeConfidence = runs/(runs+8)`,
+so 0.80 is unreachable below ~32 runs and additionally needs near-perfect autonomy and a clean denial
+record. Operators who want the pre-tier behaviour set `autoApply:false`, which keeps every proposal
+owner-gated while retaining the floor.
+
+All three lanes share ONE write path — `applyAgentEdit` in `src/state/agent-edit.ts` (sanitizers + disk
+write + `os.registerAgent` + `AgentRevisions.commit`) — so an auto-applied edit is validated and
+snapshotted exactly like an owner-approved one, and is equally revertable from the Revision history panel.
+Authorship distinguishes them: `agent:<proposer>` on the auto lane, the approving owner (with a summary
+naming the proposer) on the gated one. Same target guards as `agent_update` (user-home claude-code agents
+only, never `id === self`), plus a 10-open queue cap and identical-delta dedupe. The console surfaces open
+proposals on the **agent page → "Proposed edits from other agents"** card (owner-only, with a full
+CLAUDE.md before→after).
 
 ### `goal_list` / `goal_get` / `goal_propose` — the strategic layer (read + propose only)
 

@@ -68,9 +68,10 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
+import { agentEditable, applyAgentEdit, manifestToSnapshot, readAgentSnapshot } from './state/agent-edit';
 
 /** Sum busy + idle CPU tick counters across all cores (for a sampled utilization %). */
 function cpuTicks(): { idle: number; total: number } {
@@ -146,16 +147,6 @@ const BUILT_IN_AGENT_IDS = new Set<string>([
   SCOUT_ID, STRATEGIST_ID, IMPROVER_ID, ANALYST_ID,
 ]);
 
-/** The full editable state of an agent, from its manifest + on-disk CLAUDE.md — the unit revisions snapshot. */
-function manifestToSnapshot(ag: AgentManifest, claudeMd: string): AgentConfigSnapshot {
-  return {
-    description: ag.description ?? '',
-    category: ag.category, icon: ag.icon,
-    model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity,
-    examplePrompts: ag.examplePrompts ?? [], shellSecrets: ag.shellSecrets ?? [],
-    claudeMd,
-  };
-}
 
 /** Agent ids that currently have an improver-drafted CLAUDE.md proposal awaiting review (Apply/Dismiss).
  *  Derived from the KB proposal pages — no extra table. NB: the KB store normSeg's a slug's `/` to `-`, so
@@ -211,12 +202,6 @@ function troubledAutomations(os: AgentOS, now = Date.now()): Array<{ id: string;
   return out;
 }
 
-/** Read the agent's current on-disk snapshot (manifest fields + CLAUDE.md), to record as the "before". */
-function readAgentSnapshot(ag: AgentManifest): AgentConfigSnapshot {
-  const file = ag.dir ? path.join(ag.dir, 'CLAUDE.md') : '';
-  const claudeMd = file && fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-  return manifestToSnapshot(ag, claudeMd);
-}
 
 /** Re-apply a full snapshot to disk (agent.json + CLAUDE.md) and re-register — the shared revert primitive. */
 function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSnapshot): AgentManifest {
@@ -2426,27 +2411,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!card) return sendJson(res, 404, { error: 'no such agent-edit proposal' });
     if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
     if (!os.team.canRun(me, card.target)) return sendJson(res, 403, { error: `you cannot run "${card.target}", so you cannot approve edits to it` });
-    const ag = os.agents.get(card.target);
-    if (!ag?.dir) { tm.setAgentUpdateProposalStatus(card.id, 'rejected'); return sendJson(res, 200, { ok: false, error: `target agent "${card.target}" no longer exists` }); }
-    if (!isCodingRuntime(ag.runtime)) return sendJson(res, 200, { ok: false, error: 'only CLI-backed agents can be edited' });
-    const userRoot = path.resolve(os.paths.userAgents) + path.sep;
-    if (!(path.resolve(ag.dir) + path.sep).startsWith(userRoot)) return sendJson(res, 200, { ok: false, error: 'built-in agents cannot be edited' });
+    const editable = agentEditable(os, card.target);
+    if (!editable.ok) {
+      // A target that vanished can never be approved — close the card rather than leaving it open forever.
+      if (!os.agents.get(card.target)) { tm.setAgentUpdateProposalStatus(card.id, 'rejected'); return sendJson(res, 200, { ok: false, error: `target agent "${card.target}" no longer exists` }); }
+      return sendJson(res, 200, { ok: false, error: editable.error });
+    }
     const f = card.fields; // the proposed field delta (only present keys are applied — same shape as the self-edit body)
-    const { tuning, error: tErr } = sanitizeRuntimeTuning(runtimeTuningPatch(f, ag, { fields: ['model', 'effort', 'verbosity'] }));
-    if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
-    const before = readAgentSnapshot(ag);
-    const description = 'description' in f ? String(f.description ?? '').trim() : ag.description;
-    const category = 'category' in f ? sanitizeCategory(f.category) : ag.category;
-    const icon = 'icon' in f ? sanitizeIcon(f.icon) : ag.icon;
-    const examplePrompts = 'examplePrompts' in f ? sanitizeExamplePrompts(f.examplePrompts) : ag.examplePrompts;
-    const next: AgentManifest = { ...ag, description, model: tuning.model, effort: tuning.effort, verbosity: tuning.verbosity, category, icon, examplePrompts };
-    const { dir: _dir, ...onDisk } = next;
-    fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
-    if ('claudeMd' in f) fs.writeFileSync(path.join(ag.dir, 'CLAUDE.md'), String(f.claudeMd ?? ''));
-    os.registerAgent(next);
-    const after = manifestToSnapshot(next, 'claudeMd' in f ? String(f.claudeMd ?? '') : before.claudeMd);
-    // Author = the approving owner; the summary preserves who proposed it, so the revision log names both parties.
-    const rev = os.agentRevisions.commit(os.tenant, card.target, before, after, `proposed by ${card.agent}, approved by ${me.email}`, me.email);
+    // Author = the approving owner; the summary preserves who proposed it, so the revision log names both
+    // parties. Shares one write path with the auto-apply tier (see src/state/agent-edit.ts).
+    const applied = applyAgentEdit(os, editable.ag, f, { summary: `proposed by ${card.agent}, approved by ${me.email}`, author: me.email });
+    if (!applied.ok) return sendJson(res, 200, { ok: false, error: applied.error });
+    const rev = applied.rev;
     tm.setAgentUpdateProposalStatus(card.id, 'approved');
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.update.proposal.approved', data: { target: card.target, proposer: card.agent, by: me.email, fields: Object.keys(f), claudeMd: 'claudeMd' in f, rev } });
     return sendJson(res, 200, { ok: true, target: card.target, rev });
@@ -4150,6 +4126,20 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     os.settings.setSubagentDefault(mode, me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.subagentDefault.updated', data: { mode } });
     return sendJson(res, 200, { ok: true, mode });
+  }
+
+  // ── cross-agent edit trust: what a proposing agent's maturity earns it (agent_propose_update) ──
+  //    Three tiers — refuse below `minMaturity`, owner review in the middle, self-apply at/above
+  //    `autoApplyAt` (when `autoApply` is on). Read on every propose call; owner/admin may retune.
+  if (method === 'GET' && p === '/api/settings/agent-proposal-trust') {
+    return sendJson(res, 200, { trust: os.settings.agentProposalTrust() });
+  }
+  if (method === 'PUT' && p === '/api/settings/agent-proposal-trust') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const b = await readBody(req) as Partial<Record<'minMaturity' | 'autoApplyAt' | 'autoApply', unknown>>;
+    const trust = os.settings.setAgentProposalTrust(sanitizeAgentProposalTrust({ ...os.settings.agentProposalTrust(), ...b }), me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.agentProposalTrust.updated', data: { ...trust } });
+    return sendJson(res, 200, { ok: true, trust });
   }
 
   // ── sessions-list money column (cost / tokens / both) — a workspace-wide viewing preference ──

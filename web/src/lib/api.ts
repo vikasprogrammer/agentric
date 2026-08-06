@@ -603,6 +603,15 @@ export interface AgentStats {
   confidence: 'none' | 'low' | 'medium' | 'high'
 }
 
+/** What a PROPOSING agent's maturity earns it on the cross-agent edit path (`agent_propose_update`) —
+ *  mirror of src/types.ts AgentProposalTrust. Below `minMaturity` the proposal is refused; in between an
+ *  owner reviews it; at/above `autoApplyAt` (when `autoApply`) it applies with no human in the loop. */
+export interface AgentProposalTrust {
+  minMaturity: number
+  autoApplyAt: number
+  autoApply: boolean
+}
+
 export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled'
 export interface Task {
   id: string
@@ -1751,6 +1760,8 @@ export const api = {
   verbositySavings: (days = 30) => call<VerbositySavings>('GET', `/api/settings/verbosity-savings?days=${days}`),
   subagentDefault: () => call<{ mode: 'all' | 'none'; error?: string }>('GET', '/api/settings/subagent-default'),
   saveSubagentDefault: (mode: 'all' | 'none') => call<{ ok: boolean; mode?: 'all' | 'none'; error?: string }>('PUT', '/api/settings/subagent-default', { mode }),
+  agentProposalTrust: () => call<{ trust: AgentProposalTrust; error?: string }>('GET', '/api/settings/agent-proposal-trust'),
+  saveAgentProposalTrust: (patch: Partial<AgentProposalTrust>) => call<{ ok: boolean; trust?: AgentProposalTrust; error?: string }>('PUT', '/api/settings/agent-proposal-trust', patch),
   saveSessionMetrics: (value: SessionMetrics) => call<{ ok: boolean; sessionMetrics?: SessionMetrics; error?: string }>('PUT', '/api/settings/session-metrics', { value }),
   concurrency: () => call<Concurrency & { error?: string }>('GET', '/api/settings/concurrency'),
   saveConcurrency: (body: { value?: number | null; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number }) => call<{ ok: boolean; error?: string; value?: number | null; resolved?: number; derived?: number; idleHours?: number; unattendedMaxHours?: number; unattendedNoProgressMinutes?: number; blockedMaxHours?: number }>('PUT', '/api/settings/concurrency', body),

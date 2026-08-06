@@ -279,11 +279,17 @@ Key modules:
   `agent_update`/`agent_history`/`agent_revert` — an agent refines its OWN listing (description, starter
   prompts, tuning) + CLAUDE.md system prompt and can roll back a bad self-edit; every change snapshots a
   reversible revision (`src/state/agent-revisions.ts`, the KB-style rollback backbone). To edit ANOTHER
-  agent, `agent_propose_update` is the **gated** cross-agent path (propose-don't-apply): it writes nothing,
-  posts an owner-addressed `agent.update.proposed` card, and applies only when an **owner who can run the
-  target** approves (`POST /api/agents/proposals/:id/approve` → the same self-edit apply + revision snapshot,
-  author = approver) — an admin can't approve, since rewriting another agent's prompt is a privilege-bearing
-  side effect. Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
+  agent, `agent_propose_update` is the cross-agent path, and what a proposal is worth is decided by the
+  **proposer's maturity** (`src/state/agent-stats.ts`) against the workspace `AgentProposalTrust` tiers
+  (Settings → Runtime → Cross-agent edits): below `minMaturity` (0.4) it's **refused** outright; in the
+  middle band it's propose-don't-apply — writes nothing, posts an owner-addressed `agent.update.proposed`
+  card, applies only when an **owner who can run the target** approves (`POST /api/agents/proposals/:id/approve`)
+  and an admin can't; at/above `autoApplyAt` (0.8, `autoApply:false` disables the tier) it **applies
+  immediately** with the owner notified after the fact. All three lanes share one write path —
+  `applyAgentEdit` in `src/state/agent-edit.ts` — so every outcome snapshots a revertable revision (author
+  `agent:<proposer>` on the auto lane, the approver on the gated one). The top tier is the only place an
+  agent changes another agent with no human in the loop; it's hard to reach by construction (maturity is
+  damped by `volumeConfidence`, so ~32+ clean autonomous runs), and it's revertable, not undoable-only. Governance (propose, don't apply): `policy_propose` — an agent that spots a weak
   guardrail proposes a **TIGHTEN-ONLY** ruleset change (`tighten` a rule stricter, `reorder` a conditional
   rule above the unconditional allows — the first-match ordering fix, or `add` a new `ask`/`never`
   guardrail). `applyProposal` (`src/governance/policy.ts`) refuses any loosening (by construction + an
