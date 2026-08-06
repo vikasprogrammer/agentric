@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.315.0] — 2026-08-06
+### Fixed
+- **A running delegate was unreachable, so "stand down" spawned a second agent instead of stopping the
+  first.** Caught live on northwind (`tsk_67de2dfe`, 2026-08-06): `marketing-manager` auto-dispatched a
+  build it hadn't meant to, put the task on **HOLD** 35 s later — and the hold reached a *newly spawned*
+  `marketing-site` run, which stood down, while the run actually building kept going for 25+ minutes.
+  Root cause: `deliverToResident` refused any session with `resident = 0`, so every unattended
+  (task/automation) run was unreachable even though those are attachable TUIs now, not `claude -p`. The
+  task-discussion path then fell through to spawning a rival worker and re-pointed the task's
+  `last_session_id` at it, orphaning the live run from its own task. Now:
+  - any LIVE claude pane can be delivered into, unattended or not;
+  - a turn-end teardown is deferred while a message delivered in the last 90 s is still unread
+    (`DELIVERY_GRACE_MS`), so a HOLD typed a second before the Stop hook isn't swallowed;
+  - a task moved to `blocked`/`cancelled` by anyone other than the executing agent now **injects the
+    reason into the live run** (`task.hold.delivered`), so the row and the work stop together;
+  - the discussion path reports an undeliverable live run instead of spawning a rival onto the same task.
+- **A caller no longer pokes itself.** The poke-back fires when a task reaches `done`/`blocked`; the code
+  assumed the delegate is always the actor ("so this can't self-wake"), which a caller parking its own
+  hand-off falsifies — 14 spurious wake-up sessions across the fleet in 30 days. The actor decides now.
+- **A parked task can no longer be re-dispatched by a guarded path.** `dispatchTask` refused
+  `done`/`cancelled` but not `blocked`, so `task_dispatch`, `task_wait`'s polling kick and app dispatch
+  all sailed past a deliberate stop (45 tasks dispatched 2+ times in 30 days, 23 of them within 60 s). A
+  human forcing it from the console is still allowed — that is the un-park.
+### Added
+- **Message a delegate from the chain rail.** Any live node gets a composer that types straight into that
+  agent's session (`POST /api/sessions/:id/inject`) — steering a run you aren't attached to, without
+  opening its terminal or filing a task comment that reaches the wrong run.
+
 ## [0.314.0] — 2026-08-06
 ### Added
 - **A task's full run history — every session that worked it, not just the last one.** The task↔session
