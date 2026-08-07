@@ -282,7 +282,41 @@ const GOAL_AUTOPLAN_MAX_PER_TICK = Number(process.env.AOS_GOAL_AUTOPLAN_MAX_PER_
  * full payload won't fit, we fall back to plain mode with the acceptance condition embedded in the body —
  * the run still knows what "done" means, it just isn't evaluator-driven.
  */
-export function buildTaskPrompt(t: { id: string; title: string; body: string; criteria?: string }, opts: { goalMode?: boolean } = {}): string {
+/** One earlier session that already worked this task — the slice of `TaskRun` the prompt needs. */
+export type PriorRun = { agent: string; outcome?: string; summary?: string };
+
+/** How many earlier attempts we name individually before collapsing the rest to a count. Keeps a
+ *  much-retried task's prompt from turning into a wall of history. */
+const PRIOR_RUNS_SHOWN = 3;
+
+/**
+ * The "you are not the first" preamble for a re-dispatched task.
+ *
+ * A task is the unit of work and a session is one ATTEMPT at it, so a re-dispatch used to hand the next
+ * agent a prompt identical to the first one's — no signal that anyone had been here, which invites
+ * redoing work that already landed (or re-hitting a wall a predecessor already documented). Each prior
+ * run is one line: who ran it, what it reported, and the one-liner it left behind. The pointer to
+ * `task_get` matters as much as the lines — the notes and discussion hold the detail this can't.
+ */
+function priorRunsBlock(taskId: string, runs?: PriorRun[]): string {
+  if (!runs?.length) return '';
+  const shown = runs.slice(-PRIOR_RUNS_SHOWN);
+  const earlier = runs.length - shown.length;
+  const line = (r: PriorRun, i: number) =>
+    `  ${earlier + i + 1}. ${r.agent} — ${r.outcome || 'no report'}${r.summary ? `: ${r.summary}` : ''}`;
+  return (
+    `This is attempt ${runs.length + 1} — ${runs.length} earlier session${runs.length === 1 ? '' : 's'} already worked this task` +
+    `${earlier > 0 ? ` (${earlier} older one${earlier === 1 ? '' : 's'} not listed)` : ''}:\n` +
+    shown.map(line).join('\n') + '\n' +
+    `Pick up where they left off rather than starting over — call task_get({ id: "${taskId}" }) for the full notes and discussion first.\n\n`
+  );
+}
+
+export function buildTaskPrompt(
+  t: { id: string; title: string; body: string; criteria?: string },
+  opts: { goalMode?: boolean; priorRuns?: PriorRun[] } = {},
+): string {
+  const history = priorRunsBlock(t.id, opts.priorRuns);
   const buildBase = (converging: boolean) => {
     // Criteria we want to honour but can't route through `/goal` still belongs in the prompt.
     const embedCriteria = !!t.criteria && !converging;
@@ -293,6 +327,7 @@ export function buildTaskPrompt(t: { id: string; title: string; body: string; cr
       `You are working task ${t.id}: ${t.title}\n\n` +
       `${t.body || '(no description provided)'}\n\n` +
       (embedCriteria ? `Acceptance criteria (the definition of done): ${t.criteria}\n\n` : '') +
+      history +
       close +
       `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n` +
       `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`
@@ -634,7 +669,11 @@ export class Automations {
     // A delegator can pin the dispatched session's model / reasoning effort (e.g. a cheap background
     // sweep, or max effort for a hard task); undefined fields fall back to the agent + workspace default.
     const tuning = (t.model || t.effort) ? { model: t.model, effort: t.effort } : undefined;
-    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, undefined, false, tuning);
+    // Tell a re-dispatched run that it isn't the first — see priorRunsBlock. Only sessions that actually
+    // finished carry a verdict worth reporting; a still-alive one can't be a predecessor anyway (the
+    // pile-up guard above already refused that case).
+    const priorRuns = this.tm.taskRuns(t.id).filter((r) => !r.alive).map((r) => ({ agent: r.agent, outcome: r.outcome, summary: r.summary }));
+    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode, priorRuns }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, undefined, false, tuning);
     this.os.tasks.markDispatched(t.id, s.id);
     this.os.audit.append({
       ts: Date.now(),

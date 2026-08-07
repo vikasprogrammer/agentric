@@ -90,6 +90,32 @@ tm.backend.aliveNames = () => null;   // launcher backend / failed poll → live
 assert(tm.taskRuns(t1.id).find((r) => r.id === r3).alive === true, 'a running row stays alive when the poll cannot run');
 assert(tm.taskRuns(t1.id).find((r) => r.id === r2).alive === false, 'a terminal row is never claimed alive');
 
+console.log('\n\x1b[1m5) a re-dispatched run is told it is not the first (buildTaskPrompt priorRuns)\x1b[0m');
+// The run history is only worth recovering if it reaches the next ATTEMPT. A re-dispatch used to get a
+// prompt byte-identical to the first run's, which invites redoing work that already landed.
+const { buildTaskPrompt } = require(path.join(ROOT, 'dist/edge/automations.js'));
+const pt = { id: 'tsk_x', title: 'Ship the thing', body: 'Do the work.' };
+const first = buildTaskPrompt(pt);
+assert(!/attempt/i.test(first), 'a first dispatch carries no history preamble');
+const prior = [
+  { agent: 'engineer', outcome: 'crashed' },
+  { agent: 'engineer', outcome: 'partial', summary: 'Shipped phase 1 as PR #419' },
+];
+const again = buildTaskPrompt(pt, { priorRuns: prior });
+assert(again.includes('This is attempt 3 — 2 earlier sessions already worked this task'), 'the re-dispatch is numbered off the prior count');
+assert(again.includes('1. engineer — crashed'), 'a prior run with no summary still reports its verdict');
+assert(again.includes('2. engineer — partial: Shipped phase 1 as PR #419'), 'and one with a summary carries the one-liner');
+assert(again.includes('task_get({ id: "tsk_x" })'), 'and points at the notes/discussion the summaries cannot hold');
+assert(again.indexOf('This is attempt') < again.indexOf('When finished'), 'history precedes the closing instructions, which still land');
+// A much-retried task must not turn its prompt into a wall of history.
+const many = buildTaskPrompt(pt, { priorRuns: Array.from({ length: 6 }, (_, i) => ({ agent: 'engineer', outcome: 'failure', summary: 'try ' + (i + 1) })) });
+assert(many.includes('(3 older ones not listed)'), 'a long history collapses to the last three');
+assert(many.includes('4. engineer — failure: try 4') && !many.includes('3. engineer'), 'and the survivors keep their ABSOLUTE attempt numbers');
+// The `/goal` CLI counts the whole emitted payload against its cap, so the preamble must sit INSIDE the
+// text that gate measures — otherwise a re-dispatch could ship a payload the CLI rejects and never run.
+const goalish = buildTaskPrompt({ ...pt, criteria: 'tests green' }, { goalMode: true, priorRuns: prior });
+assert(!goalish.startsWith('/goal ') || goalish.includes('This is attempt 3'), 'goal mode carries the history inside the measured payload');
+
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);
 fs.rmSync(HOME, { recursive: true, force: true });
 process.exit(fail === 0 ? 0 : 1);

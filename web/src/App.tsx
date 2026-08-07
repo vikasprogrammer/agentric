@@ -2694,6 +2694,10 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
       <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs leading-relaxed text-neutral-300">{transcript || '(no output captured)'}</pre>
     </div>
   )
+  // No transcript for a finished run (an older session whose pane log was never written, or one whose
+  // log has since been cleaned up). We still know what the run REPORTED — fall back to that rather than
+  // a bare error, so the pane answers "what came of it" even when it can't answer "what happened".
+  if (ended && err && session) return <RunReport session={session} note={err} />
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!wsUrl) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   return (
@@ -2714,6 +2718,55 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
       </ImageDropZone>
     </div>
   )
+}
+
+/**
+ * What a finished run REPORTED, shown when its transcript can't be. A pane log is best-effort — an older
+ * session may never have written one, and a cleaned-up home loses them — but the verdict and the
+ * one-line summary live on the session row, so "what came of it" survives even when "what happened"
+ * doesn't. Strictly better than the bare error this replaced, which told the reader nothing at all.
+ */
+function RunReport({ session: s, note }: { session: Session; note: string }) {
+  const v = OUTCOME_TONE[s.outcome ?? 'unknown'] ?? OUTCOME_TONE.unknown
+  const facts = [
+    s.agent,
+    s.activeMs != null ? formatDuration(s.activeMs) : null,
+    s.costUsd != null ? fmtCost(s.costUsd) : null,
+    s.turns ? `${s.turns} turn${s.turns === 1 ? '' : 's'}` : null,
+    `${timeAgo(s.updatedAt)} ago`,
+  ].filter(Boolean) as string[]
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-black">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
+        <span>Session ended · report</span>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
+        <div className="mx-auto max-w-2xl space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${v}`}>{s.outcome === 'unknown' || !s.outcome ? 'no report' : s.outcome}</span>
+            <span className="font-mono text-[11px] text-neutral-500">{facts.join(' · ')}</span>
+          </div>
+          {s.summary
+            ? <p className="text-sm leading-relaxed text-neutral-300">{s.summary}</p>
+            : <p className="text-sm italic text-neutral-500">The run left no summary — nobody closed the loop with a report.</p>}
+          {/* The usual `note` is just "no transcript", which would read as a stutter — only show it when
+              it says something the sentence doesn't (a permission error, say). */}
+          <p className="border-t border-neutral-800 pt-3 font-mono text-[11px] text-neutral-600">
+            No transcript was captured for this run{/^no transcript/i.test(note) ? '' : ` — ${note}`}.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Outcome → pill tone, for the dark terminal pane (OUTCOME_STYLE's light-mode 700s are unreadable here). */
+const OUTCOME_TONE: Record<string, string> = {
+  success: 'border-emerald-800 text-emerald-400',
+  failure: 'border-red-900 text-red-400',
+  error: 'border-red-900 text-red-400',
+  partial: 'border-amber-900 text-amber-400',
+  unknown: 'border-neutral-700 text-neutral-400',
 }
 
 /** Wraps the first-party terminal (<Xterm>) with the console chrome: the font stepper, the "how to use"
@@ -8813,9 +8866,15 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           </Field>
         )}
 
-        {(detail.task.assignee || '').startsWith('agent:') && (detail.task.status === 'todo' || detail.task.status === 'blocked') && (
+        {/* Dispatch is offered for `doing` too, not just todo/blocked. A task is the unit of work and a
+            session is one ATTEMPT at it, so a `doing` task whose run has ENDED (headless runs exit at
+            turn-end, which is the common shape) is precisely the case that needs another go — and the
+            server has always allowed it (dispatchTask refuses only done/cancelled, plus a live-session
+            pile-up guard). Hiding the button here was the only thing standing in the way. While a run
+            IS alive we still hide it: that's the pile-up the guard would reject anyway. */}
+        {(detail.task.assignee || '').startsWith('agent:') && detail.task.status !== 'done' && detail.task.status !== 'cancelled' && !liveOf(detail.task) && (
           <Button size="sm" className="w-full" disabled={busy} onClick={() => dispatch(detail.task)}>
-            <Play className="mr-1 h-3.5 w-3.5" />{detail.task.status === 'blocked' ? 'Re-dispatch' : 'Dispatch now'}
+            <Play className="mr-1 h-3.5 w-3.5" />{detail.runs.length > 0 ? `Run again · attempt ${detail.runs.length + 1}` : 'Dispatch now'}
           </Button>
         )}
         {detail.runs.length > 0 && (

@@ -7,6 +7,37 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Added
+- **`docs/sops-plan.md`** — plan for SOPs: pre-learned department playbooks (engineering, marketing,
+  sales, support, research) with server-enforced stage order, peer review and evidence gates. `SOP.md`
+  frontmatter + prose (not YAML), stages compiled to child tasks over the `blocked_by` dependency edge
+  (no new run engine), and an `advisory → enforced` adoption ramp measured by stage-skip rate.
+
+## [0.319.0] — 2026-08-07
+### Added
+- **A re-dispatched task tells the next run it isn't the first.** A task is the unit of work and a
+  session is one ATTEMPT at it, but every attempt got a prompt byte-identical to the first one's — no
+  signal that anyone had been here, which invites redoing work that already landed or re-hitting a wall
+  a predecessor already documented. `buildTaskPrompt` now takes the task's prior runs and opens with
+  `This is attempt N — M earlier sessions already worked this task`, one line each (agent, reported
+  outcome, its one-line summary), plus a pointer to `task_get` for the notes and discussion the
+  summaries can't hold. The last three attempts are named and the rest collapse to a count, so a
+  much-retried task doesn't turn its prompt into a wall of history. It sits inside the text the `/goal`
+  length gate measures, so a converging task can't ship a payload the CLI rejects.
+- **"Run again" on a task that's already `doing`.** Dispatch was offered only for `todo`/`blocked`, but a
+  `doing` task whose run has ENDED — the normal shape, since headless runs exit at turn-end — is exactly
+  the one that needs another go, and the server has always allowed it (`dispatchTask` refuses only
+  done/cancelled plus a live-session pile-up guard). The button now appears for any non-terminal task
+  with no live run, labelled with the attempt number it will start.
+
+### Fixed
+- **A finished run with no transcript now shows what it REPORTED instead of a bare error.** A pane log is
+  best-effort — an older session may never have written one — but the verdict, summary, cost, duration
+  and turn count live on the session row, so the pane can still answer "what came of it" even when it
+  can't answer "what happened". Replaces the `⚠ no transcript for this session` dead end, on every
+  surface that shows a finished run.
+
+## [0.318.1] — 2026-08-07
 ### Fixed
 - **A task's Session tab showed tmux's `can't find session: aos-…` instead of the run's transcript.**
   The room handed `TerminalFrame` a session row only while the run was still ALIVE (`liveOf`), so for a
@@ -17,12 +48,6 @@ new version heading in the same commit.
   `lastSessionId`-scoped fetch doesn't carry it, which is also what makes picking an EARLIER attempt out
   of the run history work), so an ended run renders its read-only transcript — the same thing the
   Sessions page and the `#/term/<tmux>` popout already did. Live runs still attach as before.
-
-### Added
-- **`docs/sops-plan.md`** — plan for SOPs: pre-learned department playbooks (engineering, marketing,
-  sales, support, research) with server-enforced stage order, peer review and evidence gates. `SOP.md`
-  frontmatter + prose (not YAML), stages compiled to child tasks over the `blocked_by` dependency edge
-  (no new run engine), and an `advisory → enforced` adoption ramp measured by stage-skip rate.
 
 ## [0.318.0] — 2026-08-07
 ### Added
