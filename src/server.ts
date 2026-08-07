@@ -1786,6 +1786,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
     }
   }
+  // Agent proposes an edit to an EXISTING goal's state (`goal_update`) — the maturity-tiered sibling of
+  // goal_propose. Below the trust floor → refused; middle band → a 'goal.update.proposed' review card,
+  // nothing applied; at/above the auto-apply bar → applied immediately (owner notified). The steering-wheel
+  // transitions (activate / abandon / reopen / premature-achieve) always demote to a human. Pre-auth
+  // loopback, session-secret gated (proposer resolved from the session row, not the body).
+  if (method === 'POST' && p === '/api/goals/update') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    return sendJson(res, 200, tm.proposeGoalUpdate(session, agent, b));
+  }
 
   // ── Agents (agent loopback) ──────────────────────────────────────────────────
   // The agent-author (and any agent, as the delegation surface) creates/refines agents AS ITSELF. Like
@@ -2498,6 +2511,50 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const b = await readBody(req);
     tm.setAgentUpdateProposalStatus(card.id, 'rejected');
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'agent.update.proposal.rejected', data: { by: me.email, agent: card.agent, target: card.target, note: b.note ? String(b.note) : undefined } });
+    return sendJson(res, 200, { ok: true });
+  }
+
+  // Agent-proposed edits to EXISTING goals, awaiting human sign-off (the goals twin of /api/agents/proposals).
+  // Editing strategy is an owner/admin act (same gate as activating a goal on the console). Nothing is
+  // applied until approve; the goal_events log makes an approved (or auto-applied) edit revertable.
+  if (method === 'GET' && p === '/api/goals/proposals') {
+    if (me.role !== 'owner' && me.role !== 'admin') return sendJson(res, 403, { error: 'owner or admin required' });
+    const goalId = url.searchParams.get('goal') || undefined;
+    return sendJson(res, 200, { proposals: tm.openGoalUpdateProposals(goalId), canApprove: true });
+  }
+  const goalUpdApprove = p.match(/^\/api\/goals\/proposals\/([\w.-]+)\/approve$/);
+  if (method === 'POST' && goalUpdApprove) {
+    if (me.role !== 'owner' && me.role !== 'admin') return sendJson(res, 403, { error: 'owner or admin required — editing a goal is a steering act' });
+    const card = tm.goalUpdateProposalCard(goalUpdApprove[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such goal-edit proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    if (!os.goals.get(card.goalId)) { tm.setGoalUpdateProposalStatus(card.id, 'rejected'); return sendJson(res, 200, { ok: false, error: 'the goal no longer exists' }); }
+    // Author = the approving human; the note preserves who proposed it, so the goal_events log names both.
+    const f = card.fields;
+    const updated = os.goals.update(card.goalId, {
+      title: f.title !== undefined ? String(f.title) : undefined,
+      body: f.body !== undefined ? String(f.body) : undefined,
+      status: f.status !== undefined ? (String(f.status) as GoalStatus) : undefined,
+      target: 'target' in f ? (f.target === null ? null : String(f.target)) : undefined,
+      labels: Array.isArray(f.labels) ? f.labels.map(String) : undefined,
+      dueAt: 'dueAt' in f ? (f.dueAt === null ? null : Number(f.dueAt)) : undefined,
+      note: card.note ? `${card.note} (proposed by ${card.agent}, approved by ${me.email})` : `proposed by ${card.agent}, approved by ${me.email}`,
+      by: me.email,
+    });
+    if (!updated) return sendJson(res, 200, { ok: false, error: 'the goal could not be updated' });
+    tm.setGoalUpdateProposalStatus(card.id, 'approved');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.update.proposal.approved', data: { goal: card.goalId, proposer: card.agent, by: me.email, fields: Object.keys(f) } });
+    return sendJson(res, 200, { ok: true, goalId: card.goalId, status: updated.status });
+  }
+  const goalUpdReject = p.match(/^\/api\/goals\/proposals\/([\w.-]+)\/reject$/);
+  if (method === 'POST' && goalUpdReject) {
+    if (me.role !== 'owner' && me.role !== 'admin') return sendJson(res, 403, { error: 'owner or admin required' });
+    const card = tm.goalUpdateProposalCard(goalUpdReject[1]);
+    if (!card) return sendJson(res, 404, { error: 'no such goal-edit proposal' });
+    if (card.status !== 'open') return sendJson(res, 409, { error: 'this proposal was already resolved' });
+    const b = await readBody(req);
+    tm.setGoalUpdateProposalStatus(card.id, 'rejected');
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'goal.update.proposal.rejected', data: { by: me.email, agent: card.agent, goal: card.goalId, note: b.note ? String(b.note) : undefined } });
     return sendJson(res, 200, { ok: true });
   }
   const autoRun = p.match(/^\/api\/automations\/([\w-]+)\/run$/);

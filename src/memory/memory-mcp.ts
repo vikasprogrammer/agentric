@@ -1118,8 +1118,8 @@ const TOOLS = [
     description:
       'List the company GOALS — the strategic direction the whole fleet works toward, above the task ' +
       'board. Check this to orient your work: prefer tasks that advance an active goal. Filter by `status` ' +
-      "(default shows all) or a free-text `query`. You cannot change a goal here — that's a human decision " +
-      '(use `goal_propose` to suggest a new one). Read-only.',
+      "(default shows all) or a free-text `query`. Propose a new direction with `goal_propose`, or suggest " +
+      'a change to an existing goal with `goal_update`. Read-only.',
     annotations: { readOnlyHint: true },
     inputSchema: {
       type: 'object',
@@ -1160,6 +1160,35 @@ const TOOLS = [
         labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },
       },
       required: ['title'],
+    },
+  },
+  {
+    name: 'goal_update',
+    description:
+      "Suggest a change to an EXISTING goal's state — its status, title, description, target, labels, or due " +
+      'date — with a required `rationale`. What happens depends on your track record (maturity) and on WHAT ' +
+      'you change: an unproven agent is refused; the steering-wheel transitions — **activating, abandoning, ' +
+      'or reopening a goal, or marking one `achieved` while its linked work is unfinished** — ALWAYS go to a ' +
+      'human owner to approve (nothing changes until they do); ordinary edits and rubber-stamping an ' +
+      'already-100%-done goal as `achieved` apply immediately once you are trusted enough, with an owner ' +
+      'notified. To CREATE a new goal use `goal_propose`; to file work under one use `task_create({ goalId })`. ' +
+      'Pass `dryRun:true` to see which lane your edit would take without writing anything.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        id: { type: 'string', description: 'The goal id to edit (see goal_list / goal_get).' },
+        rationale: { type: 'string', description: 'Why — the human reviewing (or auditing) the change reads this. Required.' },
+        status: { type: 'string', enum: ['draft', 'active', 'achieved', 'abandoned'], description: 'New status. active/abandoned/draft and a premature achieved always require human approval.' },
+        title: { type: 'string', description: 'New title.' },
+        body: { type: 'string', description: 'New description (the what/why).' },
+        target: { type: 'string', description: 'New free-text target caption ("" clears it).' },
+        labels: { type: 'array', items: { type: 'string' }, description: 'Replace the goal\'s labels.' },
+        dueAt: { type: ['number', 'null'], description: 'New soft deadline (epoch ms), or null to clear it.' },
+        note: { type: 'string', description: 'A comment to append to the goal\'s activity timeline.' },
+        dryRun: { type: 'boolean', description: 'Preview the lane (apply now vs wait for approval) without writing anything.' },
+      },
+      required: ['id', 'rationale'],
     },
   },
   // ── Agents: author new agents (the agent-author's build tools) ──
@@ -2470,7 +2499,7 @@ async function goalGet(args: Record<string, unknown>): Promise<string> {
   const progressLine = p && p.total ? `\nProgress: ${p.percent}% (${p.done}/${p.total} linked tasks done)` : '\nProgress: no tasks linked yet — link work with task_create/task_update({ goalId: "' + g.id + '" }).';
   const taskLines = (d.tasks ?? []).map((t) => `  · [${t.status}] ${t.id} — ${t.title}`).join('\n');
   const tasksSection = d.tasks?.length ? `\n\nLinked tasks:\n${taskLines}` : '';
-  return `${g.id} · [${g.status}]${g.target ? ` · target: ${g.target}` : ''}${progressLine}\n# ${g.title}\n${g.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${tasksSection}`;
+  return `${g.id} · [${g.status}]${g.target ? ` · target: ${g.target}` : ''}${progressLine}\n${consoleLink('goals', g.id)}\n# ${g.title}\n${g.body ?? ''}\n\nActivity:\n${timeline || '  (none)'}${tasksSection}`;
 }
 
 async function goalPropose(args: Record<string, unknown>): Promise<string> {
@@ -2488,8 +2517,31 @@ async function goalPropose(args: Record<string, unknown>): Promise<string> {
   });
   const d = (await res.json()) as { ok?: boolean; id?: string; error?: string };
   return d.ok
-    ? `Proposed goal ${d.id}: "${title}" — it's a draft in the inbox for an owner/admin to review and activate. It won't steer the fleet until then.`
+    ? `Proposed goal ${d.id}: "${title}" — it's a draft in the inbox for an owner/admin to review and activate. It won't steer the fleet until then.\n${consoleLink('goals', d.id!)}`
     : `Could not propose goal: ${d.error ?? 'unknown error'}`;
+}
+
+async function goalUpdate(args: Record<string, unknown>): Promise<string> {
+  if (!String(args.id ?? '').trim()) return 'goal_update needs the id of the goal to edit (see goal_list).';
+  if (!String(args.rationale ?? '').trim()) return 'goal_update needs a rationale — the human reviewing the change reads it.';
+  const res = await fetch(AOS_URL + '/api/goals/update', {
+    method: 'POST',
+    headers: H({ 'content-type': 'application/json' }),
+    body: JSON.stringify({
+      session: SESSION,
+      id: String(args.id), rationale: String(args.rationale),
+      ...(args.status !== undefined ? { status: String(args.status) } : {}),
+      ...(args.title !== undefined ? { title: String(args.title) } : {}),
+      ...(args.body !== undefined ? { body: String(args.body) } : {}),
+      ...(args.target !== undefined ? { target: String(args.target) } : {}),
+      ...(Array.isArray(args.labels) ? { labels: args.labels.map(String) } : {}),
+      ...('dueAt' in args ? { dueAt: args.dueAt === null ? null : Number(args.dueAt) } : {}),
+      ...(args.note !== undefined ? { note: String(args.note) } : {}),
+      ...(args.dryRun === true ? { dryRun: true } : {}),
+    }),
+  });
+  const d = (await res.json()) as { ok?: boolean; message?: string; error?: string };
+  return d.ok ? (d.message ?? 'Done.') : `Could not update goal: ${d.error ?? 'unknown error'}`;
 }
 
 // ── Agents: author new agents ─────────────────────────────────────────────────
@@ -3132,6 +3184,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'goal_list' ? await goalList(args)
         : name === 'goal_get' ? await goalGet(args)
         : name === 'goal_propose' ? await goalPropose(args)
+        : name === 'goal_update' ? await goalUpdate(args)
         : name === 'agent_create' ? await agentCreate(args)
         : name === 'agent_get' ? await agentGet(args)
         : name === 'agent_update' ? await agentUpdate(args)

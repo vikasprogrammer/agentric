@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.318.0] — 2026-08-07
+### Added
+- **`goal_update` — agents can now edit an EXISTING goal, on a maturity tier.** Until now the agent goal
+  surface was read + propose-a-draft only (`goal_list`/`goal_get`/`goal_propose`); there was no way for an
+  agent to change a live goal's status or fields. `goal_update` adds that on the **same three-lane trust
+  model as `agent_propose_update`** (the shared `agentProposalTrust` config): below `minMaturity` → refused;
+  middle band → a `goal.update.proposed` review card that applies nothing until an owner/admin approves
+  (`POST /api/goals/proposals/:id/approve`); at/above `autoApplyAt` → applied immediately via
+  `GoalStore.update`, owner notified after. A **"shape beats score"** rule (mirroring the agent path's
+  destructive-rewrite demotion) keeps the steering-wheel transitions — **activating, abandoning, or
+  reopening a goal, or claiming an unfinished one is `achieved`** — in the human-review lane at *every*
+  tier; the only status change a top-tier agent auto-applies is marking a goal `achieved` whose linked work
+  is already 100% done. Every applied edit (auto or approved) is event-logged in `goal_events` (author =
+  the agent on the auto lane, the approving human on the gated one), so it's revertable; `dryRun` names the
+  lane without writing. Console: an owner/admin review card in the Goal room sidebar + a `goal.update.proposed`
+  inbox card. Pinned by `scripts/goal-update-guard-test.cjs` (wired into `test:governance`).
+- **Goal console deep-links in the agent tools.** `goal_get`, `goal_propose`, and `goal_update` now return
+  the `…/#/goals/<id>` console link, so an agent can hand a human a clickable pointer to the goal it read,
+  proposed, or edited.
+
 ## [0.317.0] — 2026-08-06
 ### Added
 - **`agent_get` — agents can finally READ a prompt before replacing it.** `agent_update` /

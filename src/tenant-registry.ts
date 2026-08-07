@@ -659,6 +659,7 @@ const REVIEW_PRESENTATION: Record<ReviewNotice['kind'], { icon: string; page: st
   'policy.proposal': { icon: '🛡️', page: 'settings/policy' },
   'automation.proposed': { icon: '⚡', page: 'automations' },
   'agent.update.proposed': { icon: '✏️', page: 'agents' },
+  'goal.update.proposed': { icon: '🎯', page: 'goals' },
   'connection.request': { icon: '🔌', page: 'connectors' },
 };
 

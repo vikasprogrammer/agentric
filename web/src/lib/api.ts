@@ -774,7 +774,7 @@ export interface AutoApproval {
 
 export interface Msg {
   id: string
-  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed'
+  type: 'task' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'policy.proposal' | 'app.proposed' | 'automation.proposed' | 'agent.update.proposed'
   sessionId: string
   agent: string
   title: string
@@ -865,6 +865,16 @@ export interface AgentUpdateProposal {
   agent: string          // the proposing agent
   target: string         // the agent to be edited
   fields: { description?: string; claudeMd?: string; category?: string; model?: string; effort?: string; icon?: string; examplePrompts?: string[] }
+  rationale?: string
+  preview?: string
+  createdAt: number
+}
+export interface GoalUpdateProposal {
+  id: string
+  agent: string          // the proposing agent
+  goalId: string         // the goal to be edited
+  fields: { status?: GoalStatus; title?: string; body?: string; target?: string | null; labels?: string[]; dueAt?: number | null }
+  note?: string
   rationale?: string
   preview?: string
   createdAt: number
@@ -1675,6 +1685,9 @@ export const api = {
   agentUpdateProposals: (target?: string) => call<{ proposals: AgentUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/agents/proposals' + (target ? '?target=' + encodeURIComponent(target) : '')),
   approveAgentUpdateProposal: (id: string) => call<{ ok: boolean; target?: string; rev?: number; error?: string }>('POST', `/api/agents/proposals/${id}/approve`),
   rejectAgentUpdateProposal: (id: string, note?: string) => call<{ ok: boolean; error?: string }>('POST', `/api/agents/proposals/${id}/reject`, { note }),
+  goalUpdateProposals: (goal?: string) => call<{ proposals: GoalUpdateProposal[]; canApprove?: boolean; error?: string }>('GET', '/api/goals/proposals' + (goal ? '?goal=' + encodeURIComponent(goal) : '')),
+  approveGoalUpdateProposal: (id: string) => call<{ ok: boolean; goalId?: string; status?: GoalStatus; error?: string }>('POST', `/api/goals/proposals/${id}/approve`),
+  rejectGoalUpdateProposal: (id: string, note?: string) => call<{ ok: boolean; error?: string }>('POST', `/api/goals/proposals/${id}/reject`, { note }),
   automationRuns: (id: string) => call<{ runs: Session[]; error?: string }>('GET', `/api/automations/${id}/runs`),
 
   memory: (agent: string, q = '', limit = 50, scope: 'all' | 'agent' | 'tenant' = 'all') =>
