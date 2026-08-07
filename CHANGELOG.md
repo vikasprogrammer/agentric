@@ -7,6 +7,11 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Added
+- **`docs/sops-plan.md`** — plan for SOPs: pre-learned department playbooks (engineering, marketing,
+  sales, support, research) with server-enforced stage order, peer review and evidence gates. `SOP.md`
+  frontmatter + prose (not YAML), stages compiled to child tasks over the `blocked_by` dependency edge
+  (no new run engine), and an `advisory → enforced` adoption ramp measured by stage-skip rate.
 
 ## [0.317.0] — 2026-08-06
 ### Added
