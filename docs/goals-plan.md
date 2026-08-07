@@ -275,8 +275,14 @@ activating goals.
 
 ## Out of scope (both slices)
 
-- **Agent-authored strategy with real authority.** Humans own goals + acceptance criteria; agents `goal_list`/
-  `goal_get`/`goal_propose` only. No `goal_update`/activation by agents.
+- ~~**Agent-authored strategy with real authority.** Humans own goals + acceptance criteria; agents `goal_list`/
+  `goal_get`/`goal_propose` only. No `goal_update`/activation by agents.~~ **Superseded (v0.317.0):** agents
+  now have a **maturity-tiered** `goal_update` — the same three-lane trust model as `agent_propose_update`
+  (`agentProposalTrust`). It is NOT open write: below the maturity floor it's refused, and a **"shape beats
+  score"** rule keeps the steering-wheel transitions (activate / abandon / reopen / premature-`achieve`) in the
+  human-review lane at *every* tier. Only ordinary edits and rubber-stamping an already-100%-done goal as
+  `achieved` auto-apply for a proven agent (owner notified, revertable via `goal_events`). Acceptance criteria
+  (`criteria`/`/goal`) remain a per-task field, not goal state. See `docs/agent-mcp-tools.md`.
 - **Structured numeric metrics.** v1 uses task-completion-derived progress + a free-text `target` caption.
   Real metrics (a number an automation writes, dashboards) come later, once we know what's worth measuring.
 - **Per-agent missions.** If direction turns out to be role-specific rather than company-wide, that's the

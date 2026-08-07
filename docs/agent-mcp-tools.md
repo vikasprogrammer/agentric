@@ -52,7 +52,8 @@ can only ever act as its own session; the namespace/tenant/policy are enforced s
 | `task_dispatch` | `POST /api/tasks/dispatch` | `Automations.dispatchTask` | W | spawns a governed session NOW for an agent-assigned task (async hand-off, distinct from `task_claim`); `guard:true` (no pile-up) + `TASK_MAX_ATTEMPTS` ceiling; run-as = task owner; audited `task.dispatched` (`by:agent:<id>`) |
 | `goal_list` | `GET /api/goals/list` | `GoalStore.list` | R | the strategic layer (company goals); filter by `status`/`query`; read-only |
 | `goal_get` | `GET /api/goals/get` | `GoalStore.withEvents` + `.progress` + `TaskStore.tasksForGoal` | R | one goal + its full activity timeline + **derived progress** (% from linked tasks) + the linked tasks |
-| `goal_propose` | `POST /api/goals/propose` | `GoalStore.create` (status `draft`) + `TerminalManager.postGoalCard` | W | drafts a NOT-YET-ACTIVE goal + posts a `goal.proposed` inbox card to admins; owner = run-as; auto-apply + audited `goal.proposed`. Agents READ + PROPOSE only — activating/editing a goal is a human owner/admin console action (no agent write path) |
+| `goal_propose` | `POST /api/goals/propose` | `GoalStore.create` (status `draft`) + `TerminalManager.postGoalCard` | W | drafts a NOT-YET-ACTIVE goal + posts a `goal.proposed` inbox card to admins; owner = run-as; auto-apply + audited `goal.proposed` |
+| `goal_update` | `POST /api/goals/update` | `TerminalManager.proposeGoalUpdate` → `GoalStore.update` | W | edit an EXISTING goal (status/title/body/target/labels/dueAt/note) with a required `rationale`, **maturity-tiered** on the shared `agentProposalTrust` (like `agent_propose_update`): below `minMaturity` → refused; middle band → a `goal.update.proposed` review card (nothing applied); ≥ `autoApplyAt` → applied immediately, owner notified. **Shape beats score:** activating / abandoning / reopening a goal, or a premature `achieved`, ALWAYS demote to human review whatever the tier; only ordinary edits + `achieved`-at-100% auto-apply. Owner/admin approve at `POST /api/goals/proposals/:id/approve`. Revertable via the `goal_events` log. `dryRun` names the lane without writing |
 | `agent_create` | `POST /api/agents/create` | `AgentOS.registerAgent` | W | writes `<home>/agents/<id>/{agent.json,CLAUDE.md}` + registers live; author `agent:<id>`; audited `agent.created` |
 | `agent_get` | `POST /api/agents/get` | `readAgentSnapshot` | R | reads an agent's current editable config **including the full CLAUDE.md** + a `baseHash`; defaults to self, any user-home claude-code agent is readable (the same set `agent_propose_update` can target); a cross-agent read is audited `agent.config.read` |
 | `agent_update` | `POST /api/agents/update` | `applyAgentEdit` + `AgentRevisions.commit` | W | **self-only** (edits the caller's OWN manifest/CLAUDE.md — a body `id` must equal the session's agent); user-home agents only; accepts `claudeMdEdits`/`claudeMdAppend` (anchored patch) as well as a full `claudeMd`; `baseHash` precondition, `dryRun`, and a destructive-rewrite guard needing `confirmRewrite`; snapshots a revision; audited `agent.config.updated` |
@@ -301,13 +302,14 @@ only, never `id === self`), plus a 10-open queue cap and identical-delta dedupe.
 proposals on the **agent page → "Proposed edits from other agents"** card (owner-only, with a full
 CLAUDE.md before→after).
 
-### `goal_list` / `goal_get` / `goal_propose` — the strategic layer (read + propose only)
+### `goal_list` / `goal_get` / `goal_propose` / `goal_update` — the strategic layer
 
 Goals are the tier **above** the task board — the tenant-wide, human-owned *direction* the whole fleet
-orients to: **Goal → Task → session**. The agent surface is deliberately **read + propose only**, mirroring
-the propose-not-apply posture of `policy_propose` / `skill_propose`, because activating or editing a goal
-steers the entire fleet — a steering-wheel decision reserved for a human owner/admin (there is **no agent
-write path** to activate, edit, achieve, or abandon a goal, only to *suggest* one).
+orients to: **Goal → Task → session**. Agents **read** freely (`goal_list`/`goal_get`, which also carry the
+console deep-link `…/#/goals/<id>` so an agent can hand a human a clickable link), **propose new** directions
+(`goal_propose`, always a `draft`), and **edit existing** goals under a maturity tier (`goal_update`). The
+load-bearing steering-wheel acts — activating, abandoning, or reopening a goal, or claiming an unfinished one
+is done — stay human decisions even for the most trusted agent.
 
 - **Read** — `goal_list` (filter by `status`/`query`) surfaces the active direction so an agent can orient
   its work toward a goal; `goal_get` returns one goal + its full activity timeline + **derived progress**
@@ -320,7 +322,19 @@ write path** to activate, edit, achieve, or abandon a goal, only to *suggest* on
   planner trigger — inert until a human activates it) and posts a `goal.proposed` inbox card to admins;
   `owner` = the run-as human (delegation passthrough). Like `kb_write` / `task_create` it's **auto-apply +
   audited** (`goal.proposed`), not gate-suspended — the draft is harmless until promoted, and the append-only
-  `goal_events` log is the safety net. Humans activate/edit/close a goal only from the console Goals page.
+  `goal_events` log is the safety net.
+- **Edit** — `goal_update` changes an EXISTING goal, keyed on the proposer's **maturity** against the shared
+  `agentProposalTrust` tiers (the same config that governs `agent_propose_update` — Settings → Runtime →
+  Cross-agent edits): below `minMaturity` (0.4) → **refused**; middle band → a `goal.update.proposed` review
+  card, **nothing applied**, an owner/admin approves at `POST /api/goals/proposals/:id/approve`; at/above
+  `autoApplyAt` (0.8) → **applied immediately** via `GoalStore.update`, owner notified after. A **"shape beats
+  score"** rule (mirroring the agent path's destructive-rewrite demotion) forces the steering transitions —
+  **activate / abandon / reopen-to-draft / claim-`achieved`-while-unfinished** — to the human-review lane
+  *whatever* the tier; the only status change a top-tier agent auto-applies is marking a goal `achieved` whose
+  linked work is already 100% done (the console's "Mark achieved" affordance). Every applied edit — auto or
+  approved — is event-logged in `goal_events` (author = the agent on the auto lane, the approving human on the
+  gated one), so it's revertable, and `dryRun` names the lane without writing. Pinned by
+  `scripts/goal-update-guard-test.cjs`.
 
 Linkage flows the other way through the **Tasks** tools, not a goal write: an agent connects work to a goal
 with `task_create({ goalId })` / `task_update({ goalId })` (a sub-task inherits its parent's `goalId`), and

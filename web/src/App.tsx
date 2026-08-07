@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -5260,9 +5260,10 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
   const goArtifact = m.type === 'artifact' && meta.artifactId && onOpenArtifact ? () => onOpenArtifact(meta.artifactId!) : null
   // A 'task' card has no session — it deep-links to the board (its taskId), not a terminal.
   const goTask = m.type === 'task' && meta.taskId && onOpenTask ? () => onOpenTask(meta.taskId!) : null
-  // A goal card ('goal.proposed' — an agent's draft; 'goal.ready' — its work all finished) deep-links to
-  // the Goals page for that goal (no session backs a goal).
-  const goGoal = (m.type === 'goal.proposed' || m.type === 'goal.ready') && meta.goalId && onOpenGoal ? () => onOpenGoal(meta.goalId!) : null
+  // A goal card ('goal.proposed' — an agent's draft; 'goal.ready' — its work all finished;
+  // 'goal.update.proposed' — an agent's proposed edit awaiting review) deep-links to the Goals page for
+  // that goal (no session backs a goal), where the owner review card lives.
+  const goGoal = (m.type === 'goal.proposed' || m.type === 'goal.ready' || m.type === 'goal.update.proposed') && meta.goalId && onOpenGoal ? () => onOpenGoal(meta.goalId!) : null
   // An 'agent.update.proposed' card deep-links to the TARGET agent's page, where the owner review
   // card lives — not the proposer's session terminal. Hash routing, so setting the hash routes in place.
   const goAgentEdit = m.type === 'agent.update.proposed' && meta.target ? () => { window.location.hash = navHref('agent', meta.target!) } : null
@@ -5336,6 +5337,11 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     Icon = Target; iconCls = 'text-emerald-600'; highlight = m.status === 'open'
     verb = m.title; detail = m.body
     badge = <Badge variant="outline" className="border-emerald-300 px-1.5 py-0 text-[10px] font-normal text-emerald-700">Ready to close</Badge>
+  } else if (m.type === 'goal.update.proposed') {
+    Icon = Target; iconCls = 'text-indigo-600'; highlight = m.status === 'open'
+    const resolved = m.status === 'approved' ? 'applied' : m.status === 'rejected' ? 'rejected' : ''
+    verb = 'proposed a goal edit'; detail = m.body
+    badge = <Badge variant="outline" className="border-indigo-300 px-1.5 py-0 text-[10px] font-normal text-indigo-700">{resolved || 'review in Goals'}</Badge>
   } else if (m.type === 'skill.request') {
     Icon = Sparkles; iconCls = 'text-violet-600'; highlight = m.status === 'open'
     const resolved = m.status === 'approved' ? 'installed' : m.status === 'rejected' ? 'dismissed' : ''
@@ -7458,6 +7464,60 @@ function GoalProgressBar({ p, className = '' }: { p?: GoalProgress; className?: 
 
 type GoalTab = 'tasks' | 'description' | 'activity'
 
+/** Owner/admin review queue for agent-proposed edits to THIS goal (goal_update, middle-band / demoted
+ *  lane). Non-admins get a 403 → renders nothing. Approving applies the field delta via GoalStore.update
+ *  (event-logged, revertable from the activity timeline); rejecting discards it. Mirrors AgentUpdateProposalsCard. */
+function GoalUpdateProposalsCard({ goalId, members, onResolved }: { goalId: string; members: Member[]; onResolved: () => void }) {
+  const [props, setProps] = useState<GoalUpdateProposal[] | null>(null)
+  const [busy, setBusy] = useState('')
+  const [hint, setHint] = useState('')
+  const load = () => api.goalUpdateProposals(goalId).then((r) => setProps(r.error ? [] : (r.proposals ?? []))).catch(() => setProps([]))
+  useEffect(() => { setProps(null); setHint(''); load() }, [goalId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const act = async (id: string, approve: boolean) => {
+    setBusy(id); setHint('')
+    const r = approve ? await api.approveGoalUpdateProposal(id) : await api.rejectGoalUpdateProposal(id)
+    setBusy('')
+    if (r.error || !r.ok) return setHint('⚠ ' + (r.error ?? 'failed'))
+    setHint(approve ? 'applied' : 'rejected')
+    load(); if (approve) onResolved()
+    setTimeout(() => setHint(''), 3000)
+  }
+  if (!props || props.length === 0) return null // silent for non-admins and when nothing is pending
+  const describe = (f: GoalUpdateProposal['fields']): string => {
+    const parts: string[] = []
+    if (f.status) parts.push(`status → ${f.status}`)
+    if (f.title !== undefined) parts.push(`title → "${f.title}"`)
+    if (f.body !== undefined) parts.push('description')
+    if (f.target !== undefined) parts.push(f.target ? `target → "${f.target}"` : 'clear target')
+    if (f.labels !== undefined) parts.push('labels')
+    if (f.dueAt !== undefined) parts.push(f.dueAt == null ? 'clear due date' : 'due date')
+    return parts.join(' · ') || 'no fields'
+  }
+  return (
+    <div className="space-y-2 rounded-md border border-indigo-400/50 bg-indigo-500/10 p-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-indigo-800 dark:text-indigo-300"><Target className="h-3.5 w-3.5" /> Proposed edits from agents ({props.length})</div>
+        {hint && <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>}
+      </div>
+      {props.map((pr) => (
+        <div key={pr.id} className="space-y-2 rounded border border-indigo-300/60 bg-background p-2.5">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Bot className="h-3 w-3 shrink-0" /><span className="font-medium text-foreground">{principalLabel(`agent:${pr.agent}`, members)}</span>
+            <span>· {new Date(pr.createdAt).toLocaleString()}</span>
+          </div>
+          {pr.rationale && <div className="text-sm">{pr.rationale}</div>}
+          <div className="text-xs"><span className="text-muted-foreground">Change: </span><span className="font-mono">{describe(pr.fields)}</span></div>
+          {pr.note && <div className="text-xs text-muted-foreground">Note: {pr.note}</div>}
+          <div className="flex items-center gap-2 pt-0.5">
+            <Button size="sm" className="h-7" disabled={!!busy} onClick={() => act(pr.id, true)}>Approve & apply</Button>
+            <Button size="sm" variant="outline" className="h-7" disabled={!!busy} onClick={() => act(pr.id, false)}>Reject</Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
@@ -7629,6 +7689,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
    *  progress) plus the destructive action, mirroring the task room's sidebar. */
   const goalSidebar = () => detail && (
     <div className="space-y-3.5">
+      {isAdmin && <GoalUpdateProposalsCard goalId={detail.goal.id} members={members} onResolved={() => { load(); refreshDetail(detail.goal.id) }} />}
       {signOffBox()}
       <Field label="Status">
         {isAdmin ? (

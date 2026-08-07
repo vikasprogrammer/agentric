@@ -440,7 +440,7 @@ function markDuplicateDispatches(nodes: ChainNode[]): void {
 
 export interface FeedMessage {
   id: string;
-  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
+  type: 'task' | 'task.chat' | 'task.mention' | 'update' | 'approval' | 'question' | 'completed' | 'artifact' | 'notification' | 'skill.proposed' | 'goal.proposed' | 'goal.ready' | 'goal.update.proposed' | 'skill.request' | 'secret.request' | 'host.proposed' | 'app.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
   sessionId: string;
   agent: string;
   title: string;
@@ -636,7 +636,7 @@ export interface MemberNotice {
 export interface ReviewNotice {
   sessionId: string;
   agent: string;
-  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'connection.request';
+  kind: 'secret.request' | 'skill.proposed' | 'skill.request' | 'host.proposed' | 'policy.proposal' | 'automation.proposed' | 'agent.update.proposed' | 'goal.update.proposed' | 'connection.request';
   title: string;
   summary: string;
   /** Whom to DM. Defaults (in the registry's `notifyReview`) to the `admins` tier — the audience nearly
@@ -5363,6 +5363,157 @@ export class TerminalManager {
       .filter((p) => p.target && (!target || p.target === target.trim().toLowerCase()));
   }
 
+  /**
+   * Agent proposes an edit to an EXISTING goal's state (`goal_update`) — the maturity-tiered sibling of the
+   * read-only `goal_list`/`goal_get` and the create-a-draft `goal_propose`. Same three lanes as
+   * {@link proposeAgentUpdate}, keyed on the proposer's maturity against the shared `agentProposalTrust`
+   * tiers: below the floor → refused; middle band → a `goal.update.proposed` review card, nothing applied;
+   * at/above the auto-apply bar → applied immediately via {@link GoalStore.update}, owner notified after.
+   *
+   * "Shape beats score" (mirrors the agent path's destructive-rewrite demotion): the load-bearing
+   * steering-wheel transitions — **activating, abandoning, or reopening a goal, or claiming an unfinished
+   * goal is `achieved`** — ALWAYS demote to human review, whatever the maturity tier. The only status change
+   * a top-tier agent auto-applies is marking a goal `achieved` whose linked work is already 100% done (the
+   * console's "Mark achieved" affordance). Non-status edits (title/body/target/labels/dueAt/note) auto-apply
+   * at the top tier. Owner/parent are NOT agent-editable — re-owning or re-parenting strategy stays a console
+   * act. Every applied edit is event-logged in `goal_events` (the append-only safety net), so it's revertable.
+   */
+  proposeGoalUpdate(sessionId: string, proposer: string, body: Record<string, unknown>): { ok: boolean; applied?: boolean; maturity?: number; outcome?: string; message?: string; error?: string; preview?: string; url?: string } {
+    const target = String(body.id ?? '').trim();
+    if (!target) return { ok: false, outcome: 'refused', error: 'id (the goal to edit) is required — see goal_list for ids' };
+    if (!String(body.rationale ?? '').trim()) return { ok: false, outcome: 'refused', error: 'a rationale is required — the approver sees it on the card' };
+    const goal = this.os.goals.get(target);
+    if (!goal) return { ok: false, outcome: 'refused', error: `no goal "${target}" — check goal_list for ids` };
+
+    // ── build the field delta from the fields actually present (only these are agent-editable) ──
+    const STATUSES = ['draft', 'active', 'achieved', 'abandoned'];
+    const delta: Record<string, unknown> = {};
+    if ('status' in body && body.status !== undefined) {
+      const s = String(body.status);
+      if (!STATUSES.includes(s)) return { ok: false, outcome: 'refused', error: `status must be one of ${STATUSES.join(', ')}` };
+      if (s !== goal.status) delta.status = s;
+    }
+    if ('title' in body && String(body.title ?? '').trim() && String(body.title).trim() !== goal.title) delta.title = String(body.title).trim();
+    if ('body' in body && body.body !== undefined && String(body.body) !== goal.body) delta.body = String(body.body);
+    if ('target' in body && body.target !== undefined) { const t = String(body.target); if (t !== (goal.target ?? '')) delta.target = t || null; }
+    if ('labels' in body && Array.isArray(body.labels)) delta.labels = body.labels.map(String);
+    if ('dueAt' in body && body.dueAt !== undefined) { const d = body.dueAt === null ? null : Number(body.dueAt); if ((d ?? null) !== (goal.dueAt ?? null)) delta.dueAt = d; }
+    const note = 'note' in body && String(body.note ?? '').trim() ? String(body.note).trim() : undefined;
+    if (!Object.keys(delta).length && !note) {
+      return { ok: false, outcome: 'refused', error: 'nothing to change — pass at least one of status, title, body, target, labels, dueAt, or note (with values different from the goal\'s current ones)' };
+    }
+
+    // ── the trust tier: what this proposer's track record earns it ──
+    const trust = this.os.settings.agentProposalTrust();
+    const maturity = computeAgentStat(this.db, proposer).maturity;
+    const pct = Math.round(maturity * 100);
+    if (maturity < trust.minMaturity) {
+      this.audit(sessionId, proposer, 'goal.update.blocked', { goal: target, maturity, floor: trust.minMaturity, fields: Object.keys(delta) });
+      return {
+        ok: false, outcome: 'refused', maturity,
+        error: `your maturity is ${pct}/100 and this workspace requires ${Math.round(trust.minMaturity * 100)}/100 to edit a goal directly. Maturity comes from completed runs that needed few approvals and hit no denials — until then, propose a NEW direction with goal_propose or tell a human what "${goal.title}" needs.`,
+      };
+    }
+
+    // ── shape beats score: the steering-wheel transitions always go to a human ──
+    const progress = this.os.goals.progress(target);
+    const newStatus = typeof delta.status === 'string' ? delta.status : undefined;
+    const achievedComplete = newStatus === 'achieved' && progress.total > 0 && progress.percent >= 100;
+    const forceGate = !!newStatus && !achievedComplete;
+    const forceReason =
+      newStatus === 'active' ? 'activating a goal steers the whole fleet — that\'s a human decision'
+      : newStatus === 'abandoned' ? 'abandoning a strategic direction is a human decision'
+      : newStatus === 'achieved' ? `its linked work isn't complete yet (${progress.percent}% done) — claiming the outcome needs a human`
+      : newStatus === 'draft' ? 'pulling a goal back to draft de-activates live strategy — a human decides that'
+      : 'a status change is a human decision';
+
+    const previewText = describeGoalDelta(delta, note, goal);
+    const url = this.consoleGoalUrl(target);
+
+    // ── dry run: name the lane, write nothing ──
+    if (body.dryRun === true) {
+      const lane = trust.autoApply && maturity >= trust.autoApplyAt && !forceGate ? 'apply immediately' : 'wait for an owner to approve';
+      return {
+        ok: true, outcome: 'dry_run', maturity, preview: previewText, url,
+        message: `Dry run — nothing was written. This would change ${previewText} on "${goal.title}" and would ${lane}${forceGate && trust.autoApply && maturity >= trust.autoApplyAt ? ` (held for review because ${forceReason})` : ''}.`,
+      };
+    }
+
+    const rationaleText = String(body.rationale).trim();
+
+    if (trust.autoApply && maturity >= trust.autoApplyAt && !forceGate) {
+      // Top tier + a non-steering edit: apply now, tell the owner afterwards. The goal_events log makes it revertable.
+      const updated = this.os.goals.update(target, { ...delta, note, by: `agent:${proposer}` });
+      if (!updated) return { ok: false, outcome: 'refused', error: 'the goal disappeared before the edit could apply' };
+      this.addMessage({
+        type: 'notification', sessionId, agent: proposer,
+        title: `${proposer} edited goal "${goal.title}"`,
+        body: `${rationaleText}\n\nChanges: ${previewText}\n\nApplied automatically — ${proposer} is at maturity ${pct}/100, at or above this workspace's ${Math.round(trust.autoApplyAt * 100)}/100 auto-apply bar. See the goal's activity log to review or reverse it.`,
+        status: 'open',
+        args: { goalId: target, fields: delta, note, rationale: rationaleText, preview: previewText, maturity, autoApplied: true },
+        audienceKind: 'admins',
+      });
+      this.audit(sessionId, proposer, 'goal.update.applied', { goal: target, fields: Object.keys(delta), note: !!note, maturity, bar: trust.autoApplyAt, auto: true });
+      return {
+        ok: true, applied: true, maturity, outcome: 'applied', preview: previewText, url,
+        message: `APPLIED your edit to "${goal.title}" (${previewText}) — your maturity (${pct}/100) is at or above this workspace's auto-apply bar, so it took effect immediately WITHOUT a human approving it. An owner has been notified and can reverse it from the goal's activity log. Do NOT tell anyone this is awaiting review — it is already live.\n${url}`,
+      };
+    }
+
+    // Cap the queue + dedupe an identical open proposal from this agent for this goal.
+    const open = this.db.prepare(`SELECT args FROM messages WHERE type = 'goal.update.proposed' AND status = 'open' AND agent = ?`).all<{ args: string | null }>(proposer);
+    if (open.length >= 10) return { ok: false, outcome: 'refused', error: 'you already have 10 open goal-edit proposals awaiting review — wait for a human to act on them first' };
+    const deltaKey = JSON.stringify({ goalId: target, fields: delta, note });
+    if (open.some((o) => { try { const a = JSON.parse(o.args || '{}') as { goalId?: string; fields?: unknown; note?: unknown }; return JSON.stringify({ goalId: a.goalId, fields: a.fields, note: a.note }) === deltaKey; } catch { return false; } })) {
+      return { ok: false, outcome: 'refused', error: 'an identical goal-edit proposal from you is already awaiting review' };
+    }
+    // Middle band (or a demoted top-tier steering change) — the owner decides. Proposer maturity rides the card.
+    const demoted = forceGate && trust.autoApply && maturity >= trust.autoApplyAt;
+    this.postReviewCard({
+      type: 'goal.update.proposed', sessionId, agent: proposer,
+      title: `Goal edit proposed — ${goal.title}`,
+      body: `${rationaleText}\n\nChanges to goal "${goal.title}": ${previewText}\n\nProposed by ${proposer} — maturity ${pct}/100.${demoted ? ` Above the auto-apply bar but held for review because ${forceReason}.` : ''}`,
+      args: { goalId: target, fields: delta, note, rationale: rationaleText, preview: previewText, maturity, demoted },
+      summary: `${proposer} (maturity ${pct}/100) proposes editing goal "${goal.title}" (${previewText})`,
+    });
+    this.audit(sessionId, proposer, 'goal.update.proposed', { goal: target, fields: Object.keys(delta), note: !!note, maturity, demoted });
+    return {
+      ok: true, applied: false, maturity, outcome: 'pending_approval', preview: previewText, url,
+      message: `Proposed an edit to "${goal.title}" (${previewText}) — it is in an owner's inbox for review. NOTHING has changed yet; an owner/admin must approve it first.${demoted ? ` (Your maturity is above the auto-apply bar, but this one is held for review because ${forceReason}.)` : ''}\n${url}`,
+    };
+  }
+
+  /** The proposed goal-edit review card by id (its goal + field delta + status) — for the approve/reject routes. */
+  goalUpdateProposalCard(id: string): { id: string; agent: string; goalId: string; fields: Record<string, unknown>; note?: string; rationale?: string; preview?: string; status: string } | undefined {
+    const row = this.db.prepare(`SELECT agent, args, status FROM messages WHERE id = ? AND type = 'goal.update.proposed'`).get<{ agent: string; args: string | null; status: string }>(id);
+    if (!row) return undefined;
+    let a: Record<string, unknown> = {};
+    try { a = row.args ? JSON.parse(row.args) : {}; } catch { /* tolerate a corrupt payload */ }
+    if (!a.goalId || !a.fields) return undefined;
+    return { id, agent: row.agent, goalId: String(a.goalId), fields: a.fields as Record<string, unknown>, note: a.note ? String(a.note) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, status: row.status };
+  }
+  setGoalUpdateProposalStatus(id: string, status: 'approved' | 'rejected'): void {
+    this.db.prepare(`UPDATE messages SET status = ? WHERE id = ? AND type = 'goal.update.proposed'`).run(status, id);
+  }
+  /** Open goal-edit proposals (all goals, or just one when `goalId` is given) — for the console review list. */
+  openGoalUpdateProposals(goalId?: string): { id: string; agent: string; goalId: string; fields: Record<string, unknown>; note?: string; rationale?: string; preview?: string; createdAt: number }[] {
+    return this.db
+      .prepare(`SELECT id, agent, args, created_at FROM messages WHERE type = 'goal.update.proposed' AND status = 'open' ORDER BY created_at DESC`)
+      .all<{ id: string; agent: string; args: string | null; created_at: number }>()
+      .map((r) => {
+        let a: Record<string, unknown> = {};
+        try { a = r.args ? JSON.parse(r.args) : {}; } catch { /* tolerate corrupt payload */ }
+        return { id: r.id, agent: r.agent, goalId: String(a.goalId ?? ''), fields: (a.fields ?? {}) as Record<string, unknown>, note: a.note ? String(a.note) : undefined, rationale: a.rationale ? String(a.rationale) : undefined, preview: a.preview ? String(a.preview) : undefined, createdAt: r.created_at };
+      })
+      .filter((pr) => pr.goalId && (!goalId || pr.goalId === goalId.trim()));
+  }
+
+  /** Absolute console deep-link to a goal — the tenant's real external origin when known, else the loopback
+   *  base (dev/demo), mirroring how AOS_SESSION_URL is built for the launcher. */
+  private consoleGoalUrl(goalId: string): string {
+    return `${(this.publicOrigin || this.baseUrl).replace(/\/$/, '')}/#/goals/${encodeURIComponent(goalId)}`;
+  }
+
   /** Agent posts a mid-task progress update to the Inbox feed. Unlike the (now removed) spawn/stop/exit
    *  lifecycle cards, this is an agent-authored signal: a short note on what it just did or is about to
    *  do. Flagging it `important` highlights it in the feed — a milestone or heads-up worth the operator's
@@ -6638,3 +6789,17 @@ function audienceIdOf(a: Audience): string | undefined {
   }
 }
 
+
+/** Human-readable one-line summary of a goal-edit delta, for the review card + return message. Renders a
+ *  status transition as "status draft→active", other fields by name, and a trailing note if present. */
+function describeGoalDelta(delta: Record<string, unknown>, note: string | undefined, goal: { status: string }): string {
+  const parts: string[] = [];
+  if (typeof delta.status === 'string') parts.push(`status ${goal.status}→${delta.status}`);
+  if ('title' in delta) parts.push('title');
+  if ('body' in delta) parts.push('description');
+  if ('target' in delta) parts.push(delta.target ? 'target' : 'clear target');
+  if ('labels' in delta) parts.push('labels');
+  if ('dueAt' in delta) parts.push(delta.dueAt == null ? 'clear due date' : 'due date');
+  if (note) parts.push('a note');
+  return parts.length ? parts.join(', ') : 'no fields';
+}
