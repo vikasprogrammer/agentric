@@ -8410,6 +8410,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const [hint, setHint] = useState('')
   // Which run from the task's history the room's Session tab is showing ('' = the live/last one).
   const [runSel, setRunSel] = useState('')
+  // Session rows the board's own fetch doesn't carry — `load()` pulls only each task's CURRENT run
+  // (`lastSessionId`), so picking an EARLIER attempt out of the run history has no row to show. Filled
+  // by the by-id fetch below and merged into `sessionById` lookups. See `sessRow` in roomView.
+  // `null` records a miss (deleted/invisible row) so we neither retry it forever nor block the pane.
+  const [extraRuns, setExtraRuns] = useState<Record<string, Session | null>>({})
   // view + filters
   const [view, setView] = useState<'board' | 'list' | 'focus'>(() => { const v = localStorage.getItem('aos_tasks_view'); return v === 'list' || v === 'focus' ? v : 'board' })
   useEffect(() => { localStorage.setItem('aos_tasks_view', view) }, [view])
@@ -8541,6 +8546,20 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const sessionById = new Map(sessions.map((s) => [s.id, s]))
   const liveOf = (t: Task): Session | null => { const s = t.lastSessionId ? sessionById.get(t.lastSessionId) : undefined; return s && isLive(s) ? s : null }
   const attach = (t: Task, s: Session) => onOpen(s.tmux || ('aos-' + s.id), 'Task · ' + t.title)
+  // The run the Session tab is showing, whether or not it's still alive.
+  const shownRunId = runSel || detail?.task.lastSessionId || ''
+  // Pull that run's session ROW when the board doesn't already hold it (an earlier attempt from the run
+  // history). Without the row, TerminalFrame can't tell an ENDED run from a live one and blind-attaches
+  // to a dead tmux name — which surfaces as tmux's raw "can't find session: aos-…" instead of the
+  // transcript. Same reason FullTerminalView fetches it. By-id, so one row, and only when missing.
+  useEffect(() => {
+    if (!shownRunId || sessionById.has(shownRunId) || shownRunId in extraRuns) return
+    let alive = true
+    api.sessionsByIds([shownRunId])
+      .then((rows) => { if (alive) setExtraRuns((m) => ({ ...m, [shownRunId]: rows[0] ?? null })) })
+      .catch(() => { if (alive) setExtraRuns((m) => ({ ...m, [shownRunId]: null })) }) // miss → plain attach, as before
+    return () => { alive = false }
+  }, [shownRunId, sessions])
 
   // One predicate for every lens, with `skip` naming a dimension to ignore. That's what lets each quick
   // filter show a count of what picking it would actually yield *given the other filters* — a facet count,
@@ -8862,8 +8881,16 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     // The Session tab shows the run you picked from the history, defaulting to the live/last one — so a
     // task that crashed twice can be read attempt by attempt without leaving the room.
     const picked = runSel ? detail.runs.find((r) => r.id === runSel) : undefined
-    const sessTmux = picked ? 'aos-' + picked.id : live?.tmux || (t.lastSessionId ? 'aos-' + t.lastSessionId : '')
-    const sessLive = picked ? (picked.alive ? sessionById.get(picked.id) : undefined) : live ?? undefined
+    const sessId = picked?.id || live?.id || t.lastSessionId || ''
+    // Hand TerminalFrame the session ROW even for a finished run — that's what lets it show the captured
+    // transcript instead of attaching to a tmux session that no longer exists. A headless task run (the
+    // common case here) leaves no resumable pane, so without the row every ended task run rendered
+    // tmux's "can't find session: aos-…".
+    const sessRow = (sessId ? sessionById.get(sessId) ?? extraRuns[sessId] : undefined) ?? undefined
+    const sessTmux = sessRow?.tmux || (sessId ? 'aos-' + sessId : '')
+    // Row still in flight — hold the pane rather than attach without it, or an ended run would flash the
+    // dead-terminal error for a beat before the transcript replaced it.
+    const sessPending = Boolean(sessId) && !sessionById.has(sessId) && !(sessId in extraRuns)
     const activeTab: 'discussion' | 'description' | 'session' = roomTab === 'session' && !sessTmux ? 'discussion' : roomTab
     const roomTab_btn = (id: 'discussion' | 'description' | 'session', label: ReactNode) => (
       <a href={navHref('tasks', id === 'discussion' ? t.id : `${t.id}/${id}`)} onClick={onNavClick(() => openTaskTab(t.id, id))} className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium no-underline transition-colors ${activeTab === id ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>{label}</a>
@@ -8912,7 +8939,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                     : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description. <button className="text-primary underline" onClick={() => setEditing(true)}>Add one</button></div>}
                 </div>
               )}
-              {activeTab === 'session' && sessTmux && <div className="flex h-full min-h-0 flex-col"><TerminalFrame session={sessLive} tmux={sessTmux} standalone /></div>}
+              {activeTab === 'session' && sessTmux && (
+                <div className="flex h-full min-h-0 flex-col">
+                  {sessPending
+                    ? <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening session…</div>
+                    : <TerminalFrame key={sessTmux} session={sessRow} tmux={sessTmux} standalone />}
+                </div>
+              )}
             </div>
           </div>
           <div className="overflow-y-auto bg-muted/20 p-4">

@@ -7,6 +7,17 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Fixed
+- **A task's Session tab showed tmux's `can't find session: aos-…` instead of the run's transcript.**
+  The room handed `TerminalFrame` a session row only while the run was still ALIVE (`liveOf`), so for a
+  finished run the pane had no row, couldn't tell ended from live, and blind-attached to a tmux session
+  that no longer exists. Task runs are headless by default and leave no resumable pane, so this hit
+  essentially every completed task — 111 of the northwind board's tasks were in that state. The tab now
+  resolves the run's row regardless of liveness (fetching it by id when the board's own
+  `lastSessionId`-scoped fetch doesn't carry it, which is also what makes picking an EARLIER attempt out
+  of the run history work), so an ended run renders its read-only transcript — the same thing the
+  Sessions page and the `#/term/<tmux>` popout already did. Live runs still attach as before.
+
 ### Added
 - **`docs/sops-plan.md`** — plan for SOPs: pre-learned department playbooks (engineering, marketing,
   sales, support, research) with server-enforced stage order, peer review and evidence gates. `SOP.md`
