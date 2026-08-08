@@ -10,7 +10,6 @@
  */
 import type { AgentOS } from '../kernel';
 import { buildInsights, RECENT_DAYS } from './insights';
-import { measureLearning } from './measurement';
 
 const COOLDOWN_MS = 3 * 24 * 3_600_000; // don't re-alert the same key within 3 days
 /** Clean work runs since the last crash that count as "recovered" — enough to not be a lucky single pass,
@@ -32,19 +31,16 @@ export interface InsightAlert {
 /** Detect the conditions worth a human's attention right now (pure — no dedup, no side effects). */
 export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
   const ins = buildInsights(os, now);
-  const m = measureLearning(os, now);
   const out: InsightAlert[] = [];
 
-  // Fleet success rate fell sharply week-over-week (enough runs to be real).
-  if (m.deltaPp != null && m.deltaPp <= -15 && m.recent.n >= 10) {
-    out.push({
-      key: 'success-drop',
-      severity: 'high',
-      title: `Fleet success rate dropped ${Math.abs(m.deltaPp)} points`,
-      body: `Success fell to ${m.recent.rate}% this week (${m.recent.n} runs) from ${m.prior.rate}% the week before. Check the Insights page for which agents regressed.`,
-      route: 'insights',
-    });
-  }
+  // ⛔ RETIRED (2026-08-08, docs/insights-revisit.md Step 0) — the `success-drop` alert. It was the fourth
+  // and loudest broadcast of the same broken metric: `measureLearning` counts a run as successful only if it
+  // self-reported `outcome: success`, so a week where more runs simply exited without calling `report` reads
+  // as a "fleet success rate dropped N points" DM to a human. It fired twice on northwind, where agents have
+  // reported failure exactly once in their entire history. Unlike `agent-low` below — which requires
+  // `a.failed >= 2`, i.e. real reported failures — this one had no failure evidence at all behind it.
+  // Restore it in Step 4, over an outcome derived from observable facts. (Dropping it also drops the
+  // `measureLearning` call this tick made — a multi-query scan over 8 weeks of audit, run for one alert.)
 
   // An individual agent is failing badly.
   for (const a of ins.agents) {

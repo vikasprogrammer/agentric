@@ -152,14 +152,29 @@ Principles for the rebuild, each a direct inversion of a root cause:
 - **One step at a time.** A step ships, then is measured on live data, then the next begins. Steps do
   not run in parallel.
 
-### Step 0 — stop the harm (no new capability)
+### Step 0 — stop the harm (no new capability) ✅ shipped v0.319.1
 
-Remove the success-rate line from `deriveGuidance` and the `runtime.effort.high` recommendation that
-shares its denominator. Both are wrong on both live tenants today.
+Retire every channel that broadcasts `success / sessions`. Scoping this by *channel* rather than by
+call site turned up **four**, not the two originally listed — the same number was also reaching agents
+through the tenant-shared memory Insight they `recall`, and reaching humans as a DM'd alert:
 
-- **Exit:** live `learned_guidance` on northwind + globex no longer asserts a success rate; the
-  remaining `recall`/`kb_search` line is left alone for now.
-- **Falsifier:** none needed — this is a deletion.
+| Channel | Reaches | Action |
+|---|---|---|
+| `deriveGuidance` success-rate line | every agent's system prompt, always | deleted |
+| `deriveRecommendations` → `runtime.effort.high` | owner, as an applyable config change | deleted; `recommendationResolved` now retires persisted ones at read time |
+| Tenant-shared memory Insight summary | any agent that calls `recall` | rate replaced with raw counts incl. "never reported an outcome" |
+| `alerts.ts` → `success-drop` | a DM to a human | deleted (also drops a full `measureLearning` scan per alert tick) |
+
+`agent-low` is deliberately **kept**: it gates on `a.failed >= 2`, i.e. real reported failures, so it
+has evidence behind it that `success-drop` never had. The KB fleet-learnings page keeps its counts but
+no longer derives a percentage from them, and states that outcome is self-reported.
+
+- **Exit:** live `learned_guidance` on northwind + globex no longer asserts a success rate. Regenerates
+  on the next reflect pass after deploy (≤2h northwind, ≤24h globex) — no migration needed.
+- **Pin:** `scripts/insights-signal-test.cjs` (in `npm run test:governance`) — 19 assertions across all
+  four channels, verified to fail 10 of them against the pre-fix build. Its `noRateWithoutFailures`
+  case is the fixture Step 1 must satisfy: two states differing **only** in how many runs reported,
+  with identical real failures, must produce identical guidance.
 
 ### Step 1 — an outcome that isn't self-graded
 

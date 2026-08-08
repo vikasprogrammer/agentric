@@ -7,6 +7,29 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.319.1] — 2026-08-08
+### Removed
+- **The fleet-wide "success rate" is gone from every channel that broadcast it** (`docs/insights-revisit.md`
+  Step 0). `success / sessions` divided *self-reported* successes by ALL sessions, so its complement was
+  dominated by runs that simply never called `report`: live northwind logged 334 `session.ended` with no
+  outcome against 302 `session.reported` in 30 days, and **one** reported failure in 329 reports lifetime
+  (globex: 6 in 1830). Both tenants computed ~55% and broadcast it four ways — retired all four:
+  - the `deriveGuidance` line telling **every agent, in every system prompt, permanently** to "slow down"
+    about a failure rate that isn't in the data;
+  - the `runtime.effort.high` recommendation, which stood ready to raise the whole workspace's reasoning
+    effort (and cost) on the same evidence — `recommendationResolved` now retires any persisted one at read
+    time rather than waiting for the next pass;
+  - the tenant-shared memory Insight agents `recall`, which now reports raw counts including how many runs
+    **never reported an outcome**;
+  - the `success-drop` alert, which DM'd a human whenever reporting discipline dipped (it fired twice on
+    northwind); dropping it also drops a full 8-week `measureLearning` scan per alert tick.
+  `agent-low` is kept — it gates on real reported failures (`failed >= 2`), which `success-drop` never had.
+  The KB fleet-learnings page keeps its counts, derives no percentage from them, and now says outcome is
+  self-reported. Pinned by `scripts/insights-signal-test.cjs` (19 assertions, in `npm run test:governance`),
+  verified to fail 10 of them against the pre-fix build. A rate returns only when Step 1 derives an outcome
+  from observable facts.
+
 ### Added
 - **`docs/insights-revisit.md`** — audit of the Insights surface against live northwind + globex data,
   and a from-scratch rebuild sequenced one step at a time. Findings: the stack rests on a self-graded

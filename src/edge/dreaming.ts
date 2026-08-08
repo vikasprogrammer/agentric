@@ -263,9 +263,11 @@ export class DreamingEngine {
     let insightId: string | undefined;
     try {
       const t = state.totals;
-      const rate = t.sessions ? Math.round((t.success / t.sessions) * 100) : 0;
+      // No derived "N% success" here either — this Insight is tenant-shared and agents `recall` it, so it's
+      // a THIRD broadcast channel for the same broken rate (Step 0). Report the raw counts instead: they say
+      // what was actually observed, including how much of it was never reported at all.
       const topTopics = topTopicList(state.topics, 6).filter(([, v]) => v.count >= MIN_TOPIC_COUNT).map(([k]) => k).join(', ') || '—';
-      const summary = `Fleet self-learning (pass ${state.passes}, since ${new Date(state.firstPass).toISOString().slice(0, 10)}): ${t.sessions} sessions, ${rate}% success. Recurring topics: ${topTopics}. Friction so far: ${t.rejected} approvals rejected, ${t.budgetStops} budget stops, ${t.errors} errors. Details: [[${DREAM_SECTION}/${DREAM_SLUG}]].`;
+      const summary = `Fleet self-learning (pass ${state.passes}, since ${new Date(state.firstPass).toISOString().slice(0, 10)}): ${t.sessions} sessions — ${t.success} reported success, ${t.unknown} never reported an outcome. Recurring topics: ${topTopics}. Friction so far: ${t.rejected} approvals rejected, ${t.budgetStops} budget stops, ${t.errors} errors. Details: [[${DREAM_SECTION}/${DREAM_SLUG}]].`;
       const rec = await this.os.memory.store({ tenant: this.os.tenant, agentId: 'dreamer', content: summary, tags: ['dreaming', 'learned'], type: 'Insight', importance: 0.6, scope: 'tenant', metadata: { passes: state.passes, window, sessions: win.sessions } });
       insightId = rec.id;
     } catch { /* best-effort */ }
@@ -528,8 +530,15 @@ export function deriveGuidance(s: DreamState): string {
   if (t.rejected >= 2 && rejectionRate(t) >= REJECTION_RATE) lines.push('Recent actions were rejected at human approval — `policy_check` before risky effects, and never retry an action a human already rejected.');
   if (t.budgetStops >= 1) lines.push('Budget limits have been hit — scope work tightly, avoid broad scans / long loops, and `ask` rather than burn budget guessing.');
   if (t.errors >= 2) lines.push('Some sessions ended in errors — verify your work before finishing, and `report` the real outcome (including failures) honestly.');
-  const rate = t.sessions ? t.success / t.sessions : 1;
-  if (t.sessions >= 5 && rate < 0.7) lines.push(`Recent success rate is ${Math.round(rate * 100)}% — slow down, confirm assumptions, and prefer asking over guessing on anything ambiguous.`);
+  // ⛔ RETIRED (2026-08-08, docs/insights-revisit.md Step 0) — the "Recent success rate is N% — slow down"
+  // line. `t.success / t.sessions` divides *self-reported* successes by ALL sessions, so its complement is
+  // dominated by runs that simply never called `report`: live northwind had 334 `session.ended` with no
+  // outcome against 302 `session.reported` in 30 days, and exactly ONE reported failure in 329 reports
+  // lifetime (globex: 6 in 1830). Both tenants therefore computed ~55% and told EVERY agent, in EVERY
+  // system prompt, permanently, to slow down about a failure rate that does not exist in the data. This is
+  // the same defect the 2026-07-31 correction fixed for approval friction (a rate needs a denominator and a
+  // sample) — missed here because this metric's denominator looked like one. It returns only when Step 1
+  // lands an outcome derived from observable facts rather than the agent's own grade of its own homework.
   const top = lines.slice(0, 6);
   if (!top.length) return '';
   return [
@@ -547,7 +556,11 @@ export function deriveGuidance(s: DreamState): string {
  * ones (policy/budget) clear on the next pass.
  */
 export function recommendationResolved(rec: Recommendation, currentEffort: string | undefined): boolean {
-  if (rec.id === 'runtime.effort.high') return currentEffort === 'high' || currentEffort === 'xhigh' || currentEffort === 'max';
+  // `runtime.effort.high` is RETIRED (Step 0) — it proposed a fleet-wide config change off the same broken
+  // success rate as the guidance line above. It can no longer be derived, but a tenant that hasn't run a
+  // pass since the upgrade still has one persisted in `learned_recommendations.open`; treating it as always
+  // resolved retires those at read time instead of waiting for the next pass to recompute `open`.
+  if (rec.id === 'runtime.effort.high') return true;
   return false;
 }
 
@@ -558,16 +571,11 @@ export function recommendationResolved(rec: Recommendation, currentEffort: strin
 export function deriveRecommendations(s: DreamState, currentEffort: string | undefined, now: number): Recommendation[] {
   const t = recentTally(s); // H4: propose from RECENT friction, not lifetime — a subsided problem stops re-proposing
   const recs: Recommendation[] = [];
-  const rate = t.sessions ? t.success / t.sessions : 1;
-  const effortAlreadyHigh = currentEffort === 'high' || currentEffort === 'xhigh' || currentEffort === 'max';
-  if (t.sessions >= 5 && rate < 0.7 && !effortAlreadyHigh) {
-    recs.push({
-      id: 'runtime.effort.high', kind: 'runtime',
-      title: 'Raise the workspace default reasoning effort to “high”',
-      rationale: `Recent success rate is ${Math.round(rate * 100)}% over ${t.sessions} sessions${t.errors ? `, with ${t.errors} errored` : ''}. More reasoning effort often helps agents get it right the first time. Reversible in Settings → Runtime defaults.`,
-      apply: { runtimeDefaults: { effort: 'high' } }, createdAt: now,
-    });
-  }
+  // ⛔ RETIRED (Step 0): `runtime.effort.high`. It fired on `success / sessions` — the same self-reported,
+  // 40%-missing metric the guidance line did — so it stood ready to raise the whole workspace's reasoning
+  // effort (and its cost) on evidence of nothing. `currentEffort` is kept in the signature for
+  // `recommendationResolved` and the next recommendation that legitimately needs it.
+  void currentEffort;
   if (t.rejected >= 3 && rejectionRate(t) >= REJECTION_RATE) {
     recs.push({
       id: 'policy.review', kind: 'policy',
@@ -589,7 +597,6 @@ export function deriveRecommendations(s: DreamState, currentEffort: string | und
 
 function renderPage(s: DreamState): string {
   const t = s.totals;
-  const rate = t.sessions ? Math.round((t.success / t.sessions) * 100) : 0;
   const top = topTopicList(s.topics, TOP_TOPICS);
   return [
     `_Auto-maintained and **compounding** — each self-learning pass folds new activity into this page (a pure render of the OS's cumulative state; it rebuilds even if deleted). Edit it and the next pass will overwrite._`,
@@ -597,7 +604,8 @@ function renderPage(s: DreamState): string {
     `**Pass ${s.passes}** · learning since ${new Date(s.firstPass).toISOString().slice(0, 10)}`,
     ``,
     `## Cumulative totals`,
-    `- Sessions/runs: **${t.sessions}** — ${t.success} succeeded, ${t.failure} failed, ${t.partial} partial, ${t.stopped} stopped, ${t.unknown} unknown · **${rate}% success**.`,
+    `- Sessions/runs: **${t.sessions}** — ${t.success} reported success, ${t.failure} failed, ${t.partial} partial, ${t.stopped} stopped, **${t.unknown} never reported an outcome**.`,
+    `- ⚠ Outcome is **self-reported** by the agent, and a run that never calls \`report\` lands as "unknown" — so these counts measure reporting at least as much as quality, and no success *rate* is derived from them. A derived outcome is Step 1 of \`docs/insights-revisit.md\`.`,
     `- Episodes captured: **${t.episodes}**.`,
     `- Friction (all-time): ${t.rejected} approvals rejected · ${t.budgetStops} budget stops · ${t.errors} episode errors.`,
     ``,
