@@ -8,6 +8,36 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.323.0] — 2026-08-08
+### Added
+- **A run outcome derived from what the OS observed, not from the agent's grade of its own homework**
+  (`src/edge/outcome.ts`, `docs/insights-revisit.md` Step 1). Step 0 deleted every channel that broadcast
+  the old self-reported rate; this is the replacement it had to earn. Ordered rules over observed facts —
+  the process crashed, the run made no tool calls, an unattended run died in seconds, a task closed while
+  this run held it, another run had to pick the same task up — each carrying the `basis` that decided it,
+  so a number can always be traced to its evidence. `report` stays one input among several; a human's
+  👍/👎 outranks everything. Two framing calls did more work than any rule: **the unit is a conversation**
+  (a `poke:` resume continues a transcript, so scoring rows counts one job several times) and **not
+  everything is scorable** (a person closing their own pane is not a failure — those leave the denominator
+  instead of quietly counting as not-success).
+  On the live 30-day northwind corpus (443 conversations): **unknown 6%**, down from ~40%, and **28
+  failures against the 1** the fleet self-reported over the same window.
+  Two rules were bought by the falsifier rather than designed: **`died-early`** — unattended runs split by
+  wall-clock at 2m+ → 96% report, 30–120s → 84%, **<30s → 0 of 44**, which are quota/auth deaths
+  (`You've hit your weekly limit`, `401 … token has expired`), this fleet's most common real failure and
+  structurally impossible to self-report since the agent is what stopped existing (19 found in 30 days);
+  and **`human-session`**, after v1 scored four completed interactive sessions as `abandoned`.
+  Falsifier: 35 conversations sampled stratified by basis and labelled blind from transcripts
+  (`scripts/outcome-label-sample.cjs`, `outcome-labels.json`, `outcome-label-score.cjs`). **v1: 50% exact
+  vs a 43% always-success baseline. After the two rules above: 63% vs 32%** — with the caveat, stated in
+  the doc, that the rules were revised after seeing v1's errors, so the unfitted number is 50% and a fresh
+  blind sample is owed before Step 2 leans on it. Pinned by `scripts/outcome-derivation-test.cjs`
+  (23 assertions, in `test:governance`), including the property that the metric must move when work fails
+  and *not* when reporting discipline changes.
+  Nothing consumes this yet and nothing is stamped or written — it is a pure read, evaluated as-of a time,
+  so a task that reopens tomorrow changes yesterday's verdict. The Stop-hook half of the plan was **not**
+  built: once runs were classified, most of the hole was unscorable or already decidable, leaving 6%
+  without touching the teardown path. Deferred with the reasoning recorded, not cancelled.
 ## [0.322.0] — 2026-08-08
 ### Changed
 - **Session status is an ICON now, not a coloured dot + a word.** v0.321.0 unified the vocabulary but

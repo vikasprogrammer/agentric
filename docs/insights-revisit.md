@@ -176,7 +176,51 @@ no longer derives a percentage from them, and states that outcome is self-report
   case is the fixture Step 1 must satisfy: two states differing **only** in how many runs reported,
   with identical real failures, must produce identical guidance.
 
-### Step 1 — an outcome that isn't self-graded
+### Step 1 — an outcome that isn't self-graded ✅ shipped v0.323.0
+
+`src/edge/outcome.ts`. Rules over facts the OS observed itself, ordered, each carrying the `basis` that
+decided it so any number traces back to its evidence. Live 30-day northwind corpus, 443 conversations:
+
+| | conversations | note |
+|---|---|---|
+| scorable | **309** | the denominator |
+| success | 186 | |
+| partial | 37 | |
+| failure | **28** | against **1** self-reported failure in the same corpus |
+| noop | 30 | ran, called nothing — previously invisible |
+| incomplete | 8 | someone else had to pick the task up |
+| **unknown** | **20 = 6%** | was ~40% |
+| unscorable | 134 | a person's own interactive session — outside the denominator, not counted as not-success |
+
+Two framing decisions did more work than any rule: **the unit is a conversation** (a `poke:` resume
+continues a transcript — scoring rows counts one job several times), and **not everything is scorable**
+(a human closing their own pane is not a failure).
+
+- **Exit — met.** `unknown` 6% (bar: <10%). Failure rate has variance: 9% derived vs 0.3% self-reported,
+  and non-success is 40% where the old metric's complement was mostly non-reporting.
+- **Falsifier — run, and it bit.** 35 conversations sampled stratified by basis, labelled blind from
+  transcripts only (`scripts/outcome-label-sample.cjs` → `outcome-labels.json` → `outcome-label-score.cjs`).
+  **v1 scored 50% exact against a 43% always-success baseline** — beating the baseline, but not by enough
+  to build on. The disagreements were clustered and diagnostic, and bought two rules:
+  - **`died-early`.** Unattended runs split by wall-clock: 2m+ → 96% report, 30–120s → 84%, **<30s → 0 of
+    44**. Those are quota/auth deaths (`You've hit your weekly limit`, `401 … token has expired`) — this
+    fleet's most common real failure, structurally invisible to the agent because the agent is what
+    stopped existing. 19 found in 30 days.
+  - **`human-session`.** v1 called a person closing their own pane `abandoned`; the labels called four of
+    those successes. The OS has no verdict on an interactive session — same posture as chat.
+  After both, **63% exact against a 32% baseline** (19 judged, 9 declared unscorable, 7 unlabelable for
+  lack of a transcript on this box).
+- **⚠ The 63% is not a clean number.** The labels were blind, but the rules were revised *after* seeing
+  which rows v1 got wrong, so it is partly fitted to 28 rows. **Before Step 2 leans on this, draw a fresh
+  blind sample against the current rules.** The honest, unfitted number is v1's 50%.
+- **Known coverage gap:** the OS declines to judge 134 of 443 conversations (30%) — every interactive
+  human session. Fine for Steps 2–5, which are about unattended work; it would not be fine for a
+  fleet-wide "how are we doing" claim.
+- **Pinned:** `scripts/outcome-derivation-test.cjs` (23 assertions, in `test:governance`), including the
+  property that the metric must move when work fails and *not* when reporting discipline changes.
+- **Not done:** the Stop-hook half. See "What Step 1 did not do" below.
+
+### Step 1 (original plan)
 
 The blocking dependency for everything else. Derive a per-run outcome from **observable facts already
 in the DB**, not from the agent's own `report`:
@@ -197,6 +241,25 @@ becomes rare rather than modal.
 - **Falsifier:** hand-label 30 random runs from the live DB and compare against the derived outcome;
   publish the confusion counts in the PR. If the derived signal doesn't beat "always success", stop
   and rethink before Step 2.
+
+#### What Step 1 did not do
+
+**The Stop-hook half was not built, and the reason is the evidence rather than the effort.** The plan
+assumed the 40% hole had to be closed at the source — make unattended runs report. Once the runs were
+classified it turned out most of the hole was not missing information at all:
+
+- 134 conversations were a person's own interactive session — never scorable, hook or no hook;
+- 30 called no tool at all, and 19 died in seconds — both fully decidable from what the OS already
+  recorded, and *neither could ever have self-reported* (a run killed by a quota limit has nothing left
+  to report with).
+
+That left `unknown` at 6%, under the exit bar, without touching the hook. Building it anyway would have
+added a runtime change to the teardown path for a residual the derivation already handles — so it is
+**deferred, not cancelled**: if Step 2's cards turn out to be blocked by those 20 conversations, the
+hook is the fix, and this paragraph is the record of why it was skipped.
+
+One thing the residual does say: those 20 are runs that did substantial work (11–95 tool calls) and left
+no verdict. They are the most interesting runs in the corpus, and no observable fact decides them.
 
 ### Step 2 — one signal, one card, one action
 
