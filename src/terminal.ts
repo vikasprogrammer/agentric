@@ -53,6 +53,10 @@ const WARM_CONFIRM_MS = 12_000;
  *  for minutes; one still "busy" after this is wedged, and protecting it would mean never reclaiming
  *  its pane. */
 const MID_TURN_MAX_MS = 2 * 3600_000;
+/** How long one in-memory "this session is mid-turn" stamp suppresses the gate's heartbeat write. The
+ *  gate fires on every tool call and `node:sqlite` is synchronous, so the write must not ride the hot
+ *  path more often than it has to; the DB statement is a no-op mid-turn anyway. */
+const BUSY_STAMP_THROTTLE_MS = 30_000;
 const VIDEO_MAX_DURATION_SEC = 60;         // clamp the requested clip length
 const VIDEO_JOB_TTL_MS = 20 * 60_000;      // give up on a render after 20 minutes
 const VIDEO_MAX_POLLS = 200;               // poll-attempt ceiling (belt-and-suspenders with the TTL)
@@ -738,6 +742,9 @@ export class TerminalManager {
    *  "tmux up" can't be read as "nothing is running" — which would let a second turn launch a
    *  competing claude on the same transcript. */
   private readonly launching = new Set<string>();
+  /** sessionId → when the gate heartbeat last stamped it. Purely a write throttle (see
+   *  {@link BUSY_STAMP_THROTTLE_MS}); the DB is the source of truth and `clearTurnBusy` drops the entry. */
+  private readonly busyStamped = new Map<string, number>();
   /** Pending "did that warm turn actually start?" checks, keyed by session — see `confirmWarmTurn`.
    *  Held so a newer message can cancel the previous check instead of racing it. */
   private readonly warmChecks = new Map<string, ReturnType<typeof setTimeout>>();
@@ -909,10 +916,11 @@ export class TerminalManager {
    *     turn-end path, including the ones the old code reached without clearing `busy_since` — so
    *     `last_activity > busy_since` means "that turn is over" even on a row latched by an older build.
    *     This is what heals the existing fleet without waiting on anything.
-   *  5. **the turn is not ANCIENT.** A turn running longer than `MID_TURN_MAX_MS` is wedged, not working
-   *     — the same judgement the resident reaper already makes. The backstop for a run that produced no
-   *     end signal at all (a hook that never fired, a pane wedged mid-generation): it stops reading as
-   *     "working" on its own instead of spinning forever.
+   *  5. **the stamp is not ANCIENT.** Older than `MID_TURN_MAX_MS` = wedged, not working — the same
+   *     judgement the resident reaper makes. This measures ACTIVITY, not turn age: the gate re-stamps
+   *     past the ceiling (see {@link markTurnBusy}), so a genuinely long turn keeps its spinner while a
+   *     wedged one — which emits nothing — ages out. The backstop for a run that produced no end signal
+   *     at all, so it stops reading as "working" on its own instead of spinning forever.
    */
   private isWorking(r: { id: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null }, alive: Set<string> | null): boolean {
     if (r.busy_since == null) return false;
@@ -3028,25 +3036,48 @@ export class TerminalManager {
     }
   }
 
-  /** A turn STARTED — stamp `busy_since` (the console's "working") and the idle clock with it.
-   *  `WHERE busy_since IS NULL` makes a prompt queued INSIDE a running turn a no-op: it must not restart
-   *  the staleness window, and it must certainly not move `last_activity` past `busy_since`, which is how
-   *  {@link isWorking} recognises a turn that has already ended. */
-  markTurnBusy(sessionId: string): void {
+  /**
+   * A turn is RUNNING — stamp `busy_since` (the console's "working") and the idle clock with it. Two
+   * callers, because a turn announces itself two ways and old sessions only have the second:
+   *   - `UserPromptSubmit` (`answered: true`) — the turn's actual start, for sessions launched since the
+   *     lifecycle hook shipped;
+   *   - the GATE, on every tool call (`answered: false`) — the universal heartbeat. A tool call is proof
+   *     a turn is running, and the gate hook is wired into every session that exists, so this is what
+   *     keeps an already-running session honest.
+   *
+   * `busy_since IS NULL` makes it idempotent within a turn: a queued prompt or the 40th tool call must
+   * not restart the staleness window, and must certainly not move `last_activity` past `busy_since`,
+   * which is how {@link isWorking} recognises a turn that has already ended.
+   *
+   * The `OR busy_since < <stale floor>` arm is what turns the `MID_TURN_MAX_MS` ceiling from a dumb
+   * timer into an honest wedged-turn test. A turn that is genuinely still running keeps producing tool
+   * calls, so it re-stamps and never ages out; a turn that is wedged produces nothing, so its flag goes
+   * stale and {@link isWorking} drops it. Without this arm a real 2h+ turn would silently read `ready`.
+   *
+   * `answered` says whether a HUMAN produced this signal. Only then is an open "waiting on you" card
+   * retired — otherwise a session would keep reading `needs you` (which outranks `working`) through the
+   * whole turn it just started. That closes the loop the interrupt case opens: interrupt → idle_prompt
+   * card → you type → card gone, spinner back. A tool call is not an answer, so it never clears a card.
+   */
+  markTurnBusy(sessionId: string, opts: { answered?: boolean } = {}): void {
     const now = Date.now();
-    this.db.prepare('UPDATE term_sessions SET busy_since = ?, last_activity = ?, updated_at = ? WHERE id = ? AND busy_since IS NULL')
-      .run(now, now, now, sessionId);
-    // A prompt submitted IS the human answering — retire any open "waiting on you" card, or the session
-    // would keep reading `needs you` (which outranks `working`) through the whole turn it just started.
-    // This is the close of the loop the interrupt case opens: interrupt → idle_prompt card → you type →
-    // card gone, spinner back.
-    this.clearNotifications(sessionId);
+    // The gate calls this on EVERY tool call, and `node:sqlite` is synchronous — a write that takes a
+    // lock on the gate's hot path is exactly the event-loop blocking that made a busy box feel
+    // unresponsive before. The DB statement is already a no-op mid-turn (the WHERE matches nothing), so
+    // skip even issuing it when we stamped this session moments ago. `clearTurnBusy` drops the entry, so
+    // the first tool call of the NEXT turn always reaches the DB however soon it arrives.
+    if (opts.answered === false && now - (this.busyStamped.get(sessionId) ?? 0) < BUSY_STAMP_THROTTLE_MS) return;
+    this.busyStamped.set(sessionId, now);
+    this.db.prepare('UPDATE term_sessions SET busy_since = ?, last_activity = ?, updated_at = ? WHERE id = ? AND (busy_since IS NULL OR busy_since < ?)')
+      .run(now, now, now, sessionId, now - MID_TURN_MAX_MS);
+    if (opts.answered !== false) this.clearNotifications(sessionId);
   }
 
   /** A turn ENDED — drop `busy_since`. The one place that clears it, so every end path (Stop hook,
    *  StopFailure, SessionEnd, a terminal status transition) agrees. */
   private clearTurnBusy(sessionId: string): void {
     this.db.prepare('UPDATE term_sessions SET busy_since = NULL WHERE id = ? AND busy_since IS NOT NULL').run(sessionId);
+    this.busyStamped.delete(sessionId);   // so the next turn's first tool call isn't swallowed by the throttle
   }
 
   /** Was text delivered into this session within `ms`? Reads the `chat.delivered` / `session.inject`
@@ -3924,6 +3955,14 @@ export class TerminalManager {
     }
     this.audit(sessionId, agent, 'gate.attempt', { capability, args, reasoning, ...sub });
     this.audit(sessionId, agent, 'gate.decision', { capability, decision, brief, ...sub });
+    // A tool call is PROOF a turn is running — this is the universal turn heartbeat. `UserPromptSubmit`
+    // only reaches sessions launched since that hook shipped (hook settings are written at launch), so
+    // without this an already-running session that had its `busy_since` cleared could never get it back
+    // and read `ready` while visibly generating. The gate hook, by contrast, is wired into every session
+    // that exists — it is the invariant. `answered: false`: a tool call is not a human answering, so it
+    // must not retire a waiting card (and a session blocked on an approval still reads `needs you`,
+    // which outranks `working`, so setting the flag here cannot mask a block).
+    this.markTurnBusy(sessionId, { answered: false });
 
     if (decision.effect === 'allow') {
       // Behavioural-failure watch (phase 3): the effect is allowed, but if it completes a no-progress

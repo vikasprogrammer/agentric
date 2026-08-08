@@ -201,7 +201,44 @@ console.log('    anthropics/claude-code#9516 — so the Notification bell is the
   assert(row(id).busy_since != null, 'a NOISE notification kind changes nothing');
 }
 
-console.log('\n\x1b[1m8) an unknown event is ignored, not a crash\x1b[0m');
+console.log('\n\x1b[1m8) the GATE is the universal turn heartbeat\x1b[0m');
+console.log('   (UserPromptSubmit only reaches sessions launched since that hook shipped — hook settings');
+console.log('    are written at launch — so an already-running session needs a signal it already emits)');
+{
+  const id = mk({ busy_since: null });               // an older session: no UserPromptSubmit will ever fire
+  assert(seen(id).working === false, 'starts idle');
+  tm.markTurnBusy(id, { answered: false });          // ← what the gate does on every tool call
+  assert(row(id).busy_since != null, 'a tool call stamps the turn');
+  assert(seen(id).working === true, 'so it reads working while it generates');
+}
+{
+  // A tool call is not a human answering — it must not retire a "waiting on you" card. (And a session
+  // blocked on an approval reads `needs you` anyway, which outranks working.)
+  const id = mk({ busy_since: null });
+  tm.notify(id, 'agent-demo', 'idle_prompt', 'waiting');
+  tm.markTurnBusy(id, { answered: false });
+  const card = aos.db.prepare("SELECT COUNT(*) c FROM messages WHERE session_id = ? AND type = 'notification' AND status = 'open'").get(id).c;
+  assert(card === 1, 'the waiting card survives a tool call');
+}
+{
+  // The throttle must never swallow the FIRST tool call of a turn, however soon it follows the last one.
+  const id = mk({ busy_since: null });
+  tm.markTurnBusy(id, { answered: false });
+  tm.markTurnIdle(id);                                // turn ends
+  assert(row(id).busy_since === null, 'turn ended');
+  tm.markTurnBusy(id, { answered: false });           // next turn starts immediately
+  assert(row(id).busy_since != null, 'the next turn stamps straight away — the throttle is dropped on clear');
+  assert(seen(id).working === true, 'and it reads working again');
+}
+{
+  // A long but ACTIVE turn keeps re-stamping past the ceiling; a WEDGED one produces nothing and ages out.
+  const id = mk({ busy_since: Date.now() - 3 * HOUR });
+  assert(seen(id).working === false, 'a 3h-old stamp with no activity is wedged, not working');
+  tm.markTurnBusy(id, { answered: false });           // …but a tool call proves otherwise
+  assert(seen(id).working === true, 'a tool call revives it — the ceiling measures ACTIVITY, not turn age');
+}
+
+console.log('\n\x1b[1m9) an unknown event is ignored, not a crash\x1b[0m');
 {
   const id = mk();
   const before = row(id).busy_since;

@@ -10,7 +10,7 @@ Reference for the events themselves: <https://code.claude.com/docs/en/hooks>.
 
 | Hook event | Script | Route | What it does |
 |---|---|---|---|
-| `PreToolUse` | `terminal/gate-hook.sh` | `/api/gate` | **The invariant** — every governed effect passes the gateway. Unrelated to status; listed so the table is the whole picture. |
+| `PreToolUse` | `terminal/gate-hook.sh` | `/api/gate` | **The invariant** — every governed effect passes the gateway. Also the **universal turn heartbeat**: a tool call is proof a turn is running (`markTurnBusy`, throttled to one write per 30s per session, since the gate is a hot path and `node:sqlite` is synchronous). |
 | `Notification` | `terminal/notify-hook.sh` | `/api/notify` | `permission_prompt` / `idle_prompt` / `agent_needs_input` → an inbox card + the per-session "needs you" bell, **and a turn-END** (blocked on a human is not generating). Other `notification_type`s (auth, elicitation, `agent_completed`) are dropped. |
 | `UserPromptSubmit` | `terminal/lifecycle-hook.sh` | `/api/session-event` | **Turn START** → `markTurnBusy` (stamps `busy_since`). |
 | `Stop` | `terminal/stop-hook.sh` | `/api/turn-idle` | **Turn END** → `markTurnIdle`: clears `busy_since` for every lane, and for an *unattended* run tears the pane down (the pile-up guard releases). |
@@ -84,8 +84,24 @@ turn older than the 2h ceiling); a genuinely in-flight turn is untouched, so it 
 backend: the interactive-lane clear, the turn-start signal, `StopFailure` teardown, each `SessionEnd`
 reason, all five `isWorking` clauses, and the ignore-unknown-events rule.
 
-## Gotcha
+## Gotcha — and why the gate is the heartbeat
 
 Hook settings are written into the agent folder **at launch** (`.claude/aos-settings.json`), so a change
-here reaches a session only when it is next launched. Already-running sessions keep the old hook set —
-which is exactly why `isWorking` has to self-heal rather than rely on a beacon arriving.
+here reaches a session only when it is next launched. Already-running sessions keep the old hook set.
+
+That cuts **both ways**, and only one direction was covered at first. A stale flag self-heals (clauses
+2–5 above). The opposite failure does not: a session launched before `UserPromptSubmit` was wired had no
+way to *set* the flag once it was cleared, so it read `ready` while visibly generating — observed live on
+`ses_c63f1492dc12ce06`, whose pane showed `Germinating… (1m 2s)` and which was emitting gate events every
+few seconds with `busy_since` NULL.
+
+Hence the heartbeat lives on the **gate hook**, which is wired into every session that exists, and is the
+one thing that cannot be missing — it *is* the invariant. A tool call is proof a turn is running, so it
+stamps `busy_since` too. Two properties matter:
+
+- it stamps with `answered: false`, so a tool call never retires a "waiting on you" card (only a human
+  submitting a prompt does). A session blocked on an approval still reads `needs you` regardless, since
+  that outranks `working`;
+- it re-stamps a flag older than `MID_TURN_MAX_MS`, which turns the ceiling into an honest **activity**
+  test: a long turn that is still calling tools keeps its spinner, a wedged one emits nothing and ages
+  out. Without that arm a real 2h+ turn would silently read `ready`.
