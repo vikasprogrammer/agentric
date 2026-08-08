@@ -21,6 +21,26 @@ new version heading in the same commit.
   frontmatter + prose (not YAML), stages compiled to child tasks over the `blocked_by` dependency edge
   (no new run engine), and an `advisory → enforced` adoption ramp measured by stage-skip rate.
 
+## [0.320.0] — 2026-08-08
+### Changed
+- **A task re-dispatch now RESUMES the prior transcript instead of restarting.** A task is the durable
+  unit of work; a session is one attempt. Every other re-entry path (chat threads, DM replies, poke-back,
+  self-schedule) already `--resume`d the prior transcript — task re-dispatch was the lone exception,
+  spawning a fresh session with only a text *summary* of the last run's outcome, so a retried or reopened
+  task re-derived everything it had already worked out. `dispatchTask` now resumes the same transcript when
+  the task's latest run was the **same assignee agent** and pinned one (`TerminalManager.resumableTaskTranscript`),
+  seeded with a "continue, don't restart" prompt. It's bounded: after `MAX_TASK_RESUMES` (2) resumes that
+  still don't close the task it starts **fresh** to escape a wedged/looping transcript — a fresh run mints a
+  new `claude_session_id`, so the streak resets and the *last* attempt before parking is a clean slate.
+  `TASK_MAX_ATTEMPTS` is bumped **3 → 4** so the ladder (fresh → resume → resume → fresh-escape → park) fits
+  before the block. A changed assignee can't resume another agent's transcript (→ fresh). A side benefit:
+  because a resumed dispatch reuses the transcript id, retries now collapse into ONE conversation in the
+  chain/cost view (cost = max) instead of N separate ones. Pinned by `scripts/task-resume-test.cjs`.
+### Added
+- **Jump from a session to its attached task.** The session view's facts row now shows a clickable task
+  chip (when the run works a task — `task:`/`poke:`/`ask:` provenance) that deep-links to the board card,
+  completing the edge that only existed in the other direction (task room → its runs).
+
 ## [0.319.0] — 2026-08-07
 ### Added
 - **A re-dispatched task tells the next run it isn't the first.** A task is the unit of work and a

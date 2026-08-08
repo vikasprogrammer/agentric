@@ -4226,6 +4226,14 @@ function SessionFacts({ session: s, members = [] }: { session?: Session; members
           <span className="truncate">{s.spawnedByLabel}</span>
         </span>
       )}
+      {/* The attached task, if this run works one — a clickable jump to its board card (the missing edge
+          from session → task; the reverse, task → its runs, already exists in the task room). */}
+      {s.taskId && (
+        <a href={navHref('tasks', s.taskId)} className="flex items-center gap-1 hover:text-foreground hover:underline" title={`open the attached task ${s.taskId}`}>
+          <ListChecks className="h-3.5 w-3.5 shrink-0 opacity-60" />
+          <span className="max-w-[160px] truncate">{s.taskId}</span>
+        </a>
+      )}
       <span className="flex items-center gap-1" title={`created ${new Date(s.createdAt).toLocaleString()}`}>
         <Clock className="h-3.5 w-3.5 shrink-0 opacity-60" />
         <span>{timeAgo(s.createdAt)} ago</span>
