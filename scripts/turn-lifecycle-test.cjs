@@ -169,7 +169,39 @@ console.log('\n\x1b[1m6) every terminal transition drops the flag\x1b[0m');
   assert(row(id).busy_since === null, 'markEnded clears it');
 }
 
-console.log('\n\x1b[1m7) an unknown event is ignored, not a crash\x1b[0m');
+console.log('\n\x1b[1m7) an INTERRUPTED turn (Esc) stops reading "working"\x1b[0m');
+console.log('   (Esc/Ctrl-C fires NO Stop, StopFailure or SessionEnd — there is no interrupt hook at all,');
+console.log('    anthropics/claude-code#9516 — so the Notification bell is the only signal we get)');
+{
+  const id = mk();
+  assert(seen(id).working === true, 'mid-turn → working');
+  tm.notify(id, 'agent-demo', 'idle_prompt', 'Interrupted · What should Claude do instead?');
+  assert(row(id).busy_since === null, 'the idle notification ends the turn — blocked on a human is not generating');
+  assert(seen(id).working === false, 'no spinner');
+  const card = aos.db.prepare("SELECT COUNT(*) c FROM messages WHERE session_id = ? AND type = 'notification' AND status = 'open'").get(id).c;
+  assert(card === 1, 'and it reads `needs you` — an open waiting card, which outranks working');
+}
+{
+  // …and typing the next prompt closes that loop: the card is stale the moment the human answers.
+  const id = mk();
+  tm.notify(id, 'agent-demo', 'idle_prompt', 'waiting');
+  tm.recordLifecycle(id, 'UserPromptSubmit');
+  const card = aos.db.prepare("SELECT COUNT(*) c FROM messages WHERE session_id = ? AND type = 'notification' AND status = 'open'").get(id).c;
+  assert(card === 0, 'a submitted prompt retires the waiting card');
+  assert(seen(id).working === true, 'back to working, not stuck on `needs you`');
+}
+{
+  const id = mk();
+  tm.notify(id, 'agent-demo', 'permission_prompt', 'Claude needs permission');
+  assert(row(id).busy_since === null, 'a permission prompt ends the turn too');
+}
+{
+  const id = mk();
+  tm.notify(id, 'agent-demo', 'auth_success', 'logged in');   // a noise kind
+  assert(row(id).busy_since != null, 'a NOISE notification kind changes nothing');
+}
+
+console.log('\n\x1b[1m8) an unknown event is ignored, not a crash\x1b[0m');
 {
   const id = mk();
   const before = row(id).busy_since;

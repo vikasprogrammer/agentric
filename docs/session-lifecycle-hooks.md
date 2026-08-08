@@ -11,7 +11,7 @@ Reference for the events themselves: <https://code.claude.com/docs/en/hooks>.
 | Hook event | Script | Route | What it does |
 |---|---|---|---|
 | `PreToolUse` | `terminal/gate-hook.sh` | `/api/gate` | **The invariant** — every governed effect passes the gateway. Unrelated to status; listed so the table is the whole picture. |
-| `Notification` | `terminal/notify-hook.sh` | `/api/notify` | `permission_prompt` / `idle_prompt` / `agent_needs_input` → an inbox card + the per-session "needs you" bell. Other `notification_type`s (auth, elicitation, `agent_completed`) are dropped. |
+| `Notification` | `terminal/notify-hook.sh` | `/api/notify` | `permission_prompt` / `idle_prompt` / `agent_needs_input` → an inbox card + the per-session "needs you" bell, **and a turn-END** (blocked on a human is not generating). Other `notification_type`s (auth, elicitation, `agent_completed`) are dropped. |
 | `UserPromptSubmit` | `terminal/lifecycle-hook.sh` | `/api/session-event` | **Turn START** → `markTurnBusy` (stamps `busy_since`). |
 | `Stop` | `terminal/stop-hook.sh` | `/api/turn-idle` | **Turn END** → `markTurnIdle`: clears `busy_since` for every lane, and for an *unattended* run tears the pane down (the pile-up guard releases). |
 | `StopFailure` | `terminal/lifecycle-hook.sh` | `/api/session-event` | **Turn END, errored** (`rate_limit`, `overloaded`, `server_error`, …) → same as `Stop`, plus a `session.turn.failed` audit carrying `error_type`. |
@@ -26,6 +26,23 @@ Claude fires **no `Stop`** when a turn dies on an API error. Without a handler t
 server-side: the run keeps reading "working", the automations pile-up guard keeps holding the slot, and an
 unattended run parks as a zombie until a 24-hour reaper finds it — the shape behind the recurring
 "weekly-limit zombie sessions" incidents.
+
+### There is no interrupt hook — the bell stands in for one
+
+When a human hits **Esc** (or Ctrl-C) mid-turn, Claude Code fires **nothing**: no `Stop`, no
+`StopFailure`, no `SessionEnd`. A `UserInterrupt` event has been requested
+([anthropics/claude-code#9516](https://github.com/anthropics/claude-code/issues/9516)) and does not exist.
+So an interrupted turn used to sit on the console reading "working" until the 2h ceiling.
+
+The signal we *do* get is the `Notification` hook: the TUI parks at its prompt — including the
+`Interrupted · What should Claude do instead?` prompt — and claude raises `idle_prompt` (159 of them on
+the live northwind box). `notify()` therefore **ends the turn** as well as posting the bell, and the
+session reads `needs you`, which is the honest state: claude is waiting for you to say what to do
+instead. Typing the next prompt fires `UserPromptSubmit`, which retires the waiting card and puts the
+spinner back — the other half of the loop.
+
+Note this makes the teardown deliberate: an interrupted **unattended** run is left alive rather than
+reaped, because a human stopped it on purpose and now owns it.
 
 ### Why `SessionEnd`'s reason must be read, not assumed
 

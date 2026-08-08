@@ -3036,6 +3036,11 @@ export class TerminalManager {
     const now = Date.now();
     this.db.prepare('UPDATE term_sessions SET busy_since = ?, last_activity = ?, updated_at = ? WHERE id = ? AND busy_since IS NULL')
       .run(now, now, now, sessionId);
+    // A prompt submitted IS the human answering — retire any open "waiting on you" card, or the session
+    // would keep reading `needs you` (which outranks `working`) through the whole turn it just started.
+    // This is the close of the loop the interrupt case opens: interrupt → idle_prompt card → you type →
+    // card gone, spinner back.
+    this.clearNotifications(sessionId);
   }
 
   /** A turn ENDED — drop `busy_since`. The one place that clears it, so every end path (Stop hook,
@@ -4835,6 +4840,13 @@ export class TerminalManager {
     // newer `agent_needs_input` Claude Code emits when it's blocked on the human. Auth/elicitation noise
     // and the per-turn `agent_completed` are dropped here (session completion is signalled by markEnded).
     if (kind !== 'permission_prompt' && kind !== 'idle_prompt' && kind !== 'agent_needs_input') return;
+    // Blocked on a human is, by definition, NOT generating — so this is a turn-END signal as much as it
+    // is a bell, and it's the only one we get for a turn the user INTERRUPTED (Esc / Ctrl-C fires no
+    // `Stop`, no `StopFailure`, no `SessionEnd` — there is no interrupt hook at all, see
+    // anthropics/claude-code#9516). Without this clear, an interrupted session sat on the console reading
+    // "working" until the 2h wedged-turn ceiling. `idle_prompt` is what claude raises once the TUI has
+    // been sitting at its prompt — including the "Interrupted · What should Claude do instead?" prompt.
+    this.clearTurnBusy(sessionId);
     this.clearNotifications(sessionId);
     const fallback = kind === 'permission_prompt' ? 'Claude needs permission to continue.' : 'Claude is waiting for your input.';
     const body = (message || '').trim() || fallback;

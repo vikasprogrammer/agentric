@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.325.0] — 2026-08-08
+### Fixed
+- **An INTERRUPTED turn (Esc / Ctrl-C) kept reading "working".** Claude Code fires **nothing** on a user
+  interrupt — no `Stop`, no `StopFailure`, no `SessionEnd`; a `UserInterrupt` event has been requested
+  ([anthropics/claude-code#9516](https://github.com/anthropics/claude-code/issues/9516)) and does not
+  exist. So the turn never ended server-side and the session spun until the 2h wedged-turn ceiling.
+  The signal we *do* get is the `Notification` hook: the TUI parks at its prompt — including
+  `Interrupted · What should Claude do instead?` — and claude raises `idle_prompt` (159 of them on the
+  live northwind box). `notify()` now **ends the turn** as well as ringing the bell, for all three
+  human-blocked kinds (`idle_prompt`, `permission_prompt`, `agent_needs_input`) — being blocked on a
+  human is by definition not generating. The session reads **`needs you`**, which is the honest state.
+- **The other half of that loop:** `markTurnBusy` (a submitted prompt) now retires the open waiting card.
+  Without it a session that had been interrupted would keep reading `needs you` — which outranks
+  `working` — through the entire next turn.
+
+
 ## [0.324.0] — 2026-08-08
 ### Fixed
 - **Sessions that had finished showed the "working" spinner.** `term_sessions.busy_since` — the flag the
