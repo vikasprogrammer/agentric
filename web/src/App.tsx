@@ -1693,12 +1693,12 @@ function Console({ me }: { me: Member }) {
         </div>
 
         <div className={`min-h-0 flex-1 ${fullBleed ? '' : 'overflow-y-auto p-6'}`}>
-          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
+          {route === 'agents' && <AgentsPage me={me} agents={state?.agents ?? []} sessions={sessions} selected={detail} onSelect={(id) => nav('agents', id)} run={runAgent} onEdit={openAgent} onNew={() => nav('new-agent')} onDelete={deleteAgent} onDuplicate={duplicateAgent} onRescan={rescanAgents} onImport={importAgent} onRefresh={refreshState} nav={nav} />}
           {route === 'new-agent' && <NewAgentPage me={me} onCreated={async (id) => { await refreshState(); nav('agents', id) }} />}
           {route === 'sessions' && <SessionsPage me={me} members={members} sessions={sessions} waiting={waiting} selected={selected} hiddenTabs={hiddenTabs} metrics={state?.sessionMetrics ?? 'both'} onOpen={openTerminal} onCloseTab={closeTab} onActivity={clearAlerts} onSpawn={() => nav('agents')} onStop={stopSession} onDelete={deleteSession} onRate={rateSession} onRename={renameSession} onTransfer={transferSession} onBulkStop={stopSessions} onBulkDelete={deleteSessions} urlQuery={urlQuery} onFiltersChange={setUrlQuery} />}
           {route === 'overview' && me.role === 'owner' && <OverviewPage me={me} sessions={sessions} doneToday={doneToday} members={members} agents={state?.agents ?? []} maturity={maturity} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} />}
           {route === 'inbox' && <InboxPage messages={messages} me={me} members={members} onOpen={openTerminal} onOpenArtifact={openArtifact} onOpenTask={(id) => nav('tasks', id)} onOpenGoal={(id) => nav('goals', id)} />}
-          {route === 'cockpit' && <CockpitPage onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
+          {route === 'cockpit' && <CockpitPage sessions={sessions} onOpenChat={(id) => nav('chat', id)} onOpenTerminal={openTerminal} nav={nav} />}
           {route === 'chat' && <ChatPage agents={state?.agents ?? []} sessions={sessions} messages={messages} selected={detail} onSelect={(id) => nav('chat', id)} onOpenTerminal={openTerminal} />}
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
@@ -2200,10 +2200,11 @@ function ShareAgentDialog({ me, agent, open, onOpenChange }: { me: Member; agent
 }
 
 function AgentsPage({
-  me, agents, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh, nav,
+  me, agents, sessions, selected, onSelect, run, onEdit, onNew, onDelete, onDuplicate, onRescan, onImport, onRefresh, nav,
 }: {
   me: Member
   agents: AgentInfo[]
+  sessions: Session[]
   selected: string
   onSelect: (id: string) => void
   run: (agentId: string, task: string) => Promise<string | null>
@@ -2327,6 +2328,11 @@ function AgentsPage({
 
   // Filter the fleet by the search box (id / description / category), then group for display. The
   // selected agent is resolved over the FULL list, so searching never deselects what you picked.
+  // Which agents are busy RIGHT NOW — the thing you want when deciding who to give work to, and the one
+  // thing the roster never said. Newest live run per agent, off the feed the console already polls.
+  const liveRunOf = (agentId: string): Session | undefined => sessions
+    .filter((s) => s.agent === agentId && isLive(s))
+    .sort((x, y) => y.createdAt - x.createdAt)[0]
   const q = query.trim().toLowerCase()
   const filtered = q
     ? agents.filter((a) => a.id.toLowerCase().includes(q) || (a.description ?? '').toLowerCase().includes(q) || (a.category ?? '').toLowerCase().includes(q))
@@ -2461,6 +2467,7 @@ function AgentsPage({
                       <span className="flex items-center gap-1.5">
                         <AgentIcon icon={a.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="truncate text-sm font-medium">{a.id}</span>
+                        {liveRunOf(a.id) && <SessionStatus s={liveRunOf(a.id)!} iconClass="h-3.5 w-3.5" />}
                       </span>
                       <span className="flex flex-wrap items-center gap-1">
                         <RuntimeBadge runtime={a.runtime} />
@@ -2493,6 +2500,7 @@ function AgentsPage({
                       <AgentIcon icon={a.icon} className="h-3.5 w-3.5 shrink-0" />
                       <span className="truncate">{a.id}</span>
                       <span className="ml-auto flex shrink-0 items-center gap-1">
+                        {liveRunOf(a.id) && <SessionStatus s={liveRunOf(a.id)!} iconClass="h-3.5 w-3.5" />}
                         <MaturityBadge s={maturity[a.id]} />
                         {a.builtIn && <BuiltInBadge />}
                       </span>
@@ -4564,7 +4572,8 @@ function prettyAgent(id: string): string {
  *   - ask    → a question about the workspace is answered **inline** (no session).
  *   - action → "schedule…/create a task…" deep-links into that primitive's surface.
  *  Every "work" dispatch still runs through the governed chat/terminal spawn (run-as you, gate hook). */
-function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
+function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
+  sessions: Session[]
   onOpenChat: (id: string) => void
   onOpenTerminal: (tmux: string, title?: string) => void
   nav: (r: Route, detail?: string) => void
@@ -4653,6 +4662,9 @@ function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
 
   const isWork = !preview?.intent || preview.intent === 'work'
 
+  const liveRunOf = (agentId: string): Session | undefined => sessions
+    .filter((s) => s.agent === agentId && isLive(s))
+    .sort((x, y) => y.createdAt - x.createdAt)[0]
   const card = (c: RouterCard, opts?: { primary?: boolean }) => (
     <button
       key={c.id}
@@ -4664,6 +4676,9 @@ function CockpitPage({ onOpenChat, onOpenTerminal, nav }: {
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-2">
           <span className="font-medium">{prettyAgent(c.id)}</span>
+          {/* Whether this candidate is ALREADY busy — worth knowing before you hand it more work. Same
+              glyph as everywhere else, so `working` and `needs you` read identically here. */}
+          {liveRunOf(c.id) && <SessionStatus s={liveRunOf(c.id)!} iconClass="h-3.5 w-3.5" />}
           {typeof c.score === 'number' && <span className="text-[11px] text-muted-foreground">{Math.round(c.score * 100)}% match</span>}
         </span>
         {c.description && <span className="mt-0.5 line-clamp-2 block text-xs text-muted-foreground">{c.description}</span>}
@@ -5278,11 +5293,34 @@ function InboxPage({ messages: propMessages, me, members, onOpen, onOpenArtifact
   )
 }
 
-const OUTCOME_STYLE: Record<string, { cls: string; label: string }> = {
-  success: { cls: 'border-emerald-300 text-emerald-700', label: 'success' },
-  failure: { cls: 'border-red-300 text-red-700', label: 'failure' },
-  partial: { cls: 'border-amber-300 text-amber-700', label: 'partial' },
-  unknown: { cls: 'border-neutral-300 text-neutral-600', label: 'ended' },
+/** Outlined-badge tint for a verdict on the Inbox card. Keyed by {@link Verdict} so the synonyms land
+ *  where they belong — this was the third private copy of the outcome map, and like the other two it knew
+ *  only the three enum values. */
+const OUTCOME_STYLE: Record<Verdict, { cls: string; label: string }> = {
+  success: { cls: 'border-emerald-300 text-emerald-700', label: VERDICT_META.success.label },
+  failure: { cls: 'border-red-300 text-red-700', label: VERDICT_META.failure.label },
+  partial: { cls: 'border-amber-300 text-amber-700', label: VERDICT_META.partial.label },
+  none: { cls: 'border-neutral-300 text-neutral-600', label: 'ended' },
+}
+
+/** How a decision CARD resolved, in the shared grammar. Every proposal type (policy, agent edit, goal
+ *  edit, skill, secret, connection…) resolves the same three ways but each spelled its own outcome
+ *  word ad-hoc — `applied` / `installed` / `granted` / `approved` — with no consistent tone behind them.
+ *  The word stays per-type (it is genuinely more informative than "approved"); the ROLE behind it is now
+ *  shared, so the colour means the same thing on every card. */
+const RESOLUTION_ROLE = (status: string | undefined): StatusRole =>
+  status === 'approved' || status === 'fulfilled' ? 'ok'
+    : status === 'rejected' ? 'failed'
+      : status === 'cancelled' ? 'inactive'
+        : 'needsHuman';   // 'open'/'pending' — still yours to decide
+/** The chip a resolved decision card carries. `word` is the type's own verb ("installed", "granted"). */
+function ResolutionChip({ status, word }: { status?: string; word: string }) {
+  const role = RESOLUTION_ROLE(status)
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0 text-[10px] font-medium ${roleChip(role)}`}>
+      <RoleIcon role={role} label={word} className="h-3 w-3" />{word}
+    </span>
+  )
 }
 
 /** Icon glyph for a brief's action verb — a quick visual cue for what kind of effect this is. */
@@ -5493,9 +5531,12 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
   let highlight = false
 
   if (m.type === 'completed') {
-    const o = OUTCOME_STYLE[m.outcome ?? 'unknown'] ?? OUTCOME_STYLE.unknown
-    Icon = m.outcome === 'failure' ? XCircle : CheckCircle2
-    iconCls = m.outcome === 'failure' ? 'text-red-600' : 'text-emerald-600'
+    const o = OUTCOME_STYLE[verdictOf(m.outcome) ?? 'none']
+    // Via the shared verdict map, not a bare `=== 'failure'`: a run that reported the SYNONYM `blocked`
+    // still kept the green check here, so a failed run announced itself with a tick.
+    const cv = verdictOf(m.outcome) ?? 'none'
+    Icon = ROLE[cv === 'success' ? 'ok' : cv === 'partial' ? 'partial' : cv === 'failure' ? 'failed' : 'ended'].icon
+    iconCls = VERDICT_META[cv].tone
     verb = 'finished'; detail = m.body
     badge = <Badge variant="outline" className={`px-1.5 py-0 text-[10px] font-normal ${o.cls}`}>{o.label}</Badge>
   } else if (m.type === 'artifact') {
@@ -5505,14 +5546,12 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
   } else if (m.type === 'approval') {
     // cancelled = the session ended before a human decided — a neutral "never ran", not a rejection.
     const cancelledA = m.status === 'cancelled'
-    Icon = m.status === 'approved' ? CheckCircle2 : XCircle
-    iconCls = m.status === 'approved' ? 'text-emerald-600' : cancelledA ? 'text-muted-foreground' : 'text-red-600'
+    Icon = ROLE[RESOLUTION_ROLE(m.status)].icon
+    iconCls = ROLE[RESOLUTION_ROLE(m.status)].tone
     verb = <>{m.title}{m.resolvedBy && !cancelledA && <span className="inline-flex items-center gap-1 text-muted-foreground"> · by <PrincipalTag id={m.resolvedBy} members={members} /></span>}</>
-    badge = cancelledA
-      ? <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">cancelled</Badge>
-      : <Badge variant={m.status === 'approved' ? 'default' : 'destructive'} className="px-1.5 py-0 text-[10px]">{m.status}</Badge>
+    badge = <ResolutionChip status={m.status} word={cancelledA ? 'cancelled' : (m.status ?? 'pending')} />
   } else if (m.type === 'question') {
-    Icon = HelpCircle; iconCls = 'text-sky-600'
+    Icon = HelpCircle; iconCls = m.status === 'cancelled' ? 'text-muted-foreground' : ROLE.needsHuman.tone
     const cancelled = m.status === 'cancelled'
     verb = cancelled ? 'asked — dismissed unanswered' : 'asked'; detail = m.body
     if (cancelled) badge = <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal text-muted-foreground">dismissed</Badge>
@@ -5533,13 +5572,17 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     Icon = Zap; iconCls = 'text-violet-600'; highlight = m.status === 'open'
     const resolved = m.status === 'approved' ? 'approved' : m.status === 'rejected' ? 'rejected' : ''
     verb = 'proposed an automation'; detail = m.body
-    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Automations'}</Badge>
+    badge = resolved
+      ? <ResolutionChip status={m.status} word={resolved} />
+      : <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Automations</Badge>
   } else if (m.type === 'agent.update.proposed') {
     Icon = Pencil; iconCls = 'text-violet-600'; highlight = m.status === 'open'
     const resolved = m.status === 'approved' ? 'applied' : m.status === 'rejected' ? 'rejected' : ''
     const tgt = (m.args as { target?: string } | undefined)?.target
     verb = tgt ? `proposed an edit to ${tgt}` : 'proposed an agent edit'; detail = m.body
-    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Agents'}</Badge>
+    badge = resolved
+      ? <ResolutionChip status={m.status} word={resolved} />
+      : <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Agents</Badge>
   } else if (m.type === 'goal.proposed') {
     Icon = Target; iconCls = 'text-indigo-600'; highlight = true
     verb = 'proposed a goal'; detail = m.body
@@ -5553,25 +5596,31 @@ function FeedItem({ m, members = [], onOpen, onOpenArtifact, onOpenTask, onOpenG
     Icon = Target; iconCls = 'text-indigo-600'; highlight = m.status === 'open'
     const resolved = m.status === 'approved' ? 'applied' : m.status === 'rejected' ? 'rejected' : ''
     verb = 'proposed a goal edit'; detail = m.body
-    badge = <Badge variant="outline" className="border-indigo-300 px-1.5 py-0 text-[10px] font-normal text-indigo-700">{resolved || 'review in Goals'}</Badge>
+    badge = resolved
+      ? <ResolutionChip status={m.status} word={resolved} />
+      : <Badge variant="outline" className="border-indigo-300 px-1.5 py-0 text-[10px] font-normal text-indigo-700">review in Goals</Badge>
   } else if (m.type === 'skill.request') {
     Icon = Sparkles; iconCls = 'text-violet-600'; highlight = m.status === 'open'
     const resolved = m.status === 'approved' ? 'installed' : m.status === 'rejected' ? 'dismissed' : ''
     verb = 'requested a skill'; detail = m.body
-    badge = <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">{resolved || 'review in Skills'}</Badge>
+    badge = resolved
+      ? <ResolutionChip status={m.status} word={resolved} />
+      : <Badge variant="outline" className="border-violet-300 px-1.5 py-0 text-[10px] font-normal text-violet-700">review in Skills</Badge>
   } else if (m.type === 'secret.request') {
     Icon = KeyRound; iconCls = 'text-amber-600'; highlight = m.status === 'open'
     const isAccess = (m.args as { mode?: string } | undefined)?.mode === 'access'
     const resolved = m.status === 'fulfilled' ? (isAccess ? 'granted' : 'provided') : m.status === 'rejected' ? 'dismissed' : ''
     verb = isAccess ? 'requested secret access' : 'requested a secret'; detail = m.body
-    badge = <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{resolved || (isAccess ? 'grant in Secrets' : 'provide in Secrets')}</Badge>
+    badge = resolved
+      ? <ResolutionChip status={m.status} word={resolved} />
+      : <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">{isAccess ? 'grant in Secrets' : 'provide in Secrets'}</Badge>
   } else if (m.type === 'update') {
     Icon = Activity; iconCls = 'text-muted-foreground'
     detail = m.body
   } else if (m.type === 'task' && meta.taskId) {
     // A Tasks lifecycle card (assigned to you / blocked / done). Headline = event title (via sessionName);
     // the muted line carries the task title (m.body). Blocked is highlighted — it needs a human.
-    Icon = ListChecks; iconCls = meta.event === 'blocked' ? 'text-amber-600' : meta.event === 'done' ? 'text-emerald-600' : 'text-sky-600'
+    Icon = ListChecks; iconCls = meta.event === 'blocked' ? ROLE.needsHuman.tone : meta.event === 'done' ? ROLE.ok.tone : ROLE.active.tone
     highlight = meta.event === 'blocked'
     detail = m.body
     badge = <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal">task</Badge>

@@ -8,6 +8,35 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.329.0] — 2026-08-08
+### Changed
+- **The status grammar reaches the last four surfaces** (Inbox, Approvals, Agents, Cockpit), finishing the
+  sweep started in v0.328.0.
+  - **Decision cards resolved in the card TYPE's colour, so "applied" and "rejected" looked identical** —
+    every proposal (policy, agent edit, goal edit, automation, skill, secret) rendered its outcome as the
+    same violet/indigo/amber outlined badge whatever the human decided. The per-type verb stays (it says
+    more than "approved": `installed`, `granted`, `applied`), but the ROLE behind it is now shared
+    (`RESOLUTION_ROLE` / `ResolutionChip`), so approved is green, rejected is red and `cancelled` — the
+    session ended before anyone decided — is neutral, on every card type alike.
+  - **A THIRD private outcome map** (`OUTCOME_STYLE`, after `runVerdict` and `OUTCOME_TONE` in v0.328.0)
+    carried the same synonym gap: a run that reported `completed`/`progressed`/`blocked` read `ended`, as
+    if it had never reported. Worse, the card's own icon keyed off a bare `=== 'failure'`, so **a run that
+    reported the synonym `blocked` announced its failure with a green tick**. Both go through
+    `verdictOf` / `VERDICT_META` now.
+  - A **question** card is amber (`needsHuman`) rather than sky — it is blocked on a person, exactly like
+    every other such signal. Sky stays what it always meant elsewhere: chat/unread.
+  - The last "in progress = sky" in the app (a task-event card that is neither blocked nor done) is
+    emerald.
+
+### Added
+- **The Agents roster says which agents are busy right now** — the first thing you want when deciding who
+  to give work to, and something it never showed. Newest live run per agent, off the feed the console
+  already polls, rendered through the same `SessionStatus` (so an agent whose run needs a human rings the
+  same bell here as in the sidebar). Both the roster rail and the grid card.
+- **Cockpit candidates show whether that agent is already running**, so you can see before dispatching
+  that your best-fit agent is mid-run. The Cockpit has no status vocabulary of its own — it is a
+  dispatcher — so this is the only status-shaped thing on the page.
+
 ## [0.328.0] — 2026-08-08
 ### Changed
 - **One status grammar across the whole console.** Session status was unified in v0.320–0.327; everything
