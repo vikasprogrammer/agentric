@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
-import { LoaderCircle, CircleDashed, CircleStop, CircleCheck, CircleX, CircleSlash, Copy as CopyIcon } from 'lucide-react'
+import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Copy as CopyIcon } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -81,8 +81,14 @@ const sessionState = (s: Session, waiting = false): SessionState =>
 
 /** Each state is an ICON, not a coloured dot — six dots differing only in hue and fill asked the eye to
  *  learn a colour key, and colour alone can't carry "a turn is running right now" (the thing people
- *  actually scan for). The glyph says it: a spinner spins, a bell rings, a check is finished. Colour and
- *  motion stay as reinforcement, never as the only channel.
+ *  actually scan for). The glyph says it: a spinner spins, a bell rings, a check means the turn landed
+ *  and it is your move, a dim dot means the run is closed. Colour and motion stay as reinforcement,
+ *  never as the only channel.
+ *
+ *  Note which state gets the CHECK. It is `idle`, not `done`: a check on a finished run reads
+ *  "succeeded", and a finished run may well have failed — the verdict belongs to the Result column, which
+ *  has the outcome to say it with. On a live session the check is a plain fact: the turn landed, your
+ *  move. So `done` keeps the dim dot it had before icons, and claims nothing.
  *
  *  `dot` survives for the ROLL-UP badges (the Chain toggle), where the signal is a count of sessions in a
  *  state rather than one session's status — a 8px pip is right there, an icon isn't.
@@ -91,10 +97,10 @@ const sessionState = (s: Session, waiting = false): SessionState =>
 const STATE_META: Record<SessionState, { label: string; icon: LucideIcon; anim: string; dot: string; tone: string; toneDark: string; tip: string }> = {
   waiting: { label: 'needs you', icon: Bell, anim: 'motion-safe:animate-pulse', dot: 'bg-amber-400 motion-safe:animate-pulse', tone: 'text-amber-500', toneDark: 'text-amber-300', tip: 'blocked on you — a question or an approval is waiting' },
   working: { label: 'working', icon: LoaderCircle, anim: 'motion-safe:animate-spin', dot: 'bg-emerald-500 motion-safe:animate-pulse', tone: 'text-emerald-600', toneDark: 'text-emerald-300', tip: 'a turn is running right now' },
-  idle: { label: 'ready', icon: CircleDashed, anim: '', dot: 'border border-emerald-500 bg-emerald-500/20', tone: 'text-emerald-600/90', toneDark: 'text-emerald-400', tip: 'live session, nothing running — open it and type to continue' },
+  idle: { label: 'ready', icon: Check, anim: '', dot: 'border border-emerald-500 bg-emerald-500/20', tone: 'text-emerald-600/90', toneDark: 'text-emerald-400', tip: 'live session, nothing running — the turn finished, your move' },
   stopped: { label: 'stopped', icon: CircleStop, anim: '', dot: 'bg-amber-500', tone: 'text-amber-600', toneDark: 'text-amber-400/80', tip: 'halted by a human or the idle reaper' },
   crashed: { label: 'crashed', icon: AlertTriangle, anim: '', dot: 'bg-red-500', tone: 'text-red-600', toneDark: 'text-red-400', tip: 'the pane died without an end signal' },
-  done: { label: 'done', icon: Check, anim: '', dot: 'bg-muted-foreground/40', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400', tip: 'the run ended' },
+  done: { label: 'done', icon: CircleSmall, anim: '', dot: 'bg-muted-foreground/40', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400', tip: 'the run ended' },
 }
 /** The state word's colour for a given surface. Pair it with {@link statusLabel} wherever the word is
  *  rendered away from the dot. */
@@ -3394,7 +3400,7 @@ const nodeState = (n: ChainNode): { label: string; tone: string; icon: LucideIco
   if (n.outcome === 'failure' || n.outcome === 'error') return { label: 'failed', tone: 'text-red-600', icon: CircleX, anim: '' }
   if (n.outcome === 'partial') return { label: 'partial', tone: 'text-amber-600', icon: CircleSlash, anim: '' }
   if (n.status === 'stopped') return shared('stopped')
-  return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground/70', icon: Check, anim: '' }
+  return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground/70', icon: CircleSmall, anim: '' }
 }
 
 /** Conversations with a live pane — what the Chain toggle badges when nothing needs a human and nothing

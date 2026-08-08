@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.325.1] — 2026-08-08
+### Changed
+- **Session status glyphs: `ready` takes the check, `done` takes a dim dot.** The dashed circle read as
+  visual noise rather than a state. More importantly the swap fixes a claim the old set made: a check on
+  `done` reads "succeeded", and a finished run may well have failed — the verdict belongs to the Result
+  column, which has the outcome to say it with. On a LIVE session the check is a plain fact: the turn
+  landed, your move. So `done` goes back to the quiet dot it had before icons and claims nothing, and the
+  chain rail's `no report` fallback follows it.
+
 ## [0.325.0] — 2026-08-08
 ### Fixed
 - **An INTERRUPTED turn (Esc / Ctrl-C) kept reading "working".** Claude Code fires **nothing** on a user
