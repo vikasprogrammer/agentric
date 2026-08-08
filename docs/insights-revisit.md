@@ -152,7 +152,7 @@ Principles for the rebuild, each a direct inversion of a root cause:
 - **One step at a time.** A step ships, then is measured on live data, then the next begins. Steps do
   not run in parallel.
 
-### Step 0 — stop the harm (no new capability) ✅ shipped v0.319.1
+### Step 0 — stop the harm (no new capability) ✅ shipped v0.320.1
 
 Retire every channel that broadcasts `success / sessions`. Scoping this by *channel* rather than by
 call site turned up **four**, not the two originally listed — the same number was also reaching agents

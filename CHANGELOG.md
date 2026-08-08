@@ -8,7 +8,7 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.319.1] — 2026-08-08
+## [0.320.1] — 2026-08-08
 ### Removed
 - **The fleet-wide "success rate" is gone from every channel that broadcast it** (`docs/insights-revisit.md`
   Step 0). `success / sessions` divided *self-reported* successes by ALL sessions, so its complement was
