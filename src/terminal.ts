@@ -381,6 +381,10 @@ export interface ChainNode {
   /** True when this conversation is LIVE and blocked on a human right now (its own pending ask/approval).
    *  The one state that must not read as "working". */
   blocked?: boolean;
+  /** True when a TURN is in flight on the newest run — the same `busy_since` signal the session list
+   *  carries as `working`. A warm conversation keeps its pane between turns, so `alive` alone can't tell
+   *  "generating right now" from "sitting there waiting for someone to type". */
+  working?: boolean;
   outcome?: string;
   /** How many session rows this conversation spans (>1 = it was resumed by pokes/continuations). */
   runs: number;
@@ -1377,6 +1381,9 @@ export class TerminalManager {
         alive: alive ? alive.has(latest.tmux) : undefined,
         headless: !!latest.headless,
         blocked: latest.status === 'running' && pending.length > 0,
+        // Same rule as the sessions list: a turn is in flight only when one was started AND the runtime is
+        // still there to run it (a pane that died mid-turn leaves `busy_since` set forever).
+        working: latest.busy_since != null && (this.launching.has(latest.id) || !alive || alive.has(latest.tmux)),
         outcome: reported?.outcome ?? latest.outcome ?? undefined,
         runs: rows.length,
         costUsd: cost || undefined,

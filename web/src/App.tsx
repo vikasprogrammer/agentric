@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -45,35 +45,85 @@ const canApprove = (role: Role, level: 'head' | 'owner'): boolean =>
  *  for the green dot: an interactive session that reported `done` but keeps an attachable pane is live. */
 const isLive = (s: Session): boolean => Boolean(s.alive) || s.status === 'running'
 
-/** Status dot for a session — the at-a-glance lifecycle signal, priority-ordered so the state that
- *  most needs a human wins:
- *   • blocked  → amber, PULSING  — live but waiting on you (a pending `ask` or approval gate). The one
- *                                  you must act on, so it's the only animated dot.
- *   • live     → emerald         — working. FILLED for your own interactive run; a HOLLOW ring for an
- *                                  unattended (headless) run, so "the fleet is doing this on its own"
- *                                  reads differently from "I'm driving this" without a second colour.
- *   • stopped  → amber (static)  — halted by a human/reaper.
- *   • crashed  → red             — pane died with no end signal.
- *   • done     → muted           — finished cleanly (and any unknown legacy value). */
-const statusDot = (s: Session): string =>
-  s.blocked ? 'bg-amber-400 animate-pulse'
-    : isLive(s) ? (s.headless ? 'border border-emerald-500' : 'bg-emerald-500')
-    : s.status === 'stopped' ? 'bg-amber-500'
-    : s.status === 'crashed' ? 'bg-red-500'
-    : 'bg-muted-foreground/40' // done (and any unknown legacy value)
+/** ── THE session status vocabulary ───────────────────────────────────────────────────────────────
+ *  One state per session, resolved once and rendered identically everywhere (sidebar, terminal tab
+ *  strip, list, cards, chain rail, chat rail, automation runs). Before this there were three parallel
+ *  dialects — a dot that only knew live/dead, a separate bell threaded through two surfaces, and the
+ *  chain rail's own words — so the same run could read "green" in the sidebar, "bell" in the strip and
+ *  "running" in the rail while the honest answer was "it finished its turn ten minutes ago".
+ *
+ *  Priority order = what most needs a human:
+ *   • waiting → blocked on YOU: a pending `ask` or approval gate. Amber, pulsing, + a bell. The only
+ *               state that carries an icon, because it's the only one that's a to-do.
+ *   • working → a TURN IS IN FLIGHT right now (`busy_since`, cleared by the runtime's turn-end beacon).
+ *               Emerald, pulsing.
+ *   • idle    → the pane is live but nothing is running — a warm session waiting for input, or an
+ *               interactive run that finished its turn. Emerald HOLLOW: alive, not busy. This is the
+ *               distinction the old dot could not make (both read solid green).
+ *   • stopped → halted by a human/reaper.  • crashed → the pane died with no end signal.
+ *   • done    → the run ended (and any unknown legacy status).
+ *
+ *  `headless` is deliberately NOT in the dot any more: the hollow ring now means "not busy", and the
+ *  unattended/interactive axis has its own marker (ModeBadge / the sidebar's Cpu glyph). */
+type SessionState = 'waiting' | 'working' | 'idle' | 'stopped' | 'crashed' | 'done'
 
-/** The status word shown next to the dot. `blocked` reads "waiting" (it needs a human); a live pane
- *  whose stored status is a terminal state (a `done` interactive session still running) reads "live"
- *  so the label never contradicts the dot. */
-const statusLabel = (s: Session): string =>
-  s.blocked ? 'waiting' : isLive(s) && s.status !== 'running' ? 'live' : s.status
+/** Resolve a session's state. `waiting` may be forced by the caller — the console unions the
+ *  server-authoritative `s.blocked` with open `notification` cards (a runtime permission prompt raises
+ *  a card but no gate), and that union lives in {@link WaitingCtx}. */
+const sessionState = (s: Session, waiting = false): SessionState =>
+  waiting || s.blocked ? 'waiting'
+    : isLive(s) ? (s.working ? 'working' : 'idle')
+    : s.status === 'stopped' ? 'stopped'
+    : s.status === 'crashed' ? 'crashed'
+    : 'done' // done (and any unknown legacy value)
+
+/** `toneDark` is the same word on the dark terminal tab strip (bg-neutral-900), where the -600 shades
+ *  used on light chrome go muddy. Two tones, one vocabulary — never a second set of words. */
+const STATE_META: Record<SessionState, { label: string; dot: string; tone: string; toneDark: string; tip: string }> = {
+  waiting: { label: 'needs you', dot: 'bg-amber-400 motion-safe:animate-pulse', tone: 'text-amber-600', toneDark: 'text-amber-300', tip: 'blocked on you — a question or an approval is waiting' },
+  working: { label: 'working', dot: 'bg-emerald-500 motion-safe:animate-pulse', tone: 'text-emerald-600', toneDark: 'text-emerald-300', tip: 'a turn is running right now' },
+  idle: { label: 'ready', dot: 'border border-emerald-500 bg-emerald-500/20', tone: 'text-emerald-600/90', toneDark: 'text-emerald-400', tip: 'live session, nothing running — open it and type to continue' },
+  stopped: { label: 'stopped', dot: 'bg-amber-500', tone: 'text-amber-600', toneDark: 'text-amber-400/80', tip: 'halted by a human or the idle reaper' },
+  crashed: { label: 'crashed', dot: 'bg-red-500', tone: 'text-red-600', toneDark: 'text-red-400', tip: 'the pane died without an end signal' },
+  done: { label: 'done', dot: 'bg-muted-foreground/40', tone: 'text-muted-foreground', toneDark: 'text-neutral-400', tip: 'the run ended' },
+}
+/** The state word's colour for a given surface. Pair it with {@link statusLabel} wherever the word is
+ *  rendered away from the dot. */
+const statusTone = (s: Session, waiting = false, dark = false): string => {
+  const m = STATE_META[sessionState(s, waiting)]
+  return dark ? m.toneDark : m.tone
+}
+
+/** The sessions the console considers blocked on the human, shared by context so EVERY surface can show
+ *  the same signal without prop-threading it (the reason the bell used to exist on two surfaces only). */
+const WaitingCtx = createContext<Set<string>>(new Set())
+const useWaiting = (): Set<string> => useContext(WaitingCtx)
+
+/** The one status renderer: dot + (waiting-only) bell + optional word. Reads the waiting set from
+ *  context, so a caller just passes the session. `dark` tunes the bell for the dark tab strip. */
+function SessionStatus({ s, label = false, dark = false, className = '' }: { s: Session; label?: boolean; dark?: boolean; className?: string }) {
+  const st = sessionState(s, useWaiting().has(s.id))
+  const m = STATE_META[st]
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1.5 ${className}`} title={`${m.label} — ${m.tip}`}>
+      <span className={`h-2 w-2 shrink-0 rounded-full ${m.dot}`} />
+      {st === 'waiting' && <Bell className={`h-3 w-3 shrink-0 ${dark ? m.toneDark : 'text-amber-500'}`} />}
+      {label && <span className={dark ? m.toneDark : m.tone}>{m.label}</span>}
+    </span>
+  )
+}
+
+/** The status word on its own — for the few places that render the label away from the dot (a tooltip,
+ *  a fixed-width column). Same vocabulary as {@link SessionStatus}. */
+const statusLabel = (s: Session, waiting = false): string => STATE_META[sessionState(s, waiting)].label
 
 /** The RESULT word: what the agent said came of the run, falling back to how the process ended. `done`
  *  only means "the process exited" — it's the outcome that says whether the work landed, so once a run
  *  has reported its own verdict that's what the list shows. A finished run with no report reads
- *  `no report`: nobody closed the loop, which is a finding, not a blank. */
-const resultLabel = (s: Session): string => {
-  if (isLive(s)) return statusLabel(s)
+ *  `no report`: nobody closed the loop, which is a finding, not a blank. A LIVE run has no result yet,
+ *  so it borrows the live half of the status vocabulary (working / ready / needs you). */
+const resultLabel = (s: Session, waiting = false): string => {
+  if (waiting || s.blocked || isLive(s)) return statusLabel(s, waiting)
   if (s.status === 'crashed' || s.status === 'stopped') return s.status
   if (!s.outcome) return s.status              // not stamped yet — fall back to the process view
   if (s.outcome === 'unknown') return 'no report'
@@ -81,9 +131,10 @@ const resultLabel = (s: Session): string => {
 }
 
 /** Colour for the result word — green only when the agent actually claims success, red on failure or a
- *  crash, amber for partial/stopped, and dim for "it ended but said nothing". */
-const resultTone = (s: Session): string => {
-  if (isLive(s)) return 'text-emerald-600'
+ *  crash, amber for partial/stopped, and dim for "it ended but said nothing". Live rows take their tone
+ *  from the status vocabulary so the word and the dot can never disagree. */
+const resultTone = (s: Session, waiting = false): string => {
+  if (waiting || s.blocked || isLive(s)) return STATE_META[sessionState(s, waiting)].tone
   if (s.status === 'crashed') return 'text-red-600'
   const o = s.outcome
   if (o === 'success') return 'text-emerald-600'
@@ -201,24 +252,25 @@ const sessionSource = (s: Session): SessionSource => {
     : 'member'
 }
 
-/** Session-list status filter. `live` matches any session with a live pane (regardless of stored
- *  status); `blocked` narrows to live runs waiting on a human (a pending ask/approval); the terminal
- *  states match only when NOT live, so a live pane reporting `done` reads as Live, never Done — the same
- *  rule `statusLabel` uses for the dot. */
+/** Session-list status filter, in the same vocabulary as the dot. `live` matches any session with a live
+ *  pane (regardless of stored status); `working` narrows to the ones actually mid-turn; `blocked` to the
+ *  ones waiting on a human. The terminal states match only when NOT live, so a live pane reporting `done`
+ *  reads as Live, never Done — the same rule {@link sessionState} uses for the dot. */
 // `chains` is not a lifecycle state — it narrows to sessions that took part in a HAND-OFF (a caller
 // that delegated, or a delegate). It rides in this filter because that's where people already look to
 // cut the list down, and it's resolved in `filtered` (it needs the whole list to know who called whom).
-type SessionStatusFilter = 'all' | 'live' | 'blocked' | 'chains' | 'done' | 'stopped' | 'crashed'
+type SessionStatusFilter = 'all' | 'live' | 'working' | 'blocked' | 'chains' | 'done' | 'stopped' | 'crashed'
 const matchesStatus = (s: Session, f: SessionStatusFilter): boolean =>
   f === 'all' || f === 'chains' ? true   // `chains` is applied separately — it needs the whole list
     : f === 'live' ? isLive(s)
-      : f === 'blocked' ? isLive(s) && Boolean(s.blocked)
-        : !isLive(s) && s.status === f
+      : f === 'working' ? sessionState(s) === 'working'
+        : f === 'blocked' ? isLive(s) && Boolean(s.blocked)
+          : !isLive(s) && s.status === f
 
 // Filter labels — shared by the dropdown options AND the collapsed trigger (base-ui's SelectValue
 // renders the raw value unless given a formatter, so the two must read from one source).
 const SESSION_STATUS_LABELS: Record<SessionStatusFilter, string> =
-  { all: 'All statuses', live: 'Live', blocked: 'Blocked', chains: 'Hand-offs', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
+  { all: 'All statuses', live: 'Live', working: 'Working', blocked: 'Needs you', chains: 'Hand-offs', done: 'Done', stopped: 'Stopped', crashed: 'Crashed' }
 const SESSION_SOURCE_LABELS: Record<'all' | SessionSource, string> =
   { all: 'All sources', member: 'Member', automation: 'Automation', task: 'Task', chat: 'Chat' }
 
@@ -786,17 +838,6 @@ export default function App() {
   if (viewArtifactId) return <FullArtifactView id={viewArtifactId} />
   if (termTmux) return <FullTerminalView tmux={decodeDetail(termTmux)} />
   return <Console me={me} />
-}
-
-/** The per-session "Claude is waiting on you" indicator (shown in the sidebar + session lists).
- * `tone` picks the icon colour: the default indigo-600 reads on the light sidebar/list, but on the
- * dark terminal tab strip (bg-neutral-900/700) it's near-invisible — pass a lighter tone there. */
-function WaitingBell({ className = 'h-3.5 w-3.5', tone = 'text-indigo-600' }: { className?: string; tone?: string }) {
-  return (
-    <span title="Claude is waiting for your input" className={`inline-flex shrink-0 ${tone}`}>
-      <Bell className={className} />
-    </span>
-  )
 }
 
 /** Corner pip for the COLLAPSED sidebar rail. The expanded sidebar carries its signals as text
@@ -1386,7 +1427,7 @@ function Console({ me }: { me: Member }) {
         onClick={onNavClick(() => openTerminal(s.tmux, s.agent + ' · ' + s.id))}
         className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left no-underline text-foreground hover:bg-muted ${active ? 'bg-muted' : ''}`}
       >
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(s)}`} />
+        <SessionStatus s={s} />
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1">
             <span className={`min-w-0 flex-1 truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
@@ -1395,9 +1436,13 @@ function Console({ me }: { me: Member }) {
                 <Cpu className="h-3 w-3" />
               </span>
             )}
-            {waiting.has(s.id) && <WaitingBell className="h-3 w-3" />}
           </span>
-          <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
+          {/* The state word rides on the subline: the dot alone never answered "is it working or done?",
+              which is the whole reason the sidebar sent people to the list to find out. */}
+          <span className="flex items-center gap-1 truncate text-[11px] leading-tight text-muted-foreground">
+            <span className={statusTone(s, waiting.has(s.id))}>{statusLabel(s, waiting.has(s.id))}</span>
+            <span className="truncate">· {s.agent}</span>
+          </span>
         </span>
       </a>
     )
@@ -1406,6 +1451,7 @@ function Console({ me }: { me: Member }) {
   const fullBleed = route === 'sessions' && !!selected
 
   return (
+    <WaitingCtx.Provider value={waiting}>
     <div className="flex h-screen bg-muted/30 text-foreground">
       {sidebarCollapsed && (
         <aside className="relative flex w-12 shrink-0 flex-col items-center gap-1 border-r bg-background py-3">
@@ -1581,6 +1627,7 @@ function Console({ me }: { me: Member }) {
       </main>
       <ToastHost toasts={toasts} onOpen={openNotification} onDismiss={dismissToast} />
     </div>
+    </WaitingCtx.Provider>
   )
 }
 
@@ -3293,7 +3340,7 @@ function ChainStrip({ group, runs, onOpen, className = '' }: {
             onClick={(e) => { e.stopPropagation(); onOpen(k.rep.tmux, `${k.rep.agent} · ${k.rep.id}`) }}
             title={k.rep.summary || k.rep.title}
             className="flex items-center gap-1 rounded-full border px-1.5 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground">
-            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(k.rep)}`} />
+            <SessionStatus s={k.rep} />
             <span className="max-w-[9rem] truncate">{k.rep.agent}</span>
           </button>
         </span>
@@ -3322,26 +3369,32 @@ const countDescendants = (g: SessionGroup): number =>
 /** Is this conversation working right now? (Same rule as `isLive` for a session row.) */
 const nodeLive = (n: ChainNode): boolean => Boolean(n.alive) || n.status === 'running'
 
-/** The chain node's state word + tone, priority-ordered by what needs a human: waiting first, then a
- *  duplicate re-dispatch, then live, then the agent's own verdict, then how the process ended. */
+/** The chain node's state word + tone. The LIVE half is the shared vocabulary ({@link STATE_META}) so a
+ *  node in the rail reads exactly like the same run in the sidebar, the tab strip and the list — the rail
+ *  used to say "running" for a conversation that had finished its turn twenty minutes ago. Once a node is
+ *  finished the rail keeps its own richer verdict words (pass / failed / partial / duplicate / no report),
+ *  which is more than a session row shows and is the point of the rail. */
 const nodeState = (n: ChainNode): { label: string; tone: string; dot: string; live?: boolean } => {
-  // Dot semantics are the sessions list's, deliberately: blocked pulses amber, a live UNATTENDED run is
-  // a hollow ring and a live interactive one is filled, so "is anything actually working right now?" is
-  // answerable from the rail at a glance instead of only from the verdict words.
-  if (n.blocked || (nodeLive(n) && n.pending.length)) return { label: 'waiting on you', tone: 'text-amber-600', dot: 'bg-amber-400 motion-safe:animate-pulse', live: true }
-  if (n.pending.length) return { label: 'waiting on you', tone: 'text-amber-600', dot: 'bg-amber-400 motion-safe:animate-pulse' }
-  if (nodeLive(n)) return { label: 'running', tone: 'text-emerald-600', dot: `${n.headless ? 'border border-emerald-500' : 'bg-emerald-500'} motion-safe:animate-pulse`, live: true }
+  const shared = (st: SessionState, live?: boolean) => {
+    const m = STATE_META[st]
+    return { label: m.label, tone: m.tone, dot: m.dot, live }
+  }
+  if (n.blocked || n.pending.length) return shared('waiting', nodeLive(n) || undefined)
+  if (nodeLive(n)) return shared(n.working ? 'working' : 'idle', true)
   if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', dot: 'bg-amber-500' }
-  if (n.status === 'crashed') return { label: 'crashed', tone: 'text-red-600', dot: 'bg-red-500' }
+  if (n.status === 'crashed') return shared('crashed')
   if (n.outcome === 'success') return { label: 'pass', tone: 'text-emerald-600', dot: 'bg-emerald-500/60' }
   if (n.outcome === 'failure' || n.outcome === 'error') return { label: 'failed', tone: 'text-red-600', dot: 'bg-red-500' }
   if (n.outcome === 'partial') return { label: 'partial', tone: 'text-amber-600', dot: 'bg-amber-500' }
-  if (n.status === 'stopped') return { label: 'stopped', tone: 'text-amber-600', dot: 'bg-amber-500' }
+  if (n.status === 'stopped') return shared('stopped')
   return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground', dot: 'bg-muted-foreground/40' }
 }
 
-/** Conversations working right now — what the Chain toggle badges when nothing needs a human. */
+/** Conversations with a live pane — what the Chain toggle badges when nothing needs a human and nothing
+ *  is mid-turn (the chain is warm but idle). */
 const chainLive = (c: SessionChain | null): number => (c?.nodes ?? []).filter(nodeLive).length
+/** Conversations with a turn actually in flight — "something is generating right now". */
+const chainWorking = (c: SessionChain | null): number => (c?.nodes ?? []).filter((n) => nodeLive(n) && n.working && !n.blocked && !n.pending.length).length
 
 /** One pending item — a delegate's unanswered `ask`, or an approval gate — resolved WITHOUT leaving the
  *  pane you're watching. This is the rail's reason to exist: today a question raised three hand-offs deep
@@ -3770,7 +3823,7 @@ function SessionsPage({
       >
         {renamingTab === s.id ? (
           <span className="flex items-center gap-1.5">
-            <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+            <SessionStatus s={s} dark />
             <input
               autoFocus
               value={renameDraft}
@@ -3783,9 +3836,14 @@ function SessionsPage({
           </span>
         ) : (
           <a draggable={false} href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} onDoubleClick={(e) => { e.preventDefault(); beginRename(s) }} title={`double-click to rename${s.spawnedByLabel ? ` · started by ${s.spawnedByLabel}` : ''}`} className="flex items-center gap-1.5 text-inherit no-underline">
-            <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+            <SessionStatus s={s} dark />
             <span className="max-w-[180px] truncate">{s.title}</span>
-            {waiting.has(s.id) && <WaitingBell className="h-3 w-3" tone="text-indigo-300" />}
+            {/* The state word, so a strip of six terminals says which one is generating and which is
+                sitting idle — the dot alone made them all look the same. Hidden on the active tab, where
+                the terminal itself is the answer, to keep the strip narrow. */}
+            {selected.tmux !== s.tmux && (
+              <span className={`shrink-0 text-[10px] ${statusTone(s, waiting.has(s.id), true)}`}>{statusLabel(s, waiting.has(s.id))}</span>
+            )}
           </a>
         )}
         {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}
@@ -3870,9 +3928,11 @@ function SessionsPage({
               className={`flex shrink-0 items-center gap-1 rounded px-2 py-1 ${railOpen ? 'bg-neutral-700 text-neutral-100' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'}`}>
               <GitBranch className="h-3.5 w-3.5 shrink-0" />
               <span className="whitespace-nowrap">Chain {chain!.nodes.length}</span>
+              {/* Same dots as everywhere else, rolled up over the chain. */}
               {chainPending(chain) > 0
-                ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400 motion-safe:animate-pulse" title="waiting on you" />
-                : chainLive(chain) > 0 && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse" title={`${chainLive(chain)} running`} />}
+                ? <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.waiting.dot}`} title={`${chainPending(chain)} item${chainPending(chain) === 1 ? '' : 's'} in this chain need you`} />
+                : chainWorking(chain) > 0 ? <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.working.dot}`} title={`${chainWorking(chain)} conversation${chainWorking(chain) === 1 ? '' : 's'} working right now`} />
+                  : chainLive(chain) > 0 && <span className={`h-2 w-2 shrink-0 rounded-full ${STATE_META.idle.dot}`} title={`${chainLive(chain)} live, none working right now`} />}
             </button>
           )}
         </div>
@@ -4040,12 +4100,11 @@ function SessionsPage({
               />
               <a href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} className="block pr-6 text-left text-foreground no-underline">
                 <div className="flex items-center gap-2">
-                  <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
+                  <SessionStatus s={s} />
                   <span className="truncate text-sm font-medium">{s.title}</span>
-                  {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5" />}
                 </div>
                 <div className="mt-1 flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-                  <span className="truncate"><span className={resultTone(s)}>{resultLabel(s)}</span> · {s.agent} · <span className="font-mono">{s.id}</span></span>
+                  <span className="truncate"><span className={resultTone(s, waiting.has(s.id))}>{resultLabel(s, waiting.has(s.id))}</span> · {s.agent} · <span className="font-mono">{s.id}</span></span>
                   <ModeBadge headless={s.headless} />
                 </div>
                 {/* The agent's own one-line verdict — the card's "what came of it" line. Clamped to two
@@ -4145,10 +4204,9 @@ function SessionsPage({
                 ) : (
                   <span className="w-[1.125rem] shrink-0" aria-hidden />
                 )}
-                <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot(s)}`} />
+                <SessionStatus s={s} />
                 <span className="min-w-[7rem] flex-1 truncate text-sm font-medium">{s.title}</span>
                 {!isOpen && <ChainStrip group={g} runs={g.runs.length} onOpen={onOpen} className="shrink-0" />}
-                {waiting.has(s.id) && <WaitingBell className="h-3.5 w-3.5 shrink-0" />}
                 <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground xl:block">{s.agent}</span>
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground 2xl:block" title={s.id}>{s.id}</span>
                 <OriginBadge s={s} members={members} className="w-28 shrink-0" />
@@ -4164,7 +4222,7 @@ function SessionsPage({
                 </span>
                 {/* Result = the agent's own verdict, falling back to the process status. The summary
                     rides along as the tooltip so "what came of it" is one hover away. */}
-                <span className={`w-16 shrink-0 truncate text-xs ${resultTone(s)}`} title={s.summary ? `${statusLabel(s)} · ${s.summary}` : statusLabel(s)}>{resultLabel(s)}</span>
+                <span className={`w-16 shrink-0 truncate text-xs ${resultTone(s, waiting.has(s.id))}`} title={s.summary ? `${statusLabel(s, waiting.has(s.id))} · ${s.summary}` : statusLabel(s, waiting.has(s.id))}>{resultLabel(s, waiting.has(s.id))}</span>
               </button>
               {/* Trailing cell (fixed w-16, matches the header spacer): the human verdict (finished runs)
                   plus the "⋯" actions dropdown. The dropdown replaced a row of hover icon-buttons — one
@@ -4202,10 +4260,7 @@ function SessionFacts({ session: s, members = [] }: { session?: Session; members
   if (!s) return null
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-      <span className="flex items-center gap-1.5" title={`status: ${statusLabel(s)}`}>
-        <span className={`h-1.5 w-1.5 rounded-full ${statusDot(s)}`} />
-        <span className="text-foreground">{statusLabel(s)}</span>
-      </span>
+      <SessionStatus s={s} label />
       {s.runAsLabel && (
         <span className="flex items-center gap-1" title={`runs as ${s.runAsLabel}`}>
           {memberOfPrincipal(s.runAs, members)
@@ -4830,9 +4885,6 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
           {chats.length === 0 && <p className="px-1 pt-2 text-xs text-muted-foreground">No chats yet. Start one to talk to an agent in plain language.</p>}
           {chats.map((s) => {
             const a = agentOf(s.agent)
-            // `working`, not `alive`: a warm chat keeps its pane after answering, so an alive-dot would
-            // mark every recent conversation as busy.
-            const live = s.working ?? (s.alive && s.status === 'running')
             return (
               <button
                 key={s.id}
@@ -4841,7 +4893,10 @@ function ChatPage({ agents, sessions, messages, selected, onSelect, onOpenTermin
               >
                 <AgentIcon icon={a?.icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate">{s.title || a?.id || s.agent}</span>
-                {live && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" title="working" />}
+                {/* Same vocabulary as everywhere else — a warm chat keeps its pane after answering, so
+                    `ready` (hollow) and `working` (pulsing) are the distinction that matters here. A
+                    finished/ended chat shows the muted dot rather than nothing. */}
+                <SessionStatus s={s} />
               </button>
             )
           })}
@@ -6073,7 +6128,7 @@ function FullTerminalView({ tmux }: { tmux: string }) {
       <div className="flex shrink-0 items-center gap-2 border-b border-neutral-800 bg-neutral-900 px-3 py-1.5 text-xs text-neutral-300">
         <TerminalSquare className="h-4 w-4 shrink-0" />
         <span className="truncate font-medium">{session?.title || tmux}</span>
-        {session && <span className="flex items-center gap-1"><span className={`h-1.5 w-1.5 rounded-full ${statusDot(session)}`} /></span>}
+        {session && <SessionStatus s={session} label dark />}
         <a href="#/sessions" className="ml-auto flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-neutral-400 no-underline hover:bg-neutral-800 hover:text-neutral-200" title="back to the full console">
           <ArrowLeft className="h-3.5 w-3.5" /> Console
         </a>
@@ -10379,8 +10434,8 @@ function AutomationRuns({ id, onOpen }: { id: string; onOpen: (tmux: string, tit
           {runs.map((s) => (
             <button key={s.id} onClick={() => onOpen(s.tmux, s.agent + ' · ' + s.id)} title={s.spawnedByLabel ? `started by ${s.spawnedByLabel}` : undefined}
               className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-muted">
-              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${statusDot(s)}`} />
-              <span className="w-14 shrink-0 text-muted-foreground">{statusLabel(s)}</span>
+              <SessionStatus s={s} />
+              <span className={`w-16 shrink-0 ${statusTone(s)}`}>{statusLabel(s)}</span>
               <Clock className="h-3 w-3 shrink-0 text-muted-foreground/50" />
               <span className="shrink-0 text-muted-foreground">{new Date(s.createdAt).toLocaleString()}</span>
               {s.spawnedByLabel && <span className="ml-auto min-w-0 truncate text-muted-foreground/60">{s.spawnedByLabel}</span>}

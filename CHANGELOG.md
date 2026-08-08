@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.321.0] — 2026-08-08
+### Changed
+- **One session-status vocabulary, rendered identically everywhere.** The console had three parallel
+  dialects — a dot that only knew live-vs-dead, a "waiting" bell threaded by prop to two surfaces, and the
+  chain rail's own words — so the same run could read *green* in the sidebar, *bell* in the terminal tab
+  strip and *running* in the rail while the honest answer was "it finished its turn ten minutes ago".
+  There is now a single `SessionState` (`waiting` → `working` → `idle` → `stopped` / `crashed` / `done`,
+  priority-ordered by what needs a human) and a single `<SessionStatus>` renderer used by the sidebar,
+  the terminal tab strip, the session cards + rows, the session header, the chat rail, the chain rail and
+  chips, the standalone terminal page and the automation run list.
+  - **`working` vs `idle` is the new distinction, and the one that was missing.** The server already
+    computed `working` (a turn in flight, from `busy_since`, cleared by the runtime's turn-end beacon) and
+    only the Chat rail used it — everywhere else a live pane mid-generation and a live pane that finished
+    its turn an hour ago drew the *same* solid green dot. `working` now pulses emerald, `idle` ("ready")
+    is a hollow emerald ring.
+  - **The bell is part of the vocabulary, not a separate widget**, so "needs you" shows on every surface
+    including the sidebar. The blocked set (server `blocked` ∪ open notification cards) moved from a prop
+    to `WaitingCtx`, which is why surfaces that never received the prop can show it at all.
+  - **The state WORD ships with the dot** on the sidebar (on the agent subline) and the tab strip
+    (inactive tabs), so a strip of six terminals says which one is generating.
+  - `headless` left the dot — the hollow ring now means "not busy". The unattended/interactive axis keeps
+    its own marker (the Headless badge / the sidebar's `Cpu` glyph).
+  - Sessions filter: added **Working**; **Blocked** renamed **Needs you** to match the word on the rows.
+- `ChainNode` gained `working` (same `busy_since` rule as the session list) so the hand-off rail can tell
+  a delegate that is generating from one that is merely warm.
+
 ## [0.320.1] — 2026-08-08
 ### Removed
 - **The fleet-wide "success rate" is gone from every channel that broadcast it** (`docs/insights-revisit.md`

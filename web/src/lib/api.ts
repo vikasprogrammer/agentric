@@ -1478,6 +1478,8 @@ export interface ChainNode {
   headless?: boolean
   /** Live AND blocked on a human right now (its own pending ask/approval). Must not read as "working". */
   blocked?: boolean
+  /** True when a TURN is in flight on the newest run — same `busy_since` signal as `Session.working`. */
+  working?: boolean
   outcome?: string
   /** Session rows this conversation spans (>1 = it was resumed by pokes/continuations). */
   runs: number
