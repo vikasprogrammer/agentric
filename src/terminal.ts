@@ -4262,6 +4262,31 @@ export class TerminalManager {
     }));
   }
 
+  /**
+   * The claude transcript a re-dispatch of this task should `--resume`, when there's one worth resuming.
+   *
+   * A task is the durable unit of work; a session is one attempt. Every other re-entry path (chat threads,
+   * DM replies, poke-back, self-schedule) resumes the prior transcript — tasks were the exception, spawning
+   * fresh with only a text summary of what a finished run concluded. This finds the MOST RECENT `task:<id>`
+   * session that pinned a transcript AND was run by the agent now assigned (a transcript belongs to one
+   * agent — you can't resume agent A's into agent B, so a changed assignee falls back to fresh). `uses` =
+   * how many task sessions already share that transcript (1 = only the original run; each resume adds one,
+   * because a resumed dispatch reuses the same `claude_session_id`), so the caller can stop reloading a
+   * wedged transcript after N resumes and start clean. Undefined when nothing matches → fresh spawn.
+   */
+  resumableTaskTranscript(taskId: string, agentId: string): { claudeSessionId: string; uses: number } | undefined {
+    const row = this.db
+      .prepare(`SELECT claude_session_id AS cs FROM term_sessions
+                 WHERE spawned_by = ? AND agent = ? AND claude_session_id IS NOT NULL
+                 ORDER BY created_at DESC LIMIT 1`)
+      .get<{ cs: string }>(`task:${taskId}`, agentId);
+    if (!row?.cs) return undefined;
+    const uses = this.db
+      .prepare('SELECT COUNT(*) AS n FROM term_sessions WHERE spawned_by = ? AND claude_session_id = ?')
+      .get<{ n: number }>(`task:${taskId}`, row.cs)?.n ?? 0;
+    return { claudeSessionId: row.cs, uses };
+  }
+
   /** Record a pending "how should @agent respond?" choice when a NON-owner agent is @mentioned — the
    *  human picks Quick answer vs New session (see docs/task-rooms-plan.md). Stored as a `task.mention`
    *  message (Discussion-only, out of the Inbox feed); returns its id. `human` = the member to address. */

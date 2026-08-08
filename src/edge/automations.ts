@@ -255,7 +255,14 @@ export const SCHEDULE_MAX_PENDING = 25;           // per agent: pending (enabled
 
 // A task that fails to complete N times stops being auto-dispatched and is parked `blocked` for a human,
 // so a broken task can't spin the scheduler forever (the Tasks analog of the automation pile-up guard).
-export const TASK_MAX_ATTEMPTS = 3;
+// 4 (was 3) leaves room for the resume ladder below: fresh → resume → resume → fresh-escape → park, so the
+// LAST attempt before parking is a clean slate rather than a third reload of a wedged transcript.
+export const TASK_MAX_ATTEMPTS = 4;
+
+// How many times a re-dispatch will `--resume` a task's SAME transcript before starting fresh. After this
+// many resumes that didn't close the task, dispatchTask spawns a clean session (new transcript) to escape a
+// poisoned/looping context; a fresh start resets the count. See dispatchTask + resumableTaskTranscript.
+export const MAX_TASK_RESUMES = 2;
 
 // Goal auto-planner (Phase 2) bounds. A "stuck" active goal (no open work) is auto-planned by the
 // strategist — but only after it's sat idle past the grace window (so a just-created goal you're still
@@ -314,15 +321,27 @@ function priorRunsBlock(taskId: string, runs?: PriorRun[]): string {
 
 export function buildTaskPrompt(
   t: { id: string; title: string; body: string; criteria?: string },
-  opts: { goalMode?: boolean; priorRuns?: PriorRun[] } = {},
+  opts: { goalMode?: boolean; priorRuns?: PriorRun[]; resuming?: boolean } = {},
 ): string {
   const history = priorRunsBlock(t.id, opts.priorRuns);
   const buildBase = (converging: boolean) => {
-    // Criteria we want to honour but can't route through `/goal` still belongs in the prompt.
-    const embedCriteria = !!t.criteria && !converging;
     const close = converging
       ? `When you have satisfied the goal above, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }) in that same turn.\n`
       : `When finished, call task_update({ id: "${t.id}", status: "done", note: "<what you did>" }).\n`;
+    // Resuming your OWN transcript: the full task context and everything you already did is above in this
+    // same conversation, so re-stating the body would just be noise — orient to "continue and finish".
+    if (opts.resuming) {
+      return (
+        `You are RESUMING your own earlier session on task ${t.id}: ${t.title}.\n` +
+        `Your previous turn ended without closing it (it crashed, ran out, or stopped mid-way). Everything ` +
+        `you already did is above in this same conversation — review where you left off, continue from there ` +
+        `rather than redoing it, and finish the task.\n\n` +
+        close +
+        `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).`
+      );
+    }
+    // Criteria we want to honour but can't route through `/goal` still belongs in the prompt.
+    const embedCriteria = !!t.criteria && !converging;
     return (
       `You are working task ${t.id}: ${t.title}\n\n` +
       `${t.body || '(no description provided)'}\n\n` +
@@ -673,7 +692,16 @@ export class Automations {
     // finished carry a verdict worth reporting; a still-alive one can't be a predecessor anyway (the
     // pile-up guard above already refused that case).
     const priorRuns = this.tm.taskRuns(t.id).filter((r) => !r.alive).map((r) => ({ agent: r.agent, outcome: r.outcome, summary: r.summary }));
-    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode, priorRuns }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, undefined, false, tuning);
+    // Resume the SAME transcript when the last dispatched run was THIS agent and pinned one — so a
+    // retry/reopen CONTINUES the conversation (files read, decisions made, half-done work) instead of
+    // re-deriving it from a summary, the way every other re-entry path already does. Cap it: after
+    // MAX_TASK_RESUMES resumes that still didn't close the task, start FRESH to escape a wedged transcript
+    // — a fresh run mints a new `claude_session_id`, so the streak resets and the LAST attempt before the
+    // ceiling is a clean slate. A changed assignee / no transcript ⇒ `resumable` undefined ⇒ fresh.
+    const resumable = this.tm.resumableTaskTranscript(t.id, agentId);
+    const resuming = !!resumable && resumable.uses < 1 + MAX_TASK_RESUMES;
+    const resumeId = resuming ? resumable!.claudeSessionId : undefined;
+    const s = this.tm.createSession(agentId, `Task: ${t.title}`, buildTaskPrompt(t, { goalMode, priorRuns, resuming }), `task:${t.id}`, t.mode !== 'interactive', undefined, undefined, t.owner, resumeId, false, tuning);
     this.os.tasks.markDispatched(t.id, s.id);
     this.os.audit.append({
       ts: Date.now(),
