@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 ### Added
+- **`docs/insights-revisit.md`** — audit of the Insights surface against live northwind + globex data,
+  and a from-scratch rebuild sequenced one step at a time. Findings: the stack rests on a self-graded
+  outcome signal with 1 reported failure in 329 reports and ~40% of terminated runs never reporting, so
+  the "57% success rate" injected into every agent's prompt actually measures whether `report()` was
+  called; 40 of 48 alerts on globex are five crash-looping agents that produced zero recommendations
+  (detection and proposal are disconnected engines); `recommendation.applied` is 1 event fleet-wide, so
+  the measurement loop measures its own never-taken actions. Rebuild starts at Step 0 (delete the wrong
+  guidance line) and Step 1 (an outcome derived from observable facts), each gated on live evidence.
 - **`docs/sops-plan.md`** — plan for SOPs: pre-learned department playbooks (engineering, marketing,
   sales, support, research) with server-enforced stage order, peer review and evidence gates. `SOP.md`
   frontmatter + prose (not YAML), stages compiled to child tasks over the `blocked_by` dependency edge

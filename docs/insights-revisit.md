@@ -1,0 +1,283 @@
+# Insights — revisit (audit + rebuild from scratch)
+
+> **Status (2026-08-08): audit complete, rebuild not started.** Insights shipped in 2026-06 as the
+> self-learning loop ([`self-learning-plan.md`](./self-learning-plan.md)) and has accreted six more
+> engines since. This document measures what it has actually produced on the two busiest live tenants,
+> names why, and sequences a rebuild **one step at a time** — each step independently shippable, each
+> gated on live evidence before the next begins.
+>
+> Headline: the whole stack is built on a self-reported outcome signal with **one recorded failure in
+> 329 reports**, and its only auto-applied output currently tells every agent in the fleet to "slow
+> down" about a failure rate that does not exist in the data.
+
+## 1. What exists today
+
+One admin-only page (`DreamingSettings` in `web/src/App.tsx`, ~800 lines) rendering **14 blocks**:
+
+| Block | Source | Kind |
+|---|---|---|
+| What it figured out (injected guidance) | `dreaming.ts` `deriveGuidance` | auto-applied, fleet-wide |
+| Things to consider (recommendations) | `dreaming.ts` `deriveRecommendations` | human-gated |
+| Review history | `dreaming_state.recent` | passive |
+| Fleet scorecard | `insights.ts` `buildInsights` | passive |
+| Friction | `insights.ts` | passive |
+| Is it working? | `measurement.ts` `measureLearning` | passive |
+| Improvement tiles | `improvements.ts` / `improver.ts` | action |
+| Memory cleanup / KB tidy / task reconcile / library declutter / session archive | `memory-cleanup.ts`, `kb-tidy.ts`, `task-reconcile.ts`, `library-tidy.ts`, `session-tidy.ts` | janitorial (5 blocks) |
+| Stuck goals | `strategist.ts` | action |
+| Troubled automations | `insights.ts` / `reliability.ts` | action |
+| Daily digest config + preview | `digest.ts` | push surface |
+| Alerts toggle + cadence + settings | `alerts.ts`, `dreaming.ts` | config |
+
+Backing modules: `dreaming.ts` (612 lines), `insights.ts`, `measurement.ts`, `improvements.ts`,
+`improver.ts`, `diagnosis.ts`, `alerts.ts` — ~1000 lines beyond dreaming.
+
+## 2. The evidence
+
+Measured 2026-08-08 against the live DBs (queries in §6). Two tenants: **northwind** (Mac Mini,
+`~/agent-os-data/northwind`) and **globex** (203.0.113.13, the busiest).
+
+### 2a. Human actions taken — near zero
+
+| Signal | northwind | globex |
+|---|---|---|
+| Reflect passes | 27 | 22 |
+| Sessions folded | 635 | 1830 |
+| Open recommendations (now) | **0** | **0** |
+| Recommendations dismissed (ever) | **0** | **0** |
+| `recommendation.applied` (ever) | **1** | **0** |
+| `insights.improve.applied` (ever) | **1** | 0 |
+| Janitorial applies, 30d (all five) | **0** | — |
+| `digest.posted` | **26** | — |
+
+The only surface with sustained consumption is the **pushed** one (the digest), not the page.
+
+### 2b. Alerts fire; nothing is proposed
+
+globex `insights.alert` by key (lifetime):
+
+```
+agent-crash:website-bot   8      agent-crash:customer-bot  8
+agent-crash:infra-ops     8      agent-crash:engineer      5
+agent-crash:gsc-analyst   8      pending-approvals         2
+agent-crash:docs-bot      8      agent-low:docs-bot        1
+```
+
+**40 of 48 alerts are one class — five agents crash-looping — and the recommendation engine produced
+zero cards about it.** The system noticed the fleet's biggest operational problem and had nothing to
+propose. Alerts (`alerts.ts`) and recommendations (`dreaming.ts`) are two disconnected engines over
+the same data.
+
+### 2c. The outcome signal is not a signal
+
+northwind `session.reported` outcomes, lifetime:
+
+```
+success 281 · partial 46 · failure 1 · completed 1
+```
+
+**One reported failure, ever.** globex: 6 failures across 1830 sessions. Agents grade their own
+homework and effectively never write "failure".
+
+Worse, ~40% of terminated sessions never report at all. northwind, last 30d:
+
+```
+session.ended with no outcome   334
+session.reported                302
+term_sessions terminated        499
+```
+
+`deriveGuidance` computes `success / sessions` where `sessions` includes **unknown and stopped**. So
+the shipped number means *"share of runs that called `report()` and said success"*, not *"share of
+work that succeeded"*. Both tenants land at 54–57%, and both therefore inject:
+
+> Recent success rate is 57% — slow down, confirm assumptions, and prefer asking over guessing on
+> anything ambiguous.
+
+into **every agent's system prompt, permanently**. The 2026-07-31 correction (`self-learning-plan.md`
+§Correction) added a denominator to *approval* friction and missed the identical bug in the *outcome*
+metric it was written next to.
+
+### 2d. Topic extraction: three versions, 22 resets, still wrong
+
+`learning.topics.reset`: northwind **10**, globex **12** — each reset is a `TOPICS_VERSION` bump
+discarding the cumulative map. Live guidance on globex today:
+
+> The fleet frequently works on: **total, billing, usage, auto, updates**.
+
+Live `dreaming_state.topics` samples: `statusrunning`, `partof`, `no-op`, `cover`, `ship`, `artemii`,
+`mesibalend`, `d3z43nq`, `addarecordtoroute53job`, `min-w-0`. A bag-of-words extractor with a
+stop-list and a proper-noun shape test cannot name a workstream — and its output rides in every
+prompt.
+
+### 2e. The measurement loop cannot answer its own question
+
+`measureLearning` defines an *intervention* as a `recommendation.applied` audit event. There is **1
+in the fleet's entire history**. "Is it working?" measures its own never-taken actions.
+
+## 3. Root causes, ranked
+
+1. **Built on telemetry that doesn't exist.** Self-graded outcome, near-zero variance, 40% missing.
+   Every consumer — guidance, recommendations, measurement, scorecard, alerts — inherits it.
+2. **Blast radius is inverted.** The auto-applied, fleet-wide, ungated output (guidance) got the least
+   scrutiny; the human-gated output (recommendations) that never fires got the design attention.
+3. **The recommendation engine has three hardcoded rules, one applyable**, and its triggers
+   (rejection rate ≥20%, budget stops) are ~zero on real tenants. The list is empty by construction,
+   so the page has nothing to do, so nobody opens it.
+4. **Detection and proposal are not wired together** (§2b). The most valuable card the OS could write
+   was already detected 40 times and never written.
+5. **Measurement is self-referential** (§2e) — it should measure *outcomes*, not *our own apply clicks*.
+6. **Wrong tool for topics** (§2d). An LLM consolidator already reads the same corpus every pass;
+   naming three workstreams is its job, not a regex's.
+7. **Pull surface, push consumption.** Admin-only page behind nav, nothing routes you there with a
+   reason. The digest and alert DMs are the only things read.
+8. **Junk drawer.** 5 of 14 blocks are janitorial previews with 0 applies in 30 days. Maintenance is
+   not intelligence; it dilutes the page and the concept.
+9. **No telemetry on the telemetry page.** No record of opens or clicks — we cannot distinguish a bad
+   page from an unvisited one.
+
+One sentence: **we built an analytics product on a metric nobody produces, and injected its
+conclusions into every prompt.**
+
+## 4. Rebuild — one thing at a time
+
+Principles for the rebuild, each a direct inversion of a root cause:
+
+- **A signal earns its place by producing one decision a human takes.** No block ships without a
+  named action and a way to see whether it was taken.
+- **Nothing is auto-injected into prompts until it survives as a human-facing card first.** Guidance
+  is the highest-blast-radius channel in the OS; it goes last, not first.
+- **Every number carries a denominator, a sample size, and a falsifier** (the standing lesson from
+  the 2026-07-31 correction — restated here because we broke it in the adjacent metric).
+- **One step at a time.** A step ships, then is measured on live data, then the next begins. Steps do
+  not run in parallel.
+
+### Step 0 — stop the harm (no new capability)
+
+Remove the success-rate line from `deriveGuidance` and the `runtime.effort.high` recommendation that
+shares its denominator. Both are wrong on both live tenants today.
+
+- **Exit:** live `learned_guidance` on northwind + globex no longer asserts a success rate; the
+  remaining `recall`/`kb_search` line is left alone for now.
+- **Falsifier:** none needed — this is a deletion.
+
+### Step 1 — an outcome that isn't self-graded
+
+The blocking dependency for everything else. Derive a per-run outcome from **observable facts already
+in the DB**, not from the agent's own `report`:
+
+- task closed vs reopened / re-dispatched (`tasks`, `task_events`, `TASK_MAX_ATTEMPTS`)
+- crash status (`term_sessions.status`)
+- retry / re-dispatch count for the same task
+- human 👍/👎 (`agent-stats.ts` ratings)
+- approval rejected mid-run
+- poke-back landed vs stranded
+
+Keep `report` as one input among several, never the sole one. Separately, close the 40% hole: the
+Stop hook already beacons `/api/turn-idle` — make a terminal outcome mandatory there so `unknown`
+becomes rare rather than modal.
+
+- **Exit:** on the live northwind corpus, `unknown` drops below 10% of terminated sessions, and the
+  derived failure rate is **non-trivially different from 0.3%** — i.e. the metric has variance.
+- **Falsifier:** hand-label 30 random runs from the live DB and compare against the derived outcome;
+  publish the confusion counts in the PR. If the derived signal doesn't beat "always success", stop
+  and rethink before Step 2.
+
+### Step 2 — one signal, one card, one action
+
+Pick the single highest-evidence problem in the live data — **repeat agent crashes** (§2b) — and
+build the whole vertical for it only:
+
+detection → an owner-addressed Inbox card naming the agent, the count, the window, and the last
+error → concrete actions on the card (diagnose · lower that agent's concurrency · disable) → an audit
+event per action taken.
+
+No new page. No second signal. Instrument the card: opened, action taken, dismissed.
+
+- **Exit:** on globex, the five crash-looping agents produce **one card each**, and at least one card
+  gets an action taken within a week.
+- **Falsifier:** if cards are dismissed without action, the card is wrong — fix the card, do not add
+  a second signal.
+
+### Step 3 — deliver where humans already look
+
+The card from Step 2 rides the **digest** (26 posts of demonstrated readership) and the **Inbox**
+(already audience-addressed, already DM-mirrored via `resolveRecipients`). The Insights page becomes
+the archive/history view of cards, not the delivery mechanism.
+
+- **Exit:** every card that reached a human did so without anyone opening the Insights page.
+
+### Step 4 — measure the card, not our clicks
+
+Replace `measureLearning`'s intervention model. The question is not "did an owner press Apply" but
+**"did the problem stop recurring after the action?"** For each card: the signal's rate before the
+action vs after, with sample sizes and a withheld verdict below `MIN_N` (that part of `measurement.ts`
+was right — the subject was wrong).
+
+- **Exit:** at least one card shows a real before/after on live data, with an honest "insufficient"
+  where the sample is thin.
+
+### Step 5 — second signal (only now)
+
+Only after Steps 2–4 hold. Candidates, ranked by live evidence: pending-approval pile-ups, automations
+failing repeatedly (`reliability.ts` already detects these), agents that never get used, stalled tasks.
+Each goes through the identical vertical: detect → card → action → measure.
+
+### Step 6 — retire what didn't earn its place
+
+Decided by evidence at this point, not now:
+
+- **Topic extractor** — delete; have the consolidator name workstreams in prose (§3.6).
+- **Recommendations engine v1** — superseded by cards, or deleted.
+- **Janitorial blocks (×5)** — move to a Maintenance surface, or auto-run with undo. Not Insights.
+- **Fleet-wide guidance injection** — reconsider only with a per-agent, evidence-backed line. Today's
+  two generic sentences are prompt real estate for no measured gain.
+
+## 5. What "done" looks like
+
+Not a richer page. A short list of cards that each name a real problem, reach the right human where
+they already are, offer an action, and can show whether the action worked. If the fleet is healthy,
+the surface is **empty** — and empty is the success state, not the failure state it reads as today.
+
+## 6. Reproducing the evidence
+
+```bash
+# Human actions taken (both tenants)
+sqlite3 <db> "select type,count(*) from audit_events
+  where type like 'insights%' or type like 'recommendation%' or type like 'learning%'
+  group by type order by 2 desc;"
+
+# Alerts by key — detection without proposal
+sqlite3 <db> "select json_extract(data,'\$.key') k, count(*), max(datetime(ts/1000,'unixepoch'))
+  from audit_events where type='insights.alert' group by k order by 2 desc;"
+
+# The outcome signal has no variance
+sqlite3 <db> "select json_extract(data,'\$.outcome') o, count(*)
+  from audit_events where type='session.reported' group by o order by 2 desc;"
+
+# The 40% hole: terminated sessions vs sessions that reported (30d)
+sqlite3 <db> "select (select count(*) from term_sessions
+    where created_at>(strftime('%s','now')-30*86400)*1000 and status!='running') total,
+  (select count(distinct run_id) from audit_events
+    where type='session.reported' and ts>(strftime('%s','now')-30*86400)*1000) reported;"
+
+# What is being injected into every prompt right now
+sqlite3 <db> "select value from settings where key='learned_guidance';"
+sqlite3 <db> "select value from settings where key='learned_recommendations';"
+sqlite3 <db> "select json_extract(value,'\$.topics') from settings where key='dreaming_state';"
+```
+
+Live DB paths: northwind `~/agent-os-data/northwind/agent-os.db`; globex
+`user@203.0.113.13:/home/ubuntu/tools/agent-os/data/agent-os.db`.
+
+## 7. Related
+
+- [`self-learning-plan.md`](./self-learning-plan.md) — what shipped, incl. the 2026-07-31 correction
+  whose lesson ("a signal injected into every prompt needs a denominator and a shape test") this
+  audit shows we broke again in the adjacent metric.
+- [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) — the learning loop
+  Insights sits inside.
+- [`daily-digest-plan.md`](./daily-digest-plan.md) — the push surface Step 3 rides.
+- [`oversight-plane.md`](./oversight-plane.md) — the `Intervention` gap named there is the same gap
+  Step 4 closes.
+- [`PILLARS.md`](./PILLARS.md) — Pillar 10; update its grade when Step 4 lands, not before.
