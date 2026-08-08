@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.327.0] — 2026-08-08
+### Fixed
+- **Agents that reported a verdict were shown as if they had said nothing.** The `report` tool's enum is
+  `success | failure | partial`, but the loopback route stores whatever it is handed
+  (`String(b.outcome || 'success')`), so **`completed`**, **`progressed`** and **`blocked`** are all in
+  the live data — `src/edge/outcome.ts` already folds them in as synonyms when deriving a verdict. The
+  console mapped none of them: a chain node that reported `completed` fell through to its process status
+  and rendered **`done`**, identical to a run that never reported, and `blocked` — a failure — rendered
+  grey instead of red. One shared outcome vocabulary (`VERDICT_OF` / `VERDICT_META`) now backs both the
+  sessions list and the chain rail, and an unrecognised value prints verbatim in a neutral tone rather
+  than being forced into a bucket (the agent's own account beats a guess).
+- **`report()` did not clear `busy_since` when the run left a usable summary.** That branch also renames
+  the row from the summary, and it was missed when every other terminal transition was fixed in v0.324.0
+  — so the most common way a run ends kept the "working" flag latched.
+
+### Changed
+- **The chain rail stopped speaking its own dialect.** It said `pass` / `failed` where the sessions list
+  said `success` / `failure` for the identical fact — and `pass` misread as "parse" often enough to be
+  reported. Both surfaces now use the same words. `duplicate` stays rail-only: it is a property of the
+  chain, not of the run, and nothing else can say it.
+- **`report` normalises the outcome at the WRITE** (`normalizeOutcome`), so the column stops accumulating
+  synonyms and the downstream folding is belt-and-braces rather than load-bearing. It also fixes the chat
+  mirror sending ☑️ for a run that plainly succeeded. Unrecognised words are still stored verbatim.
+- `scripts/outcome-vocabulary-test.cjs`, wired into `npm run test:governance` (14 assertions).
+
 ## [0.326.0] — 2026-08-08
 ### Fixed
 - **A session that was visibly generating could read `ready`.** The inverse of the v0.324.0 bug, and the
