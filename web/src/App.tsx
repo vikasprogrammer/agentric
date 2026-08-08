@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
+// The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
+import { LoaderCircle, CircleDashed, CircleStop, CircleCheck, CircleX, CircleSlash, Copy as CopyIcon } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -77,15 +79,22 @@ const sessionState = (s: Session, waiting = false): SessionState =>
     : s.status === 'crashed' ? 'crashed'
     : 'done' // done (and any unknown legacy value)
 
-/** `toneDark` is the same word on the dark terminal tab strip (bg-neutral-900), where the -600 shades
- *  used on light chrome go muddy. Two tones, one vocabulary — never a second set of words. */
-const STATE_META: Record<SessionState, { label: string; dot: string; tone: string; toneDark: string; tip: string }> = {
-  waiting: { label: 'needs you', dot: 'bg-amber-400 motion-safe:animate-pulse', tone: 'text-amber-600', toneDark: 'text-amber-300', tip: 'blocked on you — a question or an approval is waiting' },
-  working: { label: 'working', dot: 'bg-emerald-500 motion-safe:animate-pulse', tone: 'text-emerald-600', toneDark: 'text-emerald-300', tip: 'a turn is running right now' },
-  idle: { label: 'ready', dot: 'border border-emerald-500 bg-emerald-500/20', tone: 'text-emerald-600/90', toneDark: 'text-emerald-400', tip: 'live session, nothing running — open it and type to continue' },
-  stopped: { label: 'stopped', dot: 'bg-amber-500', tone: 'text-amber-600', toneDark: 'text-amber-400/80', tip: 'halted by a human or the idle reaper' },
-  crashed: { label: 'crashed', dot: 'bg-red-500', tone: 'text-red-600', toneDark: 'text-red-400', tip: 'the pane died without an end signal' },
-  done: { label: 'done', dot: 'bg-muted-foreground/40', tone: 'text-muted-foreground', toneDark: 'text-neutral-400', tip: 'the run ended' },
+/** Each state is an ICON, not a coloured dot — six dots differing only in hue and fill asked the eye to
+ *  learn a colour key, and colour alone can't carry "a turn is running right now" (the thing people
+ *  actually scan for). The glyph says it: a spinner spins, a bell rings, a check is finished. Colour and
+ *  motion stay as reinforcement, never as the only channel.
+ *
+ *  `dot` survives for the ROLL-UP badges (the Chain toggle), where the signal is a count of sessions in a
+ *  state rather than one session's status — a 8px pip is right there, an icon isn't.
+ *  `toneDark` is the same tone on the dark terminal tab strip (bg-neutral-900), where the -600 shades go
+ *  muddy. Two tones, one vocabulary — never a second set of words. */
+const STATE_META: Record<SessionState, { label: string; icon: LucideIcon; anim: string; dot: string; tone: string; toneDark: string; tip: string }> = {
+  waiting: { label: 'needs you', icon: Bell, anim: 'motion-safe:animate-pulse', dot: 'bg-amber-400 motion-safe:animate-pulse', tone: 'text-amber-500', toneDark: 'text-amber-300', tip: 'blocked on you — a question or an approval is waiting' },
+  working: { label: 'working', icon: LoaderCircle, anim: 'motion-safe:animate-spin', dot: 'bg-emerald-500 motion-safe:animate-pulse', tone: 'text-emerald-600', toneDark: 'text-emerald-300', tip: 'a turn is running right now' },
+  idle: { label: 'ready', icon: CircleDashed, anim: '', dot: 'border border-emerald-500 bg-emerald-500/20', tone: 'text-emerald-600/90', toneDark: 'text-emerald-400', tip: 'live session, nothing running — open it and type to continue' },
+  stopped: { label: 'stopped', icon: CircleStop, anim: '', dot: 'bg-amber-500', tone: 'text-amber-600', toneDark: 'text-amber-400/80', tip: 'halted by a human or the idle reaper' },
+  crashed: { label: 'crashed', icon: AlertTriangle, anim: '', dot: 'bg-red-500', tone: 'text-red-600', toneDark: 'text-red-400', tip: 'the pane died without an end signal' },
+  done: { label: 'done', icon: Check, anim: '', dot: 'bg-muted-foreground/40', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400', tip: 'the run ended' },
 }
 /** The state word's colour for a given surface. Pair it with {@link statusLabel} wherever the word is
  *  rendered away from the dot. */
@@ -99,16 +108,19 @@ const statusTone = (s: Session, waiting = false, dark = false): string => {
 const WaitingCtx = createContext<Set<string>>(new Set())
 const useWaiting = (): Set<string> => useContext(WaitingCtx)
 
-/** The one status renderer: dot + (waiting-only) bell + optional word. Reads the waiting set from
- *  context, so a caller just passes the session. `dark` tunes the bell for the dark tab strip. */
-function SessionStatus({ s, label = false, dark = false, className = '' }: { s: Session; label?: boolean; dark?: boolean; className?: string }) {
-  const st = sessionState(s, useWaiting().has(s.id))
-  const m = STATE_META[st]
+/** The one status renderer: the state's icon, plus the word when a surface has room for it. Reads the
+ *  waiting set from context, so a caller just passes the session. `dark` tunes the tone for the dark tab
+ *  strip. The title carries the word + what it means, so the glyph is never the only explanation. */
+function SessionStatus({ s, label = false, dark = false, className = '', iconClass = 'h-3.5 w-3.5' }: {
+  s: Session; label?: boolean; dark?: boolean; className?: string; iconClass?: string
+}) {
+  const m = STATE_META[sessionState(s, useWaiting().has(s.id))]
+  const Icon = m.icon
+  const tone = dark ? m.toneDark : m.tone
   return (
     <span className={`inline-flex shrink-0 items-center gap-1.5 ${className}`} title={`${m.label} — ${m.tip}`}>
-      <span className={`h-2 w-2 shrink-0 rounded-full ${m.dot}`} />
-      {st === 'waiting' && <Bell className={`h-3 w-3 shrink-0 ${dark ? m.toneDark : 'text-amber-500'}`} />}
-      {label && <span className={dark ? m.toneDark : m.tone}>{m.label}</span>}
+      <Icon className={`${iconClass} shrink-0 ${tone} ${m.anim}`} aria-label={m.label} />
+      {label && <span className={tone}>{m.label}</span>}
     </span>
   )
 }
@@ -1437,12 +1449,7 @@ function Console({ me }: { me: Member }) {
               </span>
             )}
           </span>
-          {/* The state word rides on the subline: the dot alone never answered "is it working or done?",
-              which is the whole reason the sidebar sent people to the list to find out. */}
-          <span className="flex items-center gap-1 truncate text-[11px] leading-tight text-muted-foreground">
-            <span className={statusTone(s, waiting.has(s.id))}>{statusLabel(s, waiting.has(s.id))}</span>
-            <span className="truncate">· {s.agent}</span>
-          </span>
+          <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
         </span>
       </a>
     )
@@ -3374,20 +3381,20 @@ const nodeLive = (n: ChainNode): boolean => Boolean(n.alive) || n.status === 'ru
  *  used to say "running" for a conversation that had finished its turn twenty minutes ago. Once a node is
  *  finished the rail keeps its own richer verdict words (pass / failed / partial / duplicate / no report),
  *  which is more than a session row shows and is the point of the rail. */
-const nodeState = (n: ChainNode): { label: string; tone: string; dot: string; live?: boolean } => {
+const nodeState = (n: ChainNode): { label: string; tone: string; icon: LucideIcon; anim: string; live?: boolean } => {
   const shared = (st: SessionState, live?: boolean) => {
     const m = STATE_META[st]
-    return { label: m.label, tone: m.tone, dot: m.dot, live }
+    return { label: m.label, tone: m.tone, icon: m.icon, anim: m.anim, live }
   }
   if (n.blocked || n.pending.length) return shared('waiting', nodeLive(n) || undefined)
   if (nodeLive(n)) return shared(n.working ? 'working' : 'idle', true)
-  if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', dot: 'bg-amber-500' }
+  if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', icon: CopyIcon, anim: '' }
   if (n.status === 'crashed') return shared('crashed')
-  if (n.outcome === 'success') return { label: 'pass', tone: 'text-emerald-600', dot: 'bg-emerald-500/60' }
-  if (n.outcome === 'failure' || n.outcome === 'error') return { label: 'failed', tone: 'text-red-600', dot: 'bg-red-500' }
-  if (n.outcome === 'partial') return { label: 'partial', tone: 'text-amber-600', dot: 'bg-amber-500' }
+  if (n.outcome === 'success') return { label: 'pass', tone: 'text-emerald-600', icon: CircleCheck, anim: '' }
+  if (n.outcome === 'failure' || n.outcome === 'error') return { label: 'failed', tone: 'text-red-600', icon: CircleX, anim: '' }
+  if (n.outcome === 'partial') return { label: 'partial', tone: 'text-amber-600', icon: CircleSlash, anim: '' }
   if (n.status === 'stopped') return shared('stopped')
-  return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground', dot: 'bg-muted-foreground/40' }
+  return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground/70', icon: Check, anim: '' }
 }
 
 /** Conversations with a live pane — what the Chain toggle badges when nothing needs a human and nothing
@@ -3533,7 +3540,7 @@ function ChainRail({ chain, session, open, onToggle, onReload, onOpen }: {
               title={n.taskTitle ?? n.title}
               className={`block w-full rounded-md border px-2.5 py-2 text-left transition-colors ${here ? 'border-primary/40 bg-background' : 'border-transparent hover:border-border hover:bg-background'}`}>
               <div className="flex items-center gap-1.5">
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${st.dot}`} />
+                <st.icon className={`h-3.5 w-3.5 shrink-0 ${st.tone} ${st.anim}`} aria-label={st.label} />
                 <span className="truncate text-[13px] font-medium">{n.agent}</span>
                 <span className={`ml-auto shrink-0 text-[10px] ${st.tone}`}>{st.label}</span>
               </div>
@@ -3838,12 +3845,6 @@ function SessionsPage({
           <a draggable={false} href={navHref('sessions', s.tmux)} onClick={onNavClick(() => onOpen(s.tmux, s.agent + ' · ' + s.id))} onDoubleClick={(e) => { e.preventDefault(); beginRename(s) }} title={`double-click to rename${s.spawnedByLabel ? ` · started by ${s.spawnedByLabel}` : ''}`} className="flex items-center gap-1.5 text-inherit no-underline">
             <SessionStatus s={s} dark />
             <span className="max-w-[180px] truncate">{s.title}</span>
-            {/* The state word, so a strip of six terminals says which one is generating and which is
-                sitting idle — the dot alone made them all look the same. Hidden on the active tab, where
-                the terminal itself is the answer, to keep the strip narrow. */}
-            {selected.tmux !== s.tmux && (
-              <span className={`shrink-0 text-[10px] ${statusTone(s, waiting.has(s.id), true)}`}>{statusLabel(s, waiting.has(s.id))}</span>
-            )}
           </a>
         )}
         {/* per-tab controls — resume (resumable + not live) / stop (running only) + delete, revealed on hover or when active */}

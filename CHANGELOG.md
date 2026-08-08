@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.322.0] — 2026-08-08
+### Changed
+- **Session status is an ICON now, not a coloured dot + a word.** v0.321.0 unified the vocabulary but
+  still spelled it out — six dots differing only in hue and fill asked the eye to learn a colour key, and
+  colour alone cannot carry "a turn is running right now", which is the thing people actually scan for.
+  Each state carries a glyph that says it by itself: `working` a spinning `LoaderCircle`, `waiting` a
+  pulsing `Bell`, `idle` ("ready") a dashed circle, `stopped` a stop circle, `crashed` an alert triangle,
+  `done` a check. Colour and motion stay as reinforcement, never as the only channel; the tooltip still
+  carries the word plus what it means, and the icon carries an `aria-label`.
+  - The status WORDS added to the sidebar subline and the terminal tab strip in v0.321.0 are gone — the
+    glyph replaced them, so the sidebar reads title + agent again and the strip stays narrow.
+  - The chain rail's per-node verdicts became icons too (`pass` → circle-check, `failed` → circle-x,
+    `partial` → circle-slash, `duplicate` → copy), keeping its word beside them since the rail has room.
+  - `STATE_META.dot` survives for the ROLL-UP badges (the Chain toggle), where the signal is a count of
+    sessions in a state rather than one session's status and an 8px pip is the right mark.
+
 ## [0.321.0] — 2026-08-08
 ### Changed
 - **One session-status vocabulary, rendered identically everywhere.** The console had three parallel
