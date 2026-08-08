@@ -109,6 +109,11 @@ NOTIFY_HOOK="$(dirname "$HOOK")/notify-hook.sh"
 # The Stop hook (fires when claude finishes a turn) lives beside them — it beacons /api/turn-idle so the
 # server can tear down an UNATTENDED run at turn-end (parity with the old `claude -p` exit).
 STOP_HOOK="$(dirname "$HOOK")/stop-hook.sh"
+# The lifecycle hook covers the rest of the turn/session state machine — UserPromptSubmit (a turn is
+# STARTING), StopFailure (the turn died on an API error, so no Stop ever fires) and SessionEnd (the run
+# is over, with claude's own reason). Together with the Stop hook these are what make the console's
+# "working / ready / done" honest instead of inferred from a latched flag + a tmux poll.
+LIFECYCLE_HOOK="$(dirname "$HOOK")/lifecycle-hook.sh"
 # The Agent OS status line renderer (native claude statusLine) lives beside the hooks too.
 STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # NO OS-level Bash sandbox. Governance is the gate hook (PreToolUse), which is now the SOLE
@@ -163,6 +168,15 @@ cat > .claude/aos-settings.json <<JSON
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "bash '$STOP_HOOK'" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "bash '$LIFECYCLE_HOOK'" } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "bash '$LIFECYCLE_HOOK'" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "bash '$LIFECYCLE_HOOK'" } ] }
     ]
   },
   "statusLine": { "type": "command", "command": "node '$STATUSLINE'", "padding": 1, "refreshInterval": 5 }

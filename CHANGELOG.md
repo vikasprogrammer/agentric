@@ -8,6 +8,42 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.324.0] — 2026-08-08
+### Fixed
+- **Sessions that had finished showed the "working" spinner.** `term_sessions.busy_since` — the flag the
+  console spins on — was a **one-way latch**: it was cleared in exactly one place, the `resident` branch
+  of `markTurnIdle`, and a member's own interactive session returns before that branch (`!r.headless`), so
+  its flag was never cleared. Live northwind carried a stale `busy_since` on **72 of 520 rows, 66 of them
+  `done`/`stopped`/`crashed`** — a finished run whose pane lingered read live *and* working, i.e. a
+  spinner on a session that ended hours ago. Every turn-end path now clears it, and `isWorking` gained
+  four more conditions so no missed signal can strand a spinner: a terminal row is never working, a dead
+  pane is never working, a turn-END recorded after the start wins (`last_activity > busy_since` — this is
+  what heals rows latched by older builds), and a turn older than the 2h wedged-turn ceiling is wedged,
+  not working. A one-time migration NULLs the already-latched rows; a genuinely in-flight turn is
+  untouched. On the live corpus this takes 72 stale flags down to 5, and all 5 were verified genuinely
+  mid-turn against their live panes.
+
+### Added
+- **Agent OS now listens to the rest of the Claude Code turn/session state machine** (`terminal/lifecycle-hook.sh`
+  → `POST /api/session-event` → `TerminalManager.recordLifecycle`), instead of inferring status from a
+  latched flag plus a tmux poll. New in `docs/session-lifecycle-hooks.md`, which maps every hook event to
+  the state it drives:
+  - **`UserPromptSubmit`** — the turn-**START** signal, which Agent OS simply did not have. `busy_since`
+    was stamped only when the *server* delivered a message, so a human typing straight into an attached
+    TUI ran whole turns the console could not see.
+  - **`StopFailure`** — a turn killed by an API error (`rate_limit`, `overloaded`, …). Claude fires **no
+    `Stop`** in that case, so the turn never ended server-side: the run kept reading "working", the
+    automations pile-up guard kept holding its slot, and an unattended run parked as a zombie until a 24h
+    reaper found it — the shape behind the recurring weekly-limit zombie sessions. It now ends the turn
+    exactly as `Stop` does (including the unattended teardown) and audits `session.turn.failed` with the
+    `error_type`.
+  - **`SessionEnd`** — the run is over, with claude's own `reason`. Only `prompt_input_exit` (the human
+    quit the TUI), `logout` and `bypass_permissions_disabled` are treated as terminal; `clear`, `resume`
+    and `compact` are mid-run events, so a `/clear` no longer looks like a finished session.
+- `scripts/turn-lifecycle-test.cjs`, wired into `npm run test:governance` (32 assertions): the
+  interactive-lane clear, the turn-start signal, `StopFailure` teardown, each `SessionEnd` reason, all
+  five `isWorking` clauses, and the ignore-unknown-events rule.
+
 ## [0.323.0] — 2026-08-08
 ### Added
 - **A run outcome derived from what the OS observed, not from the agent's grade of its own homework**

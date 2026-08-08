@@ -522,6 +522,9 @@ interface SessionRow {
   tool_calls: number | null;
   archived_at?: number | null;
   busy_since: number | null;
+  /** Last turn-END (or delivery) stamp. Paired with `busy_since` it says whether the CURRENT turn is
+   *  still in flight — see {@link TerminalManager.isWorking}. */
+  last_activity: number | null;
   gov_actions: number | null;
   gov_approvals: number | null;
   gov_denied: number | null;
@@ -891,6 +894,34 @@ export class TerminalManager {
    * regular member sees only sessions they spawned, plus sessions fired by an automation they created.
    * `taskClip` (list endpoint only) fetches `task` pre-truncated to that many chars — see sessionSelectCols.
    */
+  /**
+   * Is a turn in flight on this row RIGHT NOW — the console's `working` (a spinner), as opposed to a live
+   * pane that is merely warm (`ready`). Four conditions, each one a way the old single-expression version
+   * lied:
+   *
+   *  1. **a turn was started** (`busy_since`). Stamped by `UserPromptSubmit` / a server-side delivery,
+   *     cleared by every turn-end path (`clearTurnBusy`).
+   *  2. **the row is not already finished.** `stopped`/`crashed` are terminal — whatever the flag says,
+   *     nothing is generating. (`done` still counts: an agent that calls `report` flips its row to `done`
+   *     MID-turn and keeps working, so excluding it would blank the spinner on a genuinely busy run.)
+   *  3. **the runtime is still there to run it** — a pane that died mid-turn leaves the flag set.
+   *  4. **no turn-END was recorded AFTER this turn started.** `last_activity` is stamped by every
+   *     turn-end path, including the ones the old code reached without clearing `busy_since` — so
+   *     `last_activity > busy_since` means "that turn is over" even on a row latched by an older build.
+   *     This is what heals the existing fleet without waiting on anything.
+   *  5. **the turn is not ANCIENT.** A turn running longer than `MID_TURN_MAX_MS` is wedged, not working
+   *     — the same judgement the resident reaper already makes. The backstop for a run that produced no
+   *     end signal at all (a hook that never fired, a pane wedged mid-generation): it stops reading as
+   *     "working" on its own instead of spinning forever.
+   */
+  private isWorking(r: { id: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null }, alive: Set<string> | null): boolean {
+    if (r.busy_since == null) return false;
+    if (r.status === 'stopped' || r.status === 'crashed') return false;
+    if (r.last_activity != null && r.last_activity > r.busy_since) return false;
+    if (r.busy_since < Date.now() - MID_TURN_MAX_MS) return false;
+    return this.launching.has(r.id) || !alive || alive.has(r.tmux);
+  }
+
   listSessions(viewer?: Member, taskClip?: number, ids?: string[]): Session[] {
     // Memoize the member/automation lookups for this call — the per-row helpers below would otherwise
     // re-query them ~2x per row. See withRowCache().
@@ -942,10 +973,7 @@ export class TerminalManager {
       ...toSession(r),
       ...links.get(r.id),
       alive: this.launching.has(r.id) ? true : alive ? alive.has(r.tmux) : undefined,
-      // A turn is in flight only if one was started AND the runtime is still there to run it — a pane
-      // that died mid-turn leaves `busy_since` set, and reporting that as "working" is the perpetual
-      // spinner the cold-per-turn design was chosen to avoid.
-      working: r.busy_since != null && (this.launching.has(r.id) || !alive || alive.has(r.tmux)),
+      working: this.isWorking(r, alive),
       blocked: r.status === 'running' && blocked.has(r.id),
       resumable: resumable.has(r.id),
       forkable: !!r.claude_session_id && runtimeSupports(this.os.agents.get(r.agent)?.runtime, 'fork'),
@@ -1184,7 +1212,7 @@ export class TerminalManager {
    */
   private markCrashed(r: SessionRow): void {
     const crashedAt = Date.now();
-    this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(crashedAt, r.id);
+    this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(crashedAt, r.id);
     r.status = 'crashed';
     r.updated_at = crashedAt;
     this.writeEpisode(r.id, r.agent, 'crashed');
@@ -1246,7 +1274,7 @@ export class TerminalManager {
       + 'gate hook disabled — re-derive the hash in terminal/codex-launch.sh.';
     this.audit(r.id, r.agent, 'session.hook_trust.stale', { tmux: r.tmux });
     this.stopSession(r.id, 'system');
-    this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(Date.now(), r.id);
+    this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), r.id);
     this.addMessage({
       type: 'completed', sessionId: r.id, agent: r.agent, title: `Stopped — ${r.agent} (hook trust stale)`,
       body: why, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: r.id,
@@ -1381,9 +1409,7 @@ export class TerminalManager {
         alive: alive ? alive.has(latest.tmux) : undefined,
         headless: !!latest.headless,
         blocked: latest.status === 'running' && pending.length > 0,
-        // Same rule as the sessions list: a turn is in flight only when one was started AND the runtime is
-        // still there to run it (a pane that died mid-turn leaves `busy_since` set forever).
-        working: latest.busy_since != null && (this.launching.has(latest.id) || !alive || alive.has(latest.tmux)),
+        working: this.isWorking(latest, alive),
         outcome: reported?.outcome ?? latest.outcome ?? undefined,
         runs: rows.length,
         costUsd: cost || undefined,
@@ -2181,7 +2207,7 @@ export class TerminalManager {
       void this.launchAgentRuntimeNow(o)
         .catch((e) => {
           this.audit(o.id, o.agent, 'session.launch.failed', { error: e instanceof Error ? e.message : String(e) });
-          this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(Date.now(), o.id);
+          this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), o.id);
         })
         .finally(() => this.launching.delete(o.id));
     });
@@ -2301,7 +2327,7 @@ export class TerminalManager {
       if (runtime !== 'claude-code') {
         const why = `${CODING_RUNTIMES[runtime].label} sessions are not supported under AOS_UID_ISOLATION yet`;
         this.audit(o.id, o.agent, 'session.launch.refused', { runtime, reason: why });
-        this.db.prepare("UPDATE term_sessions SET status = 'crashed', updated_at = ? WHERE id = ?").run(Date.now(), o.id);
+        this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), o.id);
         this.addMessage({ type: 'completed', sessionId: o.id, agent: o.agent, title: `Could not start — ${o.agent}`, body: why, status: 'open', outcome: 'crashed', audienceKind: 'sessionOwner', audienceId: o.id });
         return;
       }
@@ -2898,7 +2924,7 @@ export class TerminalManager {
           }
           this.backend.kill(space, r.tmux);
           // Preserve a completed session's outcome — only a still-running one becomes 'stopped'.
-          this.db.prepare("UPDATE term_sessions SET status = ?, updated_at = ? WHERE id = ?").run(r.status === 'done' ? 'done' : 'stopped', Date.now(), r.id);
+          this.db.prepare("UPDATE term_sessions SET status = ?, busy_since = NULL, updated_at = ? WHERE id = ?").run(r.status === 'done' ? 'done' : 'stopped', Date.now(), r.id);
           this.cancelPendingQuestions(r.id, 'system');
           this.cancelPendingApprovals(r.id, 'system');
           this.blockResume(r.id); // stay reaped against a ttyd auto-reconnect; a deliberate Resume clears it
@@ -2928,17 +2954,25 @@ export class TerminalManager {
   markTurnIdle(sessionId: string): void {
     const r = this.db.prepare('SELECT tmux, status, headless, resident, claimed_by, run_as, spawned_by FROM term_sessions WHERE id = ?')
       .get<{ tmux: string; status: string; headless: number; resident: number; claimed_by: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
-    // A RESIDENT (warm chat) run is never torn down here — its whole point is to stay up for the next
-    // turn. But its turn-end IS the signal the console needs: clear `busy_since` so "working" stops, and
-    // stamp `last_activity` so the idle reaper's clock runs from the end of the turn, not its start.
-    if (r?.resident) {
+    if (!r) return;
+    // ── The turn is OVER for every lane, whatever happens to the pane below. ──
+    // This clear used to live inside the `resident` branch only, which made `busy_since` a ONE-WAY LATCH
+    // for every other kind of run: a member's own interactive session returned at `!r.headless` before
+    // reaching it, so the flag stamped at spawn was never cleared and the console showed that session as
+    // "working" forever (live northwind: 24 of 25 recent rows, `done` and `stopped` ones included, still
+    // carried a `busy_since` hours old). A turn that has ended is not busy — the lane only decides what
+    // happens to the PANE, never whether the flag is honest.
+    this.clearTurnBusy(sessionId);
+    if (r.resident) {
+      // A RESIDENT (warm chat) run is never torn down here — its whole point is to stay up for the next
+      // turn. Stamping `last_activity` is what its idle reaper clocks from.
       if (r.status !== 'running' && r.status !== 'done') return;
-      this.db.prepare('UPDATE term_sessions SET busy_since = NULL, last_activity = ?, updated_at = ? WHERE id = ?')
+      this.db.prepare('UPDATE term_sessions SET last_activity = ?, updated_at = ? WHERE id = ?')
         .run(Date.now(), Date.now(), sessionId);
       this.audit(sessionId, this.sessionAgent(sessionId) ?? '', 'chat.turn.idle', {});
       return;
     }
-    if (!r || !r.headless) return;                                     // only unattended, non-resident runs
+    if (!r.headless) return;                                           // only unattended, non-resident runs
     if (r.status !== 'running' && r.status !== 'done') return;         // stopped/crashed are already torn down
     // Record the turn-end time regardless of the decision below — it's the idle backstop's clock and the
     // signal that this run has completed at least one turn (so the backstop won't reap a mid-turn run).
@@ -2953,6 +2987,61 @@ export class TerminalManager {
     if (alive && !alive.has(r.tmux)) return;         // pane already gone (already reaped) — nothing to do
     if (this.backend.hasClient(space, r.tmux) === true) return; // a human is watching live → don't close on them
     this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
+  }
+
+  /**
+   * The rest of the Claude Code turn/session state machine (POST /api/session-event, fired by
+   * terminal/lifecycle-hook.sh). `Stop` keeps its own beacon — it carries the unattended teardown
+   * decision — so this handles the three events that had no home:
+   *
+   *  - **`UserPromptSubmit`** — a turn is STARTING. Until now `busy_since` was stamped only when the
+   *    SERVER delivered a message, so a human typing straight into an attached TUI ran turns the console
+   *    could not see. This is the missing half of the flag.
+   *  - **`StopFailure`** — the turn ended because the API errored (rate_limit / overloaded / …). Claude
+   *    fires NO `Stop` in that case, so without this the turn never ends server-side: the run keeps
+   *    reading "working", the pile-up guard stays held, and an unattended run parks as a zombie until a
+   *    24h reaper finds it. We end the turn exactly as `Stop` would (`markTurnIdle` → teardown for an
+   *    unattended run) and audit WHY.
+   *  - **`SessionEnd`** — the run is over, with claude's own `reason`. Only the reasons that really are
+   *    the end (`prompt_input_exit` = the human quit the TUI, `logout`, `bypass_permissions_disabled`)
+   *    mark the row terminal; `clear` / `resume` / `compact` are mid-run events and must NOT (a `/clear`
+   *    is not a finished session). `other` is deliberately not terminal — it's the catch-all, and the
+   *    existing pane-liveness sweep already catches a genuinely dead run.
+   *
+   * Unknown event names are ignored, so a future claude release can add events without breaking this.
+   */
+  recordLifecycle(sessionId: string, event: string, detail: { reason?: string; errorType?: string } = {}): void {
+    if (!this.hasSession(sessionId)) return;
+    const agent = this.sessionAgent(sessionId) ?? '';
+    if (event === 'UserPromptSubmit') { this.markTurnBusy(sessionId); return; }
+    if (event === 'StopFailure') {
+      this.audit(sessionId, agent, 'session.turn.failed', { errorType: detail.errorType || 'unknown' });
+      this.markTurnIdle(sessionId);       // clears `busy_since` + tears an unattended run down, like Stop
+      return;
+    }
+    if (event === 'SessionEnd') {
+      const reason = detail.reason || 'other';
+      this.clearTurnBusy(sessionId);      // whatever the reason, no turn is in flight once the session ends
+      this.audit(sessionId, agent, 'session.runtime.end', { reason });
+      if (reason === 'prompt_input_exit' || reason === 'logout' || reason === 'bypass_permissions_disabled') this.markEnded(sessionId);
+      return;
+    }
+  }
+
+  /** A turn STARTED — stamp `busy_since` (the console's "working") and the idle clock with it.
+   *  `WHERE busy_since IS NULL` makes a prompt queued INSIDE a running turn a no-op: it must not restart
+   *  the staleness window, and it must certainly not move `last_activity` past `busy_since`, which is how
+   *  {@link isWorking} recognises a turn that has already ended. */
+  markTurnBusy(sessionId: string): void {
+    const now = Date.now();
+    this.db.prepare('UPDATE term_sessions SET busy_since = ?, last_activity = ?, updated_at = ? WHERE id = ? AND busy_since IS NULL')
+      .run(now, now, now, sessionId);
+  }
+
+  /** A turn ENDED — drop `busy_since`. The one place that clears it, so every end path (Stop hook,
+   *  StopFailure, SessionEnd, a terminal status transition) agrees. */
+  private clearTurnBusy(sessionId: string): void {
+    this.db.prepare('UPDATE term_sessions SET busy_since = NULL WHERE id = ? AND busy_since IS NOT NULL').run(sessionId);
   }
 
   /** Was text delivered into this session within `ms`? Reads the `chat.delivered` / `session.inject`
@@ -4785,7 +4874,7 @@ export class TerminalManager {
     // title isn't blanked.
     const aiTitle = titleFromSummary(summary);
     if (aiTitle) this.db.prepare("UPDATE term_sessions SET title = ?, status = 'done', updated_at = ? WHERE id = ?").run(aiTitle, Date.now(), sessionId);
-    else this.db.prepare("UPDATE term_sessions SET status = 'done', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    else this.db.prepare("UPDATE term_sessions SET status = 'done', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.audit(sessionId, agent, 'session.reported', { outcome, summary });
     // Deliberate semantic memory — the agent's note to its future self. Higher importance than an
     // auto-episode (0.7 vs 0.5), private to this agent (broadly-useful facts go via `remember` shared).
@@ -6121,7 +6210,7 @@ export class TerminalManager {
     // `stopSession` (already 'stopped') or a crash the sweep caught ('crashed'). Only a natural end earns
     // the completion-fallback card below, so closing a session yourself doesn't ping you about it.
     const naturalEnd = s.status === 'running';
-    if (naturalEnd) this.db.prepare("UPDATE term_sessions SET status = 'done', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    if (naturalEnd) this.db.prepare("UPDATE term_sessions SET status = 'done', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
     // claude exited on its own. The launcher normally holds the pane on a "press [r] to resume" prompt,
     // but if that pane dies (an idle/detached `read` bailing out), ttyd's silent auto-reconnect would
@@ -6222,7 +6311,7 @@ export class TerminalManager {
     // (an attachable unattended run has no `-p` tee to fall back on). Best-effort; never blocks the stop.
     this.captureTranscript(sessionId, space, r.tmux);
     this.backend.kill(space, r.tmux);
-    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
     // The agent that asked is now dead — no one can answer its open questions or act on its approvals.
     // Cancel both so they leave "Needs you" and become dismissable, rather than hanging forever.
@@ -6270,7 +6359,7 @@ export class TerminalManager {
     this.backend.kill(space, r.tmux);
     // Park it 'stopped' so the lazy crash-detector (running row + gone tmux → crashed) doesn't fire in the
     // sub-second window before the terminal reattaches and the resume launcher flips it back to 'running'.
-    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
+    if (r.status === 'running') this.db.prepare("UPDATE term_sessions SET status = 'stopped', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.clearNotifications(sessionId);
     this.cancelPendingQuestions(sessionId, by);
     this.cancelPendingApprovals(sessionId, by);

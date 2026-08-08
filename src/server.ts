@@ -1434,6 +1434,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     tm.markTurnIdle(session);
     return sendJson(res, 200, { ok: true });
   }
+  // Claude Code LIFECYCLE hook (lifecycle-hook.sh): the rest of the turn/session state machine —
+  // `UserPromptSubmit` (a turn is starting), `StopFailure` (the turn died on an API error, so no `Stop`
+  // ever fires) and `SessionEnd` (the run is over, with claude's own reason). Best-effort, session-secret
+  // gated like the other loopback beacons.
+  if (method === 'POST' && p === '/api/session-event') {
+    const b = await readBody(req);
+    const session = String(b.session || '');
+    if (!tm.hasSession(session)) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    tm.recordLifecycle(session, String(b.event || ''), { reason: String(b.reason || ''), errorType: String(b.errorType || '') });
+    return sendJson(res, 200, { ok: true });
+  }
   // Claude Code Notification hook (notify-hook.sh): the session is blocked waiting on the human
   // (permission prompt / idle). Surface a per-session inbox bell. Session-secret gated like the rest.
   if (method === 'POST' && p === '/api/notify') {
