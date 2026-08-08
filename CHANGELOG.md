@@ -8,6 +8,41 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.328.0] — 2026-08-08
+### Changed
+- **One status grammar across the whole console.** Session status was unified in v0.320–0.327; everything
+  else still spoke its own dialect. There were **seven private colour maps**, and `blocked` alone was rose
+  on the Kanban board, amber on the goal page and red in the task drawer — for the same value. "In
+  progress" was emerald in Sessions and blue in Tasks, so nothing transferred between pages.
+  A role is now a MEANING, not a domain (`ROLE` / `RoleIcon`): sessions, tasks, goals and automations all
+  answer "is it running / does it need me / did it land" the same way, icon-first. Two rules hold it
+  together — **motion means NOW** (only `busy` and `needsHuman` animate; `active` is the static twin, since
+  a task in Doing isn't necessarily generating this second), and **a check is a claim** (`ended` claims
+  nothing, because a finished run may well have failed).
+  - **Tasks**: the four disagreeing renderers (`TASK_COLUMNS`, `taskStatusTone`, `StatusDot`,
+    `TaskStatusPill`) now derive from one `TASK_ROLE` map. `blocked` reads **"Needs you"** with the same
+    amber bell a blocked session gets — it means the same thing to the reader: this stopped and won't
+    restart on its own. The board's "Live" column is **"In progress"**.
+  - **Goals**: `active` is emerald rather than sky (matching every other "in progress"), and `abandoned`
+    is muted rather than red — a goal someone deliberately dropped is not a failure, and spending the
+    alarm colour on it means red stops meaning "something went wrong".
+  - **Overview** stopped deriving its own `live | headless | blocked` state with a private pill. It
+    couldn't tell WORKING from READY, and it mixed a *mode* (unattended) into a state axis, so an
+    unattended run that needed you read "Unattended". State comes from `sessionState`; mode keeps
+    `ModeBadge`.
+  - **`runVerdict` and `OUTCOME_TONE`** were two more private outcome maps with the same synonym gap fixed
+    in the chain rail in v0.327.0 — a task run that reported `completed`/`progressed`/`blocked` printed
+    its raw word in grey. Both now go through `verdictOf` / `VERDICT_META`.
+  - `LiveBars` (the animated equaliser) is gone with its last caller: it claimed "streaming" for every
+    live run, including one parked on an approval. The spinner/bell pair says which.
+
+### Added
+- **Automation cards say when a run is in flight.** The card showed enabled/paused only — you could not
+  see that an automation was running right now without opening it. A run carries `automation:<id>`
+  provenance, so the live feed the console already polls answers it with no new endpoint: the newest live
+  run renders through the same `SessionStatus`, so an automation whose run needs a human rings the same
+  bell here as in the sidebar, and the chip opens the run.
+
 ## [0.327.0] — 2026-08-08
 ### Fixed
 - **Agents that reported a verdict were shown as if they had said nothing.** The `report` tool's enum is
