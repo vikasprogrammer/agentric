@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
-import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Copy as CopyIcon } from 'lucide-react'
+import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, Ban, Copy as CopyIcon } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -79,28 +79,83 @@ const sessionState = (s: Session, waiting = false): SessionState =>
     : s.status === 'crashed' ? 'crashed'
     : 'done' // done (and any unknown legacy value)
 
-/** Each state is an ICON, not a coloured dot — six dots differing only in hue and fill asked the eye to
- *  learn a colour key, and colour alone can't carry "a turn is running right now" (the thing people
- *  actually scan for). The glyph says it: a spinner spins, a bell rings, a check means the turn landed
- *  and it is your move, a dim dot means the run is closed. Colour and motion stay as reinforcement,
- *  never as the only channel.
+/** ── THE STATUS GRAMMAR ──────────────────────────────────────────────────────────────────────────
+ *  A role is a MEANING, not a domain. A session, a task, a goal and an automation all answer the same
+ *  handful of questions — is it running? does it need me? did it land? — so they must answer them the
+ *  same way, and you learn the vocabulary once.
  *
- *  Note which state gets the CHECK. It is `idle`, not `done`: a check on a finished run reads
- *  "succeeded", and a finished run may well have failed — the verdict belongs to the Result column, which
- *  has the outcome to say it with. On a live session the check is a plain fact: the turn landed, your
- *  move. So `done` keeps the dim dot it had before icons, and claims nothing.
+ *  Before this there were seven private colour maps. `blocked` alone was rose on the Kanban board, amber
+ *  on the goal page and red in the task drawer — for the same value. "In progress" was emerald in
+ *  Sessions and blue in Tasks. Nothing transferred between pages.
  *
- *  `dot` survives for the ROLL-UP badges (the Chain toggle), where the signal is a count of sessions in a
- *  state rather than one session's status — a 8px pip is right there, an icon isn't.
- *  `toneDark` is the same tone on the dark terminal tab strip (bg-neutral-900), where the -600 shades go
+ *  Each role is an ICON first: colour alone can't carry "running right now" (the thing people scan for),
+ *  and ~1 in 12 men can't separate the red/green that half these maps leaned on. Colour and motion are
+ *  reinforcement, never the only channel.
+ *
+ *  Two rules worth keeping:
+ *   • **Motion means NOW.** Only `busy` (a turn generating) and `needsHuman` (a to-do) animate. `active`
+ *     is the static twin of `busy` — a task in Doing or a goal in flight is in progress but not
+ *     necessarily generating this second, and a spinner there would over-claim.
+ *   • **A check is a claim.** `ok` is a verdict; `ready` is a plain fact about a live session ("the turn
+ *     landed, your move"). `ended` claims nothing, because a finished run may well have failed — the
+ *     verdict belongs to the Result column, which has the outcome to say it with.
+ *
+ *  `toneDark` is the same role on the dark terminal tab strip (bg-neutral-900), where the -600 shades go
  *  muddy. Two tones, one vocabulary — never a second set of words. */
-const STATE_META: Record<SessionState, { label: string; icon: LucideIcon; anim: string; dot: string; tone: string; toneDark: string; tip: string }> = {
-  waiting: { label: 'needs you', icon: Bell, anim: 'motion-safe:animate-pulse', dot: 'bg-amber-400 motion-safe:animate-pulse', tone: 'text-amber-500', toneDark: 'text-amber-300', tip: 'blocked on you — a question or an approval is waiting' },
-  working: { label: 'working', icon: LoaderCircle, anim: 'motion-safe:animate-spin', dot: 'bg-emerald-500 motion-safe:animate-pulse', tone: 'text-emerald-600', toneDark: 'text-emerald-300', tip: 'a turn is running right now' },
-  idle: { label: 'ready', icon: Check, anim: '', dot: 'border border-emerald-500 bg-emerald-500/20', tone: 'text-emerald-600/90', toneDark: 'text-emerald-400', tip: 'live session, nothing running — the turn finished, your move' },
-  stopped: { label: 'stopped', icon: CircleStop, anim: '', dot: 'bg-amber-500', tone: 'text-amber-600', toneDark: 'text-amber-400/80', tip: 'halted by a human or the idle reaper' },
-  crashed: { label: 'crashed', icon: AlertTriangle, anim: '', dot: 'bg-red-500', tone: 'text-red-600', toneDark: 'text-red-400', tip: 'the pane died without an end signal' },
-  done: { label: 'done', icon: CircleSmall, anim: '', dot: 'bg-muted-foreground/40', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400', tip: 'the run ended' },
+type StatusRole = 'queued' | 'active' | 'busy' | 'needsHuman' | 'ready' | 'ok' | 'partial' | 'failed' | 'crashed' | 'halted' | 'ended' | 'inactive'
+const ROLE: Record<StatusRole, { icon: LucideIcon; anim: string; tone: string; toneDark: string }> = {
+  queued: { icon: Circle, anim: '', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400' },
+  active: { icon: CircleDot, anim: '', tone: 'text-emerald-600', toneDark: 'text-emerald-300' },
+  busy: { icon: LoaderCircle, anim: 'motion-safe:animate-spin', tone: 'text-emerald-600', toneDark: 'text-emerald-300' },
+  needsHuman: { icon: Bell, anim: 'motion-safe:animate-pulse', tone: 'text-amber-500', toneDark: 'text-amber-300' },
+  ready: { icon: Check, anim: '', tone: 'text-emerald-600/90', toneDark: 'text-emerald-400' },
+  ok: { icon: CircleCheck, anim: '', tone: 'text-emerald-600', toneDark: 'text-emerald-300' },
+  partial: { icon: CircleSlash, anim: '', tone: 'text-amber-600', toneDark: 'text-amber-400' },
+  failed: { icon: CircleX, anim: '', tone: 'text-red-600', toneDark: 'text-red-400' },
+  crashed: { icon: AlertTriangle, anim: '', tone: 'text-red-600', toneDark: 'text-red-400' },
+  halted: { icon: CircleStop, anim: '', tone: 'text-amber-600', toneDark: 'text-amber-400/80' },
+  ended: { icon: CircleSmall, anim: '', tone: 'text-muted-foreground/70', toneDark: 'text-neutral-400' },
+  inactive: { icon: Ban, anim: '', tone: 'text-muted-foreground/60', toneDark: 'text-neutral-500' },
+}
+/** Tinted chip classes for a role — the pill form used by Tasks/Goals where a dot alone is too quiet. */
+const roleChip = (r: StatusRole): string => ({
+  queued: 'bg-muted text-muted-foreground',
+  active: 'bg-emerald-500/15 text-emerald-600',
+  busy: 'bg-emerald-500/15 text-emerald-600',
+  needsHuman: 'bg-amber-500/15 text-amber-600',
+  ready: 'bg-emerald-500/15 text-emerald-600',
+  ok: 'bg-emerald-500/15 text-emerald-600',
+  partial: 'bg-amber-500/15 text-amber-600',
+  failed: 'bg-red-500/15 text-red-600',
+  crashed: 'bg-red-500/15 text-red-600',
+  halted: 'bg-amber-500/15 text-amber-600',
+  ended: 'bg-muted text-muted-foreground',
+  inactive: 'bg-muted text-muted-foreground',
+}[r])
+
+/** `dot` survives for the ROLL-UP badges (the Chain toggle), where the signal is a count of sessions in a
+ *  state rather than one session's status — an 8px pip is right there, an icon isn't. */
+const STATE_META: Record<SessionState, { label: string; role: StatusRole; icon: LucideIcon; anim: string; dot: string; tone: string; toneDark: string; tip: string }> = {
+  waiting: { label: 'needs you', role: 'needsHuman', ...ROLE.needsHuman, dot: 'bg-amber-400 motion-safe:animate-pulse', tip: 'blocked on you — a question or an approval is waiting' },
+  working: { label: 'working', role: 'busy', ...ROLE.busy, dot: 'bg-emerald-500 motion-safe:animate-pulse', tip: 'a turn is running right now' },
+  idle: { label: 'ready', role: 'ready', ...ROLE.ready, dot: 'border border-emerald-500 bg-emerald-500/20', tip: 'live session, nothing running — the turn finished, your move' },
+  stopped: { label: 'stopped', role: 'halted', ...ROLE.halted, dot: 'bg-amber-500', tip: 'halted by a human or the idle reaper' },
+  crashed: { label: 'crashed', role: 'crashed', ...ROLE.crashed, dot: 'bg-red-500', tip: 'the pane died without an end signal' },
+  done: { label: 'done', role: 'ended', ...ROLE.ended, dot: 'bg-muted-foreground/40', tip: 'the run ended' },
+}
+
+/** The one status glyph, for ANY domain. Tasks, goals and automations render through this exactly like
+ *  sessions do — same icon, same tone, same tooltip shape. */
+function RoleIcon({ role, label, tip, dark = false, className = 'h-3.5 w-3.5' }: {
+  role: StatusRole; label: string; tip?: string; dark?: boolean; className?: string
+}) {
+  const m = ROLE[role]
+  const Icon = m.icon
+  return (
+    <span className="inline-flex shrink-0" title={tip ? `${label} — ${tip}` : label}>
+      <Icon className={`${className} shrink-0 ${dark ? m.toneDark : m.tone} ${m.anim}`} aria-label={label} />
+    </span>
+  )
 }
 /** The state word's colour for a given surface. Pair it with {@link statusLabel} wherever the word is
  *  rendered away from the dot. */
@@ -1648,7 +1703,7 @@ function Console({ me }: { me: Member }) {
           {route === 'connectors' && <ConnectionsPage me={me} tab={detail} onTab={(t) => nav('connectors', t)} />}
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
-          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} agentFilter={detail} />}
+          {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} sessions={sessions} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} agentFilter={detail} />}
           {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
@@ -2813,7 +2868,7 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
  * doesn't. Strictly better than the bare error this replaced, which told the reader nothing at all.
  */
 function RunReport({ session: s, note }: { session: Session; note: string }) {
-  const v = OUTCOME_TONE[s.outcome ?? 'unknown'] ?? OUTCOME_TONE.unknown
+  const v = OUTCOME_TONE[verdictOf(s.outcome) ?? 'none']
   const facts = [
     s.agent,
     s.activeMs != null ? formatDuration(s.activeMs) : null,
@@ -2847,12 +2902,14 @@ function RunReport({ session: s, note }: { session: Session; note: string }) {
 }
 
 /** Outcome → pill tone, for the dark terminal pane (OUTCOME_STYLE's light-mode 700s are unreadable here). */
-const OUTCOME_TONE: Record<string, string> = {
+/** Verdict tint for the DARK transcript surface — the same {@link VERDICT_META} buckets (so the synonyms
+ *  `completed`/`progressed`/`blocked` land where they belong instead of falling through to grey), in the
+ *  deeper shades that read on near-black. */
+const OUTCOME_TONE: Record<Verdict, string> = {
   success: 'border-emerald-800 text-emerald-400',
   failure: 'border-red-900 text-red-400',
-  error: 'border-red-900 text-red-400',
   partial: 'border-amber-900 text-amber-400',
-  unknown: 'border-neutral-700 text-neutral-400',
+  none: 'border-neutral-700 text-neutral-400',
 }
 
 /** Wraps the first-party terminal (<Xterm>) with the console chrome: the font stepper, the "how to use"
@@ -7573,28 +7630,33 @@ const GOAL_STATUSES: { status: GoalStatus; label: string }[] = [
   { status: 'achieved', label: 'Achieved' },
   { status: 'abandoned', label: 'Abandoned' },
 ]
-// Per-status accent for the badge/dot — draft muted, active sky, achieved emerald, abandoned red.
-const goalStatusTone = (s: GoalStatus): string => ({
-  draft: 'text-muted-foreground',
-  active: 'text-sky-600',
-  achieved: 'text-emerald-600',
-  abandoned: 'text-red-600',
-}[s])
+/** Goal status in the shared grammar. Two deliberate changes: `active` is emerald (in progress) rather
+ *  than sky, matching every other "in progress" in the app; and `abandoned` is muted rather than red — a
+ *  goal someone deliberately dropped is not a failure, and spending the alarm colour on it means red
+ *  stops meaning "something went wrong". */
+const GOAL_ROLE: Record<GoalStatus, StatusRole> = {
+  draft: 'queued', active: 'active', achieved: 'ok', abandoned: 'inactive',
+}
+const GOAL_TIP: Record<GoalStatus, string> = {
+  draft: 'not committed to yet', active: 'in flight', achieved: 'the outcome landed', abandoned: 'dropped on purpose',
+}
+const goalStatusTone = (s: GoalStatus): string => ROLE[GOAL_ROLE[s]].tone
 const goalStatusBorder = (s: GoalStatus): string => ({
   draft: 'border-l-transparent',
-  active: 'border-l-sky-500',
+  active: 'border-l-emerald-500',
   achieved: 'border-l-emerald-500',
-  abandoned: 'border-l-red-500',
+  abandoned: 'border-l-muted-foreground/40',
 }[s])
 // Compact status chip for a goal — the room header's twin of TaskStatusPill. A goal whose work is all
 // done reads "Ready to close" rather than "active": the derived state is the useful one to see.
 function GoalStatusPill({ status, ready }: { status: GoalStatus; ready?: boolean }) {
   if (ready) return <span className="inline-flex shrink-0 items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0 text-[10px] font-medium text-emerald-600"><Check className="h-3 w-3" />Ready to close</span>
-  const tone = status === 'achieved' ? 'bg-emerald-500/15 text-emerald-600'
-    : status === 'abandoned' ? 'bg-red-500/15 text-red-600'
-    : status === 'draft' ? 'bg-muted text-muted-foreground'
-    : 'bg-sky-500/15 text-sky-600'
-  return <span className={`shrink-0 rounded px-1.5 py-0 text-[10px] font-medium capitalize ${tone}`}>{status}</span>
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0 text-[10px] font-medium capitalize ${roleChip(GOAL_ROLE[status])}`}
+      title={`${status} — ${GOAL_TIP[status]}`}>
+      <RoleIcon role={GOAL_ROLE[status]} label={status} className="h-3 w-3" />{status}
+    </span>
+  )
 }
 
 // A goal is COMPLETE-in-fact when every task filed under it has finished — derived from linked-task
@@ -8183,23 +8245,29 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
 // ── Tasks ──────────────────────────────────────────────────────────────────────
 // Board columns follow the machine's lifecycle, not the raw status names: `doing` reads as "Live" because
 // an in-progress task is one an agent is (or was) actively running a session on. `rail`/`head` tint the header.
+/** Task status in the shared grammar ({@link ROLE}). `blocked` maps to `needsHuman` — the same amber
+ *  bell a blocked SESSION gets — because it means the same thing to the person reading it: this stopped
+ *  and won't restart on its own. It was previously rose here, amber on the goal page and red in the
+ *  drawer, for the identical value. */
+const TASK_ROLE: Record<TaskStatus, StatusRole> = {
+  todo: 'queued', doing: 'active', blocked: 'needsHuman', done: 'ok', cancelled: 'inactive',
+}
+const TASK_TIP: Record<TaskStatus, string> = {
+  todo: 'filed, not started', doing: 'someone or something is on it', blocked: 'stopped — it needs a person',
+  done: 'finished', cancelled: 'dropped on purpose',
+}
 const TASK_COLUMNS: { status: TaskStatus; label: string; rail: string; head: string }[] = [
   { status: 'todo', label: 'Queued', rail: 'bg-muted-foreground/40', head: 'text-muted-foreground' },
-  { status: 'doing', label: 'Live', rail: 'bg-sky-500', head: 'text-sky-600' },
-  { status: 'blocked', label: 'Blocked', rail: 'bg-rose-500', head: 'text-rose-600' },
-  { status: 'done', label: 'Done', rail: 'bg-emerald-500', head: 'text-emerald-600' },
+  { status: 'doing', label: 'In progress', rail: 'bg-emerald-500', head: 'text-emerald-600' },
+  { status: 'blocked', label: 'Needs you', rail: 'bg-amber-500', head: 'text-amber-600' },
+  { status: 'done', label: 'Done', rail: 'bg-emerald-500/40', head: 'text-emerald-600/80' },
 ]
 const PRIORITY_LABEL = ['Urgent', 'High', 'Normal', 'Low']
 // Base UI's Select.Value shows the raw value unless the root gets an items map (value → label).
 const PRIORITY_ITEMS: Record<string, string> = Object.fromEntries(PRIORITY_LABEL.map((l, i) => [String(i), l]))
-// Tinted pill for a task status — used on the goal's linked-tasks list.
-const taskStatusTone = (s: TaskStatus): string => ({
-  todo: 'bg-muted text-muted-foreground',
-  doing: 'bg-sky-500/15 text-sky-600',
-  blocked: 'bg-amber-500/15 text-amber-600',
-  done: 'bg-emerald-500/15 text-emerald-600',
-  cancelled: 'bg-muted text-muted-foreground',
-}[s])
+// Tinted pill for a task status — used on the goal's linked-tasks list. One source, shared with the
+// board rails, the dense-row dot and the drawer pill (they disagreed four ways before).
+const taskStatusTone = (s: TaskStatus): string => roleChip(TASK_ROLE[s])
 
 // Priority as three pips (urgent → all three lit, low → all dim) so it reads without a text label taking a row.
 function PriorityPips({ p }: { p: number }) {
@@ -8212,20 +8280,10 @@ function PriorityPips({ p }: { p: number }) {
   )
 }
 
-// A tiny animated equalizer marking a session that's actually streaming inside a card. motion-safe so it
-// stills for reduced-motion users; purely decorative (aria-hidden).
-function LiveBars() {
-  return (
-    <span className="inline-flex h-3 items-end gap-[2px]" aria-hidden>
-      {[6, 11, 8, 12].map((h, i) => <span key={i} className="w-[2px] rounded-[1px] bg-sky-500 motion-safe:animate-pulse" style={{ height: h, animationDelay: `${i * 140}ms` }} />)}
-    </span>
-  )
-}
-
-// A small state dot for dense rows: hollow ring = queued, filled = live/blocked/done, faded = cancelled.
+// The task status glyph for dense rows — the shared grammar, so a blocked task rings the same amber bell
+// a blocked session does instead of being a rose dot only this page used.
 function StatusDot({ status }: { status: TaskStatus }) {
-  const cls = status === 'doing' ? 'bg-sky-500' : status === 'blocked' ? 'bg-rose-500' : status === 'done' ? 'bg-emerald-500' : status === 'cancelled' ? 'bg-muted-foreground/40' : 'border-[1.5px] border-muted-foreground/50'
-  return <span className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${cls}`} title={status} />
+  return <RoleIcon role={TASK_ROLE[status]} label={status} tip={TASK_TIP[status]} className="h-3.5 w-3.5" />
 }
 
 
@@ -8318,12 +8376,11 @@ function OverviewPage({ me, sessions, doneToday, members, agents, maturity, serv
   const people = useMemo(() => [...members].sort((a, b) => (Number(isOnline(b.id)) - Number(isOnline(a.id))) || a.name.localeCompare(b.name)), [members, presence])
   const peopleOnline = members.filter((m) => isOnline(m.id)).length
 
-  const stateOf = (s: Session): 'live' | 'headless' | 'blocked' => blockedRuns.has(s.id) ? 'blocked' : s.headless ? 'headless' : 'live'
+  // This page used to derive its own `live | headless | blocked` state with a private pill, which meant
+  // (a) it couldn't tell WORKING from READY — the distinction the rest of the console is built on — and
+  // (b) it mixed a MODE (headless/unattended) into a state axis, so an unattended run that needed you
+  // read "Unattended". State now comes from `sessionState` like everywhere else; mode keeps its own badge.
   const bandTone = (m: number) => (m >= 0.66 ? '#10b981' : m >= 0.33 ? '#f59e0b' : '#f43f5e')
-  const pill = (st: 'live' | 'headless' | 'blocked') => {
-    const map = { live: ['Live', 'text-emerald-600 dark:text-emerald-500 bg-emerald-500/10'], headless: ['Unattended', 'text-violet-600 dark:text-violet-400 bg-violet-500/10'], blocked: ['Blocked', 'text-amber-600 dark:text-amber-500 bg-amber-500/10'] } as const
-    return <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${map[st][1]}`}>{map[st][0]}</span>
-  }
   // Compact KPI tile: a tinted icon badge + figure + label on a single row.
   const tile = (Icon: LucideIcon, n: number, label: string, sub: string, hue: string) => (
     <Card key={label}><CardContent className="flex items-center gap-3 p-3">
@@ -8401,16 +8458,15 @@ function OverviewPage({ me, sessions, doneToday, members, agents, maturity, serv
           ) : (
             <div className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2">
               {live.map((s) => {
-                const st = stateOf(s); const om = originMeta(s.sourceKind); const OI = om.icon
+                const om = originMeta(s.sourceKind); const OI = om.icon
                 return (
                   <button key={s.id} onClick={() => onOpen(s.tmux, s.title)} className="flex flex-col gap-2 rounded-lg border bg-card p-3 text-left transition-colors hover:border-primary/50">
                     <div className="flex items-center gap-2">
-                      {st === 'live'
-                        ? <span className="relative flex h-2 w-2 shrink-0"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-60" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
-                        : <span className={`h-2 w-2 shrink-0 rounded-full ${st === 'blocked' ? 'bg-amber-500' : 'bg-violet-500'}`} />}
+                      <SessionStatus s={s} />
                       <AgentIcon icon={iconOf(s.agent)} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                       <span className="truncate text-[13.5px] font-semibold">{s.agent}</span>
-                      <span className="ml-auto">{pill(st)}</span>
+                      <span className={`ml-auto shrink-0 text-[10.5px] font-semibold ${statusTone(s, blockedRuns.has(s.id))}`}>{statusLabel(s, blockedRuns.has(s.id))}</span>
+                      <ModeBadge headless={s.headless} iconOnly />
                     </div>
                     <div className="line-clamp-2 text-[12.5px] text-muted-foreground">{s.title || s.task || '—'}</div>
                     <div className="mt-auto flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-2 text-[11px] text-muted-foreground">
@@ -8746,7 +8802,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // A metric tile for the fleet strip.
   const metric = (n: number, label: string, tone = '', pulse = false) => (
     <div className="flex items-baseline gap-1.5">
-      {pulse && n > 0 && <span className="h-1.5 w-1.5 self-center rounded-full bg-sky-500 motion-safe:animate-pulse" />}
+      {pulse && n > 0 && <span className={`h-1.5 w-1.5 self-center rounded-full ${STATE_META.working.dot}`} />}
       <span className={`font-mono text-lg font-semibold tabular-nums ${tone || 'text-foreground'}`}>{n}</span>
       <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
     </div>
@@ -8837,18 +8893,18 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         {doing && live && (
           <div
             onClick={(e) => { e.stopPropagation(); attach(t, live) }}
-            className="mt-2 cursor-pointer rounded-md border border-sky-500/30 bg-sky-500/5 px-2 py-1.5 hover:border-sky-500/60"
+            className="mt-2 cursor-pointer rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2 py-1.5 hover:border-emerald-500/60"
             title="Attach to the live session"
           >
             <div className="flex items-center gap-1.5 font-mono text-[10px]">
-              <LiveBars />
-              <span className="uppercase tracking-wide text-sky-600">live session</span>
+              <SessionStatus s={live} iconClass="h-3 w-3" />
+              <span className={`uppercase tracking-wide ${statusTone(live)}`}>{statusLabel(live)}</span>
               <span className="ml-auto tabular-nums text-muted-foreground">{fmtElapsed(now - live.createdAt)}</span>
             </div>
             {t.criteria && <div className="mt-1 truncate text-[10px] text-muted-foreground" title={t.criteria}>target: {t.criteria}</div>}
             <div className="mt-1 flex items-center justify-between font-mono text-[10px]">
               <span className="text-muted-foreground/70">try {t.attempts}{t.owner ? ` · as ${nameOf(t.owner)}` : ''}</span>
-              <span className="inline-flex items-center gap-0.5 text-sky-600">attach<ExternalLink className="h-2.5 w-2.5" /></span>
+              <span className="inline-flex items-center gap-0.5 text-emerald-600">attach<ExternalLink className="h-2.5 w-2.5" /></span>
             </div>
           </div>
         )}
@@ -8888,11 +8944,11 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         {opts?.withDiscussion !== false && detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
 
         {opts?.withDiscussion !== false && live && (
-          <button onClick={() => attach(detail.task, live)} className="flex w-full items-center gap-2 rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-left hover:border-sky-500/60">
-            <LiveBars />
-            <span className="text-xs font-medium text-sky-600">Live session</span>
+          <button onClick={() => attach(detail.task, live)} className="flex w-full items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-left hover:border-emerald-500/60">
+            <SessionStatus s={live} />
+            <span className={`text-xs font-medium capitalize ${statusTone(live)}`}>{statusLabel(live)}</span>
             <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{fmtElapsed(now - live.createdAt)}</span>
-            <span className="ml-auto inline-flex items-center gap-0.5 font-mono text-[11px] text-sky-600">attach<ExternalLink className="h-3 w-3" /></span>
+            <span className="ml-auto inline-flex items-center gap-0.5 font-mono text-[11px] text-emerald-600">attach<ExternalLink className="h-3 w-3" /></span>
           </button>
         )}
 
@@ -9073,7 +9129,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <div className="flex shrink-0 items-center gap-0.5 border-b px-2">
               {roomTab_btn('discussion', <><MessageSquare className="h-3.5 w-3.5" />Discussion{detail.unread > 0 && <span className="ml-0.5 rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white">{detail.unread}</span>}</>)}
               {roomTab_btn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
-              {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />Session{live && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />}</>)}
+              {sessTmux && roomTab_btn('session', <><TerminalSquare className="h-3.5 w-3.5" />Session{live && <span className={`ml-0.5 h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />}</>)}
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
               {activeTab === 'discussion' && (
@@ -9141,7 +9197,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           narrower select-driven filters follow. */}
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <div className="inline-flex overflow-hidden rounded-md border">
-          {([['', 'All'], ['open', 'Open'], ['blocked', 'Blocked'], ['done', 'Done']] as [QuickStatus, string][]).map(([s, label], i) => {
+          {([['', 'All'], ['open', 'Open'], ['blocked', 'Needs you'], ['done', 'Done']] as [QuickStatus, string][]).map(([s, label], i) => {
             const n = statusCount(s)
             const on = fStatus === s
             const tone = on ? (s === 'blocked' ? 'bg-red-500/10 font-medium text-red-600' : 'bg-muted font-medium') : 'text-muted-foreground'
@@ -9179,7 +9235,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <SelectContent><SelectItem value="all">Any goal</SelectItem>{goalsPresent.map((g) => <SelectItem key={g} value={g}>{goalTitle(g)}</SelectItem>)}</SelectContent>
           </Select>
         )}
-        <button onClick={() => setFLive((v) => !v)} title="Only tasks with a running session" className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 ${fLive ? 'border-sky-500 bg-sky-500/10 text-sky-600' : 'text-muted-foreground'}`}><span className={`h-1.5 w-1.5 rounded-full ${fLive || liveCount ? 'bg-sky-500 motion-safe:animate-pulse' : 'bg-muted-foreground/40'}`} />Live{liveCount > 0 && <span className="font-mono text-[10px] tabular-nums">{liveCount}</span>}</button>
+        <button onClick={() => setFLive((v) => !v)} title="Only tasks with a running session" className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 ${fLive ? 'border-emerald-500 bg-emerald-500/10 text-emerald-600' : 'text-muted-foreground'}`}><span className={`h-1.5 w-1.5 rounded-full ${fLive || liveCount ? STATE_META.working.dot : 'bg-muted-foreground/40'}`} />Live{liveCount > 0 && <span className="font-mono text-[10px] tabular-nums">{liveCount}</span>}</button>
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue{overdueCount > 0 && <span className="font-mono text-[10px] tabular-nums">{overdueCount}</span>}</button>
         {view === 'list' && (
           <>
@@ -9287,9 +9343,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
           <div className="min-w-0 flex-1 space-y-3">
             {/* Fleet strip — the board header as an operations readout: how many agents are working, what's stuck. */}
             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border bg-muted/20 px-4 py-2.5">
-              {metric(liveCount, 'live now', 'text-sky-600', true)}
+              {metric(liveCount, 'live now', 'text-emerald-600', true)}
               {metric(counts.todo, 'queued')}
-              {metric(counts.blocked, 'blocked', counts.blocked ? 'text-rose-600' : '')}
+              {metric(counts.blocked, 'needs you', counts.blocked ? 'text-amber-600' : '')}
               {metric(counts.done, 'done', 'text-emerald-600')}
             </div>
 
@@ -9320,13 +9376,14 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
             {/* Live dock — a transport bar for the fleet: every running session, named with the task it lives in. */}
             {liveTasks.length > 0 && (
-              <div className="flex items-center gap-3 overflow-x-auto rounded-md border border-sky-500/25 bg-sky-500/5 px-3 py-2">
-                <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-sky-600">
-                  <span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />{liveTasks.length} running
+              <div className="flex items-center gap-3 overflow-x-auto rounded-md border border-emerald-500/25 bg-emerald-500/5 px-3 py-2">
+                <span className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] uppercase tracking-wider text-emerald-600">
+                  <span className={`h-1.5 w-1.5 rounded-full ${STATE_META.working.dot}`} />{liveTasks.length} running
                 </span>
                 <div className="flex gap-2">
                   {liveTasks.map((t) => { const s = liveOf(t); if (!s) return null; return (
-                    <button key={t.id} onClick={() => attach(t, s)} className="flex shrink-0 items-center gap-2 rounded-md border bg-background px-2.5 py-1 text-[11px] hover:border-sky-500/50" title="Attach to the live session">
+                    <button key={t.id} onClick={() => attach(t, s)} className="flex shrink-0 items-center gap-2 rounded-md border bg-background px-2.5 py-1 text-[11px] hover:border-emerald-500/50" title="Attach to the live session">
+                      <SessionStatus s={s} iconClass="h-3 w-3" />
                       {assigneeIcon(t.assignee, 'h-3 w-3')}
                       <span className="max-w-[12rem] truncate text-muted-foreground">in <span className="text-foreground">{t.title}</span></span>
                       <span className="font-mono tabular-nums text-muted-foreground">{fmtElapsed(now - s.createdAt)}</span>
@@ -9364,7 +9421,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                           <a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-[13px] text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
                           {t.goalId && <Badge variant="outline" className="hidden shrink-0 gap-1 px-1 py-0 text-[10px] sm:inline-flex"><Target className="h-2.5 w-2.5" />{goalTitle(t.goalId)}</Badge>}
                           {unmetCount(t) > 0 && <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blockers">⏳ {unmetCount(t)}</span>}
-                          {live && <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] text-sky-600"><span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />live · {fmtElapsed(now - live.createdAt)}</span>}
+                          {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
                           {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
                         </div>
                         <div className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:block">{t.assignee ? assigneeChip(t.assignee, 'h-3.5 w-3.5') : '—'}</div>
@@ -9401,7 +9458,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                         <div className={`truncate text-xs font-medium ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</div>
                         <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
                           {t.assignee ? <span className="inline-flex min-w-0 items-center gap-1 truncate">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</span> : <span>unassigned</span>}
-                          {live && <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sky-600"><span className="h-1.5 w-1.5 rounded-full bg-sky-500 motion-safe:animate-pulse" />{fmtElapsed(now - live.createdAt)}</span>}
+                          {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{fmtElapsed(now - live.createdAt)}</span>}
                         </div>
                       </div>
                       <PriorityPips p={t.priority} />
@@ -9434,12 +9491,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
 
 /** Small status pill for a task, colour-keyed by state. Reused in the Dependencies section. */
 function TaskStatusPill({ status }: { status: TaskStatus }) {
-  const tone = status === 'done' ? 'bg-emerald-500/15 text-emerald-600'
-    : status === 'cancelled' ? 'bg-muted text-muted-foreground line-through'
-    : status === 'blocked' ? 'bg-red-500/15 text-red-600'
-    : status === 'doing' ? 'bg-blue-500/15 text-blue-600'
-    : 'bg-amber-500/15 text-amber-600'
-  return <span className={`shrink-0 rounded px-1.5 py-0 text-[10px] font-medium capitalize ${tone}`}>{status}</span>
+  const strike = status === 'cancelled' ? ' line-through' : ''
+  return (
+    <span className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0 text-[10px] font-medium capitalize ${roleChip(TASK_ROLE[status])}${strike}`}
+      title={`${status} — ${TASK_TIP[status]}`}>
+      <RoleIcon role={TASK_ROLE[status]} label={status} className="h-3 w-3" />{status}
+    </span>
+  )
 }
 
 /**
@@ -9758,16 +9816,18 @@ function fmtBytes(n: number): string {
 
 /** The tone + label a run's end state earns. A live pane wins over whatever the row last recorded; then
  *  the run's OWN verdict (`outcome`, from its `report`) if it filed one; then how the process ended. */
-function runVerdict(r: TaskRun): { label: string; cls: string } {
-  if (r.alive) return { label: 'live', cls: 'text-sky-600' }
-  const o = (r.outcome || '').toLowerCase()
-  if (o === 'success') return { label: 'success', cls: 'text-emerald-600' }
-  if (o === 'failure') return { label: 'failure', cls: 'text-destructive' }
-  if (o === 'partial') return { label: 'partial', cls: 'text-amber-600' }
-  if (r.status === 'crashed') return { label: 'crashed', cls: 'text-destructive' }
-  if (r.status === 'stopped') return { label: 'stopped', cls: 'text-amber-600' }
-  if (r.status === 'running') return { label: 'ended', cls: 'text-muted-foreground' }
-  return { label: o || r.status, cls: 'text-muted-foreground' }
+/** A task RUN's verdict, in the shared vocabularies — {@link STATE_META} while it lives, then
+ *  {@link VERDICT_META}. It used to carry its own third copy, which meant sky for "live" (nothing else in
+ *  the app is sky for live) and, like the chain rail before it, no knowledge of the `completed` /
+ *  `progressed` / `blocked` synonyms — so a run that HAD reported one printed its raw word in grey. */
+function runVerdict(r: TaskRun): { label: string; cls: string; role: StatusRole } {
+  if (r.alive) return { label: STATE_META.working.label, cls: STATE_META.working.tone, role: 'busy' }
+  const v = verdictOf((r.outcome || '').toLowerCase())
+  if (v && v !== 'none') return { label: VERDICT_META[v].label, cls: VERDICT_META[v].tone, role: v === 'success' ? 'ok' : v === 'partial' ? 'partial' : 'failed' }
+  if (r.status === 'crashed') return { label: STATE_META.crashed.label, cls: STATE_META.crashed.tone, role: 'crashed' }
+  if (r.status === 'stopped') return { label: STATE_META.stopped.label, cls: STATE_META.stopped.tone, role: 'halted' }
+  if (r.status === 'running') return { label: 'ended', cls: STATE_META.done.tone, role: 'ended' }
+  return { label: (r.outcome || '').toLowerCase() || r.status, cls: STATE_META.done.tone, role: 'ended' }
 }
 
 /**
@@ -9802,7 +9862,7 @@ function TaskRuns({ runs, selected, onOpen }: { runs: TaskRun[]; selected?: stri
               className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors hover:bg-muted/50 ${selected === r.id ? 'border-primary bg-primary/5' : r.current ? 'bg-muted/20' : 'border-dashed'}`}
             >
               <span className="w-5 shrink-0 font-mono text-[10px] text-muted-foreground/70">#{n}</span>
-              {r.alive ? <LiveBars /> : <TerminalSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+              <RoleIcon role={v.role} label={v.label} />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5">
                   <span className="truncate text-xs font-medium">{r.agent}</span>
@@ -10051,7 +10111,14 @@ function AutomationProposalsPanel({ agents, onChanged }: { agents: AgentInfo[]; 
   )
 }
 
-function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { me: Member; agents: AgentInfo[]; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; agentFilter?: string }) {
+function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFilter }: { me: Member; agents: AgentInfo[]; sessions: Session[]; serverTz?: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; agentFilter?: string }) {
+  // "Is this automation running RIGHT NOW?" — the one thing the card could not say. An automation's runs
+  // carry `automation:<id>` provenance, so the live feed the console already polls answers it without a
+  // new endpoint: newest live run wins, and it renders through the same SessionStatus as everywhere else
+  // (so a run that needs a human rings the same bell here as it does in the sidebar).
+  const liveRunOf = (id: string): Session | undefined => sessions
+    .filter((s) => s.spawnedBy === `automation:${id}` && isLive(s))
+    .sort((x, y) => y.createdAt - x.createdAt)[0];
   const [items, setItems] = useState<Automation[] | null>(null)
   const [busy, setBusy] = useState('')
   const [hint, setHint] = useState('')
@@ -10323,7 +10390,17 @@ function AutomationsPage({ me, agents, serverTz, onOpen, nav, agentFilter }: { m
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium">{a.name}</span>
-                    {!a.enabled && <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">paused</Badge>}
+                    {(() => {
+                      const run = liveRunOf(a.id)
+                      if (!run) return !a.enabled ? <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal text-muted-foreground">paused</Badge> : null
+                      return (
+                        <button onClick={() => onOpen(run.tmux, run.title || a.name)}
+                          className={`inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0 text-[10px] font-medium ${roleChip(STATE_META[sessionState(run)].role)}`}
+                          title="a run is in flight — open it">
+                          <SessionStatus s={run} iconClass="h-3 w-3" />{statusLabel(run)}
+                        </button>
+                      )
+                    })()}
                   </div>
                   <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-muted-foreground">
                     <AgentIcon icon={agents.find((ag) => ag.id === a.agentId)?.icon} className="h-3 w-3 shrink-0" />
