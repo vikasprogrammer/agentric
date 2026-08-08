@@ -135,6 +135,33 @@ function SessionStatus({ s, label = false, dark = false, className = '', iconCla
  *  a fixed-width column). Same vocabulary as {@link SessionStatus}. */
 const statusLabel = (s: Session, waiting = false): string => STATE_META[sessionState(s, waiting)].label
 
+/** ── THE outcome vocabulary ──────────────────────────────────────────────────────────────────────
+ *  What a FINISHED run says came of it, as opposed to how its process ended. Shared by the sessions
+ *  list and the chain rail, which used to disagree twice over.
+ *
+ *  The `report` tool's enum is `success | failure | partial`, but the server stores whatever it is handed
+ *  (`String(b.outcome || 'success')`), so the synonyms **`completed`**, **`progressed`** and **`blocked`**
+ *  are all in the live data — `src/edge/outcome.ts` already folds them in when it derives a verdict. The
+ *  UI mapped NONE of them: three agents that had reported a real verdict rendered as `done`, i.e. exactly
+ *  like a run that said nothing, and `blocked` — a failure — rendered grey instead of red.
+ *
+ *  An unrecognised value is shown verbatim in a neutral tone rather than forced into a bucket: printing
+ *  the agent's own word is honest, and silently calling it a success would not be. */
+type Verdict = 'success' | 'partial' | 'failure' | 'none'
+const VERDICT_OF: Record<string, Verdict> = {
+  success: 'success', completed: 'success',
+  partial: 'partial', progressed: 'partial',
+  failure: 'failure', blocked: 'failure', error: 'failure',
+  unknown: 'none',   // the stamp for "the run ended and nobody called `report`"
+}
+const VERDICT_META: Record<Verdict, { label: string; tone: string; icon: LucideIcon }> = {
+  success: { label: 'success', tone: 'text-emerald-600', icon: CircleCheck },
+  partial: { label: 'partial', tone: 'text-amber-600', icon: CircleSlash },
+  failure: { label: 'failure', tone: 'text-red-600', icon: CircleX },
+  none: { label: 'no report', tone: 'text-muted-foreground/70', icon: CircleSmall },
+}
+const verdictOf = (outcome?: string): Verdict | undefined => (outcome ? VERDICT_OF[outcome] : undefined)
+
 /** The RESULT word: what the agent said came of the run, falling back to how the process ended. `done`
  *  only means "the process exited" — it's the outcome that says whether the work landed, so once a run
  *  has reported its own verdict that's what the list shows. A finished run with no report reads
@@ -144,8 +171,8 @@ const resultLabel = (s: Session, waiting = false): string => {
   if (waiting || s.blocked || isLive(s)) return statusLabel(s, waiting)
   if (s.status === 'crashed' || s.status === 'stopped') return s.status
   if (!s.outcome) return s.status              // not stamped yet — fall back to the process view
-  if (s.outcome === 'unknown') return 'no report'
-  return s.outcome
+  const v = verdictOf(s.outcome)
+  return v ? VERDICT_META[v].label : s.outcome // an unmapped value prints as the agent wrote it
 }
 
 /** Colour for the result word — green only when the agent actually claims success, red on failure or a
@@ -154,10 +181,9 @@ const resultLabel = (s: Session, waiting = false): string => {
 const resultTone = (s: Session, waiting = false): string => {
   if (waiting || s.blocked || isLive(s)) return STATE_META[sessionState(s, waiting)].tone
   if (s.status === 'crashed') return 'text-red-600'
-  const o = s.outcome
-  if (o === 'success') return 'text-emerald-600'
-  if (o === 'failure' || o === 'error') return 'text-red-600'
-  if (o === 'partial' || s.status === 'stopped') return 'text-amber-600'
+  const v = verdictOf(s.outcome)
+  if (v && v !== 'none') return VERDICT_META[v].tone
+  if (s.status === 'stopped') return 'text-amber-600'
   return 'text-muted-foreground'
 }
 
@@ -3382,11 +3408,16 @@ const countDescendants = (g: SessionGroup): number =>
 /** Is this conversation working right now? (Same rule as `isLive` for a session row.) */
 const nodeLive = (n: ChainNode): boolean => Boolean(n.alive) || n.status === 'running'
 
-/** The chain node's state word + tone. The LIVE half is the shared vocabulary ({@link STATE_META}) so a
- *  node in the rail reads exactly like the same run in the sidebar, the tab strip and the list — the rail
- *  used to say "running" for a conversation that had finished its turn twenty minutes ago. Once a node is
- *  finished the rail keeps its own richer verdict words (pass / failed / partial / duplicate / no report),
- *  which is more than a session row shows and is the point of the rail. */
+/** The chain node's state word + tone, from the two shared vocabularies: {@link STATE_META} while it is
+ *  LIVE, {@link VERDICT_META} once it has finished. So a node reads exactly like the same run in the
+ *  sidebar, the tab strip and the list.
+ *
+ *  It used to carry a third, private set of words — `pass` / `failed` where the list said `success` /
+ *  `failure` for the identical fact (and `pass` misread as "parse" often enough to be reported). Worse,
+ *  it only knew the three enum values, so a node that reported `completed`, `progressed` or `blocked`
+ *  fell through to `n.status` and rendered `done`: an agent that HAD delivered a verdict looked exactly
+ *  like one that never reported. `duplicate` stays a rail-only word — it is a property of the chain, not
+ *  of the run, and nothing else can say it. */
 const nodeState = (n: ChainNode): { label: string; tone: string; icon: LucideIcon; anim: string; live?: boolean } => {
   const shared = (st: SessionState, live?: boolean) => {
     const m = STATE_META[st]
@@ -3396,11 +3427,12 @@ const nodeState = (n: ChainNode): { label: string; tone: string; icon: LucideIco
   if (nodeLive(n)) return shared(n.working ? 'working' : 'idle', true)
   if (n.duplicateOf) return { label: 'duplicate', tone: 'text-amber-600', icon: CopyIcon, anim: '' }
   if (n.status === 'crashed') return shared('crashed')
-  if (n.outcome === 'success') return { label: 'pass', tone: 'text-emerald-600', icon: CircleCheck, anim: '' }
-  if (n.outcome === 'failure' || n.outcome === 'error') return { label: 'failed', tone: 'text-red-600', icon: CircleX, anim: '' }
-  if (n.outcome === 'partial') return { label: 'partial', tone: 'text-amber-600', icon: CircleSlash, anim: '' }
+  const v = verdictOf(n.outcome)
+  if (v && v !== 'none') return { ...VERDICT_META[v], anim: '' }
   if (n.status === 'stopped') return shared('stopped')
-  return { label: n.outcome === 'unknown' ? 'no report' : n.status, tone: 'text-muted-foreground/70', icon: CircleSmall, anim: '' }
+  // `unknown` (ended, nobody reported) → "no report"; an unmapped value prints as the agent wrote it.
+  const m = VERDICT_META.none
+  return { label: v === 'none' ? m.label : (n.outcome || n.status), tone: m.tone, icon: m.icon, anim: '' }
 }
 
 /** Conversations with a live pane — what the Chain toggle badges when nothing needs a human and nothing

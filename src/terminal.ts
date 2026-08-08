@@ -57,6 +57,18 @@ const MID_TURN_MAX_MS = 2 * 3600_000;
  *  gate fires on every tool call and `node:sqlite` is synchronous, so the write must not ride the hot
  *  path more often than it has to; the DB statement is a no-op mid-turn anyway. */
 const BUSY_STAMP_THROTTLE_MS = 30_000;
+
+/** The `report` tool's enum is `success | failure | partial`, but the loopback route stores whatever it
+ *  is handed (`String(b.outcome || 'success')`), so agents have written `completed`, `progressed` and
+ *  `blocked` into the column too — `src/edge/outcome.ts` already folds those in as synonyms when it
+ *  derives a verdict, and the console now does the same. Normalising at the WRITE keeps one canonical
+ *  vocabulary in the DB, so the synonym folding downstream is belt-and-braces rather than load-bearing
+ *  (and the chat mirror stops sending ☑️ for a run that plainly succeeded). An unrecognised word is kept
+ *  VERBATIM: the agent's own account beats a guess, and every reader has a pass-through for it. */
+const OUTCOME_SYNONYMS: Record<string, string> = {
+  completed: 'success', progressed: 'partial', blocked: 'failure', error: 'failure',
+};
+const normalizeOutcome = (o: string): string => OUTCOME_SYNONYMS[o.trim().toLowerCase()] ?? o.trim().toLowerCase();
 const VIDEO_MAX_DURATION_SEC = 60;         // clamp the requested clip length
 const VIDEO_JOB_TTL_MS = 20 * 60_000;      // give up on a render after 20 minutes
 const VIDEO_MAX_POLLS = 200;               // poll-attempt ceiling (belt-and-suspenders with the TTL)
@@ -4905,6 +4917,7 @@ export class TerminalManager {
    *  episode), so the next run recalls the lesson, not just that a session happened. */
   report(sessionId: string, agent: string, outcome: string, summary: string, lessons?: string): void {
     if (this.hasCompleted(sessionId)) return;
+    outcome = normalizeOutcome(outcome);
     this.clearNotifications(sessionId);
     this.addMessage({ type: 'completed', sessionId, agent, title: `Completed — ${agent}`, body: summary || '(no summary)', status: 'open', outcome, audienceKind: 'sessionOwner', audienceId: sessionId });
     // A task-dispatched run signs off IN its task's Discussion too (§3.2), so the delegate's closing note
@@ -4924,7 +4937,7 @@ export class TerminalManager {
     // never persists one), so the agent's report is the reliable source. Skip when empty so a good
     // title isn't blanked.
     const aiTitle = titleFromSummary(summary);
-    if (aiTitle) this.db.prepare("UPDATE term_sessions SET title = ?, status = 'done', updated_at = ? WHERE id = ?").run(aiTitle, Date.now(), sessionId);
+    if (aiTitle) this.db.prepare("UPDATE term_sessions SET title = ?, status = 'done', busy_since = NULL, updated_at = ? WHERE id = ?").run(aiTitle, Date.now(), sessionId);
     else this.db.prepare("UPDATE term_sessions SET status = 'done', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
     this.audit(sessionId, agent, 'session.reported', { outcome, summary });
     // Deliberate semantic memory — the agent's note to its future self. Higher importance than an
