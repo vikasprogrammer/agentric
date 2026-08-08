@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.326.0] — 2026-08-08
+### Fixed
+- **A session that was visibly generating could read `ready`.** The inverse of the v0.324.0 bug, and the
+  half that had no backstop: `isWorking` self-healed against a *stale* flag, but nothing could set the
+  flag back. Hook settings are written into the agent folder **at launch**, so a session launched before
+  `UserPromptSubmit` was wired never fires it — once its `busy_since` was cleared it could never regain
+  it. Observed live on `ses_c63f1492dc12ce06`: pane showing `Germinating… (1m 2s)`, gate events every few
+  seconds, `busy_since` NULL, console reading `ready`.
+  The heartbeat now lives on the **gate hook**, which is wired into every session that exists and is the
+  one thing that cannot be missing — it *is* the invariant. A tool call is proof a turn is running, so it
+  stamps `busy_since` too:
+  - with `answered: false`, so a tool call never retires a "waiting on you" card — only a human
+    submitting a prompt does (and a session blocked on an approval reads `needs you` regardless, since
+    that outranks `working`);
+  - re-stamping a flag older than `MID_TURN_MAX_MS`, which turns that ceiling from a dumb timer into an
+    honest **activity** test: a long turn still calling tools keeps its spinner, a wedged one emits
+    nothing and ages out. Without this a real 2h+ turn would have silently read `ready`.
+  - throttled to one write per 30s per session (in-memory, dropped by `clearTurnBusy` so the first tool
+    call of the next turn is never swallowed). The gate is a hot path and `node:sqlite` is synchronous —
+    a lock-taking write there is the event-loop blocking that has made a busy box feel unresponsive
+    before, and the statement is a no-op mid-turn anyway.
+
 ## [0.325.1] — 2026-08-08
 ### Changed
 - **Session status glyphs: `ready` takes the check, `done` takes a dim dot.** The dashed circle read as
