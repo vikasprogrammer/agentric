@@ -8,6 +8,28 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.330.0] — 2026-08-09
+### Added
+- **Five new featured skill sources in the console's "Install from GitHub" dialog** — engineering and
+  design libraries alongside the existing marketing set: `addyosmani/agent-skills` (24), `google/skills`
+  (88), `emilkowalski/skills` (9), `Nutlope/hallmark` (anti-AI-slop design) and `tt-a1i/archify`
+  (architecture diagrams). A preset is only a POINTER — nothing is vendored, `browseRepo` lists the
+  repo's `SKILL.md` folders at click time and an owner/admin picks what to install — so this is reach,
+  not new trust surface. All five verified to resolve through `browseRepo` before being added; a repo of
+  agent *personas* (0 `SKILL.md` folders, e.g. `msitarzewski/agency-agents`) was rejected by that check.
+- **`scripts/skill-presets-test.cjs`** (wired into `npm run test:governance`) — pins the two mechanical
+  ways a featured source breaks: a `repo` that isn't the plain `owner/repo` form (dead button) and a
+  duplicate entry. Offline by design; live resolution stays a documented manual check, since it needs
+  GitHub's unauthenticated 60/hr budget.
+
+### Fixed
+- **Featured-source skill counts were stale or overstated.** The hand-written counts had drifted
+  (`anthropics/skills` ⭐157k→167k, `mattpocock/skills` ⭐151k→211k) and, more usefully, the raw
+  `SKILL.md` count overstates what a user actually gets: `browseRepo` dedupes skills by folder name,
+  so `alirezarezvani/claude-skills` is 439 installable, not 798. Every count is now the deduped figure
+  the browse dialog itself shows.
+
+
 ## [0.329.1] — 2026-08-09
 ### Changed
 - **Round 2 of the derived-outcome falsifier: the honest out-of-sample number is 52%, not 63%, and
