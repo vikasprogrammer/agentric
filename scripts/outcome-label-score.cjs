@@ -20,7 +20,10 @@ if (!process.env.AGENT_OS_HOME) { console.error('refusing to run without AGENT_O
 const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
 const { deriveRunOutcomes, foldConversations } = require(path.join(ROOT, 'dist/edge/outcome.js'));
 
-const labels = JSON.parse(fs.readFileSync(path.join(__dirname, 'outcome-labels.json'), 'utf8')).labels;
+// Which label set to score. Defaults to round 1; pass a path to score a later, independent round.
+const LABELS = process.argv[2] ? path.resolve(process.argv[2]) : path.join(__dirname, 'outcome-labels.json');
+const labels = JSON.parse(fs.readFileSync(LABELS, 'utf8')).labels;
+console.log(`labels: ${path.basename(LABELS)}`);
 const os = loadAgentOS();
 const convos = new Map(foldConversations(deriveRunOutcomes(os)).map((c) => [c.convoId, c]));
 

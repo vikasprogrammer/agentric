@@ -176,7 +176,7 @@ no longer derives a percentage from them, and states that outcome is self-report
   case is the fixture Step 1 must satisfy: two states differing **only** in how many runs reported,
   with identical real failures, must produce identical guidance.
 
-### Step 1 — an outcome that isn't self-graded ✅ shipped v0.323.0
+### Step 1 — an outcome that isn't self-graded 🟡 shipped v0.323.0, NOT closed (see round 2)
 
 `src/edge/outcome.ts`. Rules over facts the OS observed itself, ordered, each carrying the `basis` that
 decided it so any number traces back to its evidence. Live 30-day northwind corpus, 443 conversations:
@@ -211,8 +211,43 @@ continues a transcript — scoring rows counts one job several times), and **not
   After both, **63% exact against a 32% baseline** (19 judged, 9 declared unscorable, 7 unlabelable for
   lack of a transcript on this box).
 - **⚠ The 63% is not a clean number.** The labels were blind, but the rules were revised *after* seeing
-  which rows v1 got wrong, so it is partly fitted to 28 rows. **Before Step 2 leans on this, draw a fresh
-  blind sample against the current rules.** The honest, unfitted number is v1's 50%.
+  which rows v1 got wrong, so it is partly fitted to 28 rows. The honest, unfitted number is v1's 50%.
+
+#### Round 2 — the re-validation, and what it says (2026-08-09)
+
+32 conversations round 1 never touched (`--exclude`), stratified across all 9 bases, labelled blind,
+scored against the rules **exactly as shipped in v0.323.0** — nothing changed after seeing the result.
+
+| | exact | baseline | sign |
+|---|---|---|---|
+| round 1, v1 rules | 50% | 43% | — |
+| round 1, after tuning | 63% | 32% | 74% |
+| **round 2, out of sample** | **52%** | **43%** | **78%** |
+
+**The 63% was fitting.** True out-of-sample accuracy is ~52% — nine points above "call everything a
+success". Sign agreement (did work land, yes or no) holds up better at 78%, which is the number Step 2
+would actually lean on, but the verdict-level signal is weak.
+
+**This is not good enough to build Step 2 on.** The 11 disagreements cluster into three fixable causes,
+and one of them reverses a decision made in Step 1:
+
+1. **`no-evidence` → `unknown` on 5 conversations a human read in seconds** (4 successes, 1 partial) —
+   runs that did substantial work and left no observable trace. This is exactly the residual the
+   Stop-hook half was deferred over, and it is now the single largest error class. **That deferral was
+   wrong; the hook is the fix, and Step 1 is not finished without it.**
+2. **Quota deaths with zero tool calls read as `noop`** (3×). `died-early` requires `tool_calls > 0`, a
+   guard round 1 bought to stop an agent replying "looks like a test message" being called a failure.
+   Both shapes are an automation run, ~0 tools, a few seconds — the DB does not currently distinguish
+   "died on the first API call" from "answered and stopped". It needs a fact neither has today.
+3. **`task-retried` beat a later success** in a 4-run conversation (1×) — a fold-order bug, not a
+   sensing problem, and the cheapest of the three to fix.
+
+Two more disagreements were probably **my labels, not the rules**: I called two automation runs with no
+assistant output at all `noop`, where `died-early` called them failures. An unattended run that produces
+nothing is closer to a failure. Corrected, the exact number is ~57%.
+
+- **Verdict: Step 1 stays open.** Step 2 does not start until (1) is closed and a third round clears
+  60% out of sample on verdicts.
 - **Known coverage gap:** the OS declines to judge 134 of 443 conversations (30%) — every interactive
   human session. Fine for Steps 2–5, which are about unattended work; it would not be fine for a
   fleet-wide "how are we doing" claim.
@@ -260,6 +295,12 @@ hook is the fix, and this paragraph is the record of why it was skipped.
 
 One thing the residual does say: those 20 are runs that did substantial work (11–95 tool calls) and left
 no verdict. They are the most interesting runs in the corpus, and no observable fact decides them.
+
+> **Reversed by round 2 (2026-08-09).** The reasoning above is sound and the conclusion was wrong. A 6%
+> residual looked negligible against the whole corpus, but those conversations are not distributed like
+> the rest — they are concentrated in exactly the runs a human can judge instantly and the OS cannot, and
+> they produced **5 of the 11 out-of-sample errors**. Measuring the residual by its *share* rather than by
+> its share *of the mistakes* is the error. The hook is back in scope.
 
 ### Step 2 — one signal, one card, one action
 
