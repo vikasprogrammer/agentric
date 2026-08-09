@@ -154,8 +154,28 @@ mkdir -p .claude
 # --settings flag are NOT trust-gated, so the pre-allows are honored. (Hooks + deny rules apply either
 # way — only `allow` is gated — verified.) Clear any stale auto-discovered file from older launches.
 rm -f .claude/settings.json
+# CROSS-SESSION MESSAGING (claude ≥ 2.1.224) is OFF for governed runs. Claude Code binds a per-session
+# inbox socket and lets any session reach any other on the same machine via its `SendMessage`/`ListAgents`
+# tools. Every Agent OS run is a claude session owned by the SAME OS user on the SAME box, so out of the
+# box the whole fleet — across tenants — is mutually addressable through a channel the gateway never sees:
+# the gate hook's tool→capability table has no row for `SendMessage`, so it falls to the `*)` arm and the
+# call is unaudited, un-policed, and carries none of the run-as identity, owner or provenance that the
+# governed A2A path (`task_create`/`task_wait`/`notify`/poke-back) records. Worse, the default that
+# decides delivery keys off permission MODE: an unattended run uses --dangerously-skip-permissions, i.e.
+# the bypass class, and a bypass→bypass pair is DELIVERED with no dialog. So `refuse` here — Claude Code
+# still binds the socket but drops everything arriving on it. A value from the --settings flag wins over
+# user settings, and project/local `refuse` would win over us, which is the safe direction.
+# `isolatePeerMachines` requires explicit approval before a message leaves the box (cross-machine sends
+# are reply-only and need Remote Control, so with inbound refused this can't actually fire — it's the
+# belt to the braces, and it can't hang an unattended run).
+# NOT denied: the `SendMessage`/`ListAgents` TOOLS. The same `SendMessage` serves subagents and agent
+# teams inside one session, so a permissions deny would take those out too. Outbound stays available and
+# lands nowhere, because every governed session refuses. Governing it properly — an `agent.message`
+# capability in the gate hook's routing table, policy-gated and audited — is the follow-up.
 cat > .claude/aos-settings.json <<JSON
 {
+  "crossSessionInbound": "refuse",
+  "isolatePeerMachines": true,
   "permissions": {
     "allow": ["mcp__agentos"]$DENY_LINE
   },
