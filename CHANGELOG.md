@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.329.1] — 2026-08-09
+### Changed
+- **Round 2 of the derived-outcome falsifier: the honest out-of-sample number is 52%, not 63%, and
+  Step 1 is reopened** (`docs/insights-revisit.md`). Round 1 tuned two rules on the rows it had just
+  scored, so its 63% measured the fitting. This round samples 32 conversations round 1 never touched
+  (`outcome-label-sample.cjs --exclude`), labelled blind, scored against the rules exactly as shipped in
+  v0.323.0: **52% exact against a 43% always-success baseline** (78% on sign — did work land or not).
+  Nine points over the trivial baseline is not enough to build Step 2 on. The 11 errors cluster into
+  three causes, one of which reverses a Step 1 decision: **5 of them are the `no-evidence` residual the
+  Stop-hook half was deferred over** — 6% of the corpus, but 45% of the mistakes, because those
+  conversations are concentrated in exactly the runs a human judges instantly and the OS cannot.
+  Measuring a residual by its share rather than by its share of the errors is the mistake; the hook is
+  back in scope. The other two: quota deaths with zero tool calls fall through `died-early`'s
+  `tool_calls > 0` guard and read as `noop` (3×), and `task-retried` beat a later success in one 4-run
+  conversation (a fold-order bug). No rule was changed in response — that is what round 3 is for.
+- `outcome-label-score.cjs` takes a labels-file argument; `outcome-label-sample.cjs` takes `--exclude` so
+  a re-validation can only draw rows an earlier round never saw.
+
 ## [0.329.0] — 2026-08-08
 ### Changed
 - **The status grammar reaches the last four surfaces** (Inbox, Approvals, Agents, Cockpit), finishing the
