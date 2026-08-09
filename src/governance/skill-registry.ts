@@ -16,22 +16,31 @@
  */
 import { parseFrontmatter, validSkillName } from './skills';
 
-/** A featured one-click source shown in the console. The marketing set + a skills.sh starter. */
+/**
+ * A featured one-click source shown in the console — marketing, engineering & design sets plus a
+ * skills.sh starter. A preset is only ever a POINTER: nothing is vendored here, `browseRepo` fetches
+ * the repo's `SKILL.md` folders at click time and an owner/admin picks what to install. So the bar
+ * for adding one is just: public repo, permissive licence, and it actually contains SKILL.md folders
+ * (a repo of agent *personas* has none and would present an empty browse — verify before adding).
+ *
+ * Skill/star counts are hand-written and drift; they're a rough size signal, not a live figure.
+ * Last verified 2026-08-09.
+ */
 export const PRESET_SOURCES: { repo: string; label: string; description: string }[] = [
   {
     repo: 'coreyhaines31/marketingskills',
     label: 'Marketing Skills',
-    description: '45 marketing playbooks — SEO, CRO, copywriting, ads, lifecycle & growth (Corey Haines, MIT, ⭐36k).',
+    description: '49 marketing playbooks — SEO, CRO, copywriting, ads, lifecycle & growth (Corey Haines, MIT, ⭐44k).',
   },
   {
     repo: 'OpenClaudia/openclaudia-skills',
     label: 'OpenClaudia Marketing',
-    description: '67 open marketing skills — SEO, content, email, ads, analytics, growth (MIT).',
+    description: '75 open marketing skills — SEO, content, email, ads, analytics, growth (MIT).',
   },
   {
     repo: 'AgriciDaniel/claude-seo',
     label: 'Claude SEO',
-    description: '31 deep-SEO skills — technical, E-E-A-T, schema, GEO/AEO, local & intl (MIT, ⭐10k).',
+    description: '31 deep-SEO skills — technical, E-E-A-T, schema, GEO/AEO, local & intl (MIT, ⭐14k).',
   },
   {
     repo: 'rampstackco/claude-skills',
@@ -40,18 +49,43 @@ export const PRESET_SOURCES: { repo: string; label: string; description: string 
   },
   {
     repo: 'alirezarezvani/claude-skills',
-    label: 'Claude Skills (420)',
-    description: 'Broad library — engineering, marketing, product, compliance, finance & ops (MIT, ⭐19k).',
+    label: 'Claude Skills (439)',
+    description: 'Broad library — engineering, marketing, product, compliance, finance & ops (MIT, ⭐24k).',
   },
   {
     repo: 'anthropics/skills',
     label: 'Anthropic Official',
-    description: 'Official Anthropic skills — docx/pdf/pptx/xlsx, artifacts & frontend design (⭐157k).',
+    description: 'Official Anthropic skills — docx/pdf/pptx/xlsx, artifacts & frontend design (⭐167k).',
+  },
+  {
+    repo: 'addyosmani/agent-skills',
+    label: 'Addy Osmani · Agent Skills',
+    description: '24 production-grade engineering skills for AI coding agents — review, perf, testing & debugging (MIT, ⭐85k).',
+  },
+  {
+    repo: 'google/skills',
+    label: 'Google',
+    description: '88 skills for Google products & technologies — Cloud, Android, web & AI tooling (Apache-2.0, ⭐17k).',
+  },
+  {
+    repo: 'emilkowalski/skills',
+    label: 'Emil Kowalski · Design',
+    description: '9 skills for designers & engineers — animation, interaction & UI craft (MIT, ⭐27k).',
+  },
+  {
+    repo: 'Nutlope/hallmark',
+    label: 'Hallmark · Anti-slop Design',
+    description: 'One design skill that steers agents away from generic AI-looking UI (MIT, ⭐23k).',
+  },
+  {
+    repo: 'tt-a1i/archify',
+    label: 'Archify · Diagrams',
+    description: 'One skill for verifiable architecture, workflow & data-flow diagrams as self-contained HTML (MIT, ⭐11k).',
   },
   {
     repo: 'mattpocock/skills',
     label: 'Matt Pocock · Engineering',
-    description: 'Engineering craft — TDD, refactoring, debugging & architecture (MIT, ⭐151k).',
+    description: '35 engineering-craft skills — TDD, refactoring, debugging & architecture (MIT, ⭐211k).',
   },
 ];
 
