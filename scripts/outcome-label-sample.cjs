@@ -33,7 +33,18 @@ const { deriveRunOutcomes, foldConversations } = require(path.join(ROOT, 'dist/e
 const { readConversation } = require(path.join(ROOT, 'dist/edge/conversation.js'));
 
 const os = loadAgentOS();
-const convos = foldConversations(deriveRunOutcomes(os));
+let convos = foldConversations(deriveRunOutcomes(os));
+
+// `--exclude <labels.json>` drops conversations already labelled in an earlier round. A re-validation is
+// only worth running on rows the rules were NOT tuned against: the first round's errors bought two rules,
+// so scoring those same rows again measures the fitting, not the derivation.
+const exArg = process.argv.indexOf('--exclude');
+if (exArg > -1 && process.argv[exArg + 1]) {
+  const prior = new Set(Object.keys(JSON.parse(fs.readFileSync(process.argv[exArg + 1], 'utf8')).labels));
+  const before = convos.length;
+  convos = convos.filter((c) => !prior.has(c.convoId));
+  console.log(`excluding ${before - convos.length} already-labelled conversations`);
+}
 
 // Stratify: up to PER_BASIS per basis, taken evenly across each stratum so it isn't just the newest rows.
 const byBasis = new Map();
