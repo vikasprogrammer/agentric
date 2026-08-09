@@ -125,6 +125,15 @@ async function main() {
   const launch = fs.readFileSync(path.join(ROOT, 'terminal/claude-launch.sh'), 'utf8');
   assert(/"allow": \["mcp__agentos"\]/.test(launch), 'allow-list uses the mcp__agentos wildcard');
   assert(!/mcp__agentos__task_update"/.test(launch), 'old partial enumerated allow-list removed');
+  // Cross-session messaging (claude ≥2.1.224) reaches every session owned by the same OS user on the
+  // box — the whole fleet, across tenants — through a channel the gate hook has no capability row for.
+  // Refused at the settings layer; the tools themselves stay (SendMessage also serves subagents/teams).
+  assert(/"crossSessionInbound": "refuse"/.test(launch), 'cross-session inbound messages are refused');
+  assert(/"isolatePeerMachines": true/.test(launch), 'cross-machine sends require explicit approval');
+  assert(
+    !/"deny":[^\n]*SendMessage/.test(launch),
+    'SendMessage is NOT deny-listed (that would also kill subagents / agent teams)',
+  );
 
   console.log(`\n\x1b[1mResult:\x1b[0m ${pass} passed, ${fail} failed\n`);
   process.exit(fail ? 1 : 0);

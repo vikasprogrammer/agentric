@@ -562,6 +562,18 @@ taking".
 
 ## Gotchas
 
+- **Claude Code ships side-effect channels the gate hook doesn't know about — assume new ones.** The gate
+  hook's tool→capability table ends in `*) exit 0` ("any other built-in isn't a world side effect"), which
+  is right for `Read`/`Glob`/`Grep` and wrong the moment a release adds a tool that reaches outside the
+  session. **Cross-session messaging** (2.1.224) is the live example: each session binds an inbox socket
+  and `SendMessage`/`ListAgents` address any session owned by the same OS user on the same machine — i.e.
+  the whole fleet, across tenants, on one box — with no policy check, no audit event, and none of the
+  run-as identity/owner/provenance that `task_create`/`task_wait`/`notify`/poke-back carry. Its delivery
+  default keys off permission MODE, so `--dangerously-skip-permissions` (every unattended run) is the
+  bypass class and a bypass→bypass pair delivers with no dialog. Shut off at the settings layer in
+  `terminal/claude-launch.sh` (`crossSessionInbound: "refuse"` + `isolatePeerMachines: true`) rather than
+  by denying the tools, since the same `SendMessage` also serves subagents/agent teams inside one session.
+  When claude-code updates, diff the tools reference against that routing table.
 - `node:sqlite` emits an `ExperimentalWarning` on first use; `src/cli.ts` filters just that one line.
 - WAL mode creates `agent-os.db-wal`/`-shm` sidecars — all `*.db*` and `connectors/` are gitignored in
   `data/.gitignore`.

@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.330.1] — 2026-08-09
+### Fixed
+- **Cross-session messaging is refused on governed runs.** Claude Code 2.1.224 shipped a per-session
+  inbox socket plus `SendMessage`/`ListAgents`, so any session can address any other session owned by
+  the same OS user on the same machine — which is every Agent OS run, across tenants, on one box. That
+  channel bypasses the gateway entirely: the gate hook's tool→capability table has no row for
+  `SendMessage`, so it falls through the `*)` "not a world side effect" arm — no policy check, no audit
+  event, none of the run-as identity, owner or provenance the governed A2A path
+  (`task_create`/`task_wait`/`notify`/poke-back) records. The delivery default made it worse rather
+  than safer: it keys off permission MODE, and an unattended run's `--dangerously-skip-permissions`
+  puts it in the bypass class, where a bypass→bypass pair is delivered with no approval dialog at all.
+  `terminal/claude-launch.sh` now writes `"crossSessionInbound": "refuse"` (Claude Code still binds the
+  socket, and drops everything arriving on it) and `"isolatePeerMachines": true` into every session's
+  `--settings` file. The `SendMessage`/`ListAgents` tools are deliberately NOT denied — the same
+  `SendMessage` serves subagents and agent teams within one session — so outbound remains available and
+  simply lands nowhere, since every governed session refuses. Governing the channel properly, as an
+  `agent.message` capability in the gate hook's routing table, is the follow-up.
+
 ## [0.330.0] — 2026-08-09
 ### Added
 - **Five new featured skill sources in the console's "Install from GitHub" dialog** — engineering and
