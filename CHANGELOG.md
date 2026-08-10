@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.334.1] — 2026-08-10
+### Fixed
+- **A poke-back now wakes the caller that is still running, instead of starting a second claude beside
+  it.** When a delegate closed a `poke_on_done` hand-off, the OS chose between typing into the caller's
+  live pane and `--resume`ing its transcript in a new session — and it made that choice on the session
+  row's `status`. `status` is not liveness: an agent that calls `report` is stamped `done` while its
+  claude keeps running, which is the *normal* shape for a caller (hand off work, report, carry on while
+  the delegate finishes). So those pokes all took the resume lane and opened a **second claude on a
+  transcript the first still held** — what `chatSend` calls "the one outcome worse than a slow turn".
+  Observed on instapods 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked until 16:34; its 16:31
+  poke spawned `ses_441cec`, which died 28s later, and the caller never saw the result — it re-derived it
+  by shelling out to `gh pr view`. Liveness is now asked of the **pane** (`TerminalManager.reachable`),
+  which delivers into a reported-but-warm session, still refuses a run a human `stop`ped or the sweep
+  marked `crashed`, puts the row back to `running` + busy when text lands, and — if the inject fails on a
+  wedged pane — kills it before falling back to the resume. The same test now backs console injection and
+  task-room delivery, which shared the `status = 'running'` gate. Pinned by
+  `scripts/poke-warm-caller-test.cjs`.
+
 ## [0.334.0] — 2026-08-10
 ### Added
 - **A bare entity id is now a link wherever it is displayed.** Agents constantly reference a row by its

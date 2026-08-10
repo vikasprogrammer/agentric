@@ -348,6 +348,28 @@ marker silently so it can never fire later. A row skipped for budget stays **unm
 still owes it. Replayed over the live instawp backlog: settles in 3 ticks (~60s), 8 callers woken, 1 task
 auto-closed, 12 cold ones marked silently.
 
+### 3.5 Where the poke LANDS — the pane, never the status column
+
+`pokeCaller` has two lanes: type the wake-up into the caller's live pane, or `--resume` its transcript in a
+new session. Which one it takes is the whole correctness question, because the resume lane is only safe
+when nothing else holds that transcript.
+
+It used to choose on the session row's `status`, and **`status` is not liveness**. An agent that calls
+`report` is stamped `done` (`reportSession`) while its claude keeps running — and that is the *normal*
+shape for a caller: hand off, report, keep working while the delegate finishes minutes later. Every one of
+those pokes took the resume lane and opened a second claude on a transcript the first still held. Live on
+instapods 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked through 16:34; its 16:31 poke spawned
+`ses_441cec`, which died 28s later, and the caller — never woken — re-derived the delegate's result by
+shelling out to `gh pr view`.
+
+Liveness is therefore asked of the **pane**: `TerminalManager.reachable(sessionId)`, the delivery-side
+counterpart to `isAlive` (which folds `status` in and is right for the pile-up guards it was written for).
+`reachable` still refuses a run a human `stop`ped or the sweep marked `crashed` — a surviving pane there is
+a leftover, not a destination. Delivery puts the row back to `running` + `busy_since` so the console stops
+reading idle through work it just triggered, and an inject that fails on a wedged pane kills that pane
+before the resume, mirroring `chatSend`. `deliverToResident` and `injectToSession` share the same test —
+they carried the same `status = 'running'` gate. Pinned by `scripts/poke-warm-caller-test.cjs`.
+
 ---
 
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`
