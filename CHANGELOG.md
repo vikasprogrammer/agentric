@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.330.0] — 2026-08-10
+### Added
+- **The derived outcome reads the transcript for the runs the session row cannot decide, and Step 1 of
+  `docs/insights-revisit.md` closes at 89% out-of-sample.** Round 2 scored 52% and put Step 1 back to
+  open; 8 of its 11 errors were two blind spots. Scanning every transcript in the corpus by basis showed
+  the evidence was already on disk: `died-early` runs carry an auth/quota signature 17 times in 19,
+  11 of 30 `noop`s carry one (a run killed on its first API call makes no tool calls either), and **all
+  22 `no-evidence` conversations end with a 600–3300 character closing summary** — there were no silent
+  runs in the residual at all. They had finished and simply never called `report`.
+  So the deferred Stop-hook is not built, again and for a better reason: three read-time rules —
+  `runtime-death` (a quota/auth signature in the transcript TAIL → failure), `finished-clean` (a ≥200
+  char closing message and no error → success), `interrupted` — plus a fold fix so a conversation that
+  ENDS in success is a success rather than being scored by the `task-retried` attempts before it. The
+  layer is consulted only where the observed fields gave up, ~50 of 477 conversations, and never
+  overrules a reported outcome or a human rating. Whole pass: 40ms.
+  **Round 3 — 33 conversations neither earlier round touched, labelled blind, scored once, no rule
+  changed after: 89% exact / 93% sign against a 46% always-success baseline** (rounds: 50 → 52 → 89).
+  The three disagreements are narrow: an `ask` run whose entire answer was "Answered: 42" (under the
+  substantive floor), one run with no assistant output where the OS says `noop` and the labeller says
+  failure, and one where the agent reported `partial` and the labeller read it as success.
+  Corpus: **unknown 1 of 328 scorable (0.3%)**, failure 39, noop 19, success 218.
+  Rounds 1 and 2 are permanently in-sample now; any future rule change needs a round 4 on rows none of
+  the three touched. Pinned by `scripts/outcome-derivation-test.cjs` (32 assertions), including that the
+  transcript layer must not second-guess a report or a rating, and that a chatty zero-work reply is
+  still a `noop` rather than a death.
+
 ## [0.330.1] — 2026-08-09
 ### Fixed
 - **Cross-session messaging is refused on governed runs.** Claude Code 2.1.224 shipped a per-session

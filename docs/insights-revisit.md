@@ -176,7 +176,7 @@ no longer derives a percentage from them, and states that outcome is self-report
   case is the fixture Step 1 must satisfy: two states differing **only** in how many runs reported,
   with identical real failures, must produce identical guidance.
 
-### Step 1 — an outcome that isn't self-graded 🟡 shipped v0.323.0, NOT closed (see round 2)
+### Step 1 — an outcome that isn't self-graded ✅ closed at v0.330.0 (see Step 1b)
 
 `src/edge/outcome.ts`. Rules over facts the OS observed itself, ordered, each carrying the `basis` that
 decided it so any number traces back to its evidence. Live 30-day northwind corpus, 443 conversations:
@@ -248,6 +248,53 @@ nothing is closer to a failure. Corrected, the exact number is ~57%.
 
 - **Verdict: Step 1 stays open.** Step 2 does not start until (1) is closed and a third round clears
   60% out of sample on verdicts.
+
+#### Step 1b — the three fixes, and round 3 ✅ closed at v0.330.0
+
+The Stop-hook was still not the answer. Scanning every transcript in the corpus by current basis showed
+the evidence was already on disk, 95% of the time:
+
+```
+died-early     17 of 19 carry an auth/quota signature   the rule was right about what it found
+no-tool-calls  11 of 30 carry one                       scored `noop`; they are deaths
+no-evidence     0 of 22 carry one — and all 22 end with a 600–3300 char closing summary
+```
+
+That last line is the finding. **There were no silent runs in the residual at all.** Every one had
+finished, written a real hand-off, and simply never called `report`. A hook forcing a report would have
+added a runtime change to the teardown path to re-derive something the transcript already stated — so
+Step 1b reads the transcript instead, lazily, only for the runs the session row could not decide
+(~50 of 477 conversations; the whole pass takes 40ms).
+
+Three rules, each bought by a round-2 error:
+- **`runtime-death`** — a quota/auth signature in the transcript *tail* → failure. Fixes the 3 deaths
+  that read as `noop` because a run killed on its first API call also makes no tool calls.
+- **`finished-clean`** — ended with a ≥200-char closing message and no error → success. Fixes the 5
+  `no-evidence` misses.
+- **fold order** — a conversation that *ends* in success is a success. Three attempts each look
+  `incomplete` (that is all `task-retried` means) but the hand-off landed.
+
+**Round 3 — 33 conversations neither earlier round touched, labelled blind, scored once:**
+
+| | exact | baseline | sign |
+|---|---|---|---|
+| round 1, v1 rules | 50% | 43% | — |
+| round 1, after tuning *(in-sample)* | 63% | 32% | 74% |
+| round 2, out of sample | 52% | 43% | 78% |
+| **round 3, out of sample** | **89%** | **46%** | **93%** |
+
+Three disagreements in 28, all narrow: an `ask` run whose whole answer was "Answered: 42" (13 chars,
+under the substantive floor); one run with no assistant output at all, where the OS says `noop` and I
+say failure — the genuine ambiguity flagged in round 2; and one where the agent reported `partial` and
+I read the transcript as success, i.e. the agent was harder on itself than I was.
+
+Corpus after 1b: **unknown 1 of 328 scorable (0.3%)**, failure 39, noop 19, success 218.
+
+- **Exit met** (bar was 60% out of sample). Step 1 is closed; Step 2 can start.
+- **Standing caveat:** rounds 1 and 2 are permanently in-sample. Any future rule change needs a round 4
+  on rows none of the three touched — that discipline is the only reason the 89% means anything.
+- **Still not judged:** 130 interactive human sessions (28% of the corpus) and the ~5% of conversations
+  with no transcript on the box.
 - **Known coverage gap:** the OS declines to judge 134 of 443 conversations (30%) — every interactive
   human session. Fine for Steps 2–5, which are about unattended work; it would not be fine for a
   fleet-wide "how are we doing" claim.
@@ -296,7 +343,10 @@ hook is the fix, and this paragraph is the record of why it was skipped.
 One thing the residual does say: those 20 are runs that did substantial work (11–95 tool calls) and left
 no verdict. They are the most interesting runs in the corpus, and no observable fact decides them.
 
-> **Reversed by round 2 (2026-08-09).** The reasoning above is sound and the conclusion was wrong. A 6%
+> **Reversed by round 2, then settled by Step 1b (2026-08-10).** The hook was never built: the evidence
+> turned out to be on disk already (see Step 1b). What follows is the round-2 reasoning that reopened it.
+>
+> **Round 2 (2026-08-09).** The reasoning above is sound and the conclusion was wrong. A 6%
 > residual looked negligible against the whole corpus, but those conversations are not distributed like
 > the rest — they are concentrated in exactly the runs a human can judge instantly and the OS cannot, and
 > they produced **5 of the 11 out-of-sample errors**. Measuring the residual by its *share* rather than by
