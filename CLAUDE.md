@@ -577,6 +577,15 @@ a new version heading in the same commit. The sidebar version therefore tells yo
 build a long-running server is holding in memory — the first thing to check when a change "isn't
 taking".
 
+**Bump with `npm version`, never by hand-editing `package.json`.** The lockfile also records the root
+version (in `.version` AND `.packages[""].version`), and npm rewrites both on the next `npm install`.
+So a hand bump leaves `package-lock.json` behind, and the drift surfaces on the DEPLOY box:
+`scripts/make-live.sh` runs `npm install`, npm rewrites the lock, and the live checkout is suddenly
+"dirty" — the deploy refuses until it's re-run with `--force`, which trains everyone to force past a
+guard whose only job is to notice that someone edited the live checkout. `scripts/version-sync-test.cjs`
+(first in `npm run test:governance`, no build needed) is the falsifier: it fails the deploy gate on
+drift and prints the one-line fix.
+
 ## Gotchas
 
 - **Claude Code ships side-effect channels the gate hook doesn't know about — assume new ones.** The gate

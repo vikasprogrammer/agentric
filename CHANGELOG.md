@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.331.2] — 2026-08-10
+### Fixed
+- **`package-lock.json` is back in sync with `package.json`, and a test keeps it that way.** The lock
+  had been stuck at 0.330.0 while the package moved on, because the last few bumps edited
+  `package.json` directly instead of running `npm version`. npm rewrites the lock's two version fields
+  on the next `npm install` — which happens on the deploy box — so every `scripts/make-live.sh` run
+  found the live checkout "dirty" and had to be re-run with `--force`. That is a safety guard (someone
+  edited the live checkout) degraded into noise by a bookkeeping miss, and force-deploying past it was
+  becoming routine. New `scripts/version-sync-test.cjs` runs FIRST in `npm run test:governance` (no
+  build needed), so the drift now fails the deploy's own gate and prints the one-line fix. CLAUDE.md →
+  Versioning states the rule: bump with `npm version <x.y.z> --no-git-tag-version`, never by hand.
+
 ## [0.331.1] — 2026-08-10
 ### Changed
 - **The GitHub repo is now `vikasprogrammer/agentric`.** Follow-through on the Agentric rebrand: the
