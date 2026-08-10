@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.331.1] — 2026-08-10
+### Changed
+- **The GitHub repo is now `vikasprogrammer/agentric`.** Follow-through on the Agentric rebrand: the
+  repo slug is a public brand surface, and GitHub keeps a permanent redirect so existing clones,
+  remotes and issue links keep resolving (don't ever let a new repo claim the old `agent-os` name, or
+  that redirect dies). Swept the hardcoded slug out of the README clone block, `FEEDBACK_URL`, the
+  `gh --repo …` lines in CLAUDE.md / TODO.md / `scripts/wt.sh` / `docs/goals-plan.md` / the
+  fleet-insights skill, and both service `Documentation=` URLs (which still pointed at the wrong org).
+  Still `agent-os` on purpose: the npm package + CLI, `AGENT_OS_*`, the units, the data homes, the
+  local checkout paths, and the GitHub **App** slug `agent-os-northwind` — renaming that one changes
+  its installation URLs and breaks per-member GitHub auth.
+
 ## [0.331.0] — 2026-08-10
 ### Changed
 - **The product is now called Agentric (agentric.io).** Brand-layer rename only: every user-facing

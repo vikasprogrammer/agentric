@@ -128,7 +128,7 @@ Follow the repo's standing workflow (see CLAUDE.md + memory) — **never edit th
    **root**) · `npm run demo` if you touched governance.
 4. Bump version (minor for a feature, patch for a fix) + move a CHANGELOG line under a new heading.
 5. Commit (with the `Co-Authored-By: Claude Opus 4.8 (1M context)` trailer), push, open **one**
-   consolidated PR with `gh ... --repo vikasprogrammer/agent-os`, then `gh pr merge --squash`.
+   consolidated PR with `gh ... --repo vikasprogrammer/agentric`, then `gh pr merge --squash`.
 
 Batching several branches? Use `scripts/wt.sh integrate` and one PR, per the shared-checkout rule.
 

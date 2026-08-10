@@ -33,7 +33,7 @@ function draw() {
   w('   5. www          www.google.com\r\n')
   w('   6. end of line, trailing period → visit northwind.io.\r\n')
   w('   7. in a sentence: see the deploy at agents.example.com for details\r\n')
-  w('   8. parenthesised (github.com/vikasprogrammer/agent-os)\r\n')
+  w('   8. parenthesised (github.com/vikasprogrammer/agentric)\r\n')
   w('   9. uncommon TLD  my-shop.store  and a path one  foo.bar/baz\r\n')
   w('  10. osc-8 markup  \x1b]8;;https://claude.com/code\x1b\\the Claude Code site\x1b]8;;\x1b\\\r\n')
   w('  11. NOT a link   Component.tsx:42  ·  src/main.rs  ·  v1.2.io-beta\r\n\r\n')
