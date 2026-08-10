@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
 import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, Ban, Copy as CopyIcon } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -8696,6 +8696,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // view + filters
   const [view, setView] = useState<'board' | 'list' | 'focus'>(() => { const v = localStorage.getItem('aos_tasks_view'); return v === 'list' || v === 'focus' ? v : 'board' })
   useEffect(() => { localStorage.setItem('aos_tasks_view', view) }, [view])
+  // Task room: the state sidebar collapses so the discussion/session column gets the full width — a
+  // long transcript or an attached terminal is the reason you opened the room. Sticky across rooms.
+  const [roomSide, setRoomSide] = useState(() => localStorage.getItem('aos_task_room_side') !== '0')
+  useEffect(() => { localStorage.setItem('aos_task_room_side', roomSide ? '1' : '0') }, [roomSide])
   const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'goal' | 'none'>('priority')
   const [mine, setMine] = useState(false)
   const [fAssignee, setFAssignee] = useState('') // '' = all
@@ -9149,6 +9153,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             me={me}
             members={members}
             agents={agents}
+            liveRuns={detail.runs.filter((r) => r.alive && !r.archived)}
             onChange={() => refreshDetail(detail.task.id)}
           />
         )}
@@ -9217,10 +9222,21 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{t.id}</span>
           </div>
           {parts.length > 0 && <span className="hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:flex"><DiscussionAvatars participants={parts} members={members} />{parts.filter((p) => p !== 'system').length} in discussion</span>}
+          {/* Collapse the details sidebar (lg+ only — below that the grid stacks and the sidebar is just
+              the next block down, so there's nothing to reclaim and no toggle to offer). */}
+          <button
+            onClick={() => setRoomSide((v) => !v)}
+            title={roomSide ? 'Hide details' : 'Show details'}
+            aria-label={roomSide ? 'Hide details sidebar' : 'Show details sidebar'}
+            aria-expanded={roomSide}
+            className="hidden rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground lg:inline-flex"
+          >
+            {roomSide ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
+          </button>
           <button onClick={closeTask} className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="h-4 w-4" /></button>
         </div>
-        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px]">
-          <div className="flex min-w-0 flex-col overflow-hidden border-b lg:border-b-0 lg:border-r">
+        <div className={`grid min-h-0 flex-1 grid-cols-1 ${roomSide ? 'lg:grid-cols-[minmax(0,1fr)_320px]' : 'lg:grid-cols-[minmax(0,1fr)]'}`}>
+          <div className={`flex min-w-0 flex-col overflow-hidden border-b lg:border-b-0 ${roomSide ? 'lg:border-r' : ''}`}>
             <div className="flex shrink-0 items-center gap-0.5 border-b px-2">
               {roomTab_btn('discussion', <><MessageSquare className="h-3.5 w-3.5" />Discussion{detail.unread > 0 && <span className="ml-0.5 rounded-full bg-sky-500 px-1.5 text-[10px] font-semibold text-white">{detail.unread}</span>}</>)}
               {roomTab_btn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
@@ -9241,7 +9257,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                       ))}
                     </div>
                   )}
-                  <div className="min-h-0 flex-1"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} onChange={() => refreshDetail(t.id)} /></div>
+                  <div className="min-h-0 flex-1"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} liveRuns={detail.runs.filter((r) => r.alive && !r.archived)} onChange={() => refreshDetail(t.id)} /></div>
                 </div>
               )}
               {activeTab === 'description' && (
@@ -9260,7 +9276,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
               )}
             </div>
           </div>
-          <div className="overflow-y-auto bg-muted/20 p-4">
+          <div className={`overflow-y-auto bg-muted/20 p-4 ${roomSide ? '' : 'lg:hidden'}`}>
             {detailBody({ withDiscussion: false, selectedRun: runSel || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
           </div>
         </div>
@@ -9761,16 +9777,40 @@ function eventPhrase(e: Extract<TaskTimelineEntry, { kind: 'event' }>): { text: 
  * mention-aware composer. Quiet by default: plain messages notify no one; @mention an agent to pull it
  * onto the task, or a teammate to ping them. See docs/task-rooms-plan.md.
  */
-function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange, pinned }: { taskId: string; entries: TaskTimelineEntry[]; unread: number; me: Member; members: Member[]; agents: AgentInfo[]; onChange: () => void; pinned?: boolean }) {
+function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange, pinned, liveRuns = [] }: { taskId: string; entries: TaskTimelineEntry[]; unread: number; me: Member; members: Member[]; agents: AgentInfo[]; onChange: () => void; pinned?: boolean; liveRuns?: TaskRun[] }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
+  // What became of the last message sent — the room's whole point is that a reply REACHES the agent, so
+  // whether it did is stated, not left to be inferred from the agent's silence. `choose` parks the
+  // delivery on a picker (several live runs; guessing would talk to the wrong worker) and keeps the body
+  // around, since the message itself is already on the record — only its routing is pending.
+  const [sent, setSent] = useState<{ delivery: TaskDiscussionDelivery; body: string } | null>(null)
   // Mark the Discussion read on open (fire-and-forget; the board badge clears on its next poll).
   const readFor = useRef('')
   useEffect(() => { if (unread > 0 && readFor.current !== taskId) { readFor.current = taskId; api.readTaskDiscussion(taskId).catch(() => {}) } }, [taskId, unread])
   // Autoscroll the pinned message list to the newest entry.
   const endRef = useRef<HTMLDivElement>(null)
   useEffect(() => { if (pinned) endRef.current?.scrollIntoView({ block: 'end' }) }, [entries.length, pinned])
-  const send = async () => { const t = text.trim(); if (!t || busy) return; setBusy(true); try { await api.postTaskMessage(taskId, t); setText(''); setMention(null); onChange() } finally { setBusy(false) } }
+  const send = async () => {
+    const t = text.trim(); if (!t || busy) return
+    setBusy(true)
+    try {
+      const r = await api.postTaskMessage(taskId, t)
+      setText(''); setMention(null)
+      setSent(r.delivery && r.delivery.status !== 'none' ? { delivery: r.delivery, body: t } : null)
+      onChange()
+    } finally { setBusy(false) }
+  }
+  // The human picked which live run the parked message was for.
+  const deliverTo = async (sessionId: string) => {
+    if (!sent || busy) return
+    setBusy(true)
+    try {
+      const r = await api.deliverTaskMessage(taskId, sessionId, sent.body)
+      setSent(r.delivery ? { delivery: r.delivery, body: sent.body } : null)
+      onChange()
+    } finally { setBusy(false) }
+  }
 
   // @mention autocomplete — suggestions grouped by type (Agents, People), each ranked by name.
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -9850,8 +9890,45 @@ function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange
           ))}
         </div>
       )}
+      {/* Where this message is about to go. One live run = it reaches that agent, so say whose pane it
+          lands in BEFORE it's typed; several = it parks on the picker below instead. */}
+      {liveRuns.length === 1 && (
+        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-emerald-600">
+          <Send className="h-3 w-3 shrink-0" />goes straight to <b className="font-semibold">@{liveRuns[0].agent}</b> — its session is live
+        </div>
+      )}
+      {liveRuns.length > 1 && (
+        <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-amber-600">
+          <AlertTriangle className="h-3 w-3 shrink-0" />{liveRuns.length} runs are live on this task — you'll pick which one gets it
+        </div>
+      )}
+      {sent && (
+        <div className={`mb-1.5 rounded-md border px-2.5 py-1.5 text-[11px] ${sent.delivery.status === 'choose' ? 'border-amber-500/30 bg-amber-500/5' : sent.delivery.status === 'delivered' || sent.delivery.status === 'answered' ? 'border-emerald-500/30 bg-emerald-500/5 text-emerald-600' : 'border-amber-500/30 bg-amber-500/5 text-amber-600'}`}>
+          {sent.delivery.status === 'choose' ? (
+            <div className="space-y-1.5">
+              <div className="text-amber-600">Posted. Which live run should read it?</div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(sent.delivery.runs ?? []).map((r) => (
+                  <Button key={r.sessionId} size="xs" variant="outline" disabled={busy} onClick={() => void deliverTo(r.sessionId)}>
+                    <Bot className="h-3 w-3" />@{r.agent}{r.blocked && <span className="ml-1 text-amber-600">· waiting on you</span>}
+                  </Button>
+                ))}
+                <button onClick={() => setSent(null)} className="text-[11px] text-muted-foreground hover:text-foreground">leave it in the discussion</button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              {sent.delivery.status === 'delivered' && <><Check className="h-3 w-3 shrink-0" />delivered to <b className="font-semibold">@{sent.delivery.agent}</b>&apos;s session</>}
+              {sent.delivery.status === 'answered' && <><Check className="h-3 w-3 shrink-0" />answered <b className="font-semibold">@{sent.delivery.agent}</b>&apos;s open question — it can carry on</>}
+              {sent.delivery.status === 'undeliverable' && <><AlertTriangle className="h-3 w-3 shrink-0" />@{sent.delivery.agent}&apos;s session is live but wouldn&apos;t take the message — it&apos;s still in the discussion</>}
+              {sent.delivery.status === 'stale' && <><AlertTriangle className="h-3 w-3 shrink-0" />that run ended before the message reached it — it&apos;s still in the discussion</>}
+              <button onClick={() => setSent(null)} className="ml-auto text-muted-foreground hover:text-foreground"><X className="h-3 w-3" /></button>
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex items-end gap-2">
-        <Textarea ref={taRef} value={text} onChange={onText} onKeyDown={onKey} rows={1} placeholder="Message the task — type @ to mention an agent or teammate…" className="min-h-9 text-[13px]" />
+        <Textarea ref={taRef} value={text} onChange={onText} onKeyDown={onKey} rows={1} placeholder={liveRuns.length === 1 ? `Message the task — reaches @${liveRuns[0].agent} live…` : 'Message the task — type @ to mention an agent or teammate…'} className="min-h-9 text-[13px]" />
         <Button size="sm" disabled={!text.trim() || busy} onClick={() => void send()}><Send className="h-3.5 w-3.5" /></Button>
       </div>
     </div>

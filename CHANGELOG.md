@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.333.0] — 2026-08-10
+### Added
+- **A task room's Discussion is now a two-way channel to the agent actually working the task.** It used to
+  be a log: a plain message a human typed there sat in the timeline until the agent next called `task_get`
+  — which, mid-turn, is never — so the only reply that ever reached a working agent was one that happened
+  to answer a pending `ask`. Now an unrouted human message is routed into the live run: it **answers** the
+  run's open question when there is one (answering unblocks the turn; free text would only queue behind
+  the ask), otherwise it is **typed into the live pane** (an idle agent reads it now, a busy one at the
+  next turn boundary). With **two or more live runs it deliberately delivers to none of them** and asks
+  which one the human meant — the wrong guess talks to the wrong worker — and the pick routes the
+  already-posted message via `POST /api/tasks/:id/deliver`, so a declined or failed delivery never loses
+  it. The composer says where a message is about to go, and what became of the last one.
+- **Both halves of that channel are now told to the agent**, or it stays one-way in practice: the task
+  dispatch prompt (fresh and resuming) states that humans watching the room see the Discussion and *not*
+  its terminal narration, that a room message arrives mid-run prefixed `[task discussion] <name>:` and is
+  a live instruction — including "stop" — and that `task_say` is the way back. The `task_say` tool
+  description says the same. New `scripts/task-discussion-delivery-test.cjs` in `npm run test:governance`
+  pins the ambiguity refusal, the no-double-send when an `@mention` already routed the message, and the
+  prompt's own both-directions text.
+- **The task room's details sidebar collapses**, so the discussion or an attached session gets the full
+  width — which is usually why the room was opened. Sticky across rooms (`lg`+; below that the layout
+  already stacks).
+
 ## [0.332.0] — 2026-08-10
 ### Added
 - **A task now shows the goal it belongs to, and the goal is one click away.** The task drawer (and the

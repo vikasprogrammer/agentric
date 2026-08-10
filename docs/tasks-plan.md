@@ -552,6 +552,25 @@ session spawned and the pile-up guard blocks a second). **Isolate `AGENT_OS_HOME
 > cascades its attachment rows + files. Routes: agent loopback `POST /api/tasks/attach`; member console
 > `POST/GET-raw/DELETE /api/tasks/:id/attachments`.
 
+> **Update (2026-08-10, v0.333.0): the Discussion became a two-way channel to the running agent.** The room
+> was a log: a human's plain message sat in the timeline until the agent next called `task_get` — which,
+> mid-turn, is never — so the only message that ever reached a working agent was one that happened to
+> answer a pending `ask`. Now `Automations.postTaskDiscussion` routes an unrouted human message into the
+> run: **`answered`** when that run is blocked on a question (answering unblocks the turn; free text would
+> only queue behind the open ask), else **`delivered`** by typing it into the live pane
+> (`deliverToResident` — idle claude runs it now, busy claude queues it to the next turn boundary).
+> **Two or more live runs → `choose`**: it delivers to NONE of them and hands the live runs back, because
+> the wrong guess talks to the wrong worker; the human picks in the room and the pick comes back through
+> `POST /api/tasks/:id/deliver` (delivery only — the message is already on the record, so a declined or
+> failed delivery never loses it). Statuses `none`/`stale`/`undeliverable` cover the rest and are all
+> surfaced in the composer. Both halves of the channel are taught to the agent, or it's one-way in
+> practice: `buildTaskPrompt` (fresh AND resuming) now states that humans see the Discussion and NOT its
+> terminal output, that a room message arrives mid-run prefixed `[task discussion] <name>:` and is a live
+> instruction — including "stop" — and that `task_say` is the way back. Falsifier:
+> `scripts/task-discussion-delivery-test.cjs` (in `npm run test:governance`), which pins the ambiguity
+> refusal, the no-double-send when an `@mention` already routed the message, and the prompt's own
+> both-directions text.
+
 - **Pool auto-assignment.** Route unassigned `auto_dispatch` tasks to a workspace **default worker agent**
   (or a small pool), so a human can drop tasks on the board with no assignee and the fleet picks them up.
   This is the agent-spawns-agent frontier Automations also parks — needs a concurrency budget + a
