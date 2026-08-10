@@ -1857,6 +1857,44 @@ export class TerminalManager {
   }
 
   /**
+   * Can we still DELIVER text into this session's claude? — the honest liveness test, and deliberately
+   * NOT `isAlive`.
+   *
+   * `status` is a report of what the run last *said about itself*, not whether its process is up: an
+   * agent that calls `report` is stamped `done` (see `reportSession`) while its claude keeps running for
+   * as long as the turn lasts — and a long-lived agent typically reports well before the delegate it
+   * handed off to finishes. `isAlive` folds that status in (`status !== 'running' → false`), which is
+   * right for the pile-up guards it was written for and wrong for delivery: it declares a session with a
+   * live REPL unreachable. Live example (northwind, 2026-08-10): `ses_f4535e8f` reported at 16:13, kept
+   * working until 16:34, and the 16:31 poke-back for its delegate saw `done`, skipped the live pane, and
+   * `--resume`d a SECOND claude onto the same transcript — the outcome `chatSend` calls "the one worse
+   * than a slow turn". The second process died 28s later and the poke was never seen.
+   *
+   * So this asks the PANE, and only refuses on a status that means a human or the sweep ended the run
+   * deliberately (`stopped`/`crashed`) — where a surviving pane is a leftover, not a destination.
+   */
+  reachable(sessionId: string): boolean {
+    if (this.launching.has(sessionId)) return true; // scheduled; its pane is imminent
+    const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);
+    if (!r) return false;
+    if (r.status === 'stopped' || r.status === 'crashed') return false; // deliberately ended — don't revive by keystroke
+    const alive = this.backend.aliveNames();
+    if (!alive) return r.status === 'running'; // launcher backend: can't poll the pane, so fall back to the row
+    return alive.has(r.tmux);
+  }
+
+  /**
+   * A session we just delivered into was stamped `done` by its own `report` but is demonstrably still
+   * running — put the row back in step with reality so the console spins on `working` and the crash
+   * sweep watches it again. Terminal states set by a human (`stopped`) or the sweep (`crashed`) are
+   * never touched: `reachable` already refuses to deliver into those.
+   */
+  private restoreRunningAfterDelivery(sessionId: string): void {
+    this.db.prepare("UPDATE term_sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'done'")
+      .run(Date.now(), sessionId);
+  }
+
+  /**
    * The MOST RECENT session bound to a Slack thread (`channel` + `thread_ts`), for thread continuity:
    * a follow-up message in a thread resumes THAT run's agent + claude conversation. Returns the agent,
    * its run-as, and the pinned `claudeSessionId` needed to `--resume`. Undefined when nothing is bound
@@ -2448,8 +2486,10 @@ export class TerminalManager {
     // not reach the agent executing the task, and `continueTaskThread` fell through to spawning a SECOND
     // agent on the same task while the first kept working. Observed live on northwind 2026-08-06
     // (tsk_67de2dfe): the stand-down went to a fresh run, the real one ran on for 25+ minutes.
-    if (!row || row.status !== 'running') return false;
-    if (!this.isAlive(sessionId)) return false;
+    // Liveness is the PANE, not the row's `status` — the same lesson one layer up. An agent that called
+    // `report` reads `done` with its claude still running, and gating on `status = 'running'` made those
+    // sessions unreachable exactly like the `resident` gate above did (see `reachable`).
+    if (!row || !this.reachable(sessionId)) return false;
     const body = (text || '').replace(/\r?\n+/g, ' ').trim(); // one-line: a stray newline would submit early
     if (!body) return false;
     const space = this.spaceFor(row.run_as ?? row.spawned_by);
@@ -2462,6 +2502,7 @@ export class TerminalManager {
       // the message QUEUES behind a running turn — the session is busy either way.
       this.db.prepare('UPDATE term_sessions SET last_activity = ?, busy_since = COALESCE(busy_since, ?), updated_at = ? WHERE id = ?')
         .run(Date.now(), Date.now(), Date.now(), sessionId);
+      this.restoreRunningAfterDelivery(sessionId); // a reported-but-warm session is working again
       const agent = this.sessionAgent(sessionId) ?? '';
       // `queued` = the message will wait for claude to finish the current turn before it's read.
       this.audit(sessionId, agent, 'chat.delivered', { chars: body.length, turn, queued: turn === 'busy' || turn === 'blocked' });
@@ -3855,11 +3896,22 @@ export class TerminalManager {
     if (!row) return { ok: false, error: 'unknown session' };
     const body = (text || '').replace(/\r?\n+/g, ' ').trim();
     if (!body) return { ok: false, error: 'nothing to send' };
-    if (row.status !== 'running' || !this.isAlive(sessionId)) return { ok: false, error: 'session is not live — open it first' };
+    // `reachable`, not `isAlive`: a session that reported still has a live REPL to type into, and telling
+    // its own console "not live — open it first" while the pane is right there is the visible half of the
+    // poke-back bug.
+    if (!this.reachable(sessionId)) return { ok: false, error: 'session is not live — open it first' };
     const space = this.spaceFor(row.run_as ?? row.spawned_by);
     const ok = this.backend.injectText(space, row.tmux, body, submit);
     if (!ok) return { ok: false, error: 'could not deliver keystrokes to the terminal' };
-    this.db.prepare('UPDATE term_sessions SET last_activity = ?, updated_at = ? WHERE id = ?').run(Date.now(), Date.now(), sessionId);
+    // Submitted text starts a turn, so mark the session busy (the Stop-hook beacon clears it) — without
+    // it a poke delivered into a warm pane leaves the console reading idle through the work it triggered.
+    if (submit) {
+      this.db.prepare('UPDATE term_sessions SET last_activity = ?, busy_since = COALESCE(busy_since, ?), updated_at = ? WHERE id = ?')
+        .run(Date.now(), Date.now(), Date.now(), sessionId);
+      this.restoreRunningAfterDelivery(sessionId);
+    } else {
+      this.db.prepare('UPDATE term_sessions SET last_activity = ?, updated_at = ? WHERE id = ?').run(Date.now(), Date.now(), sessionId);
+    }
     this.audit(sessionId, this.sessionAgent(sessionId) ?? '', 'session.inject', { by, chars: body.length, submit });
     return { ok: true };
   }

@@ -555,10 +555,17 @@ export class Automations {
     if (!input.callerClaudeId) return { ok: false, reason: 'no caller transcript to resume' };
     // Prefer delivering into the caller's OWN live session if it still has one bound to this transcript —
     // an idle interactive/resident caller would otherwise never learn the delegate finished.
+    //
+    // Liveness is `reachable` (the pane), NOT the row's `status`. A caller that handed off work and then
+    // called `report` is stamped `done` with its claude still running — the common shape, since a delegate
+    // usually finishes minutes after the caller last reported. Filtering on `status = 'running'` here sent
+    // every one of those down the resume lane, starting a SECOND claude on a transcript the first was
+    // still holding. Newest row first: a transcript resumed before now spans several rows and only the
+    // latest can own the pane.
     const liveSession = this.db
-      .prepare("SELECT id, tmux FROM term_sessions WHERE claude_session_id = ? AND status = 'running'")
+      .prepare('SELECT id, tmux FROM term_sessions WHERE claude_session_id = ? ORDER BY created_at DESC')
       .all<{ id: string; tmux: string }>(input.callerClaudeId)
-      .find((r) => this.tm.isAlive(r.id));
+      .find((r) => this.tm.reachable(r.id));
     if (liveSession) {
       const injected = this.tm.injectToSession(liveSession.id, input.message, true, input.runAs ? `member:${input.runAs}` : 'system');
       this.os.audit.append({
@@ -570,8 +577,11 @@ export class Automations {
         data: { caller: agentId, source: input.source, runAs: input.runAs ?? null, via: 'inject', ok: injected.ok },
       });
       // Keystrokes landed → the caller has (or will imminently have) the result. On the rare inject failure
-      // (unreadable pane) fall through to a resume so the poke is never silently dropped.
+      // (a wedged TUI, an unreadable socket) fall through to a resume so the poke is never silently
+      // dropped — but kill the pane first, exactly as `chatSend` does: resuming a transcript that another
+      // claude still holds is worse than a late poke.
       if (injected.ok) return { ok: true, sessionId: liveSession.id, tmux: liveSession.tmux };
+      this.tm.stopSession(liveSession.id, 'system');
     }
     const s = this.tm.createSession(agentId, input.title ?? `Poke ← ${input.source}`, input.message, `poke:${input.source}`, true, undefined, undefined, input.runAs, input.callerClaudeId);
     this.os.audit.append({
