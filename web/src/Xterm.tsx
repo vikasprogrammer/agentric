@@ -30,6 +30,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
+import { entityIdRe, entityUrl } from '@/lib/entity-links'
 
 // ttyd command bytes.
 const C_INPUT = '0'
@@ -98,6 +99,9 @@ const TLD = 'com|net|org|io|ai|dev|app|sh|co|gg|xyz|me|so|to|tv|cloud|tech|edu|g
 const TAIL = `[^\\s"'\`<>)\\]}]` // a link body char — stops at whitespace and common wrappers
 const HOST = `[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9-]+)+` // a multi-label host: at least one dot
 const MATCHERS: { re: RegExp; url: (m: string) => string }[] = [
+  // 0. a bare console entity id (`tsk_…`, `goal_…`) the agent printed in its narration — link it to the
+  //    page that shows that row. First so nothing else can claim those columns.
+  { re: entityIdRe(), url: (m) => entityUrl(m) ?? m },
   // 1. explicit scheme — take the whole thing verbatim.
   { re: new RegExp(`(?:https?|ftp|file)://${TAIL}+`, 'gi'), url: (m) => m },
   // 2. www.… — no scheme, assume https.
@@ -121,7 +125,7 @@ function trimTrail(s: string): { text: string; shaved: number } {
   return { text: shaved ? s.slice(0, -shaved) : s, shaved }
 }
 
-/** A link provider spanning the four matchers above over a single buffer row. xterm asks per row; we read
+/** A link provider spanning the matchers above over a single buffer row. xterm asks per row; we read
  *  that row's text, find every non-overlapping match, and hand back clickable ranges (1-based, inclusive)
  *  that open in a new tab. Wrapped links that span rows are matched on whichever row they start — good
  *  enough for the URLs claude prints; keeps this simple and allocation-light. */
@@ -132,7 +136,7 @@ function makeLinkProvider(term: Terminal): ILinkProvider {
         const line = term.buffer.active.getLine(row - 1)
         if (!line) return cb(undefined)
         const text = line.translateToString(true)
-        if (!text || !/[.:/]/.test(text)) return cb(undefined)
+        if (!text || !/[.:/_]/.test(text)) return cb(undefined) // '_' keeps bare entity ids in scope
         const taken: boolean[] = []
         const links: ILink[] = []
         for (const { re, url } of MATCHERS) {
