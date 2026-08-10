@@ -809,7 +809,7 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
 
 /** Where the sidebar "Feedback" shortcut points — the project's GitHub issues tab, for bug reports
  *  and feature requests. Opens in a new tab. */
-const FEEDBACK_URL = 'https://github.com/vikasprogrammer/agent-os/issues'
+const FEEDBACK_URL = 'https://github.com/vikasprogrammer/agentric/issues'
 
 /** Minimal hash router — `#/<page>` with an optional detail segment (`#/sessions/<tmux>`) so a
  *  deep-linked view (an open terminal, later other pages' selections) survives a refresh and

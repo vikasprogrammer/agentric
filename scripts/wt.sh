@@ -71,7 +71,7 @@ case "$cmd" in
     echo "  cd \"$dir\", then: bump version + CHANGELOG once for the batch, and"
     echo "    npm run build && (cd web && npm run build) && npm run test:governance"
     echo "    git push -u origin $branch"
-    echo "    gh pr create --repo vikasprogrammer/agent-os --base main --head $branch ... && gh pr merge --squash"
+    echo "    gh pr create --repo vikasprogrammer/agentric --base main --head $branch ... && gh pr merge --squash"
     ;;
   done)
     name="${1:-}"; [ -n "$name" ] || die "usage: wt.sh done <name>"

@@ -57,7 +57,7 @@ _Last updated: 2026-08-04._
 - **Sequencing:** Tier B is gated behind §4.2 (done). §4.1 build is gated behind the ContextForge
   adapter spike proving the suspend protocol.
 - **Don't lead with "control plane"** — the phrase is a red ocean; lead with the enforced primitive.
-- **Ship discipline:** branch → PR → squash-merge (`--repo vikasprogrammer/agent-os`); CI = `npm run
+- **Ship discipline:** branch → PR → squash-merge (`--repo vikasprogrammer/agentric`); CI = `npm run
   test:governance`. Concurrent-shipping churn is heavy — **commit, then rebase right before merge.**
 
 ---

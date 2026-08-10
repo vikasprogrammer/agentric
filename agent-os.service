@@ -1,6 +1,6 @@
 [Unit]
 Description=Agentric - governed agent runtime + web console
-Documentation=https://github.com/InstaWP/agent-os
+Documentation=https://github.com/vikasprogrammer/agentric
 After=network.target
 Wants=network.target
 
