@@ -31,7 +31,10 @@
  * 40% before. Non-success is 26% where the self-report claimed 0.3% — the point of the exercise is that
  * the number can now MOVE.
  */
+import fs from 'node:fs';
+
 import type { AgentOS } from '../kernel';
+import { findTranscript } from './conversation';
 
 const DAY = 24 * 3_600_000;
 
@@ -50,6 +53,10 @@ export type OutcomeBasis =
   | 'task-completed'    // a task closed while this run held it
   | 'task-retried'      // another run had to pick the same task up after this one ended
   | 'human-session'     // a person's own interactive session — the OS has no verdict on it
+  // ── read from the transcript, only for runs the fields above can't decide (Step 1b) ──
+  | 'runtime-death'     // the transcript ends in a quota / auth error: the runtime killed the run
+  | 'interrupted'       // a person interrupted the turn mid-flight
+  | 'finished-clean'    // ended with a substantive closing message and no error: the turn landed
   | 'no-evidence';      // nothing observable said anything: honestly unknown
 
 export interface RunOutcome {
@@ -125,6 +132,82 @@ interface Row {
  */
 const DIED_EARLY_MS = 30_000;
 
+/**
+ * **The transcript layer** (Step 1b). Round 2 of the falsifier scored 52% out of sample against a 43%
+ * always-success baseline, and 8 of its 11 errors came from two blind spots the session row cannot see:
+ * runs the runtime killed (scored `noop`, because a run that dies on its first API call also makes no tool
+ * calls) and runs that finished properly but never called `report` (scored `unknown`). Both are legible in
+ * the transcript in one line, so this reads it — but only for the runs the observed fields could not
+ * already decide, which is ~50 of 477 conversations on the live corpus.
+ *
+ * What the corpus says, scanning every transcript by current basis:
+ *
+ *     died-early     17 of 19 carry an auth/quota signature   (the rule was right about what it found)
+ *     no-tool-calls  11 of 30 carry one                       (scored `noop`; they are deaths)
+ *     no-evidence     0 of 22 carry one — and all 22 end with a 600–3300 char closing summary
+ *
+ * The last line is the useful surprise: there were no silent runs in the residual at all. Every one of
+ * them finished, wrote a real hand-off, and simply never called `report`. That is a success the OS was
+ * throwing away, not an unknown.
+ *
+ * Signatures are matched against the transcript TAIL only — a run that recovered from a rate limit
+ * mid-way and carried on must not be called dead because the phrase appears somewhere in its history.
+ */
+const RUNTIME_DEATH = [
+  /hit your weekly limit/i,
+  /hit your session limit/i,
+  /OAuth access token has expired/i,
+  /Please run \/login/i,
+  /Credit balance is too low/i,
+];
+const INTERRUPTED = /Request interrupted by user/i;
+/** Tail window. Big enough to hold a closing summary (the longest seen is ~3.3KB), small enough that an
+ *  error the run recovered from ten turns ago is out of frame. */
+const TAIL_BYTES = 8_000;
+/** A closing message shorter than this isn't a hand-off — it's an acknowledgement or a stub. */
+const SUBSTANTIVE_CHARS = 200;
+
+/** What the transcript says about how a run ended. `undefined` when there is no transcript to read. */
+export interface TranscriptEnd { died: boolean; interrupted: boolean; closingChars: number }
+
+/** Read the tail of a conversation's transcript. Never throws: a missing or unreadable transcript is a
+ *  normal case (95% coverage on the live box, and none on a machine that didn't run the agent). */
+export function readTranscriptEnd(convoId: string, find = findTranscript): TranscriptEnd | undefined {
+  const p = find(convoId);
+  if (!p) return undefined;
+  let tail: string;
+  try {
+    const fd = fs.openSync(p, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(size, TAIL_BYTES);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      tail = buf.toString('utf8');
+    } finally { fs.closeSync(fd); }
+  } catch { return undefined; }
+
+  // The closing assistant text, for "did it end with a real hand-off". Lines are JSONL; the tail may start
+  // mid-line, so a parse failure is expected and skipped rather than treated as absence.
+  let closing = '';
+  for (const line of tail.split('\n')) {
+    try {
+      const j = JSON.parse(line) as { message?: { role?: string; content?: unknown } };
+      if (j.message?.role !== 'assistant') continue;
+      const c = j.message.content;
+      const text = Array.isArray(c)
+        ? (c as { type?: string; text?: string }[]).filter((x) => x.type === 'text').map((x) => x.text ?? '').join(' ')
+        : String(c ?? '');
+      if (text.trim()) closing = text.trim();
+    } catch { /* partial or non-message line */ }
+  }
+  return {
+    died: RUNTIME_DEATH.some((re) => re.test(tail)),
+    interrupted: INTERRUPTED.test(tail),
+    closingChars: closing.length,
+  };
+}
+
 /** A run spawned by chat is conversational Q&A — it answers a person and rarely `report`s, so it is not
  *  work with an outcome. Matches the exclusion `insights.ts` and `measurement.ts` already apply. */
 function isChat(spawnedBy: string | null): boolean {
@@ -161,8 +244,13 @@ function taskIdOf(spawnedBy: string | null): string | undefined {
  *  7. a person spawned it and closed it — `abandoned`, leaves the denominator;
  *  8. otherwise `unknown`. Honest, and the residual we are trying to shrink.
  */
-export function deriveRunOutcomes(os: AgentOS, opts: { since?: number; until?: number } = {}): RunOutcome[] {
+export function deriveRunOutcomes(
+  os: AgentOS,
+  opts: { since?: number; until?: number; findTranscript?: typeof findTranscript } = {},
+): RunOutcome[] {
   const db = os.db;
+  const find = opts.findTranscript ?? findTranscript;
+  const seen = new Map<string, TranscriptEnd | null>();   // one read per conversation, not per run
   const until = opts.until ?? Date.now();
   const since = opts.since ?? until - 30 * DAY;
 
@@ -234,6 +322,20 @@ export function deriveRunOutcomes(os: AgentOS, opts: { since?: number; until?: n
     else if (taskId && (lastRunFor.get(taskId) ?? 0) > r.created_at) { verdict = 'incomplete'; basis = 'task-retried'; }
     else { verdict = 'unknown'; basis = 'no-evidence'; }
 
+    // The transcript layer, consulted ONLY where the observed fields gave up (`no-evidence`) or gave an
+    // answer they cannot distinguish from a death (`no-tool-calls`: a run killed on its first API call
+    // makes no tool calls either). Everything decided above keeps its verdict — a `reported` outcome or a
+    // human rating is not second-guessed by prose. Lazy by construction: ~50 file reads, not 500.
+    if (basis === 'no-evidence' || basis === 'no-tool-calls') {
+      let end = seen.get(base.convoId);
+      if (end === undefined) { end = readTranscriptEnd(base.convoId, find) ?? null; seen.set(base.convoId, end); }
+      if (end) {
+        if (end.died) { verdict = 'failure'; basis = 'runtime-death'; }
+        else if (end.interrupted) { verdict = 'incomplete'; basis = 'interrupted'; }
+        else if (basis === 'no-evidence' && end.closingChars >= SUBSTANTIVE_CHARS) { verdict = 'success'; basis = 'finished-clean'; }
+      }
+    }
+
     out.push({ ...base, verdict, basis });
   }
   return out;
@@ -263,7 +365,13 @@ export function foldConversations(runs: RunOutcome[]): ConversationOutcome[] {
     const succeeded = list.find((r) => r.verdict === 'success');
     const hardFail = list.find((r) => r.verdict === 'failure' || r.verdict === 'partial');
     const worst = list.reduce((acc, r) => (SEVERITY[r.verdict] > SEVERITY[acc.verdict] ? r : acc), list[0]);
-    const pick = hardFail ?? succeeded ?? worst;
+    // A conversation that ENDS in success is a success, whatever it took to get there. Without this, a
+    // four-run hand-off where the first three attempts each look `incomplete` (each was followed by
+    // another run, which is what `task-retried` means) is scored by its struggle instead of its result —
+    // one of round 2's errors. A `failure`/`partial` before a later success still wins: that is a real
+    // problem the conversation went through, not a bookkeeping artefact of being resumed.
+    const last = list[list.length - 1];
+    const pick = last.verdict === 'success' && !hardFail ? last : hardFail ?? succeeded ?? worst;
     out.push({ convoId, agent: pick.agent, verdict: pick.verdict, basis: pick.basis, runs: list.length, at: list[0].at });
   }
   return out.sort((a, b) => b.at - a.at);

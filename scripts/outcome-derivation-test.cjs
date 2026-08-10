@@ -84,6 +84,68 @@ console.log('\n\x1b[1mDerived outcome — rules over observed facts, not the age
   assert(verdictOf(stopped).verdict === 'incomplete' && verdictOf(stopped).basis === 'stopped-midway', 'a killed unattended run is incomplete, never a success');
 }
 
+// ── the transcript layer (Step 1b) ─────────────────────────────────────────────────────────────────
+{
+  // A fake transcript store, so the rules are tested without depending on ~/.claude on this machine.
+  const tdir = fs.mkdtempSync(path.join(os_.tmpdir(), 'aos-transcripts-'));
+  const write = (id, lines) => {
+    const p = path.join(tdir, `${id}.jsonl`);
+    fs.writeFileSync(p, lines.map((l) => JSON.stringify(l)).join('\n'));
+    return p;
+  };
+  const asst = (text) => ({ message: { role: 'assistant', content: [{ type: 'text', text }] } });
+  const find = (id) => { const p = path.join(tdir, `${id}.jsonl`); return fs.existsSync(p) ? p : undefined; };
+  const verdictWith = (id) => deriveRunOutcomes(aos, { since: 0, until: NOW + 1, findTranscript: find }).find((r) => r.runId === id);
+
+  const summary = 'x'.repeat(400) + ' Watermark updated. Discord summary sent to the owner.';
+
+  // A run that finished properly and simply never called `report` — the single largest error class in
+  // round 2 (5 of 11). It is a success the OS was throwing away, not an unknown.
+  const clean = mkRun({ convo: 'tr-clean', spawnedBy: 'automation:au_x' });
+  write('tr-clean', [asst('starting'), asst(summary)]);
+  assert(verdictWith(clean).verdict === 'success' && verdictWith(clean).basis === 'finished-clean',
+    'a run that ended with a real closing summary and no error is a success, not an unknown');
+
+  // Killed by the runtime. Round 2 scored these `noop`, because a run that dies on its first API call
+  // also makes no tool calls.
+  const dead = mkRun({ convo: 'tr-dead', spawnedBy: 'automation:au_x', toolCalls: 0, activeMs: 600_000 });
+  write('tr-dead', [asst('I will start by loading my memory.'), asst('Please run /login · API Error: 401 OAuth access token has expired. Re-authenticate to continue.')]);
+  assert(verdictWith(dead).verdict === 'failure' && verdictWith(dead).basis === 'runtime-death',
+    'a quota/auth death with zero tool calls is a failure, not a noop');
+
+  const interrupted = mkRun({ convo: 'tr-int', spawnedBy: 'automation:au_x' });
+  write('tr-int', [asst('working'), { message: { role: 'user', content: '[Request interrupted by user]' } }]);
+  assert(verdictWith(interrupted).verdict === 'incomplete' && verdictWith(interrupted).basis === 'interrupted',
+    'a turn a person interrupted is incomplete');
+
+  // The guard that keeps the layer honest: an agent that answered and stopped is still a noop.
+  const chatty = mkRun({ convo: 'tr-chatty', spawnedBy: 'automation:au_x', toolCalls: 0, activeMs: 600_000 });
+  write('tr-chatty', [asst('Hi — looks like a test message. Tell me what you want built.')]);
+  assert(verdictWith(chatty).verdict === 'noop', 'a short reply with no work is still a noop, not a death');
+
+  // A stub closing line is not a hand-off.
+  const stub = mkRun({ convo: 'tr-stub', spawnedBy: 'automation:au_x' });
+  write('tr-stub', [asst('ok')]);
+  assert(verdictWith(stub).verdict === 'unknown', 'a two-character closing message does not count as finishing clean');
+
+  // The layer must never overrule a decided verdict — prose does not beat a report or a human.
+  const reported = mkRun({ convo: 'tr-rep', spawnedBy: 'automation:au_x', outcome: 'partial' });
+  write('tr-rep', [asst(summary)]);
+  assert(verdictWith(reported).basis === 'reported' && verdictWith(reported).verdict === 'partial',
+    'a reported outcome is not second-guessed by the transcript');
+
+  const rated = mkRun({ convo: 'tr-rated', spawnedBy: 'automation:au_x', rating: 'down', toolCalls: 0 });
+  write('tr-rated', [asst(summary)]);
+  assert(verdictWith(rated).basis === 'human-rating', 'a human rating is not second-guessed by the transcript');
+
+  // No transcript is a normal case, not an error.
+  const noFile = mkRun({ convo: 'tr-absent', spawnedBy: 'automation:au_x' });
+  assert(verdictWith(noFile).verdict === 'unknown' && verdictWith(noFile).basis === 'no-evidence',
+    'a missing transcript leaves the verdict honestly unknown');
+
+  fs.rmSync(tdir, { recursive: true, force: true });
+}
+
 // ── conversation folding ───────────────────────────────────────────────────────────────────────────
 {
   const cid = 'convo-1';
@@ -98,6 +160,15 @@ console.log('\n\x1b[1mDerived outcome — rules over observed facts, not the age
   mkRun({ convo: cid2, at: NOW - 3600_000, outcome: 'success' });
   const f2 = foldConversations(deriveRunOutcomes(aos, { since: 0, until: NOW + 1 })).find((c) => c.convoId === cid2);
   assert(f2 && f2.verdict === 'failure', 'a later clean run does not erase an earlier crash');
+
+  // Step 1b fold fix: a hand-off whose earlier attempts each read `incomplete` (each was followed by
+  // another run — that is all `task-retried` means) is scored by its RESULT, not by its struggle.
+  const cid3 = 'convo-3';
+  mkRun({ convo: cid3, at: NOW - 10800_000, spawnedBy: 'task:tsk_multi' });
+  mkRun({ convo: cid3, at: NOW - 7200_000, spawnedBy: 'poke:tsk_multi' });
+  mkRun({ convo: cid3, at: NOW - 3600_000, spawnedBy: 'poke:tsk_multi', outcome: 'success' });
+  const f3 = foldConversations(deriveRunOutcomes(aos, { since: 0, until: NOW + 1 })).find((c) => c.convoId === cid3);
+  assert(f3 && f3.verdict === 'success' && f3.runs === 3, 'three attempts ending in success is a success, not an incomplete');
 }
 
 // ── the summary contract ───────────────────────────────────────────────────────────────────────────
