@@ -10,7 +10,7 @@
 
 [Unit]
 Description=Agentric - privileged per-member session launcher (Phase A trust root)
-Documentation=https://github.com/InstaWP/agent-os
+Documentation=https://github.com/vikasprogrammer/agentric
 After=network.target
 
 [Service]

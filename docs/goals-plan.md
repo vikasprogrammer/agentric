@@ -108,7 +108,7 @@ owner, parent (nested display), and the event history. `cd web && npm run build`
 
 ### 7. Ship
 Bump **minor** in `package.json` + move a CHANGELOG "Unreleased" line into the new version heading in the
-same commit (per repo convention). Branch → one PR → squash-merge (`--repo vikasprogrammer/agent-os`);
+same commit (per repo convention). Branch → one PR → squash-merge (`--repo vikasprogrammer/agentric`);
 CI = `npm run test:governance` from repo root.
 
 ---

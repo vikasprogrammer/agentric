@@ -46,8 +46,8 @@ It runs on your laptop with `npm run serve`, and scales to a multi-tenant server
 ## ⚡ Quickstart
 
 ```bash
-git clone https://github.com/vikasprogrammer/agent-os
-cd agent-os
+git clone https://github.com/vikasprogrammer/agentric
+cd agentric
 npm install && npm run build
 npm run serve          # → web console at http://localhost:3010
 ```
@@ -65,8 +65,8 @@ npm run demo           # a scripted run that shows approvals, budgets, dedupe & 
 > `tmux` + `ttyd` for the browser terminal (`brew install tmux ttyd`, or your distro's packages).
 
 > **A note on the name.** The product is **Agentric**; the plumbing is still called `agent-os` — the
-> repo, the npm package and CLI (`agent-os serve`), the `AGENT_OS_*` env vars, the service units and
-> the data home. Those are baked into running deployments, so they keep the old name on purpose.
+> npm package and CLI (`agent-os serve`), the `AGENT_OS_*` env vars, the service units and the data
+> home. Those are baked into running deployments, so they keep the old name on purpose.
 
 ---
 

@@ -10,12 +10,18 @@ brand/plugin code.
 ## Naming — "Agentric" is the brand, `agent-os` is the plumbing
 
 The product is **Agentric** (agentric.io). That name is the **brand layer only**: user-facing copy
-(console, README, `docs/`, agent-facing prompts, chat/bot display names, systemd `Description=`).
+(console, README, `docs/`, agent-facing prompts, chat/bot display names, systemd `Description=`) plus
+the **GitHub repo**, which is now **`vikasprogrammer/agentric`** — always pass `--repo
+vikasprogrammer/agentric` to `gh` (GitHub permanently redirects the old `agent-os` URL, so existing
+remotes keep working; never let a new repo claim that old name or the redirect dies).
+
 Everything load-bearing keeps the `agent-os` identifier and MUST NOT be renamed here — the CLI binary
 and npm package `agent-os`, `AGENT_OS_*` env vars, the `AOS_*` prefix, the `AgentOS` class, the
 `mcp__agentos__*` tool namespace, the `/agent-os <agent>` chat command, systemd/launchd unit names
-(`agent-os.service`, `com.agentos.instapods`), data homes (`~/agent-os-data/…`), `agent-os.db`, and the
-GitHub repo. Those are live across the tenant boxes and baked into absolute paths; a full internal
+(`agent-os.service`, `com.agentos.instapods`), data homes (`~/agent-os-data/…`), `agent-os.db`, the
+local checkout paths (`~/Projects/agent-os`, `~/agent-os-live`, `~/aos-wt`), and the GitHub **App**
+slug `agent-os-instapods` (renaming that one changes its installation URLs and breaks per-member
+GitHub auth). Those are live across the tenant boxes and baked into absolute paths; a full internal
 rename is a **migration**, folded into the next box move, never a standalone sweep.
 
 ## Build / run / test
@@ -553,7 +559,7 @@ finished work, and run the live service. **All development happens in per-sessio
 - `scripts/wt.sh integrate <name…>` — spin up a fresh `batch/<ts>` worktree off `origin/main` and merge
   the named feature branches into it. Then, **merge locally, push once**: bump the version + CHANGELOG
   a single time for the whole batch, `npm run build && (cd web && npm run build) && npm run test:governance`,
-  push the batch branch, and open **one consolidated PR** (`gh … --repo vikasprogrammer/agent-os`,
+  push the batch branch, and open **one consolidated PR** (`gh … --repo vikasprogrammer/agentric`,
   `gh pr merge --squash`). Never `switch`/branch the primary checkout to integrate.
 
 "Make it live" still runs from the primary checkout after `wt.sh sync` (build + `launchctl kickstart` —

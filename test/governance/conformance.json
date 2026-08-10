@@ -1498,7 +1498,7 @@
       "args": {
         "tool": "Bash",
         "input": {
-          "command": "curl -sSL https://api.github.com/repos/vikasprogrammer/agent-os -o /tmp/repo.json"
+          "command": "curl -sSL https://api.github.com/repos/vikasprogrammer/agentric -o /tmp/repo.json"
         }
       },
       "expect": "allow",
