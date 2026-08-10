@@ -1,5 +1,5 @@
 /**
- * System dependencies — the native commands Agent OS needs on the box to run agent sessions.
+ * System dependencies — the native commands Agentric needs on the box to run agent sessions.
  *
  * The Node process itself is zero-dependency, but a live instance shells out to a couple of native
  * tools that aren't Node built-ins: `tmux` (backs every persistent agent pane) and `ttyd` (serves the
@@ -28,7 +28,7 @@ export interface Dep {
   bin: string;
   /** Human label for the UI. */
   label: string;
-  /** Why Agent OS needs it. */
+  /** Why Agentric needs it. */
   purpose: string;
   /** A hard requirement (agent sessions won't run without it) vs. recommended. */
   required: boolean;

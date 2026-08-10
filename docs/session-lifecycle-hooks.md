@@ -1,4 +1,4 @@
-# Session lifecycle — the Claude Code hooks Agent OS listens to
+# Session lifecycle — the Claude Code hooks Agentric listens to
 
 The console's session status (`working` / `ready` / `needs you` / `done` …) is only as honest as the
 signals underneath it. This is the full map of which Claude Code hook event drives which piece of state,

@@ -29,7 +29,7 @@ function sampleManifest(id: string): string {
     {
       id,
       version: '1.0.0',
-      description: 'A real Claude session, opened in this folder, with every shell command gated by Agent OS.',
+      description: 'A real Claude session, opened in this folder, with every shell command gated by Agentric.',
       principal: `svc-${id}`,
       policyContext: 'default@v3',
       runtime: 'claude-code',
@@ -44,7 +44,7 @@ function sampleManifest(id: string): string {
 const SAMPLE_CLAUDE_MD = `# Starter Agent
 
 A real \`claude\` session that opens in this folder. Create files and run commands here — this is
-your workspace. Every \`Bash\` call is gated by Agent OS; risky ones pause for inbox approval.
+your workspace. Every \`Bash\` call is gated by Agentric; risky ones pause for inbox approval.
 `;
 
 function writeIfAbsent(file: string, contents: string): void {

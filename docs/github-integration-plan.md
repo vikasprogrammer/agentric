@@ -16,7 +16,7 @@ auth-via-web" version of that is a **GitHub App** whose install flow lives in th
 ## The credential: a GitHub App (installation token)
 
 The owner registers **one** GitHub App (per tenant/org) and installs it on the repos it may touch.
-Agent OS holds the App id + RSA private key (vault) + the installation id. At each session launch we:
+Agentric holds the App id + RSA private key (vault) + the installation id. At each session launch we:
 
 1. Sign a short-lived **App JWT** (RS256, ≤10 min, `iss = appId`).
 2. Exchange it for a **1 h installation access token** — org-scoped, with the App's fine-grained

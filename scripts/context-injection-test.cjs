@@ -52,7 +52,7 @@ async function main() {
 
   // --- default (no chat configured, preload off) ---
   const base = build('tester');
-  assert(base.includes('# You are running inside Agent OS'), 'operating notes present');
+  assert(base.includes('# You are running inside Agentric'), 'operating notes present');
   assert(base.includes('a fact (memory) vs. your standing instructions (CLAUDE.md)'), 'self-improvement subsection present');
   assert(/agent_update\b/.test(base) && /change to how you ALWAYS operate → your CLAUDE\.md/.test(base), 'self-improvement explains agent_update vs remember vs both');
   assert(base.includes('agent:peer') && !base.includes('agent:tester'), 'fleet roster lists peers, excludes self');

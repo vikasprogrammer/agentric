@@ -1,4 +1,4 @@
-# Agent OS Tasks / Work Queue — Implementation Plan
+# Agentric Tasks / Work Queue — Implementation Plan
 
 > **Status (2026-07-02): SHIPPED (v1).** Built per the §8 build order — `tasks`/`task_events`/`tasks_fts`
 > tables + `TaskStore` (`src/state/tasks.ts`, `os.tasks`), the tick-driven dispatcher
@@ -9,7 +9,7 @@
 > Pillar 16 is regraded ✅. The §9 items (pool auto-assignment, agent-triggered `task_dispatch`, policy
 > brake on dispatch) remain deliberate v1 cuts. The sections below are the as-built design of record.
 
-Ship a **backlog the fleet works from**. Today Agent OS has firing conditions (Automations), ephemeral
+Ship a **backlog the fleet works from**. Today Agentric has firing conditions (Automations), ephemeral
 runs (Sessions), and a shared wiki (KB) — but no durable **unit of work**. A task's state lives nowhere:
 it's implicit in a cron, a memory, or a human's head. The Tasks plane makes the *goal* a first-class,
 persistent object with a lifecycle (`todo → doing → blocked → done`), an owner + assignee, an activity

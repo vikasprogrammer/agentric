@@ -1,6 +1,6 @@
 /**
  * Cockpit's two code-provisioned System agents — the native-LLM backends for the `ask` and `action`
- * tiers, so neither needs a separately-configured LLM API key (the native "LLM" in Agent OS is a claude
+ * tiers, so neither needs a separately-configured LLM API key (the native "LLM" in Agentric is a claude
  * session). Both run as ordinary one-shot chat runs (governed, run-as the member); Cockpit polls the
  * transcript and renders the result inline. Category `System` keeps them out of the agent ROUTER (you're
  * never "routed to the concierge" for work) and the fleet picker. Provisioning mirrors the consolidator:
@@ -34,7 +34,7 @@ function ensureSystemAgent(os: AgentOS, manifest: AgentManifest, claudeMd: strin
 const CONCIERGE_MANIFEST: AgentManifest = {
   id: CONCIERGE_ID,
   version: '1.0.0',
-  description: 'Workspace concierge — answers questions about this Agent OS workspace using its own tools.',
+  description: 'Workspace concierge — answers questions about this Agentric workspace using its own tools.',
   category: 'System',
   principal: 'svc-concierge',
   policyContext: 'default@v3',
@@ -44,7 +44,7 @@ const CONCIERGE_MANIFEST: AgentManifest = {
 
 const CONCIERGE_MD = `# Workspace concierge
 
-You are the **concierge** for this Agent OS workspace. A member asked a question about the workspace
+You are the **concierge** for this Agentric workspace. A member asked a question about the workspace
 itself — the agents, sessions, tasks, automations, memory, knowledge base, policy, or how any of it
 works. Answer it, concisely, grounded in **real state**.
 
@@ -77,7 +77,7 @@ const OPERATOR_MANIFEST: AgentManifest = {
 
 const OPERATOR_MD = `# Workspace operator
 
-A member asked you to **set something up** in this Agent OS workspace. Do exactly that — nothing more —
+A member asked you to **set something up** in this Agentric workspace. Do exactly that — nothing more —
 using the governed tools, then confirm in one line what happened. You act on the member's behalf.
 
 ## What to do

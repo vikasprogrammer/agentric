@@ -3,7 +3,7 @@
 #
 # Wire this in a session's runtime config (Claude Code: `.claude/aos-settings.json`, written by
 # claude-launch.sh; Codex: `$CODEX_HOME/hooks.json`, written by codex-launch.sh) so a REAL agent
-# running in tmux is governed by Agent OS: before every tool call, the CLI runs this hook. The server
+# running in tmux is governed by Agentric: before every tool call, the CLI runs this hook. The server
 # decides: allow / ask (create an inbox approval and BLOCK here until a human decides) / never
 # (denied outright).
 #
@@ -14,9 +14,9 @@
 # `additionalContext` output wire as Claude Code (verified against the schema embedded in the codex
 # binary). One file on purpose: a governance fix must never land for one runtime and miss the other.
 #
-# Contract (AUTHORITATIVE-DECISION mode): for the capabilities Agent OS governs (Bash,
+# Contract (AUTHORITATIVE-DECISION mode): for the capabilities Agentric governs (Bash,
 # connector.*), the hook emits a PreToolUse `permissionDecision` on stdout and exits 0.
-# `permissionDecision:"allow"` makes Agent OS the SOLE authority — it BYPASSES Claude Code's
+# `permissionDecision:"allow"` makes Agentric the SOLE authority — it BYPASSES Claude Code's
 # own permission engine (the `auto`-mode classifier never runs, so there's no second, hidden
 # denial layered on top of ours). `"deny"` blocks the call. An approval that's still pending
 # blocks the hook synchronously (polling) until a human resolves it, then emits allow/deny —
@@ -89,7 +89,7 @@ case "$TOOL" in
   mcp__agentos__*|agentos__*) exit 0 ;;
 esac
 
-# Route the tool to an Agent OS capability (structural — the only thing the hook still decides). All
+# Route the tool to an Agentric capability (structural — the only thing the hook still decides). All
 # riskiness/destructiveness classification now happens server-side in the enricher + policy.
 #
 # ONE table for every runtime, because the tool names are the SAME. Verified empirically against codex
@@ -128,14 +128,14 @@ while :; do
   # An `instruct`: the gate allowed the effect but attached an advisory note (e.g. a detected loop).
   note=$(printf '%s' "$resp" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");process.stdout.write(o.note||"")})')
   case "$dec" in
-    allow) if [ -n "$note" ]; then emit_allow_note "Agent OS: allowed by policy." "$note"; else emit allow "Agent OS: allowed by policy."; fi ;;
-    deny)  emit deny "Agent OS policy: denied — this action is blocked (irreversible or not permitted)." ;;
+    allow) if [ -n "$note" ]; then emit_allow_note "Agentric: allowed by policy." "$note"; else emit allow "Agentric: allowed by policy."; fi ;;
+    deny)  emit deny "Agentric policy: denied — this action is blocked (irreversible or not permitted)." ;;
     pending) break ;;
-    *) echo "Agent OS: gate unreachable — blocking this action until it responds…" >&2; sleep 2 ;;
+    *) echo "Agentric: gate unreachable — blocking this action until it responds…" >&2; sleep 2 ;;
   esac
 done
 
-echo "Agent OS: this action needs approval — see the inbox. Waiting…" >&2
+echo "Agentric: this action needs approval — see the inbox. Waiting…" >&2
 # Interactive runs wait indefinitely for a human. An UNATTENDED run has nobody at the terminal, so bound
 # the wait and FAIL CLOSED (deny) — we only ever stop THIS blocked call, never fall through to allow, and
 # the approval row stays pending in the inbox for a human to resolve + re-run.
@@ -144,13 +144,13 @@ waited=0
 while :; do
   sleep 1
   st=$(curl -s --max-time 10 "$AOS_URL/api/gate/$gid" -H "x-aos-tenant: ${AOS_TENANT:-}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");console.log(o.status||"")})')
-  [ "$st" = "allow" ] && emit allow "Agent OS: approved by human."
-  [ "$st" = "deny" ]  && emit deny "Agent OS: rejected by human."
+  [ "$st" = "allow" ] && emit allow "Agentric: approved by human."
+  [ "$st" = "deny" ]  && emit deny "Agentric: rejected by human."
   # any other status (pending / empty / gate momentarily unreachable) → keep waiting, never proceed
   if [ "${UNATTENDED:-}" = "1" ]; then
     waited=$((waited + 1))
     if [ "$waited" -ge "$APPROVAL_WAIT_S" ]; then
-      emit deny "Agent OS: no operator approved this within ${APPROVAL_WAIT_S}s on an unattended run — blocked (fail-closed). The approval is still in the inbox; a human can approve and re-run. Wrap up: report what you did and end the run."
+      emit deny "Agentric: no operator approved this within ${APPROVAL_WAIT_S}s on an unattended run — blocked (fail-closed). The approval is still in the inbox; a human can approve and re-run. Wrap up: report what you did and end the run."
     fi
   fi
 done

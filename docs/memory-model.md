@@ -1,4 +1,4 @@
-# How Agent OS remembers — the four-verb model
+# How Agentric remembers — the four-verb model
 
 > This is the one-page mental model for the whole memory + self-learning system. Read this first;
 > every other memory doc (`memory-layer-plan.md`, `memory-encoding-and-consolidation.md`,

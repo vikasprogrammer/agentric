@@ -1,5 +1,5 @@
 /**
- * Connectors — how a user plugs their own Slack / Gmail / GitHub (etc.) into Agent OS.
+ * Connectors — how a user plugs their own Slack / Gmail / GitHub (etc.) into Agentric.
  *
  * The "easy" path reuses Claude Code's native connector mechanism: MCP servers. A connector
  * is just an MCP server config. When a claude-code agent session starts, the OS materialises

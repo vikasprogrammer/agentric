@@ -18,7 +18,7 @@ import { IMPROVER_ID } from './improver';
 import { SCOUT_ID } from './skill-scout';
 import { STRATEGIST_ID } from './strategist';
 
-// The agents Agent OS provisions itself — never a "retire" candidate, however idle (they're on-demand
+// The agents Agentric provisions itself — never a "retire" candidate, however idle (they're on-demand
 // helpers: the consolidator/scout/strategist/… only run when the self-learning loop needs them). Mirrors
 // the `BUILT_IN_AGENT_IDS` set the server uses to mark agents read-only.
 const BUILT_IN_AGENTS = new Set<string>([...BUILTIN_SEED_IDS, CONSOLIDATOR_ID, SCOUT_ID, STRATEGIST_ID, IMPROVER_ID, ANALYST_ID]);

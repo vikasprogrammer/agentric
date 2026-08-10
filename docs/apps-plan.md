@@ -1,8 +1,8 @@
-# Agent OS Apps — Implementation Plan
+# Agentric Apps — Implementation Plan
 
 > **Status: BUILDING (2026-07-14).** Design of record for the **Apps** plane — hosting small
 > server-side apps (a mini-CRM, an internal mini-tool) inside a tenant, built **by agents and humans
-> only** (no bundled seed apps — the fleet writes them). Reuses two primitives Agent OS already ships:
+> only** (no bundled seed apps — the fleet writes them). Reuses two primitives Agentric already ships:
 > the `/terminal/` reverse-proxy machinery and the `launcher.ts` DynamicUser isolation daemon. Nothing
 > here is a PaaS: an App is a supervised, uid-isolated Node process reached through the same
 > authenticated proxy the terminal uses, and its only channel out is the same pre-auth loopback the
@@ -55,7 +55,7 @@
 
 ## 0. Where Apps sit relative to Sessions, Automations, Tasks, and the Library
 
-Agent OS already hosts two kinds of running code: **sessions** (tmux-backed agent runs, proxied via
+Agentric already hosts two kinds of running code: **sessions** (tmux-backed agent runs, proxied via
 ttyd) and **triggers** (Automations firing sessions). It already *renders* one kind of app: a
 published `.html` artifact in a **sandboxed, null-origin iframe** (`ArtifactBody`,
 `web/src/App.tsx:3904`). That covers *static, client-side* mini-tools — but a null-origin sandbox

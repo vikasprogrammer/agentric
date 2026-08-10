@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Real-Claude launcher — opens an interactive `claude` session DIRECTLY IN THE AGENT'S FOLDER,
-# governed by Agent OS. This is the authentic path: a real agent in a real shell, but every
+# governed by Agentric. This is the authentic path: a real agent in a real shell, but every
 # Bash tool call passes through the gateway via a PreToolUse hook (risky ones pause for inbox
 # approval), so even a fully autonomous claude can't do anything risky un-approved.
 #
@@ -100,7 +100,7 @@ trap 'exit 130' INT
 # safe to pre-allow at Claude's permission layer: every one goes through the loopback API, which derives
 # identity from the session row and enforces the REAL governance server-side (e.g. secret_put still
 # blocks for human approval; memory reads/writes only this agent's own namespace) — so approving them
-# here only silences Claude's own prompt, it does NOT bypass Agent OS policy. The gate hook likewise
+# here only silences Claude's own prompt, it does NOT bypass Agentric policy. The gate hook likewise
 # `exit 0`s mcp__agentos__* (they aren't world side effects), so without this pre-allow the tools NOT
 # on the old explicit list (revise/forget/update/check_inbox/schedule/agent_*/secret_*/…) prompted in
 # interactive sessions. Enumerating a partial list caused exactly that gap; the server name covers all.
@@ -114,7 +114,7 @@ STOP_HOOK="$(dirname "$HOOK")/stop-hook.sh"
 # is over, with claude's own reason). Together with the Stop hook these are what make the console's
 # "working / ready / done" honest instead of inferred from a latched flag + a tmux poll.
 LIFECYCLE_HOOK="$(dirname "$HOOK")/lifecycle-hook.sh"
-# The Agent OS status line renderer (native claude statusLine) lives beside the hooks too.
+# The Agentric status line renderer (native claude statusLine) lives beside the hooks too.
 STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # NO OS-level Bash sandbox. Governance is the gate hook (PreToolUse), which is now the SOLE
 # authority: it emits an authoritative `permissionDecision` per Bash/connector call, so we don't
@@ -133,7 +133,7 @@ STATUSLINE="$(dirname "$HOOK")/statusline.js"
 # paths that never overlap the agent folder.
 H="${HOME#/}"
 # Deny the native AskUserQuestion tool: it renders a multiple-choice picker in the TUI and BLOCKS the
-# turn until someone presses Enter at the keyboard — but an Agent OS run has no human at the terminal
+# turn until someone presses Enter at the keyboard — but an Agentric run has no human at the terminal
 # (chat/automation/task/Slack runs are unattended; even an attached session interacts via the console).
 # So it hangs the run forever and never reaches the Inbox. Denied here, the agent asks via `ask_human`
 # (governed → Inbox card + DM, blocks for the answer) or in plain prose — both work everywhere. (deny
@@ -156,7 +156,7 @@ mkdir -p .claude
 rm -f .claude/settings.json
 # CROSS-SESSION MESSAGING (claude ≥ 2.1.224) is OFF for governed runs. Claude Code binds a per-session
 # inbox socket and lets any session reach any other on the same machine via its `SendMessage`/`ListAgents`
-# tools. Every Agent OS run is a claude session owned by the SAME OS user on the SAME box, so out of the
+# tools. Every Agentric run is a claude session owned by the SAME OS user on the SAME box, so out of the
 # box the whole fleet — across tenants — is mutually addressable through a channel the gateway never sees:
 # the gate hook's tool→capability table has no row for `SendMessage`, so it falls to the `*)` arm and the
 # call is unaudited, un-policed, and carries none of the run-as identity, owner or provenance that the
@@ -222,14 +222,14 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 clear
-cyan "┌─ Agent OS · governed claude ────────────────────────────────"
+cyan "┌─ Agentric · governed claude ────────────────────────────────"
 cyan "│ agent:   $AGENT"
 cyan "│ session: $SESSION"
 cyan "│ folder:  $AGENT_DIR"
 cyan "│ task:    $TASK"
 cyan "└─────────────────────────────────────────────────────────────"
 echo
-dim "Real claude, opened in this agent's folder. Every Bash call is gated by Agent OS;"
+dim "Real claude, opened in this agent's folder. Every Bash call is gated by Agentric;"
 dim "risky ones pause here and surface as an inbox approval. Attach and type to take over."
 echo
 
@@ -262,14 +262,14 @@ if [ -d .claude/skills ]; then
   [ -n "$SKILLS" ] && dim "skills: $SKILLS"
 fi
 
-# Tell Agent OS the run ended → the Inbox shows a completion card (unless the agent already
+# Tell Agentric the run ended → the Inbox shows a completion card (unless the agent already
 # reported a richer outcome via the `report` tool) and the session is marked idle.
 notify_ended() {
   curl -s -X POST "$AOS_URL/api/ended" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" \
     -d "$(node -e 'console.log(JSON.stringify({session:process.argv[1]}))' "$SESSION")" >/dev/null 2>&1 || true
 }
 
-# Tell Agent OS a stopped session was reconnected → flip the row back to running in the console.
+# Tell Agentric a stopped session was reconnected → flip the row back to running in the console.
 notify_resumed() {
   curl -s -X POST "$AOS_URL/api/resumed" -H 'content-type: application/json' -H "x-aos-secret: ${AOS_SECRET:-}" -H "x-aos-tenant: ${AOS_TENANT:-}" \
     -d "$(node -e 'console.log(JSON.stringify({session:process.argv[1]}))' "$SESSION")" >/dev/null 2>&1 || true

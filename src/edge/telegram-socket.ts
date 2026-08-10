@@ -337,7 +337,7 @@ export class TelegramSocket {
     return (text || '').replace(re, '').trim();
   }
 
-  /** Map a Telegram user id → Agent OS member id via the identity map (provider `telegram`). Undefined
+  /** Map a Telegram user id → Agentric member id via the identity map (provider `telegram`). Undefined
    *  when the sender isn't linked to a member → the run falls back to the company identity. */
   private resolveMember(userId: string): string | undefined {
     if (!userId) return undefined;
@@ -355,7 +355,7 @@ export class TelegramSocket {
    *  parse_mode), so no markdown. */
   private helpText(): string {
     return [
-      '🤖 Agent OS — how to use this bot:',
+      '🤖 Agentric — how to use this bot:',
       '',
       '• Address an agent by name:  /agent_name your request',
       "• …or just describe what you need and I'll route it to the best-fit agent.",

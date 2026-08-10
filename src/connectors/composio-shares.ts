@@ -4,7 +4,7 @@
  * A Composio connected account lives under a `user_id` (a member's email for a personal app, the
  * service entity for a company one) and that owner is IMMUTABLE — Composio has no transfer API, and a
  * Tool Router session may only pin accounts belonging to its own `user_id`. So "make my Gmail
- * available to the team" cannot be a move; it has to be a marker Agent OS enforces at mint time.
+ * available to the team" cannot be a move; it has to be a marker Agentric enforces at mint time.
  *
  * That's this table. Marking a connection shared records `(connection id, toolkit, owning entity)`.
  * At launch `TerminalManager` mints ONE extra Tool Router session per sharing owner, under that

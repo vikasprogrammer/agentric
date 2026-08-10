@@ -1,4 +1,4 @@
-# Agent OS — Plan
+# Agentric — Plan
 
 **Category:** Agent Control Plane. **One line:** *The enforcement layer for autonomous AI.*
 **Objective:** Make it safe for an organization to let agents take consequential actions.
@@ -13,13 +13,13 @@
 
 ## 1. What we are
 
-Frameworks answer *"how do I build an agent?"* Agent OS answers *"how do I safely let it
+Frameworks answer *"how do I build an agent?"* Agentric answers *"how do I safely let it
 act?"* We are the runtime governance layer — independent of model, framework, language, and
 cloud. We do not build agents; we govern the effects they produce.
 
 ## 2. The invariant
 
-**No consequential side effect passes without an Agent OS decision** — Identity → Policy →
+**No consequential side effect passes without an Agentric decision** — Identity → Policy →
 Risk → (Allow / Approve / Deny) → Budget → Idempotency → Execute → Audit. Everything else
 exists to make this real. Today this lives in `src/gateway/gateway.ts` (the 7-step mediated
 boundary) enforced via the PreToolUse gate-hook inside sessions we host.
@@ -345,7 +345,7 @@ capability; against raw per-connector names they're exactly the brittleness the 
 ## North-star
 
 **Governed effects executed** → ultimately **% of a customer's autonomous actions governed by
-Agent OS.** That number is whether we became infrastructure.
+Agentric.** That number is whether we became infrastructure.
 
 ## Commercial line
 

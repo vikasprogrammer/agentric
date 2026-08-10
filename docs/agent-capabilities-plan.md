@@ -1,6 +1,6 @@
 # Agent capabilities plan — what an agent can reach at runtime
 
-An agent inside Agent OS is a `claude-code` session launched in the agent's folder. Today it can use
+An agent inside Agentric is a `claude-code` session launched in the agent's folder. Today it can use
 **connectors** and **memory** (`recall`/`remember`) as MCP tools, can **ask** the operator and
 **report** completion, inherits the **company context** in its system prompt, and is governed by the
 **PreToolUse gate**. This plan adds the remaining capabilities so an agent can also see its policy

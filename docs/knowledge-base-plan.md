@@ -1,4 +1,4 @@
-# Agent OS Knowledge Base (KB) — Implementation Plan
+# Agentric Knowledge Base (KB) — Implementation Plan
 
 > **Status (2026-06-23): backend shipped ✅ · console UI pending.** Built per this design: `kb_pages`/
 > `kb_revisions`/`kb_fts` (`db.ts`), `KbStore` (`src/state/kb.ts`, wired as `os.kb`), the loopback +

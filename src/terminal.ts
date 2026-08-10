@@ -1,7 +1,7 @@
 /**
  * Terminal-native sessions. Each agent session is a real tmux shell on the box (attachable
  * in the browser via ttyd). Every side effect the session takes is routed through the SAME
- * Agent OS gateway as the console — so even a raw shell can't act on anything risky without
+ * Agentric gateway as the console — so even a raw shell can't act on anything risky without
  * a human approving it in the inbox.
  *
  * Governance over a real terminal = the agent-runner / Claude PreToolUse hook calls
@@ -107,9 +107,9 @@ import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnError
 // the agent's orientation: it is otherwise a stock `claude` dropped into a folder, blind to the OS it
 // runs inside. Keep it tight — it costs tokens on every session. Describe the environment and how to
 // operate well in it; don't restate what the MCP tool descriptions already say.
-export const AGENT_OS_OPERATING_NOTES = `# You are running inside Agent OS
+export const AGENT_OS_OPERATING_NOTES = `# You are running inside Agentric
 
-You are an autonomous agent operating inside **Agent OS**, a governed runtime. You are not a chat
+You are an autonomous agent operating inside **Agentric**, a governed runtime. You are not a chat
 assistant in a sandbox — your actions can touch real systems (shells, connected apps, money), and the
 OS mediates them. Operate accordingly.
 
@@ -150,7 +150,7 @@ Your terminal output may not be read. The operator lives in the Inbox:
 ## Opening a pull request — always link back to this session
 When you open a pull request (or any deliverable that carries a description), add a line linking back to
 this run so a reviewer can trace the change to the audited session that produced it — the URL is in the
-\`AOS_SESSION_URL\` env var (\`echo "$AOS_SESSION_URL"\`), e.g. \`Agent OS session: <url>\`. Print it as a
+\`AOS_SESSION_URL\` env var (\`echo "$AOS_SESSION_URL"\`), e.g. \`Agentric session: <url>\`. Print it as a
 plain URL (links aren't clickable here).
 
 ## You are one agent in a fleet — don't work alone
@@ -1246,7 +1246,7 @@ export class TerminalManager {
       // Close the chat loop: a crash fires no `report` (the only other mirror point), so a chat-triggered
       // run that DIED would otherwise leave its Slack/Discord thread hanging forever. No-op for non-chat runs.
       const inboxLink = consolePage(this.publicOrigin, 'inbox');
-      try { this.chatMirror?.(r.id, (p) => `💥 ${r.agent} crashed — the session ended unexpectedly.\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
+      try { this.chatMirror?.(r.id, (p) => `💥 ${r.agent} crashed — the session ended unexpectedly.\n${chatLink(p, inboxLink, 'Open in Agentric')}`); } catch { /* advisory */ }
     }
   }
 
@@ -1289,7 +1289,7 @@ export class TerminalManager {
     if (this.os.agents.get(r.agent)?.runtime !== 'codex') return;
     const pane = this.backend.capturePane(this.spaceFor(r.run_as ?? r.spawned_by), r.tmux);
     if (!pane || !/hooks need review/i.test(pane)) return;
-    const why = 'Codex asked to review its hooks, which means Agent OS\'s pre-seeded trust hash is stale '
+    const why = 'Codex asked to review its hooks, which means Agentric\'s pre-seeded trust hash is stale '
       + '(most likely after a Codex upgrade). The session was stopped rather than risk it running with the '
       + 'gate hook disabled — re-derive the hash in terminal/codex-launch.sh.';
     this.audit(r.id, r.agent, 'session.hook_trust.stale', { tmux: r.tmux });
@@ -2282,7 +2282,7 @@ export class TerminalManager {
     // (`tuning` itself is resolved further up — buildCompanyMd needs its `verbosity`.)
     if (runtime === 'codex') {
       // Codex reads model/effort from the config.toml the launcher generates; it has no
-      // --permission-mode (Agent OS is the sole authority there via approval_policy = "never"), so
+      // --permission-mode (Agentric is the sole authority there via approval_policy = "never"), so
       // permissionMode is deliberately not forwarded.
       if (tuning.model) env.CODEX_MODEL = tuning.model;
       if (tuning.effort) env.CODEX_EFFORT = tuning.effort;
@@ -3521,7 +3521,7 @@ export class TerminalManager {
       );
     const messaging = chatLines.length
       ? '# Messaging — use the native integration first\n\n' +
-        'These channels are wired directly into Agent OS: the built-in tools post as the company bot, ' +
+        'These channels are wired directly into Agentric: the built-in tools post as the company bot, ' +
         'need no channel setup, and are the supported path. Reach for the native tool first; fall back to ' +
         'a Composio action only if no native tool covers what you need.\n\n' +
         chatLines.join('\n')
@@ -4043,7 +4043,7 @@ export class TerminalManager {
     // the approver; this reaches everyone watching the thread). No-op for non-chat runs.
     const dot = decision.riskClass === 'red' ? '🔴' : '🟡';
     const inboxLink = consolePage(this.publicOrigin, 'inbox');
-    try { this.chatMirror?.(sessionId, (p) => `${dot} ${agent} needs approval — ${brief.headline}\n\`${capability}\` (${decision.riskClass.toUpperCase()} · ${decision.level}) — _${brief.rationale}_\nOpen the ${chatLink(p, inboxLink, 'Agent OS Inbox')} to approve or reject.`); } catch { /* advisory */ }
+    try { this.chatMirror?.(sessionId, (p) => `${dot} ${agent} needs approval — ${brief.headline}\n\`${capability}\` (${decision.riskClass.toUpperCase()} · ${decision.level}) — _${brief.rationale}_\nOpen the ${chatLink(p, inboxLink, 'Agentric Inbox')} to approve or reject.`); } catch { /* advisory */ }
 
     // The message + gate status are derived from the approvals table at read time, so all this
     // waiter has to do is leave an audit trail. (It won't fire across a restart — that's fine.)
@@ -4582,7 +4582,7 @@ export class TerminalManager {
     // blocking `ask` doesn't sit unseen in the console. And if the run was triggered from chat, mirror the
     // question into that thread. Both best-effort, off the hot path.
     try { this.questionNotifier?.({ questionId: id, sessionId, agent, prompt, to: target?.id }); } catch { /* notifications are advisory */ }
-    try { this.chatMirror?.(sessionId, (p) => `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the ${chatLink(p, consolePage(this.publicOrigin, 'inbox'), 'Agent OS Inbox')}.`); } catch { /* advisory */ }
+    try { this.chatMirror?.(sessionId, (p) => `❓ ${agent} needs your input:\n${prompt}\n\nAnswer in the ${chatLink(p, consolePage(this.publicOrigin, 'inbox'), 'Agentric Inbox')}.`); } catch { /* advisory */ }
     return { id, to: target?.email };
   }
 
@@ -4930,7 +4930,7 @@ export class TerminalManager {
     // still work for finer-grained replies; this guarantees the outcome lands even if it never called them.
     const mark = outcome === 'success' ? '✅' : outcome === 'failure' ? '❌' : '☑️';
     const inboxLink = consolePage(this.publicOrigin, 'inbox');
-    try { this.chatMirror?.(sessionId, (p) => `${mark} ${agent} finished (${outcome}).\n${summary || '(no summary)'}\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
+    try { this.chatMirror?.(sessionId, (p) => `${mark} ${agent} finished (${outcome}).\n${summary || '(no summary)'}\n${chatLink(p, inboxLink, 'Open in Agentric')}`); } catch { /* advisory */ }
     // Rename the session from the agent's own summary — an AI-written label that reflects what the run
     // actually did, replacing the provisional title (the task text / automation name set at spawn).
     // Claude Code's internal /resume summaries aren't available for governed sessions (headless `-p`
@@ -6299,7 +6299,7 @@ export class TerminalManager {
       // `report` (the only other mirror point) would otherwise leave its Slack/Discord thread waiting
       // forever. No-op for non-chat runs (no bound thread).
       const inboxLink = consolePage(this.publicOrigin, 'inbox');
-      try { this.chatMirror?.(sessionId, (p) => `☑️ ${s.agent} finished — the session ended.\n${chatLink(p, inboxLink, 'Open in Agent OS')}`); } catch { /* advisory */ }
+      try { this.chatMirror?.(sessionId, (p) => `☑️ ${s.agent} finished — the session ended.\n${chatLink(p, inboxLink, 'Open in Agentric')}`); } catch { /* advisory */ }
     }
     this.audit(sessionId, s.agent, 'session.ended', {});
     this.reliability.forget(sessionId); // drop the loop-detector streak state for this run
@@ -6729,7 +6729,7 @@ export class TerminalManager {
     const keysDir = path.join(dir, 'keys');
     const binDir = path.join(dir, 'bin');
     fs.mkdirSync(keysDir, { recursive: true });
-    const cfg: string[] = [`# Agent OS host connections — session ${sessionId}`, ''];
+    const cfg: string[] = [`# Agentric host connections — session ${sessionId}`, ''];
     let injected = 0;
     for (const h of hosts) {
       const m = h.match.trim();

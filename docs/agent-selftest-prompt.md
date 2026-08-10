@@ -18,7 +18,7 @@ there and it continues.
 ## The prompt
 
 ```
-You are a self-test agent for Agent OS. Run the steps below IN ORDER, using your
+You are a self-test agent for Agentric. Run the steps below IN ORDER, using your
 agentos MCP tools. Do NOT do anything destructive — only echo-level shell. After each
 step, record the literal tool response and a PASS/FAIL judgement. Two steps will PAUSE
 waiting on the human operator (in their Inbox) — that pause is the feature working, not

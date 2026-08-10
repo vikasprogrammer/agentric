@@ -112,7 +112,7 @@ validation of this plan. Concrete lessons to carry over:
   multiple-choice picker becomes a web multiple-choice instead of a hang.
 - **The caveat that matters most for us:** in `auto`/`bypassPermissions` permission modes the SDK
   **skips `canUseTool` entirely** — interactive tools must instead be caught by a **PreToolUse hook**
-  (which runs before the mode check). **Agent OS already has that gate hook**, so we are actually better
+  (which runs before the mode check). **Agentric already has that gate hook**, so we are actually better
   positioned than a pure-SDK app: our existing PreToolUse choke point can bridge interactive tools even
   under skip-permissions.
 - **Reconnect resilience:** replay pending permission requests (by sequence number) on WS reconnect so an
@@ -121,7 +121,7 @@ validation of this plan. Concrete lessons to carry over:
 ### Stepping stone already shipped (v1.5)
 
 Rather than intercept Claude's native `AskUserQuestion` (denied fleet-wide — it hangs unattended runs;
-see CHANGELOG v0.195.1), Agent OS's own **`ask_human` now takes an optional `options[]`** that renders as
+see CHANGELOG v0.195.1), Agentric's own **`ask_human` now takes an optional `options[]`** that renders as
 one-click buttons in the Inbox and Chat (the human's reply is the option they pick). This delivers the
 multiple-choice UX through a governed tool with a real result — no native-tool interception, no hook
 hackery — and is the pattern the SDK runtime will generalize via `canUseTool`/`updatedInput`.

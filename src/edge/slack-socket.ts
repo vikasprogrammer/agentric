@@ -7,7 +7,7 @@
  * (Inbox card, gate hook, approvals, audit) just works.
  *
  * One company app, shared across the workspace. Per-member behaviour rides on top of that one app:
- * each inbound event names the Slack user, we resolve their email → an Agent OS member, and run the
+ * each inbound event names the Slack user, we resolve their email → an Agentric member, and run the
  * session AS that member (their personal connectors + their inbox). Unrecognised senders fall back to
  * the company identity. The bot posts an immediate ack in-thread; the agent itself replies using its
  * Slack egress tools (the company Slackbot connected via Composio).
@@ -140,7 +140,7 @@ export class SlackSocket {
     if (ev.fromBot || (this.botUserId && ev.user === this.botUserId)) return; // ignore self / other bots
     if (!ev.channel) return;
 
-    // Resolve the triggering Slack user → an Agent OS member (per-member run-as). Prefer an explicit
+    // Resolve the triggering Slack user → an Agentric member (per-member run-as). Prefer an explicit
     // identity-map link (provider `slack`, set on the Team page); fall back to matching the Slack
     // profile email to a member. The map wins so a workspace can override / cover users whose Slack
     // email differs from their login email (or when the bot lacks the email scope).

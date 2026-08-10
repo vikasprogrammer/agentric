@@ -1,6 +1,6 @@
 # Governance: roles, approvals, budgets, audit
 
-How Agent OS keeps autonomous agents accountable — without a human babysitting every step.
+How Agentric keeps autonomous agents accountable — without a human babysitting every step.
 
 ## Roles
 
