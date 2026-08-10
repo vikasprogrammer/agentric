@@ -171,7 +171,10 @@ console.log('\n\x1b[1msteering a live delegate\x1b[0m');
   const autos = new Automations(aos, tm);
   const injected = [];
   tm.backend.injectText = (space, tmuxName, body) => { injected.push({ tmux: tmuxName, body }); return true; };
+  // `isAlive` guards dispatch pile-ups; `reachable` decides delivery (a reported run keeps a live REPL).
+  // Only the delegate is up on either.
   tm.isAlive = (id) => id === liveDelegate;
+  tm.reachable = (id) => id === liveDelegate;
 
   const held = mkTask({ title: 'ship batch 1', assignee: 'agent:builder', callerAgent: 'agent:manager', callerClaudeId: 'cs_mgr' });
   var liveDelegate = mkRun({ agent: 'builder', claude_session_id: 'cs_build', spawned_by: `task:${held.id}`, status: 'running', title: 'Task: ship batch 1' });
@@ -180,7 +183,7 @@ console.log('\n\x1b[1msteering a live delegate\x1b[0m');
 
   // An unattended run is an attachable TUI — delivery must reach it (this is what was broken).
   assert(tm.deliverToResident(liveDelegate, 'stand down') === true, 'a live UNATTENDED run can be messaged');
-  assert(tm.deliverToResident(mkRun({ status: 'done' }), 'x') === false, 'a finished run cannot');
+  assert(tm.deliverToResident(mkRun({ status: 'done' }), 'x') === false, 'a run with no live pane cannot');
 
   // A HOLD by the caller reaches the run that is doing the work.
   injected.length = 0;
@@ -203,7 +206,7 @@ console.log('\n\x1b[1msteering a live delegate\x1b[0m');
   assert(!/blocked/.test(forced.reason || ''), 'a human forcing it is not refused for being blocked', forced.reason);
 
   // And a still-working delegate is never given a rival by the discussion path.
-  tm.isAlive = (id) => id === liveDelegate;
+  tm.isAlive = (id) => id === liveDelegate; tm.reachable = (id) => id === liveDelegate;
   tm.deliverToResident = () => false;   // simulate an undeliverable pane
   tm.reviveResident = () => false;
   const before = aos.db.prepare('SELECT COUNT(*) AS c FROM term_sessions').get().c;
