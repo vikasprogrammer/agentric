@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.332.0] — 2026-08-10
+### Added
+- **A task now shows the goal it belongs to, and the goal is one click away.** The task drawer (and the
+  task room's sidebar) leads with a "Part of goal" banner — goal title, its status when it isn't
+  `active`, and the goal's derived progress bar — that navigates straight to the goal's detail page.
+  The goal chip on Kanban cards and list rows became a real anchor (`#/goals/<id>`) rather than a dead
+  badge, so ⌘/middle-click opens the goal in a new tab and a plain click routes in place without also
+  opening the task behind it; the list's group-by-goal headers link the same way. The Goal `<Select>`
+  stays what it always was — the way to RE-link a task — since a picker can't double as a way out to
+  the thing it points at. Re-linking or completing a task also refreshes the goal list, so the banner's
+  progress bar reflects the edit instead of the pre-edit state.
+
 ## [0.331.2] — 2026-08-10
 ### Fixed
 - **`package-lock.json` is back in sync with `package.json`, and a test keeps it that way.** The lock

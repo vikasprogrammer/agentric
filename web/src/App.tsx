@@ -8644,8 +8644,26 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // Goals to populate the task↔goal selector (and to resolve a task's goal title for its chip). Pull
   // active goals for the picker but keep the full list so a task linked to a since-archived goal still names it.
   const [goals, setGoals] = useState<Goal[]>([])
-  useEffect(() => { api.goals().then((r) => setGoals(r.goals ?? [])).catch(() => {}) }, [])
+  const [goalProgress, setGoalProgress] = useState<Record<string, GoalProgress>>({})
+  const loadGoals = () => api.goals().then((r) => { setGoals(r.goals ?? []); setGoalProgress(r.progress ?? {}) }).catch(() => {})
+  useEffect(() => { loadGoals() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const goalOf = (id?: string) => (id ? goals.find((g) => g.id === id) : undefined)
   const goalTitle = (id?: string) => (id ? goals.find((g) => g.id === id)?.title || id : '')
+  /** A task's goal chip, as a real anchor into the goal's detail page. `stopPropagation` first so the
+   *  click doesn't also open the task behind it — including the ⌘/middle-click path, where onNavClick
+   *  deliberately falls through to the browser's new-tab handling. */
+  const goalChip = (id: string, className = '') => (
+    <a
+      href={navHref('goals', id)}
+      title={`Goal: ${goalTitle(id)} — open goal`}
+      onClick={(e) => { e.stopPropagation(); onNavClick(() => nav('goals', id))(e) }}
+      className={`inline-flex min-w-0 no-underline ${className}`}
+    >
+      <Badge variant="outline" className="max-w-[10rem] gap-1 truncate px-1.5 py-0 text-[10px] transition hover:border-primary/50 hover:text-foreground">
+        <Target className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{goalTitle(id)}</span>
+      </Badge>
+    </a>
+  )
   const [tasks, setTasks] = useState<Task[] | null>(null)
   const [discussions, setDiscussions] = useState<Record<string, TaskDiscussionSummary>>({})
   const [counts, setCounts] = useState<Record<TaskStatus, number>>({ todo: 0, doing: 0, blocked: 0, done: 0, cancelled: 0 })
@@ -8865,7 +8883,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     setTitle(''); setBody(''); setAssignee(''); setAutoDispatch(false); setPriority(2); setMode('headless'); setDue(''); setGoalId(''); setCriteria(''); setNewDeps([]); setShowNew(false)
     load()
   }
-  const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); setBusy(false) }
+  // Re-link or complete a task and the goal's derived progress moves with it, so refresh the goal
+  // list too — otherwise the "part of goal" banner keeps showing the pre-edit bar.
+  const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); if (b.goalId !== undefined || b.status) await loadGoals(); setBusy(false) }
   const dispatch = async (t: Task) => {
     setBusy(true); setHint('')
     const r = await api.dispatchTask(t.id)
@@ -8920,7 +8940,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             : <span className="font-mono text-[10px] text-muted-foreground/60">unassigned</span>}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
-          {t.goalId && <Badge variant="outline" className="max-w-[10rem] gap-1 truncate px-1.5 py-0 text-[10px]"><Target className="h-2.5 w-2.5 shrink-0" /><span className="truncate">{goalTitle(t.goalId)}</span></Badge>}
+          {t.goalId && goalChip(t.goalId)}
           {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
           <span className="ml-auto font-mono text-[10px] opacity-60">{t.id}</span>
         </div>
@@ -8990,6 +9010,32 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     ) : (
       <div className="space-y-3.5">
         <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
+
+        {/* "This task is part of a goal" banner — the goal's title, status and derived progress, as one
+            click-through into the goal's detail page. The Goal field below still RE-LINKS the task; this
+            is the read/navigate affordance a bare <Select> can't give. */}
+        {detail.task.goalId && (() => {
+          const g = goalOf(detail.task.goalId)
+          const gid = detail.task.goalId
+          return (
+            <a
+              href={navHref('goals', gid)}
+              onClick={onNavClick(() => nav('goals', gid))}
+              className="flex items-center gap-2.5 rounded-md border bg-muted/20 px-3 py-2 no-underline transition hover:border-primary/40 hover:bg-muted/40"
+            >
+              <Target className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Part of goal</div>
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium text-foreground">{g?.title ?? gid}</span>
+                  {g && g.status !== 'active' && <Badge variant="outline" className="shrink-0 px-1 py-0 text-[10px] capitalize">{g.status}</Badge>}
+                </div>
+                <GoalProgressBar p={goalProgress[gid]} className="mt-1" />
+              </div>
+              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </a>
+          )
+        })()}
         {opts?.withDiscussion !== false && detail.task.body && <div className="max-h-56 overflow-y-auto break-words rounded-md border bg-muted/30 p-3 text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{detail.task.body}</ReactMarkdown></div>}
 
         {opts?.withDiscussion !== false && live && (
@@ -9451,7 +9497,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
               if (listGroup === 'priority') groups = [0, 1, 2, 3].map((p) => ({ key: String(p), label: <span className="flex items-center gap-2"><PriorityPips p={p} />{PRIORITY_LABEL[p]}</span>, items: within(visible.filter((t) => t.priority === p)) })).filter((g) => g.items.length)
               else if (listGroup === 'status') groups = (['doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
               else if (listGroup === 'assignee') groups = [...new Set(visible.map((t) => t.assignee || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unassigned'}</span>, items: within(visible.filter((t) => (t.assignee || '') === k)) })).filter((g) => g.items.length)
-              else if (listGroup === 'goal') groups = [...new Set(visible.map((t) => t.goalId || ''))].sort((a, b) => (a ? goalTitle(a) : 'zzz').localeCompare(b ? goalTitle(b) : 'zzz')).map((k) => ({ key: k || 'none', label: <span className="flex items-center gap-1.5">{k ? <><Target className="h-3.5 w-3.5 text-muted-foreground" />{goalTitle(k)}</> : 'No goal'}</span>, items: within(visible.filter((t) => (t.goalId || '') === k)) })).filter((g) => g.items.length)
+              else if (listGroup === 'goal') groups = [...new Set(visible.map((t) => t.goalId || ''))].sort((a, b) => (a ? goalTitle(a) : 'zzz').localeCompare(b ? goalTitle(b) : 'zzz')).map((k) => ({ key: k || 'none', label: <span className="flex items-center gap-1.5">{k ? <><Target className="h-3.5 w-3.5 text-muted-foreground" /><a href={navHref('goals', k)} onClick={onNavClick(() => nav('goals', k))} className="text-muted-foreground no-underline hover:text-foreground hover:underline">{goalTitle(k)}</a></> : 'No goal'}</span>, items: within(visible.filter((t) => (t.goalId || '') === k)) })).filter((g) => g.items.length)
               else groups = [{ key: 'all', label: <span>All tasks</span>, items: within(visible) }]
               if (!visible.length) return <div className="px-3 py-8 text-center text-sm text-muted-foreground">No tasks match.</div>
               return groups.map((g) => (
@@ -9468,7 +9514,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                         <StatusDot status={t.status} />
                         <div className="flex min-w-0 flex-1 items-center gap-2">
                           <a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-[13px] text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
-                          {t.goalId && <Badge variant="outline" className="hidden shrink-0 gap-1 px-1 py-0 text-[10px] sm:inline-flex"><Target className="h-2.5 w-2.5" />{goalTitle(t.goalId)}</Badge>}
+                          {t.goalId && goalChip(t.goalId, 'hidden shrink-0 sm:inline-flex')}
                           {unmetCount(t) > 0 && <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blockers">⏳ {unmetCount(t)}</span>}
                           {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
                           {t.labels.map((l) => <Badge key={l} variant="outline" className="hidden shrink-0 px-1 py-0 text-[10px] md:inline-flex">{l}</Badge>)}
