@@ -2,7 +2,7 @@
 
 A **Task** is one unit of work. A **Goal** is the *outcome* several tasks add up to — "cut support
 first-response time to under an hour", "ship the pricing revamp", "grow the newsletter to 10k". You
-state where you want to be; Agent OS helps turn that into the tasks that get there. Goals live on the
+state where you want to be; Agentric helps turn that into the tasks that get there. Goals live on the
 **Goals** page (under Agents).
 
 ## What a goal is
@@ -58,7 +58,7 @@ Once **every task under a goal has finished**, the goal is marked **Ready to clo
 a banner at the top of the Goals page, and as an inbox card + DM to whoever owns it. You don't have to
 be watching the page to find out your goal landed.
 
-Agent OS does **not** close the goal for you. "All the tasks I filed are done" is a weaker claim than
+Agentric does **not** close the goal for you. "All the tasks I filed are done" is a weaker claim than
 "the outcome was achieved" — the plan may simply have missed something — and goal status is yours to
 set. So the goal's page offers the two real answers:
 

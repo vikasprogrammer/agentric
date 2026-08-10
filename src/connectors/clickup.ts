@@ -11,7 +11,7 @@
  * One company API token (a ClickUp personal/team token, `pk_…`), configured once in Settings →
  * Integrations, is shared across the workspace: it reads comments (ingress enrichment) and posts
  * replies (egress). Each inbound comment names the ClickUp user *with email* — the join key to an
- * Agent OS member for run-as, exactly like Slack's user→email→member mapping.
+ * Agentric member for run-as, exactly like Slack's user→email→member mapping.
  *
  * Deliberately ClickUp-specific (a connector plugin, not core). All calls use the global `fetch`
  * (Node 22+) — no runtime dependency, matching the Slack/Composio connectors' stance, and every call

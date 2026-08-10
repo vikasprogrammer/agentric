@@ -1,4 +1,4 @@
-# TODO — Agent OS plan execution
+# TODO — Agentric plan execution
 
 Working checklist for the plan in [`docs/agent-os-plan.md`](docs/agent-os-plan.md). The wedge is the
 **mediation plane behind existing MCP gateways** — own the enforced primitive (suspend-for-a-human +

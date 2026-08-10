@@ -243,7 +243,7 @@ export class AppStore {
  *  `X-Forwarded-Prefix` the proxy injects, reads the trusted `X-Aos-Member` header, and opens its own
  *  `data.db` via the built-in `node:sqlite`. This is the template an agent edits into a real app. */
 function scaffoldServerJs(name: string): string {
-  return `// ${name} — an Agent OS hosted app. Reached at /apps/<slug>/ through the authenticated proxy.
+  return `// ${name} — an Agentric hosted app. Reached at /apps/<slug>/ through the authenticated proxy.
 // The proxy strips the /apps/<slug> prefix and injects:
 //   X-Forwarded-Prefix: /apps/<slug>   (use it to build absolute links back to yourself)
 //   X-Aos-Member / X-Aos-Role          (the logged-in human — trusted, set by the proxy)

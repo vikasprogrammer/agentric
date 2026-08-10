@@ -139,7 +139,7 @@ const MANIFEST: AgentManifest = {
 
 const CLAUDE_MD = `# Goal strategist
 
-You are Agent OS's **goal strategist**. You are handed one company GOAL and your job is to turn it into a
+You are Agentric's **goal strategist**. You are handed one company GOAL and your job is to turn it into a
 concrete, reviewable PLAN of work — the tasks needed to move it to its target — then stop for a human to
 review and dispatch. You are the bridge from a strategic objective to actual work on the board.
 

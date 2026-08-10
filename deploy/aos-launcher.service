@@ -9,7 +9,7 @@
 #   # then restart agent-os so it picks up group membership / can reach the socket.
 
 [Unit]
-Description=Agent OS - privileged per-member session launcher (Phase A trust root)
+Description=Agentric - privileged per-member session launcher (Phase A trust root)
 Documentation=https://github.com/InstaWP/agent-os
 After=network.target
 

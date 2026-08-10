@@ -23,7 +23,7 @@ list on purpose — an internal marker is a hard "don't spawn me", not a soft de
 
 Claude Code already has a native, in-process sub-agent runtime: the built-in `Agent`/Task tool spawns
 a child defined by a `.claude/agents/<name>.md` file (frontmatter + persona), runs it to completion,
-and returns its result inline — sub-second, no separate process. Each Agent OS session *is* a
+and returns its result inline — sub-second, no separate process. Each Agentric session *is* a
 claude-code process, so we let a running agent spawn **one of our own fleet teammates** as such a
 sub-agent: the parent opts in via `usableSubagents`, and at launch we render each named teammate into
 its `.claude/agents/<id>.md`.
@@ -41,7 +41,7 @@ Two intents, two tools. Neither replaces the other.
 
 ## Why the invariant still holds
 
-Agent OS's one invariant: *every effect an agent has on the world passes the mediated gateway.* A
+Agentric's one invariant: *every effect an agent has on the world passes the mediated gateway.* A
 native sub-agent runs **in the same process** as the parent session, so the **PreToolUse gate hook
 fires for the sub-agent's tool calls too** (confirmed against the Claude Code hooks docs). Every
 sub-agent effect is therefore still classified / approved / budgeted / audited — there is no ungoverned

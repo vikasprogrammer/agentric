@@ -1,12 +1,25 @@
 # Changelog
 
-All notable changes to Agent OS are documented here. The format follows
+All notable changes to Agentric are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver
 (pre-beta: minor per feature merge, patch per fix — see CLAUDE.md → Versioning).
 Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.331.0] — 2026-08-10
+### Changed
+- **The product is now called Agentric (agentric.io).** Brand-layer rename only: every user-facing
+  surface — the console title/sidebar/copy, the bundled Docs pages, the agent-facing operating notes
+  and launch banners, the Slack/Discord app manifests, README, `docs/`, the landing page, systemd
+  `Description=` — says *Agentric* instead of *Agent OS*. The bundled doc page moved from
+  `what-is-agent-os` to `what-is-agentric`.
+  Every load-bearing identifier is deliberately untouched, because renaming it is a live-box migration
+  and not a copy edit: the `agent-os` CLI/npm package, `AGENT_OS_*` env vars, the `AOS_*` prefix, the
+  `AgentOS` class, the `mcp__agentos__*` tool namespace, the `/agent-os <agent>` chat command, unit
+  names (`agent-os.service`, `com.agentos.instapods`), data homes and `agent-os.db`, and the GitHub
+  repo. See CLAUDE.md → Naming for the rule.
 
 ## [0.330.0] — 2026-08-10
 ### Added

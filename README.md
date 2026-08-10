@@ -1,14 +1,16 @@
 <div align="center">
 
-# 🛡️ Agent OS
+# 🛡️ Agentric
 
 ### Run autonomous AI agents unattended — without handing them the keys to everything.
 
-Agent OS is a self-hosted control plane for AI agents. Give an agent a job, walk away, and trust that
+Agentric is a self-hosted control plane for AI agents. Give an agent a job, walk away, and trust that
 **every action it takes in the real world passes through one gate you control** — where risky moves
 pause for your approval, budgets are enforced, and everything is written to a tamper-evident audit log.
 
-[Quickstart](#-quickstart) · [Why Agent OS](#-why-agent-os) · [How it works](#-how-it-works) · [Features](#-features) · [Docs](#-documentation)
+[agentric.io](https://agentric.io)
+
+[Quickstart](#-quickstart) · [Why Agentric](#-why-agentric) · [How it works](#-how-it-works) · [Features](#-features) · [Docs](#-documentation)
 
 ![status](https://img.shields.io/badge/status-pre--beta-orange)
 ![license](https://img.shields.io/badge/license-MIT-blue)
@@ -19,13 +21,13 @@ pause for your approval, budgets are enforced, and everything is written to a ta
 
 ---
 
-## 🤔 Why Agent OS
+## 🤔 Why Agentric
 
 Letting an AI agent run on its own is easy. Letting it run on its own *safely* is the hard part —
 today it means babysitting a terminal and hoping it doesn't run `rm -rf`, refund the wrong customer,
 or burn your API budget at 3am.
 
-Agent OS puts a **governed boundary** between your agents and the outside world, then wraps it in a
+Agentric puts a **governed boundary** between your agents and the outside world, then wraps it in a
 web console you can actually run a team from:
 
 - **Leave agents running.** Risky actions suspend and wait for a human — the run resumes the moment you
@@ -62,11 +64,15 @@ npm run demo           # a scripted run that shows approvals, budgets, dedupe & 
 > **Running real agents** needs [Claude Code](https://claude.com/claude-code) (or Codex) installed, plus
 > `tmux` + `ttyd` for the browser terminal (`brew install tmux ttyd`, or your distro's packages).
 
+> **A note on the name.** The product is **Agentric**; the plumbing is still called `agent-os` — the
+> repo, the npm package and CLI (`agent-os serve`), the `AGENT_OS_*` env vars, the service units and
+> the data home. Those are baked into running deployments, so they keep the old name on purpose.
+
 ---
 
 ## 💡 The core idea
 
-Everything in Agent OS rests on a single rule:
+Everything in Agentric rests on a single rule:
 
 > **Every side effect an agent has on the outside world passes through one mediated gateway.**
 
@@ -116,7 +122,7 @@ Full pillar-by-pillar status lives in [`docs/PILLARS.md`](docs/PILLARS.md).
 
 ## 🤝 Humans and agents, on the same team
 
-Agent OS isn't a fire-and-forget bot runner. Agents and people share the same task queue, the same
+Agentric isn't a fire-and-forget bot runner. Agents and people share the same task queue, the same
 knowledge base, and the same approval loop — so work flows back and forth instead of over a wall.
 
 - **A shared task queue.** A Kanban backlog humans and agents drain together. Assign a task to an agent
@@ -137,7 +143,7 @@ levels that map to real people on your team.
 ## 🔍 How it works
 
 **Agents are folders.** Each agent is a directory with an `agent.json` manifest and a `CLAUDE.md`
-system prompt. Point it at the `claude-code` runtime and Agent OS opens a real Claude session *inside
+system prompt. Point it at the `claude-code` runtime and Agentric opens a real Claude session *inside
 that folder* — with a `PreToolUse` gate hook wired in, so every command the agent runs is classified by
 the same gateway.
 

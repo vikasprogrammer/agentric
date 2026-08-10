@@ -395,7 +395,7 @@ function bindDmRecipients(os: AgentOS, recipients: Member[], bind: (provider: 's
  */
 export async function notifyLoginLink(os: AgentOS, slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>, discord: Pick<DiscordSocket, 'dmUser'>, member: Member, link: string): Promise<number> {
   const text =
-    `🔑 Your Agent OS sign-in link (valid 7 days, single use):\n${link}\n` +
+    `🔑 Your Agentric sign-in link (valid 7 days, single use):\n${link}\n` +
     `If you didn't request this, you can ignore it — the link is harmless until it's opened.`;
   const dms = await deliverDM(slack, discord, os, [member], text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'auth.link.notified', data: { member: member.id, dms } });
@@ -422,7 +422,7 @@ export async function notifyApprovers(os: AgentOS, tm: Pick<TerminalManager, 'bi
   const text = (p: ChatPlatform) =>
     `${dot} ${notice.riskClass.toUpperCase()} approval — ${notice.agent}: ${notice.headline || `\`${notice.capability}\``}` +
     `\n\`${notice.capability}\` (${notice.level})${notice.reason ? ` — ${notice.reason}` : ''}` +
-    `\n*Reply "approve" or "deny"* to decide, or open the ${chatLink(p, inbox, 'Agent OS Inbox')}.`;
+    `\n*Reply "approve" or "deny"* to decide, or open the ${chatLink(p, inbox, 'Agentric Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, approvers, text);
   // Bind the approval to each approver's DM channel so they can resolve it by REPLYING "approve"/"deny"
   // to the DM — the reply is matched back to this approval on inbound (TerminalManager.decideApprovalFromChat).
@@ -447,7 +447,7 @@ export async function notifyQuestionAsked(os: AgentOS, tm: Pick<TerminalManager,
   const inbox = consolePage(consoleOrigin, 'inbox');
   const text = (p: ChatPlatform) =>
     `❓ Agent ${notice.agent} is waiting on your answer:\n${notice.prompt}` +
-    `\n\n*Reply to this message to answer*, or open the ${chatLink(p, inbox, 'Agent OS Inbox')}.`;
+    `\n\n*Reply to this message to answer*, or open the ${chatLink(p, inbox, 'Agentric Inbox')}.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   // Bind the question to each recipient's DM channel so they can answer by REPLYING to the DM (the reply
   // is matched back to this question on inbound — see TerminalManager.answerQuestionFromChat). AFTER
@@ -470,7 +470,7 @@ export async function notifyTaskOverdue(os: AgentOS, slack: Pick<SlackSocket, 'd
   const url = consolePage(consoleOrigin, 'tasks', task.id);
   const text = (p: ChatPlatform) =>
     `⏰ Task overdue — \`${task.title}\` (${task.id}) passed ${due} and is still ${task.status}.` +
-    `\nOpen it in the ${chatLink(p, url, 'Agent OS console')} to reprioritise, reassign, or extend it.`;
+    `\nOpen it in the ${chatLink(p, url, 'Agentric console')} to reprioritise, reassign, or extend it.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.overdue.notified', data: { id: task.id, targets: targets.length, dms } });
 }
@@ -517,7 +517,7 @@ export async function notifyTaskEvent(os: AgentOS, tm: Pick<TerminalManager, 'po
   tm.postTaskCard({ taskId: t.id, agent: agentLabel, title: card.title, body: t.title, audience: card.audience, event: card.event });
   // Deep-link straight to the task's permalink (`#/tasks/<id>`), so the DM is one tap from the board.
   const url = consolePage(consoleOrigin, 'tasks', t.id);
-  const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
+  const text = (p: ChatPlatform) => `📋 ${card.title} — \`${t.title}\` (${t.id}).\nOpen it in the ${chatLink(p, url, 'Agentric console')}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'task.notified', data: { id: t.id, event: card.event, recipients: recipients.length, dms } });
 }
@@ -556,7 +556,7 @@ async function notifyGoalEvent(os: AgentOS, tm: Pick<TerminalManager, 'postGoalC
   if (!recipients.length) return;
   tm.postGoalCard({ goalId: g.id, agent: 'goals', title: card.title, body: g.target ? `${g.title} — target: ${g.target}` : g.title, audience: card.audience, type: card.type });
   const url = consolePage(consoleOrigin, 'goals', g.id);
-  const text = (p: ChatPlatform) => `${card!.line}\nOpen it in the ${chatLink(p, url, 'Agent OS console')}.`;
+  const text = (p: ChatPlatform) => `${card!.line}\nOpen it in the ${chatLink(p, url, 'Agentric console')}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'goal.notified', data: { id: g.id, kind: notice.kind, status: g.status, recipients: recipients.length, dms } });
 }
@@ -640,7 +640,7 @@ export async function notifyMember(os: AgentOS, tm: Pick<TerminalManager, 'bindS
   const targets = resolveRecipients(os, { kind: 'member', id: notice.to });
   if (!targets.length) return;
   const bell = notice.important ? '❗' : '📨';
-  const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\n_Reply here to answer ${notice.agent}_, or open the Agent OS console → Inbox.`;
+  const text = `${bell} Message from agent ${notice.agent}:\n${notice.message}\n_Reply here to answer ${notice.agent}_, or open the Agentric console → Inbox.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   // Bind the run to this DM so a reply reaches the AGENT rather than the router (see
   // Automations.continueSessionDm) — the reason the message above can promise "reply here".
@@ -679,7 +679,7 @@ export async function notifyReview(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
   const text = (p: ChatPlatform) =>
     `${icon} ${notice.title} (agent ${notice.agent})` +
     (notice.summary && notice.summary !== notice.title ? `\n${notice.summary}` : '') +
-    `\nReview it in the ${chatLink(p, url, 'Agent OS console')}.`;
+    `\nReview it in the ${chatLink(p, url, 'Agentric console')}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'review.notified', data: { kind: notice.kind, agent: notice.agent, recipients: recipients.length, dms } });
 }
@@ -703,7 +703,7 @@ export async function notifySessionEvent(os: AgentOS, tm: Pick<TerminalManager, 
   if (!targets.length) return;
   const icon = notice.kind === 'waiting' ? '🔔' : notice.kind === 'crashed' ? '💥' : notice.kind === 'started' ? '🚀' : '✅';
   const url = consolePage(consoleOrigin, 'sessions');
-  const text = (p: ChatPlatform) => `${icon} ${notice.title}\n${notice.message}\n_Reply here to pick it back up with ${notice.agent}_, or open it in the ${chatLink(p, url, 'Agent OS console')}.`;
+  const text = (p: ChatPlatform) => `${icon} ${notice.title}\n${notice.message}\n_Reply here to pick it back up with ${notice.agent}_, or open it in the ${chatLink(p, url, 'Agentric console')}.`;
   const dms = await deliverDM(slack, discord, os, targets, text);
   // Bind the run to this DM so a reply resumes THAT conversation — "it crashed" / "it finished" is exactly
   // the moment a human wants to say "retry it" or "now do the other half" (see Automations.continueSessionDm).

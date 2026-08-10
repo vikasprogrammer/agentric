@@ -1,7 +1,7 @@
 /**
  * Native Slack — a thin, zero-dependency client for the slice of Slack's API the OS needs to run a
  * company Slack app over **Socket Mode**: open the outbound WebSocket, post replies, and resolve a
- * triggering Slack user to their email (so we can map them to an Agent OS member for run-as).
+ * triggering Slack user to their email (so we can map them to an Agentric member for run-as).
  *
  * Why Socket Mode and not a webhook: the app keeps the trust/governance model identical to the rest
  * of the OS while needing **no public URL** — the Node server dials OUT to Slack over a WebSocket, so

@@ -54,7 +54,7 @@ function loopKey(capability: string, args: Record<string, unknown>): string {
  *  flags as injection. No imperatives, no tokens; explains the observation and offers a way out. */
 function loopNote(count: number, headline: string): string {
   return (
-    `Agent OS reliability monitor: this is about the ${count}× near-identical action in a short ` +
+    `Agentric reliability monitor: this is about the ${count}× near-identical action in a short ` +
     `window (“${headline}”) with no apparent progress — a possible loop. If you're stuck, it ` +
     `usually helps to pause and try a different approach, or use the \`ask\` tool to reach a human, ` +
     `rather than repeating the same step.`

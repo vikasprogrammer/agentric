@@ -55,7 +55,7 @@ global.fetch = async (urlIn, opts = {}) => {
   }
   if (/\/user\/installations\/\d+\/repositories/.test(url)) return json({ total_count: 5, repositories: [] });
   // Company-bot minter: list App installations, then mint an installation (bot) token.
-  if (url === 'https://api.github.com/app') return json({ slug: 'agent-os-instapods', name: 'Agent OS', html_url: 'https://github.com/apps/agent-os-instapods' });
+  if (url === 'https://api.github.com/app') return json({ slug: 'agent-os-instapods', name: 'Agentric', html_url: 'https://github.com/apps/agent-os-instapods' });
   if (url === 'https://api.github.com/app/installations') return json([{ id: 555, account: { login: 'InstaWP' }, repository_selection: 'all' }]);
   if (/\/app\/installations\/\d+\/access_tokens$/.test(url)) {
     botMintCount++;

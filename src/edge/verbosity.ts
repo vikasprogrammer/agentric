@@ -5,7 +5,7 @@
 // connective prose no one reads, and output tokens are both the priciest per token AND re-billed as
 // input + cache-write on every subsequent turn — so trimming narration compounds across a long run.
 //
-// What makes this safe is the carve-out list. Agent OS runs on the artifacts its agents write: `report`
+// What makes this safe is the carve-out list. Agentric runs on the artifacts its agents write: `report`
 // lessons feed consolidation, `remember` feeds recall, `kb_write` is a wiki humans read, `slack_reply`
 // is a message to a person. Compressed prose in any of those quietly degrades the learning loop and the
 // human-facing surface, and it degrades them somewhere far from the flag that caused it. So the brief

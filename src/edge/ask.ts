@@ -62,7 +62,7 @@ export function answerFromState(os: AgentOS, tm: TerminalManager, autos: Automat
 }
 
 const ASK_SYSTEM =
-  'You are the assistant for this Agent OS workspace. Answer the question ONLY from the CONTEXT below — ' +
+  'You are the assistant for this Agentric workspace. Answer the question ONLY from the CONTEXT below — ' +
   'the live state of this workspace. Be concise (2–5 sentences). If the answer is not in the context, say ' +
   'you do not have that information and suggest the relevant console page. Never invent agents, numbers, or names.';
 

@@ -433,7 +433,7 @@ export function renderSlack(os: AgentOS, m: DigestModel, origin?: string): strin
     for (const r of m.recommendations) out.push(`⚠️ _Recommend:_ ${r}`);
     out.push('');
   }
-  out.push(`_${link('insights', 'Open the full report in Agent OS →')}_`);
+  out.push(`_${link('insights', 'Open the full report in Agentric →')}_`);
   return out.join('\n');
 }
 
@@ -496,7 +496,7 @@ export function renderDiscord(os: AgentOS, m: DigestModel, origin?: string): str
     for (const r of m.recommendations) out.push(`⚠️ **Recommend:** ${r}`);
     out.push('');
   }
-  out.push(link('insights', 'Open the full report in Agent OS →'));
+  out.push(link('insights', 'Open the full report in Agentric →'));
   const text = out.join('\n');
   if (text.length <= 2000) return text;
   return text.slice(0, 1900).replace(/\n[^\n]*$/, '') + `\n… ${link('kb', 'full digest in Knowledge')}`;

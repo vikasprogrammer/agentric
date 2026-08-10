@@ -5,7 +5,7 @@
 # single hook can serve all of them):
 #
 #   UserPromptSubmit  → a turn is STARTING (fires before claude processes the prompt). This is the signal
-#                       Agent OS never had: `busy_since` was only stamped when the SERVER delivered a
+#                       Agentric never had: `busy_since` was only stamped when the SERVER delivered a
 #                       message, so a human typing straight into an attached TUI ran a whole turn that
 #                       the console couldn't see, and the row's `busy_since` — set once at spawn — was
 #                       never renewed or cleared. That latch is why a finished session showed "working"

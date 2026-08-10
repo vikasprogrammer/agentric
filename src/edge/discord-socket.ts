@@ -29,7 +29,7 @@ const RECONNECT_MAX_MS = 30_000;
 /** A concise Discord thread title from the triggering message (Discord caps names at 100 chars). */
 function threadName(text: string, actor: string): string {
   const t = (text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-  return t || `Agent OS — ${actor}`;
+  return t || `Agentric — ${actor}`;
 }
 
 export class DiscordSocket {
@@ -203,7 +203,7 @@ export class DiscordSocket {
     if (ev.fromBot || (this.botUserId && ev.user === this.botUserId)) return; // ignore self / other bots
     if (!ev.channel) return;
 
-    // Resolve the triggering Discord user → an Agent OS member (per-member run-as). See the class
+    // Resolve the triggering Discord user → an Agentric member (per-member run-as). See the class
     // note: no email join key on Discord, so this is a seam (undefined → company identity) until the
     // member_identities map lands.
     const runAsMember = this.resolveMember(ev.user);
@@ -411,7 +411,7 @@ export class DiscordSocket {
     return 'error' in res ? { ok: false, error: res.error } : { ok: true };
   }
 
-  /** Map a Discord user id → Agent OS member id via the identity map (provider `discord`). Undefined
+  /** Map a Discord user id → Agentric member id via the identity map (provider `discord`). Undefined
    *  when the sender isn't linked to a member → the run falls back to the company identity. */
   private resolveMember(userId: string): string | undefined {
     if (!userId) return undefined;

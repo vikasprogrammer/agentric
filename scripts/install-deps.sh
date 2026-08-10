@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install (or check) the native commands Agent OS needs to run agent sessions.
+# Install (or check) the native commands Agentric needs to run agent sessions.
 #
 # This is the ZERO-DEPENDENCY bootstrap shortcut: it works on a fresh checkout BEFORE `npm run build`
 # (nothing here needs dist/), so it's the first thing to run on a new box. `npm run install-deps` maps

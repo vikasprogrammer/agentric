@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run ONE self-contained Agent OS tenant as its own process.
+# Run ONE self-contained Agentric tenant as its own process.
 #
 # Each tenant = a distinct data home + tenant id + port. Nothing is shared between tenants except the
 # software (this repo) — DB, tmux socket, ttyd, audit, cron and Slack are all per-home, so the

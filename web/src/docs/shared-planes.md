@@ -36,4 +36,4 @@ Two things make it more than a to-do list:
 
 ## And these docs?
 
-This Docs section ships with Agent OS itself — it's the manual, same for every workspace, updated with the software. **Knowledge** is what *your company* writes on top of it. If you're documenting how *your* team uses an agent, that belongs in Knowledge, not here.
+This Docs section ships with Agentric itself — it's the manual, same for every workspace, updated with the software. **Knowledge** is what *your company* writes on top of it. If you're documenting how *your* team uses an agent, that belongs in Knowledge, not here.

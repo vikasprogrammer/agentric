@@ -111,7 +111,7 @@ const MANIFEST: AgentManifest = {
 
 const CLAUDE_MD = `# Fleet skill-scout (procedural memory)
 
-You are Agent OS's **skill-scout**. You are handed a batch of the fleet's recent SUCCESSFUL runs and you
+You are Agentric's **skill-scout**. You are handed a batch of the fleet's recent SUCCESSFUL runs and you
 look for a **repeated procedure** worth turning into a reusable skill — a playbook the whole fleet can
 follow so the same multi-step task isn't re-figured-out every time.
 

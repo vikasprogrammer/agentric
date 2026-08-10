@@ -1,4 +1,4 @@
-# Agent OS Memory Layer — Implementation Plan
+# Agentric Memory Layer — Implementation Plan
 
 > **Status (2026-06-13): Phase 1 + the console UI shipped.** Provider interface + SQLite (FTS5) and
 > automem REST drivers + factory, kernel wiring, `memories` tables, the OS-owned memory MCP server
@@ -16,7 +16,7 @@
 > Pending: automatic session-end episodes / SQLite embeddings (Phase 3). Not yet deployed to prod.
 
 
-Ship a persistent memory layer for Agent OS agents, **like automem**, that works
+Ship a persistent memory layer for Agentric agents, **like automem**, that works
 in-the-box with zero infra and can be upgraded to the automem graph+vector backend.
 
 - **Backend:** pluggable provider — native SQLite by default, automem REST driver optional.
@@ -36,7 +36,7 @@ exposing `store_memory` / `recall_memory` / `associate_memories` / …. Its memo
 is a single record: `{content, tags[], type, importance, metadata, timestamp}` with
 hybrid semantic+keyword+graph+temporal recall (`GET /recall?query=…&tags=…`).
 
-Agent OS already has the two things that make this cheap:
+Agentric already has the two things that make this cheap:
 
 1. **A connector mechanism** (`src/connectors/connectors.ts`) that materializes enabled
    MCP servers into a per-session `.mcp.json` and hands it to claude-code

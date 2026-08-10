@@ -1,4 +1,4 @@
-# Agent OS — Product Pillars & Implementation Status
+# Agentric — Product Pillars & Implementation Status
 
 The platform decomposes into these pillars. Status is graded against the code as of 2026-06-13;
 pillars 6–13 re-verified against source on 2026-06-21. **Reconciled against the code again on
@@ -87,7 +87,7 @@ resolves agent-value → workspace-default → CLI-default (`resolveRuntimeTunin
 `--model`/`--effort`/`--permission-mode`. Model+effort apply to both lanes; permission-mode only to the
 interactive lane (headless keeps `--dangerously-skip-permissions`). Permission-mode is the agent's *own*
 posture — the PreToolUse gate hook still gates risky effects underneath it, even under `bypassPermissions`.
-Codex takes `model`/`effort` (via the generated `config.toml`) but has no permission-mode — Agent OS is
+Codex takes `model`/`effort` (via the generated `config.toml`) but has no permission-mode — Agentric is
 its sole authority through `approval_policy = "never"`, so that knob is not forwarded.
 
 **Runtime capabilities.** `CODING_RUNTIMES` in `src/types.ts` declares what each CLI supports

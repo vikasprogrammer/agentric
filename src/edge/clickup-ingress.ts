@@ -14,7 +14,7 @@
  *     and a comment that isn't a `/command` (and doesn't continue a bound task) is ignored — so posting
  *     a reply doesn't re-trigger us.
  *
- * run-as: the commenter's email → an Agent OS member (per-member tools + inbox), else the company
+ * run-as: the commenter's email → an Agentric member (per-member tools + inbox), else the company
  * identity — exactly like Slack's user→email→member mapping. Reply egress (`clickup_reply`) posts the
  * agent's answer back as a comment on the SAME task, read from the `clickup_threads` binding so the
  * agent never has to supply (or is able to spoof) a task id.

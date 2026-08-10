@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Agent runner — a scripted "agent" that runs INSIDE a tmux session (a real terminal you
-# can attach to). Every side effect goes through the Agent OS gateway via /api/gate, so
+# can attach to). Every side effect goes through the Agentric gateway via /api/gate, so
 # even though this is a raw shell, risky actions pause and surface as an inbox approval.
 #
 # Env (set by the server when it spawns the tmux session):
@@ -47,13 +47,13 @@ gate() {
 }
 
 clear
-cyan "┌─ Agent OS session ──────────────────────────────────────────"
+cyan "┌─ Agentric session ──────────────────────────────────────────"
 cyan "│ agent:   $AGENT"
 cyan "│ session: $SESSION"
 cyan "│ task:    $TASK"
 cyan "└─────────────────────────────────────────────────────────────"
 echo
-dim "This is a real tmux shell. Every side effect is gated by Agent OS."
+dim "This is a real tmux shell. Every side effect is gated by Agentric."
 echo
 
 # Scripted flows keyed to the mock agents' manifests (config/agents/<id>/agent.json).

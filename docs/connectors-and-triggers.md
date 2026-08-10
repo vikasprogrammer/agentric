@@ -14,7 +14,7 @@
 > See `docs/v1-mvp-scope.md` (the live tracker) and the modules `src/edge/{slack,discord}-socket.ts` +
 > `src/connectors/{slack,discord}.ts`. The reframe + use cases below remain the useful conceptual map.
 
-The build spec for how Agent OS talks to the outside world in **both directions**, and whose name is
+The build spec for how Agentric talks to the outside world in **both directions**, and whose name is
 on each action. Pairs with `docs/scoping-model.md` (what's scoped to whom) and
 `docs/per-user-isolation-plan.md` (the uid mechanism that makes personal privacy *real*). This doc
 supersedes the connector half of the scoping doc's Decision #2: the old "org vs personal" split was
@@ -36,7 +36,7 @@ variable is **whose identity it acts as**, which is exactly the connector's clas
 
 | Class | Identity | Example | Selection |
 |---|---|---|---|
-| **service** (today's `org`) | the company bot — one shared account | "AgentOS posts to #status" | always present |
+| **service** (today's `org`) | the company bot — one shared account | "Agentric posts to #status" | always present |
 | **personal** | one member's own account | "email from vikas@…" | only in that member's runs |
 | **personal + shared** | the *owner's* account, lent to the team | "use my Salesforce seat" | any run; acts as the owner |
 

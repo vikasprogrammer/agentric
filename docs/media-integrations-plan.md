@@ -25,14 +25,14 @@
 > **Original planning notes (kept as design of record):** This doc captures the full design space for
 > giving Claude sessions capabilities Claude can't do natively: **image generation**, **video
 > generation**, and **talking to peer coding agents** (Codex, Antigravity/Gemini). Image is the first
-> cut; the rest is roadmap. The through-line: in Agent OS the question is never "which vendor API" —
+> cut; the rest is roadmap. The through-line: in Agentric the question is never "which vendor API" —
 > it's **where in the trust layer the capability lives**, because that decides whether it's governed,
 > budgeted, audited, and whether the output becomes a first-class artifact.
 
 ## 0. The core framing
 
 Claude sessions cannot generate images or video. So we hand them a **tool**. But *how* we wire that tool
-determines everything about governance. Agent OS already has three placement patterns, each with a
+determines everything about governance. Agentric already has three placement patterns, each with a
 different trust posture. Every integration below is really a choice among these three.
 
 | Pattern | How it works | Governance you get | Best for |
@@ -126,7 +126,7 @@ different model strengths, parallel exploration. Four integration depths, increa
    tool. Good, cheap middle ground to prove the ergonomics.
 3. **First-class sibling agent (the big one)** — extend `TerminalManager` with a **non-claude launch
    lane** so Codex/Antigravity become real fleet members: they take `task_dispatch` hand-offs, run under
-   the same gate hook, run-as identity, budget, and audit. Turns Agent OS into a **cross-model fleet**,
+   the same gate hook, run-as identity, budget, and audit. Turns Agentric into a **cross-model fleet**,
    not just multi-vendor APIs. The A2A delegation path already exists (`task_create` → assigned agent →
    governed session); the lift is teaching the launcher a **second binary** (today `claude-launch.sh` +
    tuning + gate wiring are all claude-shaped).

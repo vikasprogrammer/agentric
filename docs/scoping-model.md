@@ -1,6 +1,6 @@
 # Scoping model — what's in the OS, and who can see/touch it
 
-The canonical reference for **tenancy and scoping** in Agent OS: every resource the system holds,
+The canonical reference for **tenancy and scoping** in Agentric: every resource the system holds,
 how it's scoped today, and the target scope we've decided on. Pair this with
 `docs/per-user-isolation-plan.md` (the OS mechanism that *enforces* the per-member boundary) — this
 doc says *what* the boundaries are; that one says *how* they're built.
@@ -14,7 +14,7 @@ doc says *what* the boundaries are; that one says *how* they're built.
 
 ## The tenancy decision
 
-One Agent OS instance = **one company team**. Within it:
+One Agentric instance = **one company team**. Within it:
 
 - **Members are trusting colleagues, but personal privacy matters.** They may see each other's
   tasks and audit, but **not** each other's personal account data, tokens, or `~/.claude`

@@ -3,7 +3,7 @@
  *
  * Claude Code has a native, in-process sub-agent runtime: the built-in `Agent`/Task tool spawns a
  * child defined by a `.claude/agents/<name>.md` file (frontmatter + persona), runs it to completion,
- * and returns its result inline — sub-second, no separate process. Agent OS piggybacks on it: when a
+ * and returns its result inline — sub-second, no separate process. Agentric piggybacks on it: when a
  * parent agent's manifest opts in via `usableSubagents`, we render EACH named fleet teammate into the
  * parent's `<dir>/.claude/agents/<id>.md` at launch, exactly like the skills library is synced into
  * `.claude/skills`. The running claude can then delegate a slice of its OWN turn to a teammate persona

@@ -17,7 +17,7 @@ You're reading this, so you've already accepted your invite link and you're logg
 If your workspace has chat connected, you don't need the console to start work. In a channel the bot is in (or a DM):
 
 ```
-@AgentOS /coding the pricing page footer link 404s — fix it
+@Agentric /coding the pricing page footer link 404s — fix it
 ```
 
 Address any agent by name with a leading `/agent-name`. The bot acks in a thread and the agent replies there when done. The run happens **as you** — your identity, your visibility — if an admin has linked your Slack/Discord handle on the Team page (ask them to add your Chat ID if replies come back as "company").
