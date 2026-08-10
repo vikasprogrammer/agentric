@@ -17,6 +17,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
+import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
 import { docPages } from '@/docs'
 import { Xterm } from './Xterm'
@@ -4555,7 +4556,7 @@ function ChatBubble({ turn, agentIcon }: { turn: Extract<ChatTurn, { kind: 'user
         {mine ? (
           <span className="whitespace-pre-wrap">{turn.text}</span>
         ) : (
-          <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-pre:my-1"><ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.text}</ReactMarkdown></div>
+          <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1 prose-pre:my-1"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{turn.text}</ReactMarkdown></div>
         )}
       </div>
     </div>
@@ -4725,11 +4726,11 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
                 <span>{preview.source === 'state' ? 'Answered from your workspace' : preview.run ? 'Concierge · looked it up for you' : 'Answered'}</span>
               </div>
               {preview.answer && (
-                <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{preview.answer}</ReactMarkdown></div>
+                <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{preview.answer}</ReactMarkdown></div>
               )}
               {preview.run && (
                 runAnswer
-                  ? <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm]}>{runAnswer}</ReactMarkdown></div>
+                  ? <div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1.5"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{runAnswer}</ReactMarkdown></div>
                   : <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground"><RefreshCw className="h-3.5 w-3.5 animate-spin" />Looking into it…</div>
               )}
               <div className="mt-3 flex items-center gap-3 text-xs">
@@ -4751,7 +4752,7 @@ function CockpitPage({ sessions, onOpenChat, onOpenTerminal, nav }: {
               </div>
               {runId ? (
                 runAnswer
-                  ? <div className="mt-3 rounded-lg border bg-muted/40 p-3"><div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1"><ReactMarkdown remarkPlugins={[remarkGfm]}>{runAnswer}</ReactMarkdown></div>
+                  ? <div className="mt-3 rounded-lg border bg-muted/40 p-3"><div className="prose prose-sm max-w-none dark:prose-invert prose-p:my-1"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]}>{runAnswer}</ReactMarkdown></div>
                       <div className="mt-2 flex gap-3 text-xs">
                         <button onClick={() => nav(preview.surface === 'automations' ? 'inbox' : 'tasks')} className="text-muted-foreground underline-offset-2 hover:underline">{preview.surface === 'automations' ? 'Review in Inbox →' : 'Open Tasks →'}</button>
                         <button onClick={() => onOpenChat(runId)} className="text-muted-foreground underline-offset-2 hover:underline">Open full session →</button>
@@ -5979,6 +5980,8 @@ const isTextMime = (m: string) => m.startsWith('text/') || m === 'application/js
 // the KB page; a bare `[[area]]` (library, tasks, …) → that nav route. Two renderers share the same
 // target resolver: `remarkWikiLinks` for full-markdown surfaces (KB/task/goal/artifact/docs) and
 // `InlineLinks` for raw-text surfaces (inbox cards, memory notes) that must stay pre-formatted.
+// Both also autolink a bare ENTITY ID (`tsk_…`, `goal_…`, `art_…` — see `@/lib/entity-links`), which
+// is what agents actually write when they reference a task or goal in prose.
 
 /** Known single-word wiki targets that map to a top-level route rather than a KB page. */
 const WIKI_AREA: Record<string, string> = {
@@ -5996,18 +5999,28 @@ function wikiHref(target: string): string {
   return '#/kb/' + inner.split('/').map(encodeURIComponent).join('/')
 }
 
-const WIKI_RE = /\[\[([^\]]+?)\]\]/g
+// `[[wiki]]` or a bare entity id, in one pass so neither can split the other's match.
+const WIKI_RE = new RegExp(String.raw`\[\[([^\]]+?)\]\]` + '|' + `(${ENTITY_ID_SRC})`, 'g')
+const HAS_LINKABLE_RE = new RegExp(String.raw`\[\[` + '|' + ENTITY_ID_SRC)
 
-/** remark plugin: rewrite `[[section/slug]]` / `[[section/slug|label]]` into real links, skipping code
- *  spans and existing links. Runs alongside remark-gfm (which already autolinks bare URLs). */
+/** remark plugin: rewrite `[[section/slug]]` / `[[section/slug|label]]` and bare entity ids
+ *  (`tsk_…`) into real links, skipping fenced code and existing links. An entity id written as an
+ *  inline `code` span IS linked — backticks are how agents usually write an id — by wrapping the
+ *  span rather than unwrapping it, so it keeps its monospace look. Runs alongside remark-gfm
+ *  (which already autolinks bare URLs). */
 function remarkWikiLinks() {
   return (tree: any) => {
     const walk = (node: any) => {
       if (!node || !Array.isArray(node.children)) return
       const out: any[] = []
       for (const child of node.children) {
+        if (child.type === 'inlineCode' && isEntityId(child.value)) {
+          const href = entityHref(child.value.trim())
+          out.push(href ? { type: 'link', url: href, children: [child] } : child)
+          continue
+        }
         if (child.type === 'code' || child.type === 'inlineCode' || child.type === 'link') { out.push(child); continue }
-        if (child.type === 'text' && child.value.includes('[[')) { out.push(...splitWikiNodes(child.value)); continue }
+        if (child.type === 'text' && HAS_LINKABLE_RE.test(child.value)) { out.push(...splitWikiNodes(child.value)); continue }
         walk(child); out.push(child)
       }
       node.children = out
@@ -6022,16 +6035,26 @@ function splitWikiNodes(value: string): any[] {
   let m: RegExpExecArray | null
   while ((m = WIKI_RE.exec(value))) {
     if (m.index > last) nodes.push({ type: 'text', value: value.slice(last, m.index) })
-    const [target, label] = m[1].split('|')
-    nodes.push({ type: 'link', url: wikiHref(target), children: [{ type: 'text', value: (label ?? target).trim() }] })
+    if (m[2] !== undefined) {
+      const href = entityHref(m[2])
+      nodes.push(href ? { type: 'link', url: href, children: [{ type: 'text', value: m[2] }] } : { type: 'text', value: m[2] })
+    } else {
+      const [target, label] = m[1].split('|')
+      nodes.push({ type: 'link', url: wikiHref(target), children: [{ type: 'text', value: (label ?? target).trim() }] })
+    }
     last = m.index + m[0].length
   }
   if (last < value.length) nodes.push({ type: 'text', value: value.slice(last) })
   return nodes.length ? nodes : [{ type: 'text', value }]
 }
 
-// Markdown link · `[[wiki]]` · bare http(s) URL · in-app `#/route`, in priority order.
-const INLINE_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+|#\/[^\s)]+)\)|\[\[([^\]]+?)\]\]|(https?:\/\/[^\s<>()]+)|(#\/[A-Za-z0-9/_%-]+)/g
+// Markdown link · `[[wiki]]` · bare http(s) URL · in-app `#/route` · bare entity id, in priority order.
+const INLINE_LINK_RE = new RegExp(
+  String.raw`\[([^\]]+)\]\((https?:\/\/[^\s)]+|#\/[^\s)]+)\)`
+  + String.raw`|\[\[([^\]]+?)\]\]`
+  + String.raw`|(https?:\/\/[^\s<>()]+)`
+  + String.raw`|(#\/[A-Za-z0-9/_%-]+)`
+  + `|(${ENTITY_ID_SRC})`, 'g')
 
 /** Render a plain string with clickable links (markdown links, `[[wiki]]` refs, bare URLs, in-app
  *  `#/route` paths) for surfaces that show raw text rather than full markdown — inbox cards, memory
@@ -6049,6 +6072,7 @@ function InlineLinks({ text }: { text?: string | null }): ReactNode {
     else if (m[3] !== undefined) { const [t, l] = m[3].split('|'); href = wikiHref(t); label = (l ?? t).trim() }  // [[wiki]]
     else if (m[4] !== undefined) { href = label = m[4] }                                    // bare URL
     else if (m[5] !== undefined) { href = label = m[5] }                                    // #/route
+    else if (m[6] !== undefined) { label = m[6]; href = entityHref(m[6]) ?? m[6] }          // tsk_… / goal_…
     const external = /^https?:/.test(href)
     parts.push(
       <a key={`il${key++}`} href={href} className="text-primary underline" onClick={(e) => e.stopPropagation()}
@@ -6069,7 +6093,8 @@ const mdComponents = {
   ul: (p: any) => <ul className="my-2 list-disc space-y-1 pl-5" {...p} />,
   ol: (p: any) => <ol className="my-2 list-decimal space-y-1 pl-5" {...p} />,
   li: (p: any) => <li className="leading-relaxed" {...p} />,
-  a: (p: any) => <a className="text-primary underline" target="_blank" rel="noreferrer" {...p} />,
+  // In-app targets (`#/tasks/<id>`, `#/kb/…`) route in place; only real external links get a new tab.
+  a: ({ href, ...p }: any) => <a href={href} className="text-primary underline" {...(String(href ?? '').startsWith('#') ? {} : { target: '_blank', rel: 'noreferrer' })} {...p} />,
   blockquote: (p: any) => <blockquote className="my-2 border-l-2 pl-3 text-muted-foreground" {...p} />,
   code: ({ inline, ...p }: any) => inline
     ? <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]" {...p} />

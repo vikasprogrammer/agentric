@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.334.0] — 2026-08-10
+### Added
+- **A bare entity id is now a link wherever it is displayed.** Agents constantly reference a row by its
+  id in prose ("tsk_dcde91f9e81af705 is in progress with an engineer") — which left the reader holding a
+  token they could only follow by hand-searching a list. `tsk_…`, `goal_…` and `art_…` now render as
+  clickable links to that task / goal / deliverable in rendered markdown (including an id written in
+  `backticks`, which is how agents usually write one), in raw-text surfaces like Inbox cards and memory
+  notes, and **in the terminal itself** — the xterm linkifier gained an entity-id matcher alongside its
+  URL ones, so an id printed in an agent's narration is clickable in the live pane. In-app markdown links
+  (`#/…`) also stop opening a pointless new tab. Session ids are deliberately excluded: a session's route
+  is keyed by its tmux name, not `ses_…`.
+
 ## [0.333.0] — 2026-08-10
 ### Added
 - **A task room's Discussion is now a two-way channel to the agent actually working the task.** It used to
