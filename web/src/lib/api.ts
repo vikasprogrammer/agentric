@@ -677,6 +677,14 @@ export interface TaskRun {
   alive: boolean
   archived: boolean
 }
+/** What happened to a plain discussion message beyond being stored — whether it REACHED the run working
+ *  the task. `choose` = more than one live run, so nothing was delivered until the human picks one. */
+export interface TaskDiscussionDelivery {
+  status: 'none' | 'delivered' | 'answered' | 'choose' | 'stale' | 'undeliverable'
+  sessionId?: string
+  agent?: string
+  runs?: { sessionId: string; agent: string; blocked: boolean }[]
+}
 /** One entry in a task's Discussion timeline (chat message or state event) — see docs/task-rooms-plan.md. */
 export type TaskTimelineEntry =
   | { kind: 'chat'; id: string; author: string; agentId?: string; body: string; mentions: string[]; at: number }
@@ -1719,7 +1727,10 @@ export const api = {
 
   tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; runs?: TaskRun[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
-  postTaskMessage: (id: string, body: string) => call<{ ok: boolean; entry?: TaskTimelineEntry; mentioned?: string[]; agents?: { agent: string; status: string }[]; error?: string }>('POST', `/api/tasks/${id}/messages`, { body }),
+  postTaskMessage: (id: string, body: string) => call<{ ok: boolean; entry?: TaskTimelineEntry; mentioned?: string[]; agents?: { agent: string; status: string }[]; delivery?: TaskDiscussionDelivery; error?: string }>('POST', `/api/tasks/${id}/messages`, { body }),
+  // Route an ALREADY-POSTED discussion message into one live run — the human's answer when several were
+  // live and the post came back `choose`. Posts nothing new.
+  deliverTaskMessage: (id: string, sessionId: string, body: string) => call<{ ok: boolean; delivery?: TaskDiscussionDelivery; error?: string }>('POST', `/api/tasks/${id}/deliver`, { sessionId, body }),
   readTaskDiscussion: (id: string) => call<{ ok: boolean }>('POST', `/api/tasks/${id}/read`),
   resolveTaskMention: (msgId: string, action: 'answer' | 'session' | 'dismiss') => call<{ ok: boolean; error?: string }>('POST', `/api/tasks/mention/${msgId}`, { action }),
   addTask: (b: AddTaskReq) => call<{ ok: boolean; task?: Task; error?: string }>('POST', '/api/tasks', b),
