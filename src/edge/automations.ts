@@ -16,7 +16,7 @@ import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
-import { CodingRuntimeId, isCodingRuntime, Task, TaskTimelineEntry } from '../types';
+import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
@@ -319,6 +319,35 @@ function priorRunsBlock(taskId: string, runs?: PriorRun[]): string {
   );
 }
 
+/** The prefix every message delivered from a task room carries INTO a run. It is the only marker the
+ *  agent gets that a line of input came from a human watching the room rather than from its own
+ *  orchestration, so it names the channel, the task, and the way back. Kept to ONE line: delivery types
+ *  it into a live TUI, where a newline would submit early. */
+export const DISCUSSION_PREFIX = '[task discussion]';
+
+/**
+ * What every task-working agent must know about the room its work is watched from — appended to the
+ * dispatch prompt (fresh AND resuming), because the channel is useless if only one side knows it exists.
+ *
+ * A human sitting in the task room sees the Discussion, NOT the agent's terminal narration: everything
+ * the agent "says" while working is invisible there. And a message they type in the room is now typed
+ * straight into this run mid-turn, arriving prefixed with {@link DISCUSSION_PREFIX}. Both halves have to
+ * be stated or the loop is one-way in practice — the agent goes quiet in the only place anyone is
+ * looking, and reads a live human interrupt as stray input.
+ */
+function roomBlock(taskId: string): string {
+  return (
+    `This task has a DISCUSSION — the room where its humans watch this work. They do NOT see your terminal ` +
+    `output; the discussion is the only thing they read, and the only place they can answer you.\n` +
+    `- Say anything you want a human to see with task_say({ id: "${taskId}", message: "…" }) — a heads-up ` +
+    `when you start, when you change approach, when something looks wrong, and a short summary at the end.\n` +
+    `- A message they type in the room is delivered straight into this session, prefixed ` +
+    `"${DISCUSSION_PREFIX} <name>: …". Treat it as a live instruction from that person, acknowledge it in the ` +
+    `room with task_say, and act on it — including "stop" or "wait", which override what you were doing.\n` +
+    `- Read the conversation so far any time with task_get({ id: "${taskId}" }) (its \`discussion\`).`
+  );
+}
+
 export function buildTaskPrompt(
   t: { id: string; title: string; body: string; criteria?: string },
   opts: { goalMode?: boolean; priorRuns?: PriorRun[]; resuming?: boolean } = {},
@@ -337,7 +366,8 @@ export function buildTaskPrompt(
         `you already did is above in this same conversation — review where you left off, continue from there ` +
         `rather than redoing it, and finish the task.\n\n` +
         close +
-        `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).`
+        `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n\n` +
+        roomBlock(t.id)
       );
     }
     // Criteria we want to honour but can't route through `/goal` still belongs in the prompt.
@@ -349,7 +379,8 @@ export function buildTaskPrompt(
       history +
       close +
       `If you cannot proceed, call task_update({ id: "${t.id}", status: "blocked", note: "<why>" }).\n` +
-      `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).`
+      `Break large work into sub-tasks with task_create({ parentId: "${t.id}", ... }).\n\n` +
+      roomBlock(t.id)
     );
   };
   // The `/goal` condition is the criteria PLUS the appended base — gate on the full payload's length.
@@ -1016,7 +1047,7 @@ export class Automations {
    * entry plus what escalation happened, so the caller can report it.
    */
   postTaskDiscussion(input: { taskId: string; author: string; agent?: string; body: string; runAs?: string }):
-    { ok: boolean; error?: string; entry?: TaskTimelineEntry; mentionedMembers?: string[]; agentRuns?: { agent: string; status: string; sessionId?: string }[] } {
+    { ok: boolean; error?: string; entry?: TaskTimelineEntry; mentionedMembers?: string[]; agentRuns?: { agent: string; status: string; sessionId?: string }[]; delivery?: TaskDiscussionDelivery } {
     const t = this.os.tasks.get(input.taskId);
     if (!t) return { ok: false, error: 'task not found' };
     const body = (input.body || '').trim();
@@ -1049,12 +1080,69 @@ export class Automations {
         mentionedMembers.push(m.id);
       }
     }
-    // A human's plain reply answers a pending question on the task's live session (feeds it to the agent).
-    if (!input.agent && t.lastSessionId && this.tm.isAlive(t.lastSessionId)) {
-      const qid = this.tm.pendingQuestionFor(t.lastSessionId);
-      if (qid) this.tm.answerQuestion(qid, body, this.os.team.getMember(input.author)?.email ?? input.author);
+    // A human's plain reply REACHES the agent working the task — not just the discussion log. An @mention
+    // already routed this message itself (continueTaskThread / a mention choice), so only an unrouted
+    // message falls through to here.
+    const delivery = input.agent || agentRuns.length ? undefined
+      : this.deliverDiscussionToRun(input.taskId, body, authorLabel, input.author);
+    return { ok: true, entry, mentionedMembers, agentRuns, delivery };
+  }
+
+  /**
+   * The sessions a task-discussion message can be delivered INTO right now: every run bound to the task
+   * whose pane is still alive. Usually 0 or 1 — the dispatcher's pile-up guard keeps one worker per task —
+   * but >1 is reachable (a second agent pulled in by an `@mention`, or a human-started run alongside the
+   * dispatched one), which is exactly the case the caller has to ask a human about rather than guess.
+   */
+  liveTaskRuns(taskId: string): { sessionId: string; agent: string; blocked: boolean }[] {
+    return this.tm.taskRuns(taskId)
+      .filter((r) => r.alive && !r.archived)
+      .map((r) => ({ sessionId: r.id, agent: r.agent, blocked: Boolean(this.tm.pendingQuestionFor(r.id)) }));
+  }
+
+  /**
+   * Route a plain human discussion message into the run that's actually working the task.
+   *
+   * Before this, a reply typed into the room only reached the agent when it happened to be BLOCKED on an
+   * `ask` — any other message sat in the timeline until the agent next read `task_get`, which for a
+   * mid-turn run is never. The room is where the work is watched, so the reply has to reach the worker.
+   *
+   * - a **pending question** on the target run is answered (that unblocks the turn; typing free text
+   *   would just queue behind the still-open ask),
+   * - otherwise the message is typed into the live pane ({@link TerminalManager.deliverToResident} —
+   *   an idle claude runs it now, a busy one queues it to the next turn boundary),
+   * - **two or more live runs** → deliver to NONE of them and hand the choice back to the caller, who
+   *   asks the human which run they meant; the pick comes back as `deliverTo`.
+   *
+   * The discussion entry is stored either way — delivery is a side channel onto the durable record, so a
+   * failed or declined delivery never loses the message. That's also why the human's pick comes back
+   * through THIS method with an explicit `deliverTo` (via `POST /api/tasks/:id/deliver`) rather than by
+   * re-posting the message: the message is already on the record, only the delivery was deferred.
+   */
+  deliverDiscussionToRun(taskId: string, body: string, authorLabel: string, author: string, deliverTo?: string): TaskDiscussionDelivery {
+    const live = this.liveTaskRuns(taskId);
+    if (!live.length) return { status: 'none' };
+    // An explicit pick that has since ended: say so rather than silently retargeting the other run.
+    const target = deliverTo ? live.find((r) => r.sessionId === deliverTo) : live.length === 1 ? live[0] : undefined;
+    if (!target) return deliverTo ? { status: 'stale' } : { status: 'choose', runs: live };
+    const emit = (status: string) => this.os.audit.append({
+      ts: Date.now(), runId: target.sessionId, tenant: this.os.tenant, principal: author,
+      type: 'task.discussion.delivered', data: { taskId, agent: target.agent, session: target.sessionId, status, chars: body.length },
+    });
+    const qid = this.tm.pendingQuestionFor(target.sessionId);
+    if (qid) {
+      this.tm.answerQuestion(qid, body, this.os.team.getMember(author)?.email ?? author);
+      emit('answered');
+      return { status: 'answered', sessionId: target.sessionId, agent: target.agent };
     }
-    return { ok: true, entry, mentionedMembers, agentRuns };
+    // Same prefix the dispatch prompt taught this agent to recognise (roomBlock), so a message arriving
+    // mid-turn is unambiguously "a human in the room said this", not stray input.
+    if (this.tm.deliverToResident(target.sessionId, `${DISCUSSION_PREFIX} ${authorLabel}: ${body} (reply with task_say({ id: "${taskId}", message: "…" }))`)) {
+      emit('delivered');
+      return { status: 'delivered', sessionId: target.sessionId, agent: target.agent };
+    }
+    emit('undeliverable');
+    return { status: 'undeliverable', sessionId: target.sessionId, agent: target.agent };
   }
 
   /**
@@ -1087,7 +1175,7 @@ export class Automations {
     const t = this.os.tasks.get(taskId);
     if (!t || !this.os.agents.has(agentId)) return { status: 'none' };
     const runAs = runAsMember ?? t.owner ?? undefined;
-    const liveMsg = `${authorLabel} in the task discussion: ${text}`;
+    const liveMsg = `${DISCUSSION_PREFIX} ${authorLabel}: ${text} (reply with task_say({ id: "${taskId}", message: "…" }))`;
     const boundId = t.lastSessionId;
     const boundAgent = boundId ? this.tm.sessionAgent(boundId) : undefined;
     const emit = (mode: string, session: string) => this.os.audit.append({

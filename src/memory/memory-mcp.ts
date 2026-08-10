@@ -1044,7 +1044,10 @@ const TOOLS = [
     name: 'task_say',
     description:
       "Post a message into a task's DISCUSSION — the threaded conversation on a task where its humans and " +
-      'agents talk. Use it to ask a question, give a heads-up, or hand off — and @mention someone to pull them ' +
+      'agents talk. This is the ONLY thing a human watching the task sees while you work: your terminal output ' +
+      'is invisible to them, and a message they type in the room is delivered straight into your session ' +
+      '(prefixed "[task discussion] <name>:") — so treat this as a live two-way channel, not a log. ' +
+      'Use it to ask a question, give a heads-up, or hand off — and @mention someone to pull them ' +
       'in: @<agent-id> resumes/spawns that agent ON this task (it keeps the task context), @<member> pings a ' +
       "teammate in their Inbox + DM. Plain messages are quiet (they don't notify anyone) — they're just there " +
       'in the discussion. Read the conversation first with task_get (its `discussion`). This is talk about a ' +

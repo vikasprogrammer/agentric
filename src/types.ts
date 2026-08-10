@@ -873,6 +873,28 @@ export interface TaskRun {
   archived: boolean; // soft-archived out of the Sessions list (still part of the task's history)
 }
 
+/**
+ * What happened to a plain human message posted into a task's Discussion, BEYOND storing it: the room is
+ * where work is watched, so a reply there should reach the run doing the work. See
+ * `Automations.postTaskDiscussion`.
+ *
+ * - `none` — no live run on the task; the message is just the record (the agent reads it on its next
+ *   `task_get`, or when the task is re-dispatched).
+ * - `delivered` — typed into the live pane (runs now if the agent is idle, queues to the next turn if busy).
+ * - `answered` — the run was BLOCKED on an `ask`; the message answered it, which unblocks the turn.
+ * - `choose` — MORE THAN ONE live run, so nothing was delivered: the human picks which one they meant and
+ *   the client re-posts the delivery with `deliverTo`. Never guessed — the wrong pick talks to the wrong worker.
+ * - `stale` — an explicit `deliverTo` whose run has ended since the choice was offered.
+ * - `undeliverable` — the run is alive but the keystrokes didn't land (unreadable pane / dead socket).
+ */
+export interface TaskDiscussionDelivery {
+  status: 'none' | 'delivered' | 'answered' | 'choose' | 'stale' | 'undeliverable';
+  sessionId?: string;
+  agent?: string;
+  /** Only on `choose`: the live runs to pick between. */
+  runs?: { sessionId: string; agent: string; blocked: boolean }[];
+}
+
 /** A file attached to a task — a durable on-disk snapshot (mirrors {@link Artifact}, keyed to a task). */
 export interface TaskAttachment {
   id: string;

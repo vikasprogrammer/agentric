@@ -3379,6 +3379,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const taskComment = p.match(/^\/api\/tasks\/([\w-]+)\/comment$/);
   const taskMessages = p.match(/^\/api\/tasks\/([\w-]+)\/messages$/);
   const taskRead = p.match(/^\/api\/tasks\/([\w-]+)\/read$/);
+  const taskDeliver = p.match(/^\/api\/tasks\/([\w-]+)\/deliver$/);
   const taskMention = p.match(/^\/api\/tasks\/mention\/([\w-]+)$/);
   const taskDispatch = p.match(/^\/api\/tasks\/([\w-]+)\/dispatch$/);
   const taskAttachments = p.match(/^\/api\/tasks\/([\w-]+)\/attachments$/);
@@ -3433,7 +3434,19 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!message) return sendJson(res, 400, { error: 'a message is required' });
     const out = autos.postTaskDiscussion({ taskId: taskMessages[1], author: me.id, body: message, runAs: me.id });
     if (!out.ok) return sendJson(res, 404, { error: out.error });
-    return sendJson(res, 200, { ok: true, entry: out.entry, mentioned: out.mentionedMembers, agents: out.agentRuns });
+    return sendJson(res, 200, { ok: true, entry: out.entry, mentioned: out.mentionedMembers, agents: out.agentRuns, delivery: out.delivery });
+  }
+  // Deliver an ALREADY-POSTED discussion message into one specific live run — the answer to the `choose`
+  // reply above, when a task had more than one live run and the human picked which one they meant. Posts
+  // nothing new (the message is already on the record); it only routes it.
+  if (taskDeliver && method === 'POST') {
+    const b = await readBody(req);
+    const sessionId = String(b.sessionId || '').trim();
+    const message = String(b.body || b.message || '').trim();
+    if (!os.tasks.get(taskDeliver[1])) return sendJson(res, 404, { error: 'task not found' });
+    if (!sessionId || !message) return sendJson(res, 400, { error: 'sessionId and body are required' });
+    const label = me.name || me.email;
+    return sendJson(res, 200, { ok: true, delivery: autos.deliverDiscussionToRun(taskDeliver[1], message, label, me.id, sessionId) });
   }
   // Mark a task's Discussion read for this member (clears its unread badge).
   if (taskRead && method === 'POST') {
