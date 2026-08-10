@@ -21,7 +21,7 @@ instructions, that's **Company context**, set by an admin.)
 
 Address an agent from Slack or Discord and the run should act **as you**, not as a faceless "company"
 identity. That match happens through your **Chat IDs** (Profile → your Slack / Discord / email
-handles). Link them and a `@AgentOS /support …` from you runs with your identity and your visibility.
+handles). Link them and a `@Agentric /support …` from you runs with your identity and your visibility.
 If chat replies come back as "company", your handle isn't linked yet — add it on your Profile (you can
 edit your own; admins can also set them on the Team page).
 

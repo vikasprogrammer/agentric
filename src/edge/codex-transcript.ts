@@ -4,7 +4,7 @@
 //
 //   - LOCATION. Claude's transcripts live in a global `~/.claude/projects/<cwd>/<id>.jsonl`, so
 //     `findTranscript` can search by filename alone. Codex writes into `$CODEX_HOME/sessions/YYYY/MM/DD/
-//     rollout-<ts>-<uuid>.jsonl`, and Agent OS gives every run its OWN `$CODEX_HOME` — so the file is
+//     rollout-<ts>-<uuid>.jsonl`, and Agentric gives every run its OWN `$CODEX_HOME` — so the file is
 //     found by walking that one session dir, and the id in the name is the id we captured at launch.
 //   - SHAPE. One record per line, `{timestamp, type, payload}`. `type` is `session_meta` |
 //     `turn_context` | `event_msg` | `response_item` | `world_state`, and the interesting variants are
@@ -46,7 +46,7 @@ const rateFor = (model: string) => RATES.find(([re]) => re.test(model))?.[1] ?? 
 const IDLE_GAP_MS = 5 * 60_000;
 
 /**
- * The rollout file for a session, given the per-session `$CODEX_HOME` Agent OS created for it
+ * The rollout file for a session, given the per-session `$CODEX_HOME` Agentric created for it
  * (`<connectors>/session-<id>.codex`). That dir holds exactly one session, so we take the newest
  * rollout under it rather than matching the id — which also works for a resumed run, where Codex
  * appends to the SAME file. Returns undefined before the run has written one.

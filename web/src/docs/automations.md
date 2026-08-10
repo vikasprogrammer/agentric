@@ -14,7 +14,7 @@ work*; automations answer *when the work starts*.
 | **Schedule (cron)** | a time rolls around | nightly reports, hourly health checks, a Monday digest |
 | **Webhook** | an HTTP call hits its private URL | wiring up an external tool or a "when X happens in our app" hook |
 | **Composio** | a connected third-party app emits an event | reacting to Stripe, GitHub, a form, etc. via Composio |
-| **Slack message** | the bot is @mentioned or DM'd | "hey @AgentOS, /support look at this ticket" |
+| **Slack message** | the bot is @mentioned or DM'd | "hey @Agentric, /support look at this ticket" |
 | **Discord message** | the bot is @mentioned or DM'd | the same, in a Discord server or DM |
 
 Slack and Discord run over an **outbound** connection, so there's no public URL to expose — set the
@@ -50,7 +50,7 @@ If a Slack/Discord mention matches **no** automation, the bot still works: addre
 and it spawns a one-off run as you.
 
 ```
-@AgentOS /support customer says checkout 500s on the annual plan
+@Agentric /support customer says checkout 500s on the annual plan
 ```
 
 So the whole fleet is reachable out of the box — per-agent automations become optional shortcuts, not

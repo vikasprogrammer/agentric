@@ -1,5 +1,5 @@
 /**
- * Agent OS — core types.
+ * Agentric — core types.
  *
  * One file on purpose: these are the contracts every plane depends on. The kernel
  * core imports only from here — never from a brand's plugin code. Keeping the
@@ -1518,7 +1518,7 @@ export function sanitizeRuntimeTuning(
     // Silently storing a mode a runtime ignores is worse than refusing it: the console would show a
     // posture that isn't in force anywhere.
     if (runtime && !runtimeSupports(runtime, 'permissionMode')) {
-      return { tuning, error: `${codingRuntime(runtime)?.label ?? runtime} has no permission mode — Agent OS is its sole authority. Leave it on inherit.` };
+      return { tuning, error: `${codingRuntime(runtime)?.label ?? runtime} has no permission mode — Agentric is its sole authority. Leave it on inherit.` };
     }
     tuning.permissionMode = mode as PermissionMode;
   }

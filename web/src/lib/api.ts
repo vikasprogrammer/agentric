@@ -150,7 +150,7 @@ export interface AgentInfo {
   runtime: 'mock' | 'claude-code'
   /** True when the agent lives under the data home (user-created) and can be deleted. */
   deletable?: boolean
-  /** True for an agent Agent OS ships and provisions itself (a department generalist, the
+  /** True for an agent Agentric ships and provisions itself (a department generalist, the
    *  agent-author, or the consolidator) — labelled as built-in in the chooser. */
   builtIn?: boolean
   /** Per-agent runtime tuning (claude-code only); undefined fields inherit the workspace default. */
@@ -231,7 +231,7 @@ export interface SystemMetrics {
   sessions: { available: boolean; totalRss: number; sessions: { id: string; agent: string; title: string; rss: number }[] }
   error?: string
 }
-/** One native command Agent OS shells out to (GET /api/deps). */
+/** One native command Agentric shells out to (GET /api/deps). */
 export interface DepStatus {
   bin: string
   label: string

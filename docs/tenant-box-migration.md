@@ -1,6 +1,6 @@
 # Tenant box-to-box migration runbook
 
-How to move a **process-per-tenant** Agent OS deployment (one `agent-os serve` process = one tenant)
+How to move a **process-per-tenant** Agentric deployment (one `agent-os serve` process = one tenant)
 from one Linux box to another with **minimal downtime** (~2–4 min) and a clean rollback. Written from
 the globex move off the shared **jump-server** onto a dedicated box (2026-07-21). Substitute your own
 old/new hosts, user, tenant slug, port, and public hostname.

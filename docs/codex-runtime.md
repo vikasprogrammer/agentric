@@ -1,6 +1,6 @@
 # The Codex runtime
 
-Agent OS can drive **OpenAI Codex** as well as Claude Code. An agent picks its runtime in its manifest:
+Agentric can drive **OpenAI Codex** as well as Claude Code. An agent picks its runtime in its manifest:
 
 ```json
 { "id": "my-agent", "runtime": "codex", "...": "..." }
@@ -241,7 +241,7 @@ sessions.
 
 **Three interactive startup prompts must be pre-empted**, or a session hangs waiting for a keypress
 nobody will press. Two are trust gates; the third is the update banner, suppressed with
-`check_for_update_on_startup = false` (Agent OS pins the CLI deliberately, so an in-pane self-update is
+`check_for_update_on_startup = false` (Agentric pins the CLI deliberately, so an in-pane self-update is
 never wanted — and the banner also swallows the first keystroke sent to a fresh pane).
 
 Two trust gates have to be pre-accepted or every session hangs or dies — the same class of bug as the

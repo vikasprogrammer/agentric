@@ -189,7 +189,7 @@ against it, which is why it is last and conditional.
 
 1. **Ingress transport** — vendor webhook (preferred; matches ClickUp/Composio) vs. a persistent
    media stream we terminate ourselves (a much larger surface; likely a no).
-2. **Whether the fast front-end is an Agent OS `System` agent** (a third sibling to
+2. **Whether the fast front-end is an Agentric `System` agent** (a third sibling to
    `concierge`/`operator`) or a vendor-side agent calling our API. Leaning `System` agent for
    consistency and governance, if latency permits — this needs a spike.
 3. **Whether Slice 3 ever ships** (§4).

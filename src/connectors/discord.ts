@@ -2,7 +2,7 @@
  * Native Discord — a thin, zero-dependency client for the slice of Discord's API the OS needs to run
  * a company Discord bot over the **Gateway** (Discord's equivalent of Slack's Socket Mode): resolve
  * the outbound gateway URL, post replies, and normalise an inbound message event so we can map the
- * author to an Agent OS member for run-as.
+ * author to an Agentric member for run-as.
  *
  * Why the Gateway and not an HTTP Interactions webhook: it keeps the trust/governance model identical
  * to the rest of the OS while needing **no public URL** — the Node server dials OUT to Discord over a
@@ -74,7 +74,7 @@ export async function startThread(
       method: 'POST',
       headers: { authorization: `Bot ${botToken}`, 'content-type': 'application/json' },
       // 1440 min = 24h auto-archive; name is capped at Discord's 100-char limit.
-      body: JSON.stringify({ name: (name || 'Agent OS').slice(0, 100), auto_archive_duration: 1440 }),
+      body: JSON.stringify({ name: (name || 'Agentric').slice(0, 100), auto_archive_duration: 1440 }),
     });
     const j: any = await res.json().catch(() => ({}));
     if (res.ok && j?.id) return { ok: true, id: String(j.id) };

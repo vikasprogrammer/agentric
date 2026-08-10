@@ -3,7 +3,7 @@
 The chosen model for running a few isolated tenants on one box: **one OS process per tenant**, each
 fully self-contained, fronted by `tailscale serve`. No reverse proxy, no wildcard DNS, no app changes.
 
-This is the model Agent OS was built for — "distinct `AGENT_OS_HOME` + `PORT` = an isolated instance".
+This is the model Agentric was built for — "distinct `AGENT_OS_HOME` + `PORT` = an isolated instance".
 The in-process tenant registry (`src/tenant-registry.ts`) stays in the tree but is **dormant** here:
 each process serves exactly one tenant at the apex host.
 

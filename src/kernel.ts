@@ -1,5 +1,5 @@
 /**
- * Kernel — assembles an Agent OS instance from its parts. This is the composition root:
+ * Kernel — assembles an Agentric instance from its parts. This is the composition root:
  * the one place where Policy, Budget, Approvals, Identity, Idempotency and Audit are
  * wired into the Gateway, and the Gateway + adapters into the Orchestrator.
  *

@@ -1,4 +1,4 @@
-# Agent OS — The Access Model (how agents reach the outside world)
+# Agentric — The Access Model (how agents reach the outside world)
 
 > **Status (2026-07-09): design north star + as-built map.** The three-layer model and vocabulary
 > below are the target. The "as-built" tables state what actually ships on `main` today; the

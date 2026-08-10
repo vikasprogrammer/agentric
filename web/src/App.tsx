@@ -644,7 +644,7 @@ function MaturityBadge({ s, className = '' }: { s?: AgentStats; className?: stri
   )
 }
 
-/** Marks an agent that ships with Agent OS (a department generalist, the agent-author, the
+/** Marks an agent that ships with Agentric (a department generalist, the agent-author, the
  *  consolidator) so the chooser makes clear it's built-in rather than one the team authored. */
 function BuiltInBadge() {
   return (
@@ -779,7 +779,7 @@ function TuningFields({ tuning, onChange, modelPlaceholder = 'inherit', inheritL
         <div className="space-y-1">
           <label className="text-xs font-medium text-muted-foreground">Permission mode</label>
           <div className="flex h-8 items-center rounded-md border border-dashed bg-muted/30 px-2 text-xs text-muted-foreground">not applicable</div>
-          <p className="text-[11px] text-muted-foreground">{runtime.label} has no permission mode — Agent OS is its sole authority, and the gate hook still governs every effect.</p>
+          <p className="text-[11px] text-muted-foreground">{runtime.label} has no permission mode — Agentric is its sole authority, and the gate hook still governs every effect.</p>
         </div>
       ) : (
         <div className="space-y-1">
@@ -1278,8 +1278,8 @@ function Console({ me }: { me: Member }) {
   const notifyItems = useMemo(() => buildNotifyItems(messages, prefs), [messages, prefs])
   const notifyUnread = notifyItems.filter((x) => x.unread).length
   useEffect(() => {
-    const brand = `${state?.tenantName || state?.tenant ? `${state.tenantName || state.tenant} · ` : ''}Agent OS`
-    // Lead with the current page (or the open session/agent) so the tab says "<page> · <tenant> · Agent OS".
+    const brand = `${state?.tenantName || state?.tenant ? `${state.tenantName || state.tenant} · ` : ''}Agentric`
+    // Lead with the current page (or the open session/agent) so the tab says "<page> · <tenant> · Agentric".
     const page = selected ? selected.title : route === 'agent' && editAgent ? `Agent · ${editAgent}` : ROUTE_TITLES[route]
     const base = page ? `${page} · ${brand}` : brand
     document.title = notifyUnread > 0 ? `🔔 (${notifyUnread}) ${base}` : base
@@ -1554,7 +1554,7 @@ function Console({ me }: { me: Member }) {
           <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" title="expand sidebar" onClick={() => setSidebarCollapsed(false)}>
             <PanelLeftOpen className="h-4 w-4" />
           </Button>
-          <div className="mt-1 text-base" title={state?.tenantName || state?.tenant || 'Agent OS'}>⚙️</div>
+          <div className="mt-1 text-base" title={state?.tenantName || state?.tenant || 'Agentric'}>⚙️</div>
           <nav className="mt-2 flex flex-col items-center gap-1">
             {me.role === 'owner' && <Button render={<a href={navHref('overview')} />} size="icon" variant="ghost" className={`h-8 w-8 ${route === 'overview' ? 'text-primary' : 'text-muted-foreground'}`} title="Overview" onClick={onNavClick(() => nav('overview'))}><LayoutGrid className="h-4 w-4" /></Button>}
             <span className="relative">
@@ -1586,8 +1586,8 @@ function Console({ me }: { me: Member }) {
         <div className="p-4 pb-2">
           <div className="mb-4 flex items-start justify-between">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 text-[15px] font-semibold">⚙️ Agent OS</div>
-              {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`tenant${state.version ? ` · Agent OS v${state.version}` : ''}`}>{state.tenantName || state.tenant}{state.version ? ` · v${state.version}` : ''}</div>}
+              <div className="flex items-center gap-2 text-[15px] font-semibold">⚙️ Agentric</div>
+              {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`tenant${state.version ? ` · Agentric v${state.version}` : ''}`}>{state.tenantName || state.tenant}{state.version ? ` · v${state.version}` : ''}</div>}
               <UpdateNotice />
             </div>
             <Button size="icon" variant="ghost" className="-mr-1 h-7 w-7 shrink-0 text-muted-foreground" title="collapse sidebar" onClick={() => setSidebarCollapsed(true)}>
@@ -2431,7 +2431,7 @@ function AgentsPage({
             <>
               <input ref={importInput} type="file" accept=".zip,application/zip" className="hidden" onChange={(e) => pickBundle(e.target.files)} />
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={onNew} title="new agent"><Plus className="h-4 w-4" /></Button>
-              <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={() => setLibraryOpen(true)} title="agent library — install a ready-made agent that ships with Agent OS"><Package className="h-4 w-4" /></Button>
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={() => setLibraryOpen(true)} title="agent library — install a ready-made agent that ships with Agentric"><Package className="h-4 w-4" /></Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={() => importInput.current?.click()} disabled={importing} title="import an agent from an AOS bundle .zip"><Upload className={'h-4 w-4' + (importing ? ' animate-pulse' : '')} /></Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground" onClick={rescan} disabled={rescanning} title="rescan the agents folder — pick up agents added on disk without a restart"><RefreshCw className={'h-4 w-4' + (rescanning ? ' animate-spin' : '')} /></Button>
             </>
@@ -6546,7 +6546,7 @@ function AppsPage({ permalink, nav }: { permalink: string; nav: (r: Route, detai
                   ⚠ A custom domain serves this app <b>publicly</b> at its root — a separate origin from the console, reached <b>without a login</b>. Only bind a domain for an app meant to be public, and have the app do its own auth if it needs it. Takes effect once the app is <b>published</b>.
                 </div>
                 <div className="mt-1.5 text-[11px] text-muted-foreground">
-                  DNS + TLS are external: point the hostname (A/CNAME) at this server and terminate TLS in front of it. Agent OS routes by the <code>Host</code> header. Save Settings to apply.
+                  DNS + TLS are external: point the hostname (A/CNAME) at this server and terminate TLS in front of it. Agentric routes by the <code>Host</code> header. Save Settings to apply.
                 </div>
                 {(a.domains ?? []).length > 0 && a.published && (
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -6887,7 +6887,7 @@ function LoginScreen({ accent }: { accent?: string }) {
     <div className="flex h-screen items-center justify-center bg-muted/30">
       <Card className="w-full max-w-md">
         <CardContent className="p-6">
-          <div className="mb-1 flex items-center gap-2 text-lg font-semibold">⚙️ Agent OS</div>
+          <div className="mb-1 flex items-center gap-2 text-lg font-semibold">⚙️ Agentric</div>
           <p className="mb-4 text-sm text-muted-foreground">
             Access is by invite. Paste the magic-link (or token) you were sent to sign in — or, if you've
             signed in before, request a fresh link by email below.
@@ -6998,9 +6998,9 @@ function CopyBlock({ text, label = 'Copy' }: { text: string; label?: string }) {
 // gets pinged and physically cannot reply. The scopes/events above are necessary but not sufficient;
 // this is the other half. (`messages_tab_read_only_enabled: false` is what actually shows the composer.)
 const SLACK_MANIFEST_OBJ = {
-  display_information: { name: 'Agent OS' },
+  display_information: { name: 'Agentric' },
   features: {
-    bot_user: { display_name: 'Agent OS', always_online: true },
+    bot_user: { display_name: 'Agentric', always_online: true },
     app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
   },
   oauth_config: {
@@ -7055,7 +7055,7 @@ function SlackSetupGuide() {
               </div>
               <div className="mt-2"><CopyBlock text={SLACK_MANIFEST} label="Copy JSON" /></div>
             </li>
-            <li>Create the app, then <strong>Install to Workspace</strong> and approve. Invite the bot to any channel you want it to watch (<code className="text-[11px]">/invite @Agent OS</code>).</li>
+            <li>Create the app, then <strong>Install to Workspace</strong> and approve. Invite the bot to any channel you want it to watch (<code className="text-[11px]">/invite @Agentric</code>).</li>
             <li>
               <strong>Basic Information → App-Level Tokens → Generate Token</strong>. Add the <code className="text-[11px]">connections:write</code> scope.
               Copy the <code className="text-[11px]">xapp-…</code> token into <strong>App-level token</strong> below.
@@ -7106,7 +7106,7 @@ function DiscordSetupGuide() {
             <li>
               <strong className="text-foreground">Create the application.</strong> Open the
               <a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer" className="mx-1 font-medium text-foreground underline">Discord Developer Portal</a>
-              → <strong>New Application</strong> → name it "Agent OS".
+              → <strong>New Application</strong> → name it "Agentric".
             </li>
             <li><strong>Bot</strong> tab → <strong>Reset Token</strong> → copy it into <strong>Bot token</strong> below.</li>
             <li>
@@ -10668,7 +10668,7 @@ function DocsPage({ selected, onSelect }: { selected: string; onSelect: (slug: s
           ))}
         </div>
         <div className="text-[11px] leading-relaxed text-muted-foreground">
-          These docs ship with Agent OS. Your company's own pages live in <a href={navHref('kb')} className="text-primary underline">Knowledge</a>.
+          These docs ship with Agentric. Your company's own pages live in <a href={navHref('kb')} className="text-primary underline">Knowledge</a>.
         </div>
       </div>
       <div className="min-w-0 max-w-3xl flex-1">
@@ -11868,7 +11868,7 @@ function SkillsPage() {
 
 /** The bundled skill library — skills that ship with the software, one-click installable into the
  *  tenant's own library. Collapsed by default; install copies the playbook (+ its files) into <home>/skills. */
-/** The agent library — the catalog of ready-made agents that ships with Agent OS (`config/agents`).
+/** The agent library — the catalog of ready-made agents that ships with Agentric (`config/agents`).
  *  Install one to copy it into this workspace as a normal, editable agent. Distribution-only: the list
  *  is fixed by what ships, and the built-in fleet shows as already installed. Mirrors SkillCatalog. */
 function AgentLibrary({ open, onOpenChange, onInstalled }: { open: boolean; onOpenChange: (o: boolean) => void; onInstalled: () => void | Promise<void> }) {
@@ -11896,7 +11896,7 @@ function AgentLibrary({ open, onOpenChange, onInstalled }: { open: boolean; onOp
             <Package className="h-4 w-4 shrink-0 text-muted-foreground" />
             Agent library
           </DialogTitle>
-          <div className="text-xs text-muted-foreground">Ready-made agents bundled with Agent OS. Install one to copy it into your fleet — then edit, tune, assign, or delete it like any other agent.</div>
+          <div className="text-xs text-muted-foreground">Ready-made agents bundled with Agentric. Install one to copy it into your fleet — then edit, tune, assign, or delete it like any other agent.</div>
         </DialogHeader>
         {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
         <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
@@ -11966,7 +11966,7 @@ function SkillCatalog({ onInstalled }: { onInstalled: () => void }) {
       </button>
       {open && (
         <div className="space-y-2 border-t p-3">
-          <p className="text-xs text-muted-foreground">Curated playbooks bundled with Agent OS. Install one to copy it into your library — then edit, assign, or delete it like any other skill.</p>
+          <p className="text-xs text-muted-foreground">Curated playbooks bundled with Agentric. Install one to copy it into your library — then edit, assign, or delete it like any other skill.</p>
           {hint && <div className="font-mono text-xs text-muted-foreground">{hint}</div>}
           {catalog.map((c) => (
             <Card key={c.name}>
@@ -13678,7 +13678,7 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
             <p className="text-sm font-medium">Agent operating notes</p>
             <p className="text-sm text-muted-foreground">
               OS-owned orientation appended to <strong>every claude-code agent's</strong> system prompt,
-              after your Company context. This is what the fleet is told about running inside Agent OS —
+              after your Company context. This is what the fleet is told about running inside Agentric —
               it's built into the platform and read-only here.
             </p>
           </div>
@@ -13695,7 +13695,7 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
 
 /**
  * Settings → System → Native dependencies — is this box set up to run agent sessions, and is what's
- * installed current? Probes the native commands Agent OS shells out to (tmux/ttyd/claude/git) via
+ * installed current? Probes the native commands Agentric shells out to (tmux/ttyd/claude/git) via
  * `GET /api/deps`. When something's missing it shows the exact install command (copyable) + the
  * `npm run install-deps` shortcut, and — for the owner — an "Install now" button that runs the box's
  * package manager (`POST /api/deps/install`).
@@ -13755,7 +13755,7 @@ function NativeDepsPanel({ me }: { me: Member }) {
         </div>
 
         <p className="text-sm text-muted-foreground">
-          The native commands Agent OS shells out to on this box. Sessions won't start until the required ones are present — and a stale runtime quietly holds sessions back to whatever it shipped with.
+          The native commands Agentric shells out to on this box. Sessions won't start until the required ones are present — and a stale runtime quietly holds sessions back to whatever it shipped with.
         </p>
 
         {err && <p className="text-sm text-red-600">{err}</p>}
@@ -16668,7 +16668,7 @@ function ThemeSettings({ me, state, onStateChange }: { me: Member; state: StateR
             <div className="w-44 overflow-hidden rounded-md border bg-background">
               <div className="h-1" style={{ background: cur.accentColor || 'transparent' }} />
               <div className="p-2">
-                <div className="mb-1.5 text-[11px] font-semibold">⚙️ {tenantName || 'Agent OS'}</div>
+                <div className="mb-1.5 text-[11px] font-semibold">⚙️ {tenantName || 'Agentric'}</div>
                 <div
                   className="rounded px-2 py-1 text-[11px] font-medium"
                   style={cur.accentColor ? { background: cur.accentColor, color: readableOn(cur.accentColor) } : { background: 'var(--sidebar-primary)', color: 'var(--sidebar-primary-foreground)' }}

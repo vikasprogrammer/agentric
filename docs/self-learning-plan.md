@@ -1,4 +1,4 @@
-# Agent OS Self-Learning ("Dreaming") — Implementation Notes
+# Agentric Self-Learning ("Dreaming") — Implementation Notes
 
 > **Status (2026-06-23): shipped ✅.** Closes the long-standing gap "an eval signal is computed per run
 > but nothing consumes it" (Pillar 10). A periodic, deterministic pass reflects on what the fleet has

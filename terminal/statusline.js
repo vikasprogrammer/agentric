@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Agent OS status line — the persistent info bar at the bottom of a governed claude TUI.
+// Agentric status line — the persistent info bar at the bottom of a governed claude TUI.
 //
 // Claude Code invokes this on every event (and on the refreshInterval below) with the live session
 // JSON on stdin (model, context window, cost, diff — see code.claude.com/docs/en/statusline). We
-// blend those native metrics with the two things ONLY Agent OS knows: how many approvals this run
+// blend those native metrics with the two things ONLY Agentric knows: how many approvals this run
 // has waiting in the inbox, and which human identity it's running as. The governance bit comes from
 // a single tight-timeout loopback GET to /api/agent/status (session-secret gated, same lane as the
 // gate hook); if the server is old or slow the fetch fails silent and we still render the local part.

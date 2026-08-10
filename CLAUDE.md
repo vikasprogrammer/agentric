@@ -1,4 +1,4 @@
-# Agent OS — working notes for Claude
+# Agentric — working notes for Claude
 
 A generic, governed operating system for running autonomous agents safely. The one invariant:
 **every side effect an agent has on the world passes through a single mediated gateway** where
@@ -6,6 +6,17 @@ Policy classifies, Approvals suspends for a human, Budget debits, Identity asser
 dedupes, and Audit records. Remove the gateway and all of that becomes docs. Keep the core generic
 and open-sourceable: `src/core` and the kernel import contracts only from `src/types.ts`, never from
 brand/plugin code.
+
+## Naming — "Agentric" is the brand, `agent-os` is the plumbing
+
+The product is **Agentric** (agentric.io). That name is the **brand layer only**: user-facing copy
+(console, README, `docs/`, agent-facing prompts, chat/bot display names, systemd `Description=`).
+Everything load-bearing keeps the `agent-os` identifier and MUST NOT be renamed here — the CLI binary
+and npm package `agent-os`, `AGENT_OS_*` env vars, the `AOS_*` prefix, the `AgentOS` class, the
+`mcp__agentos__*` tool namespace, the `/agent-os <agent>` chat command, systemd/launchd unit names
+(`agent-os.service`, `com.agentos.northwind`), data homes (`~/agent-os-data/…`), `agent-os.db`, and the
+GitHub repo. Those are live across the tenant boxes and baked into absolute paths; a full internal
+rename is a **migration**, folded into the next box move, never a standalone sweep.
 
 ## Build / run / test
 

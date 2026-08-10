@@ -1,6 +1,6 @@
-# What is Agent OS?
+# What is Agentric?
 
-Agent OS is a **governed operating system for running autonomous AI agents inside a company**. It lets your team hand real work to agents — support triage, marketing, coding, research — without handing them the keys to everything.
+Agentric is a **governed operating system for running autonomous AI agents inside a company**. It lets your team hand real work to agents — support triage, marketing, coding, research — without handing them the keys to everything.
 
 The one idea everything else hangs off:
 
@@ -18,7 +18,7 @@ Remove the gateway and all of that becomes documentation. Keep it, and "an AI di
 
 ## Why not just give everyone a super-agent?
 
-An unrestricted agent with company-wide access is a great experience for one trusted person and a terrifying one for a team. Agent OS exists to share that experience safely: everyone gets capable agents, and the *guardrails live in the system*, not in each person's judgment.
+An unrestricted agent with company-wide access is a great experience for one trusted person and a terrifying one for a team. Agentric exists to share that experience safely: everyone gets capable agents, and the *guardrails live in the system*, not in each person's judgment.
 
 ## What's in the box
 

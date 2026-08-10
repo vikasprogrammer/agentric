@@ -220,7 +220,7 @@ export class SettingsStore {
   // ── native Slack (Socket Mode) ───────────────────────────────────────────────────
   // One company Slack app, configured once here, shared across the whole workspace. The app-level
   // token opens the outbound Socket-Mode WebSocket (no public URL needed); the bot token posts
-  // replies + resolves the triggering Slack user's email → an Agent OS member (per-member run-as).
+  // replies + resolves the triggering Slack user's email → an Agentric member (per-member run-as).
 
   /** App-level token (`xapp-…`) for Socket Mode, or '' when unset. */
   slackAppToken(): string {

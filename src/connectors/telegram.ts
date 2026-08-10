@@ -2,7 +2,7 @@
  * Native Telegram — a thin, zero-dependency client for the slice of the Telegram Bot API the OS needs
  * to run a company Telegram bot over **long polling** (`getUpdates`): resolve the bot's own identity,
  * fetch inbound updates, post replies, and normalise an inbound message into an event we can map to an
- * Agent OS member for run-as.
+ * Agentric member for run-as.
  *
  * Why long polling and not a webhook: it keeps the trust/governance model identical to Slack Socket
  * Mode and the Discord Gateway — the Node server dials OUT to `api.telegram.org` over plain HTTPS

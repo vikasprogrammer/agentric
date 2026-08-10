@@ -1,8 +1,8 @@
 /**
- * Agent OS — local web tool. Zero-dependency HTTP server (Node's built-in `http`) that
+ * Agentric — local web tool. Zero-dependency HTTP server (Node's built-in `http`) that
  * exposes the OS as a JSON API, serves the browser console, and now hosts terminal-native
  * agent sessions: each session is a real tmux shell, attachable in the browser via ttyd,
- * with every side effect gated through the same Agent OS gateway.
+ * with every side effect gated through the same Agentric gateway.
  */
 import * as http from 'http';
 import * as fs from 'fs';
@@ -135,7 +135,7 @@ const CONSOLE_HTML = path.resolve(__dirname, '../public/console.html');
 const LANDING_HTML = path.resolve(__dirname, '../public/landing.html');
 const WEB_DIST = path.resolve(__dirname, '../web/dist');
 
-/** The agents Agent OS ships with: the boot-seeded fleet (department generalists + agent-author) plus
+/** The agents Agentric ships with: the boot-seeded fleet (department generalists + agent-author) plus
  *  the code-provisioned System machinery spawned by the edge loops (consolidator, skill-scout,
  *  strategist, improver, analyst). We flag these by id rather than by disk location because they
  *  materialise UNDER the user's agents home, so the `deletable` path check can't tell them apart from a
@@ -221,7 +221,7 @@ function applyAgentSnapshot(os: AgentOS, ag: AgentManifest, snap: AgentConfigSna
 
 /** Agents available for terminal sessions = whatever manifests this instance loaded.
  *  `deletable` = lives under the data home (user-created), so it can be removed; the bundled
- *  examples that ship with the software are read-only. `builtIn` = one of the agents Agent OS
+ *  examples that ship with the software are read-only. `builtIn` = one of the agents Agentric
  *  provisions itself, so the console can label it as shipped-with-the-software vs. user-authored. */
 function terminalAgents(os: AgentOS): { id: string; description: string; category?: string; runtime: string; deletable: boolean; builtIn: boolean; model?: string; effort?: string; examplePrompts?: string[]; icon?: string }[] {
   const userRoot = os.paths ? path.resolve(os.paths.userAgents) + path.sep : null;
@@ -232,7 +232,7 @@ function terminalAgents(os: AgentOS): { id: string; description: string; categor
     category: a.category,
     runtime: a.runtime,
     deletable: !!userRoot && !!a.dir && (path.resolve(a.dir) + path.sep).startsWith(userRoot),
-    // A code-provisioned agent that ships with Agent OS (generalist / agent-author / consolidator).
+    // A code-provisioned agent that ships with Agentric (generalist / agent-author / consolidator).
     builtIn: BUILT_IN_AGENT_IDS.has(a.id),
     // Per-agent runtime tuning (claude-code only) — surfaced so the console can show/edit it.
     model: a.model,
@@ -420,7 +420,7 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
 
   const server = createHttpServer(registry);
   server.listen(port, () => {
-    console.log(`\n  Agent OS console → http://localhost:${port}`);
+    console.log(`\n  Agentric console → http://localhost:${port}`);
     console.log(`  tenants: ${registry.list().map((t) => t.slug).join(', ') || '(none)'}\n`);
   });
   // Reap every tenant's ttyd + background services on graceful close AND systemd's SIGINT/SIGTERM.
@@ -2749,7 +2749,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       if (inline) return sendJson(res, 200, { intent: 'ask', answer: inline.answer, source: inline.source });
 
       // Band 2b: no direct LLM → answer via a governed, ephemeral CLAUDE run (the concierge). This is the
-      // native LLM in Agent OS — no separate API key needed, and it can use the OS tools to ground the
+      // native LLM in Agentric — no separate API key needed, and it can use the OS tools to ground the
       // answer. Spawned run-as the asker (read-only persona, System agent so it's never a route target);
       // the client polls the run's transcript and renders the reply inline. See src/edge/concierge.ts.
       ensureConcierge(os);
@@ -6504,7 +6504,7 @@ function githubAppManifest(req: http.IncomingMessage, os: AgentOS): Record<strin
   // present (even with `active:false`), so sending `{active:false}` makes GitHub reject the whole manifest
   // with "url wasn't supplied". Omitting it entirely = no webhook, which is exactly what we want.
   return {
-    name: `Agent OS — ${os.tenantName}`,
+    name: `Agentric — ${os.tenantName}`,
     url: origin,
     redirect_url: `${origin}/api/github/manifest-callback`,
     callback_urls: [`${origin}/api/github/callback`],
@@ -7038,7 +7038,7 @@ function acceptLandingHtml(email: string, token: string, accent?: string): strin
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Sign in — Agent OS</title>
+<title>Sign in — Agentric</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
@@ -7068,7 +7068,7 @@ function acceptLandingHtml(email: string, token: string, accent?: string): strin
 </style>${brand}</head>
 <body><div class="card">
   <div class="logo">A</div>
-  <h1>Sign in to Agent OS</h1>
+  <h1>Sign in to Agentric</h1>
   <p>You're accepting an invitation as <span class="email">${safeEmail}</span>.</p>
   <form method="POST" action="${action}">
     <button type="submit">Continue</button>

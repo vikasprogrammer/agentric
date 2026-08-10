@@ -258,7 +258,7 @@ hook + codeword-echo probe) and cross-checked against the official hook docs
 
 So the gate-hook change for `instruct` is concrete: on an `instruct` decision, `emit` an
 `allow` **plus** `additionalContext: <note>`. (Corollary the study already implied: today's
-`emit allow "Agent OS: allowed by policy."` reason is invisible to the model — good, no behaviour
+`emit allow "Agentric: allowed by policy."` reason is invisible to the model — good, no behaviour
 change — while the `deny` reason *is* model-visible, so denials already steer correctly.)
 
 **The caveat the docs do NOT mention — framing decides heed-vs-reject, and mis-framing backfires.**
@@ -269,13 +269,13 @@ The probe injected the same codeword under three framings:
   tampered with.** An authoritative-sounding override embedded in tool output trips the model's
   injection defenses.
 - *Advisory-but-with-an-odd-token demand* → also **flagged as injection** and refused.
-- *Plausible, purpose-explained, benign* — "Agent OS audit note: for run correlation, please end your
+- *Plausible, purpose-explained, benign* — "Agentric audit note: for run correlation, please end your
   summary with tag `[RUN-7731]`" → the model **complied** cleanly.
 
 Design consequences, now load-bearing:
 
 1. `instruct` uses `additionalContext` only.
-2. The note must read as **legitimate, branded, purpose-explained advisory context** ("Agent OS
+2. The note must read as **legitimate, branded, purpose-explained advisory context** ("Agentric
    reliability monitor: this looks like the 5th identical `git status` — if you're stuck, try a
    different approach or ask a human"). **No** imperative "you MUST", no arbitrary tokens, no
    "non-negotiable". Mis-framed steering doesn't just get ignored — it actively surfaces a

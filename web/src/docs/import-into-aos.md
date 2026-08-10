@@ -1,6 +1,6 @@
 # Import into AOS
 
-Bringing an agent over from another system (a raw Claude Code project, a CrewAI/LangGraph agent, a folder of prompts, a custom harness)? This page gives you a **master prompt** to paste into that agent. It briefs the agent on what Agent OS is and has it emit a **bundle** — a small, standard folder — that drops straight into AOS.
+Bringing an agent over from another system (a raw Claude Code project, a CrewAI/LangGraph agent, a folder of prompts, a custom harness)? This page gives you a **master prompt** to paste into that agent. It briefs the agent on what Agentric is and has it emit a **bundle** — a small, standard folder — that drops straight into AOS.
 
 The trick: the bundle mirrors how AOS actually stores things. On the **Agents** page, **Import bundle** takes the whole `.zip` and reconstructs the agent in one shot — files land on disk, and the parts that *aren't* files (memory, knowledge) are replayed through the same stores an agent writes to. Or, if you prefer, drop the files in by hand — see **Finishing the import** below.
 
@@ -39,7 +39,7 @@ So an agent's *brain* (manifest + instructions + skills) is pure files — the i
 Paste everything between the lines into the agent you're migrating **on its current system**. It will produce the bundle.
 
 ~~~text
-You are being migrated into Agent OS (AOS), a governed runtime for autonomous
+You are being migrated into Agentric (AOS), a governed runtime for autonomous
 agents. Your job right now is to package YOURSELF into an "AOS bundle" — a folder
 another operator will import so that a faithful copy of you runs inside AOS.
 

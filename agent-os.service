@@ -1,5 +1,5 @@
 [Unit]
-Description=Agent OS - governed agent runtime + web console
+Description=Agentric - governed agent runtime + web console
 Documentation=https://github.com/Globex/agent-os
 After=network.target
 Wants=network.target

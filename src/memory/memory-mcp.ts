@@ -1,5 +1,5 @@
 /**
- * Agent OS memory — a tiny stdio MCP server the OS injects into every claude-code session.
+ * Agentric memory — a tiny stdio MCP server the OS injects into every claude-code session.
  *
  * It exposes the OS-owned tools to the agent — `recall`/`remember` (memory), `ask_human`/`report` (operator),
  * and `list_capabilities`/`policy_check` (policy preview) — and implements them by calling back into

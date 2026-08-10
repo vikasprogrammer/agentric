@@ -1,6 +1,6 @@
 # The Oversight plane — the fleet's leadership layer
 
-> **The question (2026-08-01):** should Agent OS add "God-level agents" — watchers / strategy /
+> **The question (2026-08-01):** should Agentric add "God-level agents" — watchers / strategy /
 > leadership agents that guide other agents *and* humans toward company success? Is that a new
 > primitive, and is it something bigger than Goals?
 >

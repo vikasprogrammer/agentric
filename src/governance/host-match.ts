@@ -304,7 +304,7 @@ export function hostMatches(host: string, matcher: string): boolean {
  * protect: anything listening on loopback is already reachable by the shell the agent is holding, and
  * `shell.exec` governs that. Treating it as egress bought no safety and cost a great deal of noise —
  * on live northwind, `127.0.0.1` + `localhost` accounted for **35 of the 49** host approvals ever
- * raised (an agent curling its own dev server, or the Agent OS API, at owner/admin tier).
+ * raised (an agent curling its own dev server, or the Agentric API, at owner/admin tier).
  *
  * Deliberate limit: a loopback port that is an `ssh -L` tunnel to somewhere else is invisible to us.
  * That's the same honest constraint as the rest of this module (§2 of the plan) — a policy layer, not

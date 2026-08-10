@@ -1,10 +1,10 @@
-# Agent OS — Architecture
+# Agentric — Architecture
 
 > A generic operating system for running autonomous agents safely, unattended, across multiple brands.
 > Open-core: the **mechanisms** (kernel, governance, observability) are generic and shippable; the
 > **agents, policies, connectors, and data** are brand-private plugins.
 
-![Agent OS architecture](https://share.globex.com/CFWZ1myP)
+![Agentric architecture](https://share.globex.com/CFWZ1myP)
 
 ---
 
@@ -17,7 +17,7 @@ organize into **three concentric responsibilities**, and the whole design follow
 > OS controls.** Policy is checked there. Budget is debited there. Identity is asserted there.
 > Idempotency is enforced there. Audit is written there.
 
-This is the kernel/syscall boundary of the Agent OS. It is the single most important decision in the
+This is the kernel/syscall boundary of the Agentric. It is the single most important decision in the
 whole framework, because **without it, Policy, Budgets, Approvals, Audit, and Evaluation are all
 unenforceable** — they become documentation, not controls. (See §4. Today you run agents with
 `--permission-mode bypassPermissions` and let them call `Bash`/`curl`/MCP directly — i.e. there is no

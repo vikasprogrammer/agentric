@@ -1,4 +1,4 @@
-# Agent OS — The Governance & Policy Model
+# Agentric — The Governance & Policy Model
 
 This is the design north star for the trust layer: *what the governance layer is meant to be*, stated
 as principles, with each current gap mapped to the principle it violates. It sits above the
@@ -243,7 +243,7 @@ and the external work supplies a few concrete, low-dependency upgrades rather th
 ### Convergence (we are not alone, and not wrong)
 
 Microsoft's **Agent Governance Toolkit (AGT)** independently arrived at the same architecture — to the
-point of shipping a subpackage literally named **"Agent OS"** ("kernel-level governance with
+point of shipping a subpackage literally named **"Agentric"** ("kernel-level governance with
 POSIX-inspired primitives"), with an `Agent → Policy → Identity → Audit` pipeline that is our 7-step
 gateway minus budget/idempotency. Its thesis — make violations *"structurally impossible rather than
 relying on probabilistic prompt-level safety"* — restates our one invariant. AWS's **Cedar** evaluates
@@ -291,7 +291,7 @@ Four things worth taking from the landscape, none of which compromise the zero-d
 ### Deliberately out of scope (for now)
 
 SPIFFE/DIDs, TEE / confidential compute (cMCP, OPAQUE), on-chain trust scoring, and RL-with-violation
-training are real but overkill for a single-box Tailscale deployment. Revisit only if Agent OS goes
+training are real but overkill for a single-box Tailscale deployment. Revisit only if Agentric goes
 multi-org or into a regulated setting. We also keep the JSON policy engine as the zero-dep default
 rather than taking Cedar/OPA as a hard dependency — Cedar may later be offered as a *pluggable* advanced
 engine (same pattern as the swappable memory backends), but the generic core must run with no external

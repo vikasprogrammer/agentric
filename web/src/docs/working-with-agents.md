@@ -11,7 +11,7 @@ The three ways work starts, and what to do while it runs.
 Mention the bot and address an agent by name:
 
 ```
-@AgentOS /support customer says checkout 500s on the annual plan
+@Agentric /support customer says checkout 500s on the annual plan
 ```
 
 - The bot acks in a **thread**; all agent replies land in that thread.
