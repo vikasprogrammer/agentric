@@ -153,12 +153,20 @@ const DIED_EARLY_MS = 30_000;
  * Signatures are matched against the transcript TAIL only — a run that recovered from a rate limit
  * mid-way and carried on must not be called dead because the phrase appears somewhere in its history.
  */
-const RUNTIME_DEATH = [
-  /hit your weekly limit/i,
-  /hit your session limit/i,
-  /OAuth access token has expired/i,
-  /Please run \/login/i,
-  /Credit balance is too low/i,
+/** The two death classes behave differently downstream and must not be merged: a usage limit means the
+ *  credentials are FINE and exhausted (park the account, it self-heals at the reset), while an auth
+ *  failure means the token is bad and will never recover on its own (drop the account until a human
+ *  replaces it). `src/terminal.ts` already encodes exactly this split — this is the same judgement made
+ *  from the durable source. */
+export type DeathKind = 'usage' | 'auth';
+const RUNTIME_DEATH: [RegExp, DeathKind][] = [
+  [/hit your weekly limit/i, 'usage'],
+  [/hit your session limit/i, 'usage'],
+  [/Credit balance is too low/i, 'usage'],
+  [/usage limit reached/i, 'usage'],
+  [/OAuth access token has expired/i, 'auth'],
+  [/Please run \/login/i, 'auth'],
+  [/invalid bearer token/i, 'auth'],
 ];
 const INTERRUPTED = /Request interrupted by user/i;
 /** Tail window. Big enough to hold a closing summary (the longest seen is ~3.3KB), small enough that an
@@ -168,7 +176,13 @@ const TAIL_BYTES = 8_000;
 const SUBSTANTIVE_CHARS = 200;
 
 /** What the transcript says about how a run ended. `undefined` when there is no transcript to read. */
-export interface TranscriptEnd { died: boolean; interrupted: boolean; closingChars: number }
+export interface TranscriptEnd {
+  died: boolean;
+  /** Which kind of death, when one was found — `usage` parks the account, `auth` retires it. */
+  deathKind?: DeathKind;
+  interrupted: boolean;
+  closingChars: number;
+}
 
 /** Read the tail of a conversation's transcript. Never throws: a missing or unreadable transcript is a
  *  normal case (95% coverage on the live box, and none on a machine that didn't run the agent). */
@@ -201,8 +215,14 @@ export function readTranscriptEnd(convoId: string, find = findTranscript): Trans
       if (text.trim()) closing = text.trim();
     } catch { /* partial or non-message line */ }
   }
+  // Auth wins a tie: the two banners can appear together ("Please run /login · API Error: 401 …"), and a
+  // bad token must not be parked as if it were merely exhausted — parking self-heals at a reset that will
+  // never fix it, and the account silently returns to the pool still broken.
+  const hits = RUNTIME_DEATH.filter(([re]) => re.test(tail)).map(([, k]) => k);
+  const deathKind = hits.includes('auth') ? 'auth' : hits[0];
   return {
-    died: RUNTIME_DEATH.some((re) => re.test(tail)),
+    died: hits.length > 0,
+    ...(deathKind ? { deathKind } : {}),
     interrupted: INTERRUPTED.test(tail),
     closingChars: closing.length,
   };

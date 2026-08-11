@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.337.0] — 2026-08-11
+### Fixed
+- **Runtime-death remediation was firing on ~10% of the events it exists for.** `detectUsageLimit` parks
+  an exhausted runtime account and retires one with a dead token, so the pool rotates away from it — but
+  it reads the **tmux pane**, which a run killed on its first API call has usually already lost. On the
+  live corpus the derived outcome finds **31** quota/auth deaths in 30 days; the detector had fired on
+  **3**, and the pool recorded **zero** `runtime.account.limited`/`.invalid` events. The machinery was
+  right and was not being reached. It now falls back to the transcript tail — durable, unlike the pane —
+  and every detection audit carries `via: 'pane' | 'transcript'` so the coverage this claims to fix is
+  itself measurable. The `usage` vs `auth` split is preserved end to end, and **auth wins a tie**: both
+  banners often appear together, and parking a dead token is the dangerous mistake — it "self-heals" at a
+  reset that will never fix it, then rejoins the pool still broken.
+
+### Added
+- **A card for runs the runtime killed** (`docs/insights-revisit.md` Step 2 — the first end-to-end signal
+  of the rebuild). These are the fleet's most common real failure and were invisible until the derived
+  outcome existed: an agent cannot report "I hit my quota" when the agent is what stopped existing, so the
+  runs looked like silence. Grouped by **runtime account**, not by agent — that is what a human acts on,
+  and the per-agent view misleads (the top "offender" was just the automation that runs every two hours,
+  while 23 of 31 deaths traced to one shared account). Fires at ≥3 deaths in 48h with one in the last 12h,
+  and says something different when there is no pool account at all (add rotation, rather than re-link
+  this one). Present tense by construction: deaths arrive in bursts (22 of 31 inside two days), so a long
+  window would re-alert for a month about a token replaced on day three — verified against the live
+  corpus, where the card fires when evaluated during the burst and is silent when evaluated today.
+  No buttons on the card: it deep-links to Settings → Runtime where the actions already live, because
+  building a bespoke action API before knowing whether anyone clicks through is the mistake this rebuild
+  exists to stop. Pinned by `scripts/runtime-death-alert-test.cjs` (13 assertions).
+
 ## [0.336.0] — 2026-08-11
 ### Fixed
 - **An unattended run that launches background work is no longer killed while it's still working.** The
