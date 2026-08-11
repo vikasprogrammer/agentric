@@ -40,6 +40,13 @@ The real values live OUTSIDE the repo, on this machine only:
 - **`~/.claude/skills/fleet-insights/`** — the maintainer skill that reads the live tenant DBs over ssh.
   It used to ship here; it carries ssh targets, so it is personal-scope now and must not come back.
 
+The decoder ring is imported below, so on a maintainer's machine the real values are in context without
+ever entering the repo; on anyone else's clone the import is simply a missing file and this stays a
+placeholder-only public manual. **Never inline what it resolves to** — write the placeholder here and let
+the import do the decoding.
+
+@~/.claude/agentric-fleet.local.md
+
 ## Build / run / test
 
 ```bash
