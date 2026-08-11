@@ -407,13 +407,36 @@ No new page. No second signal. Instrument the card: opened, action taken, dismis
 - **Falsifier:** if cards are dismissed without action, the card is wrong — fix the card, do not add
   a second signal.
 
-### Step 3 — deliver where humans already look
+### Step 3 — deliver where humans already look → **the Journal** (`docs/journal-plan.md`)
 
 The card from Step 2 rides the **digest** (26 posts of demonstrated readership) and the **Inbox**
 (already audience-addressed, already DM-mirrored via `resolveRecipients`). The Insights page becomes
 the archive/history view of cards, not the delivery mechanism.
 
-- **Exit:** every card that reached a human did so without anyone opening the Insights page.
+Naming that concretely: the digest stops being block 4 of a page nobody opens and becomes **Journal**,
+its own top-level surface — a day-by-day record, readable backwards in time. Planned in full in
+[`journal-plan.md`](./journal-plan.md); the parts that belong to this step:
+
+- **The delivery surface already exists and is already consumed** — the digest is the *only* block in §2a
+  with sustained use, and it already writes a dated, revisioned KB page per day (`operations/daily/<iso>`).
+  Reading backwards in time is a route and a query parameter, not a feature. Promoting it is therefore
+  the cheapest possible test of this step's premise.
+- **It carries the same broken signal Step 0 deleted elsewhere.** `buildDigest` derives its verdicts from
+  `json_extract(m.metadata,'$.outcome')` — the agent's own `report()`. Step 1/1b built the replacement;
+  the Journal is its first consumer (`journal-plan.md` §6), and that rewire lands **before** any narrative
+  layer, because fluent prose over a signal with no variance is the original failure with better writing.
+- **The AI layer is human-facing only.** The direct Anthropic key is now configurable in the console, so
+  one bounded call per tenant per day can write "what actually happened" over the deterministic model
+  (~$0.005/day at the Haiku default). It never reaches `buildCompanyMd` — guidance injection is the
+  channel that turned a fake success rate into fleet-wide advice, and this step does not reopen it.
+- **Instrumented as a before/after, not as a launch.** `journal.day.viewed` is recorded from the first
+  shippable slice, so the narrative layer is measured against its own pre-narrative baseline and is
+  allowed to come back negative.
+
+- **Exit:** every card that reached a human did so without anyone opening the Insights page, and at least
+  one person opens a Journal day that is not today within a week of it shipping.
+- **Falsifier:** if only the current day is ever opened, the archive is not wanted — keep the today view,
+  drop the day picker, and do not build the narrative layer on top of a page with no readers.
 
 ### Step 4 — measure the card, not our clicks
 
@@ -485,6 +508,8 @@ Live DB paths: northwind `~/agent-os-data/northwind/agent-os.db`; globex
   audit shows we broke again in the adjacent metric.
 - [`memory-encoding-and-consolidation.md`](./memory-encoding-and-consolidation.md) — the learning loop
   Insights sits inside.
+- [`journal-plan.md`](./journal-plan.md) — Step 3 in full: the digest promoted to its own day-by-day
+  surface, rewired onto the Step 1b outcome, with a bounded human-facing narrative on top.
 - [`daily-digest-plan.md`](./daily-digest-plan.md) — the push surface Step 3 rides.
 - [`oversight-plane.md`](./oversight-plane.md) — the `Intervention` gap named there is the same gap
   Step 4 closes.
