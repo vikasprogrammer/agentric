@@ -16,7 +16,7 @@ SLUG="${1:?usage: run-tenant.sh <slug> <home-dir> <port> [owner-email] [display-
 HOME_DIR="${2:?home dir required}"
 PORT="${3:?port required}"
 OWNER="${4:-owner@${SLUG}.local}"
-DISPLAY_NAME="${5:-}"                    # optional human label (e.g. "Instapods"); falls back to slug
+DISPLAY_NAME="${5:-}"                    # optional human label (e.g. "Northwind"); falls back to slug
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$REPO/dist/cli.js" ] || { echo "build first: npm run build" >&2; exit 1; }

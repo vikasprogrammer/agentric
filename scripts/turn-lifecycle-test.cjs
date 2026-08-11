@@ -5,7 +5,7 @@
  * The bug this pins: `busy_since` was a ONE-WAY LATCH. It was stamped at spawn / on a server-side
  * delivery, and cleared in exactly ONE place — the `resident` branch of `markTurnIdle`. A member's own
  * interactive session returns before that branch (`!r.headless`), so its flag was never cleared and the
- * console drew a spinner on it forever; every finished unattended run kept the flag too. Live instapods
+ * console drew a spinner on it forever; every finished unattended run kept the flag too. Live northwind
  * had 24 of its 25 most recent rows — `done` and `stopped` ones included — carrying a `busy_since` hours
  * old. There was also no turn-START signal at all for a human typing straight into an attached TUI, and
  * no handler for `StopFailure`, which is the ONLY end signal a turn killed by a rate limit produces.

@@ -128,15 +128,15 @@ Plus `npm run typecheck`, `cd web && npm run build`, `npm run demo`.
 
 ## Correction (v0.280.0) — two signals that were wrong in production
 
-Both surfaced by reading a real posted digest's **🧠 Learned** block on the instawp tenant.
+Both surfaced by reading a real posted digest's **🧠 Learned** block on the globex tenant.
 
-1. **"The fleet frequently works on: instawp, handed, client-app, read-only, really."** `topicCounts`
+1. **"The fleet frequently works on: globex, handed, client-app, read-only, really."** `topicCounts`
    lowercased before tokenizing and filtered through a hand-maintained `STOP` list — an unwinnable game
    where every leaked word ("handed", "really", "read-only") had to be discovered in production and then
    patched in, and the guidance line rides in **every agent's system prompt**. Inverted to an **allow test
    on shape**: tokenization preserves case, and a topic is admitted only if the corpus itself writes it as
    a name (`properNouns` — capitalized away from a sentence start, or ALL-CAPS) or it carries a digit or a
-   dot (`v3`, `php8`, `instawp.com`). Precision over recall: an always-lowercase repo name is missed, but
+   dot (`v3`, `php8`, `globex.com`). Precision over recall: an always-lowercase repo name is missed, but
    nothing embarrassing gets through, and the line only prints when ≥2 topics survive. Agent ids joined
    member names as stop-words — both answer *who did the work*, not *what the fleet works on* (the whole
    id only: `migration-ops` is an agent, `migration` is a topic).

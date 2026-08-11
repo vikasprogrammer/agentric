@@ -4,7 +4,7 @@
  * The capability-wide "Always approve" (a policy `allow <capability>` rule) is too blunt for the
  * recurring-benign-approval problem — allowing all `connector.connect` or all `net.connect` is a huge
  * grant. This list is keyed on the decision-brief SIGNATURE (`capability|verb|targetKind|key`), so an
- * owner can silence exactly one recurring action shape (e.g. "reach host 5.135.136.192", "use Stripe
+ * owner can silence exactly one recurring action shape (e.g. "reach host 198.51.100.42", "use Stripe
  * refund") and nothing broader. At gate time a pending APPROVE whose signature is on the list is cleared
  * automatically (audited `approval.auto_approved` via `auto-approve-list`) — no card, no notification.
  *
@@ -23,7 +23,7 @@ export interface AutoApproval {
   /** The decision-brief signature this rule matches (the auto-approve key). */
   signature: string;
   capability: string;
-  /** Human phrase for the Settings list ("Reach host 5.135.136.192", "Use stripe refund"). */
+  /** Human phrase for the Settings list ("Reach host 198.51.100.42", "Use stripe refund"). */
   label: string;
   /** An example headline from the approval it was created from (concrete illustration). */
   example: string;

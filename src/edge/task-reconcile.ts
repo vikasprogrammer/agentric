@@ -23,7 +23,7 @@
  * poke-back that wakes a delegating caller is wired to the TASK reaching done/blocked
  * (`maybePokeCaller`), not to the delegate's session ending, so a delegate that finishes its run without
  * calling `task_update` strands the task in `doing` AND leaves the caller waiting forever. Measured on the
- * instawp tenant: 43 of 307 (14%) poke-on-done hand-offs over 30 days ended exactly that way, and 15 of 16
+ * globex tenant: 43 of 307 (14%) poke-on-done hand-offs over 30 days ended exactly that way, and 15 of 16
  * of those runs ended `outcome = 'unknown'` — the bucket `apply` deliberately never touches — so the
  * manual tile could not have rescued a single one.
  */

@@ -36,7 +36,7 @@ So an interrupted turn used to sit on the console reading "working" until the 2h
 
 The signal we *do* get is the `Notification` hook: the TUI parks at its prompt — including the
 `Interrupted · What should Claude do instead?` prompt — and claude raises `idle_prompt` (159 of them on
-the live instapods box). `notify()` therefore **ends the turn** as well as posting the bell, and the
+the live northwind box). `notify()` therefore **ends the turn** as well as posting the bell, and the
 session reads `needs you`, which is the honest state: claude is waiting for you to say what to do
 instead. Typing the next prompt fires `UserPromptSubmit`, which retires the waiting card and puts the
 spinner back — the other half of the loop.
@@ -61,7 +61,7 @@ terminal status transition (`done` / `stopped` / `crashed`).
 
 **It used to be a one-way latch.** The clear lived inside `markTurnIdle`'s `resident` branch only, so a
 member's own interactive session returned before reaching it and never cleared — the console drew a
-spinner on finished sessions forever. Live instapods carried the flag on 72 of 520 rows, 66 of them
+spinner on finished sessions forever. Live northwind carried the flag on 72 of 520 rows, 66 of them
 `done`/`stopped`/`crashed`.
 
 `TerminalManager.isWorking` is the single reader, and it is deliberately defensive — five conditions, so

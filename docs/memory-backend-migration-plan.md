@@ -10,7 +10,7 @@ loops with a live progress count, so a large ledger never blocks one request).
 ## The problem (observed live)
 
 Switching a tenant's memory backend (Settings → Memory) is a config flip — but **the old store's
-contents don't come along.** When instapods moved SQLite → automem:
+contents don't come along.** When northwind moved SQLite → automem:
 
 - automem started **empty** (0 memories).
 - the local `memories` table still held the **51 pre-switch rows**.

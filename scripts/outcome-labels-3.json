@@ -1,7 +1,7 @@
 {
   "_": "Round 3 — the out-of-sample check on the Step 1b rules (docs/insights-revisit.md).",
   "_why": "Rounds 1 and 2 are both in-sample now: round 1's errors bought `died-early` and `human-session`, round 2's bought the transcript layer and the fold fix. This round draws only conversations NEITHER round touched (`--exclude labels.json,labels-2.json`) and is scored once, with no rule change afterwards.",
-  "_corpus": "instapods, 30-day window, snapshot 2026-08-09. 33 conversations, stratified across all 8 bases present, labelled blind from task text + transcript only.",
+  "_corpus": "northwind, 30-day window, snapshot 2026-08-09. 33 conversations, stratified across all 8 bases present, labelled blind from task text + transcript only.",
   "_scale": "success | partial | incomplete | noop | failure | abandoned | ? — '?' means no transcript on this box, so no independent evidence existed.",
   "_note": "One labelling convention changed from round 2, stated here BEFORE scoring: an unattended run that produced no assistant output at all is labelled `failure`, not `noop`. Round 2 flagged that as a likely mislabel on my side (the automation did not do its job), so the convention is corrected rather than left inconsistent.",
   "labels": {

@@ -48,7 +48,7 @@ export interface Goal {
   title: string;
   body: string;              // the "what / why" narrative
   status: GoalStatus;
-  target?: string;           // free-text target caption for v1 (e.g. "grow instawp signups")
+  target?: string;           // free-text target caption for v1 (e.g. "grow globex signups")
   owner?: string;            // member id accountable for the goal
   parentId?: string;         // hierarchy: strategy → objective → key result
   labels: string[];
@@ -244,7 +244,7 @@ it — a Dreaming upgrade tracked against its 🟡 Partial grade, not a blocker 
 
 Slices 1–3 could plan a goal and measure it, but a goal could never *finish*. `progress()` computed
 100% and **nothing consumed it**: `achieved` was reachable only by hand-picking it from a dropdown
-inside the drawer. On the live instawp tenant a goal sat 6/6 done and `active` for 19 days — still
+inside the drawer. On the live globex tenant a goal sat 6/6 done and `active` for 19 days — still
 injected into every agent's prompt as current direction, and still a re-plan candidate.
 
 **The model: completion is derived, proposed, and human-confirmed.** No auto-flip. "Every task I filed

@@ -5,7 +5,7 @@
       {
         "matcher": "Bash|mcp__.*",
         "hooks": [
-          { "type": "command", "command": "bash /home/vikas/tools/agent-os/terminal/gate-hook.sh" }
+          { "type": "command", "command": "bash \"${AOS_REPO:-/path/to/agent-os}/terminal/gate-hook.sh\"" }
         ]
       }
     ]

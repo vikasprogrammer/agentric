@@ -69,7 +69,7 @@ const MIN_TOPIC_COUNT = 3;
  * Version of the topic extractor. `topics` is a CUMULATIVE map — counts compound across passes and decay
  * only on a 21-day half-life — so fixing the extractor does nothing for a workspace that has already been
  * running: the words the old one admitted keep their (large) counts and keep headlining the guidance line
- * for weeks. Live instapods held 300 topics led by `drafts(61)`, `sweep(59)`, `automated(58)` — all
+ * for weeks. Live northwind held 300 topics led by `drafts(61)`, `sweep(59)`, `automated(58)` — all
  * artefacts of one shouted prompt header, all of which v0.281.1 stopped extracting but none of which it
  * removed. Bump this whenever the extractor's meaning changes; a state carrying an older version has its
  * map cleared and rebuilt from the current corpus, so every tenant self-heals on its next pass instead of
@@ -402,7 +402,7 @@ function properNouns(episodes: EpisodeRow[]): Set<string> {
     }
   }
 
-  // A real name is *consistently* capitalized: "Composio", "DataForSEO", "InstaWP". A word the corpus
+  // A real name is *consistently* capitalized: "Composio", "DataForSEO", "Globex". A word the corpus
   // also writes in lowercase is an ordinary word that happened to start a clause — this is what separates
   // "Phase 1"/"Publish the draft" (also written "phase"/"publish") from a product name. Corpus-internal,
   // so it needs no list to maintain.
@@ -416,15 +416,15 @@ function properNouns(episodes: EpisodeRow[]): Set<string> {
 /**
  * Whether a token is a THING the fleet works on rather than an ordinary English word. The old filter was a
  * hand-maintained blocklist, which is unwinnable — fleet data produced "the fleet frequently works on:
- * instawp, handed, client-app, read-only, really", and every such word had to be discovered in production
+ * globex, handed, client-app, read-only, really", and every such word had to be discovered in production
  * and then patched in. This inverts it to an ALLOW test on shape: a topic must be written as a name
- * somewhere (`properNouns`), or carry a digit or a dot (`v3`, `php8`, `instawp.com`). Deliberately
+ * somewhere (`properNouns`), or carry a digit or a dot (`v3`, `php8`, `globex.com`). Deliberately
  * precision-over-recall — an always-lowercase repo name is missed, but nothing embarrassing gets through,
  * and the guidance line only prints at all when ≥2 topics survive.
  */
 function isEntity(token: string, proper: Set<string>): boolean {
   // An opaque IDENTIFIER is never a topic. The digit rule below exists for `v3`/`php8`, but it also let
-  // hex ids through — live instawp surfaced `f90fc16d7fb9a19` as something "the fleet frequently works
+  // hex ids through — live globex surfaced `f90fc16d7fb9a19` as something "the fleet frequently works
   // on". A long hex/base36 run with no vowel structure is a handle, not a name.
   if (/^[0-9a-f]{8,}$/i.test(token) || /^[a-z]{2,4}_[0-9a-f]{6,}$/i.test(token)) return false;
   // A FILENAME qualifies on its base name, never its extension — otherwise the dot rule (meant for
@@ -468,7 +468,7 @@ function recentTally(s: DreamState): { sessions: number; success: number; approv
     r.success += e.success || 0;
     // Approval friction is a RATIO, so an entry that predates the `approved` denominator must contribute
     // NEITHER side — counting its rejections against a missing denominator reads as 100% rejection. Live
-    // instapods computed 22% (and nagged every agent) while its true rate was 5.4%, because six of seven
+    // northwind computed 22% (and nagged every agent) while its true rate was 5.4%, because six of seven
     // window entries were legacy. Skipping them means the signal stays quiet until real evidence exists.
     if (e.approved !== undefined) {
       r.approved += e.approved;
@@ -490,7 +490,7 @@ function recentTally(s: DreamState): { sessions: number; success: number; approv
  * it self-corrects on the next pass, which records the denominator.
  */
 const REJECTION_RATE = 0.2;
-/** A rate also needs a SAMPLE. Live instawp fired the recommendation off 3 decisions (0 approved,
+/** A rate also needs a SAMPLE. Live globex fired the recommendation off 3 decisions (0 approved,
  *  3 rejected = 100%) — directionally true for that window, but far too thin to tell an owner their
  *  policy is miscalibrated. Below this many human decisions the signal stays quiet. */
 const MIN_APPROVAL_DECISIONS = 8;
@@ -532,9 +532,9 @@ export function deriveGuidance(s: DreamState): string {
   if (t.errors >= 2) lines.push('Some sessions ended in errors — verify your work before finishing, and `report` the real outcome (including failures) honestly.');
   // ⛔ RETIRED (2026-08-08, docs/insights-revisit.md Step 0) — the "Recent success rate is N% — slow down"
   // line. `t.success / t.sessions` divides *self-reported* successes by ALL sessions, so its complement is
-  // dominated by runs that simply never called `report`: live instapods had 334 `session.ended` with no
+  // dominated by runs that simply never called `report`: live northwind had 334 `session.ended` with no
   // outcome against 302 `session.reported` in 30 days, and exactly ONE reported failure in 329 reports
-  // lifetime (instawp: 6 in 1830). Both tenants therefore computed ~55% and told EVERY agent, in EVERY
+  // lifetime (globex: 6 in 1830). Both tenants therefore computed ~55% and told EVERY agent, in EVERY
   // system prompt, permanently, to slow down about a failure rate that does not exist in the data. This is
   // the same defect the 2026-07-31 correction fixed for approval friction (a rate needs a denominator and a
   // sample) — missed here because this metric's denominator looked like one. It returns only when Step 1

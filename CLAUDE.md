@@ -18,11 +18,27 @@ remotes keep working; never let a new repo claim that old name or the redirect d
 Everything load-bearing keeps the `agent-os` identifier and MUST NOT be renamed here — the CLI binary
 and npm package `agent-os`, `AGENT_OS_*` env vars, the `AOS_*` prefix, the `AgentOS` class, the
 `mcp__agentos__*` tool namespace, the `/agent-os <agent>` chat command, systemd/launchd unit names
-(`agent-os.service`, `com.agentos.instapods`), data homes (`~/agent-os-data/…`), `agent-os.db`, the
+(`agent-os.service`, `com.agentos.northwind`), data homes (`~/agent-os-data/…`), `agent-os.db`, the
 local checkout paths (`~/Projects/agent-os`, `~/agent-os-live`, `~/aos-wt`), and the GitHub **App**
-slug `agent-os-instapods` (renaming that one changes its installation URLs and breaks per-member
+slug `agent-os-northwind` (renaming that one changes its installation URLs and breaks per-member
 GitHub auth). Those are live across the tenant boxes and baked into absolute paths; a full internal
 rename is a **migration**, folded into the next box move, never a standalone sweep.
+
+## This repo is PUBLIC — no real infrastructure in a tracked file
+
+Every host, IP, ssh target, personal path, tenant slug and owner email in this repo is a
+**placeholder**: tenants are `northwind` / `globex` / `initech` / `umbrella`, hosts are
+`your-box.tailnet.ts.net` / `*.example.com`, IPs come from the RFC 5737 documentation ranges
+(`203.0.113.x`, `198.51.100.x`), homes are `/home/agent-os` or `~/…`. Keep it that way — when you
+document a real incident, write the placeholder, not the box you actually sshed into.
+
+The real values live OUTSIDE the repo, on this machine only:
+- **`~/.claude/agentric-fleet.local.md`** — the decoder ring (placeholder → real tenant/host/IP/App slug).
+- **`~/.agentric-live.env`** (0600) — the live deploy identity `scripts/make-live.sh` sources
+  (`AOS_LIVE_TENANT`, `AOS_LIVE_LABEL`, `AOS_LIVE_LOG`, …). Without it the script falls back to the
+  generic `acme` defaults and fails fast with "launchd job com.agentos.acme is not loaded".
+- **`~/.claude/skills/fleet-insights/`** — the maintainer skill that reads the live tenant DBs over ssh.
+  It used to ship here; it carries ssh targets, so it is personal-scope now and must not come back.
 
 ## Build / run / test
 
@@ -38,7 +54,7 @@ There is no test runner. Validate changes by: `npm run typecheck`, `cd web && np
 (spin up `createHttpServer` on an ephemeral port and drive it with `fetch`; avoids tmux/ttyd and port
 conflicts). Don't rely on backgrounding `agent-os serve` inside one shell call — it's flaky here.
 **⚠ Isolate test scripts:** `loadAgentOS()` with no env resolves the home to **`./data` — the LIVE
-default-tenant DB** (config `tenant` = `instapods`), NOT an ephemeral `:memory:` one (only the
+default-tenant DB** (config `tenant` = `northwind`), NOT an ephemeral `:memory:` one (only the
 demo/`AgentOS` with no `paths` is in-memory). A throwaway `loadAgentOS()` smoke test will therefore
 write test rows into the real DB. Always `export AGENT_OS_HOME=<scratch dir>` (and `rm -rf` it) before
 running such a script, or you will pollute live data.
@@ -50,16 +66,16 @@ running such a script, or you will pollute live data.
   authenticated"** — a stale-server symptom that masquerades as an auth bug. Quick check after
   restart: `curl -XPOST localhost:3010/api/<route> -d '{"session":"nope"}'` should give **404**
   (route present), not 401. (Prod Linux: `sudo systemctl restart agent-os`. **This Mac Mini** — the
-  `instapods` tenant runs under launchd as `com.agentos.instapods` (`~/Library/LaunchAgents/com.agentos.instapods.plist`,
-  KeepAlive, home `~/agent-os-data/instapods` (kept OUTSIDE the repo checkout so a spawned agent's
+  `northwind` tenant runs under launchd as `com.agentos.northwind` (`~/Library/LaunchAgents/com.agentos.northwind.plist`,
+  KeepAlive, home `~/agent-os-data/northwind` (kept OUTSIDE the repo checkout so a spawned agent's
   parent-dir CLAUDE.md walk can't pick up this repo's own CLAUDE.md; new tenants go alongside as
   `~/agent-os-data/<slug>`), on :3010, fronted by `tailscale serve` http→3010): **"make it live" is
   `scripts/make-live.sh`** — it syncs the dedicated live checkout (`~/agent-os-live`) to `origin/main`,
   installs only if a lockfile moved, builds both bundles, gates on `npm run test:governance`, restarts
   via `launchctl kickstart` (never `pkill`), and verifies `/health` reports the version it just built,
   printing the rollback command if it doesn't. `--dry-run` shows what would deploy. The manual
-  equivalent is `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.instapods`; logs at
-  `~/agent-os-data/instapods/server.log`; load/unload with `launchctl load -w|unload <plist>`.)
+  equivalent is `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`; logs at
+  `~/agent-os-data/northwind/server.log`; load/unload with `launchctl load -w|unload <plist>`.)
 - **Agent-facing MCP tools (`src/memory/memory-mcp.ts` — `recall`/`remember`/`revise`/`forget`, the
   `kb_*` tools, `ask`/`check_inbox`/`report`/`update`/`publish`/`library_list`, `schedule`/`unschedule`,
   …; full list in `docs/agent-mcp-tools.md`):** changing a tool's SCHEMA needs `npm run build` **+ relaunch
@@ -477,8 +493,8 @@ in `src/types.ts` and `TeamStore.canRun()`.
 
 ## Production deployment (Linux / systemd)
 
-> The current deployment is the **Mac Mini over Tailscale** (`vikass-mac-mini.taild4dd35.ts.net`,
-> launchd `com.agentos.instapods` → `tailscale serve` http→3010; see the macOS section above and
+> The current deployment is the **Mac Mini over Tailscale** (`your-box.tailnet.ts.net`,
+> launchd `com.agentos.northwind` → `tailscale serve` http→3010; see the macOS section above and
 > `docs/process-per-tenant.md`). The Linux/systemd + nginx runbook below stays as the reference for a
 > hardened multi-user box — the code's prod behavior (the nginx `auth_request`, `X-Original-URI`,
 > `X-Forwarded-*` handling) is built around it. Substitute your own `<host>` for the example domain.
@@ -495,7 +511,7 @@ in `src/types.ts` and `TeamStore.canRun()`.
   location sets none of its own. Every location there sets `Upgrade`/`Connection`, so each must
   repeat `Host`/`X-Forwarded-*` explicitly — otherwise the app sees `Host: 127.0.0.1:3010` and mints
   wrong invite/webhook links. There's a comment in the config; keep it.
-- **nginx gotcha that bit the insta-ai deploy (2026-07-15) — conditional `Connection: upgrade`.** The
+- **nginx gotcha that bit the umbrella deploy (2026-07-15) — conditional `Connection: upgrade`.** The
   Node server both proxies WebSockets (the terminal) and serves plain HTTP through the SAME port, so a
   hardcoded `proxy_set_header Connection "upgrade";` makes **every non-WebSocket request 502** with
   `upstream prematurely closed connection while reading response header` (the server reads `Connection:
@@ -503,27 +519,27 @@ in `src/types.ts` and `TeamStore.canRun()`.
   `map $http_upgrade $connection_upgrade { default upgrade; "" close; }` + `proxy_set_header Connection
   $connection_upgrade;` so plain requests get `Connection: close`. Symptom is deceptive: `curl` straight
   to `127.0.0.1:3010` (and a raw `nc` HTTP/1.1 request) both return 200, only the nginx hop 502s.
-- **nginx gotcha that bit insta-ai again (2026-07-16) — a literal backslash before every `$variable`.**
+- **nginx gotcha that bit umbrella again (2026-07-16) — a literal backslash before every `$variable`.**
   If the site config was generated through a shell heredoc/`sed` that escaped the `$` and the backslash
   leaked onto disk (`proxy_set_header Host \$host;`, `Upgrade \$http_upgrade;`, …), nginx emits the value
-  **with a leading backslash** — `Host: \aos.ai.instawp.io` — and a bogus non-empty `Upgrade: \` on EVERY
+  **with a leading backslash** — `Host: \aos.example.com` — and a bogus non-empty `Upgrade: \` on EVERY
   request (empty `$http_upgrade` still yields `\`). The Node app tolerates the malformed `Host` so the
   console loads normally, but **ttyd/libwebsockets strictly validates it and 403s the WebSocket
   handshake**, so ONLY the browser terminal breaks: it renders **blank** and the access log shows
   `GET /terminal/ws → 403`, while sessions otherwise spawn fine (live tmux pane, working API — a spawn
   bug that isn't one). Nail it by tcpdumping the nginx→ttyd hop
-  (`tcpdump -i lo -A 'tcp port 3011'`): healthy shows `Host: aos.ai.instawp.io`, broken shows
-  `Host: \aos.ai.instawp.io` — the header-value backslash is the only diff (direct `curl` to ttyd with a
+  (`tcpdump -i lo -A 'tcp port 3011'`): healthy shows `Host: aos.example.com`, broken shows
+  `Host: \aos.example.com` — the header-value backslash is the only diff (direct `curl` to ttyd with a
   clean Host = 200, through nginx = 403). Fix = strip them: `sudo sed -i 's/\\$/$/g' <site.conf>` (leaves
   a legit no-backslash `$connection_upgrade` from the conf.d map untouched), `nginx -t`, `reload`. Verify
   `/terminal/`+cookie → 200, no-cookie → 401, WS handshake (`Upgrade` + `Sec-WebSocket-Protocol: tty`) →
-  101. Was isolated to insta-ai (that one config was hand-written differently); jump-server + expresstech
+  101. Was isolated to umbrella (that one config was hand-written differently); jump-server + initech
   configs were clean.
 - **Hardened-unit gotcha — `ReadWritePaths=` dirs must pre-exist.** Under `ProtectHome=read-only` the
   unit fails to start with `status=226/NAMESPACE` (`Failed to set up mount namespacing: <path>: No such
   file or directory`) if any carve-out path is missing. On a fresh box `~/.config`/`~/.cache`/`~/.claude`
   often don't exist yet — `mkdir -p` them before the first `systemctl start`.
-- **⚠ `ProtectHome=read-only` silently HANGS every interactive session on the trust dialog (insta-ai,
+- **⚠ `ProtectHome=read-only` silently HANGS every interactive session on the trust dialog (umbrella,
   2026-07-15).** `terminal/claude-launch.sh` pre-accepts Claude Code's one-time folder-trust dialog by
   seeding `hasTrustDialogAccepted` into **`~/.claude.json`** — a file in the HOME ROOT, written via
   atomic temp-file + rename, so it needs the home **directory** writable, not just `~/.claude`. With
@@ -546,7 +562,7 @@ in `src/types.ts` and `TeamStore.canRun()`.
 
 Several Claude sessions (and the fleet) edit this ONE checkout **concurrently** — two sessions writing
 the same files, or one running `git switch` under another, silently clobber each other (on 2026-07-07 a
-commit landed on the wrong branch this way). So the **primary checkout `/Users/vmini/Projects/agent-os`
+commit landed on the wrong branch this way). So the **primary checkout `~/Projects/agent-os`
 is kept on `main`, clean, and never edited directly** — it exists only to sync with origin, integrate
 finished work, and run the live service. **All development happens in per-session worktrees.**
 
@@ -604,7 +620,7 @@ drift and prints the one-line fix.
   as the human who owns the machine, so it loads their user-scope `settings.json` — `enabledPlugins` above
   all, which drags in a plugin's subagent types, skills, slash commands and **SessionStart prompt hooks**.
   Installing a plugin for your own use silently changes how every fleet agent behaves (live example: the
-  `caveman` plugin turning up as `caveman:cavecrew-reviewer(…)` subagent calls inside instapods runs, its
+  `caveman` plugin turning up as `caveman:cavecrew-reviewer(…)` subagent calls inside northwind runs, its
   prompt hook reshaping their output). `--settings` only ADDS a layer; it doesn't replace the user one.
   Fix is `AOS_CLAUDE_CONFIG_ISOLATION=1` (default off) → `CLAUDE_CONFIG_DIR=<tenant home>/claude-config`
   (`src/edge/config-isolation.ts`). Two things MUST ride along or it's worse than the leak:

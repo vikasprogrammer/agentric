@@ -5,7 +5,7 @@
  * human's user-scope config: `~/.claude/settings.json` (incl. `enabledPlugins`) and everything a plugin
  * brings with it — extra subagent types, SessionStart prompt hooks, skills, slash commands. That is a real
  * behavioural channel into every fleet agent that nobody declared: on the Mac Mini a plugin installed for
- * the owner's own sessions started showing up inside instapods runs as `caveman:cavecrew-reviewer(…)`
+ * the owner's own sessions started showing up inside northwind runs as `caveman:cavecrew-reviewer(…)`
  * subagent calls, and its SessionStart hook was rewriting fleet agents' output style. None of it passes
  * through the gateway, none of it is in an agent manifest, and it changes with whatever the owner installs
  * next.

@@ -8,7 +8,7 @@
  * credential dir), which used to move that file out from under the launcher's seed: the seed kept writing
  * `~/.claude.json` while claude read the account's copy. A rotated session therefore met the whole
  * first-run gauntlet — theme picker, then the folder-trust dialog, then whatever upsell is current — and
- * an unattended TUI has nobody to answer it, so it sat there until the reaper. Live on instawp,
+ * an unattended TUI has nobody to answer it, so it sat there until the reaper. Live on globex,
  * 2026-08-04, minutes after the first credential-dir account went in.
  *
  * Three things make a config dir "already onboarded":

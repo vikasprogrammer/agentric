@@ -3,9 +3,9 @@
  * prompt, or DMs a human, must not be derived from `success / sessions`.
  *
  * That ratio divides SELF-REPORTED successes by ALL sessions, so its complement is dominated by runs that
- * never called `report` at all. On live data (2026-08-08): instapods logged 334 `session.ended` with no
+ * never called `report` at all. On live data (2026-08-08): northwind logged 334 `session.ended` with no
  * outcome against 302 `session.reported` in 30 days, and ONE reported failure in 329 reports lifetime
- * (instawp: 6 in 1830). Both tenants computed ~55% "success" and broadcast it four ways — the injected
+ * (globex: 6 in 1830). Both tenants computed ~55% "success" and broadcast it four ways — the injected
  * guidance line, a config recommendation, the tenant-shared memory Insight, and a `success-drop` DM.
  *
  * These cases pin all four shut. They're the fixture for Step 1: when an outcome derived from observable

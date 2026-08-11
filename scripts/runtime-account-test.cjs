@@ -5,7 +5,7 @@
  *
  * Why this exists: claude honours CLAUDE_CODE_OAUTH_TOKEN in print mode only. The interactive TUI the OS
  * launches ignores it and runs on the box's own ~/.claude login — while the console still showed the pooled
- * account as selected. Every session on the instawp box drained one exhausted account for a day that way
+ * account as selected. Every session on the globex box drained one exhausted account for a day that way
  * (2026-08-04). The invariant here is: no selection the launcher can't honour, and no stamp without an
  * applied credential. Isolated home; no tmux, no network. */
 const fs = require('fs');

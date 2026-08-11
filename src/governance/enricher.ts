@@ -104,7 +104,7 @@ function scan(input: unknown): { text: string; entries: [string, unknown][] } {
  * Strip DATA payloads from a shell command before intent-matching, so text that is merely WRITTEN or
  * SENT (a PR body, a commit message, a heredoc'd file) can't be mistaken for an EXECUTED action. The
  * false positives this kills, seen in the wild: docs-bot's `gh pr create --body "…verified npm run build
- * against app.instawp.io…"` tripping a prodBuild guard, and `grep -rn "delete from"` reading as a
+ * against app.globex.io…"` tripping a prodBuild guard, and `grep -rn "delete from"` reading as a
  * destructive DELETE. We remove (a) the VALUES of message/body CLI flags (`-m`/`--body`/`--title`/…) and
  * (b) heredoc bodies fed to a FILE sink (`cat`/`tee`/`>` redirect). We deliberately KEEP interpreter
  * heredocs (`bash <<`, `python <<`) — those ARE executed, so a real destructive op inside one must still

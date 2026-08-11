@@ -6,16 +6,16 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=vikas
-Group=vikas
-WorkingDirectory=/home/vikas/tools/agent-os
+User=agent-os
+Group=agent-os
+WorkingDirectory=/home/agent-os/tools/agent-os
 Environment=NODE_ENV=production
 Environment=PORT=3010
 # node is installed via nvm on this host; point at the absolute binary.
 # If node is upgraded, update this path (and PATH below).
 # ~/.local/bin holds the `claude` CLI that claude-code agents launch.
-Environment=PATH=/home/vikas/.local/bin:/home/vikas/.nvm/versions/node/v22.22.0/bin:/usr/bin:/usr/local/bin
-ExecStart=/home/vikas/.nvm/versions/node/v22.22.0/bin/node dist/cli.js serve
+Environment=PATH=/home/agent-os/.local/bin:/home/agent-os/.nvm/versions/node/v22.22.0/bin:/usr/bin:/usr/local/bin
+ExecStart=/home/agent-os/.nvm/versions/node/v22.22.0/bin/node dist/cli.js serve
 ExecReload=/bin/kill -HUP $MAINPID
 # KillMode=process (NOT mixed/control-group): on stop/restart, systemd signals ONLY the main node
 # process and leaves the rest of the cgroup alone. Agent sessions run in a tmux server that daemonises
@@ -52,10 +52,10 @@ ProtectSystem=strict
 # on "Do you trust the files in this folder?". So we make the service user's home writable and re-lock
 # the sensitive bits below (ProtectSystem=strict still shields /usr, /etc, /boot). If you prefer
 # ProtectHome=read-only, you must additionally make the home root writable enough for ~/.claude.json.
-ReadWritePaths=/home/vikas
+ReadWritePaths=/home/agent-os
 ReadWritePaths=/tmp
 # Re-lock the real persistence vectors a compromised agent could abuse (SSH keys, shell rc).
-ReadOnlyPaths=/home/vikas/.ssh
+ReadOnlyPaths=/home/agent-os/.ssh
 # NOTE (fresh box): the ~/.claude dir must exist AND hold a completed login (`claude` → /login, or
 # ANTHROPIC_API_KEY) — otherwise every spawned session launches claude, hits "Not logged in", and dies
 # instantly (symptom: "sessions won't spawn"). Any ReadWritePaths/ReadOnlyPaths path must already exist

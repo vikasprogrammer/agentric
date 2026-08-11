@@ -38,7 +38,7 @@ console.log('\n\x1b[1m2) tick() end-to-end: catch-up under the concurrency cap\x
 const aos = loadAgentOS();
 const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
 const autos = new Automations(aos, tm);
-aos.settings.setMaxConcurrentSessions(8, 'tester'); // cap = 8 (matches the instawp box)
+aos.settings.setMaxConcurrentSessions(8, 'tester'); // cap = 8 (matches the globex box)
 
 const ID = 'au_test';
 aos.db.prepare("INSERT INTO automations (id, agent_id, name, type, mode, schedule, task, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)")

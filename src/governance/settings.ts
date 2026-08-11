@@ -1025,7 +1025,7 @@ export class SettingsStore {
    * Hours an INTERACTIVE session may sit blocked on an unanswered question/approval before the janitor
    * closes it anyway. The idle reaper deliberately skips a session that is waiting on a person — but
    * nothing expires an Inbox card, so that exemption had no floor: a session blocked on a question nobody
-   * answers waits for ever, holding a `claude` process and a concurrency-cap slot (live expresstech: 66 h
+   * answers waits for ever, holding a `claude` process and a concurrency-cap slot (live initech: 66 h
    * and counting on a question raised three days earlier). Past this ceiling the wait is an abandonment,
    * so the session is closed and its card cancelled — which is also what makes the card dismissable
    * instead of hanging in the Inbox. Measured from when the OLDEST pending card was raised.

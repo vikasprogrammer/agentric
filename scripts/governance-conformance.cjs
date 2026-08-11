@@ -81,7 +81,7 @@ const { resolveCapability } = require(path.join(ROOT, 'dist/capabilities/normali
 /**
  * The file-guard cases assert that a write under the SERVICE USER's home is denied, and
  * `sensitiveWriteRoots` resolves that home with `os.homedir()` at call time. A fixture can therefore
- * not hardcode a home path: three cases baked in `/Users/vmini/…`, so they passed on the author's Mac
+ * not hardcode a home path: three cases baked in `~/…`, so they passed on the author's Mac
  * and failed on every Linux box — CI included, which went red for weeks while the guard itself was
  * working correctly (verified on a Linux host: `$HOME/.ssh/authorized_keys` → deny). Fixtures write
  * `${HOME}` and it is expanded here, per platform, before enrichment.

@@ -1,6 +1,6 @@
 # Agentric — v1 (MVP) scope — re-planned for `main`
 
-The authoritative IN/OUT + milestone tracker for the first internal release (InstaWP's own team
+The authoritative IN/OUT + milestone tracker for the first internal release (Globex's own team
 dogfooding). This is a **re-plan**: it merges the frozen chat-channels v1 scope (developed on a
 separate branch) with what *this* repo (`main`) has actually shipped — memory, knowledge base,
 self-learning, multi-tenancy, and native Slack via Socket Mode. Graded against the code on

@@ -128,7 +128,7 @@ belong to.
     "secrets": [],                        // vault keys injected into the app env at launch
     "dependencies": "stdlib"              // "stdlib" | "vendored" | "npm" (npm = reviewed capability)
   },
-  "owner": "vikas@…",               // accountable human; default run-as for bg dispatch
+  "owner": "user@…",               // accountable human; default run-as for bg dispatch
   "createdBy": "agent:app-builder", // provenance of authorship
   "version": 3                       // bumped per revision (see §6)
 }

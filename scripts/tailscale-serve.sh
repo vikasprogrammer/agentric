@@ -9,10 +9,10 @@
 #   scripts/tailscale-serve.sh <port1> [port2] [port3]
 #   scripts/tailscale-serve.sh 3010 3020 3030
 #
-# Result (for vikass-mac-mini.taild4dd35.ts.net):
-#   https://vikass-mac-mini.taild4dd35.ts.net          → 127.0.0.1:3010   (tenant 1)
-#   https://vikass-mac-mini.taild4dd35.ts.net:8443     → 127.0.0.1:3020   (tenant 2)
-#   https://vikass-mac-mini.taild4dd35.ts.net:10000    → 127.0.0.1:3030   (tenant 3)
+# Result (for your-box.tailnet.ts.net):
+#   https://your-box.tailnet.ts.net          → 127.0.0.1:3010   (tenant 1)
+#   https://your-box.tailnet.ts.net:8443     → 127.0.0.1:3020   (tenant 2)
+#   https://your-box.tailnet.ts.net:10000    → 127.0.0.1:3030   (tenant 3)
 set -euo pipefail
 
 [ "$#" -ge 1 ] || { echo "usage: tailscale-serve.sh <port1> [port2] [port3]" >&2; exit 1; }

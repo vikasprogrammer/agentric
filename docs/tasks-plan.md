@@ -327,7 +327,7 @@ delegate whose run ends with the task still open strands the task in `doing` *an
 waiting forever — the delegation silently never completes. Nothing re-dispatches it either:
 `dispatchable()` only selects `status='todo'`, so once a task is `doing` with a dead session it is inert.
 
-Measured on the instawp tenant (30 days): **43 of 307 poke-on-done hand-offs (14%)** ended that way, and
+Measured on the globex tenant (30 days): **43 of 307 poke-on-done hand-offs (14%)** ended that way, and
 15 of the 16 stranded runs ended `outcome='unknown'` — the bucket the Insights reconcile tile deliberately
 never touches — so the manual tile could not have rescued one of them.
 
@@ -345,7 +345,7 @@ Bounded so switching it on can't stampede a backlog: once per dead *run* (`markS
 session id, so a re-dispatch that strands again is a fresh signal), ≤3 wake-ups per tick sharing the
 dispatcher's concurrency headroom, and nothing older than 3 days is ever woken — a cold stranding gets its
 marker silently so it can never fire later. A row skipped for budget stays **unmarked**, so the next tick
-still owes it. Replayed over the live instawp backlog: settles in 3 ticks (~60s), 8 callers woken, 1 task
+still owes it. Replayed over the live globex backlog: settles in 3 ticks (~60s), 8 callers woken, 1 task
 auto-closed, 12 cold ones marked silently.
 
 ### 3.5 Where the poke LANDS — the pane, never the status column
@@ -358,7 +358,7 @@ It used to choose on the session row's `status`, and **`status` is not liveness*
 `report` is stamped `done` (`reportSession`) while its claude keeps running — and that is the *normal*
 shape for a caller: hand off, report, keep working while the delegate finishes minutes later. Every one of
 those pokes took the resume lane and opened a second claude on a transcript the first still held. Live on
-instapods 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked through 16:34; its 16:31 poke spawned
+northwind 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked through 16:34; its 16:31 poke spawned
 `ses_441cec`, which died 28s later, and the caller — never woken — re-derived the delegate's result by
 shelling out to `gh pr view`.
 
@@ -377,7 +377,7 @@ had just approved the skill, and the dispatch pile-up guards called a busy agent
 the fallback for "dead" is almost always `claude --resume`, so a false negative costs a rival claude on a
 live transcript. So `isAlive` was deleted rather than fixed — with two predicates a nine-tenths-correct
 choice is always available, and this is the class of bug that recurs (the `resident` gate on
-`deliverToResident`, instapods 2026-08-06, was the previous instance).
+`deliverToResident`, northwind 2026-08-06, was the previous instance).
 
 Widening the pile-up guards is bounded, not open-ended: the idle sweep's DONE-ORPHAN branch exists exactly
 to reap an unattended `done` row still holding a pane, and a human forcing work through passes
@@ -517,7 +517,7 @@ The task↔session relation is one-to-**many** and always was: a task is the dur
 is one **attempt** at it. A crash re-dispatches, an agent `task_claim`s from its own run, a `@mention`
 spawns, a human takes over. Only the newest attempt was ever reachable — `tasks.last_session_id`, the
 pointer the pile-up guard and `task-reconcile` keep — so a task that failed twice before succeeding read as
-one clean run, and its cost read as the last attempt's rather than the sum. (Measured on the live instapods
+one clean run, and its cost read as the last attempt's rather than the sum. (Measured on the live northwind
 tenant: 7 tasks with more than one run, 5 of them with a bad earlier attempt, **$60.33** of attempt cost the
 console never linked.)
 
@@ -538,7 +538,7 @@ to any run is still gated by the terminal's own authz. Pinned by `scripts/task-r
 
 > Web-only changes: `cd web && npm run build`, reload — no server restart. But Tasks needs new `/api/*`
 > routes, so a full `npm run build` + server bounce is required regardless (locally
-> `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.instapods`).
+> `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`).
 
 ---
 

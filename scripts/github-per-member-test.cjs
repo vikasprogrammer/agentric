@@ -51,18 +51,18 @@ global.fetch = async (urlIn, opts = {}) => {
   if (/\/user\/installations\?/.test(url)) {
     return json(installState === 'none'
       ? { installations: [] }
-      : { installations: [{ id: 77, account: { login: 'InstaWP' }, app_slug: 'x' }] });
+      : { installations: [{ id: 77, account: { login: 'Globex' }, app_slug: 'x' }] });
   }
   if (/\/user\/installations\/\d+\/repositories/.test(url)) return json({ total_count: 5, repositories: [] });
   // Company-bot minter: list App installations, then mint an installation (bot) token.
-  if (url === 'https://api.github.com/app') return json({ slug: 'agent-os-instapods', name: 'Agentric', html_url: 'https://github.com/apps/agent-os-instapods' });
-  if (url === 'https://api.github.com/app/installations') return json([{ id: 555, account: { login: 'InstaWP' }, repository_selection: 'all' }]);
+  if (url === 'https://api.github.com/app') return json({ slug: 'agent-os-northwind', name: 'Agentric', html_url: 'https://github.com/apps/agent-os-northwind' });
+  if (url === 'https://api.github.com/app/installations') return json([{ id: 555, account: { login: 'Globex' }, repository_selection: 'all' }]);
   if (/\/app\/installations\/\d+\/access_tokens$/.test(url)) {
     botMintCount++;
     return json({ token: 'ghs_bot_' + botMintCount, expires_at: new Date(Date.now() + 3600_000).toISOString() });
   }
   if (/\/app-manifests\/[^/]+\/conversions$/.test(url)) {
-    return json({ id: 42, slug: 'agent-os-instapods', client_id: 'Iv1.manifest', client_secret: 'manifest-secret', html_url: 'https://github.com/apps/agent-os-instapods', webhook_secret: 'whsec_x', pem: '-----BEGIN-----' });
+    return json({ id: 42, slug: 'agent-os-northwind', client_id: 'Iv1.manifest', client_secret: 'manifest-secret', html_url: 'https://github.com/apps/agent-os-northwind', webhook_secret: 'whsec_x', pem: '-----BEGIN-----' });
   }
   // Everything else (the test's own calls to the local server) → the real network stack.
   return realFetch(urlIn, opts);
@@ -195,7 +195,7 @@ async function main() {
   assert(me.connected === true && me.login === 'octocat', '/me now reports connected as octocat');
   assert(!('token' in me), '/me never leaks the token');
   // Installed case: /me reports the real installation status (installed + repo count + accounts).
-  assert(me.install && me.install.installed === true && me.install.repos === 5 && me.install.accounts.includes('InstaWP'),
+  assert(me.install && me.install.installed === true && me.install.repos === 5 && me.install.accounts.includes('Globex'),
     '/me surfaces App-installation status (installed, repos, accounts)');
   // Authorized-but-not-installed: the trap. Same connected token, but no installation → installed:false.
   installState = 'none';
@@ -252,8 +252,8 @@ async function main() {
   r = await call('GET', `/api/github/manifest-callback?code=goodcode&state=${mState}`);
   assert(r.status === 302 && (r.headers.get('location') || '').includes('github=created'), 'valid manifest-callback redirects with github=created');
   const iv = await (await call('GET', '/api/settings/integrations')).json();
-  assert(iv.github.configured === true && iv.github.slug === 'agent-os-instapods', 'App creds + slug persisted from the conversion');
-  assert(iv.github.installUrl === 'https://github.com/apps/agent-os-instapods/installations/new', 'install-on-repos link derived from the slug');
+  assert(iv.github.configured === true && iv.github.slug === 'agent-os-northwind', 'App creds + slug persisted from the conversion');
+  assert(iv.github.installUrl === 'https://github.com/apps/agent-os-northwind/installations/new', 'install-on-repos link derived from the slug');
   assert(osx.settings.githubClientId() === 'Iv1.manifest' && gid.clientSecret() === 'manifest-secret', 'client id (setting) + secret (vault) stored');
 
   // A non-admin cannot create an App.
@@ -337,17 +337,17 @@ async function main() {
   gid2.save(ownerId, { token: 'gho_ni', login: 'octocat', connectedAt: Date.now() });
   installState = 'none';
   const meNI2 = await (await call('GET', '/api/github/me')).json();
-  assert(meNI2.install && meNI2.install.installed === false && (meNI2.installUrl || '').includes('/apps/agent-os-instapods/installations/new'),
+  assert(meNI2.install && meNI2.install.installed === false && (meNI2.installUrl || '').includes('/apps/agent-os-northwind/installations/new'),
     '/me self-heals the App slug → a real install link when authorized-but-not-installed');
   // Resolves even when ALREADY installed (so the admin "install on more repos" button is available too).
   osx.settings.setGithubAppSlug('', 'owner@test');
   installState = 'installed';
   const meInst = await (await call('GET', '/api/github/me')).json();
-  assert((meInst.installUrl || '').includes('/apps/agent-os-instapods/installations/new'), 'App slug resolves regardless of install state');
+  assert((meInst.installUrl || '').includes('/apps/agent-os-northwind/installations/new'), 'App slug resolves regardless of install state');
   // And the admin Creds view (GET /api/settings/integrations) self-heals + exposes the install button.
   osx.settings.setGithubAppSlug('', 'owner@test');
   const iv2 = await (await call('GET', '/api/settings/integrations')).json();
-  assert(iv2.github && (iv2.github.installUrl || '').includes('/apps/agent-os-instapods/installations/new'), 'Creds view resolves the slug → install button URL');
+  assert(iv2.github && (iv2.github.installUrl || '').includes('/apps/agent-os-northwind/installations/new'), 'Creds view resolves the slug → install button URL');
   // Manual slug: an admin can set it directly (bare slug OR a full github.com/apps/<slug> URL) when it
   // can't be auto-resolved — so the install button works even with no bot creds + no member install.
   gid2.setPrivateKey('', 'owner@test'); osx.settings.setGithubAppSlug('', 'owner@test'); // no bot creds, no slug

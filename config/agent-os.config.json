@@ -1,5 +1,5 @@
 {
-  "tenant": "instapods",
+  "tenant": "northwind",
   "baseDomain": "",
   "home": "data",
   "agentsDir": "config/agents",

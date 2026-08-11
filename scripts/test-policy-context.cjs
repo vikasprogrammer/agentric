@@ -15,18 +15,18 @@ const ok = (cond, label) => {
 };
 
 // Match → no warning.
-ok(policyContextMismatch('billing-ops', 'instawp@v1', 'instawp@v1') === null, 'declared === enforced → null');
+ok(policyContextMismatch('billing-ops', 'globex@v1', 'globex@v1') === null, 'declared === enforced → null');
 
 // No context declared → no warning (nothing to reconcile).
-ok(policyContextMismatch('a', undefined, 'instawp@v1') === null, 'undefined context → null');
-ok(policyContextMismatch('a', '', 'instawp@v1') === null, 'empty context → null');
+ok(policyContextMismatch('a', undefined, 'globex@v1') === null, 'undefined context → null');
+ok(policyContextMismatch('a', '', 'globex@v1') === null, 'empty context → null');
 
 // Mismatch → a warning that names the agent, the declared context, and the enforced ruleset.
-const w = policyContextMismatch('billing-ops', 'default@v2', 'instawp@v1');
+const w = policyContextMismatch('billing-ops', 'default@v2', 'globex@v1');
 ok(typeof w === 'string' && w.length > 0, 'mismatch → non-empty warning');
 ok(w.includes('billing-ops'), 'warning names the agent');
 ok(w.includes('default@v2'), 'warning names the declared context');
-ok(w.includes('instawp@v1'), 'warning names the enforced ruleset');
+ok(w.includes('globex@v1'), 'warning names the enforced ruleset');
 ok(/NOT "default@v2"/.test(w), 'warning states which policy actually governs');
 
 console.log(`\npolicy-context: ${pass}/8 checks passed`);

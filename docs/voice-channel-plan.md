@@ -132,7 +132,7 @@ Ordered so each ships standalone and the risky one is last (and optional).
 - **Unmapped caller → refuse**, do not fall back to the company identity. Slack falls back via
   profile email and Discord via nothing; for voice the fallback must be *deny*, because the identity
   is the weakest of the four.
-- **Done when:** a linked member calls, says "ask the pod troubleshooter why instapods is slow", and
+- **Done when:** a linked member calls, says "ask the pod troubleshooter why northwind is slow", and
   gets a spoken answer from a fully governed run attributed to them.
 
 ### Slice 2 — answer questions by voice

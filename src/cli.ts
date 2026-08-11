@@ -189,7 +189,7 @@ function tenants(rest: string[]): void {
   const store = new TenantStore(path.join(controlHome(baseDir, cfg), 'control.db'));
   const port = Number(process.env.PORT) || 3010;
   // Resolve the default/apex slug the SAME way TenantRegistry does (AGENT_OS_TENANT overrides the config
-  // `tenant`). In process-per-tenant with an override (e.g. AGENT_OS_TENANT=expresstech), the apex is the
+  // `tenant`). In process-per-tenant with an override (e.g. AGENT_OS_TENANT=initech), the apex is the
   // override, not cfg.tenant — so a stale cfg-default tenant left in the control plane must be removable,
   // and the real apex must be the one that's guarded. Comparing against cfg.tenant alone got this backwards.
   const defaultTenant = process.env.AGENT_OS_TENANT || cfg.tenant;

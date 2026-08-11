@@ -905,7 +905,7 @@ export class TerminalManager {
    * SELECT column list for a sessions query. `undefined` clip → `*` (verbatim, full `task`, for callers
    * that read the whole prompt — e.g. `sessionsForAgent`). A numeric clip → every column verbatim EXCEPT
    * `task`, which becomes `substr(task,1,clip+1)` so the LIST path stops materialising the full prompt
-   * (up to ~53 KB/row on instawp; 2.1 MB → 0.2 MB per poll, ~33% off the query) out of SQLite just for
+   * (up to ~53 KB/row on globex; 2.1 MB → 0.2 MB per poll, ~33% off the query) out of SQLite just for
    * `server.ts` to clip it to 240. The `+1` lets the downstream `clipText()` still detect truncation and
    * keep the ellipsis, so the wire output is byte-identical.
    */
@@ -1707,7 +1707,7 @@ export class TerminalManager {
    * Run `fn` with the per-row member/automation lookups memoized.
    *
    * The row helpers below (`spawnedByLabel`, `sourceKind`, `runAsLabel`, `canViewSpawn`) each re-query
-   * SQLite per row. That's fine for one row and quadratic-feeling for a list: on the live instawp tenant
+   * SQLite per row. That's fine for one row and quadratic-feeling for a list: on the live globex tenant
    * `listSessions` walks 950 sessions and fired ~1900 point lookups to resolve a grand total of **14
    * members and 40 automations** — the lookup tables are tiny and bounded, the row count is not. Loading
    * each table once per call replaces all of them with two queries, and was over half of `listSessions`'
@@ -1865,7 +1865,7 @@ export class TerminalManager {
    * Every one of its ten call sites was wrong in the same direction — it declares a session with a live
    * REPL dead — and the failures were the expensive kind, because the fallback for "dead" is almost
    * always `claude --resume`, i.e. a SECOND claude on a transcript the first still holds. Live on
-   * instapods 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked until 16:34; its 16:31 poke-back
+   * northwind 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked until 16:34; its 16:31 poke-back
    * saw `done`, skipped the live pane, and spawned `ses_441cec`, which died 28s later — the poke was
    * never seen. So the two were folded into this one; don't reintroduce a status-based variant.
    *
@@ -2486,7 +2486,7 @@ export class TerminalManager {
     // Any LIVE claude pane can be typed into — `resident` marks a warm chat session, not "reachable".
     // Gating on it made every unattended (task/automation) run unreachable: a task-discussion HOLD could
     // not reach the agent executing the task, and `continueTaskThread` fell through to spawning a SECOND
-    // agent on the same task while the first kept working. Observed live on instapods 2026-08-06
+    // agent on the same task while the first kept working. Observed live on northwind 2026-08-06
     // (tsk_67de2dfe): the stand-down went to a fresh run, the real one ran on for 25+ minutes.
     // Liveness is the PANE, not the row's `status` — the same lesson one layer up. An agent that called
     // `report` reads `done` with its claude still running, and gating on `status = 'running'` made those
@@ -2883,7 +2883,7 @@ export class TerminalManager {
     // Hard runtime ceiling for a headless run (stuck-mid-turn backstop, Settings → Runtime; default 24h). A
     // headless run that hangs mid-turn never beacons a turn-end, so `last_activity` stays NULL — invisible to
     // the idle-straggler rule below, which requires a beacon. Without this it lingers for DAYS holding a
-    // ~500MB claude process + a cap slot (confirmed on instawp: unattended runs stuck at 60h+). `0` disables.
+    // ~500MB claude process + a cap slot (confirmed on globex: unattended runs stuck at 60h+). `0` disables.
     const maxHours = this.os.settings.unattendedMaxHours();
     const maxAgeCutoff = maxHours > 0 ? Date.now() - maxHours * 3600_000 : null;
     // No-progress backstop (fast net for a run that never STARTED — usage-limit / trust-hang / lost prompt).
@@ -2936,7 +2936,7 @@ export class TerminalManager {
         // flips to 'done' — while the approval/question row stays `pending` forever, because nothing expires
         // an unanswered card. So the block-skip fired on a run whose turn was already OVER, markTurnIdle had
         // already bailed on the same check, and neither force-reap could reach it (both require
-        // status='running'). Net effect on live instapods (2026-08): five `done` rows still holding a live
+        // status='running'). Net effect on live northwind (2026-08): five `done` rows still holding a live
         // tmux pane + ~430MB of `claude` each, the oldest 3 days old, pinned open by cards nobody could
         // deliver an answer to. A finished run cannot consume one — reap it and let teardownUnattended cancel
         // the card, which is what makes it dismissable in the Inbox instead of hanging there.
@@ -2958,7 +2958,7 @@ export class TerminalManager {
     //
     // BLOCKED CEILING. "No pending human block" was an unconditional exemption, and that is the same
     // mistake the done-orphan leak was: nothing expires an unanswered card, so a session waiting on one
-    // waits FOREVER. Live expresstech: a `support` session blocked on a question asked 2026-07-31 was
+    // waits FOREVER. Live initech: a `support` session blocked on a question asked 2026-07-31 was
     // still holding its pane 66 h later, with two more questions unanswered since 07-28. Past
     // `blockedMaxHours` (default 72 h — the age at which `escalateStalePrompts` already stops nagging and
     // treats a prompt as dead) the wait is not a wait, it's an abandonment, so reap and cancel the card.
@@ -3024,7 +3024,7 @@ export class TerminalManager {
     // This clear used to live inside the `resident` branch only, which made `busy_since` a ONE-WAY LATCH
     // for every other kind of run: a member's own interactive session returned at `!r.headless` before
     // reaching it, so the flag stamped at spawn was never cleared and the console showed that session as
-    // "working" forever (live instapods: 24 of 25 recent rows, `done` and `stopped` ones included, still
+    // "working" forever (live northwind: 24 of 25 recent rows, `done` and `stopped` ones included, still
     // carried a `busy_since` hours old). A turn that has ended is not busy — the lane only decides what
     // happens to the PANE, never whether the flag is honest.
     this.clearTurnBusy(sessionId);

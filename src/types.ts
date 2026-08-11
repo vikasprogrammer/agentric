@@ -304,7 +304,7 @@ export type ActionVerb =
 /** What the action acts ON — the object a human actually cares about (a host, a path, an amount). */
 export interface BriefTarget {
   kind: 'file' | 'host' | 'db' | 'resource' | 'money' | 'recipient' | 'command' | 'unknown';
-  /** Human label: "deploy.yml", "5.135.136.192 (ssh)", "$42.00", "3 rows". */
+  /** Human label: "deploy.yml", "198.51.100.42 (ssh)", "$42.00", "3 rows". */
   label: string;
   /** When kind === 'host' — the bare egress host, the handle host-trust learning keys on (phase 2). */
   host?: string;
@@ -318,7 +318,7 @@ export interface BriefTarget {
 /** A human-legible account of a single gated effect. Every field is computable from the enriched
  *  attempt + decision — no I/O, no model call. See {@link ActionAttempt}, {@link Decision}. */
 export interface DecisionBrief {
-  /** One line: "Run a deploy-status check against InstaWP/docs on GitHub." */
+  /** One line: "Run a deploy-status check against Globex/docs on GitHub." */
   headline: string;
   verb: ActionVerb;
   target: BriefTarget;
@@ -1187,7 +1187,7 @@ export interface CodingRuntimeSpec {
    * credential env var is NOT the same as that credential working: `claude` honours
    * `CLAUDE_CODE_OAUTH_TOKEN` in print mode (`claude -p`) only. In the TUI it ignores the env token and
    * silently runs on whatever `~/.claude/.credentials.json` holds — while its splash still prints
-   * "Claude API", so the substitution looks like it worked. Verified on the instawp box 2026-08-04 against a
+   * "Claude API", so the substitution looks like it worked. Verified on the globex box 2026-08-04 against a
    * pool token at weekly 9% and a box account at weekly 100%: print mode answered, the TUI refused with the
    * BOX account's limit + reset time, and token-plus-empty-config-dir dropped to the login picker (so there
    * is no env-token auth path at all). `pick()` filters on this, so an account of an unlisted kind is never
@@ -1483,7 +1483,7 @@ export function sanitizeAppDomains(input: unknown): string[] {
  * works this way (`'examplePrompts' in b ? … : ag.examplePrompts`); the tuning fields did not, so a body
  * carrying one knob silently cleared the rest — a `{verbosity:'terse'}` save unpinned an agent's model
  * and dropped it onto the fleet default, with nothing in the response to say so. Found live on the
- * instapods consolidator.
+ * northwind consolidator.
  *
  * "Clear to inherit" still works, and is now explicit rather than a side effect of omission: send the
  * key as `''`. Callers that render a whole form (the console's runtime card) should send every field

@@ -92,10 +92,10 @@ A **Run** is the OS's "process." It is what your `JobStatus` is today, plus the 
 ```jsonc
 {
   "run_id": "uuid",
-  "tenant": "instawp",                  // NEW: brand isolation
+  "tenant": "globex",                   // NEW: brand isolation
   "agent": { "id": "ceo", "version": "1.4.0" },
   "trigger": { "type": "cron|webhook|slack|email|agent", "ref": "...", "idempotency_key": "..." },
-  "principal": "svc-ceo@instawp",       // NEW: identity the run acts as
+  "principal": "svc-ceo@globex",        // NEW: identity the run acts as
   "inputs": { "...": "..." },
   "budget": { "usd_cap": 2.00, "token_cap": 400000, "wall_clock_ms": 1800000 }, // NEW
   "policy_context": "ceo@v7",           // NEW: which ruleset bound this run
@@ -290,7 +290,7 @@ keep the **content**.
 | Approvals workflow engine | Routing (who is "the head", who is "you") |
 | Budget accounting + hard-stop | Budget numbers |
 | Audit event store + schema | The audit data |
-| Plugin **interfaces** for Connectors/Tools/Triggers/Skills | The connector **implementations** (InstaWP DBs, ClickUp, Mailgun) |
+| Plugin **interfaces** for Connectors/Tools/Triggers/Skills | The connector **implementations** (Globex DBs, ClickUp, Mailgun) |
 | Console framework | Brand dashboards, KB content, brand voice |
 | Identity + Secrets interface | The actual service accounts + vault contents |
 

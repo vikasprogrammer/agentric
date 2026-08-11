@@ -58,7 +58,7 @@ import { Paths, resolvePaths } from './home';
 
 export interface AgentOSOptions {
   tenant: string;
-  /** Optional human label for the tenant (e.g. "Instapods"); defaults to `tenant`. Display only. */
+  /** Optional human label for the tenant (e.g. "Northwind"); defaults to `tenant`. Display only. */
   tenantName?: string;
   policy: PolicyEngine;
   /** Durable audit dir; pass null to keep audit in-memory only (tests/demo). */
