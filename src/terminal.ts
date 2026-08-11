@@ -37,6 +37,7 @@ import { VendorError, retryableStatus, timedFetch, withRetry, vendorErrorInfo } 
 import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVideoBackend, videoBackend, VideoBackend } from './edge/video-gen';
 import { understandMedia } from './edge/media-understand';
 import { readSessionCost } from './edge/session-cost';
+import { readTranscriptEnd } from './edge/outcome';
 import { TERSE_OUTPUT_BRIEF } from './edge/verbosity';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
@@ -3353,7 +3354,26 @@ export class TerminalManager {
       const row = this.db.prepare('SELECT agent, runtime_account FROM term_sessions WHERE id = ?')
         .get<{ agent: string; runtime_account: string | null }>(sessionId);
       if (!row) return;
-      const text = this.backend.capturePane(space, tmux);
+      // The pane is the fast path, but it is VOLATILE — a run killed on its first API call has usually
+      // already lost its pane by teardown, and `capturePane` then returns nothing. Measured on the live
+      // corpus: of 31 runs the derived outcome identifies as quota/auth deaths (from the
+      // transcript, which is durable), this detector had fired on **3**, and the pool recorded ZERO
+      // `runtime.account.limited` / `.invalid` events in 30 days. So the remediation machinery below was
+      // right and simply wasn't being reached. Fall back to the transcript tail, which says the same thing
+      // and outlives the pane. See docs/insights-revisit.md Step 2.
+      let text = this.backend.capturePane(space, tmux);
+      let via = 'pane';
+      if (!text || !(TerminalManager.USAGE_LIMIT_RE.test(text) || TerminalManager.AUTH_FAIL_RE.test(text))) {
+        const claudeId = this.db.prepare('SELECT claude_session_id FROM term_sessions WHERE id = ?')
+          .get<{ claude_session_id: string | null }>(sessionId)?.claude_session_id;
+        const end = claudeId ? readTranscriptEnd(claudeId) : undefined;
+        if (end?.died) {
+          // Hand the classifier the phrase it expects rather than re-deriving here, so the two sources
+          // can never disagree about what counts as a limit vs a bad token.
+          text = end.deathKind === 'auth' ? 'oauth token expired' : 'hit your weekly limit';
+          via = 'transcript';
+        }
+      }
       if (!text) return;
       const usageLimited = TerminalManager.USAGE_LIMIT_RE.test(text);
       // A usage-limit banner is checked first — it's the benign, self-healing case; an auth failure is only
@@ -3365,19 +3385,19 @@ export class TerminalManager {
       if (authFailed) {
         if (row.runtime_account) {
           this.os.runtimeAccounts.markInvalid(runtime, row.runtime_account, 'auto-disabled: a run authenticated with this token and was rejected (401)');
-          this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: row.runtime_account });
+          this.audit(sessionId, 'system', 'runtime.account.invalid', { runtime, account: row.runtime_account, via });
         } else {
-          this.audit(sessionId, 'system', 'runtime.auth_failed', { runtime });
+          this.audit(sessionId, 'system', 'runtime.auth_failed', { runtime, via });
         }
         return;
       }
       const until = this.parseLimitReset(text) ?? Date.now() + 60 * 60_000; // 1h fallback keeps it parked but self-heals
       if (row.runtime_account) {
         this.os.runtimeAccounts.markLimited(runtime, row.runtime_account, until);
-        this.audit(sessionId, 'system', 'runtime.account.limited', { runtime, account: row.runtime_account, until });
+        this.audit(sessionId, 'system', 'runtime.account.limited', { runtime, account: row.runtime_account, until, via });
       } else {
         // No pool account → the box's single default hit its limit; surface it (an operator adds accounts to rotate).
-        this.audit(sessionId, 'system', 'runtime.usage_limited', { runtime, until });
+        this.audit(sessionId, 'system', 'runtime.usage_limited', { runtime, until, via });
       }
     } catch { /* detection is best-effort — never block teardown */ }
   }

@@ -10,6 +10,7 @@
  */
 import type { AgentOS } from '../kernel';
 import { buildInsights, RECENT_DAYS } from './insights';
+import { deriveRunOutcomes } from './outcome';
 
 const COOLDOWN_MS = 3 * 24 * 3_600_000; // don't re-alert the same key within 3 days
 /** Clean work runs since the last crash that count as "recovered" — enough to not be a lucky single pass,
@@ -90,6 +91,9 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
     }
   }
 
+  // Runs the RUNTIME killed — quota exhausted or a dead token — rather than work that failed.
+  for (const d of runtimeDeaths(os, now)) out.push(d);
+
   // Approvals piling up on a human.
   const oldestH = ins.friction.oldestPendingAgeMs ? Math.round(ins.friction.oldestPendingAgeMs / 3_600_000) : 0;
   if (ins.friction.pendingApprovals >= 3 && oldestH >= 4) {
@@ -102,6 +106,69 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
     });
   }
 
+  return out;
+}
+
+/** How far back a death still counts as "happening". Deaths arrive in BURSTS — on the live corpus 22 of
+ *  31 landed inside two days — so a 30-day window would keep shouting for a month about a token someone
+ *  replaced on day three. */
+const DEATH_WINDOW_MS = 48 * 3_600_000;
+/** …and at least one must be this recent, or the condition is over. */
+const DEATH_FRESH_MS = 12 * 3_600_000;
+/** Below this it's noise: one expired token mid-run is normal and the pool already rotates around it. */
+const DEATH_MIN = 3;
+
+/**
+ * **Runs the runtime killed** — the fleet's most common real failure and, until the derived outcome
+ * existed, an invisible one: the agent cannot report "I hit my quota" because the agent is what stopped
+ * existing, so these runs looked like silent successes.
+ *
+ * Grouped by the **runtime account** rather than by agent, because that is what a human acts on. The
+ * per-agent view is misleading here: on the live corpus the top "offender" was simply the automation that
+ * runs every two hours, while 23 of 31 deaths traced to one shared account.
+ *
+ * Present-tense by construction (the standing lesson from `alert-staleness-test.cjs`): a burst two weeks
+ * ago is over, and a `died-early`/`runtime-death` count over a long window would keep re-firing about it.
+ */
+function runtimeDeaths(os: AgentOS, now: number): InsightAlert[] {
+  const runs = deriveRunOutcomes(os, { since: now - DEATH_WINDOW_MS, until: now })
+    .filter((r) => r.basis === 'runtime-death' || r.basis === 'died-early');
+  if (!runs.length) return [];
+
+  const rows = os.db
+    .prepare(`SELECT id, runtime_account FROM term_sessions WHERE id IN (${runs.map(() => '?').join(',')})`)
+    .all<{ id: string; runtime_account: string | null }>(...runs.map((r) => r.runId));
+  const acctOf = new Map(rows.map((r) => [r.id, r.runtime_account]));
+
+  const groups = new Map<string, { n: number; last: number; agents: Set<string> }>();
+  for (const r of runs) {
+    // No pool account → the box's own credentials. Still worth saying: it is the same outage, and the
+    // fix ("add accounts so the fleet can rotate") is different from "replace this one".
+    const key = acctOf.get(r.runId) ?? '(box default)';
+    const g = groups.get(key) ?? { n: 0, last: 0, agents: new Set<string>() };
+    g.n++; g.last = Math.max(g.last, r.at); g.agents.add(r.agent);
+    groups.set(key, g);
+  }
+
+  const out: InsightAlert[] = [];
+  for (const [account, g] of groups) {
+    if (g.n < DEATH_MIN || now - g.last > DEATH_FRESH_MS) continue;
+    const pool = account !== '(box default)';
+    const who = [...g.agents].slice(0, 4).join(', ') + (g.agents.size > 4 ? `, +${g.agents.size - 4} more` : '');
+    out.push({
+      key: `runtime-deaths:${account}`,
+      severity: 'high',
+      title: `${g.n} runs killed by ${pool ? `the “${account}” account` : 'the box credentials'} in 48h`,
+      body:
+        `${g.n} unattended runs were killed by the runtime — a usage limit or an expired token — not by the work failing. ` +
+        `Affected: ${who}. These runs did nothing and reported nothing, so they look like silence rather than failure.\n\n` +
+        (pool
+          ? `The pool parks a limited account automatically and drops one whose token is dead, so this clears itself IF another account can take the load. ${g.n} deaths in 48h means it could not — re-link “${account}” or add another account so the fleet can rotate.`
+          : `There is no rotation pool on this box, so every agent shares one set of credentials and they all stop together. Adding a second runtime account is the fix.`),
+      route: 'settings',
+      detail: 'runtime',
+    });
+  }
   return out;
 }
 

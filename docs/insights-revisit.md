@@ -352,7 +352,46 @@ no verdict. They are the most interesting runs in the corpus, and no observable 
 > they produced **5 of the 11 out-of-sample errors**. Measuring the residual by its *share* rather than by
 > its share *of the mistakes* is the error. The hook is back in scope.
 
-### Step 2 — one signal, one card, one action
+### Step 2 — one signal, one card, one action ✅ shipped v0.337.0 (quota/auth deaths)
+
+The signal chosen was **runs the runtime killed** rather than repeat agent crashes: it is what the new
+outcome kept surfacing, and it is costing runs now. Building it turned up a bug worth more than the card.
+
+**The OS already knew how to fix this.** `detectUsageLimit` has always run at teardown, parking an
+exhausted account (`markLimited`, self-heals at the reset) and retiring a dead token (`markInvalid`), so
+the pool rotates away from it. It reads the **tmux pane** — which a run killed on its first API call has
+usually already lost. Measured on the live corpus:
+
+| | |
+|---|---|
+| quota/auth deaths the derived outcome finds (from the transcript) | **31** |
+| of those the pane-scan detector fired on | **3** |
+| `runtime.account.limited` / `.invalid` events in 30 days | **0** |
+
+So remediation was right and simply wasn't being reached, ~90% of the time. Step 2 feeds the same
+machinery from the **durable** source: when the pane says nothing, read the transcript tail. The
+`usage` vs `auth` split is preserved end to end, and **auth wins a tie** — both banners often appear
+together, and parking a dead token is the dangerous mistake (it "self-heals" at a reset that will never
+fix it, then rejoins the pool still broken). Every detection audit now carries `via: 'pane' | 'transcript'`,
+so the coverage this claims to fix is itself measurable.
+
+**The card.** Grouped by **runtime account**, not by agent — that is what a human acts on, and the
+per-agent view misleads: the top "offender" was simply the automation that runs every two hours, while
+23 of 31 deaths traced to one shared account. Fires at ≥3 deaths in 48h with one in the last 12h;
+different body when there is no pool account at all (add rotation, rather than re-link this one).
+
+Present tense by construction — deaths arrive in **bursts** (22 of 31 inside two days), so a long window
+would re-alert for a month about a token replaced on day three. Verified against the live corpus: the
+card fires when evaluated during the burst (`19 runs killed by the "…" account in 48h`) and is silent
+when evaluated today.
+
+- **Pinned:** `scripts/runtime-death-alert-test.cjs` (13 assertions, in `test:governance`).
+- **Not built:** buttons on the card. It deep-links to Settings → Runtime, where the actions already
+  live; adding a bespoke action API before knowing whether anyone clicks through is the mistake this
+  rebuild exists to stop. Whether the click-through happens is Step 4's measurement, and the
+  `via` stamp plus `runtime.account.*` audits are enough to answer it without new plumbing.
+
+### Step 2 (original plan)
 
 Pick the single highest-evidence problem in the live data — **repeat agent crashes** (§2b) — and
 build the whole vertical for it only:
