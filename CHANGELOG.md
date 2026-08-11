@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.335.4] — 2026-08-11
+### Fixed
+- **The two remaining external image links are committed assets now.** `docs/ARCHITECTURE.md` embedded
+  the architecture diagram from a CleanShot share URL — which serves an HTML page, so the image was
+  broken on GitHub — and the README's "Full size" link pointed at another one. The diagram lives at
+  `docs/assets/architecture.jpg`; the README link is gone (the screenshot beside it is already local).
+  Also the last third-party host in a tracked file, ahead of the history rewrite.
+
 ## [0.335.3] — 2026-08-11
 ### Changed
 - **Public-repo hygiene: no real infrastructure in a tracked file.** The repo is public, and it named
