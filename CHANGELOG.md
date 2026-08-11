@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.335.5] — 2026-08-11
+### Changed
+- **CLAUDE.md imports the maintainer's decoder ring instead of expecting it to be read by hand.** The
+  public manual documents that the real tenants/hosts/IPs live in `~/.claude/agentric-fleet.local.md`,
+  but nothing loaded that file, so a session had the placeholders and not the mapping. It's an
+  `@~/.claude/agentric-fleet.local.md` import now: resolved on a maintainer's machine, a no-op missing
+  file on anyone else's clone. The manual itself stays committed and placeholder-only — the alternative
+  (gitignoring CLAUDE.md) would strip the repo's operating manual from every fresh clone while leaving
+  it in history anyway.
+
 ## [0.335.4] — 2026-08-11
 ### Fixed
 - **The two remaining external image links are committed assets now.** `docs/ARCHITECTURE.md` embedded
