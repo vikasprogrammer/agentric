@@ -78,7 +78,7 @@ console.log('\x1b[1m\n2) no pane → cold in-place resume, still resident\x1b[0m
   assert(spawned.length === before, 'launch deferred off the response path');
   // …and the session must still read as live meanwhile, or a fast second message would launch a rival
   // claude onto the same transcript.
-  assert(tm.isAlive(id) === true, 'reported live while its launch is in flight');
+  assert(tm.reachable(id) === true, 'reported live while its launch is in flight');
 }
 
 console.log('\x1b[1m\n3) a report-ended chat (done row, live pane) still takes a warm turn\x1b[0m');

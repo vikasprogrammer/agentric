@@ -647,7 +647,7 @@ export class Automations {
    * the no-pile-ups rule for cron/webhook; "Run now" from the console passes guard: false.
    */
   fire(a: Automation, opts: { guard: boolean; extra?: string; runAs?: string; mode?: ExecMode; slack?: { channel: string; threadTs: string }; discord?: { channel: string; messageId: string }; telegram?: { chat: string; messageThreadId?: string; messageId: string }; clickup?: { taskId: string; commentId: string }; resumeClaudeId?: string } = { guard: true }): FireResult {
-    if (opts.guard && a.lastSessionId && this.tm.isAlive(a.lastSessionId)) {
+    if (opts.guard && a.lastSessionId && this.tm.reachable(a.lastSessionId)) {
       return { ok: false, reason: 'previous session still running' };
     }
     // Don't spawn a scheduled/triggered run into an exhausted quota — it would just hit the usage limit and
@@ -704,7 +704,7 @@ export class Automations {
     const agentId = (t.assignee || '').startsWith('agent:') ? t.assignee!.slice('agent:'.length) : '';
     if (!agentId) return { ok: false, reason: 'task has no agent assignee' };
     if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown agent: ${agentId}` };
-    if (guard && t.lastSessionId && this.tm.isAlive(t.lastSessionId)) {
+    if (guard && t.lastSessionId && this.tm.reachable(t.lastSessionId)) {
       return { ok: false, reason: 'a session is already working this task' };
     }
     // Defer a guarded (scheduler-driven) dispatch when the agent's runtime pool is exhausted — retried next
@@ -1199,7 +1199,7 @@ export class Automations {
       // Delivery failed but the run is STILL WORKING: spawning a second agent onto the same task is how a
       // "stand down" ends up executed by a fresh run while the original keeps building (instapods
       // 2026-08-06). Report the failure instead of duplicating the worker.
-      if (this.tm.isAlive(boundId)) { emit('undeliverable', boundId); return { status: 'none', sessionId: boundId }; }
+      if (this.tm.reachable(boundId)) { emit('undeliverable', boundId); return { status: 'none', sessionId: boundId }; }
     }
     const seed = buildTaskPrompt({ id: t.id, title: t.title, body: t.body, criteria: t.criteria }) +
       `\n\nA teammate pulled you into the discussion:\n${authorLabel}: ${text}\n\nReply in the discussion with task_say({ id: "${t.id}", message: "…" }).`;
@@ -1784,12 +1784,16 @@ export class Automations {
   private dispatchTasks(budget: number = Infinity): void {
     try {
       if (budget <= 0) return; // whole-box concurrency cap already reached — dispatch nothing this tick
-      // Agents already running a task session (their `task:<id>` spawn is still alive) — skip this tick.
+      // Agents already running a task session (their `task:<id>` spawn still has a live claude) — skip this
+      // tick. Liveness is the PANE (`reachable`), not the row: a task run that called `report` and is still
+      // wrapping up holds the agent's workspace, and stacking a second session on it is the pile-up this
+      // guard exists to prevent. Bounded — the idle sweep's DONE-ORPHAN branch reaps exactly these panes,
+      // and a human forcing a dispatch passes `guard: false`.
       const busy = new Set<string>();
       for (const r of this.db
-        .prepare("SELECT id, agent FROM term_sessions WHERE spawned_by LIKE 'task:%' AND status = 'running'")
+        .prepare("SELECT id, agent FROM term_sessions WHERE spawned_by LIKE 'task:%' AND status IN ('running','done')")
         .all<{ id: string; agent: string }>()) {
-        if (this.tm.isAlive(r.id)) busy.add(r.agent);
+        if (this.tm.reachable(r.id)) busy.add(r.agent);
       }
       for (const t of this.os.tasks.dispatchable(this.os.tenant)) {
         if (budget <= 0) break; // hit the concurrency cap mid-drain — the rest retry next tick

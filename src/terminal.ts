@@ -750,7 +750,7 @@ export class TerminalManager {
   private readonly reliability = new ReliabilityMonitor();
   private readonly reliabilityOn = process.env.AOS_RELIABILITY !== '0';
   /** Sessions whose runtime launch is SCHEDULED but whose pane doesn't exist yet (see
-   *  `launchAgentRuntime`). `isAlive` counts them as live so the window between "row written" and
+   *  `launchAgentRuntime`). `reachable` counts them as live so the window between "row written" and
    *  "tmux up" can't be read as "nothing is running" — which would let a second turn launch a
    *  competing claude on the same transcript. */
   private readonly launching = new Set<string>();
@@ -1844,34 +1844,26 @@ export class TerminalManager {
     return { available: true, totalRss: sessions.reduce((n, s) => n + s.rss, 0), sessions };
   }
 
-  /** Is this session's tmux shell still alive? (The automations guard against pile-ups.) */
-  isAlive(sessionId: string): boolean {
-    // A launch that is scheduled but hasn't reached tmux yet IS a live run — see `launching`.
-    if (this.launching.has(sessionId)) return true;
-    const r = this.db.prepare('SELECT tmux, status FROM term_sessions WHERE id = ?').get<{ tmux: string; status: string }>(sessionId);
-    if (!r) return false;
-    if (r.status !== 'running') return false; // already marked dead by a previous check
-    const alive = this.backend.aliveNames();
-    if (!alive) return true; // launcher backend: can't poll; the row says running, so treat as alive
-    return alive.has(r.tmux);
-  }
-
   /**
-   * Can we still DELIVER text into this session's claude? — the honest liveness test, and deliberately
-   * NOT `isAlive`.
+   * Is this session's claude still up? — the ONE liveness predicate. Every caller that asks "can I type
+   * into this run / is this agent already working / did that delegate die" asks this.
    *
-   * `status` is a report of what the run last *said about itself*, not whether its process is up: an
-   * agent that calls `report` is stamped `done` (see `reportSession`) while its claude keeps running for
-   * as long as the turn lasts — and a long-lived agent typically reports well before the delegate it
-   * handed off to finishes. `isAlive` folds that status in (`status !== 'running' → false`), which is
-   * right for the pile-up guards it was written for and wrong for delivery: it declares a session with a
-   * live REPL unreachable. Live example (instapods, 2026-08-10): `ses_f4535e8f` reported at 16:13, kept
-   * working until 16:34, and the 16:31 poke-back for its delegate saw `done`, skipped the live pane, and
-   * `--resume`d a SECOND claude onto the same transcript — the outcome `chatSend` calls "the one worse
-   * than a slow turn". The second process died 28s later and the poke was never seen.
+   * It asks the **pane**, never the row's `status`, because `status` reports what the run last *said
+   * about itself*: an agent that calls `report` is stamped `done` (see `reportSession`) while its claude
+   * keeps running. That is not an edge case — it is the normal shape of a long-lived run, which is why
+   * the idle reaper has a whole "DONE ORPHAN" branch for a `done` row still holding a pane, and why
+   * `isWorking` (the console's spinner) already ignored status.
    *
-   * So this asks the PANE, and only refuses on a status that means a human or the sweep ended the run
-   * deliberately (`stopped`/`crashed`) — where a surviving pane is a leftover, not a destination.
+   * There used to be a second, status-folding predicate (`isAlive`: `status !== 'running' → false`).
+   * Every one of its ten call sites was wrong in the same direction — it declares a session with a live
+   * REPL dead — and the failures were the expensive kind, because the fallback for "dead" is almost
+   * always `claude --resume`, i.e. a SECOND claude on a transcript the first still holds. Live on
+   * instapods 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked until 16:34; its 16:31 poke-back
+   * saw `done`, skipped the live pane, and spawned `ses_441cec`, which died 28s later — the poke was
+   * never seen. So the two were folded into this one; don't reintroduce a status-based variant.
+   *
+   * Refuses only a status that means someone ended the run deliberately (`stopped`) or the sweep buried
+   * it (`crashed`) — a pane surviving either is a leftover, not a destination.
    */
   reachable(sessionId: string): boolean {
     if (this.launching.has(sessionId)) return true; // scheduled; its pane is imminent
@@ -2254,7 +2246,7 @@ export class TerminalManager {
    * in milliseconds instead of after the mints, and it keeps one launch from stalling other requests.
    *
    * The row is registered in {@link launching} for the gap between "scheduled" and "pane exists", so
-   * `isAlive` reports the session as live throughout and the busy/pile-up guards that depend on it
+   * `reachable` reports the session as live throughout and the busy/pile-up guards that depend on it
    * (chatSend, dispatchTask) can't double-launch into the same transcript. Errors are audited rather
    * than thrown: there is no caller left to catch them.
    */
@@ -2538,7 +2530,7 @@ export class TerminalManager {
     const row = this.db.prepare('SELECT agent, secret, claude_session_id, run_as, spawned_by, status FROM term_sessions WHERE id = ?')
       .get<{ agent: string; secret: string | null; claude_session_id: string | null; run_as: string | null; spawned_by: string | null; status: string }>(sessionId);
     if (!row || !row.claude_session_id) return false;
-    if (this.isAlive(sessionId)) return false; // caller should have delivered instead
+    if (this.reachable(sessionId)) return false; // caller should have delivered instead
     const body = (text || '').trim();
     if (!body) return false;
     const actingMember = this.resolveActingMember(runAs ?? row.run_as ?? undefined);
@@ -2587,9 +2579,9 @@ export class TerminalManager {
     if (!body) return 'error';
     const actingMember = this.resolveActingMember(runAs ?? row.run_as ?? undefined);
 
-    // WARM — the pane is still up, so the turn costs nothing but the model. Checked on the PANE, not on
-    // `isAlive`: a chat session that ended its last turn with `report` reads `done` while its claude is
-    // very much alive, and a new human turn is exactly what makes it running again.
+    // WARM — the pane is still up, so the turn costs nothing but the model. Checked on the PANE (the rule
+    // `reachable` now carries everywhere): a chat session that ended its last turn with `report` reads
+    // `done` while its claude is very much alive, and a new human turn is what makes it running again.
     if (this.paneAlive(row.tmux)) {
       const before = this.transcriptMark(row.claude_session_id);
       this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, resident = 1, task = ?, run_as = ?, updated_at = ? WHERE id = ?")
@@ -2622,11 +2614,11 @@ export class TerminalManager {
     return 'sent';
   }
 
-  /** Is this tmux pane up? Unlike {@link isAlive} this asks ONLY about the pane, ignoring the row's
-   *  status — a chat session that ended a turn with `report` is `done` with a live claude still in it.
-   *  `aliveNames()` is null when liveness can't be polled (launcher backend / failed poll); we then
-   *  answer false so the caller takes the cold path, which is correct-by-relaunch rather than a
-   *  send-keys into the dark. */
+  /** Is this tmux pane up? The raw question behind {@link reachable}, minus the row entirely — no
+   *  `launching` grace and no `stopped`/`crashed` veto, so `chatSend` can ask about a pane it may be
+   *  about to kill. `aliveNames()` is null when liveness can't be polled (launcher backend / failed
+   *  poll); we then answer false so the caller takes the cold path, which is correct-by-relaunch rather
+   *  than a send-keys into the dark. */
   private paneAlive(tmux: string): boolean {
     const alive = this.backend.aliveNames();
     return alive ? alive.has(tmux) : false;
@@ -2739,8 +2731,10 @@ export class TerminalManager {
     if (!runtimeSupports(manifest?.runtime, 'attachableUnattended') || !manifest?.dir) {
       return { ok: false, error: `this agent's runtime has no attachable session to take over` };
     }
-    // A turn is still generating → attach to the live pane, no relaunch (identical to a live take-over).
-    if (this.isAlive(sessionId)) return this.claimSession(sessionId, by);
+    // The pane is still up → attach to it, no relaunch (identical to a live take-over). Pane, not status:
+    // a run that already called `report` still owns its claude, and relaunching over it is the two-claudes
+    // outcome — a take-over must claim what is there.
+    if (this.reachable(sessionId)) return this.claimSession(sessionId, by);
     // Dead → resurrect the transcript. Needs the pinned claude session id to `--resume` from.
     if (!row.claude_session_id) return { ok: false, error: 'this run has no conversation to resume yet' };
     this.allowResume(sessionId);
@@ -2783,8 +2777,8 @@ export class TerminalManager {
       return { ok: false, error: `this agent's runtime does not support resident chat sessions` };
     }
     if (!row.claude_session_id) return { ok: false, error: 'this chat has no conversation to open yet' };
-    // A turn is still generating → attach to the live pane, no relaunch.
-    if (this.isAlive(sessionId)) return this.claimSession(sessionId, by);
+    // The pane is still up → attach to it, no relaunch (see `takeOverSession` — same reasoning).
+    if (this.reachable(sessionId)) return this.claimSession(sessionId, by);
     // Idle/dead → resurrect as an interactive resident TUI (resumes the transcript, no seed prompt).
     this.allowResume(sessionId);
     this.db.prepare("UPDATE term_sessions SET status = 'running', headless = 0, resident = 1, claimed_by = ?, claimed_at = ?, last_activity = ?, updated_at = ? WHERE id = ?")
@@ -3856,10 +3850,13 @@ export class TerminalManager {
   refreshAgentSkills(agent: string): { reloaded: number } {
     const manifest = this.os.agents.get(agent);
     if (!manifest || !runtimeSupports(manifest.runtime, 'nativeSkills') || !manifest.dir) return { reloaded: 0 };
+    // No `status` filter — liveness is the pane (`reachable`). A session that reported still has the REPL
+    // the `/reload-skills` inject needs, and skipping it meant the human who just approved the install
+    // watched the agent keep saying it has no such skill.
     const rows = this.db
-      .prepare(`SELECT id, tmux, run_as, spawned_by FROM term_sessions WHERE agent = ? AND status = 'running' AND headless = 0`)
+      .prepare(`SELECT id, tmux, run_as, spawned_by FROM term_sessions WHERE agent = ? AND headless = 0`)
       .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null }>(agent)
-      .filter((r) => this.isAlive(r.id));
+      .filter((r) => this.reachable(r.id));
     if (!rows.length) return { reloaded: 0 };
     // Sync the library (incl. the just-installed skill) into the agent's watched .claude/skills — once;
     // all of the agent's sessions run out of the same folder.
@@ -3896,9 +3893,8 @@ export class TerminalManager {
     if (!row) return { ok: false, error: 'unknown session' };
     const body = (text || '').replace(/\r?\n+/g, ' ').trim();
     if (!body) return { ok: false, error: 'nothing to send' };
-    // `reachable`, not `isAlive`: a session that reported still has a live REPL to type into, and telling
-    // its own console "not live — open it first" while the pane is right there is the visible half of the
-    // poke-back bug.
+    // `reachable`: a session that reported still has a live REPL to type into, and telling its own console
+    // "not live — open it first" while the pane is right there is the visible half of the poke-back bug.
     if (!this.reachable(sessionId)) return { ok: false, error: 'session is not live — open it first' };
     const space = this.spaceFor(row.run_as ?? row.spawned_by);
     const ok = this.backend.injectText(space, row.tmux, body, submit);
@@ -4926,7 +4922,9 @@ export class TerminalManager {
     if (!a) return { status: 'failed' };
     if (a.status === 'answered') return { status: 'answered', answer: a.answer ?? undefined };
     if (a.status === 'failed') return { status: 'failed' };
-    if (a.delegate_run_id && Date.now() - a.created_at > ASK_AGENT_GRACE_MS && !this.isAlive(a.delegate_run_id)) {
+    // `reachable`, not the row: a delegate that answered with `report` and is still finishing up is not a
+    // dead delegate, and grading it `failed` would unblock the caller with a lie.
+    if (a.delegate_run_id && Date.now() - a.created_at > ASK_AGENT_GRACE_MS && !this.reachable(a.delegate_run_id)) {
       this.db.prepare("UPDATE agent_asks SET status = 'failed' WHERE id = ? AND status = 'pending'").run(id);
       return { status: 'failed' };
     }
