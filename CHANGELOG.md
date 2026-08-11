@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.335.2] — 2026-08-11
+### Fixed
+- **An "Edit proposed for X" DM now links to X's own settings page.** The review DM for an
+  `agent_propose_update` said "Review it in the Agentric console" and pointed at the Agents index, so a
+  reviewer landing there had to find the target agent themselves — five proposals in one batch meant five
+  identical links. `ReviewNotice` gained an optional `link` (page + detail + label) that overrides the
+  kind's default page, and the agent-edit proposal sets it to `#/agent/<target>`, where the review card
+  actually lives (parity with the inbox row, which has deep-linked by target all along). Pinned by
+  `scripts/review-notify-test.cjs`, now part of `npm run test:governance`.
+
 ## [0.335.1] — 2026-08-11
 ### Changed
 - **README rewritten, and the feature list is now complete.** The old README documented roughly a third
