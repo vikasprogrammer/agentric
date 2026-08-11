@@ -7,7 +7,18 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.335.1] — 2026-08-11
 ### Changed
+- **README rewritten, and the feature list is now complete.** The old README documented roughly a third
+  of what ships (no Goals, Tasks, Apps, Library, Media, Skills, Insights, Codex, self-editing agents,
+  chat egress, per-member GitHub, multi-tenancy…). It now carries a grouped feature index — governance
+  and trust · running agents · work · knowledge and learning · integrations · operations — that a reader
+  can check against `docs/PILLARS.md`. The prose is also de-AI-ified against the
+  [humanizer](https://github.com/blader/humanizer) pattern list: no em dashes, no decorative emoji,
+  sentence-case headings, no promotional inflation, actors restored to passive sentences.
+- **A second README screenshot** (`docs/assets/console-session.jpg`): a live agent session in the browser
+  terminal, so the "watch it, take it over, hand it back" claim has a picture.
 - **README hero screenshot.** The README now leads with a shot of the console Overview (live sessions,
   what's blocked on a human, who's online) — committed to `docs/assets/` rather than hotlinked, since
   the share link it came from serves a signed URL that expires.
