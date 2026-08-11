@@ -153,14 +153,47 @@ console.log('\n\x1b[1m6) a transcript spanning several rows — the NEWEST one o
   assert(sentTo(old).length === 0, 'the retired row was never written to');
 }
 
-console.log('\n\x1b[1m7) reachable() vs isAlive() — the distinction the bug turned on\x1b[0m');
+console.log('\n\x1b[1m7) reachable() is the ONE liveness predicate — the pane, vetoed only by a deliberate end\x1b[0m');
 {
-  const cs = 'cs-contrast';
-  const c = mkCaller(cs, { status: 'done' });
-  assert(tm.isAlive(c) === false, "isAlive() is false for a reported run (right for pile-up guards)");
-  assert(tm.reachable(c) === true, 'reachable() is true — there is a live REPL to type into');
+  assert(typeof tm.isAlive !== 'function', 'the status-folding `isAlive` is gone — no wrong choice to make');
+  const c = mkCaller('cs-contrast', { status: 'done' });
+  assert(tm.reachable(c) === true, 'a reported run is live — there is a REPL to type into');
+  for (const s of ['stopped', 'crashed']) {
+    aos.db.prepare('UPDATE term_sessions SET status = ? WHERE id = ?').run(s, c);
+    assert(tm.reachable(c) === false, `${s} vetoes a surviving pane (a leftover, not a destination)`);
+  }
+  aos.db.prepare("UPDATE term_sessions SET status = 'done' WHERE id = ?").run(c);
   livePanes.delete('aos-' + c);
   assert(tm.reachable(c) === false, 'and false once the pane goes away');
+}
+
+// The other two sites that read `status` as liveness. Both fail in the SAME direction as the poke — they
+// call a live agent free — but cost differently: one stacks a rival worker, one silently skips a delivery.
+console.log('\n\x1b[1m8) the dispatch pile-up guard counts a reported-but-warm worker as busy\x1b[0m');
+{
+  const t = aos.tasks.create({ tenant: aos.tenant, title: 'ship it', assignee: 'agent:caller', owner: alice.id, createdBy: alice.id });
+  const worker = mkCaller('cs-worker', { status: 'done', spawned_by: `task:${t.id}` });  // reported, still up
+  aos.tasks.markDispatched(t.id, worker);
+  const guarded = autos.dispatchTask(t.id, { guard: true, by: 'test' });
+  assert(guarded.ok === false && /already working/.test(guarded.reason || ''), 'guarded dispatch refuses — no rival worker', guarded.reason);
+  livePanes.delete('aos-' + worker);
+  const after = autos.dispatchTask(t.id, { guard: true, by: 'test' });
+  assert(!/already working/.test(after.reason || ''), 'and stops refusing once the pane is actually gone', after.reason);
+}
+
+console.log('\n\x1b[1m9) a freshly installed skill reaches a reported-but-warm session\x1b[0m');
+{
+  const reached = [];
+  tm.materializeSkills = (sessionId) => { reached.push(sessionId); };
+  // Its own agent, so the sweep's row set is exactly this one session.
+  aos.agents.set('skiller', { id: 'skiller', name: 'Skiller', runtime: 'claude-code', dir: HOME });
+  const s = mkCaller('cs-skills', { status: 'done', headless: 0, agent: 'skiller' });  // interactive, reported, pane alive
+  tm.refreshAgentSkills('skiller');
+  assert(reached.includes(s), 'the live REPL is refreshed — not told to wait for its next run', reached);
+  reached.length = 0;
+  livePanes.delete('aos-' + s);
+  tm.refreshAgentSkills('skiller');
+  assert(reached.length === 0, 'a dead pane is still skipped');
 }
 
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);

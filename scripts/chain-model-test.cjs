@@ -171,9 +171,8 @@ console.log('\n\x1b[1msteering a live delegate\x1b[0m');
   const autos = new Automations(aos, tm);
   const injected = [];
   tm.backend.injectText = (space, tmuxName, body) => { injected.push({ tmux: tmuxName, body }); return true; };
-  // `isAlive` guards dispatch pile-ups; `reachable` decides delivery (a reported run keeps a live REPL).
-  // Only the delegate is up on either.
-  tm.isAlive = (id) => id === liveDelegate;
+  // `reachable` is the one liveness predicate — delivery AND the dispatch pile-up guards read it.
+  // Only the delegate is up.
   tm.reachable = (id) => id === liveDelegate;
 
   const held = mkTask({ title: 'ship batch 1', assignee: 'agent:builder', callerAgent: 'agent:manager', callerClaudeId: 'cs_mgr' });
@@ -201,12 +200,12 @@ console.log('\n\x1b[1msteering a live delegate\x1b[0m');
   assert(blocked.ok === false && /blocked/.test(blocked.reason), 'a blocked task refuses a guarded dispatch', blocked.reason);
   // …but a human forcing it from the console still gets PAST the park (it stops on this scratch home's
   // missing agent manifest, not on the block — spawning a real one would start a real tmux session).
-  tm.isAlive = () => false;
+  tm.reachable = () => false;
   const forced = autos.dispatchTask(held.id, { guard: false, by: 'human' });
   assert(!/blocked/.test(forced.reason || ''), 'a human forcing it is not refused for being blocked', forced.reason);
 
   // And a still-working delegate is never given a rival by the discussion path.
-  tm.isAlive = (id) => id === liveDelegate; tm.reachable = (id) => id === liveDelegate;
+  tm.reachable = (id) => id === liveDelegate;
   tm.deliverToResident = () => false;   // simulate an undeliverable pane
   tm.reviveResident = () => false;
   const before = aos.db.prepare('SELECT COUNT(*) AS c FROM term_sessions').get().c;

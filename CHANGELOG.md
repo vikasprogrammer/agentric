@@ -8,6 +8,33 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.334.2] — 2026-08-11
+### Fixed
+- **One liveness predicate, and it asks the pane.** v0.334.1 fixed the poke-back's `status = 'running'`
+  liveness test by adding `TerminalManager.reachable`, and left the older status-folding `isAlive` in
+  place for the pile-up guards. A sweep of that method's remaining ten call sites found **every one of
+  them wrong in the same direction** — it calls a session with a live REPL dead:
+  - `takeOverSession` / `openChatSession` — a take-over of a run that had already `report`ed took the
+    "dead → resurrect" branch and relaunched claude **over its own live pane** instead of claiming it.
+  - `agentAskStatus` — a delegate that answered and was still wrapping up got graded `failed`, so the
+    caller unblocked on a false "your delegate died".
+  - `maybeHoldDelegate` — a HOLD or cancel aimed at a reported-but-working delegate decided there was
+    "nothing running to interrupt" and never reached it (the 2026-08-06 incident's remaining half).
+  - `refreshAgentSkills` — a just-approved skill install skipped the very session whose human approved
+    it, which then kept insisting it had no such skill until its next run.
+  - the dispatch pile-up guards (`fire`, `dispatchTask`, `dispatchTasks`, `task_wait`, the app-trigger
+    poll) — a busy agent read as free, so a second session stacked onto work already in flight.
+
+  Their shared shape is why this was worth doing as one pass rather than site by site: the fallback for
+  "dead" is almost always `claude --resume`, so a false negative doesn't degrade — it puts a **second
+  claude on a transcript the first still holds**. All ten now use `reachable`, and `isAlive` is
+  **deleted** rather than kept as a synonym: with two predicates, a nine-tenths-correct choice is always
+  available, and this class of bug already recurred once (the `resident` gate on `deliverToResident`).
+  Widening the pile-up guards stays bounded — the idle sweep's DONE-ORPHAN branch reaps exactly the
+  unattended `done`-with-a-pane rows they now count, and a human forcing work through passes
+  `guard: false`. `scripts/poke-warm-caller-test.cjs` grew cases 7–9 (no status-folding predicate
+  survives; the dispatch guard sees a warm worker; a skill install reaches a reported session).
+
 ## [0.334.1] — 2026-08-10
 ### Fixed
 - **A poke-back now wakes the caller that is still running, instead of starting a second claude beside
