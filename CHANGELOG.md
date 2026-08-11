@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.337.1] — 2026-08-11
+### Docs
+- **`docs/journal-plan.md`** — Step 3 of the Insights rebuild, planned concretely. The day-by-day
+  changelog already exists (`buildDigest` + a dated KB page per day) and is the only Insights block with
+  sustained use — 26 `digest.posted` against ~one human action from the other thirteen. So the work is a
+  promotion, not a build: give it its own **Journal** nav surface, let it read backwards in time from the
+  frozen KB pages, rewire its verdicts off the agent's own `report()` onto the derived outcome from Step
+  1b, and only then add one bounded human-facing paragraph per day over the deterministic model
+  (~$0.005/tenant/day at the Haiku default). Four gated steps, each independently shippable, each with a
+  falsifier — including "if only today is ever opened, drop the day picker and stop". Names three
+  correctness traps found while writing it: re-rendering a past day would staple *today's* learned
+  guidance onto it, the per-agent line caps live in the model rather than the chat render (so the console
+  preview is truncated too), and `signals.costUsd` sums a per-transcript cumulative cost across resumed
+  runs. `docs/insights-revisit.md` Step 3 now points at it.
+
 ## [0.337.0] — 2026-08-11
 ### Fixed
 - **Runtime-death remediation was firing on ~10% of the events it exists for.** `detectUsageLimit` parks
