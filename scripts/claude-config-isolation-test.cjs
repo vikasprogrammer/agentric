@@ -81,6 +81,15 @@ assert(/"skipDangerousModePermissionPrompt":\s*true/.test(launcher), 'aos-settin
 
 console.log('\n\x1b[1m7) The launch wiring: opt-in, claude-only, and rotation wins\x1b[0m');
 {
+  // `applyConfigIsolation` reaches the real `os.homedir()` (no boxHome seam), and isolation is a NO-OP
+  // when that home has no `.credentials.json` — correctly so, since an empty config dir would hang the
+  // run on the login picker. On a maintainer's laptop the box IS logged in, so this section passed; on a
+  // CI runner it is not, and the two assertions below failed for every commit since the test landed —
+  // a red gate that says nothing about the code. Point HOME at the fixture box home instead, so the
+  // section asserts the WIRING rather than the runner's login state. (Node's os.homedir() reads $HOME
+  // on POSIX.)
+  const realHome = process.env.HOME;
+  process.env.HOME = boxHome;
   // Isolated home — loadAgentOS() with no env resolves to the LIVE ./data home (see CLAUDE.md).
   process.env.AGENT_OS_HOME = path.join(TMP, 'tenant-home');
   process.env.AGENT_OS_TENANT = 'testco';
@@ -107,6 +116,16 @@ console.log('\n\x1b[1m7) The launch wiring: opt-in, claude-only, and rotation wi
 
   assert(apply({}, 'codex').CLAUDE_CONFIG_DIR === undefined, 'codex is untouched — it reads a different config dir');
   delete process.env.AOS_CLAUDE_CONFIG_ISOLATION;
+  if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+
+  // And the guard the section used to depend on by accident, asserted deliberately: a box with no
+  // credential file must NOT be isolated, whatever the flag says.
+  process.env.HOME = path.join(TMP, 'logged-out-box');
+  fs.mkdirSync(process.env.HOME, { recursive: true });
+  process.env.AOS_CLAUDE_CONFIG_ISOLATION = '1';
+  assert(apply({}).CLAUDE_CONFIG_DIR === undefined, 'a box with no login is left on its own config dir, flag or not');
+  delete process.env.AOS_CLAUDE_CONFIG_ISOLATION;
+  if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

@@ -248,8 +248,13 @@ Key modules:
   (unattended) run is closed by the SERVER at turn-end — the Stop hook (`terminal/stop-hook.sh`) beacons
   `/api/turn-idle` → `TerminalManager.markTurnIdle` kills the pane so tmux drops and the pile-up guard
   releases (parity with the old `-p` exit) UNLESS a human has taken it over / is watching / it's blocked on
-  a person; `interactive` stays live until closed. `UNATTENDED=1` (was `HEADLESS=1`) selects the lane in
-  `terminal/claude-launch.sh`. **Take-over** is now lossless: `POST /api/sessions/:id/interactive` →
+  a person / **it still has background children** (`src/edge/background-work.ts`: a subagent, a forked skill
+  or a `run_in_background` command, launched-but-not-yet-notified per the transcript — an agent that yields
+  the turn to be woken by one used to be killed mid-work and never reached `report`; bounded 15-min grace,
+  skipped once it has reported); `interactive` stays live until closed. The same file carries
+  `UNATTENDED_TURN_BRIEF`, injected on this lane ONLY, telling the agent its turn boundary is a run
+  boundary and to wait via `task_wait`/`ask`/`schedule` instead of yielding. `UNATTENDED=1` (was
+  `HEADLESS=1`) selects the lane in `terminal/claude-launch.sh`. **Take-over** is now lossless: `POST /api/sessions/:id/interactive` →
   `claimSession` just marks the live run claimed (sticky, no kill/resume) and the console attaches to the
   still-streaming pane. See `docs/attachable-sessions-plan.md`.
 - `src/memory/` — the **memory plane** (per-agent persistent recall). `index.ts` factory →
