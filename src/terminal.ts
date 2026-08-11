@@ -38,6 +38,7 @@ import { DEFAULT_VIDEO_COST_PER_SEC_USD, DEFAULT_VIDEO_DURATION_SEC, resolveVide
 import { understandMedia } from './edge/media-understand';
 import { readSessionCost } from './edge/session-cost';
 import { TERSE_OUTPUT_BRIEF } from './edge/verbosity';
+import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
 import { readConversation, findTranscript, Conversation } from './edge/conversation';
 
@@ -767,6 +768,11 @@ export class TerminalManager {
   /** Pending "did that warm turn actually start?" checks, keyed by session — see `confirmWarmTurn`.
    *  Held so a newer message can cancel the previous check instead of racing it. */
   private readonly warmChecks = new Map<string, ReturnType<typeof setTimeout>>();
+  /** sessionId → when its turn-end teardown was FIRST deferred for outstanding background work (see
+   *  `markTurnIdle`). The clock for {@link BACKGROUND_GRACE_MS}: held per RUN, not per turn, so ending
+   *  more turns can't renew the grace. In-memory on purpose — a restart forgetting it costs at most one
+   *  more grace window, and the idle-straggler backstop bounds that anyway. */
+  private readonly turnEndDeferred = new Map<string, number>();
   /** Optional sink notified when an approval card lands, so an out-of-band channel (Slack/Discord DM)
    *  can ping the approver. Set by the registry once the chat sockets exist; absent = no notifications. */
   private approvalNotifier?: (notice: ApprovalNotice) => void;
@@ -2292,7 +2298,10 @@ export class TerminalManager {
     // Resolved BEFORE the company payload is built: `verbosity` rides the appended system prompt rather
     // than a CLI flag, so buildCompanyMd needs the resolved value (the other knobs are just env below).
     const tuning = resolveRuntimeTuning(manifest, this.os.settings.runtimeDefaults(), o.tuning, runtime);
-    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity);
+    // The unattended brief rides the same appended prompt, on exactly the lane `markTurnIdle` tears down
+    // at turn-end (headless, non-resident) — a resident chat pane and a member's own session both survive
+    // a turn boundary, so telling them "this run ends when your turn ends" would simply be false.
+    const companyMd = this.buildCompanyMd(o.agent, o.actingMember, tuning.verbosity, !!o.headless && !o.resident);
     // Skills + sub-agents are materialised as native filesystem conventions (`.claude/skills`,
     // `.claude/agents`), so they only apply to a runtime that discovers them. Codex has its own
     // (differently-shaped) skills mechanism — not wired yet, so we skip rather than write files it
@@ -3017,8 +3026,8 @@ export class TerminalManager {
    * (pane already gone) is skipped via the liveness poll below, so a stray second beacon can't re-reap.
    */
   markTurnIdle(sessionId: string): void {
-    const r = this.db.prepare('SELECT tmux, status, headless, resident, claimed_by, run_as, spawned_by FROM term_sessions WHERE id = ?')
-      .get<{ tmux: string; status: string; headless: number; resident: number; claimed_by: string | null; run_as: string | null; spawned_by: string | null }>(sessionId);
+    const r = this.db.prepare('SELECT tmux, status, headless, resident, claimed_by, run_as, spawned_by, agent, claude_session_id FROM term_sessions WHERE id = ?')
+      .get<{ tmux: string; status: string; headless: number; resident: number; claimed_by: string | null; run_as: string | null; spawned_by: string | null; agent: string; claude_session_id: string | null }>(sessionId);
     if (!r) return;
     // ── The turn is OVER for every lane, whatever happens to the pane below. ──
     // This clear used to live inside the `resident` branch only, which made `busy_since` a ONE-WAY LATCH
@@ -3051,6 +3060,32 @@ export class TerminalManager {
     const alive = this.backend.aliveNames();
     if (alive && !alive.has(r.tmux)) return;         // pane already gone (already reaped) — nothing to do
     if (this.backend.hasClient(space, r.tmux) === true) return; // a human is watching live → don't close on them
+    // BACKGROUND CHILDREN — the turn ended, but the RUN hasn't. An agent that launches a subagent or a
+    // `run_in_background` command and then hands the turn back is waiting to be woken by the harness (a
+    // `<task-notification>` starts a new turn); tearing down here kills both it and its children mid-work,
+    // which is how a run that did everything but the last step lands as "no report". See
+    // `src/edge/background-work.ts` for the incident this comes from.
+    //   - Only for a run that has NOT reported: `report` flips the row to `done`, and that is the agent
+    //     saying it is finished — a stray `tail -f` it forgot to kill must not buy it another 15 minutes.
+    //   - Bounded by BACKGROUND_GRACE_MS from the FIRST defer, and audited both ways, so "we waited and it
+    //     still didn't finish" is a queryable event and not an immortal pane. A never-ending sleep loop
+    //     (the original incident had two) therefore costs one grace window, once.
+    if (r.status === 'running') {
+      const bg = pendingBackgroundWork(r.claude_session_id ? findTranscript(r.claude_session_id) : undefined);
+      if (bg) {
+        const firstDefer = this.turnEndDeferred.get(sessionId) ?? Date.now();
+        this.turnEndDeferred.set(sessionId, firstDefer);
+        const waitedMs = Date.now() - firstDefer;
+        if (waitedMs < BACKGROUND_GRACE_MS) {
+          this.audit(sessionId, r.agent, 'session.turnend.deferred', { ...bg, waitedMs, graceMs: BACKGROUND_GRACE_MS });
+          return;
+        }
+        this.turnEndDeferred.delete(sessionId);
+        this.teardownUnattended(sessionId, space, r.tmux, 'turn-end-grace-expired');
+        return;
+      }
+    }
+    this.turnEndDeferred.delete(sessionId);
     this.teardownUnattended(sessionId, space, r.tmux, 'turn-end');
   }
 
@@ -3151,6 +3186,7 @@ export class TerminalManager {
    *  (blocks resurrection + writes the episode), then kill the pane so tmux drops and the pile-up guard
    *  releases. Shared by the Stop-hook fast path and the idle backstop. */
   private teardownUnattended(sessionId: string, space: string, tmux: string, reason: string): void {
+    this.turnEndDeferred.delete(sessionId); // this run is over however it got here — don't leak the clock
     this.captureTranscript(sessionId, space, tmux);
     // Before killing the pane, check whether this run died on a usage-limit refusal; if so park the account
     // it used so the next launch rotates away from it (rotation's detection point).
@@ -3494,7 +3530,7 @@ export class TerminalManager {
    *  We tack on OS-owned operating notes after the user's content. The terminal here is a browser
    *  xterm (over ttyd) running the TUI on the alternate screen with mouse reporting on, so embedded
    *  terminal hyperlinks (OSC 8) aren't clickable — the agent must surface raw URLs as plain text. */
-  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity): string {
+  private buildCompanyMd(selfAgent?: string, actingMember?: string, verbosity?: Verbosity, unattended = false): string {
     const company = this.os.settings.company().companyMd.trim();
     // Per-member personal context: free-text the human you run AS chose to inject into their sessions
     // (their working style, standing preferences, domain notes). Self-service, owner-scoped — set on
@@ -3698,7 +3734,11 @@ export class TerminalManager {
     // "never compress a report/kb_write/chat reply" — are read after the sections that tell the agent to
     // write those things, and so it can't be mistaken for guidance about the company itself.
     const terse = verbosity === 'terse' ? TERSE_OUTPUT_BRIEF : '';
-    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, terse]
+    // Unattended lane only (see the call site). Placed after the operating notes and the fleet/team
+    // sections, because it points at `task_wait` / `ask` / `schedule` / `task_create` as the ways to wait
+    // — it reads as a correction to "just wait for it" only once those tools have been introduced.
+    const lane = unattended ? UNATTENDED_TURN_BRIEF : '';
+    return [company, memberCtx, AGENT_OS_OPERATING_NOTES, messaging, github, codeReview, goalsSection, fleet, team, preamble, learned, lane, terse]
       .filter(Boolean)
       .join('\n\n');
   }

@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.336.0] — 2026-08-11
+### Fixed
+- **An unattended run that launches background work is no longer killed while it's still working.** The
+  turn-end teardown (`markTurnIdle`) treated a turn boundary as the end of the run, which it is —
+  unless the agent launched a subagent, a forked skill (`/code-review …`), or a `run_in_background`
+  command and handed the turn back to be woken when that finishes. Claude Code does wake it, but the
+  pane was already gone: the run and its children died mid-work and it never reached `report`. Live
+  case (instapods `ses_11dd20920d30aae4`, $12.34): PR pushed, review forked, "I'll fold in whatever it
+  finds before closing the task out", reaped 300ms later — the review killed with it, the task left
+  `doing` for ten minutes until the stranded sweep poked the caller, which cost another $18.99 to work
+  out what had happened. 49 unattended runs were reaped at turn-end with no report in the preceding 14
+  days. Teardown now defers while children are outstanding (`pendingBackgroundWork` reads the
+  transcript's launch acks vs `<task-notification>` completions), bounded by a 15-minute grace measured
+  from the FIRST defer and audited both ways (`session.turnend.deferred`, then a
+  `turn-end-grace-expired` reap) — so a never-ending `sleep` loop costs one window, once. A run that
+  has already called `report` is torn down regardless: `report` means finished, whatever it left
+  running. Fails open on any unreadable transcript. Pinned by `scripts/turn-idle-background-guard-test.cjs`.
+
+### Added
+- **Unattended runs are told that their turn boundary is a run boundary.** The server-side grace alone
+  would have let the same agent idle rather than finish — it invented `until [ -f … ]; do sleep 15`
+  loops because nothing said waiting wasn't available to it. `UNATTENDED_TURN_BRIEF` rides the system
+  prompt on the headless, non-resident lane only (where it's true) and names the alternatives the OS
+  already provides — `task_wait` for a delegate, `ask` for a person, `schedule` for a future run,
+  `task_create` to park the rest — plus `report` before stopping, always.
+
 ## [0.335.5] — 2026-08-11
 ### Changed
 - **CLAUDE.md imports the maintainer's decoder ring instead of expecting it to be read by hand.** The
