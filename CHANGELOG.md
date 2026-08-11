@@ -7,6 +7,10 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Changed
+- **README hero screenshot.** The README now leads with a shot of the console Overview (live sessions,
+  what's blocked on a human, who's online) — committed to `docs/assets/` rather than hotlinked, since
+  the share link it came from serves a signed URL that expires.
 
 ## [0.334.2] — 2026-08-11
 ### Fixed
