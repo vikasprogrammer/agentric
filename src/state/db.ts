@@ -1033,7 +1033,7 @@ function migrate(db: Db): void {
   addColumn(db, 'term_sessions', 'busy_since', 'INTEGER');
   // One-time cleanup: `busy_since` was a ONE-WAY LATCH for every lane except a warm chat. It was cleared
   // only inside `markTurnIdle`'s resident branch, so a member's interactive session (which returns before
-  // that branch) and every finished unattended run kept the flag set forever — live instapods had 24 of
+  // that branch) and every finished unattended run kept the flag set forever — live northwind had 24 of
   // its 25 most recent rows, `done` and `stopped` ones included, carrying a `busy_since` hours old, and
   // the console drew a spinner on all of them. Every end path now clears it; this NULLs the ones already
   // latched: anything terminal, plus any turn older than the 2h wedged-turn ceiling. A genuinely

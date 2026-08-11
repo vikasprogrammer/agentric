@@ -1,7 +1,7 @@
 {
   "_": "Blind hand-labels for the derived-outcome falsifier (docs/insights-revisit.md, Step 1).",
   "_how": "Produced by reading ONLY scripts/outcome-label-sample.cjs's evidence.json — the task text and the transcript tail. The labeller did not see the derived verdict, the basis, or any field the rules key on (status, tool_calls, rating, reported outcome) while labelling.",
-  "_corpus": "instapods, 30-day window, snapshot taken 2026-08-08. Conversation ids are opaque; no live content is committed here.",
+  "_corpus": "northwind, 30-day window, snapshot taken 2026-08-08. Conversation ids are opaque; no live content is committed here.",
   "_scale": "success | partial | incomplete | noop | failure | abandoned | ? — where '?' means the transcript was not on this box, so there was no independent evidence to judge from. Those rows are reported separately and never counted as agreement.",
   "labels": {
     "019fa7e6-87cb-74d1-a452-3b71e68d9274": "?",

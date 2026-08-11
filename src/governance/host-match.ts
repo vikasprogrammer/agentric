@@ -36,7 +36,7 @@ export interface Egress {
  *
  * That distinction is the whole point. A `\bssh\b` search over the command text fires on
  * `grep -i "cmd\|exec\|ssh\|sprintf"` and on `ssh -i ~/.ssh/id_rsa` twice over: the word appears, no
- * host can be pinned, and a purely local grep is escalated to an OWNER approval. Live instapods data
+ * host can be pinned, and a purely local grep is escalated to an OWNER approval. Live northwind data
  * (2026-08): 10 of the last 15 host approvals were "host could not be identified", most of them this
  * shape. Matching the head token instead keeps the same governance reach (every real invocation still
  * has its verb in command position) while the word-in-a-string cases stop paging a human.
@@ -303,7 +303,7 @@ export function hostMatches(host: string, matcher: string): boolean {
  * Such a "reach" never leaves the box, so it isn't egress and there is nothing for host governance to
  * protect: anything listening on loopback is already reachable by the shell the agent is holding, and
  * `shell.exec` governs that. Treating it as egress bought no safety and cost a great deal of noise —
- * on live instapods, `127.0.0.1` + `localhost` accounted for **35 of the 49** host approvals ever
+ * on live northwind, `127.0.0.1` + `localhost` accounted for **35 of the 49** host approvals ever
  * raised (an agent curling its own dev server, or the Agentric API, at owner/admin tier).
  *
  * Deliberate limit: a loopback port that is an `ssh -L` tunnel to somewhere else is invisible to us.

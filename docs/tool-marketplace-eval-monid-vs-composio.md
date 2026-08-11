@@ -89,5 +89,5 @@ and billing. Concretely:
 ## Open follow-up (not done)
 
 Verify the live Composio setup — whether LinkedIn is connectable/connected on the Composio account the
-instapods tenant uses, and confirm the actions appear in a minted Tool Router endpoint — so agents can
+northwind tenant uses, and confirm the actions appear in a minted Tool Router endpoint — so agents can
 post today.

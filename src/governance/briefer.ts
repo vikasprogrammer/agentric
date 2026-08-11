@@ -184,7 +184,7 @@ export function briefFor(capability: string, args: Record<string, unknown>, deci
 }
 
 /** A short, stable human phrase for a brief's ACTION SHAPE — the label shown for an auto-approval rule
- *  ("Run `git` commands", "Reach 5.135.136.192 (ssh)", "Grant stripe refund"). Unlike `headline` (which
+ *  ("Run `git` commands", "Reach 198.51.100.42 (ssh)", "Grant stripe refund"). Unlike `headline` (which
  *  varies per call), this reflects only the parts the signature keys on, so it reads the same every time. */
 export function describeBrief(brief: DecisionBrief): string {
   const t = brief.target;

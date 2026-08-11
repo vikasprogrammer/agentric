@@ -1,7 +1,7 @@
 # The Decision-Brief Layer — unifying policy · approval · failure · audit
 
-> Status: **proposed** (design). Motivated by a fleet-usage study across instapods / instawp /
-> expresstech (45-day window, 2026-07-23) plus a review of the Failproof AI (`befailproof.ai`)
+> Status: **proposed** (design). Motivated by a fleet-usage study across northwind / globex /
+> initech (45-day window, 2026-07-23) plus a review of the Failproof AI (`befailproof.ai`)
 > reliability model. No code shipped yet.
 
 ## 1. The problem in one sentence
@@ -28,9 +28,9 @@ signal:
 
 | Tenant | gate.decision | shell.exec `allow` | shell.exec `deny` | `approve` (all caps) |
 |---|--:|--:|--:|--:|
-| instapods | 4,892 | 3,654 | 21 (0.6%) | ~172 |
-| instawp | 17,055 | 13,631 | 98 (0.7%) | ~180 |
-| expresstech | 2,152 | 1,498 | 30 (2%) | ~14 |
+| northwind | 4,892 | 3,654 | 21 (0.6%) | ~172 |
+| globex | 17,055 | 13,631 | 98 (0.7%) | ~180 |
+| initech | 2,152 | 1,498 | 30 (2%) | ~14 |
 
 Nearly every `allow` carries the same reason: **`"default policy (no rule matched)"`**. The policy
 engine is barely shaping behaviour.
@@ -38,7 +38,7 @@ engine is barely shaping behaviour.
 **~All human-in-the-loop friction is host identification, not risk.** The `approve` escalations are
 dominated by `net.connect` / `ssh.exec` with reasons like `"host could not be identified"` /
 `"host is not a granted connection"` — agents hitting legitimate new hosts (deploy targets,
-`curl https://instapods.com`, `ssh root@5.135.136.192`). Humans approve most of them. On instapods,
+`curl https://northwind.com`, `ssh root@198.51.100.42`). Humans approve most of them. On northwind,
 **65 approved / 30 rejected** — a 32% rejection rate — so the human *is* an active curator, but is
 handed raw JSON to decide on.
 
@@ -52,13 +52,13 @@ handed raw JSON to decide on.
 …and `reason` is an internal classification, not an explanation. This is the exact "unhelpful JSON"
 the owner flagged in-console.
 
-**There is no behavioural-failure signal at all.** High `stopped` ratios (instapods 30%, instawp
+**There is no behavioural-failure signal at all.** High `stopped` ratios (northwind 30%, globex
 18%) are plausibly humans killing runaway/looping runs — but the system cannot say, because it never
 computes loop / runaway / drift / hallucination. (Corroborated by the Failproof AI model, whose one
 genuinely differentiated idea over what agent-os already has is exactly this behavioural layer.)
 
-**Adjacent audit-signal loss** (motivates the same layer): `episode.error` — instawp **192**,
-instapods 28, expresstech 22 — and the `consolidator` agent crashes 100% on all three tenants. The
+**Adjacent audit-signal loss** (motivates the same layer): `episode.error` — globex **192**,
+northwind 28, initech 22 — and the `consolidator` agent crashes 100% on all three tenants. The
 failure/learning signal is itself lossy. (Tracked separately as clean bugs; noted here because they
 share the "audit can't see what happened" root.)
 
@@ -94,7 +94,7 @@ export type ActionVerb =
 
 export interface BriefTarget {
   kind: 'file' | 'host' | 'db' | 'resource' | 'money' | 'recipient' | 'unknown';
-  label: string;                 // human: "deploy.yml", "5.135.136.192 (ssh)", "$42.00", "3 rows"
+  label: string;                 // human: "deploy.yml", "198.51.100.42 (ssh)", "$42.00", "3 rows"
   host?: string;                 // when kind === 'host' — the egress target, for host-trust
   outsideWorkdir?: boolean;      // file writes outside the agent's own folder
   count?: number;                // deleteCount / recipients / rows
@@ -102,7 +102,7 @@ export interface BriefTarget {
 }
 
 export interface DecisionBrief {
-  /** One-line human summary: "Run a deploy-status check against InstaWP/docs on GitHub." */
+  /** One-line human summary: "Run a deploy-status check against Globex/docs on GitHub." */
   headline: string;
   verb: ActionVerb;
   target: BriefTarget;
@@ -337,7 +337,7 @@ Each phase is independently valuable and independently shippable.
 
 ## 12. The blocked-card surface (phase 4 — scoping)
 
-**Motivation (from a fleet audit of instawp, 2026-07-24).** A hard `deny` (never-tier) is a *silent
+**Motivation (from a fleet audit of globex, 2026-07-24).** A hard `deny` (never-tier) is a *silent
 wall*: the agent's tool call fails with a terse reason, and — unlike an approval — there is **no card,
 no notification, no human visibility**. That audit found **129 denials in 14 days, ~67% false
 positives** (scratch `rm -rf`, and `prodBuild` firing on doc content) that *no one ever saw*. Approvals

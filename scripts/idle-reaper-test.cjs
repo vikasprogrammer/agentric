@@ -116,7 +116,7 @@ assert(statusOf(runningBlocked) === 'running', '…and still running');
 assert(qStatus(qst) === 'pending', '…with its question still open for an answer');
 
 /* Sweep 3 — the BLOCKED ceiling. An interactive session waiting on a question/approval is exempt from the
- * idle reaper, and nothing expires an Inbox card, so with no ceiling it waits for ever (live expresstech:
+ * idle reaper, and nothing expires an Inbox card, so with no ceiling it waits for ever (live initech:
  * 66 h on a question raised three days earlier). Past `blockedMaxHours`, measured from when the card was
  * RAISED, it is closed and the card cancelled — but a recent block, and an attached session, are left. */
 console.log('\n\x1b[1m5) sweep 3: the blocked-on-a-card ceiling\x1b[0m');

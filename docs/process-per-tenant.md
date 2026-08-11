@@ -9,7 +9,7 @@ each process serves exactly one tenant at the apex host.
 
 ## Why this shape (and not subdomains / one process)
 
-- **Tailscale MagicDNS gives one name per machine** (`vikass-mac-mini.taild4dd35.ts.net`) — no wildcard
+- **Tailscale MagicDNS gives one name per machine** (`your-box.tailnet.ts.net`) — no wildcard
   DNS, no `*.ts.net` TLS. So subdomain-per-tenant can't work without your own domain.
 - **Tailscale serves HTTPS on three ports** — `443`, `8443`, `10000`. Mapping one tenant port to each
   makes every tenant a **separate origin** → clean per-tenant cookies, **zero app changes**. Hence the
@@ -71,9 +71,9 @@ maps:
 
 | Tenant URL | → local process |
 |---|---|
-| `https://vikass-mac-mini.taild4dd35.ts.net` | `127.0.0.1:3010` |
-| `https://vikass-mac-mini.taild4dd35.ts.net:8443` | `127.0.0.1:3020` |
-| `https://vikass-mac-mini.taild4dd35.ts.net:10000` | `127.0.0.1:3030` |
+| `https://your-box.tailnet.ts.net` | `127.0.0.1:3010` |
+| `https://your-box.tailnet.ts.net:8443` | `127.0.0.1:3020` |
+| `https://your-box.tailnet.ts.net:10000` | `127.0.0.1:3030` |
 
 `tailscale serve` forwards `X-Forwarded-Proto: https` and the original `Host`, so the app's generated
 invite/webhook links come out as the correct public `https://…` URLs. Undo with
@@ -96,13 +96,13 @@ One plist per tenant at `~/Library/LaunchAgents/com.agentos.<slug>.plist`:
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/vmini/Projects/agent-os/scripts/run-tenant.sh</string>
-    <string>acme</string><string>/Users/vmini/aos/acme</string><string>3010</string><string>you@acme.com</string>
+    <string>~/Projects/agent-os/scripts/run-tenant.sh</string>
+    <string>acme</string><string>~/aos/acme</string><string>3010</string><string>you@acme.com</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/Users/vmini/aos/acme/server.log</string>
-  <key>StandardErrorPath</key><string>/Users/vmini/aos/acme/server.log</string>
+  <key>StandardOutPath</key><string>~/aos/acme/server.log</string>
+  <key>StandardErrorPath</key><string>~/aos/acme/server.log</string>
 </dict></plist>
 ```
 
@@ -115,7 +115,7 @@ Run `scripts/tailscale-serve.sh …` once (it persists with `--bg`).
 
 ## Verify
 
-- `curl -s https://vikass-mac-mini.taild4dd35.ts.net/health` → `{"ok":true,"tenant":"acme"}`; the
+- `curl -s https://your-box.tailnet.ts.net/health` → `{"ok":true,"tenant":"acme"}`; the
   `:8443` / `:10000` URLs return their own tenant ids.
 - Each home on disk is independent: `~/aos/globex/agent-os.db`, its own `tmux.sock`, `audit/`.
 - Logging into one tenant's URL does not authenticate you on another (separate origins + separate DBs).

@@ -37,7 +37,7 @@ variable is **whose identity it acts as**, which is exactly the connector's clas
 | Class | Identity | Example | Selection |
 |---|---|---|---|
 | **service** (today's `org`) | the company bot — one shared account | "Agentric posts to #status" | always present |
-| **personal** | one member's own account | "email from vikas@…" | only in that member's runs |
+| **personal** | one member's own account | "email from user@…" | only in that member's runs |
 | **personal + shared** | the *owner's* account, lent to the team | "use my Salesforce seat" | any run; acts as the owner |
 
 The **company app is bidirectional**: the same Slack bot token that *receives* slash commands and
@@ -285,7 +285,7 @@ same as UC3). **Build:** email adapter; reuses everything from UC2/UC3.
 
 ### UC5 — Agent emails an org user *from the managing member* *(egress, member identity)*
 **Already solved by P2+P3.** A **personal** Gmail connector OAuth'd as the member via Composio
-(`user_id` = their email) → the agent's `send_email` goes out *genuinely from* `vikas@instawp.com`
+(`user_id` = their email) → the agent's `send_email` goes out *genuinely from* `you@example.com`
 and lands in his real Sent — not a spoofed header. Recipient resolved via P4. run-as picks whose
 Gmail. Fails closed if the member hasn't connected Gmail.
 *Why not set `From:` on company Mailgun?* That's in-domain spoofing — survives DKIM only if aligned,

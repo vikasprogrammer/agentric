@@ -132,7 +132,7 @@ is unset → skip the Slack post, still render dashboard + KB page (fail-soft, n
 ## What shipped (v0.146.0)
 
 - `src/edge/digest.ts` — `buildDigest` (pure read) + `renderSlack`/`renderMarkdown` + `Digest`
-  (`today`/`refresh`/`postNow`/`maybePostEod`). Validated against a copy of the live instapods data:
+  (`today`/`refresh`/`postNow`/`maybePostEod`). Validated against a copy of the live northwind data:
   20 sessions rendered correctly, low-value test runs thresholded out, engineer's 3 PRs + the staged
   newsletter surfaced.
 - **Salience rule (refined against real data):** body = episodes with `importance ≥ 0.5` **OR** any
@@ -164,7 +164,7 @@ is unset → skip the Slack post, still render dashboard + KB page (fail-soft, n
 
 ## What shipped (v0.280.0) — from a log to a synthesis
 
-A real posted digest (instawp, 94 sessions, 2026-07-30) exposed the limits of "group the episode lines by
+A real posted digest (globex, 94 sessions, 2026-07-30) exposed the limits of "group the episode lines by
 agent". The lines themselves were excellent — the `report`-first-sentence source is doing its job — but the
 artifact around them wasn't readable, and in two places it was actively misleading.
 

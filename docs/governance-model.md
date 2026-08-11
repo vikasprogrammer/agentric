@@ -219,7 +219,7 @@ incl. SQL inside `db_query`/`execute_php`, case-insensitive):
 
 ```jsonc
 { "when": { "verb": "db.destroy",   "target.env": "prod" }, "then": "never" },  // DROP/TRUNCATE DATABASE|TABLE, schema delete
-{ "when": { "verb": "site.delete" },                        "then": "never" },  // delete a WP/InstaWP site
+{ "when": { "verb": "site.delete" },                        "then": "never" },  // delete a WP/Globex site
 { "when": { "verb": "content.delete", "count": { "gt": 25 } }, "then": "never" }, // mass content/user delete
 { "when": { "verb": "fs.destroy" },                         "then": "never" },  // rm -rf data paths, mkfs, dd
 { "when": { "verb": "infra.destroy" },                      "then": "never" },  // terraform destroy, kubectl delete, force-push main

@@ -6,7 +6,7 @@
  * `chat:` / `poke:` / `ask:` / `goal:`); `run_as` is IDENTITY (the accountable human). The old
  * createSession fallback took ANY non-`automation:` provenance as the identity, so a chat-routed or
  * ownerless-task run stored `run_as = 'chat:triage'` / `'task:<id>'` — a value no consumer can match.
- * Measured on the live instawp tenant (2026-08-04): 23 such rows. The cost is silent: that run loses the
+ * Measured on the live globex tenant (2026-08-04): 23 such rows. The cost is silent: that run loses the
  * member's GitHub token (its PRs land as the App bot), Composio/connector identity, member-scoped secret
  * resolution, and inbox ownership — with no error anywhere.
  *

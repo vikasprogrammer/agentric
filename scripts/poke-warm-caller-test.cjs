@@ -7,7 +7,7 @@
  * its claude keeps running, which is the NORMAL shape for a caller: it hands off work, reports, and carries
  * on for minutes while the delegate finishes. Every one of those took the resume lane, starting a SECOND
  * claude on a transcript the first still held — the outcome `chatSend` calls "the one worse than a slow
- * turn". Live on instapods 2026-08-10: `ses_f4535e8f` reported 16:13, worked until 16:34, and its 16:31
+ * turn". Live on northwind 2026-08-10: `ses_f4535e8f` reported 16:13, worked until 16:34, and its 16:31
  * poke spawned `ses_441cec` which died 28s later; the caller never saw it and re-derived the result by hand.
  *
  * Pins: reported-but-warm delivers in place; a dead pane still resumes; a human `stop` is never overridden;

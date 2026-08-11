@@ -162,7 +162,7 @@ assert(row(qaRun).parentThreadId === 'cs_eng' && row(qaRun).taskId === tQa.id, '
 assert(row(engRun2).parentThreadId === 'cs_eng', 'a poke resolves to its OWN thread (no parent = not a hand-off)');
 assert(row(engRun1).parentThreadId === undefined && row(engRun1).taskId === undefined, 'a member-spawned run has no chain edge');
 
-// ── steering a live hand-off: the instapods 2026-08-06 incident (tsk_67de2dfe) ──
+// ── steering a live hand-off: the northwind 2026-08-06 incident (tsk_67de2dfe) ──
 // A manager put its own delegated task on HOLD. The stand-down reached a NEWLY SPAWNED run while the
 // agent actually executing kept going for 25+ minutes, and the manager poked itself for the transition.
 console.log('\n\x1b[1msteering a live delegate\x1b[0m');

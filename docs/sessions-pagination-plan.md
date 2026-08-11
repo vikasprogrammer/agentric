@@ -1,6 +1,6 @@
 # Sessions pagination plan
 
-`GET /api/sessions` returns **all** non-archived sessions (~950 on instawp) and the console's global
+`GET /api/sessions` returns **all** non-archived sessions (~950 on globex) and the console's global
 1.5 s poll re-fetches the whole list every tick — the Tasks page fetches it a second time on its own 5 s
 timer. The console-perf arc so far (#525 clip → #530 gzip+ETag+304 → #532 client render-skip → #533
 per-row cache → #535 in-query task clip) made each tick cheap **when nothing changed**, but on a busy
@@ -82,7 +82,7 @@ need a home). Phase 2 delivers the measured perf win. Phase 3 is the largest cli
 ## Status
 
 - Phase 1 — **shipped** v0.294.0 (#539).
-- Phase 2 — **shipped** v0.296.0 (#542). Live instawp: poll payload 265 KB → 19.5 KB gzipped (950 → 83
+- Phase 2 — **shipped** v0.296.0 (#542). Live globex: poll payload 265 KB → 19.5 KB gzipped (950 → 83
   rows) off the list routes.
 - Phase 3 — **decided, deferred** (2026-08-03). Split into **3a** (client row virtualization — low-risk,
   fixes the render jank while keeping all client-side filtering; do first) and **3b** (server-side

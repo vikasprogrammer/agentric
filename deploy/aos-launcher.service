@@ -16,7 +16,7 @@ After=network.target
 [Service]
 Type=simple
 # Absolute node path (nvm) + the compiled CLI — match agent-os.service's node version.
-ExecStart=/home/vikas/.nvm/versions/node/v22.22.0/bin/node /home/vikas/tools/agent-os/dist/cli.js launcher --socket=/run/aos/launcher.sock --group=aos --trusted-dir=/home/vikas/tools/agent-os/terminal
+ExecStart=/home/user/.nvm/versions/node/v22.22.0/bin/node /home/user/tools/agent-os/dist/cli.js launcher --socket=/run/aos/launcher.sock --group=aos --trusted-dir=/home/user/tools/agent-os/terminal
 Restart=on-failure
 RestartSec=5
 SyslogIdentifier=aos-launcher

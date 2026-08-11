@@ -511,7 +511,7 @@ This is the natural extension of Pillar 10 (Distil now emits facts → memories/
 ## 13. Tools / Apps — ⬜ Not started
 
 **The idea.** Tools *built by agents* (or users) for specific/general use — the
-`/home/vikas/tools/`-style standalone apps, but registered, governed, and surfaced in the console.
+`/home/user/tools/`-style standalone apps, but registered, governed, and surfaced in the console.
 
 **Closest today.** The hand-written capability registry (`src/capabilities/registry.ts` + examples) —
 governed native effects, but authored in TypeScript by the platform, not by agents. A path: an agent

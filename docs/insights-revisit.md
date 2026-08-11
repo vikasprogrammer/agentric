@@ -34,12 +34,12 @@ Backing modules: `dreaming.ts` (612 lines), `insights.ts`, `measurement.ts`, `im
 
 ## 2. The evidence
 
-Measured 2026-08-08 against the live DBs (queries in §6). Two tenants: **instapods** (Mac Mini,
-`~/agent-os-data/instapods`) and **instawp** (125.253.92.103, the busiest).
+Measured 2026-08-08 against the live DBs (queries in §6). Two tenants: **northwind** (Mac Mini,
+`~/agent-os-data/northwind`) and **globex** (203.0.113.13, the busiest).
 
 ### 2a. Human actions taken — near zero
 
-| Signal | instapods | instawp |
+| Signal | northwind | globex |
 |---|---|---|
 | Reflect passes | 27 | 22 |
 | Sessions folded | 635 | 1830 |
@@ -54,7 +54,7 @@ The only surface with sustained consumption is the **pushed** one (the digest), 
 
 ### 2b. Alerts fire; nothing is proposed
 
-instawp `insights.alert` by key (lifetime):
+globex `insights.alert` by key (lifetime):
 
 ```
 agent-crash:website-bot   8      agent-crash:customer-bot  8
@@ -70,16 +70,16 @@ the same data.
 
 ### 2c. The outcome signal is not a signal
 
-instapods `session.reported` outcomes, lifetime:
+northwind `session.reported` outcomes, lifetime:
 
 ```
 success 281 · partial 46 · failure 1 · completed 1
 ```
 
-**One reported failure, ever.** instawp: 6 failures across 1830 sessions. Agents grade their own
+**One reported failure, ever.** globex: 6 failures across 1830 sessions. Agents grade their own
 homework and effectively never write "failure".
 
-Worse, ~40% of terminated sessions never report at all. instapods, last 30d:
+Worse, ~40% of terminated sessions never report at all. northwind, last 30d:
 
 ```
 session.ended with no outcome   334
@@ -100,8 +100,8 @@ metric it was written next to.
 
 ### 2d. Topic extraction: three versions, 22 resets, still wrong
 
-`learning.topics.reset`: instapods **10**, instawp **12** — each reset is a `TOPICS_VERSION` bump
-discarding the cumulative map. Live guidance on instawp today:
+`learning.topics.reset`: northwind **10**, globex **12** — each reset is a `TOPICS_VERSION` bump
+discarding the cumulative map. Live guidance on globex today:
 
 > The fleet frequently works on: **total, billing, usage, auto, updates**.
 
@@ -169,8 +169,8 @@ through the tenant-shared memory Insight they `recall`, and reaching humans as a
 has evidence behind it that `success-drop` never had. The KB fleet-learnings page keeps its counts but
 no longer derives a percentage from them, and states that outcome is self-reported.
 
-- **Exit:** live `learned_guidance` on instapods + instawp no longer asserts a success rate. Regenerates
-  on the next reflect pass after deploy (≤2h instapods, ≤24h instawp) — no migration needed.
+- **Exit:** live `learned_guidance` on northwind + globex no longer asserts a success rate. Regenerates
+  on the next reflect pass after deploy (≤2h northwind, ≤24h globex) — no migration needed.
 - **Pin:** `scripts/insights-signal-test.cjs` (in `npm run test:governance`) — 19 assertions across all
   four channels, verified to fail 10 of them against the pre-fix build. Its `noRateWithoutFailures`
   case is the fixture Step 1 must satisfy: two states differing **only** in how many runs reported,
@@ -179,7 +179,7 @@ no longer derives a percentage from them, and states that outcome is self-report
 ### Step 1 — an outcome that isn't self-graded ✅ closed at v0.330.0 (see Step 1b)
 
 `src/edge/outcome.ts`. Rules over facts the OS observed itself, ordered, each carrying the `basis` that
-decided it so any number traces back to its evidence. Live 30-day instapods corpus, 443 conversations:
+decided it so any number traces back to its evidence. Live 30-day northwind corpus, 443 conversations:
 
 | | conversations | note |
 |---|---|---|
@@ -318,7 +318,7 @@ Keep `report` as one input among several, never the sole one. Separately, close 
 Stop hook already beacons `/api/turn-idle` — make a terminal outcome mandatory there so `unknown`
 becomes rare rather than modal.
 
-- **Exit:** on the live instapods corpus, `unknown` drops below 10% of terminated sessions, and the
+- **Exit:** on the live northwind corpus, `unknown` drops below 10% of terminated sessions, and the
   derived failure rate is **non-trivially different from 0.3%** — i.e. the metric has variance.
 - **Falsifier:** hand-label 30 random runs from the live DB and compare against the derived outcome;
   publish the confusion counts in the PR. If the derived signal doesn't beat "always success", stop
@@ -363,7 +363,7 @@ event per action taken.
 
 No new page. No second signal. Instrument the card: opened, action taken, dismissed.
 
-- **Exit:** on instawp, the five crash-looping agents produce **one card each**, and at least one card
+- **Exit:** on globex, the five crash-looping agents produce **one card each**, and at least one card
   gets an action taken within a week.
 - **Falsifier:** if cards are dismissed without action, the card is wrong — fix the card, do not add
   a second signal.
@@ -436,8 +436,8 @@ sqlite3 <db> "select value from settings where key='learned_recommendations';"
 sqlite3 <db> "select json_extract(value,'\$.topics') from settings where key='dreaming_state';"
 ```
 
-Live DB paths: instapods `~/agent-os-data/instapods/agent-os.db`; instawp
-`ubuntu@125.253.92.103:/home/ubuntu/tools/agent-os/data/agent-os.db`.
+Live DB paths: northwind `~/agent-os-data/northwind/agent-os.db`; globex
+`user@203.0.113.13:/home/ubuntu/tools/agent-os/data/agent-os.db`.
 
 ## 7. Related
 

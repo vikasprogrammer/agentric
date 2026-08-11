@@ -50,8 +50,8 @@ nginx's `/terminal/` at the app (which now reverse-proxies to each member's own 
 sudo systemctl edit agent-os.service     # add:  [Service]  Environment=AOS_UID_ISOLATION=1
 # 2. the member uids must be able to READ/EXECUTE the runner scripts + memory MCP. Make the install
 #    dir group-readable by `aos` (or relocate runtime assets to a world-readable path):
-sudo chgrp -R aos /home/vikas/tools/agent-os && sudo chmod -R g+rX /home/vikas/tools/agent-os
-sudo chmod o+x /home/vikas            # member uids must traverse to reach the repo
+sudo chgrp -R aos /home/user/tools/agent-os && sudo chmod -R g+rX /home/user/tools/agent-os
+sudo chmod o+x /home/agent-os            # member uids must traverse to reach the repo
 sudo systemctl restart agent-os.service aos-launcher.service
 ```
 

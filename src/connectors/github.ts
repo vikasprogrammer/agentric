@@ -221,7 +221,7 @@ export interface InstallationStatus {
   installed: boolean;
   /** How many App installations the user's token can act through. */
   count: number;
-  /** The account logins the App is installed on (org/user), e.g. ["InstaWP"]. */
+  /** The account logins the App is installed on (org/user), e.g. ["Globex"]. */
   accounts: string[];
   /** Total repositories reachable across those installations. */
   repos: number;

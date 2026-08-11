@@ -23,7 +23,7 @@ context (per-agent policy *selection* is not implemented). PR #136 made the drif
 only way to *clear* that drift today is to hand-edit every agent manifest, per tenant, across every box.
 
 That hand-editing is the actual source of the operational pain we hit:
-- A tenant's enforced id changed (`default@v1` → `default@v2` → `default@v3-instapods` → `default@v3`)
+- A tenant's enforced id changed (`default@v1` → `default@v2` → `default@v3-northwind` → `default@v3`)
   and left N agents mismatched; each fix was a manual `sed` sweep over `agents/*/agent.json`.
 - Multi-tenant boxes multiply the work (each tenant home has its own agents and its own enforced id).
 - Ad-hoc sweeps are error-prone (e.g. `perl` interpolating an `@v3` id into nothing).

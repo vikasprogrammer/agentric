@@ -36,7 +36,7 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
   // ⛔ RETIRED (2026-08-08, docs/insights-revisit.md Step 0) — the `success-drop` alert. It was the fourth
   // and loudest broadcast of the same broken metric: `measureLearning` counts a run as successful only if it
   // self-reported `outcome: success`, so a week where more runs simply exited without calling `report` reads
-  // as a "fleet success rate dropped N points" DM to a human. It fired twice on instapods, where agents have
+  // as a "fleet success rate dropped N points" DM to a human. It fired twice on northwind, where agents have
   // reported failure exactly once in their entire history. Unlike `agent-low` below — which requires
   // `a.failed >= 2`, i.e. real reported failures — this one had no failure evidence at all behind it.
   // Restore it in Step 4, over an outcome derived from observable facts. (Dropping it also drops the

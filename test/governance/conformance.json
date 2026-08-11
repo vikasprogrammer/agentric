@@ -274,7 +274,7 @@
       "name": "connector read is allowed",
       "capability": "connector.call",
       "args": {
-        "tool": "mcp__instawp__list_sites",
+        "tool": "mcp__globex__list_sites",
         "input": {}
       },
       "expect": "allow"
@@ -294,7 +294,7 @@
       "name": "delete_site is never (by name)",
       "capability": "connector.call",
       "args": {
-        "tool": "mcp__instawp__delete_site",
+        "tool": "mcp__globex__delete_site",
         "input": {
           "site_id": 5
         }
@@ -305,7 +305,7 @@
       "name": "db_query DROP TABLE is never (argument-aware \u2014 the closed hole)",
       "capability": "connector.call",
       "args": {
-        "tool": "mcp__instawp__db_query",
+        "tool": "mcp__globex__db_query",
         "input": {
           "sql": "DROP TABLE wp_posts"
         }
@@ -327,7 +327,7 @@
       "name": "db_query SELECT is just a read-ish call",
       "capability": "connector.call",
       "args": {
-        "tool": "mcp__instawp__db_query",
+        "tool": "mcp__globex__db_query",
         "input": {
           "sql": "SELECT * FROM wp_posts LIMIT 10"
         }
@@ -382,7 +382,7 @@
       "name": "bulk delete over cap \u2192 never",
       "capability": "connector.call",
       "args": {
-        "tool": "mcp__instawp__delete_content",
+        "tool": "mcp__globex__delete_content",
         "input": {
           "ids": [
             1,
@@ -420,7 +420,7 @@
       "name": "small delete under cap now runs freely (only over-cap bulk delete is never)",
       "capability": "connector.call",
       "args": {
-        "tool": "mcp__instawp__delete_content",
+        "tool": "mcp__globex__delete_content",
         "input": {
           "ids": [
             1,
@@ -1139,7 +1139,7 @@
       "args": {
         "tool": "Bash",
         "input": {
-          "command": "mkdir -p repos && rm -rf cli && gh repo clone InstaWP/cli cli"
+          "command": "mkdir -p repos && rm -rf cli && gh repo clone Globex/cli cli"
         }
       },
       "expect": "allow"
@@ -1216,12 +1216,12 @@
       "args": {
         "tool": "Bash",
         "input": {
-          "command": "gh pr create --repo InstaWP/docs --body \"Reviewed app.instawp.io; npm run build passes\""
+          "command": "gh pr create --repo Globex/docs --body \"Reviewed app.globex.io; npm run build passes\""
         }
       },
       "patterns": [
         {
-          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.instawp\\.io))",
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
           "fact": "prodBuild",
           "scope": "shell"
         }
@@ -1237,12 +1237,12 @@
       "args": {
         "tool": "Bash",
         "input": {
-          "command": "git push origin x -m \"Verified npm run build against app.instawp.io\""
+          "command": "git push origin x -m \"Verified npm run build against app.globex.io\""
         }
       },
       "patterns": [
         {
-          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.instawp\\.io))",
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
           "fact": "prodBuild",
           "scope": "shell"
         }
@@ -1258,12 +1258,12 @@
       "args": {
         "tool": "Bash",
         "input": {
-          "command": "cat > pr.md <<EOF\nnpm run build passes on app.instawp.io\nEOF"
+          "command": "cat > pr.md <<EOF\nnpm run build passes on app.globex.io\nEOF"
         }
       },
       "patterns": [
         {
-          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.instawp\\.io))",
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
           "fact": "prodBuild",
           "scope": "shell"
         }
@@ -1279,12 +1279,12 @@
       "args": {
         "tool": "Bash",
         "input": {
-          "command": "npm run build && rsync -a dist/ app.instawp.io:/var/www"
+          "command": "npm run build && rsync -a dist/ app.globex.io:/var/www"
         }
       },
       "patterns": [
         {
-          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.instawp\\.io))",
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
           "fact": "prodBuild",
           "scope": "shell"
         }
@@ -1344,12 +1344,12 @@
       "args": {
         "tool": "Bash",
         "input": {
-          "command": "gh api repos/x/pulls -X POST -f title=\"docs\" -f body=\"Reviewed app.instawp.io; npm run build passes\""
+          "command": "gh api repos/x/pulls -X POST -f title=\"docs\" -f body=\"Reviewed app.globex.io; npm run build passes\""
         }
       },
       "patterns": [
         {
-          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.instawp\\.io))",
+          "pattern": "(?=[\\s\\S]*(?:vite build|npm run build))(?=[\\s\\S]*(?:app-atomic|app\\.globex\\.io))",
           "fact": "prodBuild",
           "scope": "shell"
         }

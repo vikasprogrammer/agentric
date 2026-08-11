@@ -105,7 +105,7 @@ already are (the enricher is pure/no-I/O); `gate()` fetches them and threads the
 
 **Loopback is not egress** (v0.291.3). `localhost`, `127.0.0.0/8` and `::1` never leave the box, and
 anything listening there is already reachable by the shell the agent is holding — `shell.exec` governs
-that. Governing it bought no safety and cost most of the noise: on live instapods, `127.0.0.1` +
+that. Governing it bought no safety and cost most of the noise: on live northwind, `127.0.0.1` +
 `localhost` were **35 of the 49** host approvals ever raised, typically an agent curling its own dev
 server at owner/admin tier. `computeHostFacts` now reports `netEgress: false` for a pinned loopback
 target, in `allowlist` mode as well as `open`. (An `ssh -L` tunnel on a loopback port is invisible to
@@ -114,7 +114,7 @@ this — same honest constraint as the rest of §2.)
 **Verbs are matched in COMMAND POSITION, not anywhere in the line** (v0.290.1). The first cut searched
 the whole command for `\bssh\b`, which fires on `grep -i "cmd\|exec\|ssh\|sprintf"` and on
 `ssh -i ~/.ssh/id_rsa` — the word is there, no host can be pinned, and a local grep becomes an OWNER
-approval. Live instapods: 10 of 15 host approvals in the fortnight to 2026-08-02 were "host could not be
+approval. Live northwind: 10 of 15 host approvals in the fortnight to 2026-08-02 were "host could not be
 identified", mostly this shape, and almost all were approved — the false-positive tax the fleet was
 paying. `host-match.ts` now splits the line into invocations (quote-aware, so a separator inside a quoted
 string is data), skips wrapper prefixes and their flag arguments (`sudo -u deploy ssh box`), strips a

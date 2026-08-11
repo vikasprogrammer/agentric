@@ -21,7 +21,7 @@ import { classifyActivity, clipText, ActivityCategory, ActivityEffect, ActivityT
 
 /**
  * How much long-form text a LIST endpoint ships per row. List views render a title, a badge row and at
- * most a two-line caption; the full prose belongs to the detail fetch. Measured on the instawp tenant
+ * most a two-line caption; the full prose belongs to the detail fetch. Measured on the globex tenant
  * before this cap: GET /api/sessions was 3.07 MB (2.1 MB of it session `task` prompts) and GET /api/tasks
  * was 1.27 MB (887 KB of it task `body`) — ~3 MB of prose per console load that nothing displayed.
  */
@@ -2631,7 +2631,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // ── terminal-native sessions ────────────────────────────────────────────────
   // `?archived=1` returns the soft-archived set (the Sessions "show archived / restore" view); default is live.
   //
-  // PAYLOAD: the full `task` prompt is CLIPPED for the list. Measured on the instawp tenant (946 sessions):
+  // PAYLOAD: the full `task` prompt is CLIPPED for the list. Measured on the globex tenant (946 sessions):
   // the response was 3.07 MB of which `task` alone was 2.1 MB — every session's complete prompt shipped to
   // a view that never renders it in full. The console uses `task` in exactly two places: the client-side
   // search haystack, and a `line-clamp-2` fallback caption when `title` is empty. `LIST_CLIP` chars
@@ -3388,7 +3388,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/tasks') {
     const tasks = os.tasks.list({ tenant: os.tenant, status: (url.searchParams.get('status') as TaskStatus) || undefined, query: url.searchParams.get('q') || undefined, limit: 500 });
     // PAYLOAD: `body` is CLIPPED here for the same reason as the sessions list above — measured on the
-    // instawp tenant (471 tasks) it was 887 KB of a 1.27 MB response, and NO list-level view renders it
+    // globex tenant (471 tasks) it was 887 KB of a 1.27 MB response, and NO list-level view renders it
     // (the board shows title/labels; the description tab reads `detail.task.body` from GET /api/tasks/:id,
     // which still returns the full text). Search is server-side (`?q=`), so the client needs no haystack.
     const slim = tasks.map((t) => (t.body ? { ...t, body: clipText(t.body, LIST_CLIP) } : t));
@@ -6210,7 +6210,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   }
   if (method === 'GET' && p === '/api/approvals') return sendJson(res, 200, os.approvals.pending(os.tenant).filter((a) => tm.canViewSession(a.runId, me)).map(approvalView));
   // "Always approve": approve THIS attempt AND add its decision-brief SIGNATURE to the auto-approval list,
-  // so future attempts of the SAME action shape (e.g. "reach 5.135.136.192", "use stripe refund") clear
+  // so future attempts of the SAME action shape (e.g. "reach 198.51.100.42", "use stripe refund") clear
   // without a card. Narrower + safer than a capability-wide allow rule — it only silences this one shape,
   // is fully legible in Settings → Auto-approvals, and one-click revocable. OWNER-ONLY (it durably loosens
   // gating). Only reachable for an `approve`, so it can never wave through a never-tier (deny) action.
@@ -7118,7 +7118,7 @@ function relOf(root: string, abs: string): string {
 //
 // TRANSPORT: every in-memory response body funnels through `sendBody`, which adds the two things this
 // server shipped without for its whole life — compression and revalidation. Measured on the live
-// instawp tenant (949 sessions / 473 tasks), one console load moved ~4.7 MB of JSON plus 1.82 MB of
+// globex tenant (949 sessions / 473 tasks), one console load moved ~4.7 MB of JSON plus 1.82 MB of
 // uncompressed app bundle, and the SPA re-polls sessions+messages every 1.5s forever. Nothing in front
 // covers it either: the Mac Mini tenants run behind `tailscale serve` with no nginx at all, and the
 // nginx box has `gzip on` but the default `gzip_types` (text/html only), so JS/CSS/JSON went out raw.
@@ -7142,7 +7142,7 @@ const GZIP_CACHE_MAX = 64;
  * cost is amortised to nothing and only the wire size matters — take the small level-6 win.
  *
  * A live JSON payload is the opposite. `/api/sessions` changes whenever any run does (8 concurrent runs
- * on the live instawp tenant keep `updatedAt` moving), so nearly every 1.5s poll is a cache MISS and
+ * on the live globex tenant keep `updatedAt` moving), so nearly every 1.5s poll is a cache MISS and
  * re-compresses ~1.2 MB. Measured on that payload: level 6 costs 15.8 ms, level 4 costs 10.1 ms for
  * 5.9% more bytes, level 1 costs 6.5 ms for 18.8% more. Level 4 is the knee — it buys back a third of
  * the compression time (comparable to the entire list rebuild) for bytes nobody notices on a poll that

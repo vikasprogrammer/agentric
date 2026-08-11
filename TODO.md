@@ -67,7 +67,7 @@ _Last updated: 2026-08-04._
 Full arc + measurements in memory `console-list-payload-perf`; pagination design in
 [`docs/sessions-pagination-plan.md`](docs/sessions-pagination-plan.md).
 
-## Shipped (console-perf arc, all deployed to instapods · personal · instawp)
+## Shipped (console-perf arc, all deployed to northwind · personal · globex)
 
 - [x] List-payload clip (#525) · gzip + ETag + 304 (#530) · client render-skip on 304 (#532) ·
       per-row query cache (#533) · in-query task clip (#535)
@@ -75,7 +75,7 @@ Full arc + measurements in memory `console-list-payload-perf`; pagination design
       dropped its 2nd full-list poll.
 - [x] **Sessions-pagination Phase 2** (#542, v0.296.0) — `GET /api/sessions/summary`; the 1.5 s poll
       switches source by route (full list only on the Sessions/Chat views, cheap summary everywhere
-      else). Live instawp: poll payload **265 KB → 19.5 KB gzipped, 950 → 83 rows** off the list routes.
+      else). Live globex: poll payload **265 KB → 19.5 KB gzipped, 950 → 83 rows** off the list routes.
 
 ## Next — Phase 3 (DECIDED: virtualize now, paginate later)
 
@@ -112,7 +112,7 @@ human already lives in, all through the same gate + run-as). Long-poll (`getUpda
 @BotFather token. Mirrors the Discord path; see CLAUDE.md → `src/edge/telegram-socket.ts` /
 `src/connectors/telegram.ts`.
 
-## Shipped (all deployed to instapods · personal)
+## Shipped (all deployed to northwind · personal)
 
 - [x] **Ingress + `telegram_reply` MVP** — long-poll socket, run-as via identity map (provider
       `telegram`), chat-id thread continuity, bound-chat reply tool, Settings→Integrations panel ·
@@ -142,6 +142,6 @@ human already lives in, all through the same gate + run-as). Long-poll (`getUpda
 
 ## Notes
 
-- Live bot: **personal** tenant `@VikAgentricBot`; owner Telegram id `7024650475` → `vikas.programmer@gmail.com`.
-  **instapods** has the code but no token (socket `start()` no-ops until one is set).
+- Live bot: **personal** tenant `@VikAgentricBot`; owner Telegram id `7024650475` → `owner@example.com`.
+  **northwind** has the code but no token (socket `start()` no-ops until one is set).
 - Group thread continuity needs **Group Privacy OFF** in @BotFather (mentions/commands work either way).

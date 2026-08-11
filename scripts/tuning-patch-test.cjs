@@ -4,7 +4,7 @@
  * The agent-config route replaced the tuning fields wholesale while every other field on it patched by
  * presence. So a one-knob save (`{verbosity:'terse'}` from a script, or any future partial caller) blanked
  * the rest: it unpinned the agent's model and dropped it onto the fleet default, with nothing in the
- * response saying so. Hit the live instapods consolidator, which is pinned to opus and quietly wasn't.
+ * response saying so. Hit the live northwind consolidator, which is pinned to opus and quietly wasn't.
  *
  * The contract now: absent key → keep; present key → replace; `''` → clear to inherit. That last one is
  * why the console must state every knob it owns — JSON.stringify drops `undefined`, so a spread of a

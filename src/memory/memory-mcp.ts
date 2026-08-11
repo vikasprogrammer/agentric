@@ -1157,7 +1157,7 @@ const TOOLS = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        title: { type: 'string', description: 'A short goal title, e.g. "Grow InstaWP signups 20% this quarter".' },
+        title: { type: 'string', description: 'A short goal title, e.g. "Grow Globex signups 20% this quarter".' },
         body: { type: 'string', description: 'The what/why — enough for a human to judge and refine it.' },
         target: { type: 'string', description: 'Optional free-text target caption, e.g. "20% MoM signup growth".' },
         labels: { type: 'array', items: { type: 'string' }, description: 'Optional freeform labels.' },

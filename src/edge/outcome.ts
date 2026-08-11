@@ -1,7 +1,7 @@
 /**
  * **Derived run outcome** — Step 1 of `docs/insights-revisit.md`.
  *
- * Everything Insights ever claimed rested on one number the agent wrote about itself. On live instapods
+ * Everything Insights ever claimed rested on one number the agent wrote about itself. On live northwind
  * that number had no variance and a large hole: **one** reported failure in 329 reports lifetime, and
  * ~40% of terminated runs never called `report` at all. So "success rate" measured whether `report()` was
  * called. Step 0 deleted every channel that broadcast it; this module is the replacement it has to earn.

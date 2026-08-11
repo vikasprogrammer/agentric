@@ -10,10 +10,10 @@ const { enrichArgs } = require(path.join(__dirname, '..', 'dist/governance/enric
 const bash = (command) => ({ tool: 'Bash', input: { command } });
 const conn = (tool, input = {}) => ({ tool, input });
 
-// An InstaWP-shaped pattern set (exactly what would live in Settings, not in code).
+// An Globex-shaped pattern set (exactly what would live in Settings, not in code).
 const patterns = [
   { pattern: '\\breboot\\b|systemctl\\s+reboot|shutdown\\s+-r', fact: 'serverReboot', scope: 'shell' },
-  { pattern: 'v-instawp-suspend-user|hestia.*suspend', fact: 'userSuspend', scope: 'shell' },
+  { pattern: 'v-globex-suspend-user|hestia.*suspend', fact: 'userSuspend', scope: 'shell' },
   { pattern: '(vite build|npm run build)[\\s\\S]*(app-atomic|159\\.65\\.64\\.73)', fact: 'prodBuild', scope: 'shell' },
   { pattern: 'stripe-refund|STRIPE_REFUND', fact: 'stripeRefund', scope: 'any' },
   { pattern: 'freescout-manager\\.php reply|freescout[\\s\\S]*\\breply\\b', fact: 'freescoutSend', scope: 'shell' },
@@ -21,9 +21,9 @@ const patterns = [
 
 const cases = [
   // [name, capability, args, fact, expected, patternsOverride?]
-  ['reboot → serverReboot', 'shell.exec', bash('ssh root@159.65.64.73 "reboot"'), 'serverReboot', true],
+  ['reboot → serverReboot', 'shell.exec', bash('ssh root@198.51.100.23 "reboot"'), 'serverReboot', true],
   ['systemctl reload is NOT a reboot', 'shell.exec', bash('systemctl reload apache2'), 'serverReboot', undefined],
-  ['suspend-user → userSuspend', 'shell.exec', bash('v-instawp-suspend-user user123 phishing'), 'userSuspend', true],
+  ['suspend-user → userSuspend', 'shell.exec', bash('v-globex-suspend-user user123 phishing'), 'userSuspend', true],
   ['prod build → prodBuild', 'shell.exec', bash('cd /home/runcloud/webapps/app-atomic/live && npm run build'), 'prodBuild', true],
   ['dev build (no prod path) is not prodBuild', 'shell.exec', bash('npm run build'), 'prodBuild', undefined],
   ['stripe refund (any scope, shell)', 'shell.exec', bash('./iwp stripe-refund ch_123 --amount=50'), 'stripeRefund', true],

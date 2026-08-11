@@ -2,7 +2,7 @@
 
 How to move a **process-per-tenant** Agentric deployment (one `agent-os serve` process = one tenant)
 from one Linux box to another with **minimal downtime** (~2–4 min) and a clean rollback. Written from
-the instawp move off the shared **jump-server** onto a dedicated box (2026-07-21). Substitute your own
+the globex move off the shared **jump-server** onto a dedicated box (2026-07-21). Substitute your own
 old/new hosts, user, tenant slug, port, and public hostname.
 
 > **Why box-to-box and not a version bump:** keep the migration **like-for-like** — deploy the *same
@@ -13,8 +13,8 @@ Reference values used below (replace with yours):
 
 | | old (source) | new (target) |
 |---|---|---|
-| host | `vikas@OLD_IP` | `ubuntu@NEW_IP` |
-| install | `/home/vikas/tools/agent-os` | `/home/ubuntu/tools/agent-os` |
+| host | `user@OLD_IP` | `ubuntu@NEW_IP` |
+| install | `/home/user/tools/agent-os` | `/home/ubuntu/tools/agent-os` |
 | data home | `…/data` | `…/data` |
 | unit | `agent-os-<tenant>.service` | same |
 | ports | app `3012`, ttyd `3013` | same |
@@ -46,7 +46,7 @@ stays put. The tenant's state is:
 ## 1. Pre-flight (before any downtime)
 
 1. **Access to the new box.** Get SSH in. If the old box can already reach the new one (jump host),
-   install your key through it: `ssh old "ssh ubuntu@NEW_IP 'cat >> ~/.ssh/authorized_keys'" <<< "$PUBKEY"`.
+   install your key through it: `ssh old "ssh user@NEW_IP 'cat >> ~/.ssh/authorized_keys'" <<< "$PUBKEY"`.
    Set up a **new→old** key too (for rsync driven by the idle new box): generate on new, append to old's
    `authorized_keys` (may need `sudo tee` if that file is root-owned).
 2. **Confirm the new box is bigger and dedicated.** `free -h`, `nproc`, `df -h /`.
@@ -54,7 +54,7 @@ stays put. The tenant's state is:
    built-in sqlite. Keeping AutoMem = byte-identical recall.
 4. **Lower the DNS TTL** on the public hostname to ~60s **now**, so the eventual cutover propagates fast.
 5. **Inventory the old box's NON-agent-os runtime deps.** Agents shell out to tools the base install
-   doesn't include — on the instawp box the `iwp`/`clickup-manager` tooling needs **PHP + composer**
+   doesn't include — on the globex box the `iwp`/`clickup-manager` tooling needs **PHP + composer**
    (`php -v`, `php -m`, `which composer` on the old box). Note the versions/extensions so §2 installs a
    match; a missing runtime silently fails only the agents that use it ("this runtime has no php").
 6. **Disable unattended auto-reboot on the new box** (it bit us — a kernel upgrade rebooted mid-setup):
@@ -181,7 +181,7 @@ where `<munged-cwd>` is the absolute agent-dir with `/`→`-`. They must be copi
 cwd matches:
 
 ```bash
-rsync -a vikas@OLD_IP:/home/vikas/.claude/projects/ ~/stage-cp/
+rsync -a user@OLD_IP:/home/user/.claude/projects/ ~/stage-cp/
 cd ~/stage-cp
 for d in */; do d="${d%/}"
   case "$d" in -home-OLDUSER-*) t="${d/-home-OLDUSER-/-home-NEWUSER-}";; *) t="$d";; esac
@@ -218,7 +218,7 @@ back to the tenant-wide `github_bot_token`. The binary is all you install; the t
 needs the same reach. **Do NOT copy the old box's private `id_rsa`** — that doubles the blast radius of a
 key that's root everywhere, and it's unrevocable per-box. Instead:
 1. Enumerate the fleet: `grep -rhoE 'root@[a-z0-9.-]+|ssh +root@[0-9.]+' <old agent CLAUDE.md + ~/agents/*/>`;
-   confirm reach with `ssh root@<h> hostname` from the old box. (On the instawp box this found staging×2,
+   confirm reach with `ssh root@<h> hostname` from the old box. (On the globex box this found staging×2,
    dev3, dev, cloudapp, newstaging, **and 3 production servers** — production is a deliberate opt-in.)
 2. Give the new box **its own** keypair (`ssh-keygen -t ed25519`); it stays on the new box.
 3. From the old box (which still has root on each), append the new box's **public** key to each host's

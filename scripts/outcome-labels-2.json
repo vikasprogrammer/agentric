@@ -1,7 +1,7 @@
 {
   "_": "Round 2 — the independent re-validation the Step 1 PR owed (docs/insights-revisit.md).",
   "_why": "Round 1's errors bought two rules (`died-early`, `human-session`), so round 1 measures the fitting as much as the derivation. This round samples ONLY conversations round 1 never touched (`outcome-label-sample.cjs --exclude scripts/outcome-labels.json`) and scores the rules exactly as shipped in v0.323.0 — nothing was changed after seeing these results.",
-  "_corpus": "instapods, 30-day window, snapshot 2026-08-09. 32 conversations, stratified across all 9 bases, labelled blind from task text + transcript only.",
+  "_corpus": "northwind, 30-day window, snapshot 2026-08-09. 32 conversations, stratified across all 9 bases, labelled blind from task text + transcript only.",
   "_scale": "success | partial | incomplete | noop | failure | abandoned | ? — '?' means no transcript on this box, so no independent evidence existed.",
   "labels": {
     "019fb7ad-61de-7232-a5da-c47fde855819": "?",

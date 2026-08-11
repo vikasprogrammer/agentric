@@ -1197,7 +1197,7 @@ export class Automations {
       if (this.tm.deliverToResident(boundId, liveMsg)) { emit('delivered', boundId); return { status: 'delivered', sessionId: boundId }; }
       if (this.tm.reviveResident(boundId, liveMsg, runAs)) { emit('revived', boundId); return { status: 'revived', sessionId: boundId }; }
       // Delivery failed but the run is STILL WORKING: spawning a second agent onto the same task is how a
-      // "stand down" ends up executed by a fresh run while the original keeps building (instapods
+      // "stand down" ends up executed by a fresh run while the original keeps building (northwind
       // 2026-08-06). Report the failure instead of duplicating the worker.
       if (this.tm.reachable(boundId)) { emit('undeliverable', boundId); return { status: 'none', sessionId: boundId }; }
     }
