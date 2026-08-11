@@ -91,6 +91,35 @@ const discordStub = { dmUser: async () => ({ ok: false }) };
   assert(/console\.test\/#\/settings\/secrets/.test(sent[0].text), 'DM deep-links to Settings → Secrets', sent[0].text);
   assert(/🔑/.test(sent[0].text), 'DM carries the secret icon');
 
+  console.log('\n\x1b[1m7) an agent-edit proposal DMs the TARGET agent\'s settings page, not the Agents index\x1b[0m');
+  // The reviewer approves the card on `#/agent/<target>`; dropping them on the index made them hunt for
+  // it. The proposal carries its own deep-link, so the DM lands where the review card actually is.
+  const mk = (id, prompt) => {
+    const dir = path.join(aos.paths.userAgents, id);
+    fs.mkdirSync(dir, { recursive: true });
+    const manifest = { id, version: '1.0.0', description: `${id} agent`, principal: `svc-${id}`, policyContext: 'default@v3', runtime: 'claude-code' };
+    fs.writeFileSync(path.join(dir, 'agent.json'), JSON.stringify(manifest, null, 2) + '\n');
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), prompt);
+    aos.registerAgent({ ...manifest, dir });
+    return id;
+  };
+  const EDITOR = mk('editor-bot', '# Editor\n\n## Method\n\nDo the work.\n');
+  const TARGET = mk('blog-optimizer', '# Blog optimizer\n\n## Method\n\nRewrite the headline.\n\n## Gotchas\n\nKeep the slug.\n');
+  aos.settings.setAgentProposalTrust({ minMaturity: 0, autoApplyAt: 1, autoApply: false }, 'test');
+  const es = tm.createSession(EDITOR, 'edit test', 'task');
+  const before7 = notices.length;
+  const prop = tm.proposeAgentUpdate(es.id, EDITOR, { id: TARGET, rationale: 'add a shipping note', claudeMdAppend: '## Shipping\n\nHand off.' });
+  assert(prop.ok && prop.outcome === 'pending_approval', 'proposal queued for review', prop);
+  const n7 = notices[before7];
+  assert(n7 && n7.kind === 'agent.update.proposed' && n7.link && n7.link.page === 'agent' && n7.link.detail === TARGET,
+    'the notice carries the target-agent deep-link', n7 && JSON.stringify(n7.link));
+  sent.length = 0;
+  await notifyReview(aos, slackStub, discordStub, 'https://console.test', n7);
+  assert(sent.length === 1 && new RegExp(`console\\.test/#/agent/${TARGET}`).test(sent[0].text),
+    "DM deep-links to the target agent's settings page", sent[0] && sent[0].text);
+  assert(!/Agentric console/.test(sent[0].text) && new RegExp(`${TARGET}'s settings`).test(sent[0].text),
+    'and names that page in the link label', sent[0] && sent[0].text);
+
   console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);
   try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
   process.exit(fail === 0 ? 0 : 1);
