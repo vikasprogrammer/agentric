@@ -4,7 +4,7 @@
 > Open-core: the **mechanisms** (kernel, governance, observability) are generic and shippable; the
 > **agents, policies, connectors, and data** are brand-private plugins.
 
-![Agentric architecture](https://share.instawp.com/CFWZ1myP)
+![Agentric architecture](assets/architecture.jpg)
 
 ---
 

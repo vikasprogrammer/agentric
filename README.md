@@ -112,7 +112,7 @@ by the same policy engine that governs native capabilities.
 <img src="docs/assets/console-session.jpg" alt="Agentric console: a live agent session in the browser terminal, with other running sessions in tabs alongside it" width="900">
 
 <sub>A live session in the browser terminal. Every run is a real CLI agent in a tmux pane you can
-watch, take over, and hand back. <a href="https://share.instawp.com/k7v5nDCp">Full size</a>.</sub>
+watch, take over, and hand back.</sub>
 
 </div>
 
