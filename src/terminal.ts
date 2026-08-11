@@ -667,6 +667,12 @@ export interface ReviewNotice {
    *  every review card is addressed to. A PERSONAL connection request overrides it to the run's own
    *  member, since only they can complete the OAuth for their own account. */
   audience?: Audience;
+  /** Where the DM's link lands, when the card is about ONE named object and the kind's default page is a
+   *  list. Overrides {@link REVIEW_PRESENTATION}'s page for this notice: an `agent.update.proposed` points
+   *  at `#/agent/<target>` — the target agent's settings page, where the review card actually is — instead
+   *  of dropping the reviewer on the Agents index to find it themselves (parity with the inbox row, which
+   *  has deep-linked by target all along). `label` names the destination in the DM text. */
+  link?: { page: string; detail?: string; label?: string };
 }
 
 /** The spec an agent proposes for a new automation — the subset of `AddAutomationInput` an agent may
@@ -4602,7 +4608,7 @@ export class TerminalManager {
    * fires in ONE place — parity with how approvals/questions/tasks already reach a human. The notifier is
    * advisory: a failed push never wedges the request.
    */
-  private postReviewCard(input: { type: ReviewNotice['kind']; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience }): void {
+  private postReviewCard(input: { type: ReviewNotice['kind']; sessionId: string; agent: string; title: string; body: string; args?: Record<string, unknown>; summary?: string; audience?: Audience; link?: ReviewNotice['link'] }): void {
     // Providing/publishing/granting is an owner/admin act — address the review card to the admin tier by
     // default. A caller can override (e.g. a personal connection request, which only its own member can
     // complete) by passing an explicit `audience`.
@@ -4613,7 +4619,7 @@ export class TerminalManager {
       ...(input.args ? { args: input.args } : {}),
       audienceKind: audience.kind, audienceId: audienceIdOf(audience),
     });
-    try { this.reviewNotifier?.({ sessionId: input.sessionId, agent: input.agent, kind: input.type, title: input.title, summary: input.summary ?? input.body, audience }); }
+    try { this.reviewNotifier?.({ sessionId: input.sessionId, agent: input.agent, kind: input.type, title: input.title, summary: input.summary ?? input.body, audience, ...(input.link ? { link: input.link } : {}) }); }
     catch { /* out-of-band push is advisory — never let it wedge the request */ }
   }
 
@@ -5575,6 +5581,8 @@ export class TerminalManager {
       // the target moved while the card sat in the queue (a full replacement would silently undo the change).
       args: { target, fields, rationale: rationaleText, preview: previewText, maturity, demoted, baseHash: contentHash(current), ...(risk ? { bytesBefore: risk.bytesBefore, bytesAfter: risk.bytesAfter, droppedHeadings: risk.droppedHeadings } : {}) },
       summary: `${proposer} (maturity ${pct}/100) proposes editing ${target} (${previewText})`,
+      // The review card lives on the TARGET agent's settings page — link there, not the Agents index.
+      link: { page: 'agent', detail: target, label: `${target}'s settings` },
     });
     this.audit(sessionId, proposer, 'agent.update.proposed', { target, fields: Object.keys(fields), maturity, demoted, destructive: risk?.destructive ?? false, bytesBefore: risk?.bytesBefore, bytesAfter: risk?.bytesAfter });
     return {

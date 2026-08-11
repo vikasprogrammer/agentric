@@ -675,11 +675,15 @@ export async function notifyReview(os: AgentOS, slack: Pick<SlackSocket, 'dmUser
   const recipients = resolveRecipients(os, notice.audience ?? { kind: 'admins' });
   if (!recipients.length) return;
   const { icon, page } = REVIEW_PRESENTATION[notice.kind];
-  const url = consolePage(consoleOrigin, page);
+  // A notice about ONE named object carries its own deep-link (an `agent.update.proposed` → that agent's
+  // settings page). Otherwise fall back to the kind's page, where the reviewer finds the card in a list.
+  const url = notice.link ? consolePage(consoleOrigin, notice.link.page, notice.link.detail) : consolePage(consoleOrigin, page);
+  const label = notice.link?.label ?? 'Agentric console';
+  const lead = notice.link?.label ? 'Review it on' : 'Review it in the';
   const text = (p: ChatPlatform) =>
     `${icon} ${notice.title} (agent ${notice.agent})` +
     (notice.summary && notice.summary !== notice.title ? `\n${notice.summary}` : '') +
-    `\nReview it in the ${chatLink(p, url, 'Agentric console')}.`;
+    `\n${lead} ${chatLink(p, url, label)}.`;
   const dms = await deliverDM(slack, discord, os, recipients, text);
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'review.notified', data: { kind: notice.kind, agent: notice.agent, recipients: recipients.length, dms } });
 }
