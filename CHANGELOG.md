@@ -26,6 +26,14 @@ new version heading in the same commit.
   has already called `report` is torn down regardless: `report` means finished, whatever it left
   running. Fails open on any unreadable transcript. Pinned by `scripts/turn-idle-background-guard-test.cjs`.
 
+- **The governance gate is green on CI again.** `claude-config-isolation-test.cjs` §7 called
+  `applyConfigIsolation`, which reads the real `os.homedir()` — and isolation correctly no-ops when
+  that home has no `.credentials.json`. A maintainer's laptop is logged in, so it passed locally and
+  failed on every CI run since the test landed (2 checks, red on `main` for 5+ commits — a gate that
+  said nothing about the code). §7 points `$HOME` at its own fixture box home now, so it asserts the
+  wiring rather than the runner's login state, and the no-login case it used to depend on by accident
+  is asserted deliberately.
+
 ### Added
 - **Unattended runs are told that their turn boundary is a run boundary.** The server-side grace alone
   would have let the same agent idle rather than finish — it invented `until [ -f … ]; do sleep 15`
