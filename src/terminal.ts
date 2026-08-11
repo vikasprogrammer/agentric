@@ -19,6 +19,7 @@ import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffSta
 import { mintToolRouterSessionAsync, COMPOSIO_KEY_HEADER, serviceUserId, type MintOptions } from './connectors/composio';
 import { isCodingRuntime, runtimeSupports, CODING_RUNTIMES, CodingRuntimeId, ActionAttempt, AgentManifest, ApprovalLevel, AuditEvent, Decision, Member, RiskClass, Role, RunContext, RuntimeTuning, TaskRun, TaskStatus, TaskTimelineEntry, TaskDiscussionSummary, Verbosity, canApprove, resolveRuntimeTuning, riskClassForLevel } from './types';
 import { enrichArgs, autoClearsApproval, redactSecrets } from './governance/enricher';
+import { isolateClaudeConfig } from './edge/config-isolation';
 import { resolveCapability } from './capabilities/normalize';
 import { briefFor } from './governance/briefer';
 import { ReliabilityMonitor } from './edge/reliability';
@@ -2328,6 +2329,9 @@ export class TerminalManager {
     // today's behavior). pick() also returns null when every account is limited; a member launch then still
     // proceeds on the default (better than blocking the human), while the scheduler defers cron upstream.
     this.applyRuntimeAccount(env, o.id, o.agent, runtime, o.resident);
+    // Then, only if rotation left the credentials on the box default, swap the USER-SCOPE config layer for
+    // a tenant-owned one (opt-in) — see applyConfigIsolation.
+    this.applyConfigIsolation(env, o.id, o.agent, runtime);
     if (caps.pinnedSessionId) {
       // A stable claude session id we choose (vs letting claude mint its own), so a stopped session can be
       // resumed in-place with `claude --resume <id>`. `resume` continues that transcript (a thread
@@ -3192,6 +3196,30 @@ export class TerminalManager {
     } catch {
       return true; // can't tell → assume progress; never let a read error reap live runs
     }
+  }
+
+  /** Point a claude-code session at a TENANT-OWNED config dir instead of the box owner's `~/.claude`, so
+   *  their user-scope settings — above all `enabledPlugins`, which drags in a plugin's subagents, skills
+   *  and SessionStart prompt hooks — stop applying to governed runs. See src/edge/config-isolation.ts for
+   *  what is carried across (credentials + transcripts, by symlink) and why.
+   *
+   *  Called AFTER applyRuntimeAccount so ROTATION WINS: a pooled account IS a config dir, already isolated
+   *  and holding its own credentials, and overwriting it would launch the run on the wrong account.
+   *
+   *  Behind `AOS_CLAUDE_CONFIG_ISOLATION=1` while it proves out on one tenant — a mistake here hangs every
+   *  unattended run on the box (the failure mode the trust-dialog and rotation bugs both took), so the
+   *  default stays off. Off, or unable to set up safely, the session launches on the box config unchanged. */
+  private applyConfigIsolation(env: Record<string, string>, sessionId: string, agent: string, runtime: CodingRuntimeId): void {
+    if (process.env.AOS_CLAUDE_CONFIG_ISOLATION !== '1') return;
+    if (runtime !== 'claude-code') return;               // codex reads a different config dir (CODEX_HOME)
+    if (env.CLAUDE_CONFIG_DIR) return;                   // rotation already picked a credential dir
+    if (!this.os.paths) return;
+    const r = isolateClaudeConfig(this.os.paths.home);
+    if (!r.isolated) { this.audit(sessionId, agent, 'claude.config.isolation.skipped', { reason: r.reason }); return; }
+    env.CLAUDE_CONFIG_DIR = r.dir;
+    // `detached` credentials / `own` projects are the two ways this degrades silently — a divergent token
+    // and transcripts the console can't resolve. Both are visible in the audit rather than inferred later.
+    this.audit(sessionId, agent, 'claude.config.isolated', { dir: r.dir, credentials: r.credentials, projects: r.projects });
   }
 
   /** Select a rotation-pool account for this runtime and point the session's credentials at it, via the

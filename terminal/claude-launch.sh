@@ -172,10 +172,20 @@ rm -f .claude/settings.json
 # teams inside one session, so a permissions deny would take those out too. Outbound stays available and
 # lands nowhere, because every governed session refuses. Governing it properly — an `agent.message`
 # capability in the gate hook's routing table, policy-gated and audited — is the follow-up.
+#
+# BYPASS-MODE CONFIRMATION: the unattended lane runs --dangerously-skip-permissions, and claude asks for a
+# one-time "yes, I accept" before entering that mode. It's suppressed on a box whose OWNER has accepted it
+# in their own user settings — which is exactly the inherited state config isolation removes (a
+# tenant-owned CLAUDE_CONFIG_DIR starts with no settings.json), so an unattended run would park on a dialog
+# nobody is there to answer. Declaring it HERE makes the lane self-sufficient: same behaviour on a fresh
+# box, an isolated config dir, or a rotated account dir. It is not a governance change — it suppresses the
+# interactive confirmation of a mode this lane already runs in, and every effect still passes the
+# PreToolUse gate hook, which decides authoritatively regardless of permission mode.
 cat > .claude/aos-settings.json <<JSON
 {
   "crossSessionInbound": "refuse",
   "isolatePeerMachines": true,
+  "skipDangerousModePermissionPrompt": true,
   "permissions": {
     "allow": ["mcp__agentos"]$DENY_LINE
   },
