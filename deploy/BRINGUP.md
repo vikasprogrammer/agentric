@@ -4,9 +4,9 @@ Turn `AOS_UID_ISOLATION=1` on for a live instance, step by step, **verifying eac
 Everything is reversible by flipping the flag back (see Rollback) — flag-off is byte-for-byte today's
 behavior, so you can stop at any point without breaking the running console.
 
-Run as a user with `sudo`. `<REPO>` = `/home/agent-os/tools/agent-os`. The app service is `agent-os.service`
+Run as a user with `sudo`. `<REPO>` = `/home/user/tools/agent-os`. The app service is `agent-os.service`
 (`User=vikas`), its node is the one in that unit's `ExecStart` (here
-`/home/agent-os/.nvm/versions/node/v22.22.0/bin/node`). Members' Unix accounts are **auto-created on demand**
+`/home/user/.nvm/versions/node/v22.22.0/bin/node`). Members' Unix accounts are **auto-created on demand**
 (systemd DynamicUser) — there is no `useradd` step.
 
 ---
@@ -16,7 +16,7 @@ Run as a user with `sudo`. `<REPO>` = `/home/agent-os/tools/agent-os`. The app s
 - [ ] You can afford a brief `agent-os.service` restart (drops live terminal attachments; sessions survive).
 
 ```bash
-cd /home/agent-os/tools/agent-os
+cd /home/user/tools/agent-os
 git status --short          # know what's uncommitted
 systemctl is-active agent-os.service
 ```
@@ -41,15 +41,15 @@ A flag-on session runs as the member's uid and must read the runner scripts + me
 `node`/`claude`. The agent SOURCE dirs do **not** need this (the launcher copies them as root).
 ```bash
 # repo readable + traversable for the aos group
-sudo chgrp -R aos /home/agent-os/tools/agent-os
-sudo chmod -R g+rX /home/agent-os/tools/agent-os
+sudo chgrp -R aos /home/user/tools/agent-os
+sudo chmod -R g+rX /home/user/tools/agent-os
 sudo chmod o+x /home/agent-os                      # member uids must traverse the home to reach the repo/node
 # node + claude reachable (node is in the service's node dir; install claude alongside it or in /usr/local/bin)
-sudo chmod -R a+rX /home/agent-os/.nvm/versions/node/v22.22.0
+sudo chmod -R a+rX /home/user/.nvm/versions/node/v22.22.0
 ```
 Verify a low-privilege account can resolve **both** `node` and `claude` on the session PATH:
 ```bash
-NODEDIR=/home/agent-os/.nvm/versions/node/v22.22.0/bin
+NODEDIR=/home/user/.nvm/versions/node/v22.22.0/bin
 sudo -u nobody env -i PATH="$NODEDIR:/usr/local/bin:/usr/bin:/bin" HOME=/tmp \
   bash -c 'command -v node && command -v claude && node --version'
 ```
@@ -81,7 +81,7 @@ ls -l /run/aos/launcher.sock        # expect srw-rw---- root aos
 
 Mechanism check (as the app user, with the aos group):
 ```bash
-sudo -u vikas -g aos node -e 'import("/home/agent-os/tools/agent-os/dist/edge/launcher.js").then(m=>new m.LauncherClient("/run/aos/launcher.sock").ping().then(r=>{console.log(r);process.exit(0)}))'
+sudo -u vikas -g aos node -e 'import("/home/user/tools/agent-os/dist/edge/launcher.js").then(m=>new m.LauncherClient("/run/aos/launcher.sock").ping().then(r=>{console.log(r);process.exit(0)}))'
 ```
 - [ ] Prints `{ ok: true }` (the app user can reach the launcher).
 

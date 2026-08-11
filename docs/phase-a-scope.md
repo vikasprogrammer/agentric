@@ -87,7 +87,7 @@ dedicated `aos-automations` space. **Files:** `edge/automations.ts` (resolve own
 - **Seed:** `seed-claude` (root, via `+ExecStartPre`) copies them into `/var/lib/aos/<member>/.claude/`
   on holder start, `0600`, chowned to the live uid.
 - `terminal/claude-launch.sh` already respects `HOME`; the scope sets `HOME=/var/lib/aos/<member>`.
-- The app's own unit drops `ReadWritePaths=/home/agent-os/.claude` (sessions no longer use it). Per-session
+- The app's own unit drops `ReadWritePaths=/home/user/.claude` (sessions no longer use it). Per-session
   materialised files (`.mcp.json`, company.md, transcript) move under the member's runtime/home dir,
   still written `0600` (Phase 0a), now also uid-isolated.
 - ⚠️ **Ops sub-decision:** a shared *subscription* login driven by many concurrent uids may hit

@@ -6,8 +6,8 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=vikas
-Group=vikas
+User=agent-os
+Group=agent-os
 WorkingDirectory=/home/agent-os/tools/agent-os
 Environment=NODE_ENV=production
 Environment=PORT=3010

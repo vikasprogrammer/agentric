@@ -37,7 +37,7 @@ variable is **whose identity it acts as**, which is exactly the connector's clas
 | Class | Identity | Example | Selection |
 |---|---|---|---|
 | **service** (today's `org`) | the company bot — one shared account | "Agentric posts to #status" | always present |
-| **personal** | one member's own account | "email from vikas@…" | only in that member's runs |
+| **personal** | one member's own account | "email from user@…" | only in that member's runs |
 | **personal + shared** | the *owner's* account, lent to the team | "use my Salesforce seat" | any run; acts as the owner |
 
 The **company app is bidirectional**: the same Slack bot token that *receives* slash commands and

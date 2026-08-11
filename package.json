@@ -1,6 +1,6 @@
 {
   "name": "agent-os",
-  "version": "0.335.2",
+  "version": "0.335.3",
   "description": "A generic, governed operating system for running autonomous agents safely across brands. Ships with a local web console.",
   "license": "MIT",
   "type": "commonjs",
@@ -52,8 +52,7 @@
     "orchestration",
     "ai",
     "governance",
-    "claude",
-    "globex"
+    "claude"
   ],
   "optionalDependencies": {
     "@libsql/client": "^0.14.0"

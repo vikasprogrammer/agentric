@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.335.3] — 2026-08-11
+### Changed
+- **Public-repo hygiene: no real infrastructure in a tracked file.** The repo is public, and it named
+  the boxes it runs on — ssh targets (`user@203.0.113.x` were live droplets), a Tailscale MagicDNS
+  name, private tenant hostnames, `/Users/<me>/…` paths, an owner email, and the four real tenant
+  slugs across 75 files including every incident note in this changelog. All of it is now placeholder:
+  tenants are `northwind` / `globex` / `initech` / `umbrella`, hosts are `your-box.tailnet.ts.net` and
+  `*.example.com`, IPs come from the RFC 5737 documentation ranges, service homes are `/home/agent-os`.
+  No credential was ever committed; this is reconnaissance surface, not a leak.
+- **`scripts/make-live.sh` takes its deploy identity from an untracked env file**
+  (`~/.agentric-live.env`, override with `AOS_LIVE_ENV`) instead of hardcoding one box's launchd label,
+  tenant slug and log path. Falls back to generic `acme` defaults and fails fast when the file is absent.
+- **`terminal/claude-settings.json`** no longer hardcodes one machine's absolute path to the gate hook
+  (`${AOS_REPO:-/path/to/agent-os}/terminal/gate-hook.sh`), and `agent-os.service` ships a neutral
+  `agent-os` service user rather than the author's account.
+
+### Removed
+- **The `fleet-insights` maintainer skill** (`.claude/skills/fleet-insights/`). It exists to read the
+  live tenant databases over ssh, so its whole value was the ssh targets it listed. It is personal-scope
+  now (`~/.claude/skills/`), not something a public checkout should carry.
+
 ## [0.335.2] — 2026-08-11
 ### Fixed
 - **An "Edit proposed for X" DM now links to X's own settings page.** The review DM for an

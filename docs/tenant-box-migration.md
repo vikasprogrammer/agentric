@@ -13,8 +13,8 @@ Reference values used below (replace with yours):
 
 | | old (source) | new (target) |
 |---|---|---|
-| host | `vikas@OLD_IP` | `ubuntu@NEW_IP` |
-| install | `/home/agent-os/tools/agent-os` | `/home/ubuntu/tools/agent-os` |
+| host | `user@OLD_IP` | `ubuntu@NEW_IP` |
+| install | `/home/user/tools/agent-os` | `/home/ubuntu/tools/agent-os` |
 | data home | `…/data` | `…/data` |
 | unit | `agent-os-<tenant>.service` | same |
 | ports | app `3012`, ttyd `3013` | same |
@@ -181,7 +181,7 @@ where `<munged-cwd>` is the absolute agent-dir with `/`→`-`. They must be copi
 cwd matches:
 
 ```bash
-rsync -a vikas@OLD_IP:/home/agent-os/.claude/projects/ ~/stage-cp/
+rsync -a user@OLD_IP:/home/user/.claude/projects/ ~/stage-cp/
 cd ~/stage-cp
 for d in */; do d="${d%/}"
   case "$d" in -home-OLDUSER-*) t="${d/-home-OLDUSER-/-home-NEWUSER-}";; *) t="$d";; esac

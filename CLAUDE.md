@@ -24,6 +24,22 @@ slug `agent-os-northwind` (renaming that one changes its installation URLs and b
 GitHub auth). Those are live across the tenant boxes and baked into absolute paths; a full internal
 rename is a **migration**, folded into the next box move, never a standalone sweep.
 
+## This repo is PUBLIC — no real infrastructure in a tracked file
+
+Every host, IP, ssh target, personal path, tenant slug and owner email in this repo is a
+**placeholder**: tenants are `northwind` / `globex` / `initech` / `umbrella`, hosts are
+`your-box.tailnet.ts.net` / `*.example.com`, IPs come from the RFC 5737 documentation ranges
+(`203.0.113.x`, `198.51.100.x`), homes are `/home/agent-os` or `~/…`. Keep it that way — when you
+document a real incident, write the placeholder, not the box you actually sshed into.
+
+The real values live OUTSIDE the repo, on this machine only:
+- **`~/.claude/agentric-fleet.local.md`** — the decoder ring (placeholder → real tenant/host/IP/App slug).
+- **`~/.agentric-live.env`** (0600) — the live deploy identity `scripts/make-live.sh` sources
+  (`AOS_LIVE_TENANT`, `AOS_LIVE_LABEL`, `AOS_LIVE_LOG`, …). Without it the script falls back to the
+  generic `acme` defaults and fails fast with "launchd job com.agentos.acme is not loaded".
+- **`~/.claude/skills/fleet-insights/`** — the maintainer skill that reads the live tenant DBs over ssh.
+  It used to ship here; it carries ssh targets, so it is personal-scope now and must not come back.
+
 ## Build / run / test
 
 ```bash

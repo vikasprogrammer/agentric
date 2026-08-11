@@ -172,7 +172,7 @@ dedicated `aos-automations` service user.
 One `~/.claude` is shared by every run today; it holds `.credentials.json` (the single Anthropic
 identity every agent runs under) and `history.jsonl` / `file-history/` / `projects/` (the full
 cross-session transcript history, readable by all). Each uid needs its **own** `$HOME` with its own
-`~/.claude` (its own login). The systemd unit's `ReadWritePaths=/home/agent-os/.claude` becomes per-uid
+`~/.claude` (its own login). The systemd unit's `ReadWritePaths=/home/user/.claude` becomes per-uid
 state dirs instead.
 
 - **Files:** launcher sets `HOME` per uid; `terminal/claude-launch.sh` already respects `HOME`/PATH;

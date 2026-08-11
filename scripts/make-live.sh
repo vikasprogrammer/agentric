@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# "Make it live" — deploy origin/main to the northwind tenant on this Mac Mini.
+# "Make it live" — deploy origin/main to ONE tenant's service on a macOS box.
 #
 # The live service runs from a DEDICATED checkout (~/agent-os-live), decoupled from the
 # shared primary checkout that several sessions edit concurrently, and is supervised by launchd
-# (com.agentos.northwind → scripts/run-tenant.sh northwind … :3010). Deploying is always the same
+# (com.agentos.<tenant> → scripts/run-tenant.sh <tenant> … :3010). Deploying is always the same
 # five steps — sync, install if deps moved, build both bundles, restart, verify — so they live here
 # instead of being retyped.
 #
@@ -12,9 +12,9 @@
 #   scripts/make-live.sh --skip-tests    # skip the governance suite gate
 #   scripts/make-live.sh --force         # discard local changes in the live checkout
 #
-# Deliberately northwind-only: every other tenant on this box (and every Linux box) has its own
-# service, home and port. Override via env if that ever changes:
-#   AOS_LIVE_CHECKOUT  AOS_LIVE_LABEL  AOS_LIVE_PORT  AOS_LIVE_LOG  AOS_LIVE_REF
+# Deliberately ONE tenant per invocation: every other tenant on the box (and every Linux box) has
+# its own service, home and port. Which one is yours comes from an untracked env file — see below:
+#   AOS_LIVE_TENANT  AOS_LIVE_CHECKOUT  AOS_LIVE_LABEL  AOS_LIVE_PORT  AOS_LIVE_LOG  AOS_LIVE_REF
 #
 # Safety properties worth keeping:
 #  - Nothing is restarted until the build AND the tests pass, so a broken commit leaves the running
@@ -24,10 +24,18 @@
 #  - A failed health check prints the exact rollback command rather than guessing.
 set -euo pipefail
 
+# Your box's real slug/label/paths belong to YOUR deployment, not to this repo — keep them in an
+# untracked env file (default `~/.agentric-live.env`) that this sources if present:
+#   AOS_LIVE_TENANT=acme  AOS_LIVE_CHECKOUT=…  AOS_LIVE_LABEL=…  AOS_LIVE_PORT=…  AOS_LIVE_LOG=…
+ENV_FILE="${AOS_LIVE_ENV:-$HOME/.agentric-live.env}"
+# shellcheck disable=SC1090
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
+TENANT="${AOS_LIVE_TENANT:-acme}"
 CHECKOUT="${AOS_LIVE_CHECKOUT:-$HOME/agent-os-live}"
-LABEL="${AOS_LIVE_LABEL:-com.agentos.northwind}"
+LABEL="${AOS_LIVE_LABEL:-com.agentos.$TENANT}"
 PORT="${AOS_LIVE_PORT:-3010}"
-LOG="${AOS_LIVE_LOG:-$HOME/agent-os-data/northwind/server.log}"
+LOG="${AOS_LIVE_LOG:-$HOME/agent-os-data/$TENANT/server.log}"
 REF="${AOS_LIVE_REF:-origin/main}"
 
 DRY=0; SKIP_TESTS=0; FORCE=0
