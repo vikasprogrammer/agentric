@@ -17,6 +17,12 @@ pause for your approval, budgets are enforced, and everything is written to a ta
 ![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)
 ![deps](https://img.shields.io/badge/runtime%20deps-zero-success)
 
+<br>
+
+<img src="docs/assets/console-overview.jpg" alt="Agentric console — Overview: live agent sessions, what is blocked on a human, and who is online" width="900">
+
+<sub>The Overview: every running agent, what finished, and what's waiting on you.</sub>
+
 </div>
 
 ---
