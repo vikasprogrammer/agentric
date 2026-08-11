@@ -600,6 +600,18 @@ drift and prints the one-line fix.
   `terminal/claude-launch.sh` (`crossSessionInbound: "refuse"` + `isolatePeerMachines: true`) rather than
   by denying the tools, since the same `SendMessage` also serves subagents/agent teams inside one session.
   When claude-code updates, diff the tools reference against that routing table.
+- **The box owner's `~/.claude` is an undeclared input to every agent.** A session runs as the same OS user
+  as the human who owns the machine, so it loads their user-scope `settings.json` — `enabledPlugins` above
+  all, which drags in a plugin's subagent types, skills, slash commands and **SessionStart prompt hooks**.
+  Installing a plugin for your own use silently changes how every fleet agent behaves (live example: the
+  `caveman` plugin turning up as `caveman:cavecrew-reviewer(…)` subagent calls inside northwind runs, its
+  prompt hook reshaping their output). `--settings` only ADDS a layer; it doesn't replace the user one.
+  Fix is `AOS_CLAUDE_CONFIG_ISOLATION=1` (default off) → `CLAUDE_CONFIG_DIR=<tenant home>/claude-config`
+  (`src/edge/config-isolation.ts`). Two things MUST ride along or it's worse than the leak:
+  `.credentials.json` (an empty dir doesn't fall back to the box login — it hangs on the login picker) and
+  `projects/` (the server resolves transcripts from ITS own env, so moving them blanks the conversation
+  view + chain), both as symlinks back to `~/.claude`. Rotation wins over it — a pooled account already is
+  an isolated config dir. Watch `claude.config.isolated` for `credentials: detached`.
 - `node:sqlite` emits an `ExperimentalWarning` on first use; `src/cli.ts` filters just that one line.
 - WAL mode creates `agent-os.db-wal`/`-shm` sidecars — all `*.db*` and `connectors/` are gitignored in
   `data/.gitignore`.

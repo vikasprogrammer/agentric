@@ -12,6 +12,36 @@ new version heading in the same commit.
   what's blocked on a human, who's online) — committed to `docs/assets/` rather than hotlinked, since
   the share link it came from serves a signed URL that expires.
 
+## [0.335.0] — 2026-08-11
+### Added
+- **A governed session no longer reads the box owner's personal claude config.** Every Agentric run is a
+  `claude` process owned by the same OS user as the human who owns the machine, so it loads that human's
+  user-scope `~/.claude/settings.json` — including `enabledPlugins`, and with it a plugin's extra subagent
+  types, skills, slash commands and **SessionStart prompt hooks**. On the Mac Mini this surfaced as
+  northwind sessions calling a `caveman:cavecrew-reviewer(…)` subagent nobody had given them, with the
+  plugin's prompt hook quietly reshaping fleet output. It is a behavioural channel into every agent that
+  no manifest declares, the gateway never sees, and that changes whenever the owner installs something.
+
+  Behind **`AOS_CLAUDE_CONFIG_ISOLATION=1`** (default off), a claude-code session now launches with
+  `CLAUDE_CONFIG_DIR=<tenant home>/claude-config` — a user-scope layer Agentric owns. Two things are
+  carried across as symlinks back to the box dir, because without them the cure is worse than the disease:
+  `.credentials.json` (an empty config dir does not fall back to the box login, it drops the run on the
+  interactive login picker, where an unattended session hangs until the reaper) and `projects/` (the
+  server resolves transcripts from its own environment, so a session writing them elsewhere would blank
+  the conversation timeline and the hand-off chain). One credential file behind one link means a refresh
+  can never leave one side stale.
+
+  Fail-open throughout, like account rotation: no box credential, or any error preparing the dir, and the
+  session launches on the box config unchanged (`claude.config.isolation.skipped`). Rotation still wins —
+  a pooled account already **is** an isolated config dir. `claude.config.isolated` records the dir and the
+  two ways it can degrade silently: `credentials: detached` (claude replaced the symlink on a refresh, so
+  the dirs can diverge — the newer token is left alone rather than clobbered) and `projects: own`.
+- The unattended lane now declares **`skipDangerousModePermissionPrompt`** in its own `--settings` layer.
+  It runs `--dangerously-skip-permissions`, and claude's one-time acceptance of that mode was being
+  inherited from the box owner's user settings — the exact state config isolation removes, which would
+  have parked every unattended run on a dialog with nobody there to answer it. Not a governance change:
+  the PreToolUse gate hook remains the authority on every effect regardless of permission mode.
+
 ## [0.334.2] — 2026-08-11
 ### Fixed
 - **One liveness predicate, and it asks the pane.** v0.334.1 fixed the poke-back's `status = 'running'`
