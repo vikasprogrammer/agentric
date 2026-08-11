@@ -362,13 +362,26 @@ instapods 2026-08-10: `ses_f4535e8f` reported at 16:13 and worked through 16:34;
 `ses_441cec`, which died 28s later, and the caller — never woken — re-derived the delegate's result by
 shelling out to `gh pr view`.
 
-Liveness is therefore asked of the **pane**: `TerminalManager.reachable(sessionId)`, the delivery-side
-counterpart to `isAlive` (which folds `status` in and is right for the pile-up guards it was written for).
-`reachable` still refuses a run a human `stop`ped or the sweep marked `crashed` — a surviving pane there is
-a leftover, not a destination. Delivery puts the row back to `running` + `busy_since` so the console stops
-reading idle through work it just triggered, and an inject that fails on a wedged pane kills that pane
-before the resume, mirroring `chatSend`. `deliverToResident` and `injectToSession` share the same test —
-they carried the same `status = 'running'` gate. Pinned by `scripts/poke-warm-caller-test.cjs`.
+Liveness is therefore asked of the **pane**: `TerminalManager.reachable(sessionId)`. It refuses a run a
+human `stop`ped or the sweep marked `crashed` — a surviving pane there is a leftover, not a destination —
+and falls back to the row under the launcher backend, which cannot poll panes. Delivery puts the row back
+to `running` + `busy_since` so the console stops reading idle through work it just triggered, and an inject
+that fails on a wedged pane kills that pane before the resume, mirroring `chatSend`.
+
+**`reachable` is the only liveness predicate; there is deliberately no second one.** It shipped beside the
+older status-folding `isAlive`, and a sweep of that method's ten call sites found every one of them wrong
+in the same direction — the take-over paths (`takeOverSession` / `openChatSession`) relaunched over a live
+pane instead of claiming it, `agentAskStatus` graded a still-running delegate `failed`, `maybeHoldDelegate`
+decided there was "nothing running to interrupt", `refreshAgentSkills` skipped the very session whose human
+had just approved the skill, and the dispatch pile-up guards called a busy agent free. Their shared shape:
+the fallback for "dead" is almost always `claude --resume`, so a false negative costs a rival claude on a
+live transcript. So `isAlive` was deleted rather than fixed — with two predicates a nine-tenths-correct
+choice is always available, and this is the class of bug that recurs (the `resident` gate on
+`deliverToResident`, instapods 2026-08-06, was the previous instance).
+
+Widening the pile-up guards is bounded, not open-ended: the idle sweep's DONE-ORPHAN branch exists exactly
+to reap an unattended `done` row still holding a pane, and a human forcing work through passes
+`guard: false`. Pinned by `scripts/poke-warm-caller-test.cjs`.
 
 ---
 

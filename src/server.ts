@@ -1710,7 +1710,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const t = os.tasks.get(String(b.id || ''));
     if (!t) return sendJson(res, 200, { ok: false, error: 'task not found' });
     const terminal = t.status === 'done' || t.status === 'cancelled';
-    if (!terminal && t.status !== 'blocked' && (t.assignee || '').startsWith('agent:') && !(t.lastSessionId && tm.isAlive(t.lastSessionId))) {
+    if (!terminal && t.status !== 'blocked' && (t.assignee || '').startsWith('agent:') && !(t.lastSessionId && tm.reachable(t.lastSessionId))) {
       autos.dispatchTask(t.id, { guard: true, by: `wait:${agent}` });
     }
     // The delegate's closing "what I did" — the newest comment (task_update writes the done note as one).
@@ -2139,7 +2139,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         if (terminal || cur.status === 'blocked' || Date.now() >= deadline) {
           return sendJson(res, 200, { ok: true, taskId: task.id, status: cur.status, terminal, note: os.tasks.latestNote(task.id) ?? null });
         }
-        if (!(cur.lastSessionId && tm.isAlive(cur.lastSessionId))) autos.dispatchTask(task.id, { guard: true, by: `app:${slug}` });
+        if (!(cur.lastSessionId && tm.reachable(cur.lastSessionId))) autos.dispatchTask(task.id, { guard: true, by: `app:${slug}` });
         await sleep(1500);
       }
     }

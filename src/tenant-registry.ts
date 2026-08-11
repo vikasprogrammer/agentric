@@ -573,7 +573,7 @@ function maybeHoldDelegate(tm: TerminalManager, os: AgentOS, notice: TaskNotice)
   if (t.status !== 'blocked' && t.status !== 'cancelled') return;
   if (!t.lastSessionId) return;
   if (notice.by === t.assignee) return;               // the delegate parked itself — it already knows
-  if (!tm.isAlive(t.lastSessionId)) return;           // nothing running to interrupt
+  if (!tm.reachable(t.lastSessionId)) return;         // nothing running to interrupt (the PANE, not the row)
   const note = os.tasks.latestNote(t.id) || '(no reason given)';
   const who = notice.by.startsWith('agent:') ? notice.by.slice('agent:'.length) : (os.team.getMember(notice.by)?.name ?? 'a teammate');
   const verb = t.status === 'cancelled' ? 'CANCELLED' : 'put on HOLD';
