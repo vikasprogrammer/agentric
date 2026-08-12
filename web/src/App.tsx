@@ -13257,9 +13257,11 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
       {measure && (measure.recent.rate != null || measure.trend.some((b) => b.rate != null)) && (() => {
         const maxRate = Math.max(1, ...measure.trend.map((b) => b.rate ?? 0))
         const dv = measure.deltaPp
-        const V: Record<string, { label: string; cls: string }> = {
-          improved: { label: 'improved', cls: 'text-emerald-600' }, declined: { label: 'declined', cls: 'text-red-600' },
-          flat: { label: 'no change', cls: 'text-muted-foreground' }, insufficient: { label: 'too early to tell', cls: 'text-muted-foreground' },
+        // `no-action` is the point of this block, not an error state: an alert nobody acted on is a
+        // failed alert, and it should read that way rather than hiding among the neutral verdicts.
+        const CV: Record<string, { label: string; cls: string }> = {
+          resolved: { label: 'stopped', cls: 'text-emerald-600' }, ongoing: { label: 'still happening', cls: 'text-red-600' },
+          'no-action': { label: 'nobody acted', cls: 'text-amber-600' }, 'too-early': { label: 'too early to tell', cls: 'text-muted-foreground' },
         }
         return (
           <Card>
@@ -13270,7 +13272,7 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
               </div>
               {measure.recent.rate != null && (
                 <div className="text-sm">
-                  Success rate <strong>{measure.recent.rate}%</strong> <span className="text-xs text-muted-foreground">last 7 days ({measure.recent.n} runs)</span>
+                  Success rate <strong>{measure.recent.rate}%</strong> <span className="text-xs text-muted-foreground">last 7 days ({measure.recent.n} runs{measure.recent.unknownShare ? `, ${measure.recent.unknownShare}% undecidable` : ''})</span>
                   {dv != null && <span className={`ml-1 text-xs ${dv > 0 ? 'text-emerald-600' : dv < 0 ? 'text-red-600' : 'text-muted-foreground'}`}>{dv > 0 ? '▲' : dv < 0 ? '▼' : '■'} {dv > 0 ? '+' : ''}{dv} pts vs the week before</span>}
                 </div>
               )}
@@ -13285,19 +13287,18 @@ function DreamingSettings({ me, onChanged }: { me: Member; onChanged?: () => voi
                   </div>
                 ))}
               </div>
-              {measure.interventions.length > 0 && (
+              {measure.cards.length > 0 && (
                 <div className="space-y-1.5 border-t pt-2">
-                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Did your changes help?</div>
-                  {measure.interventions.map((iv, i) => (
-                    <div key={i} className="flex flex-wrap items-baseline gap-x-2 text-xs">
-                      <span className="font-medium">{iv.title}</span>
-                      <span className="text-muted-foreground">{new Date(iv.at).toLocaleDateString()}</span>
-                      {iv.before.rate != null && iv.after.rate != null
-                        ? <span className="text-muted-foreground">{iv.before.rate}% → {iv.after.rate}%{iv.deltaPp != null && ` (${iv.deltaPp > 0 ? '+' : ''}${iv.deltaPp} pts)`} · {iv.before.n}/{iv.after.n} runs</span>
-                        : <span className="text-muted-foreground">not enough runs yet</span>}
-                      <span className={`font-medium ${V[iv.verdict].cls}`}>{V[iv.verdict].label}</span>
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Did the alerts lead anywhere?</div>
+                  {measure.cards.map((c) => (
+                    <div key={c.key} className="flex flex-wrap items-baseline gap-x-2 text-xs">
+                      <span className="font-medium">{c.title}</span>
+                      <span className="text-muted-foreground">{new Date(c.postedAt).toLocaleDateString()}</span>
+                      <span className="text-muted-foreground">{c.before} before → {c.after} since{c.afterDays ? ` (${c.afterDays}d)` : ''}</span>
+                      <span className={`font-medium ${CV[c.verdict].cls}`}>{CV[c.verdict].label}</span>
                     </div>
                   ))}
+                  <p className="text-[10px] text-muted-foreground">Counts of the thing the alert was about, not a success rate — before it was raised, and since someone acted on it.</p>
                 </div>
               )}
             </CardContent>

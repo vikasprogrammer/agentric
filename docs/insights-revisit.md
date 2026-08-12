@@ -438,7 +438,51 @@ its own top-level surface — a day-by-day record, readable backwards in time. P
 - **Falsifier:** if only the current day is ever opened, the archive is not wanted — keep the today view,
   drop the day picker, and do not build the narrative layer on top of a page with no readers.
 
-### Step 4 — measure the card, not our clicks
+### Step 4 — measure the card, not our clicks ✅ shipped v0.339.0
+
+Both halves of "Is it working?" were broken the same way, and this replaces both.
+
+**The trend was still the discredited metric.** It counted a run as successful only if it self-reported
+`outcome: success` — the number Step 0 deleted from every *broadcast* channel, still quietly driving the
+page. It now reads the derived outcome, and carries the **undecidable share beside the rate**, so "the
+work got worse" can never again be read off a number that moved because reporting discipline moved.
+
+On the live corpus it produces a usable trend for the first time:
+
+```
+Jul 8  58%  n=31   undecidable 3%
+Jul 15 54%  n=37   undecidable 3%
+Jul 22 75%  n=77   undecidable 0%
+Jul 29 58%  n=110  undecidable 0%
+Aug 5  80%  n=162  undecidable 1%
+```
+
+**The interventions were our own Apply clicks** — `recommendation.applied`, one event in the fleet's
+entire history, so the block could never answer anything. Replaced by: *a card was raised — did a human
+do anything, and did the problem stop?* Counting **events, not rates**: "12 runs died, you replaced the
+account, 0 died since" is a claim you can check, where a rate would hide it behind a denominator that
+also moved.
+
+Four verdicts, chosen so the uncomfortable one is reachable:
+
+| verdict | meaning |
+|---|---|
+| `no-action` | **nobody acted.** A card nobody acts on is a failed card — this is the whole point |
+| `resolved` | acted on, and the signal stopped |
+| `ongoing` | acted on, and it kept happening |
+| `too-early` | not enough time since to say |
+
+A card whose recurrence we cannot count is **omitted entirely** rather than shown with a made-up
+verdict. Today that means only `runtime-deaths:*` appears — Step 2's signal, the only one with a
+countable recurrence. Live output is currently `[]`, correctly: the card shipped yesterday and the
+condition is not firing.
+
+- **Pinned:** `scripts/card-measurement-test.cjs` (16 assertions, in `test:governance`).
+- **Note on Step 3:** satisfied by construction, not skipped. The card already rides `postInsightAlert`
+  → the admins' Inbox + an out-of-band DM, which is the "deliver where humans already look" requirement.
+  The page is where the *measurement* lives, which is the archive role Step 3 assigns it.
+
+### Step 4 (original plan)
 
 Replace `measureLearning`'s intervention model. The question is not "did an owner press Apply" but
 **"did the problem stop recurring after the action?"** For each card: the signal's rate before the
