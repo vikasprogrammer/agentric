@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.338.0] — 2026-08-12
+### Added
+- **The sidebar session switcher grew the same "⋯" actions menu the sessions list has.** Every row in
+  the sidebar's session list now reveals a `RowActionsMenu` on hover (and on keyboard focus, and while
+  the menu is open) — Resume, Take over, Fork, Stop, Delete, Transfer to…, each gated exactly as it is
+  on the list page. Until now those actions were only reachable by leaving the sidebar for **All
+  sessions**, even though the sidebar is where you actually live while a run is going. The trigger is a
+  SIBLING of the row's link, not a child (a button nested in an `<a>` is invalid interactive content and
+  swallows navigation), and it holds its place at `opacity-0` so hovering reveals it without reflowing
+  the title. `RowActionsMenu`'s `onActivity` is now optional: the inspect panel it opens belongs to
+  SessionsPage, so the sidebar mounts the same menu minus that one item.
+
 ## [0.337.2] — 2026-08-12
 ### Fixed
 - **The terse brief's carve-out no longer reads as a licence to be long.** A terse `engineer` run
