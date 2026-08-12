@@ -22,6 +22,16 @@ import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
 import { sweepStrandedTasks } from './task-reconcile';
+import {
+  DEDUPE_TTL_MS,
+  Headers as WHHeaders,
+  THREAD_TTL_MS,
+  deliveryKey,
+  matchesFilter,
+  resolveEvent,
+  threadKey,
+  verifySignature,
+} from './webhook-ingress';
 
 // ── minimal cron (5 fields: minute hour day-of-month month day-of-week) ──────────
 // Supports: * , a-b , */n , a-b/n , lists. dow 0-7 (7 ≡ 0 = Sunday).
@@ -163,8 +173,15 @@ export interface Automation {
   /** Shared key for POST /hooks/<id> (webhook type only). */
   secret?: string;
   /** Match filter. composio: the trigger slug (e.g. SLACK_DIRECT_MESSAGE_RECEIVED). slack: an event
-   *  type (`app_mention`/`message`) or a channel id to scope to. '' / '*' = any event of that type. */
+   *  type (`app_mention`/`message`) or a channel id to scope to. webhook: a comma-separated event list,
+   *  `prefix.*` allowed. '' / '*' = any event of that type. */
   filter?: string;
+  /** Secret the SOURCE signs the request body with (webhook type). Set ⇒ an unsigned or badly signed
+   *  delivery is refused, so the URL key stops being the only credential. See `webhook-ingress.ts`. */
+  signingSecret?: string;
+  /** Dot path to the conversation id in the webhook payload (`conversation.id`). Set ⇒ follow-up events
+   *  on the same conversation continue the run already handling it instead of spawning a rival. */
+  threadPath?: string;
   /** Task template for the spawned session. Webhook payloads are appended at fire time. */
   task: string;
   enabled: boolean;
@@ -192,6 +209,8 @@ interface AutomationRow {
   run_at: number | null;
   run_as: string | null;
   resume_claude_id: string | null;
+  signing_secret: string | null;
+  thread_path: string | null;
 }
 
 function toAutomation(r: AutomationRow): Automation {
@@ -213,6 +232,8 @@ function toAutomation(r: AutomationRow): Automation {
     runAt: r.run_at ?? undefined,
     runAs: r.run_as ?? undefined,
     resumeClaudeId: r.resume_claude_id ?? undefined,
+    signingSecret: r.signing_secret ?? undefined,
+    threadPath: r.thread_path ?? undefined,
   };
 }
 
@@ -222,8 +243,13 @@ export interface AddAutomationInput {
   type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup';
   mode?: ExecMode;
   schedule?: string;
-  /** composio: trigger slug to match. slack: event type / channel id to match. ('' / omitted = any). */
+  /** composio: trigger slug to match. slack: event type / channel id to match. webhook: comma-separated
+   *  event list (`convo.created, convo.note.*`). ('' / omitted = any). */
   filter?: string;
+  /** webhook: secret the source signs the body with ('' = URL key only). */
+  signingSecret?: string;
+  /** webhook: dot path to the conversation id in the payload ('' = no continuity). */
+  threadPath?: string;
   task: string;
   createdBy?: string;
   /** Member id the fired session should act as — so a cron/webhook/etc. spawn binds THAT member's
@@ -444,6 +470,11 @@ export class Automations {
       parseCron(schedule); // throws with a useful message on a bad expression
     } else if (input.type === 'webhook') {
       secret = randomBytes(24).toString('hex');
+      filter = (input.filter || '').trim(); // event list to match; '' = any event (the historical behaviour)
+      // Event-driven runs are unattended by default. Webhook was the one trigger type that missed this,
+      // so every hook-created automation quietly defaulted to an interactive TUI nothing would ever attach
+      // to — and then blocked the next delivery, because an interactive pane never exits.
+      if (input.mode === undefined) mode = 'headless';
     } else if (input.type === 'composio') {
       filter = (input.filter || '').trim().toUpperCase(); // '' = any Composio trigger
       if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
@@ -456,8 +487,11 @@ export class Automations {
     } else if (input.type === 'telegram') {
       filter = (input.filter || '').trim(); // event type (mention/direct_message) or chat id; '' = any
       if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
+    } else if (input.type === 'clickup') {
+      filter = (input.filter || '').trim(); // task id to scope to; '' = any task
+      if (input.mode === undefined) mode = 'headless'; // event-driven runs are unattended by default
     } else {
-      throw new Error('type must be cron, webhook, composio, slack, discord, or telegram');
+      throw new Error('type must be cron, webhook, composio, slack, discord, telegram, or clickup');
     }
     const a: Automation = {
       id: newId('automation'),
@@ -473,10 +507,12 @@ export class Automations {
       createdBy: input.createdBy,
       createdAt: Date.now(),
       runAs: input.runAs?.trim() || undefined,
+      signingSecret: input.type === 'webhook' ? (input.signingSecret?.trim() || undefined) : undefined,
+      threadPath: input.type === 'webhook' ? (input.threadPath?.trim() || undefined) : undefined,
     };
     this.db
-      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_as) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAs ?? null);
+      .prepare('INSERT INTO automations (id, agent_id, name, type, mode, schedule, secret, filter, task, enabled, created_by, created_at, run_as, signing_secret, thread_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(a.id, a.agentId, a.name, a.type, a.mode, a.schedule ?? null, a.secret ?? null, a.filter ?? null, a.task, 1, a.createdBy ?? null, a.createdAt, a.runAs ?? null, a.signingSecret ?? null, a.threadPath ?? null);
     return a;
   }
 
@@ -595,13 +631,17 @@ export class Automations {
     return { ok: true, sessionId: s.id, tmux: s.tmux };
   }
 
-  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null }): Automation | undefined {
+  update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null; signingSecret?: string | null; threadPath?: string | null }): Automation | undefined {
     const a = this.get(id);
     if (!a) return undefined;
     if (patch.schedule !== undefined && a.type === 'cron') parseCron(patch.schedule);
-    // `filter` is only meaningful for the event-driven triggers; ignore it on cron/webhook/once so an
-    // edit can't stamp a stray filter onto a type that never reads one. composio uppercases its slug.
-    const filterTypes = a.type === 'composio' || a.type === 'slack' || a.type === 'discord' || a.type === 'telegram';
+    // `filter` is only meaningful for the event-driven triggers; ignore it on cron/once so an edit can't
+    // stamp a stray filter onto a type that never reads one. composio uppercases its slug. `webhook`
+    // joined this list when it gained an event filter — without it, the one trigger type that most needs
+    // scoping would be the only one you couldn't scope after creating it.
+    const filterTypes =
+      a.type === 'composio' || a.type === 'slack' || a.type === 'discord' || a.type === 'telegram' ||
+      a.type === 'clickup' || a.type === 'webhook';
     const nextFilter = !filterTypes
       ? a.filter ?? null
       : patch.filter === undefined
@@ -611,8 +651,16 @@ export class Automations {
           : patch.filter.trim();
     // `runAs`: undefined = leave as-is; a member id sets it; null/'' clears it (back to company identity).
     const nextRunAs = patch.runAs === undefined ? a.runAs ?? null : (patch.runAs || '').trim() || null;
+    // Webhook-only, same undefined/null convention. Clearing `signingSecret` drops back to URL-key auth,
+    // so it's an explicit null rather than something an unrelated edit can wipe by omission.
+    // NB: trim AFTER the undefined check — `patch.x?.trim()` turns an explicit null into undefined, which
+    // would silently read a deliberate "clear this" as "leave it alone".
+    const webhookOnly = (next: string | null | undefined, cur: string | undefined): string | null =>
+      a.type !== 'webhook' || next === undefined ? (cur ?? null) : (next || '').trim() || null;
+    const nextSigning = webhookOnly(patch.signingSecret, a.signingSecret);
+    const nextThreadPath = webhookOnly(patch.threadPath, a.threadPath);
     this.db
-      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ?, run_as = ? WHERE id = ?')
+      .prepare('UPDATE automations SET name = ?, mode = ?, schedule = ?, filter = ?, task = ?, enabled = ?, run_as = ?, signing_secret = ?, thread_path = ? WHERE id = ?')
       .run(
         patch.name?.trim() || a.name,
         patch.mode ?? a.mode,
@@ -621,6 +669,8 @@ export class Automations {
         patch.task ?? a.task,
         (patch.enabled ?? a.enabled) ? 1 : 0,
         nextRunAs,
+        nextSigning,
+        nextThreadPath,
         id,
       );
     return this.get(id);
@@ -971,19 +1021,136 @@ export class Automations {
     return { sessions, reply: explicit.help };
   }
 
-  /** Inbound webhook: validate id + key, append the payload to the task, fire (guarded). */
-  fireWebhook(id: string, key: string, payload: unknown): { status: number; body: Record<string, unknown> } {
+  /**
+   * Inbound webhook. Authenticate, decide whether this delivery is one we care about, then either
+   * continue the run already handling its conversation or start a new one.
+   *
+   * The old shape of this method was `fire(a, { guard: true })` — one live session per automation, and
+   * anything arriving while it ran came back 429. That reads as backpressure but it is data loss: a
+   * product webhook does not retry a 4xx, so the event is simply gone, and the busier the agent the more
+   * it drops. Volume is now handled where it belongs — `filter` refuses events the automation was never
+   * about, dedupe absorbs re-deliveries, and continuity folds follow-ups into the run that already owns
+   * that conversation. What is left is genuinely concurrent work on DIFFERENT conversations, which is
+   * exactly what should run in parallel, so it spawns unguarded like every other event-driven ingress.
+   *
+   * Every non-fire outcome answers **200**. A webhook sender reads 4xx/5xx as "retry or disable me", and
+   * neither is right for "not subscribed to this event" or "already handled" — those are successful
+   * acknowledgements of an event we correctly did nothing about. Genuine caller errors (unknown hook,
+   * bad key, bad signature) still answer 4xx.
+   */
+  fireWebhook(
+    id: string,
+    key: string,
+    payload: unknown,
+    opts: { headers?: WHHeaders; query?: URLSearchParams; rawBody?: string } = {},
+  ): { status: number; body: Record<string, unknown> } {
     const a = this.get(id);
     if (!a || a.type !== 'webhook') return { status: 404, body: { error: 'not found' } };
     if (!a.secret || key !== a.secret) return { status: 403, body: { error: 'bad key' } };
     if (!a.enabled) return { status: 409, body: { error: 'automation is disabled' } };
-    let extra: string | undefined;
-    if (payload !== undefined && payload !== null && Object.keys(payload as object).length > 0) {
-      extra = 'Webhook payload:\n' + JSON.stringify(payload, null, 2).slice(0, MAX_PAYLOAD_CHARS);
+
+    const headers = opts.headers ?? {};
+    const query = opts.query ?? new URLSearchParams();
+    const rawBody = opts.rawBody ?? '';
+
+    const audit = (outcome: string, data: Record<string, unknown> = {}) =>
+      this.os.audit.append({
+        ts: Date.now(), runId: data.session ? String(data.session) : '-', tenant: this.os.tenant,
+        principal: 'webhook', type: 'trigger.webhook',
+        data: { automation: a.id, agent: a.agentId, outcome, ...data },
+      });
+
+    // Authenticity. Only enforced when the operator configured a signing secret — an existing automation
+    // has none and keeps working on its URL key alone.
+    if (a.signingSecret && !verifySignature(rawBody, a.signingSecret, headers)) {
+      audit('bad-signature');
+      return { status: 401, body: { error: 'bad signature' } };
     }
-    const r = this.fire(a, { guard: true, extra });
-    if (!r.ok) return { status: 429, body: { error: r.reason } };
-    return { status: 200, body: { ok: true, sessionId: r.sessionId } };
+
+    const event = resolveEvent(headers, query, payload);
+    if (!matchesFilter(a.filter, event)) {
+      audit('filtered', { event });
+      return { status: 200, body: { ok: true, skipped: 'filter', event } };
+    }
+
+    // Dedupe. Recorded BEFORE spawning: two simultaneous deliveries of the same event race here, and the
+    // PK conflict is what makes one of them lose. Losing the race means someone else is handling it.
+    const delivery = deliveryKey(headers, query, rawBody);
+    if (!this.claimDelivery(a.id, delivery)) {
+      audit('duplicate', { event, delivery });
+      return { status: 200, body: { ok: true, skipped: 'duplicate', event } };
+    }
+
+    const extra = this.webhookPrompt(payload, event) ?? `Webhook delivery${event ? `: ${event}` : ''} (empty payload).`;
+
+    // Continuity: a follow-up on a conversation some session already owns goes INTO that session.
+    const thread = threadKey(query, payload, a.threadPath);
+    if (thread) {
+      const bound = this.webhookThread(a.id, thread);
+      if (bound && this.tm.deliverToResident(bound, extra)) {
+        audit('continued', { event, thread, session: bound });
+        return { status: 200, body: { ok: true, continued: true, sessionId: bound, event } };
+      }
+    }
+
+    const r = this.fire(a, { guard: false, extra, runAs: a.runAs });
+    if (!r.ok) {
+      audit('refused', { event, reason: r.reason });
+      return { status: 503, body: { error: r.reason } };
+    }
+    if (thread) this.bindWebhookThread(a.id, thread, r.sessionId);
+    this.db.prepare('UPDATE webhook_deliveries SET session_id = ? WHERE automation_id = ? AND delivery_key = ?')
+      .run(r.sessionId, a.id, delivery);
+    audit('fired', { event, thread: thread || null, session: r.sessionId });
+    return { status: 200, body: { ok: true, sessionId: r.sessionId, event } };
+  }
+
+  /** The task-prompt suffix for a webhook delivery: the event name (when the source named one) + payload. */
+  private webhookPrompt(payload: unknown, event: string): string | undefined {
+    const hasPayload = payload !== undefined && payload !== null && Object.keys(payload as object).length > 0;
+    if (!hasPayload) return event ? `Webhook event: ${event}` : undefined;
+    return (
+      (event ? `Webhook event: ${event}\n` : '') +
+      'Webhook payload:\n' +
+      JSON.stringify(payload, null, 2).slice(0, MAX_PAYLOAD_CHARS)
+    );
+  }
+
+  /**
+   * Record this delivery, returning false if it was already recorded (⇒ a re-delivery, skip it). The
+   * INSERT's primary key is the lock: concurrent duplicates can't both win. Old rows are pruned here
+   * rather than on a timer — the write path is the only place the table grows.
+   */
+  private claimDelivery(automationId: string, deliveryKey: string): boolean {
+    const now = Date.now();
+    this.db.prepare('DELETE FROM webhook_deliveries WHERE created_at < ?').run(now - DEDUPE_TTL_MS);
+    try {
+      this.db
+        .prepare('INSERT INTO webhook_deliveries (automation_id, delivery_key, created_at) VALUES (?, ?, ?)')
+        .run(automationId, deliveryKey, now);
+      return true;
+    } catch {
+      return false; // PK conflict → already claimed
+    }
+  }
+
+  /** The session currently bound to this source-side conversation, if it's still within the warm window. */
+  private webhookThread(automationId: string, threadKey: string): string | undefined {
+    const row = this.db
+      .prepare('SELECT session_id, created_at FROM webhook_threads WHERE automation_id = ? AND thread_key = ?')
+      .get<{ session_id: string; created_at: number }>(automationId, threadKey);
+    if (!row) return undefined;
+    if (Date.now() - row.created_at > THREAD_TTL_MS) return undefined;
+    return row.session_id;
+  }
+
+  private bindWebhookThread(automationId: string, threadKey: string, sessionId: string): void {
+    this.db
+      .prepare(
+        'INSERT INTO webhook_threads (automation_id, thread_key, session_id, created_at) VALUES (?, ?, ?, ?) ' +
+          'ON CONFLICT(automation_id, thread_key) DO UPDATE SET session_id = excluded.session_id, created_at = excluded.created_at',
+      )
+      .run(automationId, threadKey, sessionId, Date.now());
   }
 
   /**

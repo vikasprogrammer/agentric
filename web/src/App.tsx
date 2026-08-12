@@ -10245,6 +10245,7 @@ const TRIGGER_ITEMS: Record<string, string> = {
   discord: 'Discord message (native)',
   telegram: 'Telegram message (native)',
   composio: 'Composio event',
+  clickup: 'ClickUp comment (native)',
 }
 
 /** The glyph that marks an automation's trigger family — a scannable stand-in for the old `type` badge. */
@@ -10256,18 +10257,26 @@ function triggerIcon(type: Automation['type']): LucideIcon {
     case 'discord': return MessageSquare
     case 'telegram': return Send
     case 'once': return Clock
+    case 'clickup': return ListChecks
     default: return Zap
   }
 }
 /** One-line, human trigger summary for the card's meta row (schedule phrasing, or event + filter scope). */
+/** Trigger types that carry a match filter — the one list both the form and the submit path read, so a
+ *  new filtered type can't be wired into the UI and silently dropped on save (webhook was, for a while). */
+const FILTER_TYPES: Automation['type'][] = ['composio', 'slack', 'discord', 'telegram', 'webhook', 'clickup']
+/** Sentinel for "remove the stored signing secret" — distinguishable from '' (leave it alone). */
+const CLEAR_SECRET = ' clear'
+
 function triggerSummary(a: Automation): string {
   switch (a.type) {
     case 'cron': return a.schedule ? cronToHuman(a.schedule) : 'Schedule'
-    case 'webhook': return 'Webhook'
+    case 'webhook': return `Webhook · ${a.filter || 'any event'}`
     case 'slack': return `Slack · ${a.filter || 'any message'}`
     case 'discord': return `Discord · ${a.filter || 'any message'}`
     case 'telegram': return `Telegram · ${a.filter || 'any message'}`
     case 'composio': return `Composio · ${a.filter || 'any event'}`
+    case 'clickup': return `ClickUp · ${a.filter || 'any task'}`
     case 'once': return 'One-shot'
     default: return a.type
   }
@@ -10348,11 +10357,15 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
   // create / edit form
   const [name, setName] = useState('')
   const [agentId, setAgentId] = useState(agents[0]?.id ?? '')
-  const [type, setType] = useState<'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram'>('cron')
+  const [type, setType] = useState<Exclude<Automation['type'], 'once'>>('cron')
   const [mode, setMode] = useState<'interactive' | 'headless'>('headless')
   const [schedule, setSchedule] = useState('*/30 * * * *')
   const [scheduleCustom, setScheduleCustom] = useState(false)
   const [filter, setFilter] = useState('')
+  const [threadPath, setThreadPath] = useState('')
+  // Write-only: '' = leave the stored one alone, CLEAR_SECRET = remove it, anything else = replace it.
+  const [signingSecret, setSigningSecret] = useState('')
+  const [editSigned, setEditSigned] = useState(false)
   const [task, setTask] = useState('')
   const [runAs, setRunAs] = useState('') // member id the fired session acts as ('' = company identity)
   const [members, setMembers] = useState<Member[]>([])
@@ -10368,7 +10381,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
   // form into view when it opens (or when switching which automation is being edited) so it isn't missed.
   useEffect(() => { if (showForm) formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, [showForm, editId])
 
-  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setRunAs(''); setEditId(null) }
+  const resetForm = () => { setName(''); setTask(''); setFilter(''); setType('cron'); setMode('headless'); setSchedule('*/30 * * * *'); setScheduleCustom(false); setRunAs(''); setThreadPath(''); setSigningSecret(''); setEditSigned(false); setEditId(null) }
   const startCreate = () => { resetForm(); setShowForm(true); setHint('') }
   const startEdit = (a: Automation) => {
     if (a.type === 'once') return // one-shot deferred runs aren't editable from the console
@@ -10379,6 +10392,11 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
     setMode(a.mode)
     setFilter(a.filter ?? '')
     setRunAs(a.runAs ?? '')
+    setThreadPath(a.threadPath ?? '')
+    // The signing secret is write-only — the server never sends it back, only whether one is set. So the
+    // field starts empty and blank means "leave it alone"; replacing or clearing it is deliberate.
+    setSigningSecret('')
+    setEditSigned(!!a.signed)
     if (a.type === 'cron') {
       const preset = CRON_PRESETS.some((p) => p.value === a.schedule)
       setScheduleCustom(!preset)
@@ -10388,14 +10406,23 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
     setShowForm(true); setHint('')
   }
   const closeForm = () => { setShowForm(false); setHint(''); resetForm() }
+  /** The webhook-only fields, omitted entirely for every other trigger type so a patch can't stamp them
+   *  onto a cron. An untouched signing secret is omitted (server keeps it); the sentinel sends null. */
+  const webhookPatch = (): { threadPath?: string; signingSecret?: string | null } => {
+    if (type !== 'webhook') return {}
+    return {
+      threadPath,
+      ...(signingSecret === CLEAR_SECRET ? { signingSecret: null } : signingSecret ? { signingSecret } : {}),
+    }
+  }
   const submit = async () => {
     setHint('')
     if (editId) {
       // agentId + type are immutable on edit; everything else is patchable. filter only for event triggers.
-      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' || type === 'telegram' ? filter : undefined, task, runAs })
+      const r = await api.updateAutomation(editId, { name, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs, ...webhookPatch() })
       if (r.error) return setHint('⚠ ' + r.error)
     } else {
-      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: type === 'composio' || type === 'slack' || type === 'discord' || type === 'telegram' ? filter : undefined, task, runAs: runAs || undefined })
+      const r = await api.addAutomation({ name, agentId, type, mode, schedule: type === 'cron' ? schedule : undefined, filter: FILTER_TYPES.includes(type) ? filter : undefined, task, runAs: runAs || undefined, ...webhookPatch() })
       if (r.error) return setHint('⚠ ' + r.error)
     }
     closeForm()
@@ -10507,7 +10534,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                   </Select>
                 </Field>
                 <Field label="Trigger" help={editId ? "The trigger type can't be changed after creation — delete and recreate to switch." : undefined}>
-                  <Select items={TRIGGER_ITEMS} value={type} disabled={!!editId} onValueChange={(v) => v && setType(v as 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram')}>
+                  <Select items={TRIGGER_ITEMS} value={type} disabled={!!editId} onValueChange={(v) => v && setType(v as Exclude<Automation['type'], 'once'>)}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="cron">Schedule (cron)</SelectItem>
@@ -10516,6 +10543,7 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                       <SelectItem value="discord">Discord message (native)</SelectItem>
                       <SelectItem value="telegram">Telegram message (native)</SelectItem>
                       <SelectItem value="composio">Composio event</SelectItem>
+                      <SelectItem value="clickup">ClickUp comment (native)</SelectItem>
                     </SelectContent>
                   </Select>
                 </Field>
@@ -10546,9 +10574,29 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                     ) })()}
                   </Field>
                 ) : type === 'webhook' ? (
-                  <Field label="Webhook" help="A secret URL is generated on create — POST to it to fire this automation.">
-                    <Input disabled value="URL generated after create" />
-                  </Field>
+                  <>
+                    <Field label="Trigger filter" help="Which events of the source's stream this automation is about — a comma-separated list, matched against the event name the source sends (an X-…-Event header or an event/type/action field). `prefix.*` matches a family. Blank = every event, which for a busy source means a run per event.">
+                      <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="convo.created, convo.note.*   (blank = any)" />
+                    </Field>
+                    <Field label="Conversation id path" help="Dot path to the source's own conversation/ticket id in the payload. Set it and follow-up events on the same conversation continue the run already handling it, instead of starting a second agent on the same ticket. Blank = every accepted event gets its own run.">
+                      <Input value={threadPath} onChange={(e) => setThreadPath(e.target.value)} className="font-mono" placeholder="conversation.id   (blank = no continuity)" />
+                    </Field>
+                    <Field label="Signing secret" help="The secret the source signs its request body with. Set it and an unsigned or badly signed delivery is refused, so the URL key stops being the only credential. Write-only — it's never shown again. Leave blank to keep the current one; clear it with the button to fall back to URL-key auth.">
+                      <Input value={signingSecret} onChange={(e) => setSigningSecret(e.target.value)} type="password" className="font-mono"
+                        placeholder={editId && editSigned ? 'set — type to replace' : 'optional'} />
+                      {editId && editSigned && !signingSecret && (
+                        <button type="button" onClick={() => setSigningSecret(CLEAR_SECRET)} className="mt-1 text-[11px] text-muted-foreground underline-offset-2 hover:underline">
+                          Remove the signing secret (fall back to URL-key auth)
+                        </button>
+                      )}
+                      {signingSecret === CLEAR_SECRET && (
+                        <p className="mt-1 text-[11px] text-amber-600">Will be removed on save — deliveries will be authenticated by the URL key alone.</p>
+                      )}
+                    </Field>
+                    <Field label="Webhook URL" help="A secret URL is generated on create — POST to it to fire this automation.">
+                      <Input disabled value="URL generated after create" />
+                    </Field>
+                  </>
                 ) : type === 'slack' ? (
                   <Field label="Trigger filter" help="Scope to an event type (app_mention / message) or a channel id (e.g. C0123…). Blank = any Slack message the app receives. Needs Slack tokens in Connections → Creds.">
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="app_mention  ·  or a channel id  (blank = any)" />
@@ -10556,6 +10604,10 @@ function AutomationsPage({ me, agents, sessions, serverTz, onOpen, nav, agentFil
                 ) : type === 'discord' ? (
                   <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a channel id. Blank = any Discord message the bot receives. Needs a bot token in Connections → Creds.">
                     <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="mention  ·  or a channel id  (blank = any)" />
+                  </Field>
+                ) : type === 'clickup' ? (
+                  <Field label="Trigger filter" help="Scope to a single ClickUp task id. Blank = any task a /agentname comment is posted on. Needs a ClickUp token + webhook secret in Settings → Integrations.">
+                    <Input value={filter} onChange={(e) => setFilter(e.target.value)} className="font-mono" placeholder="a task id  (blank = any task)" />
                   </Field>
                 ) : type === 'telegram' ? (
                   <Field label="Trigger filter" help="Scope to an event type (mention / direct_message) or a chat id. Blank = any Telegram message the bot receives. Needs a bot token in Connections → Creds.">
