@@ -1518,28 +1518,44 @@ function Console({ me }: { me: Member }) {
   const navEnded = mySessions.filter((s) => !isLive(s))
   const selectedEndedNav = navEnded.find((s) => s.tmux === selected?.tmux)
   const collapsibleNav = navEnded.filter((s) => s.tmux !== selected?.tmux)
+  // A sidebar switcher row. The "⋯" menu is a SIBLING of the link, not a child — a button nested inside
+  // an <a> is invalid interactive content and swallows the anchor's navigation. It stays in flow at
+  // opacity-0 (so hovering doesn't reflow the title) and reveals on row hover / keyboard focus / while
+  // open. Same RowActionsMenu the sessions list and grid cards use, minus Activity (its inspect panel
+  // lives inside SessionsPage).
   const renderNavSession = (s: Session) => {
     const active = selected?.tmux === s.tmux && route === 'sessions'
     return (
-      <a
-        key={s.id}
-        href={navHref('sessions', s.tmux)}
-        onClick={onNavClick(() => openTerminal(s.tmux, s.agent + ' · ' + s.id))}
-        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left no-underline text-foreground hover:bg-muted ${active ? 'bg-muted' : ''}`}
-      >
-        <SessionStatus s={s} />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-1">
-            <span className={`min-w-0 flex-1 truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
-            {s.headless && (
-              <span title="background run — headless, runs unattended to completion (won't auto-open a terminal tab)" className="shrink-0 text-amber-500/80">
-                <Cpu className="h-3 w-3" />
-              </span>
-            )}
+      <div key={s.id} className={`group/nav flex w-full items-center rounded-md ${active ? 'bg-muted' : 'hover:bg-muted'}`}>
+        <a
+          href={navHref('sessions', s.tmux)}
+          onClick={onNavClick(() => openTerminal(s.tmux, s.agent + ' · ' + s.id))}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 pl-2 text-left no-underline text-foreground"
+        >
+          <SessionStatus s={s} />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1">
+              <span className={`min-w-0 flex-1 truncate text-[13px] leading-tight ${active ? 'font-medium text-primary' : ''}`}>{s.title}</span>
+              {s.headless && (
+                <span title="background run — headless, runs unattended to completion (won't auto-open a terminal tab)" className="shrink-0 text-amber-500/80">
+                  <Cpu className="h-3 w-3" />
+                </span>
+              )}
+            </span>
+            <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
           </span>
-          <span className="block truncate text-[11px] leading-tight text-muted-foreground">{s.agent}</span>
-        </span>
-      </a>
+        </a>
+        <RowActionsMenu
+          session={s}
+          members={members}
+          me={me}
+          onOpen={openTerminal}
+          onStop={stopSession}
+          onDelete={deleteSession}
+          onTransfer={transferSession}
+          className="mr-0.5 h-6 w-6 shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/nav:opacity-100 data-[state=open]:opacity-100"
+        />
+      </div>
     )
   }
   // A live terminal takes the whole content area (no padding/scroll wrapper).
@@ -3188,16 +3204,18 @@ function EditableSessionTitle({ title, onRename }: { title: string; onRename: (t
   )
 }
 
-/** The per-row "⋯" actions dropdown for the sessions list + grid cards. One compact trigger replaces the
- *  cluster of hover icon-buttons (which forced a wide fixed cell / overlay) — icon + label items, gated
- *  exactly like their old button counterparts, and the natural home for future per-session actions. */
+/** The per-row "⋯" actions dropdown for the sessions list + grid cards + the sidebar switcher. One compact
+ *  trigger replaces the cluster of hover icon-buttons (which forced a wide fixed cell / overlay) — icon +
+ *  label items, gated exactly like their old button counterparts, and the natural home for future
+ *  per-session actions. `onActivity` is optional: the inspect panel it opens belongs to SessionsPage, so
+ *  the sidebar (which renders outside that page) mounts the same menu minus that one item. */
 function RowActionsMenu({ session: s, members, me, onOpen, onStop, onDelete, onTransfer, onActivity, className = '' }: {
   session: Session; members: Member[]; me: Member
   onOpen: (tmux: string, title: string) => void
   onStop: (id: string) => void
   onDelete: (id: string, tmux: string) => void
   onTransfer: (id: string, to: string) => void
-  onActivity: (s: Session) => void
+  onActivity?: (s: Session) => void
   className?: string
 }) {
   const canTransfer = me.role === 'owner' || me.role === 'admin' || s.runAs === me.id
@@ -3223,9 +3241,11 @@ function RowActionsMenu({ session: s, members, me, onOpen, onStop, onDelete, onT
             <GitBranch className="h-3.5 w-3.5 shrink-0 text-violet-500" /> <span>Fork</span>
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem className="gap-2 text-xs" onClick={() => onActivity(s)}>
-          <Activity className="h-3.5 w-3.5 shrink-0 text-sky-500" /> <span>Activity</span>
-        </DropdownMenuItem>
+        {onActivity && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => onActivity(s)}>
+            <Activity className="h-3.5 w-3.5 shrink-0 text-sky-500" /> <span>Activity</span>
+          </DropdownMenuItem>
+        )}
         {isLive(s) && (
           <DropdownMenuItem className="gap-2 text-xs" onClick={() => onStop(s.id)}>
             <Square className="h-3.5 w-3.5 shrink-0 text-amber-500" /> <span>Stop</span>
