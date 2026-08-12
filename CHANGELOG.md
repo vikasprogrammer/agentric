@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.338.1] — 2026-08-12
+### Fixed
+- **An expired GitHub token is no longer injected into a session's env, where it shadowed a working box
+  credential.** `injectMemberGithub` read the run-as member's vault blob synchronously at launch and
+  exported it as `GH_TOKEN`/`GITHUB_TOKEN` regardless of whether it was still alive — the fire-and-forget
+  refresh it kicks only helps the NEXT launch. Those user tokens live ~8 h and nothing refreshes them
+  proactively, so any run starting after a quiet gap got a corpse. That is strictly worse than no token:
+  `gh` prefers the env over its keyring, and `configureGitCredentials` resets the inherited git helper for
+  github.com, so a dead string made every `git`/`gh` call hard-fail with *"GITHUB_TOKEN in the environment
+  is invalid and overrides your good keyring credential"* until the agent stripped the var by hand. Both
+  injection paths now withhold an already-expired blob (new `GithubIdentity.isExpired` — the harder
+  condition `needsRefresh` deliberately doesn't distinguish, since a merely-stale token is still usable),
+  leaving the env unset exactly as `injectShellSecrets` does for an unresolved key so both tools fall back
+  cleanly; the refresh still fires so the next launch is whole. Audited `github.token.expired` /
+  `github.bot_token.expired`. On the live instapods tenant this fired on ~10% of launches
+  (54 `github.token.stale` events against 554 injections). Note this does NOT rescue a session whose token
+  dies *mid-run* — env can't be mutated from outside the process, so a run outliving its token (60 of 611
+  in the last 30 days) still needs the `github_refresh` tool.
+- `scripts/github-per-member-test.cjs` now runs in `npm run test:governance`, pinning the guard along with
+  the rest of the per-member GitHub credential path.
+
 ## [0.338.0] — 2026-08-12
 ### Added
 - **The sidebar session switcher grew the same "⋯" actions menu the sessions list has.** Every row in

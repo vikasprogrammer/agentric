@@ -259,6 +259,16 @@ export class GithubIdentity {
   }
 
   /**
+   * True when a token is ALREADY past its expiry — the harder condition `needsRefresh` deliberately
+   * doesn't distinguish (that one fires inside the skew, while the token is still usable). The launch
+   * path needs the distinction: a merely-stale token is still worth injecting, a dead one is not.
+   * Shared by the member and bot blobs, both of which carry `expiresAt` in epoch ms.
+   */
+  isExpired(blob: { expiresAt?: number }, nowMs: number = Date.now()): boolean {
+    return blob.expiresAt !== undefined && blob.expiresAt <= nowMs;
+  }
+
+  /**
    * On-demand refresh for a LIVE session (the `github_refresh` agent tool). Unlike `ensureFresh` — which
    * only fires within the expiry skew and is fire-and-forget at launch — this UNCONDITIONALLY exchanges
    * the stored refresh token for a new access token, because the agent only calls it after a token has
