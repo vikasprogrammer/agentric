@@ -833,11 +833,18 @@ export interface Automation {
   agentId: string
   name: string
   /** `once` = a one-shot deferred run scheduled by an agent (not creatable from the console). */
-  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram'
+  type: 'cron' | 'once' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup'
   mode: ExecMode
   schedule?: string
-  /** composio: trigger slug. slack: event type (app_mention/message) or channel id. '' = any. */
+  /** composio: trigger slug. slack: event type (app_mention/message) or channel id. webhook: a
+   *  comma-separated event list (`convo.created, convo.note.*`). '' = any. */
   filter?: string
+  /** webhook: dot path to the source's conversation id in the payload — follow-ups on the same
+   *  conversation continue the run already handling it. '' / absent = a run per accepted event. */
+  threadPath?: string
+  /** webhook: whether a body-signing secret is configured. The secret ITSELF is never sent to the
+   *  client — this is the only thing the console can know about it. */
+  signed?: boolean
   task: string
   enabled: boolean
   createdAt: number
@@ -891,10 +898,13 @@ export interface GoalUpdateProposal {
 export interface AddAutomationReq {
   agentId: string
   name: string
-  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram'
+  type: 'cron' | 'webhook' | 'composio' | 'slack' | 'discord' | 'telegram' | 'clickup'
   mode: ExecMode
   schedule?: string
   filter?: string
+  /** webhook only — see Automation.threadPath / the write-only signing secret. */
+  threadPath?: string
+  signingSecret?: string | null
   task: string
   runAs?: string
 }
@@ -1684,7 +1694,9 @@ export const api = {
 
   automations: () => call<{ automations: Automation[] }>('GET', '/api/automations'),
   addAutomation: (a: AddAutomationReq) => call<Automation & { error?: string }>('POST', '/api/automations', a),
-  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled' | 'runAs'>>) =>
+  // `signingSecret` is write-only and therefore not part of `Automation`: null removes it, a string sets
+  // it, omitted leaves the stored one alone.
+  updateAutomation: (id: string, patch: Partial<Pick<Automation, 'name' | 'mode' | 'schedule' | 'filter' | 'task' | 'enabled' | 'runAs' | 'threadPath'>> & { signingSecret?: string | null }) =>
     call<Automation & { error?: string }>('PATCH', '/api/automations/' + id, patch),
   deleteAutomation: (id: string) => call<{ ok: boolean }>('DELETE', '/api/automations/' + id),
   /** Fire an automation once now. `mode` overrides its saved default for this run only (headless =

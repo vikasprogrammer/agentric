@@ -8,6 +8,45 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.340.0] — 2026-08-12
+### Fixed
+- **A webhook fired at a busy agent silently lost the event.** `fireWebhook` spawned with
+  `guard: true`, so any delivery arriving while the previous run was still alive came back **429** with
+  nothing queued — and a product webhook does not retry a 4xx, so the event was simply gone. The busier
+  the agent, the more it dropped. The guard is a *cron* rule (the next occurrence is equivalent to this
+  one) and does not hold for webhooks, where two events are two different pieces of work. Deliveries now
+  spawn unguarded, and volume is handled before spawning instead of by refusing to spawn.
+- **Webhook automations defaulted to `interactive`** — every other event-driven trigger defaults to
+  `headless`. A hook-created automation therefore opened a TUI nothing would ever attach to, which then
+  blocked the next delivery, because an interactive pane never exits. Now `headless` like its siblings.
+- **`Automations.add()` rejected `type: 'clickup'` outright** ("type must be cron, webhook, composio,
+  slack, discord, or telegram") despite it being a valid type everywhere else, so a per-task ClickUp
+  automation could not be created. Accepted now, and wired into the console's trigger picker, filter
+  field, summary and icon.
+- **`update()` ignored `filter` on webhook automations**, so the one trigger type that most needs
+  scoping was the only one you could not scope after creating it.
+
+### Added
+- **Webhook ingress: event filter, dedupe, body signatures, conversation continuity**
+  (`docs/webhook-ingress.md`, `src/edge/webhook-ingress.ts`). Three new per-automation fields, all
+  optional, all defaulting to the previous behaviour so existing hooks are untouched:
+  `filter` (comma-separated event names, `prefix.*` for a family), `threadPath` (dot path to the
+  source's conversation id — a follow-up continues the run already handling that ticket instead of
+  racing a second agent onto it), and a write-only `signingSecret` (HMAC over the raw body; configured
+  ⇒ unsigned deliveries are refused, so a key in a URL stops being the only credential).
+  Vendor-neutral by construction — the event name, delivery id and signature are matched by *shape*
+  (`x-…-event`, `x-…-delivery`, `x-…-signature`, in either algorithm and either encoding), so a source
+  nobody here has seen needs no code.
+- Everything declined now answers **200** with a reason (`skipped: 'filter' | 'duplicate'`) rather than
+  a 4xx a sender would read as "retry or disable me", and every delivery appends a `trigger.webhook`
+  audit event with its outcome — so "did that event reach an agent, and if not why not" is one query.
+- `scripts/webhook-ingress-test.cjs` (58 assertions) pins all of it, including the regression itself:
+  a second ticket arriving during a live run still gets its own session.
+
+### Security
+- `signingSecret` is stripped in `automationView` alongside the hook key — a bare spread would have
+  shipped it to every admin's browser. The console only ever learns `signed: true|false`.
+
 ## [0.339.0] — 2026-08-12
 ### Changed
 - **"Is it working?" now measures the world instead of our own clicks** (`docs/insights-revisit.md`

@@ -272,6 +272,31 @@ function migrate(db: Db): void {
       created_at INTEGER NOT NULL
     );
 
+    -- Webhook ingress bookkeeping (src/edge/webhook-ingress.ts). Deliveries a webhook automation has
+    -- already accepted, so a source's retry (or an at-least-once re-delivery) is acknowledged instead of
+    -- spawning a second run for the same event. Pruned on write past DEDUPE_TTL_MS — this is a short
+    -- retry-absorbing window, not a permanent ledger; the audit trail is the durable record.
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      automation_id TEXT NOT NULL,
+      delivery_key  TEXT NOT NULL,
+      session_id    TEXT,              -- the run it started (NULL when it continued an existing one)
+      created_at    INTEGER NOT NULL,
+      PRIMARY KEY (automation_id, delivery_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_ts ON webhook_deliveries (created_at);
+
+    -- Which session is handling a given source-side conversation (ticket/issue id), so a follow-up event
+    -- on that conversation continues THAT run instead of racing a second agent onto the same ticket. The
+    -- webhook analogue of slack_threads/clickup_threads, keyed by the source's own id rather than ours.
+    CREATE TABLE IF NOT EXISTS webhook_threads (
+      automation_id TEXT NOT NULL,
+      thread_key    TEXT NOT NULL,
+      session_id    TEXT NOT NULL,
+      created_at    INTEGER NOT NULL,
+      PRIMARY KEY (automation_id, thread_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_webhook_threads_session ON webhook_threads (session_id);
+
     -- Native Telegram egress binding (the analogue of discord_threads): the chat (+ forum topic +
     -- triggering message) a Telegram-triggered session should reply into. Written when a telegram
     -- automation / chat run spawns a session; read by the agentos telegram_reply tool so the agent posts
@@ -769,6 +794,11 @@ function migrate(db: Db): void {
   addColumn(db, 'automations', 'run_at', 'INTEGER'); // fire time for a one-shot 'once' automation (epoch ms)
   addColumn(db, 'automations', 'run_as', 'TEXT');    // member id the fired session should act as (one-shot)
   addColumn(db, 'automations', 'resume_claude_id', 'TEXT'); // claude session id a one-shot resumes (context continuity)
+  // Webhook ingress (see src/edge/webhook-ingress.ts). `filter` above is reused for the event filter;
+  // these two add authenticity and conversation continuity. Both NULL on an existing webhook automation,
+  // which keeps its previous behaviour exactly: URL-key auth, no continuity.
+  addColumn(db, 'automations', 'signing_secret', 'TEXT'); // shared secret the source signs the body with ('' / NULL = URL key only)
+  addColumn(db, 'automations', 'thread_path', 'TEXT');    // dot path to the conversation id in the payload ('' = no continuity)
 
   // Remote-MCP transport for connectors (older DBs are all stdio: command/args/env).
   addColumn(db, 'connectors', 'transport', "TEXT NOT NULL DEFAULT 'stdio'");

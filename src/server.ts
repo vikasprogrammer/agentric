@@ -562,8 +562,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const hookMatch = p.match(/^\/hooks\/([\w-]+)$/);
   if (method === 'POST' && hookMatch) {
     const key = url.searchParams.get('key') || String(req.headers['x-hook-key'] || '');
-    const payload = await readBody(req);
-    const out = autos.fireWebhook(hookMatch[1], key, payload);
+    // The RAW bytes, not the parsed object: a body signature is over what the source actually sent, and
+    // re-serializing the parse would change key order/whitespace and never match. Headers + query ride
+    // along too — the event name, delivery id and signature all live outside the JSON body.
+    const raw = await readRawBody(req);
+    let json: Record<string, any> = {};
+    try { const v = JSON.parse(raw || '{}'); if (v && typeof v === 'object') json = v; } catch { /* non-JSON body: still authenticate + fire, just with no readable fields */ }
+    const out = autos.fireWebhook(hookMatch[1], key, json, { headers: req.headers, query: url.searchParams, rawBody: raw });
     return sendJson(res, out.status, out.body);
   }
 
@@ -2416,6 +2421,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         mode: b.mode === 'headless' ? 'headless' : b.mode === 'interactive' ? 'interactive' : undefined,
         schedule: b.schedule ? String(b.schedule) : undefined,
         filter: b.filter !== undefined ? String(b.filter) : undefined,
+        signingSecret: b.signingSecret !== undefined ? String(b.signingSecret) : undefined,
+        threadPath: b.threadPath !== undefined ? String(b.threadPath) : undefined,
         task: String(b.task || ''),
         createdBy: me.id,
         runAs: runAs || undefined,
@@ -2621,6 +2628,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         task: b.task !== undefined ? String(b.task) : undefined,
         enabled: b.enabled !== undefined ? !!b.enabled : undefined,
         runAs,
+        // null clears (back to URL-key auth / no continuity); omitted leaves them alone. The console
+        // sends the signing secret only when it's actually being changed — it can't read the current one.
+        signingSecret: b.signingSecret === undefined ? undefined : b.signingSecret === null ? null : String(b.signingSecret),
+        threadPath: b.threadPath === undefined ? undefined : b.threadPath === null ? null : String(b.threadPath),
       });
       return sendJson(res, updated ? 200 : 404, updated ? automationView(updated, req, true) : { error: 'not found' });
     } catch (e) {
@@ -6327,9 +6338,14 @@ function appView(a: AppManifest, appSup?: AppSupervisor) {
 }
 /** Strip the webhook secret for non-admins; give admins the ready-to-paste hook URL instead. */
 function automationView(a: Automation, req: http.IncomingMessage, admin: boolean, canManage = true) {
-  const { secret, ...rest } = a;
+  // Both credentials are stripped, not spread: `secret` is re-exposed only inside the admin hook URL, and
+  // `signingSecret` is never echoed at all — it's the SOURCE's copy of a shared secret, so the console only
+  // needs to know whether one is set. Anything write-only here must be destructured out; a bare `...a`
+  // would have shipped it to every admin's browser and into the response cache.
+  const { secret, signingSecret, ...rest } = a;
   return {
     ...rest,
+    signed: !!signingSecret,
     hookUrl: admin && a.type === 'webhook' && secret ? hookUrlFor(req, a.id, secret) : undefined,
     // When it fires next: an enabled cron computes its next matching minute; a pending one-shot carries
     // its scheduled runAt. Event triggers (webhook/slack/discord) have no schedule, so it stays absent.
