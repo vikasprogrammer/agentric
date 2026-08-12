@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.339.0] — 2026-08-12
+### Changed
+- **"Is it working?" now measures the world instead of our own clicks** (`docs/insights-revisit.md`
+  Step 4). Both halves were broken the same way.
+  The **trend** counted a run as successful only if it self-reported `outcome: success` — the number
+  Step 0 deleted from every broadcast channel, still quietly driving the page. It now reads the derived
+  outcome and carries the **undecidable share beside the rate**, so "the work got worse" can never again
+  be read off a number that moved because reporting discipline moved. On the live corpus it produces a
+  usable trend for the first time: 58% → 54% → 75% → 58% → 80% over recent weeks, undecidable 0–3%.
+  The **interventions** were `recommendation.applied` events — one in the fleet's entire history, so the
+  block could never answer anything. Replaced by: a card was raised, did a human do anything, did the
+  problem stop. It counts **events, not rates** ("12 runs died, you replaced the account, 0 since" is
+  checkable; a rate hides it behind a denominator that also moved), and the verdicts are chosen so the
+  uncomfortable one is reachable — **`no-action`**, because a card nobody acts on is a failed card, next
+  to `resolved`, `ongoing` and `too-early`. A card whose recurrence cannot be counted is omitted rather
+  than given a made-up verdict, so today only Step 2's runtime-death signal appears.
+  Pinned by `scripts/card-measurement-test.cjs` (16 assertions).
 ## [0.338.1] — 2026-08-12
 ### Fixed
 - **An expired GitHub token is no longer injected into a session's env, where it shadowed a working box

@@ -525,13 +525,14 @@ export interface SessionTidyItem { id: string; title: string; agent: string; sta
 export interface SessionTidyPlan { deadAfterDays: number; dead: { total: number; sample: SessionTidyItem[] }; stale: { total: number; sample: SessionTidyItem[] } }
 export interface StuckGoal { id: string; title: string; days: number }
 export interface TroubledAutomation { id: string; name: string; type: string; reason: 'errored' | 'idle'; detail: string }
-export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null }
-export interface MeasureIntervention { id: string; title: string; at: number; before: { n: number; rate: number | null }; after: { n: number; rate: number | null }; deltaPp: number | null; verdict: 'improved' | 'declined' | 'flat' | 'insufficient' }
+export interface MeasureTrendBucket { start: number; label: string; total: number; success: number; rate: number | null; unknownShare: number | null }
+/** A raised card and what happened next — counts of the signal, not rates (see src/edge/measurement.ts). */
+export interface CardEffect { key: string; title: string; postedAt: number; actedAt: number | null; action: string | null; before: number; after: number; afterDays: number; verdict: 'resolved' | 'ongoing' | 'no-action' | 'too-early' }
 export interface Measurement {
   trend: MeasureTrendBucket[]
-  interventions: MeasureIntervention[]
-  recent: { n: number; rate: number | null }
-  prior: { n: number; rate: number | null }
+  cards: CardEffect[]
+  recent: { n: number; rate: number | null; unknownShare: number | null }
+  prior: { n: number; rate: number | null; unknownShare: number | null }
   deltaPp: number | null
 }
 export interface DigestConfig {
