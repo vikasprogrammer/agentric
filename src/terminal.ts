@@ -6782,7 +6782,8 @@ export class TerminalManager {
    * set `GH_TOKEN` (a curated shellSecret/assigned PAT) we leave it, and a connected member's token
    * overrides afterwards. Reads the vault-cached token synchronously (mint is a network call the sync
    * launch path can't await); a near-expiry token is injected as-is while a fire-and-forget refresh
-   * rewrites the cache for the next launch. Audited.
+   * rewrites the cache for the next launch, but an ALREADY-EXPIRED one is withheld — see the note on
+   * `injectMemberGithub` for why a dead token is worse than none. Audited.
    */
   private injectGithubBaseline(env: Record<string, string>, agent: string, sessionId: string): void {
     if (env.GH_TOKEN) return; // an explicit agent credential wins over the bot baseline
@@ -6791,6 +6792,13 @@ export class TerminalManager {
     if (!blob) {
       // No cached token yet but the bot IS configured → mint one for the NEXT launch (best-effort).
       if (gh.botConfigured()) void gh.ensureBotToken().catch(() => { /* next launch retries */ });
+      return;
+    }
+    if (gh.isExpired(blob)) {
+      // The cache went cold (nothing launched for >1 h). Leave the env unset and re-mint for the next
+      // launch rather than hand this run a dead credential.
+      this.audit(sessionId, agent, 'github.bot_token.expired', { expiresAt: blob.expiresAt });
+      void gh.ensureBotToken().catch(() => { /* next launch retries */ });
       return;
     }
     env.GH_TOKEN = blob.token;
@@ -6810,12 +6818,26 @@ export class TerminalManager {
    * synchronously (the launch path is sync); if it's within the refresh skew of expiry AND has a refresh
    * token, kick a fire-and-forget refresh that rewrites the vault blob for the NEXT launch (this run
    * still gets the currently-valid token). Audited per injection.
+   *
+   * An ALREADY-EXPIRED blob is withheld instead, because a dead token here is strictly worse than no
+   * token: `gh` prefers `GH_TOKEN`/`GITHUB_TOKEN` over its keyring, and `configureGitCredentials` resets
+   * the inherited git helper for github.com — so a dead string SHADOWS a perfectly good box credential
+   * and every `git`/`gh` call hard-fails until the agent strips the var by hand. Leaving the env unset
+   * (the same posture `injectShellSecrets` takes for an unresolved key) lets both tools fall back
+   * cleanly, and the fire-and-forget refresh still makes the next launch whole. The window this closes
+   * is real: the member token lives ~8 h with no proactive refresher, so any run launched after a long
+   * quiet gap used to get a corpse.
    */
   private injectMemberGithub(env: Record<string, string>, agent: string, actingMember: string | undefined, sessionId: string): void {
     if (!actingMember) return;
     const gh = new GithubIdentity(this.os);
     const blob = gh.load(actingMember);
     if (!blob) return;
+    if (gh.isExpired(blob)) {
+      this.audit(sessionId, agent, 'github.token.expired', { login: blob.login, principal: actingMember, expiresAt: blob.expiresAt });
+      if (blob.refreshToken) void gh.ensureFresh(actingMember).catch(() => { /* next launch retries */ });
+      return; // whatever the bot/agent set stays; if nothing did, `gh` falls back to the box credential
+    }
     env.GH_TOKEN = blob.token;
     env.GITHUB_TOKEN = blob.token;
     this.audit(sessionId, agent, 'github.token.injected', { login: blob.login, principal: actingMember });

@@ -150,6 +150,27 @@ async function main() {
   const env3 = { GH_TOKEN: 'gho_BOT' };
   tm.injectMemberGithub(env3, 'coder', 'nobody-else', 'sess3'); // unlinked member
   assert(env3.GH_TOKEN === 'gho_BOT', 'unlinked run-as member → bot token untouched');
+
+  // Expiry guard: a DEAD member token must never be injected. `gh` prefers the env over its keyring and
+  // configureGitCredentials resets the inherited git helper, so injecting a corpse shadows a working box
+  // credential and hard-fails every git/gh call. Withhold it and let the fallback work.
+  assert(gid.isExpired({ token: 't' }) === false, 'isExpired false for a non-expiring token');
+  assert(gid.isExpired({ expiresAt: Date.now() + 60_000 }) === false, 'isExpired false inside the refresh skew (still usable)');
+  assert(gid.isExpired({ expiresAt: Date.now() - 1 }) === true, 'isExpired true once past expiry');
+
+  refreshCount = 0;
+  gid.save(ownerId, { token: 'gho_dead', refreshToken: 'ghr_x', expiresAt: Date.now() - 60_000, login: 'octocat', connectedAt: now });
+  const env4 = {};
+  tm.injectMemberGithub(env4, 'coder', ownerId, 'sess4');
+  assert(env4.GH_TOKEN === undefined && env4.GITHUB_TOKEN === undefined, 'expired member token is WITHHELD, not injected');
+  tm.configureGitCredentials(env4);
+  assert(env4.GIT_CONFIG_COUNT === undefined, 'no token → git helper reset is skipped, so the inherited helper survives');
+
+  const env5 = { GH_TOKEN: 'gho_BOT' };
+  tm.injectMemberGithub(env5, 'coder', ownerId, 'sess5');
+  assert(env5.GH_TOKEN === 'gho_BOT', 'expired member token does NOT clobber a live bot/agent token');
+  await new Promise((r) => setTimeout(r, 50)); // the guard kicks a fire-and-forget refresh for next launch
+  assert(refreshCount > 0, 'withholding still refreshes the blob so the NEXT launch is whole');
   gid.clear(ownerId);
 
   // ─── 4) HTTP flow: creds → connect → callback → me → disconnect ──────────────
