@@ -58,6 +58,15 @@ console.log('\n\x1b[1m3) the brief names its carve-outs\x1b[0m');
 for (const tool of ['report', 'remember', 'kb_write', 'task_update', 'ask', 'slack_reply', 'discord_reply'])
   assert(TERSE_OUTPUT_BRIEF.includes(tool), `exempts ${tool}`);
 assert(/[Ee]rror messages/.test(TERSE_OUTPUT_BRIEF) && /byte-for-byte/i.test(TERSE_OUTPUT_BRIEF), 'exempts error text verbatim');
+// …and the carve-out must not read as a licence to be long. A terse engineer run answered a console
+// question at essay length because "write them in full, ordinary prose" was the last word on the exempt
+// lane. Compression stays off there; shape does not.
+assert(/not a licence to be long/i.test(TERSE_OUTPUT_BRIEF), 'the exempt lane is still bound on SHAPE');
+assert(/[Ll]ead with the answer/.test(TERSE_OUTPUT_BRIEF), 'tells the exempt lane to lead with the answer');
+assert(/summary and then restate/i.test(TERSE_OUTPUT_BRIEF), 'bans the summary-then-restatement duplication');
+// The whole point of the carve-out survives it: prose and caveats stay.
+assert(/completeness wins over length/i.test(TERSE_OUTPUT_BRIEF), 'completeness still beats brevity');
+assert(/ordinary prose/.test(TERSE_OUTPUT_BRIEF), 'the exempt surfaces still keep ordinary prose');
 
 const aos = loadAgentOS();
 const db = aos.db;

@@ -8,6 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.337.2] — 2026-08-12
+### Fixed
+- **The terse brief's carve-out no longer reads as a licence to be long.** A terse `engineer` run
+  answered a console question at essay length and the owner had to reply "explain to me in 1 liner" —
+  which looked like the verbosity flag failing, and wasn't: the session was stamped `verbosity=terse`
+  and the workspace default is terse, but human-facing prose (`report`, `ask`, the chat replies) is
+  deliberately EXEMPT from compression so terse phrasing can't degrade memory, consolidation and the
+  surfaces teammates read. The exemption ended on "write them in full, ordinary prose", and that is the
+  half the model acted on. `TERSE_OUTPUT_BRIEF` now separates the two axes: those surfaces stay
+  uncompressed, keep their caveats and stay ordinary prose, but they must lead with the answer, must not
+  summarise and then restate the same content as detail, must not recount the steps to a finding the
+  finding implies, and must answer a narrow question narrowly before widening. Compression is still off
+  there; shape is not. Pinned by new assertions in `scripts/verbosity-test.cjs` that hold BOTH halves —
+  the brevity clauses and the "completeness wins over length" guarantee they must not eat.
+
 ## [0.337.1] — 2026-08-11
 ### Docs
 - **`docs/journal-plan.md`** — Step 3 of the Insights rebuild, planned concretely. The day-by-day
