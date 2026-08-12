@@ -14,6 +14,15 @@
 // It is a prompt instruction, not an enforced transform: the model can ignore it, and compliance drifts
 // by model and by task. That is exactly why `verbositySavings` exists — the flag ships with the query
 // that can falsify it.
+//
+// The carve-out has a failure mode of its own, and it showed up live: a terse `engineer` run answered a
+// console question at essay length, and the owner had to reply "explain to me in 1 liner". Nothing was
+// broken — the answer landed in the exempt lane, and "write them in full, ordinary prose" reads as a
+// LICENCE to be long. So the exemption now says what it always meant: exempt from compression is not
+// exempt from shape. Those surfaces keep their prose and every caveat; they still lead with the answer
+// and still don't say a thing twice. That is a discipline the artifacts want anyway — a `report` whose
+// first line is the outcome is a better input to consolidation than one that arrives at it in paragraph
+// four.
 
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -38,6 +47,14 @@ export const TERSE_OUTPUT_BRIEF =
   '`discord_reply`/`discord_send`/`discord_dm`, `clickup_reply`, `telegram_reply`). Those are read by ' +
   'teammates, or feed memory and consolidation, and terse phrasing there costs far more than it saves. ' +
   'Write them in full, ordinary prose.\n\n' +
+  '**Exempt from compression is not a licence to be long.** Those surfaces keep ordinary prose and every ' +
+  'caveat, but the same discipline applies to their SHAPE. Lead with the answer, the finding or the ' +
+  'outcome in the first sentence, then give only what a reader needs in order to act on it or trust it. ' +
+  'Do not write a summary and then restate the same content as detail. Do not recount the steps you took ' +
+  'to reach a finding the finding already implies. Do not pad a section so it looks complete, and do not ' +
+  'add a closing paragraph that repeats the opening one. Every extra sentence has to earn its place with ' +
+  'content a reader would miss if it were cut. When someone asks a narrow question, answer THAT question ' +
+  'first — offer the wider context after it, or not at all.\n\n' +
   '**Terse is not vague, and not curt.** If brevity would drop a caveat, a risk, or a reason a person ' +
   'needs, keep it — completeness wins over length every time. A human who asks you to explain something ' +
   'is asking for the explanation; give it to them properly. This is about cutting words that carry ' +
