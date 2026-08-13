@@ -56,6 +56,11 @@ const WARM_CONFIRM_MS = 12_000;
  *  for minutes; one still "busy" after this is wedged, and protecting it would mean never reclaiming
  *  its pane. */
 const MID_TURN_MAX_MS = 2 * 3600_000;
+/** How long an idle INTERACTIVE session keeps its spawn-cap slot after its last turn ended. Long enough
+ *  that a human thinking between turns never loses their slot to a scheduled spawn; short enough that a
+ *  TUI someone walked away from stops blocking the scheduler. Only affects ADMISSION — the session stays
+ *  alive and attachable either way; reaping it is the idle reaper's separate, much longer, decision. */
+const PARKED_IDLE_MS = 30 * 60_000;
 /** How long one in-memory "this session is mid-turn" stamp suppresses the gate's heartbeat write. The
  *  gate fires on every tool call and `node:sqlite` is synchronous, so the write must not ride the hot
  *  path more often than it has to; the DB statement is a no-op mid-turn anyway. */
@@ -1842,6 +1847,57 @@ export class TerminalManager {
     let n = 0;
     for (const r of rows) if (alive.has(r.tmux)) n++;
     return n;
+  }
+
+  /**
+   * Sessions occupying a **work slot** — the number the spawn cap should compare against, as opposed to
+   * {@link aliveSessionCount}, which counts every live pane.
+   *
+   * The two differ because an **interactive** session stays alive until a human closes it, by design. A
+   * TUI someone opened, used for ten minutes and walked away from is indistinguishable, to a pane count,
+   * from an agent working flat out. On the live fleet that difference took out the entire scheduled lane:
+   * a tenant accumulated ~13 parked TUIs (nine claimed by one person, seven untouched for over a week),
+   * the pane count sat permanently above the cap, and every cron was deferred for a month — 31,570
+   * consecutive `scheduler.deferred` events, no cron fired, nobody noticed. Raising the cap only buys
+   * time, because parked panes keep accumulating; they must stop counting as work.
+   *
+   * A session holds a slot when it is alive AND any of:
+   *   - **headless** — an unattended run is working from spawn to exit by definition (a wedged one is the
+   *     unattended reapers' problem, not the cap's).
+   *   - **a turn is in flight** — {@link isWorking}, the same predicate the console's spinner uses. A
+   *     human actively driving a TUI is real load and must still count.
+   *   - **recently active** — within {@link PARKED_IDLE_MS}, so a human thinking between turns keeps
+   *     their slot rather than losing it to a scheduled spawn mid-conversation.
+   *
+   * Everything else is parked: alive, costing almost nothing, and no reason to block scheduled work.
+   * Falls back to the pure DB count when liveness can't be polled, for the same fail-safe reason
+   * {@link aliveSessionCount} does.
+   */
+  admissionSessionCount(): number {
+    const alive = this.backend.aliveNames();
+    if (!alive) return this.runningSessionCount();
+    const rows = this.db
+      .prepare(
+        "SELECT id, tmux, status, headless, busy_since, last_activity, created_at FROM term_sessions WHERE status = 'running'",
+      )
+      .all<{ id: string; tmux: string; status: string; headless: number | null; busy_since: number | null; last_activity: number | null; created_at: number }>();
+    const now = Date.now();
+    let n = 0;
+    for (const r of rows) {
+      if (!alive.has(r.tmux) && !this.launching.has(r.id)) continue; // row says running, pane says otherwise
+      if (r.headless) { n++; continue; }
+      if (this.isWorking(r, alive)) { n++; continue; }
+      if (now - (r.last_activity ?? r.created_at) <= PARKED_IDLE_MS) n++;
+    }
+    return n;
+  }
+
+  /** How many live sessions are parked — alive but holding no work slot. Observability only (the Settings
+   *  concurrency panel), so "running: 34 / cap 25" can explain itself instead of looking like an overload. */
+  parkedSessionCount(): number {
+    const alive = this.backend.aliveNames();
+    if (!alive) return 0;
+    return Math.max(0, this.aliveSessionCount() - this.admissionSessionCount());
   }
 
   /** Pure DB count of `running` sessions — the cap's fallback when tmux liveness can't be polled. Cheap

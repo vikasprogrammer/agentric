@@ -4334,7 +4334,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const value = os.settings.maxConcurrentSessions(); // operator override (null = unset)
     const resolved = autos.concurrencyCap();           // effective cap the scheduler enforces (0 = unlimited)
     const source = envLocked ? 'env' : value != null ? 'setting' : 'derived';
-    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours() });
+    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), admitted: tm.admissionSessionCount(), parked: tm.parkedSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours() });
   }
   if (method === 'PUT' && p === '/api/settings/concurrency') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
