@@ -881,6 +881,7 @@ export class TerminalManager {
       audit: (type, data) => this.audit('-', 'system', type, data),
     });
     this.refreshTranscriptRoots();
+    this.sweepLaunchMarkers();
   }
 
   /** Teach the transcript reader where rotated sessions wrote their conversations. Without it the console's
@@ -2334,14 +2335,52 @@ export class TerminalManager {
   private launchAgentRuntime(o: LaunchSpec): void {
     if (!this.os.agents.get(o.agent)?.dir) return;
     this.launching.add(o.id);
+    this.markLaunching(o.id, true);
     setImmediate(() => {
       void this.launchAgentRuntimeNow(o)
         .catch((e) => {
           this.audit(o.id, o.agent, 'session.launch.failed', { error: e instanceof Error ? e.message : String(e) });
           this.db.prepare("UPDATE term_sessions SET status = 'crashed', busy_since = NULL, updated_at = ? WHERE id = ?").run(Date.now(), o.id);
         })
-        .finally(() => this.launching.delete(o.id));
+        .finally(() => { this.launching.delete(o.id); this.markLaunching(o.id, false); });
     });
+  }
+
+  /** Path of a session's "pane is coming up" marker (see {@link markLaunching} / attach.sh). */
+  private launchMarkerPath(sessionId: string): string | null {
+    return this.os.paths ? path.join(this.os.paths.connectors, `session-${sessionId}.launching`) : null;
+  }
+
+  /**
+   * Mirror {@link launching} onto disk for the ttyd attach wrapper. attach.sh runs in its own process
+   * and can't see this Set, so before it existed the wrapper guessed the launch window with a fixed
+   * ~3s timer — which is a guess about how fast the box is, and on a loaded host it loses: at load 76
+   * an instawp spawn took 13.3s, the guess expired, and the user got tmux's raw "can't find session"
+   * for a run that went on to succeed. With the marker the wrapper waits exactly as long as a launch
+   * is actually in flight. Cleared in the launch's `finally` (so a FAILED launch releases it too) and
+   * swept at boot by {@link sweepLaunchMarkers}, so the only way to orphan one is `kill -9` mid-launch
+   * — which the wrapper's own ceiling then bounds. Best-effort: never fail a launch over a marker.
+   */
+  private markLaunching(sessionId: string, on: boolean): void {
+    const p = this.launchMarkerPath(sessionId);
+    if (!p || !this.os.paths) return;
+    try {
+      if (!on) { fs.rmSync(p, { force: true }); return; }
+      this.ensureSecureDir(this.os.paths.connectors);
+      fs.writeFileSync(p, '', { mode: 0o600 });
+    } catch { /* best-effort */ }
+  }
+
+  /** Drop launch markers orphaned by a server killed mid-launch. Runs once at construction: nothing is
+   *  launching yet, so every marker on disk is by definition stale, and leaving one would make the next
+   *  attach to that dead session sit through attach.sh's ceiling before giving up. */
+  private sweepLaunchMarkers(): void {
+    if (!this.os.paths) return;
+    try {
+      for (const f of fs.readdirSync(this.os.paths.connectors)) {
+        if (f.startsWith('session-') && f.endsWith('.launching')) fs.rmSync(path.join(this.os.paths.connectors, f), { force: true });
+      }
+    } catch { /* dir may not exist yet — nothing to sweep */ }
   }
 
   /**
