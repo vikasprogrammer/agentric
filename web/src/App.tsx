@@ -7954,6 +7954,9 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const [showPlan, setShowPlan] = useState(false)
   const [planGuidance, setPlanGuidance] = useState('')
   const [planMax, setPlanMax] = useState('')
+  // Whether the tasks this plan files should auto-dispatch (run without a human pressing dispatch). Off by
+  // default: the plan is filed for review. Server-enforced — see Strategist.plan / /api/tasks/create.
+  const [planAuto, setPlanAuto] = useState(false)
   // Sign-off step for a goal whose work is complete — an optional outcome note lands on the timeline.
   const [signingOff, setSigningOff] = useState(false)
   const [outcome, setOutcome] = useState('')
@@ -7992,7 +7995,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     if (editing) return // don't overwrite an in-progress edit on a background refresh
     api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) })
   }, [selId, goals, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setSigningOff(false); setOutcome('') }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setPlanAuto(false); setSigningOff(false); setOutcome('') }, [selId]) // fresh drawer per selection
 
   const visible = goals ?? []
   // Goals finished in fact but still open — the banner's subject. Derived from the list in view (the
@@ -8014,11 +8017,14 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const plan = async (id: string) => {
     setPlanNote(''); setHint(''); setBusy(true)
     const maxTasks = planMax.trim() ? Number(planMax.trim()) : undefined
-    const r = await api.planGoal(id, { guidance: planGuidance.trim() || undefined, maxTasks: maxTasks && maxTasks > 0 ? maxTasks : undefined })
+    const r = await api.planGoal(id, { guidance: planGuidance.trim() || undefined, maxTasks: maxTasks && maxTasks > 0 ? maxTasks : undefined, autoDispatch: planAuto || undefined })
     setBusy(false)
     if (!r.ok) return setHint('⚠ ' + (r.error || 'Could not start the strategist.'))
-    setShowPlan(false); setPlanGuidance(''); setPlanMax('')
-    setPlanNote('Strategist is drafting a plan — tasks will appear under this goal shortly.')
+    const auto = planAuto
+    setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setPlanAuto(false)
+    setPlanNote(auto
+      ? 'Strategist is drafting a plan — tasks will appear under this goal and auto-dispatch as soon as they are filed.'
+      : 'Strategist is drafting a plan — tasks will appear under this goal shortly.')
     setPlanSession(r.sessionId ?? '')
     setTimeout(() => refreshDetail(id), 6000)
   }
@@ -8169,8 +8175,21 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
           <div className="flex items-center gap-2">
             <label className="text-xs text-muted-foreground">Max tasks</label>
             <Input type="number" min={1} value={planMax} onChange={(e) => setPlanMax(e.target.value)} placeholder="—" className="h-7 w-20" />
+          </div>
+          {/* Dispatch control — off by default files the plan for review; on auto-runs each task (in
+              dependsOn order) the moment it is filed, with no human dispatch step. */}
+          <label className="flex cursor-pointer items-start gap-2 rounded-md border bg-background px-2 py-1.5">
+            <input type="checkbox" className="mt-0.5" checked={planAuto} onChange={(e) => setPlanAuto(e.target.checked)} />
+            <span className="text-xs">
+              <span className="font-medium">Auto-dispatch the planned tasks</span>
+              <span className="block text-[11px] text-muted-foreground">{planAuto
+                ? 'Each agent-assigned task runs as soon as it is filed (dependencies still wait for their blockers). No review step.'
+                : 'Off — the plan is filed for you to review and dispatch each task yourself.'}</span>
+            </span>
+          </label>
+          <div className="flex items-center gap-2">
             <div className="flex-1" />
-            <Button size="sm" variant="ghost" className="h-7" disabled={busy} onClick={() => { setShowPlan(false); setPlanGuidance(''); setPlanMax('') }}>Cancel</Button>
+            <Button size="sm" variant="ghost" className="h-7" disabled={busy} onClick={() => { setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setPlanAuto(false) }}>Cancel</Button>
             <Button size="sm" className="h-7" disabled={busy} onClick={() => plan(detail.goal.id)}>
               <Wand2 className="mr-1 h-3.5 w-3.5" />Draft plan
             </Button>

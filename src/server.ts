@@ -1594,6 +1594,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // task dispatch runs the unattended lane, so it wouldn't apply).
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
     if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
+    // A goal-plan run the requester chose to auto-run: the server force-stamps auto-dispatch on every task
+    // this session files, regardless of what the agent passed (its prompt never sets the flag). See
+    // Strategist.plan / TerminalManager.markPlanAutoDispatch.
+    const planAuto = tm.isPlanAutoDispatch(session);
     try {
       // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
@@ -1607,7 +1611,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
         model: tuning.model,
         effort: tuning.effort,
-        autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true',
+        autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true' || planAuto,
         goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
         dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
@@ -1621,7 +1625,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // Immediate dispatch (parity with the console route above): an agent-assigned auto-dispatch hand-off
       // starts NOW rather than waiting for the next ~20s scheduler tick, so a delegated task begins the
       // moment it's filed — and a waiting caller (task_wait / wait:true) makes progress at once.
-      if (task.autoDispatch && (task.assignee || '').startsWith('agent:')) autos.dispatchTask(task.id, { guard: true, by: `agent:${agent}` });
+      // EXCEPTION — a goal-plan run: let the ~20s tick drain the whole plan in dependsOn order, one session
+      // per agent, instead of racing every dep-free task to a session the instant it's filed (the plan is
+      // still being written; the tick's dispatchable() throttle is what we want here).
+      if (!planAuto && task.autoDispatch && (task.assignee || '').startsWith('agent:')) autos.dispatchTask(task.id, { guard: true, by: `agent:${agent}` });
       return sendJson(res, 200, { ok: true, id: task.id });
     } catch (e) {
       return sendJson(res, 200, { ok: false, error: e instanceof Error ? e.message : String(e) });
@@ -3594,8 +3601,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const pb = await readBody(req);
     const guidance = typeof pb.guidance === 'string' ? pb.guidance.trim().slice(0, 2000) : undefined;
     const maxTasks = Number.isFinite(Number(pb.maxTasks)) && Number(pb.maxTasks) > 0 ? Math.floor(Number(pb.maxTasks)) : undefined;
-    const r = await new Strategist(os, tm).plan(goal.id, me.email, me.id, { guidance: guidance || undefined, maxTasks });
-    if (r.spawned) os.audit.append({ ts: Date.now(), runId: r.sessionId ?? '-', tenant: os.tenant, principal: me.email, type: 'goal.plan.requested', data: { goalId: goal.id } });
+    // Opt-in: auto-dispatch the tasks this plan files (default off = file-only for a human to dispatch).
+    const autoDispatch = pb.autoDispatch === true || pb.autoDispatch === 'true';
+    const r = await new Strategist(os, tm).plan(goal.id, me.email, me.id, { guidance: guidance || undefined, maxTasks, autoDispatch });
+    if (r.spawned) os.audit.append({ ts: Date.now(), runId: r.sessionId ?? '-', tenant: os.tenant, principal: me.email, type: 'goal.plan.requested', data: { goalId: goal.id, autoDispatch } });
     return sendJson(res, r.spawned ? 200 : 409, r.spawned ? { ok: true, sessionId: r.sessionId } : { ok: false, error: r.reason });
   }
   if (method === 'GET' && p === '/api/goals') {
