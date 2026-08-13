@@ -3086,10 +3086,31 @@ export class TerminalManager {
       const idleCutoff = Date.now() - idleHours * 3600_000;
       const blockedHours = this.os.settings.blockedMaxHours();
       const blockedCutoff = blockedHours > 0 ? Date.now() - blockedHours * 3600_000 : null;
-      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status FROM term_sessions WHERE headless = 0 AND resident = 0 AND claimed_by IS NULL AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ?")
-        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string }>(idleCutoff);
+      // CLAIM CEILING. `claimed_by IS NULL` was the third unconditional exemption in this sweep, and it
+      // leaked exactly like the other two: claiming hands a session's lifecycle to a human, but nothing
+      // ever expires a claim, so someone who takes a session over and closes the tab creates an immortal
+      // pane. Live instawp: seven sessions claimed by one member, idle 143–168 h, skipped by the 72 h
+      // reaper every tick for a week — until they and their peers filled the concurrency cap and starved
+      // every scheduled run on the tenant for a month. The exemption stays; it just gets a ceiling, like
+      // `blockedMaxHours` above. `0` restores the old forever-exemption. Someone actually ATTACHED is
+      // still never cut (checked below) — that is what "a human owns it" should have meant all along.
+      const claimedHours = this.os.settings.claimedMaxHours();
+      const claimedCutoff = claimedHours > 0 ? Date.now() - claimedHours * 3600_000 : null;
+      // Widen the scan to the more permissive of the two clocks, then decide per row — otherwise a claim
+      // ceiling SHORTER than the idle timeout would never see its own rows.
+      const scanCutoff = claimedCutoff == null ? idleCutoff : Math.max(idleCutoff, claimedCutoff);
+      const stale = this.db.prepare("SELECT id, tmux, run_as, spawned_by, agent, status, claimed_by, last_activity, created_at FROM term_sessions WHERE headless = 0 AND resident = 0 AND status IN ('running','done') AND COALESCE(last_activity, created_at) < ?")
+        .all<{ id: string; tmux: string; run_as: string | null; spawned_by: string | null; agent: string; status: string; claimed_by: string | null; last_activity: number | null; created_at: number }>(scanCutoff);
       for (const r of stale) {
         try {
+          const idleSince = r.last_activity ?? r.created_at;
+          // Claimed: exempt unless the claim itself has gone stale. Unclaimed: the ordinary idle clock —
+          // re-checked here because the scan may have been widened past it for the claimed rows.
+          if (r.claimed_by) {
+            if (claimedCutoff == null || idleSince >= claimedCutoff) continue;
+          } else if (idleSince >= idleCutoff) {
+            continue;
+          }
           // A reaped 'running' row flips to 'stopped' and drops out of the query next tick; a 'done' row keeps
           // its status (below), so skip one whose pane is already gone to avoid re-killing / re-auditing it
           // every tick. Only applies when we can poll liveness (local backend); null → fall through as before.
@@ -3098,7 +3119,7 @@ export class TerminalManager {
           if (this.backend.hasClient(space, r.tmux) === true) continue; // someone's attached — it's in use
           // Blocked on a person: leave it — unless nobody has answered inside the ceiling above, at which
           // point it is abandoned, not waiting.
-          let reason = 'idle-interactive';
+          let reason = r.claimed_by ? 'claimed-abandoned' : 'idle-interactive';
           const blockedAt = this.oldestPendingBlockAt(r.id);
           if (blockedAt !== undefined) {
             if (blockedCutoff == null || blockedAt >= blockedCutoff) continue;
@@ -3112,7 +3133,11 @@ export class TerminalManager {
           this.blockResume(r.id); // stay reaped against a ttyd auto-reconnect; a deliberate Resume clears it
           this.audit(r.id, r.agent, 'session.reaped', reason === 'blocked-timeout'
             ? { reason, blockedHours, blockedForMs: Date.now() - (blockedAt as number), status: r.status }
-            : { reason, idleHours, status: r.status });
+            // Name WHO abandoned it: a claim reaped out from under someone should be traceable to the
+            // person who took it over, not read as the janitor closing an ownerless pane.
+            : reason === 'claimed-abandoned'
+              ? { reason, claimedHours, claimedBy: r.claimed_by, idleForMs: Date.now() - idleSince, status: r.status }
+              : { reason, idleHours, status: r.status });
         } catch { /* one bad row must not stop the sweep */ }
       }
     }

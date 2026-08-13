@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.345.0] — 2026-08-13
+### Fixed
+- **Claiming a session made it immortal.** The idle-interactive reaper skipped `claimed_by IS NOT NULL`
+  rows unconditionally — "a human owns that lifecycle" — but nothing ever expires a claim, so anyone who
+  hit "take over" and then closed the tab left a pane running forever. Live instawp: seven sessions
+  claimed by one member, idle **143–168 h**, skipped by the 72 h reaper every tick for a week. Together
+  with their peers they filled the concurrency cap and starved every scheduled run on the tenant for a
+  month (see v0.344.0, the other half of the same outage).
+  The exemption stays; it now has a **ceiling**, exactly like the blocked-on-a-human exemption directly
+  above it in the same sweep — which was unconditional for the same reason and got the same treatment.
+  New `claimedMaxHours` (Settings, default **72 h**, `0` restores the permanent exemption). A session
+  someone is **actually attached to** is still never cut, whatever the clock says: that is what "a human
+  owns it" should have meant. Reaped rows audit as `claimed-abandoned` and name who had claimed them, so
+  it reads as a traceable take-over expiry rather than the janitor closing an ownerless pane.
+- **`PUT /api/settings/concurrency` silently ignored `blockedMaxHours`.** The key was declared in the
+  request type and echoed back in the response, but had no handler — so setting it returned 200 with the
+  value unchanged. Now applied and audited like its siblings.
+
+### Changed
+- `scripts/idle-reaper-test.cjs` grows a claim-ceiling section (41 assertions total). Note one existing
+  assertion **inverted**: a 96 h-old claimed session used to be pinned as "left running", which was the
+  bug being asserted as correct.
+
 ## [0.344.2] — 2026-08-13
 ### Fixed
 - **A runtime account stayed stuck on "limited · resets …" long after it was usable again.** The

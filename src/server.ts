@@ -4334,11 +4334,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const value = os.settings.maxConcurrentSessions(); // operator override (null = unset)
     const resolved = autos.concurrencyCap();           // effective cap the scheduler enforces (0 = unlimited)
     const source = envLocked ? 'env' : value != null ? 'setting' : 'derived';
-    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), admitted: tm.admissionSessionCount(), parked: tm.parkedSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours() });
+    return sendJson(res, 200, { value, resolved, derived: derivedConcurrencyCap(), source, envLocked, alive: tm.aliveSessionCount(), admitted: tm.admissionSessionCount(), parked: tm.parkedSessionCount(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours(), claimedMaxHours: os.settings.claimedMaxHours() });
   }
   if (method === 'PUT' && p === '/api/settings/concurrency') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
-    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown; unattendedNoProgressMinutes?: unknown; blockedMaxHours?: unknown };
+    const b = await readBody(req) as { value?: unknown; idleHours?: unknown; unattendedMaxHours?: unknown; unattendedNoProgressMinutes?: unknown; blockedMaxHours?: unknown; claimedMaxHours?: unknown };
     // Cap: `null`/'' clears the override (→ derived default); 0 = unlimited; N>0 = cap. Only touched when the
     // key is present, so a PUT that only sets idleHours leaves the cap alone.
     if ('value' in b) {
@@ -4370,7 +4370,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const savedM = os.settings.setUnattendedNoProgressMinutes(m, me.email);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.noProgress.updated', data: { unattendedNoProgressMinutes: savedM } });
     }
-    return sendJson(res, 200, { ok: true, value: os.settings.maxConcurrentSessions(), resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours() });
+    // Blocked-on-a-human ceiling (hours): 0 = off. This key was already declared in the body type and read
+    // back in the response, but had no handler — so a PUT setting it returned 200 with the value silently
+    // unchanged. Present-only, like the rest.
+    if ('blockedMaxHours' in b) {
+      const h = Number(b.blockedMaxHours);
+      if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'blockedMaxHours must be a non-negative number (0 = off)' });
+      const savedH = os.settings.setBlockedMaxHours(h, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.blockedMax.updated', data: { blockedMaxHours: savedH } });
+    }
+    // Claim ceiling (hours): how long a claimed-but-untouched session keeps its take-over exemption. 0 = off.
+    if ('claimedMaxHours' in b) {
+      const h = Number(b.claimedMaxHours);
+      if (!Number.isFinite(h) || h < 0) return sendJson(res, 400, { error: 'claimedMaxHours must be a non-negative number (0 = off)' });
+      const savedH = os.settings.setClaimedMaxHours(h, me.email);
+      os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.claimedMax.updated', data: { claimedMaxHours: savedH } });
+    }
+    return sendJson(res, 200, { ok: true, value: os.settings.maxConcurrentSessions(), resolved: autos.concurrencyCap(), derived: derivedConcurrencyCap(), idleHours: os.settings.interactiveIdleTimeoutHours(), unattendedMaxHours: os.settings.unattendedMaxHours(), unattendedNoProgressMinutes: os.settings.unattendedNoProgressMinutes(), blockedMaxHours: os.settings.blockedMaxHours(), claimedMaxHours: os.settings.claimedMaxHours() });
   }
 
   // ── Runtime account POOL (launch-time credential rotation) — owner-managed ──────────────
