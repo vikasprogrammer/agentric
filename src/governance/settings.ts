@@ -83,6 +83,7 @@ const MAX_CONCURRENT_KEY = 'max_concurrent_sessions'; // whole-box concurrency c
 const INTERACTIVE_IDLE_HOURS_KEY = 'interactive_idle_timeout_hours'; // auto-close a detached member session idle past this; unset → 48h, 0 → off
 const UNATTENDED_MAX_HOURS_KEY = 'unattended_max_runtime_hours'; // hard runtime ceiling for a headless/unattended run (stuck-mid-turn backstop); unset → 24h, 0 → off
 const BLOCKED_MAX_HOURS_KEY = 'blocked_max_hours'; // force-close an interactive session waiting this long on an unanswered card; unset → 72h, 0 → off
+const CLAIMED_MAX_HOURS_KEY = 'claimed_max_hours'; // force-close a CLAIMED interactive session idle this long; unset → 72h, 0 → off (permanent take-over exemption)
 const UNATTENDED_NO_PROGRESS_MIN_KEY = 'unattended_no_progress_minutes'; // reap a headless run that never made a tool call (never-started: rate-limit/trust-hang/lost-prompt); unset → 30m, 0 → off
 const KILL_SWITCH_KEY = 'kill_switch'; // workspace-wide emergency stop (JSON KillSwitchState)
 const SUPPRESSED_BUILTINS_KEY = 'suppressed_builtins'; // built-in agent ids an admin deleted (JSON string[]); boot won't re-seed them
@@ -1046,6 +1047,38 @@ export class SettingsStore {
     const clamped = !Number.isFinite(n) || n < 0 ? 72 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
     this.set(BLOCKED_MAX_HOURS_KEY, String(clamped), by);
     return this.blockedMaxHours();
+  }
+
+  /**
+   * Hours after which a **claimed** interactive session that nobody has touched is treated as abandoned
+   * rather than owned — the ceiling on the take-over exemption.
+   *
+   * Claiming a session ("take over" in the console) hands its lifecycle to a human, and the idle reaper
+   * skipped `claimed_by IS NOT NULL` rows unconditionally so it could not close something a person was
+   * driving. Unconditionally is the problem: nothing ever expires a claim, so a human who takes a session
+   * over and closes the tab creates an immortal pane. Live instawp: seven sessions claimed by one member,
+   * idle **143–168 h**, skipped by the 72 h reaper every tick for a week, until they and their peers had
+   * filled the concurrency cap and starved every scheduled run on the tenant.
+   *
+   * This is the same shape as the blocked-on-a-human exemption directly above, which was unconditional
+   * for the same reason and got the same treatment: keep the exemption, give it a ceiling.
+   *
+   * Default **72 h**, matching {@link blockedMaxHours} — three days without a keystroke is abandonment,
+   * not ownership. Clamped 1 h–30 d; `0` disables (restoring the permanent exemption). A session with
+   * someone **attached** is never cut by this, whatever the clock says: they are right there.
+   */
+  claimedMaxHours(): number {
+    const n = Number(this.getRow(CLAIMED_MAX_HOURS_KEY)?.value);
+    if (!Number.isFinite(n)) return 72; // unset → default
+    if (n <= 0) return 0;               // explicit 0 → disabled (permanent take-over exemption)
+    return Math.min(Math.max(Math.round(n), 1), 24 * 30);
+  }
+
+  setClaimedMaxHours(hours: number, by?: string): number {
+    const n = Number(hours);
+    const clamped = !Number.isFinite(n) || n < 0 ? 72 : n === 0 ? 0 : Math.min(Math.max(Math.round(n), 1), 24 * 30);
+    this.set(CLAIMED_MAX_HOURS_KEY, String(clamped), by);
+    return this.claimedMaxHours();
   }
 
   /** Minutes after which a headless/unattended run that has made ZERO progress — never a completed turn

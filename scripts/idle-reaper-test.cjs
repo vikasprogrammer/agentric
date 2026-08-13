@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 /* Idle-interactive reaper test — a detached member (headless=0) session idle past the configurable
- * timeout is closed (status→stopped), while recent/attached/claimed/disabled cases are left alone.
+ * timeout is closed (status→stopped), while recent/attached/disabled cases are left alone.
+ *
+ * Section 7 covers the CLAIM CEILING. `claimed_by IS NULL` used to exempt a claimed session from this
+ * sweep unconditionally, on the reasoning that a human owns its lifecycle. Nothing ever expired a claim,
+ * so someone who took a session over and closed the tab created an immortal pane: live instawp had seven
+ * sessions claimed by one member, idle 143-168h, skipped by the 72h reaper every tick for a week — until
+ * they and their peers filled the concurrency cap and starved every scheduled run on the tenant for a
+ * month. The exemption stays; it now has a ceiling, exactly like the blocked-on-a-human one above it.
  * Isolated home; backend kill/hasClient stubbed so no real tmux is needed. */
 const fs = require('fs');
 const os = require('os');
@@ -58,7 +65,7 @@ aos.settings.setUnattendedNoProgressMinutes(0);
 const stale = mkSession({ created_at: Date.now() - 96 * H });                 // 4 days idle → reap
 const recent = mkSession({ created_at: Date.now() - 2 * H });                 // 2h → keep
 const attachedStale = mkSession({ created_at: Date.now() - 96 * H, tmux: 'aos-ATTACHED' }); attached.add('aos-ATTACHED'); // in use → keep
-const claimedStale = mkSession({ created_at: Date.now() - 96 * H, claimed_by: 'm_bob' }); // human owns it → keep
+const claimedStale = mkSession({ created_at: Date.now() - 96 * H, claimed_by: 'm_bob' }); // claim went stale → reap
 const unattended = mkSession({ created_at: Date.now() - 96 * H, headless: 1 });   // sweep-2 territory, not sweep 3 → keep here
 const activeByLastAct = mkSession({ created_at: Date.now() - 96 * H, last_activity: Date.now() - 1 * H }); // recent turn → keep
 
@@ -68,7 +75,9 @@ assert(statusOf(stale) === 'stopped', 'detached 4-day-idle member session → st
 assert(killed.includes('aos-' + stale), 'its pane was killed');
 assert(statusOf(recent) === 'running', 'recent (2h) session → left running');
 assert(statusOf(attachedStale) === 'running', 'attached session (client present) → left running');
-assert(statusOf(claimedStale) === 'running', 'claimed take-over → left running');
+// Was 'left running' — an unconditional exemption, and the leak this file now pins against. 96h idle is
+// past the default 72h claim ceiling, so the take-over is abandonment.
+assert(statusOf(claimedStale) === 'stopped', 'claimed take-over idle past the ceiling → stopped');
 assert(statusOf(unattended) === 'running', 'headless=1 unattended → not touched by sweep 3');
 assert(statusOf(activeByLastAct) === 'running', 'old but recent last_activity → left running');
 
@@ -164,6 +173,50 @@ const blockedForever = mkSession({ created_at: Date.now() - 200 * H });
 askAt(blockedForever, 150);
 tm.reapIdleSessions();
 assert(statusOf(blockedForever) === 'running', '0 → a 150h-old block is never cut');
+
+console.log('\n\x1b[1m7) the claim ceiling — a take-over expires, it is not a permanent exemption\x1b[0m');
+aos.settings.setInteractiveIdleTimeoutHours(48);
+aos.settings.setBlockedMaxHours(72);
+assert(aos.settings.claimedMaxHours() === 72, 'unset → 72h default');
+assert(aos.settings.setClaimedMaxHours(0) === 0, 'set 0 → 0 (permanent exemption restored)');
+assert(aos.settings.setClaimedMaxHours(99999) === 24 * 30, 'clamps to 30 days max');
+
+// 0 = the OLD behaviour, kept as an escape hatch for anyone who wants take-overs to be forever.
+aos.settings.setClaimedMaxHours(0);
+const claimedForever = mkSession({ created_at: Date.now() - 400 * H, claimed_by: 'm_bob' });
+tm.reapIdleSessions();
+assert(statusOf(claimedForever) === 'running', '0 → even a 400h-idle claim is never cut');
+
+aos.settings.setClaimedMaxHours(72);
+const claimedWeekOld = mkSession({ created_at: Date.now() - 168 * H, claimed_by: 'm_bob' });   // the live case
+const claimedFresh = mkSession({ created_at: Date.now() - 10 * H, claimed_by: 'm_bob' });      // still theirs
+const claimedAttached = mkSession({ created_at: Date.now() - 400 * H, claimed_by: 'm_bob', tmux: 'aos-CLAIMED-ATTACHED' });
+attached.add('aos-CLAIMED-ATTACHED');
+const claimedActive = mkSession({ created_at: Date.now() - 400 * H, claimed_by: 'm_bob', last_activity: Date.now() - 2 * H });
+tm.reapIdleSessions();
+
+assert(statusOf(claimedWeekOld) === 'stopped', 'claimed + idle a week → stopped (the instawp case)');
+assert(statusOf(claimedFresh) === 'running', 'claimed + idle 10h → still theirs');
+assert(statusOf(claimedActive) === 'running', 'claimed + a turn 2h ago → still theirs');
+// The one rule that must never be overridden by a clock: someone is literally attached right now.
+assert(statusOf(claimedAttached) === 'running', 'claimed + ATTACHED → never cut, whatever the age');
+
+// The audit has to name the person, so a reaped take-over is traceable rather than looking like the
+// janitor closing an ownerless pane.
+const ev = aos.db.prepare("SELECT data FROM audit_events WHERE type='session.reaped' AND run_id=? ORDER BY ts DESC LIMIT 1").get(claimedWeekOld);
+const parsed = ev ? JSON.parse(ev.data) : {};
+assert(parsed.reason === 'claimed-abandoned', 'audited as claimed-abandoned, not idle-interactive', JSON.stringify(parsed));
+assert(parsed.claimedBy === 'm_bob', 'and names who had claimed it');
+
+// A ceiling SHORTER than the idle timeout must still see its own rows — the scan window is widened to the
+// more permissive of the two clocks, so a claim can expire before an ordinary idle session would.
+aos.settings.setInteractiveIdleTimeoutHours(200);
+aos.settings.setClaimedMaxHours(24);
+const claimedShortCeiling = mkSession({ created_at: Date.now() - 48 * H, claimed_by: 'm_bob' });
+const unclaimedSameAge = mkSession({ created_at: Date.now() - 48 * H });
+tm.reapIdleSessions();
+assert(statusOf(claimedShortCeiling) === 'stopped', 'claim ceiling below the idle timeout still applies');
+assert(statusOf(unclaimedSameAge) === 'running', '…and the longer idle timeout still protects unclaimed rows');
 
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}IDLE REAPER: ${pass}/${pass + fail} passed\x1b[0m`);
 try { fs.rmSync(HOME, { recursive: true, force: true }); } catch {}
