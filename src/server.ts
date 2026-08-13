@@ -1649,7 +1649,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const found = os.tasks.withEvents(url.searchParams.get('id') || '');
     if (!found) return sendJson(res, 404, { error: 'task not found' });
-    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id), discussion: tm.discussionTimeline(found.task.id) });
+    return sendJson(res, 200, { ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id), children: os.tasks.children(found.task.id), discussion: tm.discussionTimeline(found.task.id) });
   }
   // agent posts into a task's Discussion (the `task_say` tool). Author = the calling agent; @mentions
   // escalate (a member → addressed card+DM, an agent → resumed/spawned on the task). Quiet otherwise.
@@ -3409,7 +3409,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const found = os.tasks.withEvents(taskId[1]);
     if (!found) return sendJson(res, 404, { error: 'task not found' });
     return sendJson(res, 200, {
-      ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id),
+      ...found, attachments: os.tasks.attachments(found.task.id), dependents: os.tasks.dependents(found.task.id), children: os.tasks.children(found.task.id),
       // Every session that worked this task, not just `lastSessionId` — the retries and crashes that
       // preceded the current run are part of the task's story. Same tenant-wide read as the rest of the
       // detail payload; ATTACHING to any of those sessions is still gated by the terminal's own authz.

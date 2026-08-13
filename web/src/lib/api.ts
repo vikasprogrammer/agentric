@@ -641,6 +641,14 @@ export interface Task {
   updatedAt: number
   updatedBy: string
 }
+/** A task SPAWNED by another (the `parentId` hand-off edge), as the detail route returns it — the
+ *  server resolves these so a wide fan-out isn't under-counted by the board's bounded page. */
+export interface TaskChild {
+  id: string
+  title: string
+  status: TaskStatus
+  assignee?: string
+}
 export interface TaskEvent {
   id: string
   taskId: string
@@ -1739,7 +1747,7 @@ export const api = {
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
   tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
-  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; runs?: TaskRun[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
+  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; children?: TaskChild[]; runs?: TaskRun[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
   postTaskMessage: (id: string, body: string) => call<{ ok: boolean; entry?: TaskTimelineEntry; mentioned?: string[]; agents?: { agent: string; status: string }[]; delivery?: TaskDiscussionDelivery; error?: string }>('POST', `/api/tasks/${id}/messages`, { body }),
   // Route an ALREADY-POSTED discussion message into one live run — the human's answer when several were
   // live and the post came back `choose`. Posts nothing new.

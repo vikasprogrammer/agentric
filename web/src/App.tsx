@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -445,8 +445,6 @@ const formatTokens = (t?: Session['tokens']): string => {
   if (n < 1_000_000) return `${Math.round(n / 1000)}k`
   return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0)}M`
 }
-/** Column heading for the money cell under the workspace `metrics` preference. */
-const metricsHeader = (m: SessionMetrics): string => (m === 'cost' ? 'Cost' : m === 'tokens' ? 'Tokens' : 'Cost · tokens')
 /** The money cell's text for a run under the workspace `metrics` preference: cost, tokens, or both. A
  *  React fragment so the token figure can stay dimmer than the dollars when both show. */
 const MetricsValue = ({ s, m }: { s: Session; m: SessionMetrics }): ReactNode => {
@@ -458,6 +456,15 @@ const MetricsValue = ({ s, m }: { s: Session; m: SessionMetrics }): ReactNode =>
 /** The full four-way token breakdown, for a `title` tooltip. */
 const tokenBreakdown = (t?: Session['tokens']): string =>
   t ? `${totalTokens(t)!.toLocaleString()} tokens (in ${t.input.toLocaleString()} · out ${t.output.toLocaleString()} · cache-read ${t.cacheRead.toLocaleString()} · cache-write ${t.cacheWrite.toLocaleString()})` : 'not yet computed'
+
+/** Heading for the merged "what this run consumed" cell — engaged time plus the workspace's chosen
+ *  money figure. */
+const spendHeader = (m: SessionMetrics): string => `Took · ${m === 'tokens' ? 'Tokens' : 'Cost'}`
+
+/** Tooltip for that cell: both halves spelled out, each saying so when it wasn't recorded. Engaged
+ *  time excludes idle gaps, which is the whole reason it isn't the row's wall-clock age. */
+const spendTitle = (s: Session): string =>
+  `${s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}\n${tokenBreakdown(s.tokens)}`
 
 /** The sessions-list view state (filters + sort), held in the URL hash query so it survives a
  *  refresh / deep-link, AND mirrored to localStorage so it survives navigating away and back via the
@@ -3440,13 +3447,17 @@ function buildChainGroups(rows: Session[]): SessionGroup[] {
  *  marker when the conversation itself spans several runs. This is what makes a re-dispatch or a stalled
  *  delegate visible from the list, instead of only after opening the session. */
 const MAX_CHAIN_CHIPS = 3
-function ChainStrip({ group, runs, onOpen, className = '' }: {
+function ChainStrip({ group, runs, onOpen, className = '', nowrap = false }: {
   group: SessionGroup; runs: number; onOpen: (tmux: string, title: string) => void; className?: string
+  /** Keep the strip on ONE line, clipping past the caller's width cap instead of wrapping. The card
+   *  grid wants the wrap (it has vertical room); a table row does not — a wrapped strip makes that one
+   *  row twice as tall as its neighbours, which reads as a rendering fault rather than as extra detail. */
+  nowrap?: boolean
 }) {
   const kids = group.children
   if (!kids.length && runs < 2) return null
   return (
-    <div className={`flex flex-wrap items-center gap-1 ${className}`}>
+    <div className={`flex items-center gap-1 ${nowrap ? 'flex-nowrap' : 'flex-wrap'} ${className}`}>
       {kids.length > 0 && (
         <span className="flex items-center gap-0.5 rounded-full border border-foreground/20 px-1.5 text-[10px] font-medium text-foreground/70"
           title={`${kids.length} hand-off${kids.length === 1 ? '' : 's'} — ${kids.map((k) => k.rep.agent).join(', ')}`}>
@@ -4277,22 +4288,28 @@ function SessionsPage({
         <div className="divide-y overflow-hidden rounded-lg border">
           {/* column headings — click to sort; each mirrors its row column's width/visibility classes.
               Column set widens with the viewport so the flex title never gets squeezed to zero:
-              always → Session/Started/Mode/Updated/Result; lg adds Cost; xl adds Agent+Took; 2xl adds
-              ID+Activity. The trailing spacer matches the row's inline rating cell (the hover actions
-              overlay absolutely, so they reserve no width). */}
+              always → Session/Started/Mode/Updated/Result; lg adds Took·Cost; 2xl adds ID+Activity.
+              The trailing spacer matches the row's inline rating cell (the hover actions overlay
+              absolutely, so they reserve no width).
+
+              Two fixed columns used to sit here and no longer do, because on a real workspace they
+              were mostly empty and the title paid for them. `Agent` moved INTO the title cell (it's a
+              short, low-variance token that reads fine as a chip, and it cost 7rem the title needed —
+              on instawp every row truncated). `Took` merged into the metrics cell: engaged time and
+              cost are one "what did this run consume" thought, and neither is recorded for ~60% of
+              sessions, so two separate mostly-`—` columns were pure overhead. Sorting by agent is now
+              the "All agents" filter's job; duration sort folded into cost. */}
           <div className="flex items-center gap-3 bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             <span className="h-3.5 w-3.5 shrink-0" aria-hidden />
             <div className="flex min-w-0 flex-1 items-center gap-3">
               <span className="h-2 w-2 shrink-0" aria-hidden />
               {sortHead('title', 'Session', 'min-w-[7rem] flex-1')}
-              {sortHead('agent', 'Agent', 'hidden w-28 shrink-0 xl:flex')}
               {sortHead('id', 'ID', 'hidden w-20 shrink-0 2xl:flex')}
               {sortHead('startedBy', 'Started by', 'w-28 shrink-0')}
               <span className="w-8 shrink-0 text-center" title="mode">Run</span>
               {sortHead('updated', 'Updated', 'w-16 shrink-0')}
-              {sortHead('duration', 'Took', 'hidden w-14 shrink-0 justify-end xl:flex')}
               <span className="hidden w-32 shrink-0 2xl:block">Activity</span>
-              {sortHead('cost', metricsHeader(metrics), `hidden ${metrics === 'both' ? 'w-24' : 'w-16'} shrink-0 justify-end lg:flex`)}
+              {sortHead('cost', spendHeader(metrics), `hidden ${metrics === 'both' ? 'w-28' : 'w-20'} shrink-0 justify-end lg:flex`)}
               {sortHead('status', 'Result', 'w-16 shrink-0')}
             </div>
             <span className="w-20 shrink-0" aria-hidden />
@@ -4331,18 +4348,28 @@ function SessionsPage({
                 )}
                 <SessionStatus s={s} />
                 <span className="min-w-[7rem] flex-1 truncate text-sm font-medium">{s.title}</span>
-                {!isOpen && <ChainStrip group={g} runs={g.runs.length} onOpen={onOpen} className="shrink-0" />}
-                <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground xl:block">{s.agent}</span>
+                {/* The agent that RAN this entry, inline rather than in a fixed column. ChainStrip
+                    below names only the children, so without this the root's own agent would be the
+                    one thing a chained row didn't say. */}
+                <span className="max-w-[8rem] shrink-0 truncate text-xs text-muted-foreground" title={`agent ${s.agent}`}>{s.agent}</span>
+                {/* Capped, because the strip is `shrink-0` and the title is the flexible cell: without a
+                    ceiling a 4-agent chain eats the title down to a few characters, which is exactly the
+                    row you most want to read. Past the cap the chips clip; the `+N` and the expander
+                    still say there's more. */}
+                {!isOpen && <ChainStrip group={g} runs={g.runs.length} onOpen={onOpen} nowrap className="max-w-[18rem] shrink-0 overflow-hidden" />}
                 <span className="hidden w-20 shrink-0 truncate font-mono text-xs text-muted-foreground 2xl:block" title={s.id}>{s.id}</span>
                 <OriginBadge s={s} members={members} className="w-28 shrink-0" />
                 <span className="flex w-8 shrink-0 justify-center"><ModeBadge headless={s.headless} iconOnly /></span>
                 <span className="w-16 shrink-0 text-xs tabular-nums text-muted-foreground" title={new Date(s.updatedAt).toLocaleString()}>{timeAgo(s.updatedAt)} ago</span>
-                {/* Engaged time, not wall-clock — the tooltip spells out the difference, which is often
-                    hours for an interactive session that sat idle between turns. */}
-                <span className="hidden w-14 shrink-0 justify-end text-right text-xs tabular-nums text-muted-foreground xl:block" title={s.activeMs != null ? `${formatDuration(s.activeMs)} of engaged work — idle gaps excluded (open ${timeAgo(s.createdAt)} ago)` : 'duration not yet computed'}>{formatDuration(s.activeMs)}</span>
                 <SessionInsights s={s} chain={kids} className="hidden w-32 shrink-0 overflow-hidden 2xl:flex" />
-                {/* Money column follows the workspace preference: cost, tokens, or both (tokens dim). */}
-                <span className={`hidden ${metrics === 'both' ? 'w-24' : 'w-16'} shrink-0 items-baseline justify-end text-right text-xs tabular-nums text-muted-foreground lg:flex`} title={s.tokens ? tokenBreakdown(s.tokens) : 'not yet computed'}>
+                {/* What the run consumed: engaged time then money, in one cell. Engaged time is not
+                    wall-clock — the tooltip spells out the difference, which is often hours for an
+                    interactive session that sat idle between turns. The money half follows the
+                    workspace preference: cost, tokens, or both (tokens dim). Either half renders `—`
+                    on its own when only the other was recorded. */}
+                <span className={`hidden ${metrics === 'both' ? 'w-28' : 'w-20'} shrink-0 items-baseline justify-end gap-1 text-right text-xs tabular-nums text-muted-foreground lg:flex`} title={spendTitle(s)}>
+                  <span className={s.activeMs == null ? 'opacity-40' : ''}>{formatDuration(s.activeMs)}</span>
+                  <span className="opacity-30">·</span>
                   <MetricsValue s={s} m={metrics} />
                 </span>
                 {/* Result = the agent's own verdict, falling back to the process status. The summary
@@ -8728,7 +8755,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const openTask = (id: string) => nav('tasks', id)
   const openTaskTab = (id: string, tab: 'discussion' | 'description' | 'session') => nav('tasks', tab === 'discussion' ? id : `${id}/${tab}`)
   const closeTask = () => { setEditing(false); nav('tasks') }
-  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; runs: TaskRun[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; children: TaskChild[]; runs: TaskRun[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // Which run from the task's history the room's Session tab is showing ('' = the live/last one).
@@ -8745,7 +8772,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // long transcript or an attached terminal is the reason you opened the room. Sticky across rooms.
   const [roomSide, setRoomSide] = useState(() => localStorage.getItem('aos_task_room_side') !== '0')
   useEffect(() => { localStorage.setItem('aos_task_room_side', roomSide ? '1' : '0') }, [roomSide])
-  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'goal' | 'none'>('priority')
+  // Sticky like the view mode next to it — the grouping is a way of *reading* the board, and having it
+  // snap back to Priority on every visit made Chain in particular feel like a toy rather than a lens.
+  const [listGroup, setListGroup] = useState<'priority' | 'status' | 'assignee' | 'goal' | 'chain' | 'none'>(() => {
+    const v = localStorage.getItem('aos_tasks_group')
+    return v === 'status' || v === 'assignee' || v === 'goal' || v === 'chain' || v === 'none' ? v : 'priority'
+  })
+  useEffect(() => { localStorage.setItem('aos_tasks_group', listGroup) }, [listGroup])
   const [mine, setMine] = useState(false)
   const [fAssignee, setFAssignee] = useState('') // '' = all
   const [fLabel, setFLabel] = useState('')
@@ -8860,7 +8893,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) })
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) })
   }, [selId, tasks, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false); setRunSel('') }, [selId]) // fresh drawer per selection
 
@@ -8872,6 +8905,13 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // Defined above `visible` so the "Live only" filter can use it.
   const sessionById = new Map(sessions.map((s) => [s.id, s]))
   const liveOf = (t: Task): Session | null => { const s = t.lastSessionId ? sessionById.get(t.lastSessionId) : undefined; return s && isLive(s) ? s : null }
+  // How many tasks each task spawned, over the WHOLE board rather than the filtered view — a fan-out
+  // count that changed as you filtered would be reporting the filter, not the work.
+  const childCount = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const t of tasks ?? []) if (t.parentId) m.set(t.parentId, (m.get(t.parentId) ?? 0) + 1)
+    return m
+  }, [tasks])
   const attach = (t: Task, s: Session) => onOpen(s.tmux || ('aos-' + s.id), 'Task · ' + t.title)
   // The run the Session tab is showing, whether or not it's still alive.
   const shownRunId = runSel || detail?.task.lastSessionId || ''
@@ -8958,10 +8998,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
     setEditing(false); setBusy(false)
     await load()
-    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] })
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] })
   }
   // Re-pull the open task's detail (events + attachments + dependency edges) after a mutation that doesn't move columns.
-  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
+  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -9150,6 +9190,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <TaskDependencies
           task={detail.task}
           dependents={detail.dependents}
+          spawned={detail.children}
           tasks={tasks}
           canEdit={!busy}
           onOpen={openTask}
@@ -9395,7 +9436,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
         <button onClick={() => setFOverdue((v) => !v)} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 ${fOverdue ? 'border-red-500 bg-red-500/10 text-red-600' : 'text-muted-foreground'}`}><AlertTriangle className="h-3.5 w-3.5" />Overdue{overdueCount > 0 && <span className="font-mono text-[10px] tabular-nums">{overdueCount}</span>}</button>
         {view === 'list' && (
           <>
-            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', goal: 'Group: Goal', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
+            <Select items={{ priority: 'Group: Priority', status: 'Group: Status', assignee: 'Group: Assignee', goal: 'Group: Goal', chain: 'Group: Chain', none: 'Group: None' }} value={listGroup} onValueChange={(v) => v && setListGroup(v as typeof listGroup)}>
               <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent><SelectItem value="priority">Group: Priority</SelectItem><SelectItem value="status">Group: Status</SelectItem><SelectItem value="assignee">Group: Assignee</SelectItem><SelectItem value="goal">Group: Goal</SelectItem><SelectItem value="none">Group: None</SelectItem></SelectContent>
             </Select>
@@ -9555,10 +9596,18 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             {(() => {
               const within = (arr: Task[]) => [...arr].sort((a, b) => sort === 'priority' ? a.priority - b.priority || b.updatedAt - a.updatedAt : sort === 'due' ? (a.dueAt ?? Infinity) - (b.dueAt ?? Infinity) : b.updatedAt - a.updatedAt)
               let groups: { key: string; label: ReactNode; items: Task[] }[]
+              // Chain mode replaces sibling sorting with structural order, so the depth map it returns
+              // has to reach the row render below; the other modes leave it null and indent nothing.
+              let chain: ReturnType<typeof chainOrder> | null = null
               if (listGroup === 'priority') groups = [0, 1, 2, 3].map((p) => ({ key: String(p), label: <span className="flex items-center gap-2"><PriorityPips p={p} />{PRIORITY_LABEL[p]}</span>, items: within(visible.filter((t) => t.priority === p)) })).filter((g) => g.items.length)
               else if (listGroup === 'status') groups = (['doing', 'blocked', 'todo', 'done', 'cancelled'] as TaskStatus[]).map((s) => ({ key: s, label: <span className="flex items-center gap-2"><StatusDot status={s} /><span className="capitalize">{s}</span></span>, items: within(visible.filter((t) => t.status === s)) })).filter((g) => g.items.length)
               else if (listGroup === 'assignee') groups = [...new Set(visible.map((t) => t.assignee || ''))].sort().map((k) => ({ key: k || 'none', label: <span>{k ? assigneeChip(k, 'h-3.5 w-3.5') : 'Unassigned'}</span>, items: within(visible.filter((t) => (t.assignee || '') === k)) })).filter((g) => g.items.length)
               else if (listGroup === 'goal') groups = [...new Set(visible.map((t) => t.goalId || ''))].sort((a, b) => (a ? goalTitle(a) : 'zzz').localeCompare(b ? goalTitle(b) : 'zzz')).map((k) => ({ key: k || 'none', label: <span className="flex items-center gap-1.5">{k ? <><Target className="h-3.5 w-3.5 text-muted-foreground" /><a href={navHref('goals', k)} onClick={onNavClick(() => nav('goals', k))} className="text-muted-foreground no-underline hover:text-foreground hover:underline">{goalTitle(k)}</a></> : 'No goal'}</span>, items: within(visible.filter((t) => (t.goalId || '') === k)) })).filter((g) => g.items.length)
+              else if (listGroup === 'chain') {
+                chain = chainOrder(visible, within)
+                const roots = chain.order.filter((t) => (chain!.depth.get(t.id) ?? 0) === 0).length
+                groups = [{ key: 'chain', label: <span className="flex items-center gap-1.5"><GitBranch className="h-3.5 w-3.5" />Hand-off chains <span className="normal-case opacity-70">· {roots} root{roots === 1 ? '' : 's'}</span></span>, items: chain.order }]
+              }
               else groups = [{ key: 'all', label: <span>All tasks</span>, items: within(visible) }]
               if (!visible.length) return <div className="px-3 py-8 text-center text-sm text-muted-foreground">No tasks match.</div>
               return groups.map((g) => (
@@ -9570,11 +9619,23 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
                     const dm = dueMeta(t.dueAt, t.status)
                     const live = liveOf(t)
                     const agentAssigned = (t.assignee || '').startsWith('agent:')
+                    const depth = chain?.depth.get(t.id) ?? 0
+                    // Child count comes from the FULL board, not the visible set, so the badge doesn't
+                    // shrink as you filter — "this spawned 3" stays true whatever the list is showing.
+                    const spawned = childCount.get(t.id) ?? 0
                     return (
-                      <div key={t.id} onClick={() => openTask(t.id)} className={`group flex cursor-pointer items-center gap-3 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50 ${selId === t.id ? 'bg-muted' : ''}`}>
+                      <div key={t.id} onClick={() => openTask(t.id)} className={`group flex cursor-pointer items-center gap-3 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50 ${selId === t.id ? 'bg-muted' : ''} ${depth ? 'bg-muted/20' : ''}`}>
+                        {depth > 0 && <span className="shrink-0" style={{ width: `${Math.min(depth, 4) * 14}px` }} aria-hidden />}
                         <StatusDot status={t.status} />
                         <div className="flex min-w-0 flex-1 items-center gap-2">
                           <a href={navHref('tasks', t.id)} onClick={(e) => { e.stopPropagation(); onNavClick(() => openTask(t.id))(e) }} className={`truncate text-[13px] text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</a>
+                          {/* Fan-out marker — present in every grouping mode, because "this task started
+                              others" is worth seeing without switching to the chain view first. */}
+                          {spawned > 0 && (
+                            <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-foreground/20 px-1.5 text-[10px] font-medium text-foreground/70" title={`spawned ${spawned} task${spawned === 1 ? '' : 's'}`}>
+                              <GitBranch className="h-2.5 w-2.5 shrink-0" />{spawned}
+                            </span>
+                          )}
                           {t.goalId && goalChip(t.goalId, 'hidden shrink-0 sm:inline-flex')}
                           {unmetCount(t) > 0 && <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blockers">⏳ {unmetCount(t)}</span>}
                           {live && <span className={`inline-flex shrink-0 items-center gap-1 font-mono text-[10px] ${statusTone(live)}`}><SessionStatus s={live} iconClass="h-3 w-3" />{statusLabel(live)} · {fmtElapsed(now - live.createdAt)}</span>}
@@ -9657,13 +9718,55 @@ function TaskStatusPill({ status }: { status: TaskStatus }) {
 }
 
 /**
+ * Order a task list as hand-off chains: every task nested under the task that spawned it (`parentId`),
+ * depth-first, siblings in the list's own sort order.
+ *
+ * This is the task-level twin of the sessions list's chain folding, and it answers the question the flat
+ * board can't: *which task started this one*. On a fleet where agents delegate to each other, most work
+ * arrives as `task_create` from inside another task, so a flat list shows a hundred sibling rows for what
+ * is really a handful of trees.
+ *
+ * A task whose parent is NOT in the visible set — filtered out, or simply not on the loaded board —
+ * surfaces as a root rather than vanishing: narrowing the board must never hide work. Cycles can't be
+ * created through the store, but `seen` keeps a corrupted row from hanging the render.
+ */
+function chainOrder(tasks: Task[], sortSiblings: (t: Task[]) => Task[]):
+  { order: Task[]; depth: Map<string, number>; kids: Map<string, number> } {
+  const byId = new Map(tasks.map((t) => [t.id, t]))
+  const children = new Map<string, Task[]>()
+  const roots: Task[] = []
+  for (const t of tasks) {
+    const p = t.parentId && byId.has(t.parentId) ? t.parentId : undefined
+    if (p) children.set(p, [...(children.get(p) ?? []), t])
+    else roots.push(t)
+  }
+  const depth = new Map<string, number>()
+  const kids = new Map<string, number>()
+  for (const [p, cs] of children) kids.set(p, cs.length)
+  const order: Task[] = []
+  const seen = new Set<string>()
+  const walk = (t: Task, d: number) => {
+    if (seen.has(t.id)) return
+    seen.add(t.id)
+    depth.set(t.id, d)
+    order.push(t)
+    for (const c of sortSiblings(children.get(t.id) ?? [])) walk(c, d + 1)
+  }
+  for (const r of sortSiblings(roots)) walk(r, 0)
+  return { order, depth, kids }
+}
+
+/**
  * Dependencies section of the task drawer. Renders two edges — "Depends on" (this task's blockers) and
  * "Blocks" (the reverse edge, `dependents`) — resolving each id → title/status from the already-loaded
  * board (no per-blocker fetch). An editor adds/removes blockers and PATCHes the whole `dependsOn` set.
  */
-function TaskDependencies({ task, dependents, tasks, canEdit, onOpen, onSave }: {
+function TaskDependencies({ task, dependents, spawned, tasks, canEdit, onOpen, onSave }: {
   task: Task
   dependents: string[]
+  /** The tasks this one spawned, resolved SERVER-side — see `TaskStore.children`. Deriving them from
+   *  `tasks` would under-count against the board's bounded page. */
+  spawned: TaskChild[]
   tasks: Task[] | null
   canEdit: boolean
   onOpen: (id: string) => void
@@ -9703,8 +9806,58 @@ function TaskDependencies({ task, dependents, tasks, canEdit, onOpen, onSave }: 
     )
   }
 
+  // The hand-off chain this task sits in. `parentId` is set by `task_create` when an agent spawns work
+  // out of work it was already doing, so the edge answers "which task started this one?" — the task-level
+  // twin of the session chain rail. Ancestors walk up to the root (guarded against a corrupted cycle);
+  // subtasks are the direct children only, since each of those renders its own chain when opened.
+  const ancestors: Task[] = []
+  for (let p = task.parentId ? byId(task.parentId) : undefined; p && !ancestors.some((a) => a.id === p!.id); p = p.parentId ? byId(p.parentId) : undefined) ancestors.unshift(p)
+  const subtasks = spawned
+  // A parent that isn't on the loaded board still gets named by id — "spawned by something" beats a
+  // silently missing edge.
+  const orphanParent = task.parentId && !byId(task.parentId) ? task.parentId : undefined
+
   return (
     <div className="space-y-2">
+      {(ancestors.length > 0 || subtasks.length > 0 || orphanParent) && (
+        <div className="space-y-2">
+          <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Chain</div>
+          {(ancestors.length > 0 || orphanParent) && (
+            <div>
+              <div className="mb-1 text-[11px] text-muted-foreground">Spawned by</div>
+              {orphanParent
+                ? <div className="rounded-md border bg-muted/20 px-2 py-1.5 font-mono text-xs opacity-70" title="the parent task isn't on the current board — clear the filters or widen the range">{orphanParent}</div>
+                : (
+                  <div className="space-y-1">
+                    {ancestors.map((a, i) => (
+                      <div key={a.id} className="flex items-center gap-2 rounded-md border bg-muted/20 px-2 py-1.5 text-xs" style={{ marginLeft: `${i * 10}px` }}>
+                        <span className="shrink-0 text-muted-foreground/60">↳</span>
+                        <a href={navHref('tasks', a.id)} onClick={(e) => { e.preventDefault(); onOpen(a.id) }} className="min-w-0 flex-1 truncate text-foreground no-underline hover:underline">{a.title}</a>
+                        <TaskStatusPill status={a.status} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+            </div>
+          )}
+          {subtasks.length > 0 && (
+            <div>
+              <div className="mb-1 text-[11px] text-muted-foreground">Spawned <span className="opacity-70">· {subtasks.length}</span></div>
+              <div className="space-y-1">
+                {subtasks.map((c) => (
+                  <div key={c.id} className="flex items-center gap-2 rounded-md border bg-muted/20 px-2 py-1.5 text-xs">
+                    <span className="shrink-0 text-muted-foreground/60">↳</span>
+                    <a href={navHref('tasks', c.id)} onClick={(e) => { e.preventDefault(); onOpen(c.id) }} className="min-w-0 flex-1 truncate text-foreground no-underline hover:underline">{c.title}</a>
+                    {c.assignee && <span className="shrink-0 truncate text-[10px] text-muted-foreground">{c.assignee.replace(/^agent:/, '')}</span>}
+                    <TaskStatusPill status={c.status} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Dependencies</div>
 
       <div>

@@ -364,6 +364,21 @@ export class TaskStore {
     return this.db.prepare('SELECT task_id FROM task_deps WHERE depends_on = ?').all<{ task_id: string }>(id).map((r) => r.task_id);
   }
 
+  /**
+   * The tasks this one SPAWNED — its direct `parent_id` children, newest last. The hand-off edge, not a
+   * dependency: an agent working a task calls `task_create`, and the child records who it came out of.
+   *
+   * Served from here rather than derived on the client because the board ships a bounded page of tasks,
+   * so a client-side `filter(t => t.parentId === id)` silently under-counts a wide fan-out — and a
+   * "spawned · 6" that is really 12 is worse than no number at all.
+   */
+  children(id: string): Array<Pick<Task, 'id' | 'title' | 'status' | 'assignee'>> {
+    return this.db
+      .prepare(`SELECT id, title, status, assignee FROM tasks WHERE parent_id = ? ORDER BY created_at ASC`)
+      .all<{ id: string; title: string; status: string; assignee: string | null }>(id)
+      .map((r) => ({ id: r.id, title: r.title, status: r.status as TaskStatus, assignee: r.assignee ?? undefined }));
+  }
+
   /** The subset of this task's blockers that are NOT yet done/cancelled (a missing blocker counts as met). */
   unmetDeps(id: string): string[] {
     return this.db
