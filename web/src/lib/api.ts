@@ -1586,8 +1586,11 @@ export const api = {
   run: (agent: string, task: string) => call<{ id: string; tmux: string; error?: string }>('POST', '/api/sessions', { agent, task }),
   stopSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/stop`),
   /** Restart a session's agent process in place (keeps the transcript, resumes the same claude id) so a
-   *  newly-connected MCP server is picked up. The terminal must remount right after to re-attach. */
-  reloadSession: (id: string) => call<{ ok: boolean; error?: string }>('POST', `/api/sessions/${id}/reload`),
+   *  newly-connected MCP server is picked up. The terminal must remount right after to re-attach.
+   *  `rotate` brings it back on a different runtime account (the usage-limit escape hatch); the
+   *  conversation is carried across, and `note` explains it when no other account was free. */
+  reloadSession: (id: string, rotate = false) =>
+    call<{ ok: boolean; error?: string; account?: string; note?: string }>('POST', `/api/sessions/${id}/reload`, { rotate }),
   /** Halt every running session tenant-wide (owner/admin). Softer sibling of the kill switch. */
   stopAllSessions: () => call<{ ok: boolean; halted?: number; error?: string }>('POST', '/api/sessions/stop-all'),
   /** Host resource snapshot for Settings → System (RAM / CPU / uptime). */

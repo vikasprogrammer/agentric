@@ -142,6 +142,17 @@ export class RuntimeAccountStore {
     return r?.n ?? 0;
   }
 
+  /** Every credential DIRECTORY in the pool (any status — a limited account's dir still holds the
+   *  transcripts of the runs made under it). The transcript reader needs these: a rotated session writes
+   *  its conversation under `<configDir>/projects/…`, not the server's own `~/.claude`, so without them
+   *  every rotated run reads back as "no transcript". */
+  configDirs(runtime?: CodingRuntimeId): string[] {
+    const rows = runtime
+      ? this.db.prepare('SELECT config_dir FROM runtime_accounts WHERE runtime = ? AND config_dir IS NOT NULL').all<{ config_dir: string }>(runtime)
+      : this.db.prepare('SELECT config_dir FROM runtime_accounts WHERE config_dir IS NOT NULL').all<{ config_dir: string }>();
+    return rows.map((r) => r.config_dir).filter(Boolean);
+  }
+
   add(a: { runtime: CodingRuntimeId; name: string; kind: RuntimeAccountKind; configDir?: string; apiKeyRef?: string }): RuntimeAccount {
     const name = a.name.trim();
     if (!name) throw new Error('account name required');
@@ -204,7 +215,7 @@ export class RuntimeAccountStore {
    *  available — and stamp its last_used_at. Returns null when there are NO usable accounts for the runtime
    *  (caller → box default) or every enabled one is currently limited (caller → box default for a member
    *  launch; the scheduler defers cron). Auto-recovers accounts whose limit has lapsed first. */
-  pick(runtime: CodingRuntimeId, now: number = Date.now(), opts?: { kinds?: RuntimeAccountKind[] }): RuntimeAccount | null {
+  pick(runtime: CodingRuntimeId, now: number = Date.now(), opts?: { kinds?: RuntimeAccountKind[]; exclude?: string }): RuntimeAccount | null {
     this.recover(now);
     // The kind filter is ALWAYS on: a runtime's `liveCredentialKinds` are the only ones its launch lane
     // actually authenticates with (a claude `token` account, e.g., is silently ignored by the interactive
@@ -213,7 +224,13 @@ export class RuntimeAccountStore {
     const kinds = liveKinds(runtime).filter((k) => !opts?.kinds || opts.kinds.includes(k));
     if (!kinds.length) return null;
     const kindClause = ` AND kind IN (${kinds.map(() => '?').join(',')})`;
-    const r = this.db.prepare(`SELECT * FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available'${kindClause} ORDER BY last_used_at IS NOT NULL, last_used_at ASC LIMIT 1`).get<Row>(runtime, ...kinds);
+    // `exclude` is what makes a ROTATION a rotation rather than a re-pick: reloading a session onto
+    // "another account" must not hand back the one that just hit its limit. LRU ordering alone doesn't
+    // guarantee that — the current account is only last in line while others exist, and with a pool of
+    // one it would come straight back. Excluding it by name turns that case into an honest null.
+    const excludeClause = opts?.exclude ? ' AND name != ?' : '';
+    const r = this.db.prepare(`SELECT * FROM runtime_accounts WHERE runtime = ? AND enabled = 1 AND status = 'available'${kindClause}${excludeClause} ORDER BY last_used_at IS NOT NULL, last_used_at ASC LIMIT 1`)
+      .get<Row>(runtime, ...kinds, ...(opts?.exclude ? [opts.exclude] : []));
     if (!r) return null;
     this.db.prepare('UPDATE runtime_accounts SET last_used_at = ? WHERE runtime = ? AND name = ?').run(now, runtime, r.name);
     return toAccount({ ...r, last_used_at: now });

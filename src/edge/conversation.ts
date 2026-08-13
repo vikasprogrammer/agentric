@@ -85,19 +85,35 @@ export interface Conversation {
 
 const claudeConfigDir = (): string => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
+/** Extra config dirs to search beyond the server's own. A session launched under a ROTATION-POOL account
+ *  runs with `CLAUDE_CONFIG_DIR=<account dir>`, so claude writes its transcript under THAT dir's
+ *  `projects/` — a place the server, which resolves paths from its own environment, would never look.
+ *  The terminal manager registers each pooled dir (at boot and whenever one is selected for a launch).
+ *  A Set because registration is idempotent and called on every launch; filenames are claude session
+ *  UUIDs, so widening the search can't collide across accounts or tenants. */
+const extraRoots = new Set<string>();
+
+/** Declare a credential dir whose `projects/` may hold session transcripts. Idempotent; ignores empties. */
+export function registerTranscriptRoot(dir: string | undefined | null): void {
+  if (dir) extraRoots.add(dir);
+}
+
 /** Locate `<claudeSessionId>.jsonl` under any project dir. Filename is unique, so cwd escaping is irrelevant. */
 export function findTranscript(claudeSessionId: string): string | undefined {
-  const projects = path.join(claudeConfigDir(), 'projects');
-  let dirs: string[];
-  try {
-    dirs = fs.readdirSync(projects);
-  } catch {
-    return undefined;
-  }
   const wanted = `${claudeSessionId}.jsonl`;
-  for (const d of dirs) {
-    const candidate = path.join(projects, d, wanted);
-    if (fs.existsSync(candidate)) return candidate;
+  // The server's own dir first — the common case, and the only one before rotation is configured.
+  for (const root of [claudeConfigDir(), ...extraRoots]) {
+    const projects = path.join(root, 'projects');
+    let dirs: string[];
+    try {
+      dirs = fs.readdirSync(projects);
+    } catch {
+      continue;
+    }
+    for (const d of dirs) {
+      const candidate = path.join(projects, d, wanted);
+      if (fs.existsSync(candidate)) return candidate;
+    }
   }
   return undefined;
 }
