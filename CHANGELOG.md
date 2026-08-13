@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.341.2] — 2026-08-13
+### Fixed
+- **A task Discussion rendered agent messages as raw markdown.** Agents write markdown, but the Discussion
+  body was drawn as plain text (only `@mentions` were pulled out), so `**bold**`, `` `inline code` ``
+  (branch names, `/code-review ultra 630`, `develop`/`master`), and numbered/bulleted lists all showed
+  their literal syntax. `DiscussionBody` now renders through `ReactMarkdown` (same `remarkGfm` +
+  `[[wiki]]`/entity linking + `mdComponents` as every other markdown surface), with a small `remarkMentions`
+  plugin so `@mentions` keep their highlight — and it no longer mistakes the `@` inside an email like
+  `user@example.com` for a mention.
+
 ## [0.341.1] — 2026-08-13
 ### Fixed
 - **Guided runtime-account login failed hard on the first partial capture of the authorize URL.** The
