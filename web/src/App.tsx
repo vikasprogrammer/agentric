@@ -6095,6 +6095,48 @@ function splitWikiNodes(value: string): any[] {
   return nodes.length ? nodes : [{ type: 'text', value }]
 }
 
+// Highlight `@mentions` inside rendered markdown — a remark plugin so mentions survive alongside real
+// markdown formatting (a Discussion body is agent-authored markdown, not plain text). Text nodes only:
+// never re-scan inside code or links, and never inside an email (the `@` must start a token).
+const MENTION_RE = /@[a-z0-9][a-z0-9._-]*/gi
+function remarkMentions(agentIds: Set<string>) {
+  return (tree: any) => {
+    const walk = (node: any) => {
+      if (!node || !Array.isArray(node.children)) return
+      const out: any[] = []
+      for (const child of node.children) {
+        if (child.type === 'code' || child.type === 'inlineCode' || child.type === 'link') { out.push(child); continue }
+        if (child.type === 'text' && child.value.includes('@')) { out.push(...splitMentionNodes(child.value, agentIds)); continue }
+        walk(child); out.push(child)
+      }
+      node.children = out
+    }
+    walk(tree)
+  }
+}
+function splitMentionNodes(value: string, agentIds: Set<string>): any[] {
+  const nodes: any[] = []
+  let last = 0
+  MENTION_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = MENTION_RE.exec(value))) {
+    const before = m.index === 0 ? '' : value[m.index - 1]
+    if (/[\w@]/.test(before)) continue // '@' must start a token — skip emails / mid-word matches
+    if (m.index > last) nodes.push({ type: 'text', value: value.slice(last, m.index) })
+    const tok = m[0].slice(1).toLowerCase().replace(/[._-]+$/, '')
+    const isAgent = agentIds.has(tok)
+    // `data.hName`/`hProperties` map this synthetic node straight to a styled <span> in rehype.
+    nodes.push({
+      type: 'mention',
+      data: { hName: 'span', hProperties: { className: `rounded px-1 font-medium ${isAgent ? 'bg-sky-500/15 text-sky-600' : 'bg-muted text-foreground'}` } },
+      children: [{ type: 'text', value: m[0] }],
+    })
+    last = m.index + m[0].length
+  }
+  if (last < value.length) nodes.push({ type: 'text', value: value.slice(last) })
+  return nodes.length ? nodes : [{ type: 'text', value }]
+}
+
 // Markdown link · `[[wiki]]` · bare http(s) URL · in-app `#/route` · bare entity id, in priority order.
 const INLINE_LINK_RE = new RegExp(
   String.raw`\[([^\]]+)\]\((https?:\/\/[^\s)]+|#\/[^\s)]+)\)`
@@ -9935,21 +9977,11 @@ function DiscussionAvatars({ participants, members }: { participants: string[]; 
   )
 }
 
-/** Render Discussion body text with @mentions highlighted (agent mentions get the sky accent). */
+/** Render a Discussion body as markdown (agents author markdown), with @mentions highlighted — agent
+ *  mentions get the sky accent — and `[[wiki]]`/entity refs linked like every other markdown surface. */
 function DiscussionBody({ text, agents }: { text: string; agents: AgentInfo[] }) {
-  const parts = text.split(/(@[a-z0-9][a-z0-9._-]*)/gi)
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part[0] === '@') {
-          const tok = part.slice(1).toLowerCase().replace(/[._-]+$/, '')
-          const isAgent = agents.some((a) => a.id.toLowerCase() === tok)
-          return <span key={i} className={`rounded px-1 font-medium ${isAgent ? 'bg-sky-500/15 text-sky-600' : 'bg-muted text-foreground'}`}>{part}</span>
-        }
-        return <span key={i}>{part}</span>
-      })}
-    </>
-  )
+  const agentIds = useMemo(() => new Set(agents.map((a) => a.id.toLowerCase())), [agents])
+  return <ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks, [remarkMentions, agentIds]]} components={mdComponents}>{text}</ReactMarkdown>
 }
 
 /** One-line phrasing for a task state event in the merged Discussion timeline. */
@@ -10066,7 +10098,7 @@ function TaskDiscussion({ taskId, entries, unread, me, members, agents, onChange
                 {who.kind === 'agent' && <span className="flex items-center gap-0.5 rounded bg-sky-500/10 px-1 text-[9px] uppercase tracking-wide text-sky-600"><Bot className="h-2.5 w-2.5" />agent</span>}
                 <span className="ml-auto font-mono text-[10px] text-muted-foreground">{fmtDiscussionClock(e.at)}</span>
               </div>
-              <div className="whitespace-pre-wrap break-words text-[13px] leading-relaxed text-foreground"><DiscussionBody text={e.body} agents={agents} /></div>
+              <div className="break-words text-[13px] leading-relaxed text-foreground [&_pre]:whitespace-pre-wrap [&_pre]:break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"><DiscussionBody text={e.body} agents={agents} /></div>
             </div>
           </div>
         )
