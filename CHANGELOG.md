@@ -8,6 +8,26 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.344.1] — 2026-08-13
+### Fixed
+- **Opening a session on a busy box greeted you with tmux's raw `can't find session: aos-…`** — for a run
+  that was launching perfectly normally. The ttyd attach wrapper waited a fixed ~3s for the pane to
+  appear before concluding the session was dead, which is really a guess about how fast the host is. On
+  a loaded tenant the guess loses: at load average 76 a spawn took **13.3s** (row written 12:01:23.037,
+  `tmux new-session` at 12:01:36.324). The wait expired, the resurrect branch found no env file — a
+  brand-new run hasn't written one — and the plain-attach tail printed tmux's not-found error. The
+  session itself was fine and reported `success` four minutes later, so the only damage was to trust:
+  the console said a healthy run had vanished.
+  The wrapper no longer guesses. The server now holds a `session-<id>.launching` marker for exactly the
+  window between "row written" and "pane exists" (mirroring the in-memory `TerminalManager.launching`
+  set that `attach.sh` can't see from its own process), and the wrapper waits as long as a launch is
+  actually in flight — showing `starting session…` instead of a blank pane. The marker is released in
+  the launch's `finally`, so a **failed** launch stops the wait immediately rather than stalling it;
+  stale markers are swept at boot; and a 120s ceiling bounds the `kill -9`-mid-launch case. With no
+  marker at all — an older session, a resurrect, a mock pane — the original ~3s floor is unchanged, so a
+  genuinely dead session still gives up promptly. Pinned by `scripts/attach-grace-test.cjs`, which
+  reproduces the live symptom (exact error string) against the old wrapper.
+
 ## [0.344.0] — 2026-08-13
 ### Fixed
 - **Abandoned browser tabs could silently switch off every scheduled run on a tenant.** The whole-box

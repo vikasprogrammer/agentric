@@ -8,13 +8,16 @@
 #   $1  tmux socket path   (fixed, set when ttyd was launched)
 #   $2  tmux session name   (aos-<id>, supplied by the browser)
 # Env:
-#   AOS_SESSION_DIR  dir holding the per-session launch env files (session-<id>.env)
+#   AOS_SESSION_DIR  dir holding the per-session launch env files (session-<id>.env) and the
+#                    `session-<id>.launching` marker the server holds while a pane is coming up
 set -u
 SOCK="${1:-}"
 NAME="${2:-}"
 
 # No target (e.g. a ttyd asset probe) → nothing to attach to; exit cleanly.
 [ -z "$SOCK" ] || [ -z "$NAME" ] && exit 0
+
+ID="${NAME#aos-}"
 
 # `tmux -u` on every attach/new-session below: this client is ttyd's xterm.js, which is always UTF-8,
 # but ttyd is launched by the (launchd/systemd) server that may carry no locale — without -u tmux would
@@ -26,11 +29,33 @@ fi
 
 # Not alive (yet). This is EITHER a brand-new session whose server-side `tmux new-session` simply
 # hasn't landed (a race: the browser opens the terminal the instant spawn returns), OR a session
-# that was stopped/ended. Wait out a short grace window for the spawn to appear before deciding —
-# otherwise we'd "resume" a fresh session that has no transcript yet and claude would print
-# "No conversation found with session ID …" (which surfaces to the user as a spurious not-found).
+# that was stopped/ended. Wait for the spawn to appear before deciding — otherwise we'd "resume" a
+# fresh session that has no transcript yet and claude would print "No conversation found with
+# session ID …" (which surfaces to the user as a spurious not-found).
+#
+# How long to wait used to be a fixed ~3s, which is really a guess about how fast the BOX is — and
+# on a loaded host the guess loses. Observed on instawp at load 76 (2026-08-13): the row was written
+# at 12:01:23.037 and `tmux new-session` only landed at 12:01:36.324, a 13.3s gap. The wait expired,
+# we fell through to the resurrect branch, found no env file (a brand-new run hasn't written one),
+# and hit the plain-attach tail — so a session that was launching perfectly normally greeted the
+# user with tmux's raw "can't find session: aos-…". It finished `success` four minutes later.
+#
+# So don't guess: ASK. The server drops `session-<id>.launching` for exactly the window between
+# "row written" and "pane exists" (TerminalManager.launching) and removes it in the launch's
+# `finally`, success or failure. While that marker is present we keep waiting however long the box
+# needs; the ceiling only bounds a marker orphaned by a server killed mid-launch (boot sweeps those,
+# so it should never be reached). With no marker at all — an older session, a resurrect, a
+# mock/agent-runner pane — the original ~3s floor applies unchanged.
+MARK="${AOS_SESSION_DIR:-}/session-$ID.launching"
+FLOOR=12      # ~3s   — the no-marker wait, as before
+CEILING=480   # ~120s — hard stop; a stale marker must never hang the terminal open forever
 i=0
-while [ "$i" -lt 12 ]; do
+while [ "$i" -lt "$CEILING" ]; do
+  # Past the floor with no launch in flight → it really is gone. Stop waiting and decide below.
+  if [ "$i" -ge "$FLOOR" ] && [ ! -f "$MARK" ]; then break; fi
+  # One line of feedback for the slow-box case, so the pane isn't blank while we wait. tmux clears
+  # the screen on attach, so this never survives into the session itself.
+  if [ "$i" -eq 0 ] && [ -f "$MARK" ]; then printf 'starting session…\r\n'; fi
   sleep 0.25
   if tmux -S "$SOCK" has-session -t "$NAME" 2>/dev/null; then
     exec tmux -u -S "$SOCK" attach -t "$NAME"
@@ -38,10 +63,9 @@ while [ "$i" -lt 12 ]; do
   i=$((i + 1))
 done
 
-# Still gone after ~3s → it was genuinely stopped. Resurrect from the persisted launch context, if
-# we have it. The launcher (RESUME=1) sources ENV_FILE to recover AGENT_DIR / CLAUDE_SESSION_ID /
-# secrets, then `claude --resume`.
-ID="${NAME#aos-}"
+# Still gone, and nothing is launching → it was genuinely stopped. Resurrect from the persisted
+# launch context, if we have it. The launcher (RESUME=1) sources ENV_FILE to recover AGENT_DIR /
+# CLAUDE_SESSION_ID / secrets, then `claude --resume`.
 LAUNCHER="$(cd "$(dirname "$0")" && pwd)/claude-launch.sh"
 ENV_FILE="${AOS_SESSION_DIR:-}/session-$ID.env"
 
