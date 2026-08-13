@@ -1782,7 +1782,9 @@ export class Automations {
     // catch-up window (see the cron branch below). No queue needed. 0 = unlimited. The cap is now ON by
     // default (RAM-derived) rather than opt-in — resolved live so a Settings change needs no restart.
     const cap = this.concurrencyCap();
-    let running = cap > 0 ? this.tm.aliveSessionCount() : 0;
+    // `admissionSessionCount`, not `aliveSessionCount`: a parked interactive TUI is alive but is not work,
+    // and counting it lets one person's abandoned tabs starve every scheduled run on the tenant.
+    let running = cap > 0 ? this.tm.admissionSessionCount() : 0;
     let deferred = 0;
     const overCap = (): boolean => cap > 0 && running >= cap;
     for (const a of this.list()) {
@@ -1865,7 +1867,7 @@ export class Automations {
       let spawned = 0;
       for (const g of this.os.goals.stuck(this.os.tenant, GOAL_AUTOPLAN_GRACE_MS, now.getTime())) {
         if (spawned >= GOAL_AUTOPLAN_MAX_PER_TICK) break;
-        if (cap > 0 && this.tm.aliveSessionCount() >= cap) break; // respect the whole-box concurrency cap
+        if (cap > 0 && this.tm.admissionSessionCount() >= cap) break; // respect the whole-box concurrency cap
         const last = this.db
           .prepare("SELECT MAX(ts) AS t FROM audit_events WHERE type = 'goal.planned' AND data LIKE ?")
           .get<{ t: number | null }>(`%"goalId":"${g.id}"%`);

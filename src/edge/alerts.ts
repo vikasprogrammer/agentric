@@ -94,6 +94,10 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
   // Runs the RUNTIME killed — quota exhausted or a dead token — rather than work that failed.
   for (const d of runtimeDeaths(os, now)) out.push(d);
 
+  // Scheduled work is not running at all, right now.
+  const blocked = schedulerBlocked(os, now);
+  if (blocked) out.push(blocked);
+
   // Approvals piling up on a human.
   const oldestH = ins.friction.oldestPendingAgeMs ? Math.round(ins.friction.oldestPendingAgeMs / 3_600_000) : 0;
   if (ins.friction.pendingApprovals >= 3 && oldestH >= 4) {
@@ -112,6 +116,11 @@ export function detectAlerts(os: AgentOS, now = Date.now()): InsightAlert[] {
 /** How far back a death still counts as "happening". Deaths arrive in BURSTS — on the live corpus 22 of
  *  31 landed inside two days — so a 30-day window would keep shouting for a month about a token someone
  *  replaced on day three. */
+/** The scheduler defers a spawn every tick it is over the cap, so "blocked" is a RATE, not a count. These
+ *  bound the claim to the present: deferring in the last few minutes, for at least an hour, having fired
+ *  nothing in that hour. */
+const SCHED_FRESH_MS = 5 * 60_000;
+const SCHED_BLOCKED_MS = 60 * 60_000;
 const DEATH_WINDOW_MS = 48 * 3_600_000;
 /** …and at least one must be this recent, or the condition is over. */
 const DEATH_FRESH_MS = 12 * 3_600_000;
@@ -170,6 +179,64 @@ function runtimeDeaths(os: AgentOS, now: number): InsightAlert[] {
     });
   }
   return out;
+}
+
+/**
+ * **Nothing scheduled is running.** The whole-box concurrency cap defers a spawn whenever the box is at
+ * its ceiling, which is correct as backpressure and catastrophic as a steady state: the deferral is
+ * recorded to audit and nowhere else, so a tenant can lose every cron — reviews, health sweeps, billing
+ * jobs — and the only trace is a row nobody reads.
+ *
+ * That is not hypothetical. One tenant deferred continuously for **a month**: 31,570 `scheduler.deferred`
+ * events, not one automation fired, discovered only because someone went looking for an unrelated bug.
+ * The condition was trivially detectable the whole time. This makes it arrive instead.
+ *
+ * Present-tense by construction (the standing lesson from `alert-staleness-test.cjs`): it fires only if
+ * the scheduler is deferring **now** (within `SCHED_FRESH_MS`), has been for at least `SCHED_BLOCKED_MS`,
+ * and has fired **nothing** in that window. Recovery silences it with no bookkeeping — one successful
+ * fire, or one tick that isn't over the cap, and the condition is simply false. So the honest question
+ * "what makes this alert stop?" has a real answer: the scheduler running again.
+ */
+function schedulerBlocked(os: AgentOS, now: number): InsightAlert | null {
+  const since = now - SCHED_BLOCKED_MS;
+  const latest = os.db
+    .prepare("SELECT ts, data FROM audit_events WHERE type = 'scheduler.deferred' ORDER BY ts DESC LIMIT 1")
+    .get<{ ts: number; data: string }>();
+  if (!latest || now - latest.ts > SCHED_FRESH_MS) return null; // not deferring right now
+
+  const oldest = os.db
+    .prepare("SELECT MIN(ts) AS t FROM audit_events WHERE type = 'scheduler.deferred' AND ts >= ?")
+    .get<{ t: number | null }>(since);
+  if (!oldest?.t || latest.ts - oldest.t < SCHED_BLOCKED_MS * 0.9) return null; // a brief burst, not a stall
+
+  // If anything actually fired in the window the scheduler is coping, however loaded it looks.
+  const fired = os.db
+    .prepare("SELECT COUNT(*) AS c FROM audit_events WHERE type = 'automation.fired' AND ts >= ?")
+    .get<{ c: number }>(since)!.c;
+  if (fired > 0) return null;
+
+  let cap = 0, running = 0, deferred = 0;
+  try {
+    const d = JSON.parse(latest.data) as { cap?: number; running?: number; deferred?: number };
+    cap = d.cap ?? 0; running = d.running ?? 0; deferred = d.deferred ?? 0;
+  } catch { /* shape drift must not cost us the alert */ }
+
+  const hours = Math.round((now - oldest.t) / 3_600_000);
+  return {
+    key: 'scheduler-blocked',
+    severity: 'high',
+    title: `No scheduled work has run for ${hours}h — the box is at its session cap`,
+    body:
+      `Every cron, one-shot and auto-dispatched task has been deferred for ${hours}h: ${running} sessions are ` +
+      `open against a cap of ${cap}, and ${deferred} automations are waiting each tick. Nothing has fired in ` +
+      `that time, so daily reviews, health sweeps and scheduled reports have simply not happened — silently, ` +
+      `because a deferral is not a failure and nothing errored.\n\n` +
+      `The usual cause is not real load: interactive sessions stay open until someone closes them, and ` +
+      `abandoned ones keep their slot. Open Sessions, sort by last activity, and close the ones nobody is ` +
+      `using. Raising the cap in Settings → Concurrency also clears it, but if the slots are held by parked ` +
+      `sessions rather than work, it will fill up again.`,
+    route: 'sessions',
+  };
 }
 
 /** Detected alerts minus any whose key fired within the cooldown — the ones to actually push now. */

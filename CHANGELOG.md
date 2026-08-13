@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.344.0] — 2026-08-13
+### Fixed
+- **Abandoned browser tabs could silently switch off every scheduled run on a tenant.** The whole-box
+  concurrency cap counted every live pane, but an **interactive** session stays alive until a human
+  closes it *by design* — so parked TUIs accumulate and hold cap slots forever. One live tenant reached
+  ~13 parked sessions (nine claimed by one person, seven untouched for over a week), sat permanently
+  above its ceiling, and deferred **every cron for a month**: 31,570 consecutive `scheduler.deferred`
+  events, not one automation fired. Daily support reviews, fleet-health sweeps and billing jobs simply
+  did not happen, and nothing said so.
+  The cap now compares against `TerminalManager.admissionSessionCount()` — sessions actually holding a
+  **work** slot: headless runs, sessions with a turn in flight (the same `isWorking` predicate the
+  console's spinner uses), and interactive sessions active within the last 30 minutes. A parked TUI is
+  still alive and attachable; it just stops blocking scheduled work. Raising the cap was never the fix —
+  parked panes keep accumulating, so it only buys weeks.
+
+### Added
+- **A `scheduler-blocked` alert**, because the condition above was detectable the whole month and only
+  ever written to an audit row nobody reads. Fires when the scheduler is deferring **now**, has been for
+  at least an hour, and has fired nothing in that window — then names the cap, the numbers, and parked
+  sessions as the usual cause. Present-tense by construction: one successful fire, or one tick under the
+  cap, and it is simply false again, so recovery needs no bookkeeping.
+- Settings → Concurrency now reports `admitted` and `parked` alongside `alive`, so "34 running against a
+  cap of 25" can explain itself instead of reading as genuine overload.
+- `scripts/scheduler-admission-test.cjs` (18 assertions) pins both halves, including that admission never
+  reaps and that a stale burst of deferrals does not keep alerting.
+
 ## [0.343.0] — 2026-08-13
 ### Added
 - **Choose whether a goal plan auto-dispatches.** "Plan this goal" was hardcoded file-only — the strategist
