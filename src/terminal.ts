@@ -3042,6 +3042,9 @@ export class TerminalManager {
     const r = this.db.prepare('SELECT tmux, status, headless, resident, claimed_by, run_as, spawned_by, agent, claude_session_id FROM term_sessions WHERE id = ?')
       .get<{ tmux: string; status: string; headless: number; resident: number; claimed_by: string | null; run_as: string | null; spawned_by: string | null; agent: string; claude_session_id: string | null }>(sessionId);
     if (!r) return;
+    // A goal-plan run files all its tasks within the turn, so once the turn ends the auto-dispatch flag has
+    // done its job — drop it (bounds the in-memory set; a no-op for every non-plan session).
+    this.clearPlanAutoDispatch(sessionId);
     // ── The turn is OVER for every lane, whatever happens to the pane below. ──
     // This clear used to live inside the `resident` branch only, which made `busy_since` a ONE-WAY LATCH
     // for every other kind of run: a member's own interactive session returned at `!r.headless` before
@@ -3499,6 +3502,15 @@ export class TerminalManager {
   sessionAgent(id: string): string | undefined {
     return this.db.prepare('SELECT agent FROM term_sessions WHERE id = ?').get<{ agent: string }>(id)?.agent;
   }
+
+  /** Sessions whose filed tasks should auto-dispatch (a goal plan run the requester chose to auto-run).
+   *  In-memory + short-lived: a plan session files its tasks within one run, so this needn't survive a
+   *  restart — if the server bounces mid-plan the remaining tasks are simply filed file-only (safe
+   *  degradation, never an accidental dispatch). Set by Strategist.plan, read by /api/tasks/create. */
+  private planAutoDispatchSessions = new Set<string>();
+  markPlanAutoDispatch(id: string): void { this.planAutoDispatchSessions.add(id); }
+  isPlanAutoDispatch(id: string): boolean { return this.planAutoDispatchSessions.has(id); }
+  clearPlanAutoDispatch(id: string): void { this.planAutoDispatchSessions.delete(id); }
 
   /** The member id a session acts as (run-as), if any — so a deferred task it schedules runs as the
    *  same identity. NULL for company-identity runs. */

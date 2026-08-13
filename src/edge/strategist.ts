@@ -37,6 +37,11 @@ export interface PlanSteer {
   guidance?: string;
   /** Hard cap on how many NEW tasks to file this run — keeps a plan tight instead of sprawling. */
   maxTasks?: number;
+  /** When true, the tasks this plan files auto-dispatch (agent-assigned ones run without a human pressing
+   *  dispatch). ENFORCED server-side: the create route stamps `auto_dispatch=1` on every task the plan
+   *  session files, so it never depends on the agent obeying the prompt. Default false = file-only (a human
+   *  reviews the plan and dispatches). Respects `dependsOn` — a dependent still waits for its blockers. */
+  autoDispatch?: boolean;
 }
 
 export class Strategist {
@@ -58,9 +63,13 @@ export class Strategist {
     const existing = this.os.tasks.tasksForGoal(goalId);
     const task = this.buildTask(goal, existing, steer);
     const session = this.tm.createSession(AGENT_ID, `Plan goal — ${goal.title}`, task, `goal:${goalId}`, true /* headless */, undefined, undefined, runAs);
+    // Deterministic auto-dispatch: flag this plan session so the tasks/create route stamps `auto_dispatch=1`
+    // on every task it files — the enforcement doesn't trust the agent to set the flag (its prompt never
+    // mentions it). Default off leaves the plan file-only for a human to dispatch.
+    if (steer?.autoDispatch) this.tm.markPlanAutoDispatch(session.id);
     this.os.audit.append({
       ts: Date.now(), runId: session.id, tenant: this.os.tenant, principal: by,
-      type: 'goal.planned', data: { goalId, title: goal.title, sessionId: session.id, existingTasks: existing.length, steered: !!(steer?.guidance || steer?.maxTasks) },
+      type: 'goal.planned', data: { goalId, title: goal.title, sessionId: session.id, existingTasks: existing.length, steered: !!(steer?.guidance || steer?.maxTasks), autoDispatch: !!steer?.autoDispatch },
     });
     return { spawned: true, sessionId: session.id };
   }
@@ -106,8 +115,20 @@ export class Strategist {
       'its blockers are done, so this turns your plan into an enforced pipeline (not just a to-do list).',
       'NUMBER the titles: prefix each task title with its step number in run order — "1. ", "2. ", … — so',
       'the sequence is visible at a glance on the board (a parallel/independent track can share a number).',
-      'Do NOT set autoDispatch — leave the plan for a human to review and dispatch. Finish with report.',
     );
+    if (steer?.autoDispatch) {
+      // The requester chose to auto-run this plan. The server force-stamps auto-dispatch on the tasks you
+      // file, so you don't set the flag — but the ordering is now load-bearing: a task runs the moment its
+      // blockers finish, with no human gate. Get the dependsOn chain right.
+      lines.push(
+        'This plan will AUTO-RUN: each task you file dispatches on its own the moment its dependsOn blockers',
+        'are done — there is NO human review step, so your dependsOn ordering IS the execution order. Get it',
+        'exactly right and scope each task tightly. (You do not set autoDispatch — that is handled for you.)',
+        'Finish with report.',
+      );
+    } else {
+      lines.push('Do NOT set autoDispatch — leave the plan for a human to review and dispatch. Finish with report.');
+    }
     return lines.join('\n');
   }
 

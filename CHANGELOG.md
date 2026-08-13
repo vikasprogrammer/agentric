@@ -8,7 +8,21 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.342.0] — 2026-08-13
+## [0.343.0] — 2026-08-13
+### Added
+- **Choose whether a goal plan auto-dispatches.** "Plan this goal" was hardcoded file-only — the strategist
+  filed tasks and a human dispatched each one. The Plan modal now has an **"Auto-dispatch the planned
+  tasks"** checkbox (**off by default**, so today's review-first behaviour is unchanged). When on, the
+  tasks the plan files run on their own — each agent-assigned task dispatches the moment it becomes
+  eligible, in `dependsOn` order, with no human step. Enforcement is **deterministic, not prompt-honoured**:
+  `Strategist.plan({ autoDispatch })` flags the plan session (`TerminalManager.markPlanAutoDispatch`), and
+  `/api/tasks/create` stamps `auto_dispatch=1` on every task that session files regardless of what the agent
+  passed — so it never depends on the model obeying an instruction. Plan tasks route through the ~20s
+  scheduler tick (`dispatchable()`) rather than the immediate create-time dispatch, so the whole plan drains
+  in pipeline order, one session per agent. The strategist's prompt is told the plan will auto-run (so it
+  scopes tasks and orders `dependsOn` accordingly); its default file-only prompt is unchanged. Audited on
+  `goal.planned` / `goal.plan.requested` (`autoDispatch`). Scoped to the manual "Plan this goal" button —
+  the opt-in goal auto-planner stays file-only.
 ### Added
 - **Reload a session onto another runtime account.** A run that hits "You've hit your session limit ·
   resets …" had no way back except starting over: credentials bind ONCE, at launch (`applyRuntimeAccount`
