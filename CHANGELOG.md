@@ -8,6 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.341.1] — 2026-08-13
+### Fixed
+- **Guided runtime-account login failed hard on the first partial capture of the authorize URL.** The
+  poll scraped the CLI's `oauth/authorize?…` line and, the instant it saw a URL without a `state=` tail,
+  permanently failed the login with "the sign-in link came back incomplete from the runtime" — so a poll
+  that merely caught the line *mid-render*, or a URL the CLI wrapped across rows inside a fixed-width box
+  (real newlines `capture-pane -J` won't rejoin), killed the whole flow with no retry. Now an incomplete
+  URL is treated as transient: the poll keeps waiting for a whole one and only gives up after an 8s settle
+  window, and `extractAuthorizeUrl` reassembles a URL split across rows (conservatively — a row with a
+  space or prose, like the "Paste code" prompt, ends the URL and can never be fused into the query string).
+
 ## [0.341.0] — 2026-08-13
 ### Added
 - **The task hand-off chain is visible.** `parentId` — set whenever an agent spawns work out of work it

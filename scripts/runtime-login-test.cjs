@@ -108,12 +108,30 @@ s = m.poll(s.id);
 assert(s.phase !== 'failed', 'a fresh login is not timed out');
 
 // A URL clipped at the pane's wrap point is what a too-narrow pane produced against the real CLI. Sending
-// the human to a truncated authorize request would fail in the browser and read as a product bug.
+// the human to a truncated authorize request would fail in the browser and read as a product bug — so a
+// clipped URL is NEVER shown. But a first capture can simply be mid-render, so an incomplete URL waits for
+// a whole one rather than failing on sight, and only fails if it stays clipped past the settle window.
 m = mk();
 pane = URL_SCREEN.replace(URL, URL.slice(0, 90));
 s = m.start('claude-code', 'clipped');
 s = m.poll(s.id);
-assert(s.phase === 'failed' && /incomplete/.test(s.error), 'a truncated sign-in link is refused, not shown', JSON.stringify(s));
+assert(s.phase === 'starting' && !s.url, 'a clipped sign-in link is not shown — the poll waits for a whole one', JSON.stringify(s));
+m.logins.get(s.id).urlSeenAt -= 9000;   // pretend the settle window elapsed with the URL still clipped
+s = m.poll(s.id);
+assert(s.phase === 'failed' && /incomplete/.test(s.error), 'a URL that stays clipped past the settle window fails closed', JSON.stringify(s));
+
+// The CLI can print the authorize URL wrapped across rows (e.g. a bordered box whose borders capture-pane
+// -J won't rejoin). It must be reassembled to the WHOLE URL, not clipped at the first row's fragment.
+m = mk();
+pane = [
+  "Browser didn't open? Use the url below to sign in (c to copy)",
+  '│ ' + URL.slice(0, 70) + '  │',
+  '│ ' + URL.slice(70) + '  │',
+  ' Paste code here if prompted >',
+].join('\n');
+s = m.start('claude-code', 'wrapped');
+s = m.poll(s.id);
+assert(s.phase === 'awaiting-code' && s.url === URL, 'a URL wrapped across rows is reassembled and surfaced whole', JSON.stringify(s));
 
 console.log('\n\x1b[1m3) Guards on what may be started at all\x1b[0m');
 m = mk();
