@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.344.2] — 2026-08-13
+### Fixed
+- **A runtime account stayed stuck on "limited · resets …" long after it was usable again.** The
+  console reads accounts through `RuntimeAccountStore.list()`, but the lapsed-limit self-heal
+  (`recover()`) only ran inside `pick()`/`allLimited()` — i.e. on an actual launch. On an idle runtime
+  nothing called it, so a limit whose reset had already passed showed frozen indefinitely. `list()` (and
+  `get()`) now run `recover()` first, so an expired limit clears on the next console load.
+- **The Refresh button couldn't clear a stale limit.** `recordCheck` only updates the usage snapshot and
+  the `/check` handler re-parked an account limited *only* when the probe reported an exhausted window —
+  so a Refresh that authenticated and found the account healthy (e.g. weekly 75% / session 46%, nowhere
+  near the cap) refreshed the Usage cell but left the "limited" badge untouched. A healthy probe with no
+  exhausted window now clears the limit via the new `RuntimeAccountStore.clearLimit()`.
+
 ## [0.344.1] — 2026-08-13
 ### Fixed
 - **Opening a session on a busy box greeted you with tmux's raw `can't find session: aos-…`** — for a run

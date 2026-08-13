@@ -4517,7 +4517,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       os.runtimeAccounts.recordCheck(runtime, name, { ok: check.ok, note: check.note, usage: check.usage });
       // A now-valid token re-enables a previously auto-disabled account; usage-exhaustion re-parks it limited.
       if (check.ok === true && !acct.enabled && acct.checkOk === false) os.runtimeAccounts.setEnabled(runtime, name, true);
+      // Status reconciliation is the whole point of Refresh: an exhausted window re-parks it limited, while a
+      // token that authenticates with NO exhausted window clears a stale limit (recordCheck only touches the
+      // usage snapshot, so without this a healthy probe updated the % but left "limited · resets …" frozen).
       if (check.limitedUntil) os.runtimeAccounts.markLimited(runtime, name, check.limitedUntil);
+      else if (check.ok === true) os.runtimeAccounts.clearLimit(runtime, name);
       os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.checked', data: { runtime, name, ok: check.ok, note: check.note } });
       return sendJson(res, 200, { ok: true, account: os.runtimeAccounts.get(runtime, name), check: { ok: check.ok, note: check.note } });
     }

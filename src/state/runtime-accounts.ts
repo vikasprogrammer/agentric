@@ -119,12 +119,17 @@ const toAccount = (r: Row): RuntimeAccount => ({
 export class RuntimeAccountStore {
   constructor(private db: Db) {}
 
-  /** Every account across all runtimes, newest first — never exposes the api-key VALUE (only its vault ref). */
-  list(): RuntimeAccount[] {
+  /** Every account across all runtimes, newest first — never exposes the api-key VALUE (only its vault ref).
+   *  Self-heals first: a limit whose reset time has lapsed is cleared here too, not only inside pick()/
+   *  allLimited(). Without this the console (which reads through list()) shows "limited · resets …" frozen
+   *  long after the reset passed, since nothing launches to run recover() on an idle runtime. */
+  list(now: number = Date.now()): RuntimeAccount[] {
+    this.recover(now);
     return this.db.prepare('SELECT * FROM runtime_accounts ORDER BY runtime, created_at DESC').all<Row>().map(toAccount);
   }
 
-  get(runtime: CodingRuntimeId, name: string): RuntimeAccount | null {
+  get(runtime: CodingRuntimeId, name: string, now: number = Date.now()): RuntimeAccount | null {
+    this.recover(now);
     const r = this.db.prepare('SELECT * FROM runtime_accounts WHERE runtime = ? AND name = ?').get<Row>(runtime, name);
     return r ? toAccount(r) : null;
   }
@@ -188,6 +193,15 @@ export class RuntimeAccountStore {
                        WHEN limited_until IS NULL THEN ? ELSE MAX(limited_until, ?) END
                      WHERE runtime = ? AND name = ?`)
       .run(until, until, until, runtime, name);
+  }
+
+  /** Un-park an account: clear a 'limited' flag regardless of its reset time. Used when a definitive live
+   *  signal says the account is usable again — a Refresh probe that authenticates AND reports no exhausted
+   *  window — so a stale limit (e.g. an earlier burst/model-specific banner that parked it) doesn't survive
+   *  until its recorded reset. A no-op on an already-available account. */
+  clearLimit(runtime: CodingRuntimeId, name: string): void {
+    this.db.prepare("UPDATE runtime_accounts SET status = 'available', limited_until = NULL WHERE runtime = ? AND name = ? AND status = 'limited'")
+      .run(runtime, name);
   }
 
   /** Cache the outcome of a validation call (add-time / Refresh) — health + usage snapshot. Doesn't touch
