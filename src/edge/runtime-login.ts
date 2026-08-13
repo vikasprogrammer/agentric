@@ -34,6 +34,9 @@ const TTL_MS = 15 * 60_000;
 /** The runtime's own login is the only thing that writes the credential file, so polling for it IS the
  *  completion check. Between the code being typed and the file appearing there's a token exchange. */
 const EXCHANGE_GRACE_MS = 60_000;
+/** A freshly-printed authorize URL can be caught mid-render, its `state=` tail not yet on screen. That's
+ *  transient — keep polling for a whole URL and only give up if it stays incomplete past this window. */
+const URL_SETTLE_MS = 8_000;
 
 export type LoginPhase = 'starting' | 'awaiting-code' | 'exchanging' | 'done' | 'failed';
 
@@ -56,15 +59,47 @@ interface Login extends LoginState {
   /** Prompts already answered, so a poll can't press Enter twice on the same screen. */
   answered: Set<string>;
   codeAt?: number;
+  /** When we first saw an authorize URL that wasn't yet whole — lets us wait out a mid-render capture
+   *  before deciding the link is genuinely clipped. */
+  urlSeenAt?: number;
 }
 
-/** The authorize URL, as printed in the pane. The pane is spawned wide enough that the CLI prints it on
- *  ONE line (see `cols` at spawn) — a hard-wrapped URL cannot be reassembled reliably, so the width is
- *  the guarantee here, and `looksWhole` below refuses to show a URL that arrived clipped anyway. */
+/** The authorize URL, as printed in the pane. The pane is spawned wide enough (see `cols` at spawn) that
+ *  the CLI usually prints it on ONE line, and `capture-pane -J` rejoins a soft wrap. Two things still break
+ *  a single-line scrape: the CLI can render the URL inside a fixed-width box whose borders force real
+ *  newlines `-J` won't rejoin, and a poll can catch the line MID-RENDER before its `state=` tail has landed.
+ *  So `extractAuthorizeUrl` reassembles across rows and `looksWhole` still refuses to hand back a URL that
+ *  never completed — a clipped link is worse than none (the human authorizes a broken request and blames us). */
 const URL_RE = /https:\/\/[^\s]*oauth\/authorize\?[^\s]+/;
+const URL_START_RE = /https:\/\/[^\s]*oauth\/authorize\?/;
+/** URL-legal characters (RFC 3986 unreserved + the sub-delims OAuth query strings use). A row that is
+ *  NOTHING BUT these is a wrapped URL continuation; a row with a space or prose (the "Paste code" prompt)
+ *  is not, and ends the URL — so reassembly can never fuse the prompt into the query string. */
+const URL_FRAG_RE = /^[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/;
+/** Strip a boxed row's borders/padding (│ ┃ | leading markers, surrounding whitespace) before testing it. */
+const BOX_TRIM_RE = /^[\s│┃|>]+|[\s│┃|]+$/g;
 /** An OAuth authorize URL that lost its tail is worse than none: the human would authorize into a
  *  broken request and blame the product. Every provider's URL carries `state` last-ish, so require it. */
 const looksWhole = (u: string): boolean => /[?&]state=[^&\s]+/.test(u);
+
+/** Pull the authorize URL from a captured pane, reassembling it when the CLI wrapped it across rows (a
+ *  bordered box, or a hard wrap `capture-pane -J` left as real newlines). Take the URL-legal run after the
+ *  authorize marker, then append each following row that is purely a URL fragment, stopping the moment the
+ *  URL is whole or a row carries other text. Returns whatever we have — the caller's `looksWhole` decides
+ *  whether it's complete enough to show, so a still-partial reassembly is treated as "not ready yet". */
+export function extractAuthorizeUrl(pane: string): string | undefined {
+  const lines = pane.split('\n');
+  const start = lines.findIndex((l) => URL_START_RE.test(l));
+  if (start < 0) return undefined;
+  let url = lines[start].match(URL_RE)?.[0];
+  if (!url) return undefined;
+  for (let i = start + 1; i < lines.length && !looksWhole(url); i++) {
+    const frag = lines[i].replace(BOX_TRIM_RE, '');
+    if (!frag || !URL_FRAG_RE.test(frag)) break; // first non-fragment row ends the URL
+    url += frag;
+  }
+  return url;
+}
 /** Prompts the CLI shows before it gets to the browser step, each answered by accepting the highlighted
  *  default (theme → any; login method → "Claude account with subscription", which is what a pooled
  *  account must be). Matching on the question text, not on option numbering, which is likelier to shift. */
@@ -175,11 +210,20 @@ export class RuntimeLoginManager {
       }
     }
 
-    const url = pane.match(URL_RE)?.[0];
+    const url = extractAuthorizeUrl(pane);
     if (url && l.phase === 'starting') {
-      if (!looksWhole(url)) return toState(this.fail(l, 'the sign-in link came back incomplete from the runtime — start it again, or run the login on the box and add the dir by path'));
-      l.phase = 'awaiting-code';
-      l.url = url;
+      if (looksWhole(url)) {
+        l.phase = 'awaiting-code';
+        l.url = url;
+      } else {
+        // Caught mid-render: the URL's head printed before its `state=` tail landed. Keep polling for a
+        // whole one; only a URL that stays clipped past the settle window is genuinely broken. Failing on
+        // the first partial capture (as this did) turned a transient read into an unrecoverable login.
+        l.urlSeenAt ??= Date.now();
+        if (Date.now() - l.urlSeenAt > URL_SETTLE_MS) {
+          return toState(this.fail(l, 'the sign-in link came back incomplete from the runtime — start it again, or run the login on the box and add the dir by path'));
+        }
+      }
     }
     // The code was typed but no credential file yet: either the exchange is in flight, or the CLI is
     // sitting on an error we don't have a pattern for. Don't wait out the full TTL for the latter.
