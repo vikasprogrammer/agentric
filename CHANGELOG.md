@@ -8,6 +8,33 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.341.0] — 2026-08-13
+### Added
+- **The task hand-off chain is visible.** `parentId` — set whenever an agent spawns work out of work it
+  was already doing — reached the client and was rendered nowhere, so a board where ~40% of tasks have a
+  parent read as a flat pile of siblings. Three surfaces now show it: a **Group: Chain** lens on the list
+  view that nests each task under the one that started it (depth-first, siblings in the list's own sort
+  order); a **fan-out badge** on every row that spawned others, in *all* grouping modes; and a **Chain**
+  block in the task room with the ancestor breadcrumb ("spawned by") plus the tasks this one spawned.
+  A task whose parent is off the current board surfaces as a root rather than vanishing — narrowing the
+  board must never hide work.
+- `TaskStore.children()` + `children` on `GET /api/tasks/:id`. The room resolves subtasks server-side
+  because the board ships a bounded page: deriving them client-side under-counted a wide fan-out, and a
+  "spawned · 6" that is really 12 is worse than no number.
+- The list view's grouping choice is sticky (`aos_tasks_group`), like the view mode beside it.
+
+### Changed
+- **The sessions list gave two fixed columns to data that mostly isn't there, and the title paid.** On
+  instawp only 41% of sessions record a cost and 41% a duration (32% for task-spawned runs), so `Took`
+  and `Cost` were `—` on most rows while every session title truncated. `Agent` moved into the title
+  cell as a chip (it's short and low-variance, and the chain strip only ever named the *children*, so the
+  root's own agent was the one thing a chained row didn't say); `Took` merged into the metrics cell as
+  `2m · $0.14`. That returns ~11rem to the title at laptop widths. Sorting by agent is now the "All
+  agents" filter's job; duration sort folded into cost.
+- The chain strip in a session row is capped and clips on one line instead of wrapping — an uncapped
+  4-agent chain ate the title down to a few characters, and a wrapped strip made that one row twice as
+  tall as its neighbours.
+
 ## [0.340.0] — 2026-08-12
 ### Fixed
 - **A webhook fired at a busy agent silently lost the event.** `fireWebhook` spawned with
