@@ -2832,9 +2832,9 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
   // the session resurrectable, then bumping `nonce` remounts the terminal so it re-attaches and attach.sh
   // relaunches via `claude --resume` (same session id), picking up any newly-connected MCP server. Returns
   // the API result so the ImageDropZone chrome can toast success/failure.
-  const reload = async (): Promise<{ ok: boolean; error?: string }> => {
+  const reload = async (rotate = false): Promise<{ ok: boolean; error?: string; account?: string; note?: string }> => {
     if (!session?.id) return { ok: false, error: 'no session' }
-    const r = await api.reloadSession(session.id)
+    const r = await api.reloadSession(session.id, rotate)
     if (r.ok) { setTranscript(null); setNonce((n) => n + 1) }
     return r
   }
@@ -2955,8 +2955,9 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
   fontSize: number; setFontSize: (f: number | ((s: number) => number)) => void
   /** Lifecycle callbacks for the top-right "Operations" menu (absent → the menu is hidden). */
   ops?: SessionOps
-  /** Reload the agent process in place; resolves with the API result so we can toast it. */
-  onReload?: () => Promise<{ ok: boolean; error?: string }>
+  /** Reload the agent process in place; resolves with the API result so we can toast it. `rotate` asks
+   *  for it to come back on a different runtime account. */
+  onReload?: (rotate?: boolean) => Promise<{ ok: boolean; error?: string; account?: string; note?: string }>
   /** Distraction-free (full-viewport) state + toggle. Toggle absent → the button is hidden. */
   zen?: boolean
   onToggleZen?: () => void
@@ -3108,10 +3109,15 @@ function ImageDropZone({ session, attachable, children, onActivity, fontSize, se
           <OperationsMenu
             session={session}
             ops={ops}
-            onReload={async () => {
-              setToast({ kind: 'busy', text: 'reloading agent…' })
-              const r = await onReload()
-              setToast(r.ok ? { kind: 'ok', text: 'agent reloaded — MCP is reconnecting' } : { kind: 'err', text: r.error || 'reload failed' })
+            onReload={async (rotate) => {
+              setToast({ kind: 'busy', text: rotate ? 'switching account…' : 'reloading agent…' })
+              const r = await onReload(rotate)
+              if (!r.ok) { setToast({ kind: 'err', text: r.error || 'reload failed' }); return }
+              // Rotation is best-effort: the reload always happens, so say plainly which account it came
+              // back on — "reloaded" alone would read as success on a rotation that silently didn't move.
+              if (r.account) setToast({ kind: 'ok', text: `reloaded on account “${r.account}” — conversation carried over` })
+              else if (r.note) setToast({ kind: 'err', text: r.note })
+              else setToast({ kind: 'ok', text: 'agent reloaded — MCP is reconnecting' })
             }}
           />
         )}
@@ -3297,11 +3303,14 @@ type SessionOps = {
  *  for the session-lifecycle actions that were otherwise scattered across the tab strip / cards:
  *  - Reload — restart the agent process IN PLACE (kill + `claude --resume`, same session id), the way to
  *    pick up a newly-connected MCP server (they only spawn at claude launch). Resumable sessions only.
+ *  - Reload on another account — the same restart, but rotated onto a different runtime account, for a
+ *    run that hit its usage limit. The conversation is carried across; an ordinary Reload keeps the
+ *    account it already had (credentials bind at launch, so plain Reload replays the same one).
  *  - Transfer — hand the run-as to another member (owner/admin or the current owner; the "share" action).
  *  - Fork — branch a new session that inherits this conversation.
  *  - Stop / Delete — halt or remove the session.
  *  Each item mirrors the gating of its tab-strip/card counterpart. */
-function OperationsMenu({ session, ops, onReload }: { session: Session; ops: SessionOps; onReload: () => void }) {
+function OperationsMenu({ session, ops, onReload }: { session: Session; ops: SessionOps; onReload: (rotate?: boolean) => void }) {
   const { members, me, onOpen, onStop, onDelete, onTransfer, onActivity } = ops
   const canTransfer = me.role === 'owner' || me.role === 'admin' || session.runAs === me.id
   const transferTargets = canTransfer ? members.filter((m) => m.id !== session.runAs) : []
@@ -3328,11 +3337,20 @@ function OperationsMenu({ session, ops, onReload }: { session: Session; ops: Ses
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {session.resumable && (
-          <DropdownMenuItem className="gap-2 text-xs" onClick={onReload}>
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => onReload(false)}>
             <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />
             <span className="flex flex-col">
               <span>Reload</span>
               <span className="text-[10px] text-muted-foreground">restart the agent · picks up new MCP connections</span>
+            </span>
+          </DropdownMenuItem>
+        )}
+        {session.resumable && (
+          <DropdownMenuItem className="gap-2 text-xs" onClick={() => onReload(true)}>
+            <RefreshCw className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-500" />
+            <span className="flex flex-col">
+              <span>Reload on another account</span>
+              <span className="text-[10px] text-muted-foreground">hit a usage limit? restart on the next pooled account · keeps the conversation</span>
             </span>
           </DropdownMenuItem>
         )}

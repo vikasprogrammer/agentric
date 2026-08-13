@@ -8,6 +8,31 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.342.0] — 2026-08-13
+### Added
+- **Reload a session onto another runtime account.** A run that hits "You've hit your session limit ·
+  resets …" had no way back except starting over: credentials bind ONCE, at launch (`applyRuntimeAccount`
+  writes them into `session-<id>.env`, which `attach.sh` replays verbatim on every resurrect), so the
+  existing Reload always came back on the same exhausted account and rotation only ever happened on a
+  brand-new session. Operations → **"Reload on another account"** (`POST /api/sessions/:id/reload`
+  `{rotate:true}`) picks the next available pooled account, **carries the conversation across**, rewrites
+  the persisted launch env and comes back on the new login — same session, same `claude --resume`. The
+  conversation part is the load-bearing half: each pooled account is a whole `CLAUDE_CONFIG_DIR` with its
+  OWN `projects/`, so resuming under a different dir would otherwise hit "No conversation found with
+  session ID …". The transcript is COPIED (the old account keeps its history, and a rotation that can't be
+  completed changes nothing). Best-effort by design — with no second account free the session still
+  reloads, on the account it had, and the toast says why. Audited `runtime.account.rotated`.
+- `pick(runtime, now, { exclude })` on `RuntimeAccountStore` — the LRU order alone doesn't guarantee a
+  *different* account (with a pool of one it hands back the very account being rotated away from).
+
+### Fixed
+- **A session that ran under a pooled account read back as having no transcript.** The reader resolved
+  `projects/` from the SERVER's own environment only, but a rotated session writes under its account's
+  config dir — so the console's conversation view came up blank and `detectUsageLimit`'s transcript
+  fallback (the durable half of limit detection, added precisely for these runs) never found anything.
+  Pool credential dirs are now registered as transcript roots, refreshed before each read so an account
+  added after boot isn't invisible for the life of the process.
+
 ## [0.341.2] — 2026-08-13
 ### Fixed
 - **A task Discussion rendered agent messages as raw markdown.** Agents write markdown, but the Discussion

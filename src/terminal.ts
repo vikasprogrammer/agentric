@@ -41,7 +41,7 @@ import { readTranscriptEnd } from './edge/outcome';
 import { TERSE_OUTPUT_BRIEF } from './edge/verbosity';
 import { pendingBackgroundWork, BACKGROUND_GRACE_MS, UNATTENDED_TURN_BRIEF } from './edge/background-work';
 import { findCodexRollout, readCodexCost, readCodexConversation } from './edge/codex-transcript';
-import { readConversation, findTranscript, Conversation } from './edge/conversation';
+import { readConversation, findTranscript, registerTranscriptRoot, Conversation } from './edge/conversation';
 
 // Video render tuning: a submitted job renders async. The in-call path polls briefly for the fast case;
 // the tick poller finishes the rest, bounded by a TTL + a poll ceiling so a stuck render can't linger.
@@ -101,6 +101,7 @@ import { materializeSubagents } from './edge/subagents';
 import { guidanceStale } from './edge/dreaming';
 import { GithubIdentity } from './edge/github-identity';
 import { credentialDirHasLogin } from './edge/runtime-account-check';
+import type { RuntimeAccount } from './state/runtime-accounts';
 import { RuntimeLoginManager } from './edge/runtime-login';
 import { LauncherSessionBackend, LocalSessionBackend, SessionBackend, SpawnErrorSink } from './edge/session-backend';
 
@@ -874,6 +875,16 @@ export class TerminalManager {
       accounts: os.runtimeAccounts,
       audit: (type, data) => this.audit('-', 'system', type, data),
     });
+    this.refreshTranscriptRoots();
+  }
+
+  /** Teach the transcript reader where rotated sessions wrote their conversations. Without it the console's
+   *  conversation view (and the transcript fallback in `detectUsageLimit`) only ever sees the SERVER's own
+   *  `~/.claude/projects`, so every run made under a pooled account reads back as "no transcript". Called
+   *  again before each read rather than only at boot: a pool account added later would otherwise stay
+   *  invisible for the lifetime of the process. Cheap (one small query) and idempotent. */
+  private refreshTranscriptRoots(): void {
+    try { for (const dir of this.os.runtimeAccounts.configDirs()) registerTranscriptRoot(dir); } catch { /* pool is optional */ }
   }
 
   /** The launcher "space" (member-uid identity) a session runs in: the spawning member, or a shared
@@ -2466,6 +2477,7 @@ export class TerminalManager {
       const file = home ? findCodexRollout(home) : undefined;
       return file ? readCodexConversation(file) : { turns: [], found: false };
     }
+    this.refreshTranscriptRoots(); // an account added since boot writes somewhere the reader doesn't know yet
     return row.claude_session_id ? readConversation(row.claude_session_id) : { turns: [], found: false };
   }
 
@@ -3292,29 +3304,40 @@ export class TerminalManager {
         }
         return;
       }
-      const { configDirVar, apiKeyVar, tokenVar } = CODING_RUNTIMES[runtime].credentialEnv;
-      let varName: string | undefined;
-      if (acct.kind === 'oauth') {
-        // Require the credential FILE, not just the path: an empty/never-logged-in dir doesn't fall back to
-        // the box login, it drops the session onto the CLI's interactive login picker, where it hangs until
-        // the reaper. Falling through to the box default is the strictly better failure.
-        if (!acct.configDir || !credentialDirHasLogin(runtime, acct.configDir)) {
-          this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, kind: acct.kind, dir: acct.configDir ?? null, reason: 'no readable .credentials.json in the credential dir' });
-          return;
-        }
-        varName = configDirVar;
-        env[configDirVar] = acct.configDir;
-      } else {
-        // apikey | token: the value lives in the vault; the KIND picks which env var carries it (a usage-billed
-        // API key vs. a long-lived OAuth token). A runtime that has no tokenVar can't honour a token account.
-        varName = acct.kind === 'token' ? tokenVar : apiKeyVar;
-        const value = varName && acct.apiKeyRef ? this.os.secrets.getSync(this.os.tenant, agent, acct.apiKeyRef) : undefined;
-        if (!value) { this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, kind: acct.kind, ref: acct.apiKeyRef, var: varName ?? null }); return; }
-        env[varName!] = value;
-      }
+      const resolved = this.credentialEnvFor(acct, runtime, sessionId, agent);
+      if (!resolved) return;
+      Object.assign(env, resolved.vars);
       this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
-      this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind, via: varName });
+      this.audit(sessionId, agent, 'runtime.account.selected', { runtime, account: acct.name, kind: acct.kind, via: resolved.varName });
     } catch { /* rotation must never break a launch — fall through to the box default */ }
+  }
+
+  /** Turn a selected pool account into the env vars that authenticate a launch under it, or null when it
+   *  can't be resolved (audited). Shared by the launch path and the rotate-on-reload path so the two can
+   *  never disagree about which var carries which kind. */
+  private credentialEnvFor(acct: RuntimeAccount, runtime: CodingRuntimeId, sessionId: string, agent: string): { vars: Record<string, string>; varName: string } | null {
+    const { configDirVar, apiKeyVar, tokenVar } = CODING_RUNTIMES[runtime].credentialEnv;
+    if (acct.kind === 'oauth') {
+      // Require the credential FILE, not just the path: an empty/never-logged-in dir doesn't fall back to
+      // the box login, it drops the session onto the CLI's interactive login picker, where it hangs until
+      // the reaper. Falling through to the box default is the strictly better failure.
+      if (!acct.configDir || !credentialDirHasLogin(runtime, acct.configDir)) {
+        this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, kind: acct.kind, dir: acct.configDir ?? null, reason: 'no readable .credentials.json in the credential dir' });
+        return null;
+      }
+      // A dir we're about to run under is a dir whose `projects/` will hold this run's transcript.
+      registerTranscriptRoot(acct.configDir);
+      return { vars: { [configDirVar]: acct.configDir }, varName: configDirVar };
+    }
+    // apikey | token: the value lives in the vault; the KIND picks which env var carries it (a usage-billed
+    // API key vs. a long-lived OAuth token). A runtime that has no tokenVar can't honour a token account.
+    const varName = acct.kind === 'token' ? tokenVar : apiKeyVar;
+    const value = varName && acct.apiKeyRef ? this.os.secrets.getSync(this.os.tenant, agent, acct.apiKeyRef) : undefined;
+    if (!varName || !value) {
+      this.audit(sessionId, agent, 'runtime.account.unresolved', { runtime, account: acct.name, kind: acct.kind, ref: acct.apiKeyRef, var: varName ?? null });
+      return null;
+    }
+    return { vars: { [varName]: value }, varName };
   }
 
   /** Snapshot a live pane's scrollback to `<connectors>/session-<id>.log` (0600) so the console's
@@ -6555,8 +6578,13 @@ export class TerminalManager {
    * crash-detector (a gone tmux on a 'running' row) from mislabelling the restart. Pending questions/
    * approvals are cancelled — the process is going away and can't answer them. Only a claude-code session
    * with a persisted launch env (resurrectable) can be reloaded. Caller applies the per-member gate.
+   *
+   * `rotate` additionally moves the session onto ANOTHER pool account before it comes back — the answer to
+   * "this run hit its usage limit, put it on a different login without losing the conversation". Rotation
+   * is best-effort and never blocks the reload: if there's no second account free, the session reloads on
+   * the one it already had and the caller is told why (`note`).
    */
-  reloadSession(sessionId: string, by: string): { ok: boolean; error?: string } {
+  reloadSession(sessionId: string, by: string, opts?: { rotate?: boolean }): { ok: boolean; error?: string; account?: string; note?: string } {
     const r = this.db.prepare('SELECT agent, tmux, status, spawned_by, run_as FROM term_sessions WHERE id = ?').get<{ agent: string; tmux: string; status: string; spawned_by: string | null; run_as: string | null }>(sessionId);
     if (!r) return { ok: false, error: 'unknown session' };
     // Reload only works for a resurrectable session — one whose persisted launch env attach.sh can
@@ -6564,6 +6592,9 @@ export class TerminalManager {
     if (!this.os.paths || !fs.existsSync(path.join(this.os.paths.connectors, `session-${sessionId}.env`))) {
       return { ok: false, error: 'this session cannot be reloaded (no resumable conversation)' };
     }
+    // Rotate BEFORE killing the pane: the rewrite must be on disk by the time attach.sh sources the env
+    // file, and a failure here should leave a live session untouched rather than a dead one un-rotated.
+    const rotation = opts?.rotate ? this.rotateSessionAccount(sessionId, r.agent, by) : undefined;
     const space = this.spaceFor(r.run_as ?? r.spawned_by);
     this.captureTranscript(sessionId, space, r.tmux);
     this.backend.kill(space, r.tmux);
@@ -6576,8 +6607,103 @@ export class TerminalManager {
     // Deliberate restart — the OPPOSITE of stopSession: clear any stale stop-marker so attach.sh
     // resurrects (`claude --resume`) the moment the terminal reconnects.
     this.allowResume(sessionId);
-    this.audit(sessionId, by, 'session.reloaded', { tmux: r.tmux });
-    return { ok: true };
+    this.audit(sessionId, by, 'session.reloaded', { tmux: r.tmux, ...(rotation?.account ? { account: rotation.account } : {}) });
+    return { ok: true, ...(rotation?.account ? { account: rotation.account } : {}), ...(rotation?.note ? { note: rotation.note } : {}) };
+  }
+
+  /**
+   * Move a resumable session onto a different runtime-account before it is resurrected: pick another
+   * available account, carry its conversation across, and rewrite the persisted launch env so
+   * `attach.sh` → `claude --resume` comes up authenticated as the new one.
+   *
+   * The conversation is the hard part. Credentials for a pooled account are a whole CONFIG DIR, and claude
+   * writes its transcripts under `$CLAUDE_CONFIG_DIR/projects/`, so each account has its own private set.
+   * Point a resume at a different dir and claude reports "No conversation found with session ID …" — the
+   * rotation would silently cost the user their context. So the transcript is COPIED into the target dir
+   * first (copied, not moved: the old account's history stays intact, and a half-finished rotation leaves
+   * the session exactly as it was).
+   *
+   * Never throws — a rotation that can't be completed degrades to an ordinary reload on the current
+   * account, with the reason returned for the caller to surface.
+   */
+  private rotateSessionAccount(sessionId: string, agent: string, by: string): { account?: string; note?: string } {
+    try {
+      const row = this.db.prepare('SELECT runtime_account, claude_session_id FROM term_sessions WHERE id = ?')
+        .get<{ runtime_account: string | null; claude_session_id: string | null }>(sessionId);
+      if (!row) return { note: 'unknown session' };
+      const manifest = this.os.agents.get(agent);
+      const runtime: CodingRuntimeId = isCodingRuntime(manifest?.runtime) ? manifest!.runtime : 'claude-code';
+      if (this.os.runtimeAccounts.enabledCount(runtime) === 0) return { note: 'no runtime-account pool configured — reloaded on the box default' };
+      // Same narrowing a resident session gets: a reloaded session is long-lived by definition, and a
+      // static `token` carries no refresh token into the process, so it would hit /login mid-conversation.
+      const acct = this.os.runtimeAccounts.pick(runtime, Date.now(), { kinds: ['oauth', 'apikey'], exclude: row.runtime_account ?? undefined });
+      if (!acct) {
+        const all = this.os.runtimeAccounts.allLimited(runtime);
+        return { note: all.limited ? 'every other account is at its limit — reloaded on the current one' : 'no other account available — reloaded on the current one' };
+      }
+      const resolved = this.credentialEnvFor(acct, runtime, sessionId, agent);
+      if (!resolved) return { note: `could not authenticate as ${acct.name} — reloaded on the current one` };
+      // Carry the conversation across. Only meaningful for a credential-DIR account (an api-key account
+      // shares the box's dir, so the transcript is already where the resume will look). The transcript we
+      // are about to copy lives under the CURRENT account's dir — make sure the reader knows about it, or
+      // an account added since boot looks like a session with nothing to resume.
+      this.refreshTranscriptRoots();
+      if (acct.kind === 'oauth' && acct.configDir && row.claude_session_id) {
+        const moved = this.copyTranscriptInto(row.claude_session_id, acct.configDir);
+        if (!moved) return { note: `could not carry the conversation to ${acct.name} — reloaded on the current one` };
+      }
+      if (!this.rewriteLaunchEnv(sessionId, runtime, resolved.vars)) return { note: `could not update the launch env — reloaded on the current one` };
+      this.db.prepare('UPDATE term_sessions SET runtime_account = ? WHERE id = ?').run(acct.name, sessionId);
+      this.audit(sessionId, by, 'runtime.account.rotated', { runtime, from: row.runtime_account, to: acct.name, kind: acct.kind, via: resolved.varName });
+      return { account: acct.name };
+    } catch {
+      return { note: 'rotation failed — reloaded on the current account' };
+    }
+  }
+
+  /** Copy a claude transcript into `<configDir>/projects/<same project dir>/` so a resume under that
+   *  account finds the conversation. Returns false when the source can't be located (nothing to resume
+   *  from — better to abort the rotation than to strand the user on an empty session). Already-there is a
+   *  success: re-rotating onto the same dir must be a no-op, not an error. */
+  private copyTranscriptInto(claudeSessionId: string, configDir: string): boolean {
+    try {
+      const src = findTranscript(claudeSessionId);
+      if (!src) return false;
+      const projectDir = path.basename(path.dirname(src));
+      const destDir = path.join(configDir, 'projects', projectDir);
+      const dest = path.join(destDir, `${claudeSessionId}.jsonl`);
+      if (path.resolve(src) === path.resolve(dest)) return true;
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.copyFileSync(src, dest);
+      registerTranscriptRoot(configDir);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Rewrite the persisted `session-<id>.env` so a resurrect authenticates with `vars`. Every credential
+   *  var this runtime knows is stripped first — rotating from an api-key account to a credential dir must
+   *  not leave the old key behind for the CLI to prefer. */
+  private rewriteLaunchEnv(sessionId: string, runtime: CodingRuntimeId, vars: Record<string, string>): boolean {
+    if (!this.os.paths) return false;
+    try {
+      const file = path.join(this.os.paths.connectors, `session-${sessionId}.env`);
+      const { configDirVar, apiKeyVar, tokenVar } = CODING_RUNTIMES[runtime].credentialEnv;
+      const credVars = new Set([configDirVar, apiKeyVar, tokenVar].filter(Boolean) as string[]);
+      const kept = fs.readFileSync(file, 'utf8')
+        .split('\n')
+        .filter((line) => {
+          const m = /^export ([A-Za-z_][A-Za-z0-9_]*)=/.exec(line);
+          return !(m && credVars.has(m[1]));
+        })
+        .filter((line) => line.trim() !== '');
+      const body = [...kept, ...Object.entries(vars).map(([k, v]) => `export ${k}=${shSingleQuote(v)}`)].join('\n') + '\n';
+      this.writeSecret(file, body);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
