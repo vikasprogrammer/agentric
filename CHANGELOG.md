@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.350.0] — 2026-08-14
+### Added
+- **The feed folds in the `messages` notification class, and the Goals lens is the default.** Two changes
+  to the activity feed (v0.348/0.349):
+  - **Notifications/updates now appear in the stream.** A fourth `UNION` branch in `FeedStore` folds the
+    surviving `messages` cards — `update` (an agent's progress note), `notification` (a session-less
+    `notify`/system card), `task` (a Tasks notification) and `artifact` (a published deliverable) — into
+    the feed under a new `state='info'` (an ambient event, neither a decision nor running/done). It
+    deliberately excludes `approval`/`question` (their own branches) and `completed` (it duplicates the
+    session's `done` line), and drops dismissed cards. Visibility reproduces `TerminalManager.canViewMsg`
+    exactly in SQL — the branch projects a `member`-audience target (`aud_member`) and the non-admin scope
+    ORs it with the session's `run_as`/`spawned_by`, so a card is visible to its addressed member OR the
+    session's human, owner/admin see all. So the old inbox is no longer a separate read surface — the one
+    stream carries it. `scripts/feed-smoke.cjs` gains coverage for the fold + the audience scope.
+  - **Goals is now the default lens, collapsed.** Opening the Feed shows the outcome-first view with every
+    goal section collapsed (a clean overview — title, progress, count), plus a one-click **Expand all /
+    Collapse all** toggle. The Feed (by-time) lens and its filters are one click away.
+  See `docs/feed-plan.md`.
+
 ## [0.349.0] — 2026-08-14
 ### Added
 - **The Feed page — the console surface for the unified activity stream (v0.348.0 backend).** A new
