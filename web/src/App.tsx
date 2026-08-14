@@ -12209,6 +12209,9 @@ function SkillsPage() {
   // human publishes them — surface them in their own review section, keep the Library to live skills.
   const proposed = resp.skills.filter((s) => s.proposed)
   const published = resp.skills.filter((s) => !s.proposed)
+  // Agent-proposed EDITS to skills that are already live — parked until applied here, so the running
+  // fleet keeps the current text meanwhile.
+  const edited = resp.skills.filter((s) => s.pending && !s.proposed)
 
   return (
     <div className="max-w-6xl space-y-6">
@@ -12252,6 +12255,21 @@ function SkillsPage() {
           </p>
           <div className="space-y-2">
             {proposed.map((s) => <ProposedSkillCard key={s.name} s={s} onChanged={load} />)}
+          </div>
+        </section>
+      )}
+
+      {edited.length > 0 && (
+        <section className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/40 p-3">
+          <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-amber-700">
+            <Sparkles className="h-3.5 w-3.5" />Edits proposed by agents · {edited.length}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            An agent proposed a rewrite of a skill that is already live (via <span className="font-mono">skill_propose</span> on an existing name).
+            The <span className="font-medium text-foreground">live skill is unchanged</span> — review the proposed text against the current one, then Apply or Discard.
+          </p>
+          <div className="space-y-2">
+            {edited.map((s) => <ProposedSkillEditCard key={s.name} s={s} onChanged={load} />)}
           </div>
         </section>
       )}
@@ -12877,6 +12895,100 @@ function ProposedSkillCard({ s, onChanged }: { s: SkillSummary; onChanged: () =>
   )
 }
 
+/** An agent-proposed EDIT to a skill that is already live (`skill_propose` on an existing name). The
+ *  proposed text is parked outside the library, so the fleet keeps running the current version until
+ *  Apply overwrites SKILL.md; Discard drops the proposal untouched. The reviewer can tweak the proposed
+ *  text before applying (the tweak is saved straight after, so what ships is what's on screen). */
+function ProposedSkillEditCard({ s, onChanged }: { s: SkillSummary; onChanged: () => void }) {
+  const [reviewing, setReviewing] = useState(false)
+  const [current, setCurrent] = useState('')
+  const [draft, setDraft] = useState('')
+  const [proposed, setProposed] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [hint, setHint] = useState('')
+
+  const open = async () => {
+    setReviewing(true); setHint('')
+    const r = await api.skill(s.name)
+    if (r.error) return setHint('⚠ ' + r.error)
+    setCurrent(r.content ?? '')
+    setProposed(r.pendingContent ?? '')
+    setDraft(r.pendingContent ?? '')
+  }
+  const apply = async () => {
+    setBusy(true); setHint('')
+    const r = await api.applySkillEdit(s.name)
+    if (!r.ok || r.error) { setBusy(false); return setHint('⚠ ' + (r.error || 'failed')) }
+    // The reviewer edited the proposed text in place — save that over what was just applied.
+    if (draft && proposed && draft !== proposed) {
+      const w = await api.saveSkill(s.name, draft)
+      if (!w.ok || w.error) { setBusy(false); return setHint('⚠ applied, but saving your tweak failed: ' + (w.error || 'failed')) }
+    }
+    setBusy(false); onChanged()
+  }
+  const discard = async () => {
+    if (!confirm(`Discard the proposed edit to "${s.name}"? The live skill stays as it is.`)) return
+    setBusy(true); setHint('')
+    const r = await api.discardSkillEdit(s.name)
+    setBusy(false)
+    if (!r.ok || r.error) return setHint('⚠ ' + (r.error || 'failed'))
+    onChanged()
+  }
+  const delta = s.pending ? s.pending.bytes - s.bytes : 0
+
+  return (
+    <Card className="border-amber-200">
+      <CardContent className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <button className="min-w-0 text-left" onClick={reviewing ? () => setReviewing(false) : open}>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-sm font-medium">{s.name}</span>
+              <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700">edit proposed</Badge>
+              <span className="text-[10px] text-muted-foreground" title="size of the proposed SKILL.md vs the live one">
+                {s.bytes} → {s.pending?.bytes ?? 0} B ({delta >= 0 ? '+' : ''}{delta})
+              </span>
+            </div>
+            <div className="mt-1 text-sm text-muted-foreground">{s.description || <span className="italic">no description</span>}</div>
+            {s.pending && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                {s.pending.agent ? <>by <span className="font-mono">{s.pending.agent}</span></> : 'by an agent'}
+                {s.pending.at ? ` · ${timeAgo(s.pending.at)}` : ''}
+                {s.pending.rationale ? <> · <span className="italic">“{s.pending.rationale}”</span></> : null}
+              </div>
+            )}
+          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button size="sm" variant="outline" disabled={busy} onClick={reviewing ? () => setReviewing(false) : open}>
+              <Pencil className="mr-1 h-3.5 w-3.5" />Review
+            </Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="discard the proposed edit" disabled={busy} onClick={discard}><Trash2 className="h-3.5 w-3.5" /></Button>
+          </div>
+        </div>
+        {reviewing && (
+          <div className="mt-3 space-y-2">
+            <div className="grid gap-2 lg:grid-cols-2">
+              <div className="space-y-1">
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">Live now</div>
+                <Textarea value={current} readOnly className="min-h-[320px] bg-muted/40 font-mono text-xs leading-relaxed" />
+              </div>
+              <div className="space-y-1">
+                <div className="text-[11px] uppercase tracking-wider text-amber-700">Proposed{draft !== proposed ? ' · edited by you' : ''}</div>
+                <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} className="min-h-[320px] font-mono text-xs leading-relaxed" />
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={apply} disabled={busy}><Check className="mr-1 h-3.5 w-3.5" />Apply to the live skill</Button>
+              <Button size="sm" variant="ghost" onClick={() => setReviewing(false)}>Close</Button>
+              {hint && <span className="font-mono text-xs text-muted-foreground">{hint}</span>}
+            </div>
+          </div>
+        )}
+        {!reviewing && hint && <div className="mt-1 font-mono text-xs text-destructive">{hint}</div>}
+      </CardContent>
+    </Card>
+  )
+}
+
 function SkillCard({ s, agents, onChanged }: { s: SkillSummary; agents: string[]; onChanged: () => void }) {
   const [editing, setEditing] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -12944,6 +13056,12 @@ function SkillCard({ s, agents, onChanged }: { s: SkillSummary; agents: string[]
               <Badge variant="outline" className="px-1.5 py-0 text-[10px] font-normal" title={s.agents.length ? s.agents.join(', ') : 'every claude-code agent'}>
                 {s.agents.length === 0 ? 'All agents' : s.agents.length === 1 ? s.agents[0] : `${s.agents.length} agents`}
               </Badge>
+              {s.pending && (
+                <Badge variant="outline" className="border-amber-300 px-1.5 py-0 text-[10px] font-normal text-amber-700"
+                  title={`${s.pending.agent ?? 'an agent'} proposed a rewrite — review it above. This live version is unchanged.`}>
+                  edit proposed
+                </Badge>
+              )}
             </div>
             <div className="mt-1 text-sm text-muted-foreground">
               {s.description ? (() => {

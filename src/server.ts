@@ -1205,9 +1205,23 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const out = tm.publishArtifact(session, { path: filePath, title: String(b.title || ''), description: b.description ? String(b.description) : undefined, folder: b.folder ? String(b.folder) : undefined });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
-  // agent proposes a new skill (Lever 6 — procedural memory). Drafts a NOT-YET-PUBLISHED skill in the
-  // library (`materialize()` skips it) and posts a 'skill.proposed' inbox card for an owner/admin to
-  // review + publish. Pre-auth loopback like the other agent tools; gated by the session secret.
+  // agent reads a library skill's full SKILL.md (`skill_get`) — the read counterpart to proposing an
+  // edit, so a revision starts from the real text instead of a rewrite from memory (the same clobber
+  // lesson as `agent_get`). Read-only; pre-auth loopback, session-secret gated.
+  // (Under /api/agent/… on purpose: /api/skills/<x> is the console's per-skill route, and a loopback
+  // sibling there would shadow a skill that happened to be named "read".)
+  if (method === 'GET' && p === '/api/agent/skill/read') {
+    const session = String(url.searchParams.get('session') || '');
+    const agent = tm.sessionAgent(session);
+    if (!agent) return sendJson(res, 404, { error: 'unknown session' });
+    if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
+    const out = tm.readSkill(agent, String(url.searchParams.get('name') || ''));
+    return sendJson(res, out.ok ? 200 : 404, out);
+  }
+  // agent proposes a skill (Lever 6 — procedural memory). A NEW name drafts a NOT-YET-PUBLISHED skill in
+  // the library (`materialize()` skips it); an EXISTING name proposes an EDIT, parked beside the library
+  // with the live skill untouched. Either way a 'skill.proposed' inbox card asks an owner/admin to
+  // review + publish/apply. Pre-auth loopback like the other agent tools; gated by the session secret.
   if (method === 'POST' && p === '/api/skills/propose') {
     const b = await readBody(req);
     const session = String(b.session || '');
@@ -1217,7 +1231,8 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const name = String(b.name || '').trim();
     const description = String(b.description || '').trim();
     const body = String(b.body || '').trim();
-    if (!name || !description || !body) return sendJson(res, 400, { error: 'name, description, and body are required' });
+    if (!name || !body) return sendJson(res, 400, { error: 'name and body are required' });
+    if (!description && !os.skills.get(name.toLowerCase())) return sendJson(res, 400, { error: 'description is required for a new skill' });
     const out = tm.proposeSkill(session, agent, { name, description, body, rationale: b.rationale ? String(b.rationale) : undefined });
     return sendJson(res, out.ok ? 200 : 400, out);
   }
@@ -5117,6 +5132,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const reloaded = proposer ? tm.refreshAgentSkills(proposer).reloaded : 0;
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.published', data: { skill: name, reloaded } });
     return sendJson(res, 200, { ok: true, skill: os.skills.get(name), reloaded });
+  }
+  // Apply an agent-proposed EDIT to an existing skill (owner/admin): the parked text becomes the live
+  // SKILL.md. Until this runs the skill in every agent is untouched — that gate is the whole point of
+  // parking the edit outside the skill folder. Same-session delivery mirrors publish.
+  const skillEditApply = p.match(/^\/api\/skills\/([\w.-]+)\/edit\/apply$/);
+  if (method === 'POST' && skillEditApply) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = skillEditApply[1];
+    const applied = os.skills.applyEdit(name);
+    if (!applied) return sendJson(res, 404, { error: 'no pending edit for this skill' });
+    const reloaded = applied.agent ? tm.refreshAgentSkills(applied.agent).reloaded : 0;
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.applied', data: { skill: name, proposedBy: applied.agent, reloaded } });
+    return sendJson(res, 200, { ok: true, skill: os.skills.get(name), reloaded });
+  }
+  // Discard an agent-proposed edit (owner/admin) — drops the parked text, live skill untouched.
+  const skillEditDrop = p.match(/^\/api\/skills\/([\w.-]+)\/edit\/discard$/);
+  if (method === 'POST' && skillEditDrop) {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const name = skillEditDrop[1];
+    const proposer = os.skills.pendingEdit(name)?.agent;
+    if (!os.skills.discardEdit(name)) return sendJson(res, 404, { error: 'no pending edit for this skill' });
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'skill.edit.dismissed', data: { skill: name, proposedBy: proposer } });
+    return sendJson(res, 200, { ok: true });
   }
   // List open agent skill-requests for the Skills page review section (owner/admin).
   if (method === 'GET' && p === '/api/skills/requests') {
