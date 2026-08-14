@@ -1097,9 +1097,13 @@ export interface SkillSummary {
   proposed: boolean
   /** Provenance of a proposal (present only when `proposed`). */
   proposal?: { agent?: string; session?: string; rationale?: string; at: number }
+  /** An agent-proposed EDIT awaiting review. The live skill is unchanged until it's applied. */
+  pending?: { agent?: string; session?: string; rationale?: string; at: number; bytes: number }
 }
 export interface SkillDetail extends SkillSummary {
   content: string
+  /** The proposed replacement text of a pending edit (present only when `pending` is). */
+  pendingContent?: string
 }
 export interface SkillsResp {
   enabled: boolean
@@ -1919,6 +1923,12 @@ export const api = {
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/' + encodeURIComponent(name) + '/publish'),
   setSkillAgents: (name: string, agents: string[]) =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('PUT', '/api/skills/' + encodeURIComponent(name) + '/agents', { agents }),
+  /** Apply an agent-proposed edit — the parked text overwrites the live SKILL.md (owner/admin). */
+  applySkillEdit: (name: string) =>
+    call<{ ok: boolean; skill?: SkillDetail; reloaded?: number; error?: string }>('POST', '/api/skills/' + encodeURIComponent(name) + '/edit/apply'),
+  /** Discard an agent-proposed edit — the live skill is untouched (owner/admin). */
+  discardSkillEdit: (name: string) =>
+    call<{ ok: boolean; error?: string }>('POST', '/api/skills/' + encodeURIComponent(name) + '/edit/discard'),
   skillRequests: () => call<SkillRequestsResp>('GET', '/api/skills/requests'),
   approveSkillRequest: (id: string, scope?: 'agent' | 'all') =>
     call<{ ok: boolean; skill?: SkillDetail; error?: string }>('POST', '/api/skills/requests/' + encodeURIComponent(id) + '/approve', scope ? { scope } : {}),

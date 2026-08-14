@@ -5250,12 +5250,33 @@ export class TerminalManager {
     }
   }
 
-  /** Agent proposes a new skill (Lever 6 — the fleet drafting its own procedural memory). Drafts a
-   *  `.aos-proposed` skill in the library (never materialised until a human publishes it), posts a
-   *  'skill.proposed' card to the Inbox so owner/admins see it, and audits `skill.proposed`. Returns
-   *  a structured result (name collisions/bad names come back as `ok:false` for the agent to see). */
-  proposeSkill(sessionId: string, agent: string, input: { name: string; description: string; body: string; rationale?: string }): { ok: boolean; skill?: string; error?: string } {
+  /** Agent proposes a skill (Lever 6 — the fleet drafting its own procedural memory). Two lanes on one
+   *  tool, chosen by whether the name is already in the library:
+   *   • NEW name → drafts a `.aos-proposed` skill (never materialised until a human publishes it).
+   *   • EXISTING name → proposes an EDIT: parked next to the library, the live skill untouched, until an
+   *     owner/admin applies it. (Refining your own unpublished draft rewrites it in place — nothing is
+   *     live, so there's nothing to gate.)
+   *  Either way a 'skill.proposed' card lands in the Inbox and the act is audited. Returns a structured
+   *  result including the human-facing `message` (composed HERE, not in the MCP process, which outlives
+   *  a server upgrade) — bad names / a teammate's un-reviewed edit come back as `ok:false`. */
+  proposeSkill(sessionId: string, agent: string, input: { name: string; description: string; body: string; rationale?: string }): { ok: boolean; skill?: string; mode?: 'new' | 'edit' | 'draft'; message?: string; error?: string } {
+    const exists = !!this.os.skills.get((input.name || '').trim().toLowerCase());
     try {
+      if (exists) {
+        const { applied, skill } = this.os.skills.proposeEdit({ name: input.name, description: input.description, body: input.body, rationale: input.rationale, agent, session: sessionId });
+        if (applied) {
+          this.audit(sessionId, agent, 'skill.draft.updated', { name: skill.name, rationale: input.rationale });
+          return { ok: true, skill: skill.name, mode: 'draft', message: `Updated your unpublished draft "${skill.name}". It is still NOT active — an owner/admin has to publish it before any agent can use it.` };
+        }
+        this.postReviewCard({
+          type: 'skill.proposed', sessionId, agent,
+          title: `Skill edit proposed — ${skill.name}`,
+          body: (input.rationale || input.description || `${agent} proposes an update to the "${skill.name}" skill.`).trim(),
+          args: { skill: skill.name, edit: true, ...(input.rationale ? { rationale: input.rationale } : {}) },
+        });
+        this.audit(sessionId, agent, 'skill.edit.proposed', { name: skill.name, rationale: input.rationale });
+        return { ok: true, skill: skill.name, mode: 'edit', message: `Proposed an EDIT to the existing skill "${skill.name}". The live skill is UNCHANGED — your version is parked in the inbox for an owner/admin to review and apply.` };
+      }
       const s = this.os.skills.propose({ name: input.name, description: input.description, body: input.body, rationale: input.rationale, agent, session: sessionId });
       this.postReviewCard({
         type: 'skill.proposed', sessionId, agent,
@@ -5264,10 +5285,29 @@ export class TerminalManager {
         args: { skill: s.name, ...(input.rationale ? { rationale: input.rationale } : {}) },
       });
       this.audit(sessionId, agent, 'skill.proposed', { name: s.name, description: s.description, rationale: input.rationale });
-      return { ok: true, skill: s.name };
+      return { ok: true, skill: s.name, mode: 'new', message: `Proposed skill "${s.name}" — a draft in the inbox for an owner/admin to review and publish. It won't be active until then.` };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }
+  }
+
+  /** The full text of a library skill, for the `skill_get` tool — what an agent reads BEFORE proposing an
+   *  edit, so it revises the real thing instead of rewriting from memory. Returns the live SKILL.md plus
+   *  whether an edit is already parked (proposing over a teammate's un-reviewed one is refused). */
+  readSkill(agent: string, name: string): { ok: boolean; skill?: { name: string; description: string; content: string; active: boolean; proposed: boolean; pending?: { agent?: string; at: number } }; error?: string } {
+    const s = this.os.skills.get((name || '').trim().toLowerCase());
+    if (!s) return { ok: false, error: `no skill named "${name}" — list what exists with skill_find` };
+    return {
+      ok: true,
+      skill: {
+        name: s.name,
+        description: s.description,
+        content: s.content,
+        active: !s.proposed && (s.agents.length === 0 || s.agents.includes(agent)),
+        proposed: s.proposed,
+        ...(s.pending ? { pending: { agent: s.pending.agent, at: s.pending.at } } : {}),
+      },
+    };
   }
 
   /** An agent proposes a Host connection (`host_propose`). Drafts an inactive, credential-less org host

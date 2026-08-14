@@ -268,7 +268,7 @@ Key modules:
   `mirror.ts` (`MirroredMemoryProvider`) which copies every write into that table — recall goes to the
   upgraded store, the self-learning loop keeps working. The `sqlite` backend IS the table (no wrap).
   Backend + ranking + maintenance (prune/dedupe) + **shared `scope` (agent | tenant)** are all config in
-  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 60 always-on tools
+  **Settings → Memory**, hot-swapped live. `memory-mcp.ts` = the OS-owned stdio MCP server injected into every session — 61 always-on tools
   + 11 conditional (chat-reply / egress / media, each exposed only when its env flag is set; full list
   in `docs/agent-mcp-tools.md`). Memory: `recall`/`remember`/`revise`/`forget` (recall returns each memory's id, the
   handle for revise/forget). Episodic self-query (the run-history companion to semantic memory):
@@ -281,7 +281,15 @@ Key modules:
   Inbox default `mine` view isn't flooded; `notify({to,message})` is the escape hatch to loop in ONE
   named teammate, and owner/admin flip to `?scope=all` for oversight). Skills: `skill_propose` (draft a
   reusable playbook — Lever 6 procedural memory; lands as a NOT-YET-PUBLISHED `.aos-proposed` skill +
-  a `skill.proposed` inbox card, gated behind an owner/admin publish), plus `skill_find` (discover the
+  a `skill.proposed` inbox card, gated behind an owner/admin publish. It is **create-or-update**: an
+  EXISTING name proposes an EDIT instead of erroring — the replacement text parks in
+  `<home>/skills/.proposed-edits/<name>.json`, deliberately OUTSIDE the skill folder because
+  `copySkill` ships a skill's whole folder to every agent, so the LIVE skill is untouched until an
+  owner/admin applies it (`POST /api/skills/:name/edit/apply`, `…/edit/discard`). One pending edit per
+  skill — the same agent replaces its own, a different agent is refused rather than clobbering an
+  un-reviewed draft; refining your OWN unpublished draft rewrites in place, since nothing is live to
+  gate. The body REPLACES the whole SKILL.md, so `skill_get` reads the current text first — the same
+  clobber lesson as `agent_get`), plus `skill_find` (discover the
   installed library + bundled catalog, and — with a `query` — matching community skills from the skills.sh
   directory) / `skill_request` (ASK an owner/admin to install a skill — never self-installs; `source`
   omitted ⇒ bundled catalog, `source:'owner/repo'` ⇒ a remote GitHub repo resolved at request time; posts a

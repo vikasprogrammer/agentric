@@ -583,23 +583,43 @@ const TOOLS = [
     name: 'skill_propose',
     description:
       'Propose a reusable SKILL for the whole workspace — a self-contained, multi-step playbook a ' +
-      'teammate (human or agent) could follow verbatim. Use this when you have just worked out HOW to ' +
-      'do something repeatable and non-obvious (a procedure, a checklist, a recipe), not a one-off fix ' +
-      "and not a plain fact (use `report` lessons / `remember` for facts). Check first that a similar " +
-      "skill doesn't already exist. Your proposal is a DRAFT: it is NOT active and no agent can use it " +
-      'until a human reviews and publishes it — an inbox card notifies the owner/admins. Pass a short ' +
-      '`name` (lowercase-hyphen), a one-line `description` (what it does + when to use it — this is what ' +
-      'agents match on), the full Markdown `body` (the steps), and optionally a `rationale` for the reviewer.',
+      'teammate (human or agent) could follow verbatim — or propose an UPDATE to a skill that already ' +
+      'exists. Use this when you have just worked out HOW to do something repeatable and non-obvious (a ' +
+      'procedure, a checklist, a recipe), not a one-off fix and not a plain fact (use `report` lessons / ' +
+      '`remember` for facts). A NEW `name` drafts a new skill; an EXISTING `name` proposes an edit to it — ' +
+      "read the current text with `skill_get` first and send the WHOLE revised body, since it REPLACES the " +
+      'skill (a fragment would delete the rest). Either way nothing changes until a human decides: a new ' +
+      'skill is inactive until published, and a proposed edit leaves the LIVE skill untouched until an ' +
+      'owner/admin applies it. An inbox card notifies them. Pass a short `name` (lowercase-hyphen), a ' +
+      'one-line `description` (what it does + when to use it — this is what agents match on; keep the ' +
+      "existing one when editing unless it's wrong), the full Markdown `body` (the steps), and optionally " +
+      'a `rationale` for the reviewer.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        name: { type: 'string', description: 'Skill id: lowercase letters, digits and hyphens (2–40 chars, starts with a letter). Becomes the /command name.' },
-        description: { type: 'string', description: 'One line: what the skill does and when to use it. This is what Claude matches on to auto-invoke it.' },
-        body: { type: 'string', description: 'The full SKILL.md body in Markdown — the concrete, self-contained steps. Frontmatter optional (a name/description header is added if absent).' },
-        rationale: { type: 'string', description: 'Optional note to the reviewer: why this is worth a skill / where it came from.' },
+        name: { type: 'string', description: 'Skill id: lowercase letters, digits and hyphens (2–40 chars, starts with a letter). Becomes the /command name. An existing id proposes an EDIT to that skill.' },
+        description: { type: 'string', description: 'One line: what the skill does and when to use it. This is what Claude matches on to auto-invoke it. Optional when editing (the current one is kept).' },
+        body: { type: 'string', description: 'The full SKILL.md body in Markdown — the concrete, self-contained steps. When editing, this REPLACES the whole body, so send the complete revised text. Frontmatter optional (a name/description header is added if absent).' },
+        rationale: { type: 'string', description: 'Optional note to the reviewer: why this is worth a skill / what changed and why.' },
       },
-      required: ['name', 'description', 'body'],
+      required: ['name', 'body'],
+    },
+  },
+  {
+    name: 'skill_get',
+    description:
+      "Read a workspace skill's full text (its SKILL.md), by id. Use it before `skill_propose` on an " +
+      'existing skill: an edit REPLACES the whole body, so revise the real text rather than rewriting ' +
+      'from memory. Also tells you whether the skill is active for you and whether an edit is already ' +
+      'awaiting review. `skill_find` lists what exists.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        name: { type: 'string', description: 'The skill id (as listed by skill_find).' },
+      },
+      required: ['name'],
     },
   },
   {
@@ -1897,16 +1917,33 @@ async function skillPropose(args: Record<string, unknown>): Promise<string> {
   const name = String(args.name ?? '').trim();
   const description = String(args.description ?? '').trim();
   const body = String(args.body ?? '').trim();
-  if (!name || !description || !body) return 'skill_propose needs name, description, and body.';
+  if (!name || !body) return 'skill_propose needs a name and a body.';
   const res = await fetch(AOS_URL + '/api/skills/propose', {
     method: 'POST',
     headers: H({ 'content-type': 'application/json' }),
     body: JSON.stringify({ session: SESSION, agent: AGENT, name, description, body, rationale: args.rationale ? String(args.rationale) : undefined }),
   });
-  const d = (await res.json()) as { ok?: boolean; skill?: string; error?: string };
+  // The outcome sentence is composed SERVER-side: an MCP process outlives a server upgrade, so a
+  // hardcoded one here can describe behavior the running server no longer has (the agent-edit lesson).
+  const d = (await res.json()) as { ok?: boolean; skill?: string; message?: string; error?: string };
   return d.ok
-    ? `Proposed skill "${d.skill ?? name}" — it's a draft in the inbox for an owner/admin to review and publish. It won't be active until then.`
+    ? (d.message ?? `Proposed "${d.skill ?? name}" — it's in the inbox for an owner/admin to review.`)
     : `Could not propose skill: ${d.error ?? 'unknown error'}`;
+}
+
+async function skillGet(args: Record<string, unknown>): Promise<string> {
+  const name = String(args.name ?? '').trim();
+  if (!name) return 'skill_get needs the name of a skill (see skill_find).';
+  const res = await fetch(AOS_URL + `/api/agent/skill/read?session=${encodeURIComponent(SESSION)}&name=${encodeURIComponent(name)}`, { headers: H({}) });
+  const d = (await res.json()) as { ok?: boolean; skill?: { name: string; description: string; content: string; active: boolean; proposed: boolean; pending?: { agent?: string; at: number } }; error?: string };
+  if (!d.ok || !d.skill) return `Could not read the skill: ${d.error ?? 'unknown error'}`;
+  const s = d.skill;
+  const notes = [
+    s.proposed ? 'status: PROPOSED (not published — no agent can use it yet)' : s.active ? 'status: active for you' : 'status: published, but not assigned to you',
+    s.pending ? `⚠ an edit proposed by ${s.pending.agent ?? 'another agent'} is already awaiting review — resolve that before proposing another` : '',
+    `description: ${s.description || '(none)'}`,
+  ].filter(Boolean);
+  return `Skill "${s.name}"\n${notes.join('\n')}\n\n--- SKILL.md ---\n${s.content}`;
 }
 
 async function policyPropose(args: Record<string, unknown>): Promise<string> {
@@ -3147,6 +3184,7 @@ async function handle(req: JsonRpc): Promise<void> {
         : name === 'notify' ? await notify(args)
         : name === 'publish' ? await publish(args)
         : name === 'skill_propose' ? await skillPropose(args)
+        : name === 'skill_get' ? await skillGet(args)
         : name === 'policy_propose' ? await policyPropose(args)
         : name === 'automation_propose' ? await automationPropose(args)
         : name === 'host_propose' ? await hostPropose(args)

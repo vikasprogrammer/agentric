@@ -34,6 +34,15 @@ const MARKER = '.aos-managed';
  */
 const PROPOSED_MARKER = '.aos-proposed';
 
+/**
+ * Where a proposed EDIT to an already-published skill is parked: `<home>/skills/.proposed-edits/<name>.json`
+ * (a `SkillEdit` blob). Deliberately OUTSIDE the skill folder — `copySkill` copies a skill's whole folder
+ * into every agent, so a marker file inside it would ship the not-yet-approved text to the fleet, which is
+ * exactly what the human gate exists to prevent. The live SKILL.md is untouched until an owner/admin
+ * applies the edit. The folder name starts with a dot and holds no SKILL.md, so `list()` skips it.
+ */
+const EDITS_DIR = '.proposed-edits';
+
 /** A skill as listed in the library: its folder name + the frontmatter we surface in the UI. */
 export interface SkillSummary {
   /** Folder name = the `/command-name` the CLI exposes. Lowercase, hyphenated. */
@@ -59,6 +68,32 @@ export interface SkillSummary {
   proposed: boolean;
   /** Provenance of a proposal (present only when `proposed`). */
   proposal?: SkillProposal;
+  /**
+   * A pending agent-proposed EDIT to this (published) skill, awaiting a human. Metadata only — the
+   * proposed text itself is on `SkillDetail.pendingContent`, so a list payload doesn't carry every
+   * draft body. The live skill keeps materialising unchanged until the edit is applied.
+   */
+  pending?: PendingSkillEdit;
+}
+
+/** A proposed edit to an existing skill — the JSON body of `<skills>/.proposed-edits/<name>.json`. */
+export interface SkillEdit extends PendingSkillEdit {
+  /** The full proposed SKILL.md text (what `applyEdit` writes over the live one). */
+  content: string;
+}
+
+/** The metadata half of a pending edit — what a list payload carries (no body). */
+export interface PendingSkillEdit {
+  /** The agent that proposed the edit. */
+  agent?: string;
+  /** The source session id, for a link back to the run that produced it. */
+  session?: string;
+  /** Optional free-text: why the agent thinks the skill should change. */
+  rationale?: string;
+  /** When it was proposed (epoch ms). */
+  at: number;
+  /** Bytes of the proposed SKILL.md (for a size-delta glance in the review UI). */
+  bytes: number;
 }
 
 /** Who/why a skill was proposed — the JSON body of the `.aos-proposed` marker. */
@@ -76,6 +111,8 @@ export interface SkillProposal {
 /** A skill plus the full SKILL.md text (for the editor). */
 export interface SkillDetail extends SkillSummary {
   content: string;
+  /** The proposed SKILL.md text of a pending edit (present only when `pending` is). */
+  pendingContent?: string;
 }
 
 export interface ProposeSkillInput {
@@ -211,6 +248,7 @@ export class SkillsStore {
     const folder = path.join(this.dir, name);
     if (!fs.existsSync(folder)) return false;
     fs.rmSync(folder, { recursive: true, force: true });
+    this.discardEdit(name); // a parked edit to a deleted skill is orphaned — drop it with the folder
     this.db?.prepare('DELETE FROM skill_assignments WHERE skill = ?').run(name); // drop orphan assignment rows
     return true;
   }
@@ -238,6 +276,111 @@ export class SkillsStore {
     const provenance: SkillProposal = { agent: input.agent, session: input.session, rationale: input.rationale, at: Date.now() };
     fs.writeFileSync(path.join(folder, PROPOSED_MARKER), JSON.stringify(provenance));
     return this.read(name)!;
+  }
+
+  /**
+   * Propose an EDIT to a skill that already exists — the update counterpart to `propose()` (which is
+   * create-only and throws on a name collision). Two shapes, both human-gated the same way `propose`
+   * is, because a published skill is live in every assigned agent:
+   *
+   *  - The target is the proposer's OWN unpublished draft (`.aos-proposed`, same agent): the draft is
+   *    rewritten in place. Nothing is live, so there is nothing to gate; refining your own draft
+   *    shouldn't need a human round-trip. Returns `applied: true`.
+   *  - Anything else (a published skill, or someone else's draft): the new text is PARKED as a pending
+   *    edit (`.proposed-edits/<name>.json`) and the live SKILL.md is untouched until an owner/admin
+   *    calls `applyEdit`. Returns `applied: false`.
+   *
+   * One pending edit per skill: a second proposal from the SAME agent replaces its own (it's still
+   * refining), one from a DIFFERENT agent is refused rather than silently clobbering a teammate's
+   * un-reviewed draft. Throws on a bad/unknown name or an empty body.
+   */
+  proposeEdit(input: ProposeSkillInput): { applied: boolean; skill: SkillDetail } {
+    if (!this.dir) throw new Error('a data home is required to propose skills');
+    const name = input.name.trim().toLowerCase();
+    if (!validSkillName(name)) throw new Error('invalid skill name');
+    const current = this.read(name);
+    if (!current) throw new Error(`skill "${name}" not found`);
+    const body = (input.body || '').trim();
+    if (!body) throw new Error('a skill body is required');
+    // A body without frontmatter inherits the skill's CURRENT description when the proposal omits one —
+    // an edit that only rewrites the steps must not silently blank what agents match on.
+    const content = body.startsWith('---') ? body + '\n' : composeSkill(name, ((input.description || '').trim() || current.description), body);
+
+    // The proposer's own unpublished draft: not live, so rewrite it in place (re-stamping provenance).
+    if (current.proposed && input.agent && current.proposal?.agent === input.agent) {
+      fs.writeFileSync(path.join(this.dir, name, 'SKILL.md'), content);
+      const provenance: SkillProposal = { agent: input.agent, session: input.session, rationale: input.rationale ?? current.proposal.rationale, at: Date.now() };
+      fs.writeFileSync(path.join(this.dir, name, PROPOSED_MARKER), JSON.stringify(provenance));
+      return { applied: true, skill: this.read(name)! };
+    }
+
+    const open = this.pendingEdit(name);
+    if (open && open.agent && input.agent && open.agent !== input.agent) {
+      throw new Error(`an edit to "${name}" proposed by ${open.agent} is already awaiting review — ask a human to resolve it first`);
+    }
+    const edit: SkillEdit = {
+      agent: input.agent, session: input.session, rationale: input.rationale,
+      at: Date.now(), bytes: Buffer.byteLength(content), content,
+    };
+    fs.mkdirSync(path.join(this.dir, EDITS_DIR), { recursive: true });
+    fs.writeFileSync(this.editFile(name), JSON.stringify(edit));
+    return { applied: false, skill: this.read(name)! };
+  }
+
+  /** The pending edit parked for a skill, if any (metadata + the proposed text). */
+  pendingEdit(name: string): SkillEdit | undefined {
+    if (!this.dir || !validSkillName(name)) return undefined;
+    const file = this.editFile(name);
+    if (!fs.existsSync(file)) return undefined;
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8') || '{}') as Partial<SkillEdit>;
+      if (!raw.content) return undefined;
+      return { agent: raw.agent, session: raw.session, rationale: raw.rationale, at: raw.at ?? 0, bytes: raw.bytes ?? Buffer.byteLength(raw.content), content: raw.content };
+    } catch {
+      return undefined; // a corrupt parked edit is no edit — the live skill is what matters
+    }
+  }
+
+  /** Every skill with a pending edit — the review queue behind the console's "Proposed edits" section. */
+  pendingEdits(): { name: string; edit: SkillEdit }[] {
+    if (!this.dir) return [];
+    const folder = path.join(this.dir, EDITS_DIR);
+    if (!fs.existsSync(folder)) return [];
+    const out: { name: string; edit: SkillEdit }[] = [];
+    for (const f of fs.readdirSync(folder)) {
+      if (!f.endsWith('.json')) continue;
+      const name = f.slice(0, -5);
+      const edit = this.pendingEdit(name);
+      if (edit && this.get(name)) out.push({ name, edit });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Apply a pending edit (the human's act): the proposed text becomes the live SKILL.md and the parked
+   * edit is dropped, so it reaches agents on their next session (or same-session via `refreshAgentSkills`).
+   * Returns the proposing agent (for same-session delivery) or undefined when there was nothing to apply.
+   */
+  applyEdit(name: string): { agent?: string } | undefined {
+    if (!this.dir) return undefined;
+    const edit = this.pendingEdit(name);
+    if (!edit || !this.get(name)) return undefined;
+    fs.writeFileSync(path.join(this.dir, name, 'SKILL.md'), edit.content);
+    fs.rmSync(this.editFile(name), { force: true });
+    return { agent: edit.agent };
+  }
+
+  /** Discard a pending edit without touching the live skill. True when one was actually removed. */
+  discardEdit(name: string): boolean {
+    if (!this.dir || !validSkillName(name)) return false;
+    const file = this.editFile(name);
+    if (!fs.existsSync(file)) return false;
+    fs.rmSync(file, { force: true });
+    return true;
+  }
+
+  private editFile(name: string): string {
+    return path.join(this.dir!, EDITS_DIR, `${name}.json`);
   }
 
   /**
@@ -392,6 +535,7 @@ export class SkillsStore {
       .filter((e) => !(e.isFile() && e.name === 'SKILL.md') && e.name !== MARKER && e.name !== PROPOSED_MARKER)
       .map((e) => (e.isDirectory() ? e.name + '/' : e.name));
     const proposal = readProposal(path.join(folder, PROPOSED_MARKER));
+    const edit = this.pendingEdit(name);
     return {
       name,
       description: fm.description ?? '',
@@ -401,6 +545,8 @@ export class SkillsStore {
       agents: this.assignmentsFor(name),
       proposed: !!proposal,
       ...(proposal ? { proposal } : {}),
+      // Split so a list payload carries only the pending edit's metadata, never every proposed body.
+      ...(edit ? { pending: { agent: edit.agent, session: edit.session, rationale: edit.rationale, at: edit.at, bytes: edit.bytes }, pendingContent: edit.content } : {}),
       content,
     };
   }
@@ -462,7 +608,7 @@ export class SkillsStore {
 }
 
 function summaryOf(s: SkillDetail): SkillSummary {
-  const { content: _content, ...rest } = s;
+  const { content: _content, pendingContent: _pending, ...rest } = s;
   return rest;
 }
 

@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.347.0] — 2026-08-14
+### Added
+- **`skill_propose` can update a skill, not just create one.** Lever 6 gave the fleet a way to write its
+  own playbooks and a human gate in front of them — but the tool was create-only: an agent that had just
+  learned the `wp-version-upgrade` skill was missing a step could only be told *"a skill named
+  wp-version-upgrade already exists"*. There was no `skill_update`, no propose-an-update path, and no
+  supported way to fix a skill short of a human editing it in the console. So the fleet could author
+  procedural memory but never *revise* it — the half of learning that matters most once a library exists.
+  `skill_propose` is now **create-or-update, chosen by the name**. A new name behaves exactly as before
+  (a `.aos-proposed` draft, invisible until published). An existing name proposes an **edit**: the full
+  replacement text is parked at `<home>/skills/.proposed-edits/<name>.json` and the **live skill is left
+  untouched** until an owner/admin applies it (Skills page → *Edits proposed by agents*, a side-by-side
+  live-vs-proposed review with Apply / Discard; `POST /api/skills/:name/edit/apply` | `…/edit/discard`).
+  The parking spot is outside the skill folder on purpose: `copySkill` ships a skill's whole folder into
+  every agent, so a marker file *inside* it would hand the un-reviewed text to the fleet — exactly what
+  the gate exists to prevent. `scripts/skill-edit-proposal-test.cjs` (in `test:governance`) pins that:
+  after a proposal, a materialise must still deliver the old text byte for byte.
+  Two guards come from the `agent_get` / CLAUDE.md clobbering lessons, since an edit REPLACES the whole
+  SKILL.md: a new read tool **`skill_get`** returns a skill's current text (plus whether it's active for
+  the caller and whether an edit is already pending), so a revision starts from the real thing rather than
+  a rewrite from memory; and there is **one pending edit per skill** — the same agent may replace its own,
+  a different agent is refused rather than silently overwriting a teammate's un-reviewed draft. An agent
+  refining its OWN unpublished draft rewrites it in place (nothing is live, so there is nothing to gate).
+  A body sent without frontmatter inherits the skill's current `description`, so an edit to the steps
+  can't blank what agents match on. The outcome sentence the agent sees is composed **server-side** and
+  echoed by the tool, because an MCP process outlives a server upgrade. Audited `skill.edit.proposed` /
+  `skill.edit.applied` / `skill.edit.dismissed` / `skill.draft.updated`.
+
 ## [0.346.0] — 2026-08-14
 ### Added
 - **Runtime-account usage refreshes itself.** The pool's *limit* state already self-healed (`recover()`
