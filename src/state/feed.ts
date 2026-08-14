@@ -43,6 +43,7 @@ export interface FeedItem {
   status: string | null; // pending | approved | rejected | cancelled | answered | (session status)
   // session enrichment
   costUsd: number | null;
+  tokens: number | null; // input + output tokens (session lines only)
   outcome: string | null;
   rating: string | null;
   hasTrail: boolean; // resolved/finished → the step-by-step history is fetchable
@@ -86,6 +87,7 @@ interface FeedRow {
   args: string | null;
   status: string | null;
   cost_usd: number | null;
+  tokens: number | null;
   outcome: string | null;
   rating: string | null;
   aud_member: string | null; // scope-only: a 'member'-audience card's target member id (never returned)
@@ -109,7 +111,7 @@ WITH feed AS (
     t.goal_id AS goal_id, g.title AS goal_title,
     COALESCE(NULLIF(s.report_summary,''), s.title) AS title,
     NULL AS capability, NULL AS level, NULL AS args,
-    s.status AS status, s.cost_usd AS cost_usd, s.outcome AS outcome, s.rating AS rating,
+    s.status AS status, s.cost_usd AS cost_usd, (COALESCE(s.input_tokens,0) + COALESCE(s.output_tokens,0)) AS tokens, s.outcome AS outcome, s.rating AS rating,
     NULL AS aud_member
   FROM term_sessions s
   LEFT JOIN tasks t ON t.last_session_id = s.id
@@ -127,7 +129,7 @@ WITH feed AS (
     t.goal_id AS goal_id, g.title AS goal_title,
     a.reason AS title,
     a.capability AS capability, a.level AS level, a.args AS args,
-    a.status AS status, NULL AS cost_usd, NULL AS outcome, NULL AS rating,
+    a.status AS status, NULL AS cost_usd, NULL AS tokens, NULL AS outcome, NULL AS rating,
     NULL AS aud_member
   FROM approvals a
   LEFT JOIN term_sessions s ON s.id = a.run_id
@@ -145,7 +147,7 @@ WITH feed AS (
     t.goal_id AS goal_id, g.title AS goal_title,
     q.prompt AS title,
     NULL AS capability, NULL AS level, NULL AS args,
-    q.status AS status, NULL AS cost_usd, NULL AS outcome, NULL AS rating,
+    q.status AS status, NULL AS cost_usd, NULL AS tokens, NULL AS outcome, NULL AS rating,
     NULL AS aud_member
   FROM questions q
   LEFT JOIN term_sessions s ON s.id = q.run_id
@@ -170,7 +172,7 @@ WITH feed AS (
     t.goal_id AS goal_id, g.title AS goal_title,
     CASE WHEN m.type IN ('update','notification') THEN COALESCE(NULLIF(m.body,''), m.title) ELSE m.title END AS title,
     NULL AS capability, NULL AS level, NULL AS args,
-    m.status AS status, NULL AS cost_usd, m.outcome AS outcome, NULL AS rating,
+    m.status AS status, NULL AS cost_usd, NULL AS tokens, m.outcome AS outcome, NULL AS rating,
     CASE WHEN m.audience_kind='member' THEN m.audience_id ELSE NULL END AS aud_member
   FROM messages m
   LEFT JOIN term_sessions s ON s.id = m.session_id
@@ -324,6 +326,7 @@ function mapRow(r: FeedRow): FeedItem {
     args: r.args ? safeParse(r.args) : null,
     status: r.status,
     costUsd: r.cost_usd,
+    tokens: r.tokens,
     outcome: r.outcome,
     rating: r.rating,
     hasTrail: r.state === 'done',

@@ -64,6 +64,8 @@ run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,created_at
 run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,audience_kind,audience_id,dismissed_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
   'd1', 'notification', '', 'system', 'Old', '...', 'open', 'member', 'm1', T(1), T(16));
 
+db.prepare(`UPDATE term_sessions SET input_tokens=?, output_tokens=? WHERE id='s_done'`).run(1200, 800);
+
 const feed = new FeedStore(db);
 const admin = { id: 'boss', isAdmin: true };
 const m1 = { id: 'm1', isAdmin: false };
@@ -89,6 +91,7 @@ assert.strictEqual(doneItem.runAs, 'm1');
 assert.ok(doneItem.goal && doneItem.goal.title === 'Clear support backlog', 'goal tag not joined');
 assert.strictEqual(doneItem.title, 'Shipped redirect fix');
 assert.strictEqual(doneItem.hasTrail, true);
+assert.strictEqual(doneItem.tokens, 2000, `tokens=${doneItem.tokens}`); // 1200 in + 800 out
 
 // 3) decision args parsed from JSON
 const pend = all.items.find((i) => i.uid === 'approval:a_pend');

@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.351.0] — 2026-08-14
+### Changed
+- **Feed page polish from live use.** Several refinements to how a line reads and how the page remembers you:
+  - **Session status now matches the Sessions page exactly.** A session line renders through the same
+    `SessionStatus`/`sessionState` (reading the shared `WaitingCtx`) as the Sessions list, so *working /
+    ready / needs-you / stopped / crashed* agree everywhere instead of the feed showing a blanket
+    "running". The status word appears in the line's metadata in its matching tone.
+  - **Lens + filter live in the URL** (`?lens=&filter=`). There is no forced default anymore — the page
+    opens on whatever you last selected, and a refresh restores it (parity with the Sessions filters).
+  - **Open the associated session** from any line — its live terminal when the run is still around, else
+    the Sessions page.
+  - **Show history removed** — the trail expander wasn't earning its space (the endpoint stays for now).
+  - **Leaner lines:** the agent is shown once (a chip), not repeated in the sentence; the activity snippet
+    clamps to two lines with a **More/Less** toggle; and cost is shown as a **token count** (`12.3k tok`)
+    rather than a dollar figure. `FeedItem` gains a `tokens` field (input + output); `feed-smoke` covers it.
+  See `docs/feed-plan.md`.
+
 ## [0.350.0] — 2026-08-14
 ### Added
 - **The feed folds in the `messages` notification class, and the Goals lens is the default.** Two changes
