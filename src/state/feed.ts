@@ -26,7 +26,7 @@ export interface FeedItem {
   uid: string; // "<source>:<id>" — unique + the keyset-pagination tiebreak
   ts: number; // epoch ms, the sort key
   kind: string; // session.running | session.done | approval.pending | approval.approved | question.pending | …
-  state: 'running' | 'done' | 'decision';
+  state: 'running' | 'done' | 'decision' | 'info';
   // attribution — always resolved, the thing the old inbox lacked
   runId: string;
   agent: string | null;
@@ -70,7 +70,7 @@ export interface TrailStep {
 interface FeedRow {
   ts: number;
   uid: string;
-  state: 'running' | 'done' | 'decision';
+  state: 'running' | 'done' | 'decision' | 'info';
   kind: string;
   run_id: string;
   ref_table: string;
@@ -88,6 +88,7 @@ interface FeedRow {
   cost_usd: number | null;
   outcome: string | null;
   rating: string | null;
+  aud_member: string | null; // scope-only: a 'member'-audience card's target member id (never returned)
 }
 
 /**
@@ -108,7 +109,8 @@ WITH feed AS (
     t.goal_id AS goal_id, g.title AS goal_title,
     COALESCE(NULLIF(s.report_summary,''), s.title) AS title,
     NULL AS capability, NULL AS level, NULL AS args,
-    s.status AS status, s.cost_usd AS cost_usd, s.outcome AS outcome, s.rating AS rating
+    s.status AS status, s.cost_usd AS cost_usd, s.outcome AS outcome, s.rating AS rating,
+    NULL AS aud_member
   FROM term_sessions s
   LEFT JOIN tasks t ON t.last_session_id = s.id
   LEFT JOIN goals g ON g.id = t.goal_id
@@ -125,7 +127,8 @@ WITH feed AS (
     t.goal_id AS goal_id, g.title AS goal_title,
     a.reason AS title,
     a.capability AS capability, a.level AS level, a.args AS args,
-    a.status AS status, NULL AS cost_usd, NULL AS outcome, NULL AS rating
+    a.status AS status, NULL AS cost_usd, NULL AS outcome, NULL AS rating,
+    NULL AS aud_member
   FROM approvals a
   LEFT JOIN term_sessions s ON s.id = a.run_id
   LEFT JOIN tasks t ON t.last_session_id = s.id
@@ -142,11 +145,38 @@ WITH feed AS (
     t.goal_id AS goal_id, g.title AS goal_title,
     q.prompt AS title,
     NULL AS capability, NULL AS level, NULL AS args,
-    q.status AS status, NULL AS cost_usd, NULL AS outcome, NULL AS rating
+    q.status AS status, NULL AS cost_usd, NULL AS outcome, NULL AS rating,
+    NULL AS aud_member
   FROM questions q
   LEFT JOIN term_sessions s ON s.id = q.run_id
   LEFT JOIN tasks t ON t.last_session_id = s.id
   LEFT JOIN goals g ON g.id = t.goal_id
+
+  UNION ALL
+  -- 4 ── MESSAGES: the notification/update class the other three don't cover — an agent's 'update' note,
+  -- a session-less 'notification'/'task' card, a published 'artifact'. NOT 'approval'/'question' (their
+  -- own branches) nor 'completed' (it duplicates the session's done line). Visibility mirrors canViewMsg:
+  -- the session's human (run_as/spawned_by, like every branch) OR a 'member'-audience card's target
+  -- (aud_member) — the outer scope ORs both. Dismissed cards drop out.
+  SELECT
+    m.created_at AS ts,
+    'message:' || m.id AS uid,
+    'info' AS state,
+    'message.' || m.type AS kind,
+    m.session_id AS run_id, 'messages' AS ref_table, m.id AS ref_id,
+    m.agent AS agent,
+    COALESCE(s.run_as, CASE WHEN m.audience_kind='member' THEN m.audience_id END) AS run_as,
+    s.spawned_by AS spawned_by,
+    t.goal_id AS goal_id, g.title AS goal_title,
+    CASE WHEN m.type IN ('update','notification') THEN COALESCE(NULLIF(m.body,''), m.title) ELSE m.title END AS title,
+    NULL AS capability, NULL AS level, NULL AS args,
+    m.status AS status, NULL AS cost_usd, m.outcome AS outcome, NULL AS rating,
+    CASE WHEN m.audience_kind='member' THEN m.audience_id ELSE NULL END AS aud_member
+  FROM messages m
+  LEFT JOIN term_sessions s ON s.id = m.session_id
+  LEFT JOIN tasks t ON t.last_session_id = s.id
+  LEFT JOIN goals g ON g.id = t.goal_id
+  WHERE m.type IN ('update','notification','task','artifact') AND m.dismissed_at IS NULL
 )`;
 
 export class FeedStore {
@@ -165,8 +195,17 @@ export class FeedStore {
 
     if (opts.goalId) { where.push('goal_id = ?'); params.push(opts.goalId); }
 
-    const scope = this.scopeSql('', opts.viewer);
-    if (scope.sql) { where.push(scope.sql); params.push(...scope.params); }
+    // Scope on the union: the session's human (run_as/spawned_by/own-automation) OR — for a folded
+    // message row — a 'member'-audience card addressed to the viewer (aud_member). Together this is
+    // exactly canViewSpawn/canViewRow OR canViewMsg's member branch. Owner/admin: no clause (see all).
+    if (!opts.viewer.isAdmin) {
+      const autos = this.myAutomations(opts.viewer.id);
+      const parts = ['run_as = ?', 'spawned_by = ?', 'aud_member = ?'];
+      const p: unknown[] = [opts.viewer.id, opts.viewer.id, opts.viewer.id];
+      if (autos.length) { parts.push(`spawned_by IN (${autos.map(() => '?').join(',')})`); p.push(...autos); }
+      where.push(`(${parts.join(' OR ')})`);
+      params.push(...p);
+    }
 
     const cur = parseCursor(opts.cursor);
     if (cur) { where.push('(ts < ? OR (ts = ? AND uid < ?))'); params.push(cur.ts, cur.ts, cur.uid); }
@@ -235,10 +274,7 @@ export class FeedStore {
    */
   private scopeSql(prefix: string, viewer: FeedViewer): { sql: string; params: unknown[] } {
     if (viewer.isAdmin) return { sql: '', params: [] };
-    const autoIds = this.db
-      .prepare('SELECT id FROM automations WHERE created_by = ?')
-      .all<{ id: string }>(viewer.id)
-      .map((a) => `automation:${a.id}`);
+    const autoIds = this.myAutomations(viewer.id);
     const parts = [`${prefix}run_as = ?`, `${prefix}spawned_by = ?`];
     const params: unknown[] = [viewer.id, viewer.id];
     if (autoIds.length) {
@@ -246,6 +282,14 @@ export class FeedStore {
       params.push(...autoIds);
     }
     return { sql: `(${parts.join(' OR ')})`, params };
+  }
+
+  /** The viewer's own automations, as `automation:<id>` provenance strings (for the scope clause). */
+  private myAutomations(viewerId: string): string[] {
+    return this.db
+      .prepare('SELECT id FROM automations WHERE created_by = ?')
+      .all<{ id: string }>(viewerId)
+      .map((a) => `automation:${a.id}`);
   }
 }
 

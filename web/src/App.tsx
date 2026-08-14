@@ -5262,6 +5262,7 @@ const FEED_FILTERS: { key: FeedFilter; label: string; countKey?: keyof FeedRespo
 
 /** Map a feed line to the cross-domain status role (drives its glyph + tone). */
 function feedItemRole(it: FeedItem): StatusRole {
+  if (it.state === 'info') return 'ended'
   if (it.state === 'decision') return 'needsHuman'
   if (it.state === 'running') return 'busy'
   if (it.kind === 'approval.rejected' || it.outcome === 'failure' || it.kind === 'session.crashed') return 'failed'
@@ -5293,8 +5294,9 @@ function trailLabel(step: FeedTrailStep): string {
 }
 
 function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r: Route, detail?: string) => void }) {
-  const [lens, setLens] = useState<'feed' | 'goals'>('feed')
+  const [lens, setLens] = useState<'feed' | 'goals'>('goals')
   const [filter, setFilter] = useState<FeedFilter>('all')
+  const [openGoals, setOpenGoals] = useState<Set<string>>(new Set()) // goal sections start collapsed
   const [limit, setLimit] = useState(40)
   const [page, setPage] = useState<FeedResponse | null>(null)
   const [progress, setProgress] = useState<Record<string, GoalProgress>>({})
@@ -5438,7 +5440,11 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
           </div>
         ) : (
           <div>
-            <div className="text-sm"><span className="font-medium">{it.agent}</span>{it.title ? <span className="text-foreground/90"> · {it.title}</span> : null}</div>
+            <div className="text-sm">
+              {it.agent && <span className="font-medium">{it.agent}</span>}
+              {it.agent && it.title && <span className="text-muted-foreground"> · </span>}
+              {it.title && <span className="text-foreground/90">{it.title}</span>}
+            </div>
             {attribution(it)}
             {trailBlock(it)}
           </div>
@@ -5469,6 +5475,7 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
       goalGroups[i].items.push(it)
     }
   }
+  const allGoalsOpen = goalGroups.length > 0 && goalGroups.every((g) => openGoals.has(g.id))
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -5493,6 +5500,12 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
             })}
           </div>
         )}
+        {lens === 'goals' && goalGroups.length > 0 && (
+          <Button size="sm" variant="ghost" className="ml-auto text-xs text-muted-foreground"
+            onClick={() => setOpenGoals(allGoalsOpen ? new Set() : new Set(goalGroups.map((g) => g.id)))}>
+            {allGoalsOpen ? 'Collapse all' : 'Expand all'}
+          </Button>
+        )}
       </div>
 
       {/* stream */}
@@ -5516,8 +5529,8 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
           {goalGroups.map((g) => {
             const pct = g.id !== '__none__' ? progress[g.id]?.percent : undefined
             return (
-              <details key={g.id} open className="group overflow-hidden rounded-xl border border-border bg-muted/20">
-                <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3">
+              <details key={g.id} open={openGoals.has(g.id)} className="group overflow-hidden rounded-xl border border-border bg-muted/20">
+                <summary onClick={(e) => { e.preventDefault(); setOpenGoals((s) => { const n = new Set(s); n.has(g.id) ? n.delete(g.id) : n.add(g.id); return n }) }} className="flex cursor-pointer list-none items-center gap-3 px-4 py-3">
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
                   {g.id !== '__none__' ? <Target className="h-4 w-4 shrink-0 text-muted-foreground" /> : <List className="h-4 w-4 shrink-0 text-muted-foreground" />}
                   <span className="truncate font-semibold">{g.title}</span>

@@ -82,8 +82,21 @@ tiebreak across the union.
 ordering, attribution/goal joins, JSON arg parsing, counts, every filter, the goal lens, viewer scoping,
 keyset pagination, and the trail.
 
+## Folded: the `messages` notification class (v0.350.0)
+
+A fourth union branch folds the notification/update cards from `messages` into the stream, so the old
+inbox is no longer a separate read path:
+
+- **Included** — `update` (an agent's progress note), `notification` (a session-less `notify`/system
+  card), `task` (a Tasks notification), `artifact` (a published deliverable). All carry the new
+  `state = 'info'` (neither a decision nor running/done — an ambient event).
+- **Excluded** — `approval` and `question` (their own branches already cover them), and `completed`
+  (it duplicates the session's own `done` line). Dismissed cards (`dismissed_at`) drop out.
+- **Visibility** mirrors `TerminalManager.canViewMsg` = `canViewAudience` OR `canViewRow`. The branch
+  projects an `aud_member` scope column (a `member`-audience card's target), and the outer non-admin
+  scope ORs it with the session's `run_as`/`spawned_by` — exactly reproducing the rule in SQL.
+
 ## Not in this slice
 
-The React console surface (the feed/goal-lens UI) and folding the surviving `messages` cases
-(`type='update'`, audience-addressed session-less notifications) into a fourth union branch. This slice
-is the backend view + endpoints the console will consume.
+Retiring the `messages` read path entirely (it remains the write-ahead for notifier delivery) and any
+per-member read/dismiss state on the feed itself.

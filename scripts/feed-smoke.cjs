@@ -48,16 +48,38 @@ run(`INSERT INTO audit_events (ts,run_id,tenant,type,principal,data) VALUES (?,?
 run(`INSERT INTO task_events (id,task_id,kind,body,author,session_id,created_at) VALUES (?,?,?,?,?,?,?)`,
   'te1', 't1', 'status', 'doing→done', 'agent:pod-troubleshooter', 's_done', T(4));
 
+// --- folded message rows (notification/update class) ---
+// a session-less notification addressed to member m1 (aud_member scope)
+run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,audience_kind,audience_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  'n1', 'notification', '', 'system', 'Heads up', 'Nightly backup finished', 'open', 'member', 'm1', T(12));
+// an agent 'update' note on the running session (sessionOwner audience → scopes via the session)
+run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,audience_kind,audience_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  'u1', 'update', 's_run', 'support-triage', 'Task Update', 'Progress: 3 of 5 tickets done', 'open', 'sessionOwner', 's_run', T(15));
+// excluded: an 'approval' mirror (its own branch) and a 'completed' card (dupes session.done)
+run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,created_at) VALUES (?,?,?,?,?,?,?,?)`,
+  'x1', 'approval', 's_run', 'support-triage', 'Approval', '...', 'pending', T(13));
+run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,created_at) VALUES (?,?,?,?,?,?,?,?)`,
+  'x2', 'completed', 's_done', 'pod-troubleshooter', 'Done', '...', 'open', T(14));
+// excluded: a dismissed notification (a human hid it)
+run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,audience_kind,audience_id,dismissed_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+  'd1', 'notification', '', 'system', 'Old', '...', 'open', 'member', 'm1', T(1), T(16));
+
 const feed = new FeedStore(db);
 const admin = { id: 'boss', isAdmin: true };
 const m1 = { id: 'm1', isAdmin: false };
 const m2 = { id: 'm2', isAdmin: false };
 
-// 1) admin sees all 5 items, newest first
+// 1) admin sees the 5 core items + 2 folded messages (n1, u1); the 3 excluded ones never appear
 const all = feed.list({ viewer: admin });
-assert.strictEqual(all.items.length, 5, `expected 5 items, got ${all.items.length}`);
-const order = all.items.map((i) => i.uid);
-assert.deepStrictEqual(order, ['question:q_pend', 'approval:a_pend', 'session:s_run', 'approval:a_res', 'session:s_done'], `bad order: ${order}`);
+assert.strictEqual(all.items.length, 7, `expected 7 items, got ${all.items.length}`);
+assert.deepStrictEqual(all.items.slice(0, 5).map((i) => i.uid), ['question:q_pend', 'approval:a_pend', 'session:s_run', 'approval:a_res', 'session:s_done'], 'core ordering changed');
+const uids = new Set(all.items.map((i) => i.uid));
+assert.ok(uids.has('message:n1') && uids.has('message:u1'), 'folded notification/update missing');
+assert.ok(!uids.has('message:x1') && !uids.has('message:x2') && !uids.has('message:d1'), 'excluded/dismissed message leaked into feed');
+// folded rows carry the info state + their content as the title
+const n1 = all.items.find((i) => i.uid === 'message:n1');
+assert.strictEqual(n1.state, 'info');
+assert.strictEqual(n1.title, 'Nightly backup finished');
 
 // 2) attribution + goal tag resolved on the done session
 const doneItem = all.items.find((i) => i.uid === 'session:s_done');
@@ -90,9 +112,9 @@ const g1 = feed.list({ viewer: admin, goalId: 'g1' });
 assert.strictEqual(g1.items.length, 2, `goal filter items=${g1.items.length}`);
 assert.deepStrictEqual(g1.items.map((i) => i.uid).sort(), ['approval:a_res', 'session:s_done']);
 
-// 7) scoping — m1 owns everything, m2 owns nothing
-assert.strictEqual(feed.list({ viewer: m1 }).items.length, 5, 'run-as owner should see own rows');
-assert.strictEqual(feed.list({ viewer: m2 }).items.length, 0, 'a stranger should see nothing');
+// 7) scoping — m1 owns everything + is the audience of n1/u1 (7); m2 owns nothing and is addressed by nothing (0)
+assert.strictEqual(feed.list({ viewer: m1 }).items.length, 7, 'owner/addressee should see own rows + member-audience cards');
+assert.strictEqual(feed.list({ viewer: m2 }).items.length, 0, 'a stranger should see nothing (incl. member-audience cards for others)');
 assert.strictEqual(feed.counts(m2, 0).needsYou, 0, 'stranger needsYou must be 0');
 
 // 8) keyset pagination
@@ -112,4 +134,4 @@ assert.strictEqual(steps[0].kind, 'approval.requested');
 assert.strictEqual(steps[2].kind, 'task.status');
 assert.strictEqual(steps[1].detail.approved, true, 'audit detail should be parsed JSON');
 
-console.log('✓ feed smoke: 9 groups passed');
+console.log('✓ feed smoke: 9 groups passed (incl. folded message rows + audience scope)');

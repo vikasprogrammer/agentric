@@ -1548,8 +1548,8 @@ export type FeedFilter = 'all' | 'needsYou' | 'running' | 'done'
 export interface FeedItem {
   uid: string // "<source>:<id>" — stable id + pagination tiebreak
   ts: number
-  kind: string // session.running | session.done | approval.pending | approval.approved | question.pending | …
-  state: 'running' | 'done' | 'decision'
+  kind: string // session.running | session.done | approval.pending | question.pending | message.update | message.notification | …
+  state: 'running' | 'done' | 'decision' | 'info'
   runId: string
   agent: string | null
   runAs: string | null // the accountable human (member id)
