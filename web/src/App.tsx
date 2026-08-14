@@ -15398,7 +15398,7 @@ function ConcurrencySettings({ me }: { me: Member }) {
 /** Per-account usage cell: the weekly (7d) + session (5h) windows as compact "wk 13% / 5h 33%" lines, each
  *  coloured by pressure (amber ≥80%, red ≥100%) with the reset time on hover. Falls back to the last check
  *  note (e.g. "could not verify") or a dash when there's no usage snapshot. */
-function runtimeUsageCell(a: RuntimeAccount) {
+function runtimeUsageCell(a: RuntimeAccount, refreshing = false) {
   const u = a.usage
   const win = (label: string, w?: { usedPct?: number; resetsAt?: number }) => {
     if (!w || w.usedPct == null) return null
@@ -15407,8 +15407,17 @@ function runtimeUsageCell(a: RuntimeAccount) {
     return <span key={label} className={cls} title={w.resetsAt ? `resets ${new Date(w.resetsAt).toLocaleString()}` : undefined}>{label} {pct}%</span>
   }
   const rows = u ? [win('wk', u.weekly), win('5h', u.session)].filter(Boolean) : []
-  if (rows.length) return <span className="flex flex-col font-mono leading-tight">{rows}</span>
-  return <span className="text-muted-foreground">{a.kind === 'token' && a.checkNote && a.checkOk !== true ? a.checkNote : '—'}</span>
+  // A snapshot is a reading from `lastCheckedAt`, not a live number — say so, and say when it is being
+  // re-read, so nobody acts on a percentage that predates the quota window they care about.
+  const age = a.lastCheckedAt ? `read ${new Date(a.lastCheckedAt).toLocaleString()}` : undefined
+  if (rows.length) return (
+    <span className="flex flex-col font-mono leading-tight" title={age}>
+      {rows}
+      {refreshing && <span className="text-muted-foreground">checking…</span>}
+    </span>
+  )
+  if (refreshing) return <span className="font-mono text-muted-foreground">checking…</span>
+  return <span className="text-muted-foreground" title={age}>{a.kind === 'token' && a.checkNote && a.checkOk !== true ? a.checkNote : '—'}</span>
 }
 
 function RuntimeAccountsSettings({ me }: { me: Member }) {
@@ -15424,6 +15433,17 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
 
   const load = () => api.runtimeAccounts().then((r) => { if (!r.error) setResp(r) }).catch(() => {})
   useEffect(() => { load() }, [])
+  // Reading the pool kicks a background usage re-probe for any stale account; the response we just got is
+  // the PRE-probe reading, so re-read while the server still reports work in flight. Self-terminating: a
+  // finished probe stamps `lastCheckedAt`, which makes the account fresh and empties `refreshing`. The
+  // attempt cap is the belt-and-braces against a probe that never resolves.
+  const [reprobes, setReprobes] = useState(0)
+  const refreshingKeys = resp?.refreshing ?? []
+  useEffect(() => {
+    if (!refreshingKeys.length || reprobes >= 6) return
+    const t = setTimeout(() => { setReprobes((n) => n + 1); load() }, 4000)
+    return () => clearTimeout(t)
+  }, [refreshingKeys.join(','), reprobes])
 
   const runtimes = resp?.runtimes ?? []
   const spec = runtimes.find((r) => r.id === runtime)
@@ -15546,7 +15566,7 @@ function RuntimeAccountsSettings({ me }: { me: Member }) {
                         ? <Badge variant="outline" className="border-amber-500/40 text-amber-600 dark:text-amber-400">limited{a.limitedUntil ? ` · resets ${new Date(a.limitedUntil).toLocaleString()}` : ''}</Badge>
                         : <Badge variant="outline" className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400">available</Badge>}
                     </td>
-                    <td className="py-1.5 pr-3">{runtimeUsageCell(a)}</td>
+                    <td className="py-1.5 pr-3">{runtimeUsageCell(a, refreshingKeys.includes(`${a.runtime}/${a.name}`))}</td>
                     <td className="py-1.5 pr-3 text-muted-foreground">{a.lastUsedAt ? new Date(a.lastUsedAt).toLocaleString() : '—'}</td>
                     <td className="py-1.5 text-right">
                       {canEdit && (

@@ -8,6 +8,29 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.346.0] — 2026-08-14
+### Added
+- **Runtime-account usage refreshes itself.** The pool's *limit* state already self-healed (`recover()`
+  runs inside `list()`/`get()`/`pick()`, so a parked account un-parks the moment its reset passes), but the
+  usage snapshot — the `wk 96%` / `5h 35%` on Settings → Runtime accounts — was written only at add-time
+  and by a human clicking **Refresh**. So the percentages were a frozen reading from whenever someone last
+  clicked, and an account that hit its wall in a way our teardown detector missed (or under another
+  process) still showed a comfortable number.
+  Reading the pool now kicks a background re-probe of every enabled Claude account whose snapshot is older
+  than 10 minutes (`src/edge/runtime-account-usage.ts`), applying the result exactly like the manual
+  Refresh: an exhausted window parks the account, a clean authentication clears a stale limit. One 1-token
+  Haiku call per account, in-flight probes de-duped across readers, at most 8 per sweep — so the cost is
+  bounded by the staleness window, not by how often the page is polled. `GET /api/runtime-accounts`
+  returns `refreshing: ["<runtime>/<name>", …]`; the console shows `checking…` on those rows and re-reads
+  once they land, and each usage cell now carries its `lastCheckedAt` as a tooltip so a snapshot never
+  reads as a live number. Audited (`runtime.account.checked`, `auto: true`) only when the probe actually
+  changes health or status — a healthy sweep is silent.
+  Deliberately **not** included: reviving a disabled account. `enabled = 0` means a human pulled it or a
+  live 401 auto-disabled it; the manual Refresh stays the way back into rotation.
+- `scripts/runtime-usage-refresh-test.cjs` (17 assertions, in `npm run test:governance`) pins the
+  selection rules, limit reconciliation, audit quietness, in-flight de-dupe, and that a failing probe
+  leaves the last known snapshot intact.
+
 ## [0.345.0] — 2026-08-13
 ### Fixed
 - **Claiming a session made it immortal.** The idle-interactive reaper skipped `claimed_by IS NOT NULL`
