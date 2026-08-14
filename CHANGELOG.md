@@ -8,6 +8,34 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.348.0] — 2026-08-14
+### Added
+- **A unified activity feed (`os.feed`) — one stream to replace the inbox/tasks/sessions/notifications
+  split.** The console makes a human reconcile four surfaces that are really the *same work* at different
+  stages, so you can't tell at a glance who is asking what, resolved items vanish, and the inbox is dead
+  weight unless something is actively blocked on a person. This is the backend for a single time-ordered
+  stream, read by **time** or by **outcome (goal)**, where a human is pulled in only for the decisions the
+  fleet can't make itself — and the stream *is* the history, so nothing disappears once you answer it.
+  The key move: there is **no `feed` table**. `FeedStore` (`src/state/feed.ts`) is a read-only view that
+  `UNION ALL`s rows already living in `term_sessions`, `approvals` and `questions`, LEFT JOINing each
+  session → its task (`tasks.last_session_id`) → the task's goal so **attribution is on every line**:
+  `agent`, `run_as` (the accountable human), `spawned_by` (raw provenance), and the goal tag. A session
+  surfaces at its current state (running → a live line; finished → a done line with outcome/rating/cost);
+  an approval/question is its own line — a `decision` while pending, resolved `history` once answered.
+  New endpoints: `GET /api/feed?filter=all|needsYou|running|done&goal=<id>&cursor=<c>` →
+  `{ items, nextCursor, counts:{ needsYou, running, doneToday } }` (the **goal lens** is the same endpoint
+  with `?goal=`; the **"Needs you"** rail is just `filter=needsYou` = pending approvals ∪ pending
+  questions, a query not a stored list), and `GET /api/feed/:runId/trail` →
+  `{ steps }`, the step-by-step past rebuilt from the append-only logs (`audit_events` ⋃ `task_events`,
+  oldest first) so a resolved decision keeps its full trail forever. Visibility mirrors
+  `canViewSpawn`/`canViewRow` (owner/admin see all; else run-as / own-provenance / own-automation),
+  applied in SQL so keyset pagination stays correct. Adds `approvals.resolved_at` (parity with
+  `questions.answered_at`, so a resolved decision sorts by when you decided, stamped in
+  `resolve()`/`cancel()`) plus feed indices. `scripts/feed-smoke.cjs` (in `test:governance`) pins union
+  ordering, the attribution/goal joins, counts, every filter, the goal lens, scoping, keyset pagination,
+  and the trail. The React console surface and folding the surviving `messages` cases into the union come
+  next. See `docs/feed-plan.md`.
+
 ## [0.347.0] — 2026-08-14
 ### Added
 - **`skill_propose` can update a skill, not just create one.** Lever 6 gave the fleet a way to write its

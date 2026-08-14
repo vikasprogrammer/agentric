@@ -71,6 +71,7 @@ import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
 import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
+import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
 import { agentEditable, applyAgentEdit, assessClaudeMdEdit, contentHash, diffStat, manifestToSnapshot, readAgentSnapshot, resolveClaudeMd } from './state/agent-edit';
 
@@ -2692,6 +2693,31 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (method === 'GET' && p === '/api/sessions/summary') {
     const { rows, doneToday } = tm.sessionsSummary(me, LIST_CLIP);
     return sendJson(res, 200, { rows: rows.map((s) => (s.task ? { ...s, task: clipText(s.task, LIST_CLIP) } : s)), doneToday });
+  }
+  // The unified activity feed (docs/feed-plan.md): one time-ordered stream over sessions/approvals/questions,
+  // scoped to what the caller may see, with the glance/filter counters. `?filter=all|needsYou|running|done`,
+  // `?goal=<id>` for the goal lens, `?cursor=` for keyset pagination. Replaces the four separate lists.
+  if (method === 'GET' && p === '/api/feed') {
+    const raw = url.searchParams.get('filter') || 'all';
+    const filter: FeedFilter = (['all', 'needsYou', 'running', 'done'] as const).includes(raw as FeedFilter) ? (raw as FeedFilter) : 'all';
+    const viewer = { id: me.id, isAdmin: isAdmin(me) };
+    const page = os.feed.list({
+      viewer,
+      filter,
+      goalId: url.searchParams.get('goal') || undefined,
+      cursor: url.searchParams.get('cursor') || undefined,
+      limit: Number(url.searchParams.get('limit')) || 40,
+    });
+    const now = new Date();
+    const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    return sendJson(res, 200, { ...page, counts: os.feed.counts(viewer, dayStart) });
+  }
+  // The step-by-step history behind one feed line, rebuilt from the append-only logs. 404 (no existence
+  // leak) when the caller can't view that run — same rule as /api/sessions/:id.
+  const feedTrailMatch = p.match(/^\/api\/feed\/([\w-]+)\/trail$/);
+  if (method === 'GET' && feedTrailMatch) {
+    if (!tm.canViewSession(feedTrailMatch[1], me)) return sendJson(res, 404, { error: 'unknown run' });
+    return sendJson(res, 200, { steps: os.feed.trail(feedTrailMatch[1]) });
   }
   // Single session by id (Sessions-pagination Phase 1) — the by-id fetch the console lacked (every by-id
   // read used to come from the full list array). 404 when the caller can't see it (canViewRow → no row),
