@@ -1541,6 +1541,36 @@ export interface SessionChain {
   updatedAt: number
 }
 
+// ── Unified activity feed (os.feed) — one stream over sessions/approvals/questions. See docs/feed-plan.md.
+export type FeedFilter = 'all' | 'needsYou' | 'running' | 'done'
+/** One line in the stream. A running/finished session, or a pending/resolved approval or question —
+ *  all projected to this shape by the server's UNION view, with attribution joined onto every row. */
+export interface FeedItem {
+  uid: string // "<source>:<id>" — stable id + pagination tiebreak
+  ts: number
+  kind: string // session.running | session.done | approval.pending | approval.approved | question.pending | …
+  state: 'running' | 'done' | 'decision'
+  runId: string
+  agent: string | null
+  runAs: string | null // the accountable human (member id)
+  spawnedBy: string | null // raw provenance: "automation:…" | "task:…" | a member id | null
+  goal: { id: string; title: string } | null
+  title: string
+  ref: { table: string; id: string }
+  capability: string | null
+  level: string | null // head | owner (decisions)
+  args: unknown | null
+  status: string | null // pending | approved | rejected | cancelled | answered | <session status>
+  costUsd: number | null
+  outcome: string | null
+  rating: string | null
+  hasTrail: boolean
+}
+export interface FeedCounts { needsYou: number; running: number; doneToday: number }
+export interface FeedResponse { items: FeedItem[]; nextCursor: string | null; counts: FeedCounts }
+/** One step of a line's history, rebuilt from the append-only logs (audit_events ⋃ task_events). */
+export interface FeedTrailStep { ts: number; source: 'audit' | 'task'; kind: string; author: string | null; detail: unknown }
+
 export const api = {
   /** Current member, or null if not authenticated (401). Drives the login gate. */
   me: async (): Promise<Member | null> => {
@@ -1777,6 +1807,19 @@ export const api = {
   deleteTaskAttachment: (taskId: string, attId: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/tasks/${taskId}/attachments/${attId}`),
   /** Direct URL to an attachment's bytes (inline; for download/preview links). */
   taskAttachmentUrl: (taskId: string, attId: string) => `/api/tasks/${taskId}/attachments/${attId}/raw`,
+
+  /** One page of the unified activity feed. `goalId` scopes to the goal lens; `cursor` is keyset pagination. */
+  feed: (opts: { filter?: FeedFilter; goalId?: string; cursor?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams()
+    if (opts.filter && opts.filter !== 'all') qs.set('filter', opts.filter)
+    if (opts.goalId) qs.set('goal', opts.goalId)
+    if (opts.cursor) qs.set('cursor', opts.cursor)
+    if (opts.limit) qs.set('limit', String(opts.limit))
+    const q = qs.toString()
+    return call<FeedResponse>('GET', '/api/feed' + (q ? '?' + q : ''))
+  },
+  /** The step-by-step history behind one feed line, rebuilt from the append-only logs. */
+  feedTrail: (runId: string) => call<{ steps: FeedTrailStep[] }>('GET', `/api/feed/${runId}/trail`),
 
   goals: (q = '', status = '') => call<{ goals: Goal[]; counts: GoalCounts; progress: Record<string, GoalProgress>; autoPlan?: boolean }>('GET', `/api/goals?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   setAutoPlanGoals: (on: boolean) => call<{ ok: boolean; autoPlan?: boolean; error?: string }>('POST', '/api/goals/autoplan', { on }),
