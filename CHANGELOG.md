@@ -8,6 +8,24 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.349.0] — 2026-08-14
+### Added
+- **The Feed page — the console surface for the unified activity stream (v0.348.0 backend).** A new
+  primary nav item (pinned by default) that renders `/api/feed` as one time-ordered stream, read two
+  ways via a lens toggle: **Feed** (by time) and **Goals** (the same lines grouped by outcome, each goal
+  collapsible with its rolled-up progress bar). Every line leads with attribution — the agent, the human
+  it runs as (avatar + name), a provenance hint (*via automation/task/chat*), and a clickable goal tag —
+  so "who is asking what" is answered in the row itself. Decisions are highlighted inline (amber for
+  approvals, sky for questions) and actioned in place: **Approve/Deny** (gated by `canApprove`, else a
+  "waiting on an owner-level approver" note) and **Reply** to a question, both resolving optimistically
+  and dropping off the 4s poll. A resolved/finished line carries a **Show history** toggle that lazy-loads
+  its step-by-step trail from `/api/feed/:runId/trail` (the append-only `audit_events` ⋃ `task_events`).
+  Filter chips (All · Needs you · Running · Done) carry live counts and, in the Feed lens, scope the
+  stream; keyset **Load more** paginates. Reuses the cross-domain status glyph, role-tinted chips, and
+  member-avatar primitives, so it reads as part of the existing console. `api.feed()` / `api.feedTrail()`
+  added to the client. The surviving `messages` cases (`update`, session-less notifications) folding into
+  the stream come next. See `docs/feed-plan.md`.
+
 ## [0.348.0] — 2026-08-14
 ### Added
 - **A unified activity feed (`os.feed`) — one stream to replace the inbox/tasks/sessions/notifications
