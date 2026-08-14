@@ -140,7 +140,10 @@ export interface RuntimeSpecInfo {
  *  code back, and the runtime's own CLI writes the credential dir. */
 export type LoginPhase = 'starting' | 'awaiting-code' | 'exchanging' | 'done' | 'failed'
 export interface RuntimeLogin { id: string; runtime: string; name: string; phase: LoginPhase; url?: string; error?: string; startedAt: number }
-export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; error?: string }
+/** `refreshing` = `<runtime>/<name>` for each account whose usage snapshot is being re-probed in the
+ *  background right now (the read kicked it — see src/edge/runtime-account-usage.ts). The `accounts` in
+ *  THIS response are the pre-probe reading, so a non-empty list means "read again shortly for fresh %". */
+export interface RuntimeAccountsResp { accounts: RuntimeAccount[]; runtimes: RuntimeSpecInfo[]; logins?: RuntimeLogin[]; refreshing?: string[]; error?: string }
 
 export interface AgentInfo {
   id: string

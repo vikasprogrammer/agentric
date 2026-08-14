@@ -35,6 +35,7 @@ import { ensureConcierge, CONCIERGE_ID, ensureOperator, OPERATOR_ID } from './ed
 import { answerAsk } from './edge/ask';
 import { SlackSocket } from './edge/slack-socket';
 import { checkClaudeToken, credentialDirHasLogin, readConfigDirToken, RuntimeCheckResult } from './edge/runtime-account-check';
+import { refreshStaleUsage } from './edge/runtime-account-usage';
 import { ClickupIngress } from './edge/clickup-ingress';
 import { DiscordSocket } from './edge/discord-socket';
 import { TelegramSocket } from './edge/telegram-socket';
@@ -4394,6 +4395,11 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   // usage quota. Empty pool = inert (box default). Never returns an api-key VALUE — only its vault ref.
   if (method === 'GET' && p === '/api/runtime-accounts') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    // Kick a background re-probe of any account whose usage snapshot has gone stale, so the percentages on
+    // this table are about the CURRENT quota window rather than whenever a human last hit Refresh. Fire and
+    // forget: `accounts` below is the pre-probe reading, and `refreshing` tells the console to re-read once
+    // the probes land (see src/edge/runtime-account-usage.ts).
+    const { refreshing } = refreshStaleUsage(os);
     const accounts = os.runtimeAccounts.list();
     // `liveCredentialKinds` rides along so the console offers only kinds that actually launch, and badges any
     // pre-existing row of a kind that doesn't (added before the launcher knew the difference) as never-used.
@@ -4403,7 +4409,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // but uid isolation rules it out per-deployment), so the UI offers the guided path only when it works.
       guidedLogin: tm.logins.supported(s.id).ok,
     }));
-    return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list() });
+    return sendJson(res, 200, { accounts, runtimes, logins: tm.logins.list(), refreshing });
   }
   if (method === 'POST' && p === '/api/runtime-accounts') {
     if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
