@@ -1090,6 +1090,18 @@ function migrate(db: Db): void {
   db.exec(`UPDATE term_sessions SET run_as = (SELECT m.id FROM members m WHERE m.email = lower(term_sessions.run_as))
              WHERE run_as IS NOT NULL AND instr(run_as, '@') > 0
                AND EXISTS (SELECT 1 FROM members m WHERE m.email = lower(term_sessions.run_as))`);
+
+  // WHEN an approval was decided (epoch ms), NULL while pending. `questions` already records `answered_at`;
+  // this brings approvals to parity so the unified feed (src/state/feed.ts) can order a RESOLVED decision
+  // by when you decided it, not by when it was raised — without a per-row scan of `audit_events`.
+  addColumn(db, 'approvals', 'resolved_at', 'INTEGER');
+
+  // Indices the feed view leans on: sessions ordered by recency within a state, pending decisions, and the
+  // session→task→goal attribution join (tasks.last_session_id). All IF NOT EXISTS, so a no-op on re-run.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_status_updated ON term_sessions(status, updated_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_last_session ON tasks(last_session_id)');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

@@ -156,7 +156,7 @@ export class SqliteApprovals implements Approvals {
   resolve(id: string, approved: boolean, by: string): void {
     const row = this.db.prepare('SELECT status FROM approvals WHERE id = ?').get<{ status: string }>(id);
     if (!row || row.status !== 'pending') return;
-    this.db.prepare('UPDATE approvals SET status = ?, resolved_by = ? WHERE id = ?').run(approved ? 'approved' : 'rejected', by, id);
+    this.db.prepare('UPDATE approvals SET status = ?, resolved_by = ?, resolved_at = ? WHERE id = ?').run(approved ? 'approved' : 'rejected', by, Date.now(), id);
     const waiter = this.waiters.get(id);
     if (waiter) {
       waiter(approved);
@@ -167,7 +167,7 @@ export class SqliteApprovals implements Approvals {
   cancel(id: string, by: string): boolean {
     const row = this.db.prepare('SELECT status FROM approvals WHERE id = ?').get<{ status: string }>(id);
     if (!row || row.status !== 'pending') return false;
-    this.db.prepare("UPDATE approvals SET status = 'cancelled', resolved_by = ? WHERE id = ?").run(by, id);
+    this.db.prepare("UPDATE approvals SET status = 'cancelled', resolved_by = ?, resolved_at = ? WHERE id = ?").run(by, Date.now(), id);
     const waiter = this.waiters.get(id);
     if (waiter) {
       waiter(false); // deny — the gated effect must not proceed
