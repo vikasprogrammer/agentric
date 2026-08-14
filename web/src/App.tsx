@@ -15,7 +15,7 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
-import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type FeedTrailStep } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -1729,7 +1729,7 @@ function Console({ me }: { me: Member }) {
           {route === 'team' && <TeamPage me={me} onProfileChange={refreshState} />}
           {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} sessions={sessions} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} agentFilter={detail} />}
-          {route === 'feed' && <FeedPage me={me} members={members} nav={nav} />}
+          {route === 'feed' && <FeedPage me={me} members={members} sessions={sessions} nav={nav} onOpen={openTerminal} query={urlQuery} setQuery={setUrlQuery} />}
           {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} />}
           {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
@@ -5280,27 +5280,40 @@ function provenanceHint(spawnedBy: string | null): string | null {
   return null
 }
 
-/** Prettify a trail step's raw kind (audit type / task.<kind>) into a human label. */
-function trailLabel(step: FeedTrailStep): string {
-  const k = step.kind
-  const d = step.detail as Record<string, unknown> | string | null
-  if (k === 'approval.requested') return 'Approval requested'
-  if (k === 'approval.decided' || k === 'approval.resolved') return d && typeof d === 'object' && d.approved ? 'Approved' : 'Decided'
-  if (k === 'question.asked') return 'Question asked'
-  if (k === 'question.answered') return 'Answered'
-  if (k === 'gate.decision') return 'Action ran'
-  if (k.startsWith('task.')) return typeof d === 'string' && d ? d : k.slice(5)
-  return k.replace(/[._]/g, ' ')
+/** Compact token count for a session line: "512 tok" / "12.3k tok" / "1.4M tok". */
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}k tok`
+  return `${n} tok`
 }
 
-function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r: Route, detail?: string) => void }) {
-  const [lens, setLens] = useState<'feed' | 'goals'>('goals')
-  const [filter, setFilter] = useState<FeedFilter>('all')
+/** Whether a feed line points at a session we can open (a session line, or a card that carries a run id
+ *  matching a live session). */
+function isSessionKind(it: FeedItem): boolean {
+  return it.kind.startsWith('session')
+}
+
+function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me: Member; members: Member[]; sessions: Session[]; nav: (r: Route, detail?: string) => void; onOpen: (tmux: string, title: string) => void; query: string; setQuery: (params: Record<string, string>) => void }) {
+  const waiting = useWaiting()
+  // Lens + filter live in the URL (?lens=&filter=), so a refresh restores exactly what you were looking
+  // at and there is no forced default — you land on whatever you last selected.
+  const params = new URLSearchParams(query)
+  const lens: 'feed' | 'goals' = params.get('lens') === 'goals' ? 'goals' : 'feed'
+  const rawFilter = params.get('filter')
+  const filter: FeedFilter = (['all', 'needsYou', 'running', 'done'] as const).includes(rawFilter as FeedFilter) ? (rawFilter as FeedFilter) : 'all'
+  const setUrl = (next: { lens?: 'feed' | 'goals'; filter?: FeedFilter }) => {
+    const l = next.lens ?? lens
+    const f = next.filter ?? filter
+    const p: Record<string, string> = { lens: l }
+    if (l === 'feed' && f !== 'all') p.filter = f
+    setQuery(p)
+  }
+
   const [openGoals, setOpenGoals] = useState<Set<string>>(new Set()) // goal sections start collapsed
+  const [expanded, setExpanded] = useState<Set<string>>(new Set()) // which snippets are shown in full
   const [limit, setLimit] = useState(40)
   const [page, setPage] = useState<FeedResponse | null>(null)
   const [progress, setProgress] = useState<Record<string, GoalProgress>>({})
-  const [trails, setTrails] = useState<Record<string, FeedTrailStep[] | 'loading'>>({})
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [replyTo, setReplyTo] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
@@ -5325,13 +5338,8 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
 
   const items = page?.items ?? []
   const counts = page?.counts
+  const sessionById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions])
 
-  const toggleTrail = async (runId: string) => {
-    if (trails[runId]) { setTrails((t) => { const n = { ...t }; delete n[runId]; return n }); return }
-    setTrails((t) => ({ ...t, [runId]: 'loading' }))
-    const r = await api.feedTrail(runId).catch(() => ({ steps: [] as FeedTrailStep[] }))
-    setTrails((t) => ({ ...t, [runId]: r.steps ?? [] }))
-  }
   const markBusy = (uid: string, on: boolean) => setBusy((b) => { const n = new Set(b); on ? n.add(uid) : n.delete(uid); return n })
   const decide = async (it: FeedItem, approved: boolean) => {
     markBusy(it.uid, true)
@@ -5344,18 +5352,49 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
     await api.answerQuestion(it.ref.id, text).catch(() => {})
     markBusy(it.uid, false); load()
   }
+  // Open the associated session: its live terminal if we still have the row, else the Sessions page.
+  const canOpen = (it: FeedItem): boolean => Boolean(it.runId) && (sessionById.has(it.runId) || isSessionKind(it))
+  const openSession = (it: FeedItem) => {
+    const s = sessionById.get(it.runId)
+    if (s) onOpen(s.tmux, s.title || it.agent || 'Session')
+    else nav('sessions', it.runId)
+  }
+  const toggleExpand = (uid: string) => setExpanded((s) => { const n = new Set(s); n.has(uid) ? n.delete(uid) : n.add(uid); return n })
 
   // ── shared line renderer ──
+  // The activity snippet: the agent is already shown as a chip below, so the snippet is JUST the text —
+  // clamped to two lines with a More/Less toggle when it's long, so a chatty summary can't dominate.
+  const snippet = (it: FeedItem, quoted = false) => {
+    if (!it.title) return null
+    const long = it.title.length > 150
+    const open = expanded.has(it.uid)
+    const text = quoted ? `“${it.title}”` : it.title
+    return (
+      <div className="text-sm text-foreground/90">
+        <div className={long && !open ? 'line-clamp-2' : ''}>{text}</div>
+        {long && (
+          <button onClick={() => toggleExpand(it.uid)} className="mt-0.5 text-xs font-medium text-muted-foreground hover:text-foreground">
+            {open ? 'Less' : 'More'}
+          </button>
+        )}
+      </div>
+    )
+  }
+
   const attribution = (it: FeedItem) => {
     const prov = provenanceHint(it.spawnedBy)
+    const s = isSessionKind(it) ? sessionById.get(it.runId) : undefined
     return (
       <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
         {it.agent && <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-medium text-foreground/80"><Bot className="h-3 w-3" />{it.agent}</span>}
+        {/* the session's status word, exactly as the Sessions page renders it (same sessionState + tones) */}
+        {s && <span className={statusTone(s, waiting.has(s.id))}>{statusLabel(s, waiting.has(s.id))}</span>}
         {it.runAs && <span className="inline-flex items-center gap-1">for <PrincipalTag id={it.runAs} members={members} /></span>}
         {prov && <span>· {prov}</span>}
         {it.goal && <button onClick={() => nav('goals', it.goal!.id)} className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 hover:text-foreground"><Target className="h-3 w-3" />{it.goal.title}</button>}
-        {typeof it.costUsd === 'number' && it.costUsd > 0 && <span className="tabular-nums">${it.costUsd.toFixed(2)}</span>}
+        {typeof it.tokens === 'number' && it.tokens > 0 && <span className="tabular-nums">{formatTokenCount(it.tokens)}</span>}
         <span className="tabular-nums">{timeAgo(it.ts)}</span>
+        {canOpen(it) && <button onClick={() => openSession(it)} className="inline-flex items-center gap-1 hover:text-foreground"><ExternalLink className="h-3 w-3" />Open</button>}
       </div>
     )
   }
@@ -5370,7 +5409,6 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
         <div className="mt-2 flex gap-2">
           <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy.has(it.uid)} onClick={() => decide(it, true)}><Check className="mr-1 h-3.5 w-3.5" />Approve</Button>
           <Button size="sm" variant="destructive" className="h-7 px-2.5 text-xs" disabled={busy.has(it.uid)} onClick={() => decide(it, false)}><X className="mr-1 h-3.5 w-3.5" />Deny</Button>
-          <Button size="sm" variant="ghost" className="h-7 px-2.5 text-xs" onClick={() => nav('sessions', it.runId)}>Open</Button>
         </div>
       )
     }
@@ -5385,77 +5423,38 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
         </div>
       )
       return (
-        <div className="mt-2 flex gap-2">
+        <div className="mt-2">
           <Button size="sm" className="h-7 px-2.5 text-xs" disabled={busy.has(it.uid)} onClick={() => { setReplyTo(it.uid); setReplyText('') }}><Send className="mr-1 h-3.5 w-3.5" />Reply</Button>
-          <Button size="sm" variant="ghost" className="h-7 px-2.5 text-xs" onClick={() => nav('sessions', it.runId)}>Open thread</Button>
         </div>
       )
     }
     return null
   }
 
-  const trailBlock = (it: FeedItem) => {
-    if (!it.hasTrail) return null
-    const t = trails[it.runId]
-    return (
-      <div className="mt-2">
-        <button onClick={() => toggleTrail(it.runId)} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-          {t ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          {t ? 'Hide history' : 'Show history'}
-        </button>
-        {t === 'loading' && <div className="mt-1 pl-4 text-xs text-muted-foreground">Loading…</div>}
-        {Array.isArray(t) && (
-          t.length === 0
-            ? <div className="mt-1 pl-4 text-xs text-muted-foreground">No recorded steps.</div>
-            : <ol className="mt-2 space-y-2 border-l border-border pl-3.5">
-                {t.map((s, i) => (
-                  <li key={i} className="relative text-xs">
-                    <span className={`absolute -left-[18px] top-1 h-2 w-2 rounded-full ${s.source === 'task' ? 'bg-emerald-500' : 'bg-muted-foreground/50'}`} />
-                    <span className="font-medium text-foreground/80">{trailLabel(s)}</span>
-                    {s.author && <span className="text-muted-foreground"> · {principalLabel(s.author, members)}</span>}
-                    <span className="ml-1 tabular-nums text-muted-foreground">{timeAgo(s.ts)}</span>
-                  </li>
-                ))}
-              </ol>
-        )}
-      </div>
-    )
-  }
-
   const line = (it: FeedItem) => {
     const isDecision = it.state === 'decision'
     const isQuestion = it.kind.startsWith('question')
-    const body = (
-      <>
-        {isDecision ? (
-          <div className={`rounded-lg border px-3 py-2.5 ${isQuestion ? 'border-sky-300 bg-sky-50/40 dark:border-sky-500/30 dark:bg-sky-500/5' : 'border-amber-300 bg-amber-50/40 dark:border-amber-500/30 dark:bg-amber-500/5'}`}>
-            <div className={`text-[11px] font-medium uppercase tracking-wide ${isQuestion ? 'text-sky-600' : 'text-amber-600'}`}>
-              {isQuestion ? 'Question' : `Approval${it.capability ? ` · ${it.capability}` : ''}`}
-            </div>
-            <div className="mt-1 text-sm">
-              {isQuestion ? <><span className="font-medium">{it.agent}</span> asked: “{it.title}”</> : it.title}
-            </div>
-            {attribution(it)}
-            {decisionActions(it)}
-          </div>
-        ) : (
-          <div>
-            <div className="text-sm">
-              {it.agent && <span className="font-medium">{it.agent}</span>}
-              {it.agent && it.title && <span className="text-muted-foreground"> · </span>}
-              {it.title && <span className="text-foreground/90">{it.title}</span>}
-            </div>
-            {attribution(it)}
-            {trailBlock(it)}
-          </div>
-        )}
-      </>
+    const s = isSessionKind(it) ? sessionById.get(it.runId) : undefined
+    const body = isDecision ? (
+      <div className={`rounded-lg border px-3 py-2.5 ${isQuestion ? 'border-sky-300 bg-sky-50/40 dark:border-sky-500/30 dark:bg-sky-500/5' : 'border-amber-300 bg-amber-50/40 dark:border-amber-500/30 dark:bg-amber-500/5'}`}>
+        <div className={`text-[11px] font-medium uppercase tracking-wide ${isQuestion ? 'text-sky-600' : 'text-amber-600'}`}>
+          {isQuestion ? 'Question' : `Approval${it.capability ? ` · ${it.capability}` : ''}`}
+        </div>
+        <div className="mt-1">{snippet(it, isQuestion)}</div>
+        {attribution(it)}
+        {decisionActions(it)}
+      </div>
+    ) : (
+      <div>
+        {snippet(it)}
+        {attribution(it)}
+      </div>
     )
     return (
       <div key={it.uid} className="flex gap-3">
         <div className="flex flex-col items-center">
           <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-muted/60">
-            <RoleIcon role={feedItemRole(it)} label={it.kind} className="h-4 w-4" />
+            {s ? <SessionStatus s={s} iconClass="h-4 w-4" /> : <RoleIcon role={feedItemRole(it)} label={it.kind} className="h-4 w-4" />}
           </span>
           <span className="w-px flex-1 bg-border" />
         </div>
@@ -5482,8 +5481,8 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
       {/* controls: lens + (feed-only) filters */}
       <div className="sticky top-0 z-10 -mx-1 mb-3 flex flex-wrap items-center gap-2 bg-background/85 px-1 py-2 backdrop-blur">
         <div className="inline-flex rounded-lg border border-border bg-muted/40 p-0.5">
-          <button onClick={() => setLens('feed')} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium ${lens === 'feed' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}><List className="h-3.5 w-3.5" />Feed</button>
-          <button onClick={() => setLens('goals')} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium ${lens === 'goals' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}><Target className="h-3.5 w-3.5" />Goals</button>
+          <button onClick={() => setUrl({ lens: 'feed' })} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium ${lens === 'feed' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}><List className="h-3.5 w-3.5" />Feed</button>
+          <button onClick={() => setUrl({ lens: 'goals' })} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium ${lens === 'goals' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'}`}><Target className="h-3.5 w-3.5" />Goals</button>
         </div>
         {lens === 'feed' && (
           <div className="flex flex-wrap gap-1.5">
@@ -5492,7 +5491,7 @@ function FeedPage({ me, members, nav }: { me: Member; members: Member[]; nav: (r
               const on = filter === f.key
               const amber = f.key === 'needsYou'
               return (
-                <button key={f.key} onClick={() => setFilter(f.key)}
+                <button key={f.key} onClick={() => setUrl({ filter: f.key })}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${on ? (amber ? 'border-transparent bg-amber-500/15 text-amber-600' : 'border-transparent bg-primary/10 text-primary') : 'border-border bg-card text-muted-foreground hover:text-foreground'}`}>
                   {f.label}{typeof n === 'number' && n > 0 && <span className="tabular-nums opacity-80">{n}</span>}
                 </button>

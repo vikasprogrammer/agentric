@@ -1562,6 +1562,7 @@ export interface FeedItem {
   args: unknown | null
   status: string | null // pending | approved | rejected | cancelled | answered | <session status>
   costUsd: number | null
+  tokens: number | null // input + output tokens (session lines)
   outcome: string | null
   rating: string | null
   hasTrail: boolean
