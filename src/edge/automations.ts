@@ -570,17 +570,21 @@ export class Automations {
 
   /**
    * Wake a CALLER agent with a completion poke — the "really done" signal a delegate sends back when it
-   * finishes a `poke_on_done` hand-off. Two delivery paths, chosen by whether the caller's transcript
-   * still has a LIVE session:
+   * finishes a `poke_on_done` hand-off. Three delivery paths, tried in order — deliver to a live pane
+   * before ever starting a claude, because the agent's sessions all share ONE workspace folder:
    *
    *  - **Live caller → inject** (the common interactive/resident case). The caller ended its turn and is
    *    sitting IDLE at the prompt — it will NOT observe the delegate's completion on its own (the bug this
    *    fixes: an interactive session had to be told "check that task status" by hand). So we type the poke
    *    into its live pane (`injectToSession`, submit): an idle claude runs it immediately, a mid-turn
    *    claude queues it to the next turn boundary — never a competing `--resume` on one conversation.
-   *  - **Dead caller → resume** (a headless caller that exited at turn-end). Nothing to type into, so we
-   *    `--resume` `callerClaudeId` in a fresh `poke:` run with `message` as the next turn, and the caller
-   *    continues its OWN plan with full context.
+   *  - **Cold transcript, but the AGENT is live elsewhere → inject into that sibling.** The caller's own
+   *    conversation exited, yet the same agent is mid-run under another transcript (a cron sweep, a
+   *    console run). Resuming would put a rival claude in its workspace, so the poke goes to the warm
+   *    pane instead — the message carries the task id, title and result, so it needs no prior context.
+   *  - **Nothing of this agent is live → resume** (a headless caller that exited at turn-end). Nothing to
+   *    type into, so we `--resume` `callerClaudeId` in a fresh `poke:` run with `message` as the next
+   *    turn, and the caller continues its OWN plan with full context.
    *
    * Fires IMMEDIATELY (unlike schedule(), whose 1-min floor makes it a scheduler, not a wake). The delegate
    * (task assignee) is always the actor, never the caller, so this can't self-wake. Audited `agent.poked`.
@@ -618,6 +622,36 @@ export class Automations {
       // claude still holds is worse than a late poke.
       if (injected.ok) return { ok: true, sessionId: liveSession.id, tmux: liveSession.tmux };
       this.tm.stopSession(liveSession.id, 'system');
+    }
+    // The caller's OWN transcript is cold — but liveness has a second axis the transcript lookup can't
+    // see: the caller AGENT may be working right now under a DIFFERENT transcript (its cron sweep, a
+    // console run, another hand-off). All of an agent's sessions run out of ONE workspace folder, so a
+    // `--resume` here puts a second claude in the same directory as a live one — the pile-up every other
+    // dispatch path already guards against (`dispatchTasks`, `dispatchTask({guard})`, chat continuation),
+    // and the poke was the only lane with no per-agent guard. Live on northwind 2026-08-16: task
+    // `tsk_f2d63c5f` closed while `check-resolve-tickets` had been running since 12:36 under transcript
+    // `a2182167`; the poke resumed the caller's 2-DAY-OLD transcript `83bc1aa7` into `ses_8e3da48b` and
+    // both panes ran the same agent's workspace at once.
+    // The poke message is self-contained (task id, title, delegate's note), so a warm sibling can act on
+    // it with no transcript context — delivering there beats both a rival claude and a dropped wake-up.
+    const sibling = this.db
+      .prepare('SELECT id, tmux FROM term_sessions WHERE agent = ? ORDER BY created_at DESC LIMIT 50')
+      .all<{ id: string; tmux: string }>(agentId)
+      .find((r) => this.tm.reachable(r.id));
+    if (sibling) {
+      const injected = this.tm.injectToSession(sibling.id, input.message, true, input.runAs ? `member:${input.runAs}` : 'system');
+      this.os.audit.append({
+        ts: Date.now(),
+        runId: sibling.id,
+        tenant: this.os.tenant,
+        principal: input.runAs ? `member:${input.runAs}` : 'system',
+        type: 'agent.poked',
+        data: { caller: agentId, source: input.source, runAs: input.runAs ?? null, via: 'inject-sibling', transcript: input.callerClaudeId, ok: injected.ok },
+      });
+      // Unlike the same-transcript lane above, a failed inject here must NOT kill the pane: that session
+      // is doing unrelated work for someone else. Fall through to the resume so the poke isn't dropped —
+      // a rare wedged-TUI pile-up is the lesser cost.
+      if (injected.ok) return { ok: true, sessionId: sibling.id, tmux: sibling.tmux };
     }
     const s = this.tm.createSession(agentId, input.title ?? `Poke ← ${input.source}`, input.message, `poke:${input.source}`, true, undefined, undefined, input.runAs, input.callerClaudeId);
     this.os.audit.append({
