@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.353.0] — 2026-08-16
+### Added
+- **Feed time window (default last 24h) for fast loading.** A window selector — Last 24 hours / 2 days /
+  7 days / 30 days — bounds the stream, defaulting to **24h** so the first paint is small and quick. The
+  window is persisted in the URL (`?win=`) alongside lens/filter, and `since` is computed fresh on every
+  load/poll from the token (the URL stores the window, not a frozen timestamp). Crucially the window
+  prunes only the **done/info history** — a `running` session or an **open decision** (a pending approval
+  from days ago) always shows regardless of window, so speeding up the load never hides live work or
+  something that needs you (`FeedStore.list({ since })` → `ts >= since OR state='running' OR
+  status='pending'`; `feed-smoke` covers it).
+### Changed
+- **`· via task` (and `· via automation`) is now a link** that opens the originating task/automation in a
+  new tab, so a run's provenance connects to what triggered it.
+
 ## [0.352.0] — 2026-08-16
 ### Added
 - **See what a running session is doing, and connect every feed line to its object.** Two related feed

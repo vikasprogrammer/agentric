@@ -5253,6 +5253,15 @@ function QuestionReply({ m }: { m: Msg }) {
 // between inbox · tasks · sessions · notifications.
 // ────────────────────────────────────────────────────────────────────────────
 
+// Time windows for the feed. Default 24h keeps the first paint small + fast; live sessions and open
+// decisions are shown regardless of window (the server never prunes those). `label` is the menu text.
+const FEED_WINDOWS: { key: string; days: number; label: string }[] = [
+  { key: '24h', days: 1, label: 'Last 24 hours' },
+  { key: '2d', days: 2, label: 'Last 2 days' },
+  { key: '7d', days: 7, label: 'Last 7 days' },
+  { key: '30d', days: 30, label: 'Last 30 days' },
+]
+
 const FEED_FILTERS: { key: FeedFilter; label: string; countKey?: keyof FeedResponse['counts'] }[] = [
   { key: 'all', label: 'All' },
   { key: 'needsYou', label: 'Needs you', countKey: 'needsYou' },
@@ -5301,11 +5310,16 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
   const lens: 'feed' | 'goals' = params.get('lens') === 'goals' ? 'goals' : 'feed'
   const rawFilter = params.get('filter')
   const filter: FeedFilter = (['all', 'needsYou', 'running', 'done'] as const).includes(rawFilter as FeedFilter) ? (rawFilter as FeedFilter) : 'all'
-  const setUrl = (next: { lens?: 'feed' | 'goals'; filter?: FeedFilter }) => {
+  const rawWin = params.get('win')
+  const win = FEED_WINDOWS.some((w) => w.key === rawWin) ? (rawWin as string) : '24h' // default: last 24h, fast load
+  const winDays = FEED_WINDOWS.find((w) => w.key === win)!.days
+  const setUrl = (next: { lens?: 'feed' | 'goals'; filter?: FeedFilter; win?: string }) => {
     const l = next.lens ?? lens
     const f = next.filter ?? filter
+    const w = next.win ?? win
     const p: Record<string, string> = { lens: l }
     if (l === 'feed' && f !== 'all') p.filter = f
+    if (w !== '24h') p.win = w
     setQuery(p)
   }
 
@@ -5324,15 +5338,18 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
   const effLimit = lens === 'goals' ? Math.max(limit, 80) : limit
 
   const load = async () => {
-    const p = await api.feed({ filter: effFilter, limit: effLimit }).catch(() => null)
+    // `since` is computed fresh on every load from the chosen window token, so a refresh (and each poll)
+    // uses a moving cutoff — the URL stores the window, not a frozen timestamp.
+    const since = Date.now() - winDays * 86_400_000
+    const p = await api.feed({ filter: effFilter, limit: effLimit, since }).catch(() => null)
     if (p && Array.isArray(p.items)) setPage(p)
   }
-  useEffect(() => { setPage(null); load() /* eslint-disable-next-line */ }, [effFilter, effLimit])
+  useEffect(() => { setPage(null); load() /* eslint-disable-next-line */ }, [effFilter, effLimit, win])
   useEffect(() => {
     const t = setInterval(() => { if (!replyTo) load() }, 4000)
     return () => clearInterval(t)
     /* eslint-disable-next-line */
-  }, [effFilter, effLimit, replyTo])
+  }, [effFilter, effLimit, win, replyTo])
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
   useEffect(() => { if (lens === 'goals') api.goals().then((r) => setProgress(r.progress ?? {})).catch(() => {}) }, [lens])
 
@@ -5388,8 +5405,20 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     )
   }
 
+  // The provenance hint — and when it points at a real object (a task/automation that spawned the run),
+  // make it a link that opens that object in a new tab.
+  const provChip = (it: FeedItem) => {
+    const sb = it.spawnedBy
+    const label = provenanceHint(sb)
+    if (!sb || !label) return null
+    const href = sb.startsWith('task:') ? navHref('tasks', sb.slice(5))
+      : sb.startsWith('automation:') ? navHref('automations', sb.slice('automation:'.length))
+      : null
+    if (href) return <a href={href} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 hover:text-foreground hover:underline">· {label}<ExternalLink className="h-2.5 w-2.5" /></a>
+    return <span>· {label}</span>
+  }
+
   const attribution = (it: FeedItem) => {
-    const prov = provenanceHint(it.spawnedBy)
     const s = isSessionKind(it) ? sessionById.get(it.runId) : undefined
     return (
       <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
@@ -5397,7 +5426,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
         {/* the session's status word, exactly as the Sessions page renders it (same sessionState + tones) */}
         {s && <span className={statusTone(s, waiting.has(s.id))}>{statusLabel(s, waiting.has(s.id))}</span>}
         {it.runAs && <span className="inline-flex items-center gap-1">for <PrincipalTag id={it.runAs} members={members} /></span>}
-        {prov && <span>· {prov}</span>}
+        {provChip(it)}
         {it.goal && <button onClick={() => nav('goals', it.goal!.id)} className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 hover:text-foreground"><Target className="h-3 w-3" />{it.goal.title}</button>}
         {typeof it.tokens === 'number' && it.tokens > 0 && <span className="tabular-nums">{formatTokenCount(it.tokens)}</span>}
         <span className="tabular-nums">{timeAgo(it.ts)}</span>
@@ -5513,12 +5542,19 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
             })}
           </div>
         )}
-        {lens === 'goals' && goalGroups.length > 0 && (
-          <Button size="sm" variant="ghost" className="ml-auto text-xs text-muted-foreground"
-            onClick={() => setOpenGoals(allGoalsOpen ? new Set() : new Set(goalGroups.map((g) => g.id)))}>
-            {allGoalsOpen ? 'Collapse all' : 'Expand all'}
-          </Button>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {lens === 'goals' && goalGroups.length > 0 && (
+            <Button size="sm" variant="ghost" className="text-xs text-muted-foreground"
+              onClick={() => setOpenGoals(allGoalsOpen ? new Set() : new Set(goalGroups.map((g) => g.id)))}>
+              {allGoalsOpen ? 'Collapse all' : 'Expand all'}
+            </Button>
+          )}
+          {/* time window — default 24h keeps the load small; live + pending items always show regardless */}
+          <select value={win} onChange={(e) => setUrl({ win: e.target.value })} aria-label="Time window"
+            className="rounded-md border border-border bg-card px-2 py-1 text-xs text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            {FEED_WINDOWS.map((w) => <option key={w.key} value={w.key}>{w.label}</option>)}
+          </select>
+        </div>
       </div>
 
       {/* stream */}
@@ -5526,7 +5562,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
         <div className="py-16 text-center text-sm text-muted-foreground">Loading the fleet’s activity…</div>
       ) : items.length === 0 ? (
         <div className="py-16 text-center text-sm text-muted-foreground">
-          {filter === 'needsYou' ? 'Nothing needs you right now. The fleet is running itself.' : 'No activity to show.'}
+          {filter === 'needsYou' ? 'Nothing needs you right now. The fleet is running itself.' : `No activity in the ${(FEED_WINDOWS.find((w) => w.key === win)!.label).toLowerCase()}. Try a longer window.`}
         </div>
       ) : lens === 'feed' ? (
         <>
