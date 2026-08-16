@@ -175,12 +175,19 @@ console.log('\n\x1b[1m7) the caller transcript is cold but the AGENT is live els
   assert(sentTo(warm).some((i) => i.text.includes('tsk_7')), 'and it carries the task, so no transcript context is needed');
   assert(sentTo(cold).length === 0, 'nothing typed at the retired transcript');
   assert(pokeAudit(warm).some((d) => d.via === 'inject-sibling' && d.transcript === 'cs-cold'), 'audited via:inject-sibling with the transcript it stood in for', pokeAudit(warm));
-  // A wedged sibling must NOT be killed — it is doing someone else's work; fall through instead.
+  // A wedged sibling must NOT be killed — it is doing someone else's work. Since v0.355.0 the wake-up is
+  // HELD in the queue for the next tick rather than falling through to a resume: the fall-through only
+  // existed because there was nowhere to keep the message, and "late" beats a second claude in a live
+  // workspace. See scripts/wakeup-queue-test.cjs for the retry that then delivers it.
   injectWorks = false;
   const r2 = poke('cs-cold', 'tsk_7b');
   injectWorks = true;
-  assert(spawned.length === before + 1, 'a failed sibling inject still resumes — the poke is never dropped', r2);
-  assert(livePanes.has('aos-' + warm), 'and the sibling pane survives (it is not the poke\'s to end)');
+  assert(spawned.length === before, 'a failed sibling inject spawns NOTHING — the wake-up is queued, not dropped', r2);
+  assert(/queued/.test(r2.reason || ''), 'and it says so', r2);
+  assert(livePanes.has('aos-' + warm), 'the sibling pane survives (it is not the poke\'s to end)');
+  livePanes.delete('aos-' + warm);                       // the sibling finally exits…
+  autos.wakeups.sweep();                                 // …and the scheduler retry gets it out
+  assert(spawned.length === before + 1, 'the retry delivers it once the agent is free', spawned[spawned.length - 1]);
   idleAgent();
 }
 

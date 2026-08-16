@@ -752,6 +752,33 @@ function migrate(db: Db): void {
       updated_at   INTEGER NOT NULL
     );
 
+    -- The agent WAKE QUEUE (src/edge/wakeups.ts). One row per "something this agent was waiting on has
+    -- happened" — today a delegate closing a poke_on_done hand-off. Producers only ever INSERT here;
+    -- a single deliverer picks the destination (own pane → any pane of that agent → resume) and marks
+    -- the row delivered. Making the wake-up durable is the point: an undeliverable one stays pending
+    -- and the scheduler retries it, instead of the fire-time decision that produced four lane-choice
+    -- bugs (v0.307.0 / v0.334.1 / v0.334.2 / v0.354.1 — see the module header).
+    -- (agent, source, kind) is the dedupe key while pending: a delegate flip-flopping done→blocked→done
+    -- wakes its caller once, with the latest message.
+    CREATE TABLE IF NOT EXISTS agent_wakeups (
+      id                TEXT PRIMARY KEY,
+      tenant            TEXT NOT NULL,
+      agent             TEXT NOT NULL,          -- the CALLER agent id (bare, no agent: prefix)
+      source            TEXT NOT NULL,          -- what woke it — a task id today
+      kind              TEXT NOT NULL,          -- wake class: 'poke' (room for 'approval', …)
+      transcript        TEXT NOT NULL,          -- caller's pinned claude session id — the resume target
+      run_as            TEXT,                   -- member the woken run acts as (identity passthrough)
+      title             TEXT,                   -- session title for the resume lane
+      message           TEXT NOT NULL,          -- must stand alone: a sibling session has no shared context
+      status            TEXT NOT NULL,          -- 'pending' | 'delivered' | 'expired'
+      attempts          INTEGER NOT NULL DEFAULT 0,
+      delivered_via     TEXT,                   -- 'inject' | 'inject-sibling' | 'resume' | 'none'
+      delivered_session TEXT,                   -- the session that received it
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_wakeups_pending ON agent_wakeups (status, agent);
+
     -- Runtime account POOL for launch-time credential rotation, generic across coding runtimes. Each row is
     -- one set of credentials for a given runtime (claude-code | codex | …) the launcher can run a session
     -- under; when one hits its usage limit the selector rotates to the next available account for the SAME

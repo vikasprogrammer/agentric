@@ -383,6 +383,39 @@ Widening the pile-up guards is bounded, not open-ended: the idle sweep's DONE-OR
 to reap an unattended `done` row still holding a pane, and a human forcing work through passes
 `guard: false`. Pinned by `scripts/poke-warm-caller-test.cjs`.
 
+### 3.6 The wake QUEUE — producers enqueue, one deliverer decides (`src/edge/wakeups.ts`)
+
+§3.5 fixed *which* liveness question to ask. It did not fix **where the question is asked**, and that was
+the actual defect: the lane was chosen inline, at fire time, by whichever producer happened to be firing,
+with no record that an attempt had been made. Four bugs came out of that one decision — the stranded
+hand-offs of §3.4 (a transition the delegate had to volunteer), the `status`-vs-pane lane of §3.5,
+`isAlive`'s ten wrong call sites, and finally liveness asked of the **transcript** instead of the **agent**:
+northwind 2026-08-16, task `tsk_f2d63c5f` closed while `check-resolve-tickets` had been running since 12:36
+under transcript `a2182167`, so the poke resumed its 2-day-old caller transcript `83bc1aa7` and both runs
+worked the same support ticket. Every fix was correct; none of them touched the class.
+
+So the decision moved behind a durable queue. Producers (`maybePokeCaller`, `sweepStrandedTasks`, anything
+later) only **enqueue** an `agent_wakeups` row; `WakeupQueue.deliver` is the only code that picks a
+destination, and it does so **per AGENT, never per transcript** — because all of an agent's sessions run
+out of one workspace folder, so the agent is the real unit of exclusion:
+
+1. a live session on the wake-up's **own transcript** — the caller continues its own plan;
+2. any other live session of that agent — the message carries the task id, title and the delegate's note,
+   so it stands alone, and it beats starting a rival claude;
+3. nothing of that agent is live → `--resume` the transcript in a fresh `poke:` run.
+
+What the row buys, beyond one code path: **enqueue still delivers synchronously** (the tick is the retry,
+not the schedule, so a poke lands in the same second it fires); an undeliverable wake-up **stays pending**
+instead of being decided-and-forgotten — a wedged sibling is left alone rather than resumed past, and the
+concurrency cap defers the resume lane rather than dropping it; a hand-off re-fired while pending
+(done→blocked→done) wakes the caller **once**, with the latest message; several pending wake-ups
+**coalesce** into one resume carrying all of them, so N delegates finishing while the caller is down cost
+one claude and lose nothing. And it fails **loudly**: after 5 attempts (or 24h) the wake-up expires with an
+`agent.wakeup.expired` audit and an inbox card to the run's owner quoting the message that never landed —
+a queue whose failure mode is a silent row would be the original bug wearing a different hat.
+
+Pinned by `scripts/wakeup-queue-test.cjs`.
+
 ---
 
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`

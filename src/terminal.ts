@@ -6126,6 +6126,25 @@ export class TerminalManager {
   }
 
   /**
+   * A queued wake-up gave up (see `src/edge/wakeups.ts` → `expire`): the agent could not be reached after
+   * every retry, so a human is told what never landed. Addressed to the run's owner when there is one,
+   * else the admin tier — the alternative is a `pending` row nobody ever reads, which is the exact
+   * silence the wake queue exists to end. Deep-links to the source task like any other task card.
+   */
+  postWakeupExpired(agent: string, source: string, memberId: string | null, text: string): void {
+    const body = `This agent could not be woken after repeated attempts, so it never saw:\n\n${text}`;
+    this.addMessage({
+      type: 'task', sessionId: `task:${source}`, agent,
+      title: `Undelivered update for ${agent}`, body, status: 'open',
+      args: { taskId: source, event: 'wakeup.expired' },
+      audienceKind: memberId ? 'member' : 'admins', audienceId: memberId || undefined,
+    });
+    if (memberId) {
+      try { this.memberNotifier?.({ sessionId: `task:${source}`, agent, to: memberId, message: body, important: true }); } catch { /* advisory */ }
+    }
+  }
+
+  /**
    * Agent publishes a deliverable to the gallery: snapshots a file from its working folder, records
    * it with full provenance (the session's spawned_by → `source`), posts an 'artifact' inbox card,
    * and audits it. The file path is resolved STRICTLY under the agent's own folder by the store.

@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.355.0] — 2026-08-16
+### Changed
+- **Agent wake-ups are now a durable queue instead of a fire-time decision** (`src/edge/wakeups.ts`, new
+  `agent_wakeups` table). `pokeCaller` used to pick its delivery lane inline — type into the caller's pane,
+  or `--resume` its transcript — with no record that an attempt had been made, and four bugs came out of
+  that single decision (v0.307.0 stranded hand-offs, v0.334.1 status-vs-pane, v0.334.2 `isAlive`, v0.354.1
+  transcript-vs-agent liveness). Producers now only enqueue; one deliverer picks the destination **per
+  agent** (own pane → any pane of that agent → resume), because all of an agent's sessions share one
+  workspace folder. Consequences: an undeliverable wake-up stays `pending` and the scheduler retries it
+  (a wedged sibling is left alone rather than resumed past; the concurrency cap defers the resume lane
+  instead of dropping it); the same hand-off re-fired while pending wakes the caller **once**, with the
+  latest message; several pending wake-ups **coalesce** into one resume carrying all of them; and a
+  wake-up that can never land expires with an `agent.wakeup.expired` audit plus an inbox card to the run's
+  owner quoting what never arrived. Delivery is still synchronous on enqueue, so a poke lands in the same
+  second it fires. Pinned by `scripts/wakeup-queue-test.cjs`; docs/tasks-plan.md §3.6.
+
 ## [0.354.1] — 2026-08-16
 ### Fixed
 - **A completion poke no longer starts a second claude in a workspace the agent is already working in.**
