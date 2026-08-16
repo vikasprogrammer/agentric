@@ -47,6 +47,25 @@ export interface FeedItem {
   outcome: string | null;
   rating: string | null;
   hasTrail: boolean; // resolved/finished → the step-by-step history is fetchable
+  // the live object this line is ABOUT — so a click connects to it (a task card → its task, not a
+  // dead "session" id). Decoded from provenance/session_id; null for a session-less notification.
+  target: { kind: 'session' | 'task' | 'goal' | 'artifact'; id: string } | null;
+  // for a RUNNING session: the newest thing the agent just did, so you can watch progress without
+  // opening the terminal. Enriched by the route (classifyActivity over the audit tail); null otherwise.
+  lastActivity?: { primitive: string; summary: string; ts: number } | null;
+}
+
+/** Decode the object a feed line points at from its kind + run id. Session/approval/question lines are
+ *  about their session; a folded message card encodes its real target in `session_id` (`task:<id>`,
+ *  `goal:<id>`, a real session id, or blank for a session-less notification). */
+export function feedTarget(kind: string, runId: string): FeedItem['target'] {
+  if (kind.startsWith('session') || kind.startsWith('approval') || kind.startsWith('question'))
+    return runId ? { kind: 'session', id: runId } : null;
+  // message.* — runId is the card's session_id
+  if (runId.startsWith('task:')) return { kind: 'task', id: runId.slice(5) };
+  if (runId.startsWith('goal:')) return { kind: 'goal', id: runId.slice(5) };
+  if (runId && !runId.includes(':')) return { kind: 'session', id: runId }; // a real session (e.g. an update)
+  return null;
 }
 
 export interface FeedPage {
@@ -170,7 +189,10 @@ WITH feed AS (
     COALESCE(s.run_as, CASE WHEN m.audience_kind='member' THEN m.audience_id END) AS run_as,
     s.spawned_by AS spawned_by,
     t.goal_id AS goal_id, g.title AS goal_title,
-    CASE WHEN m.type IN ('update','notification') THEN COALESCE(NULLIF(m.body,''), m.title) ELSE m.title END AS title,
+    CASE
+      WHEN m.type IN ('update','notification') THEN COALESCE(NULLIF(m.body,''), m.title)
+      WHEN NULLIF(m.body,'') IS NOT NULL THEN m.title || ' — ' || m.body
+      ELSE m.title END AS title,
     NULL AS capability, NULL AS level, NULL AS args,
     m.status AS status, NULL AS cost_usd, NULL AS tokens, m.outcome AS outcome, NULL AS rating,
     CASE WHEN m.audience_kind='member' THEN m.audience_id ELSE NULL END AS aud_member
@@ -321,6 +343,7 @@ function mapRow(r: FeedRow): FeedItem {
     goal: r.goal_id ? { id: r.goal_id, title: r.goal_title ?? '(untitled goal)' } : null,
     title: r.title ?? '',
     ref: { table: r.ref_table, id: r.ref_id },
+    target: feedTarget(r.kind, r.run_id),
     capability: r.capability,
     level: r.level,
     args: r.args ? safeParse(r.args) : null,

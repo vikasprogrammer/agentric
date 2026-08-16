@@ -55,6 +55,9 @@ run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,audience_k
 // an agent 'update' note on the running session (sessionOwner audience → scopes via the session)
 run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,audience_kind,audience_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
   'u1', 'update', 's_run', 'support-triage', 'Task Update', 'Progress: 3 of 5 tickets done', 'open', 'sessionOwner', 's_run', T(15));
+// a 'task' card: session_id encodes the real task (task:T9), body carries the task title
+run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,audience_kind,audience_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  'tk1', 'task', 'task:T9', 'docs-writer', 'Task done', 'Write the API reference', 'open', 'member', 'm1', T(11));
 // excluded: an 'approval' mirror (its own branch) and a 'completed' card (dupes session.done)
 run(`INSERT INTO messages (id,type,session_id,agent,title,body,status,created_at) VALUES (?,?,?,?,?,?,?,?)`,
   'x1', 'approval', 's_run', 'support-triage', 'Approval', '...', 'pending', T(13));
@@ -71,17 +74,23 @@ const admin = { id: 'boss', isAdmin: true };
 const m1 = { id: 'm1', isAdmin: false };
 const m2 = { id: 'm2', isAdmin: false };
 
-// 1) admin sees the 5 core items + 2 folded messages (n1, u1); the 3 excluded ones never appear
+// 1) admin sees the 5 core items + 3 folded messages (n1, u1, tk1); the 3 excluded ones never appear
 const all = feed.list({ viewer: admin });
-assert.strictEqual(all.items.length, 7, `expected 7 items, got ${all.items.length}`);
+assert.strictEqual(all.items.length, 8, `expected 8 items, got ${all.items.length}`);
 assert.deepStrictEqual(all.items.slice(0, 5).map((i) => i.uid), ['question:q_pend', 'approval:a_pend', 'session:s_run', 'approval:a_res', 'session:s_done'], 'core ordering changed');
 const uids = new Set(all.items.map((i) => i.uid));
-assert.ok(uids.has('message:n1') && uids.has('message:u1'), 'folded notification/update missing');
+assert.ok(uids.has('message:n1') && uids.has('message:u1') && uids.has('message:tk1'), 'folded notification/update/task missing');
 assert.ok(!uids.has('message:x1') && !uids.has('message:x2') && !uids.has('message:d1'), 'excluded/dismissed message leaked into feed');
 // folded rows carry the info state + their content as the title
 const n1 = all.items.find((i) => i.uid === 'message:n1');
 assert.strictEqual(n1.state, 'info');
 assert.strictEqual(n1.title, 'Nightly backup finished');
+// a task card connects to its real task (target) and names it (event — task title)
+const tk1 = all.items.find((i) => i.uid === 'message:tk1');
+assert.deepStrictEqual(tk1.target, { kind: 'task', id: 'T9' }, `task target=${JSON.stringify(tk1.target)}`);
+assert.strictEqual(tk1.title, 'Task done — Write the API reference');
+// core lines target their session
+assert.deepStrictEqual(all.items.find((i) => i.uid === 'session:s_run').target, { kind: 'session', id: 's_run' });
 
 // 2) attribution + goal tag resolved on the done session
 const doneItem = all.items.find((i) => i.uid === 'session:s_done');
@@ -116,7 +125,7 @@ assert.strictEqual(g1.items.length, 2, `goal filter items=${g1.items.length}`);
 assert.deepStrictEqual(g1.items.map((i) => i.uid).sort(), ['approval:a_res', 'session:s_done']);
 
 // 7) scoping — m1 owns everything + is the audience of n1/u1 (7); m2 owns nothing and is addressed by nothing (0)
-assert.strictEqual(feed.list({ viewer: m1 }).items.length, 7, 'owner/addressee should see own rows + member-audience cards');
+assert.strictEqual(feed.list({ viewer: m1 }).items.length, 8, 'owner/addressee should see own rows + member-audience cards');
 assert.strictEqual(feed.list({ viewer: m2 }).items.length, 0, 'a stranger should see nothing (incl. member-audience cards for others)');
 assert.strictEqual(feed.counts(m2, 0).needsYou, 0, 'stranger needsYou must be 0');
 
