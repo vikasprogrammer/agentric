@@ -2707,6 +2707,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       goalId: url.searchParams.get('goal') || undefined,
       cursor: url.searchParams.get('cursor') || undefined,
       limit: Number(url.searchParams.get('limit')) || 40,
+      since: Number(url.searchParams.get('since')) || undefined,
     });
     // Live progress: for the RUNNING lines, attach the newest thing the agent just did (classified from
     // the audit tail, with the un-audited `update` note as a fallback), so a viewer can watch a session

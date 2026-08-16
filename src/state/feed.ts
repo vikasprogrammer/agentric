@@ -207,7 +207,7 @@ export class FeedStore {
   constructor(private db: Db) {}
 
   /** One page of the stream, newest first, scoped to what `viewer` may see. */
-  list(opts: { viewer: FeedViewer; filter?: FeedFilter; goalId?: string; cursor?: string; limit?: number }): FeedPage {
+  list(opts: { viewer: FeedViewer; filter?: FeedFilter; goalId?: string; cursor?: string; limit?: number; since?: number }): FeedPage {
     const limit = Math.max(1, Math.min(opts.limit ?? 40, 100));
     const where: string[] = [];
     const params: unknown[] = [];
@@ -230,6 +230,11 @@ export class FeedStore {
       where.push(`(${parts.join(' OR ')})`);
       params.push(...p);
     }
+
+    // Time window (fast default load): prune the DONE/info history older than `since`, but never hide a
+    // live session or an open decision just because it's old — a 2-day-old pending approval still needs
+    // you. So running + pending rows always pass, whatever the window.
+    if (opts.since) { where.push("(ts >= ? OR state = 'running' OR status = 'pending')"); params.push(opts.since); }
 
     const cur = parseCursor(opts.cursor);
     if (cur) { where.push('(ts < ? OR (ts = ? AND uid < ?))'); params.push(cur.ts, cur.ts, cur.uid); }

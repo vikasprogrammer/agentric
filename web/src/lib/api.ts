@@ -1814,12 +1814,13 @@ export const api = {
   taskAttachmentUrl: (taskId: string, attId: string) => `/api/tasks/${taskId}/attachments/${attId}/raw`,
 
   /** One page of the unified activity feed. `goalId` scopes to the goal lens; `cursor` is keyset pagination. */
-  feed: (opts: { filter?: FeedFilter; goalId?: string; cursor?: string; limit?: number } = {}) => {
+  feed: (opts: { filter?: FeedFilter; goalId?: string; cursor?: string; limit?: number; since?: number } = {}) => {
     const qs = new URLSearchParams()
     if (opts.filter && opts.filter !== 'all') qs.set('filter', opts.filter)
     if (opts.goalId) qs.set('goal', opts.goalId)
     if (opts.cursor) qs.set('cursor', opts.cursor)
     if (opts.limit) qs.set('limit', String(opts.limit))
+    if (opts.since) qs.set('since', String(opts.since))
     const q = qs.toString()
     return call<FeedResponse>('GET', '/api/feed' + (q ? '?' + q : ''))
   },

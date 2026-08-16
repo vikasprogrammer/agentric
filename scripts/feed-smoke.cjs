@@ -92,6 +92,14 @@ assert.strictEqual(tk1.title, 'Task done — Write the API reference');
 // core lines target their session
 assert.deepStrictEqual(all.items.find((i) => i.uid === 'session:s_run').target, { kind: 'session', id: 's_run' });
 
+// 1b) time window prunes old DONE/info history but NEVER hides a live session or an open decision
+const recent = feed.list({ viewer: admin, since: T(4) }); // only the last 4 min of history
+const rUids = new Set(recent.items.map((i) => i.uid));
+assert.ok(rUids.has('session:s_run'), 'running session must survive the window');
+assert.ok(rUids.has('approval:a_pend') && rUids.has('question:q_pend'), 'open decisions must survive the window');
+assert.ok(!rUids.has('session:s_done') && !rUids.has('approval:a_res'), 'old done/resolved history should be pruned');
+assert.ok(!rUids.has('message:u1') && !rUids.has('message:n1'), 'old info/notifications should be pruned');
+
 // 2) attribution + goal tag resolved on the done session
 const doneItem = all.items.find((i) => i.uid === 'session:s_done');
 assert.strictEqual(doneItem.state, 'done');
