@@ -8,6 +8,15 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.354.0] — 2026-08-16
+### Changed
+- **Reopening an ended session from the feed now warns + confirms.** Opening a *live* session attaches to
+  it (nothing happens to the run); opening one that has **ended** relaunches it (`claude --resume`) as a
+  fresh run. The feed used to do this silently. Now a line whose session has ended shows an amber
+  **"Reopen (relaunch)"** control (instead of the plain "Open"), and clicking it asks for confirmation
+  ("…has ended. Reopening relaunches it as a new run and attaches you to the terminal.") before spending
+  the run. Live sessions still open in one click, and non-session targets (task/goal) just navigate.
+
 ## [0.353.0] — 2026-08-16
 ### Added
 - **Feed time window (default last 24h) for fast loading.** A window selector — Last 24 hours / 2 days /

@@ -5331,6 +5331,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [replyTo, setReplyTo] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
+  const [confirmRelaunch, setConfirmRelaunch] = useState<FeedItem | null>(null) // the ended session awaiting a reopen confirm
   const [, setNow] = useState(Date.now())
 
   // The Goals lens groups the whole stream by outcome, so it always reads unfiltered + a bit deeper.
@@ -5372,17 +5373,28 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
   // Connect the line to the real object it's about — a task card opens its task, a session opens its
   // live terminal (or the Sessions page), a goal opens the goal. This is the "everything connects" bit.
   const canOpen = (it: FeedItem): boolean => it.target !== null
+  // A session line we still hold is either LIVE (attach — nothing happens to it) or ENDED (reopening
+  // RELAUNCHES it via `claude --resume`, a fresh run). We flag the second so the button can warn and the
+  // click can confirm. A session not in the summary set → we just route to Sessions (no relaunch here).
+  const willRelaunch = (it: FeedItem): boolean => {
+    if (it.target?.kind !== 'session') return false
+    const s = sessionById.get(it.target.id)
+    return s !== undefined && !isLive(s)
+  }
   const openTarget = (it: FeedItem) => {
     const t = it.target
     if (!t) return
     if (t.kind === 'session') {
       const s = sessionById.get(t.id)
-      if (s) onOpen(s.tmux, s.title || it.agent || 'Session')
-      else nav('sessions', t.id)
+      if (s && isLive(s)) onOpen(s.tmux, s.title || it.agent || 'Session') // live → attach, nothing relaunched
+      else if (s) resumeAndOpen(s, onOpen) // ended → relaunch (claude --resume) + open
+      else nav('sessions', t.id) // not in the loaded set → hand off to the Sessions page
     } else if (t.kind === 'task') nav('tasks', t.id)
     else if (t.kind === 'goal') nav('goals', t.id)
     else if (t.kind === 'artifact') nav('artifacts', t.id)
   }
+  // Gate the click: a relaunch asks first, everything else opens straight away.
+  const clickOpen = (it: FeedItem) => { if (willRelaunch(it)) setConfirmRelaunch(it); else openTarget(it) }
   const toggleExpand = (uid: string) => setExpanded((s) => { const n = new Set(s); n.has(uid) ? n.delete(uid) : n.add(uid); return n })
 
   // ── shared line renderer ──
@@ -5430,7 +5442,11 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
         {it.goal && <button onClick={() => nav('goals', it.goal!.id)} className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 hover:text-foreground"><Target className="h-3 w-3" />{it.goal.title}</button>}
         {typeof it.tokens === 'number' && it.tokens > 0 && <span className="tabular-nums">{formatTokenCount(it.tokens)}</span>}
         <span className="tabular-nums">{timeAgo(it.ts)}</span>
-        {canOpen(it) && <button onClick={() => openTarget(it)} className="inline-flex items-center gap-1 hover:text-foreground"><ExternalLink className="h-3 w-3" />{it.target && it.target.kind !== 'session' ? `Open ${it.target.kind}` : 'Open'}</button>}
+        {canOpen(it) && (
+          willRelaunch(it)
+            ? <button onClick={() => clickOpen(it)} title="This session has ended — reopening relaunches it as a new run" className="inline-flex items-center gap-1 text-amber-600 hover:text-amber-700"><RefreshCw className="h-3 w-3" />Reopen (relaunch)</button>
+            : <button onClick={() => clickOpen(it)} className="inline-flex items-center gap-1 hover:text-foreground"><ExternalLink className="h-3 w-3" />{it.target && it.target.kind !== 'session' ? `Open ${it.target.kind}` : 'Open'}</button>
+        )}
       </div>
     )
   }
@@ -5599,6 +5615,28 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
           })}
         </div>
       )}
+
+      {/* Reopening an ended session relaunches it — confirm before spending a fresh run. */}
+      <Dialog open={confirmRelaunch !== null} onOpenChange={(o) => { if (!o) setConfirmRelaunch(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reopen this session?</DialogTitle>
+            <DialogDescription>
+              {confirmRelaunch && (<>
+                <span className="font-medium text-foreground">{confirmRelaunch.agent}</span>
+                {confirmRelaunch.title ? ` · ${confirmRelaunch.title}` : ''} has ended.
+                Reopening relaunches it (<span className="font-mono text-xs">claude --resume</span>) as a new run and attaches you to the terminal.
+              </>)}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmRelaunch(null)}>Cancel</Button>
+            <Button onClick={() => { const it = confirmRelaunch; setConfirmRelaunch(null); if (it) openTarget(it) }}>
+              <RefreshCw className="mr-1.5 h-4 w-4" />Reopen &amp; relaunch
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
