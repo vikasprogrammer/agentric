@@ -81,6 +81,9 @@ const mkCaller = (cs, opts = {}) => {
 const autos = new Automations(aos, tm);
 const poke = (cs, source) => autos.pokeCaller({ callerAgent: 'agent:caller', callerClaudeId: cs, runAs: alice.id, message: `✅ Really done: ${source}`, source });
 const sentTo = (id) => injected.filter((i) => i.tmux === 'aos-' + id);
+/** Retire every live pane of the caller agent. Cases about the RESUME lane need the agent fully idle:
+ *  a live session under ANY transcript is now a delivery target (case 10), not something to resume past. */
+const idleAgent = () => { for (const r of aos.db.prepare("SELECT tmux FROM term_sessions WHERE agent = 'caller'").all()) livePanes.delete(r.tmux); };
 const row = (id) => aos.db.prepare('SELECT status, busy_since FROM term_sessions WHERE id = ?').get(id);
 const pokeAudit = (id) => aos.db.prepare("SELECT data FROM audit_events WHERE run_id = ? AND type = 'agent.poked'").all(id).map((r) => JSON.parse(r.data));
 
@@ -108,6 +111,7 @@ console.log('\n\x1b[1m2) delivering puts the row back in step with reality\x1b[0
 
 console.log('\n\x1b[1m3) the pane really is gone — resume, as before\x1b[0m');
 {
+  idleAgent();
   const cs = 'cs-dead';
   const c = mkCaller(cs, { status: 'done', pane: false });
   const r = poke(cs, 'tsk_3');
@@ -121,6 +125,7 @@ console.log('\n\x1b[1m3) the pane really is gone — resume, as before\x1b[0m');
 
 console.log('\n\x1b[1m4) a human STOPPED the run — a leftover pane is not a destination\x1b[0m');
 {
+  idleAgent();
   const cs = 'cs-stopped';
   const c = mkCaller(cs, { status: 'stopped' });        // pane still listed, deliberately ended
   const before = spawned.length;
@@ -132,6 +137,7 @@ console.log('\n\x1b[1m4) a human STOPPED the run — a leftover pane is not a de
 
 console.log('\n\x1b[1m5) the inject fails on a live pane — kill it BEFORE resuming\x1b[0m');
 {
+  idleAgent();
   const cs = 'cs-wedged';
   const c = mkCaller(cs, { status: 'done' });
   injectWorks = false;
@@ -153,7 +159,32 @@ console.log('\n\x1b[1m6) a transcript spanning several rows — the NEWEST one o
   assert(sentTo(old).length === 0, 'the retired row was never written to');
 }
 
-console.log('\n\x1b[1m7) reachable() is the ONE liveness predicate — the pane, vetoed only by a deliberate end\x1b[0m');
+// The SECOND axis of liveness: the transcript is cold but the AGENT is not. All of an agent's sessions
+// share one workspace folder, so resuming here means two claudes in the same directory. northwind
+// 2026-08-16: `check-resolve-tickets` was running since 12:36 under one transcript when a poke resumed
+// its 2-day-old caller transcript into a second pane.
+console.log('\n\x1b[1m7) the caller transcript is cold but the AGENT is live elsewhere — deliver there, never resume\x1b[0m');
+{
+  idleAgent();
+  const cold = mkCaller('cs-cold', { status: 'done', pane: false });   // the caller's own conversation, exited
+  const warm = mkCaller('cs-other', { status: 'running' });            // same agent, different transcript, working
+  const before = spawned.length;
+  const r = poke('cs-cold', 'tsk_7');
+  assert(r.ok && r.sessionId === warm, 'the poke went to the agent\'s live session', r);
+  assert(spawned.length === before, 'NO second claude in the agent workspace', spawned.slice(before));
+  assert(sentTo(warm).some((i) => i.text.includes('tsk_7')), 'and it carries the task, so no transcript context is needed');
+  assert(sentTo(cold).length === 0, 'nothing typed at the retired transcript');
+  assert(pokeAudit(warm).some((d) => d.via === 'inject-sibling' && d.transcript === 'cs-cold'), 'audited via:inject-sibling with the transcript it stood in for', pokeAudit(warm));
+  // A wedged sibling must NOT be killed — it is doing someone else's work; fall through instead.
+  injectWorks = false;
+  const r2 = poke('cs-cold', 'tsk_7b');
+  injectWorks = true;
+  assert(spawned.length === before + 1, 'a failed sibling inject still resumes — the poke is never dropped', r2);
+  assert(livePanes.has('aos-' + warm), 'and the sibling pane survives (it is not the poke\'s to end)');
+  idleAgent();
+}
+
+console.log('\n\x1b[1m8) reachable() is the ONE liveness predicate — the pane, vetoed only by a deliberate end\x1b[0m');
 {
   assert(typeof tm.isAlive !== 'function', 'the status-folding `isAlive` is gone — no wrong choice to make');
   const c = mkCaller('cs-contrast', { status: 'done' });
@@ -169,7 +200,7 @@ console.log('\n\x1b[1m7) reachable() is the ONE liveness predicate — the pane,
 
 // The other two sites that read `status` as liveness. Both fail in the SAME direction as the poke — they
 // call a live agent free — but cost differently: one stacks a rival worker, one silently skips a delivery.
-console.log('\n\x1b[1m8) the dispatch pile-up guard counts a reported-but-warm worker as busy\x1b[0m');
+console.log('\n\x1b[1m9) the dispatch pile-up guard counts a reported-but-warm worker as busy\x1b[0m');
 {
   const t = aos.tasks.create({ tenant: aos.tenant, title: 'ship it', assignee: 'agent:caller', owner: alice.id, createdBy: alice.id });
   const worker = mkCaller('cs-worker', { status: 'done', spawned_by: `task:${t.id}` });  // reported, still up
@@ -181,7 +212,7 @@ console.log('\n\x1b[1m8) the dispatch pile-up guard counts a reported-but-warm w
   assert(!/already working/.test(after.reason || ''), 'and stops refusing once the pane is actually gone', after.reason);
 }
 
-console.log('\n\x1b[1m9) a freshly installed skill reaches a reported-but-warm session\x1b[0m');
+console.log('\n\x1b[1m10) a freshly installed skill reaches a reported-but-warm session\x1b[0m');
 {
   const reached = [];
   tm.materializeSkills = (sessionId) => { reached.push(sessionId); };

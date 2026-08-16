@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.354.1] — 2026-08-16
+### Fixed
+- **A completion poke no longer starts a second claude in a workspace the agent is already working in.**
+  `Automations.pokeCaller` chose between "inject into the live pane" and "`--resume` the transcript" by
+  looking only at the CALLER'S TRANSCRIPT. A caller whose own conversation had exited took the resume
+  lane even when the same agent was mid-run under a *different* transcript — and all of an agent's
+  sessions share one workspace folder, so that put two claudes in the same directory (northwind
+  2026-08-16: `check-resolve-tickets` running since 12:36 got a poke that resumed its 2-day-old caller
+  transcript; both runs then worked the same support ticket). The poke was the only dispatch lane with no
+  per-agent guard — `dispatchTasks`, `dispatchTask({guard})` and chat-thread continuation all had one.
+  There is now a third lane between the two: cold transcript + a live session elsewhere on that agent →
+  deliver the poke into that session (the message already carries the task id, title and the delegate's
+  note, so it needs no transcript context). A wedged sibling is never killed — it is doing unrelated
+  work — so a failed inject falls through to the resume rather than ending someone else's run. Audited
+  `agent.poked via:'inject-sibling'` with the transcript it stood in for; pinned by
+  `scripts/poke-warm-caller-test.cjs` case 7.
+
 ## [0.354.0] — 2026-08-16
 ### Changed
 - **Reopening an ended session from the feed now warns + confirms.** Opening a *live* session attaches to
