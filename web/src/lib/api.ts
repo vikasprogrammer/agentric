@@ -1566,6 +1566,10 @@ export interface FeedItem {
   outcome: string | null
   rating: string | null
   hasTrail: boolean
+  /** The live object this line is about — a click connects to it (task card → its task, not a dead run id). */
+  target: { kind: 'session' | 'task' | 'goal' | 'artifact'; id: string } | null
+  /** For a running session: the newest thing the agent just did (audit-derived), so you can watch progress. */
+  lastActivity?: { primitive: string; summary: string; ts: number } | null
 }
 export interface FeedCounts { needsYou: number; running: number; doneToday: number }
 export interface FeedResponse { items: FeedItem[]; nextCursor: string | null; counts: FeedCounts }

@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.352.0] — 2026-08-16
+### Added
+- **See what a running session is doing, and connect every feed line to its object.** Two related feed
+  improvements:
+  - **Live progress on running sessions.** Each `running` line now shows a one-liner of the newest thing
+    the agent just did — derived automatically from the audit tail via the same `classifyActivity` the
+    activity trail uses (with the un-audited `update` note as a fallback), refreshed by the 4s poll. You
+    can watch a session advance ("Ran: npm test", "Edited src/…", "Reported: …") without opening its
+    terminal; on finish the run's report summary is the line. Exposed as `FeedItem.lastActivity`,
+    enriched in the `/api/feed` handler and bounded to the page's running items.
+  - **Lines connect to what they're about.** New `FeedItem.target` decodes the real object behind a line
+    (`feedTarget`): a session/approval/question → its session; a folded message card → its encoded
+    `session_id` (`task:<id>` → the task, `goal:<id>` → the goal). So a *"Task done"* card now opens its
+    **task** and names it — *"Task done — Write the API reference"* — instead of a generic headline
+    pointing at a dead run id. The console's Open action routes by target kind (task/goal/session/artifact).
+  `feed-smoke` covers the target decode + combined task title. See `docs/feed-plan.md`.
+
 ## [0.351.0] — 2026-08-14
 ### Changed
 - **Feed page polish from live use.** Several refinements to how a line reads and how the page remembers you:

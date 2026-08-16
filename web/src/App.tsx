@@ -5352,12 +5352,19 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     await api.answerQuestion(it.ref.id, text).catch(() => {})
     markBusy(it.uid, false); load()
   }
-  // Open the associated session: its live terminal if we still have the row, else the Sessions page.
-  const canOpen = (it: FeedItem): boolean => Boolean(it.runId) && (sessionById.has(it.runId) || isSessionKind(it))
-  const openSession = (it: FeedItem) => {
-    const s = sessionById.get(it.runId)
-    if (s) onOpen(s.tmux, s.title || it.agent || 'Session')
-    else nav('sessions', it.runId)
+  // Connect the line to the real object it's about — a task card opens its task, a session opens its
+  // live terminal (or the Sessions page), a goal opens the goal. This is the "everything connects" bit.
+  const canOpen = (it: FeedItem): boolean => it.target !== null
+  const openTarget = (it: FeedItem) => {
+    const t = it.target
+    if (!t) return
+    if (t.kind === 'session') {
+      const s = sessionById.get(t.id)
+      if (s) onOpen(s.tmux, s.title || it.agent || 'Session')
+      else nav('sessions', t.id)
+    } else if (t.kind === 'task') nav('tasks', t.id)
+    else if (t.kind === 'goal') nav('goals', t.id)
+    else if (t.kind === 'artifact') nav('artifacts', t.id)
   }
   const toggleExpand = (uid: string) => setExpanded((s) => { const n = new Set(s); n.has(uid) ? n.delete(uid) : n.add(uid); return n })
 
@@ -5394,7 +5401,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
         {it.goal && <button onClick={() => nav('goals', it.goal!.id)} className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 hover:text-foreground"><Target className="h-3 w-3" />{it.goal.title}</button>}
         {typeof it.tokens === 'number' && it.tokens > 0 && <span className="tabular-nums">{formatTokenCount(it.tokens)}</span>}
         <span className="tabular-nums">{timeAgo(it.ts)}</span>
-        {canOpen(it) && <button onClick={() => openSession(it)} className="inline-flex items-center gap-1 hover:text-foreground"><ExternalLink className="h-3 w-3" />Open</button>}
+        {canOpen(it) && <button onClick={() => openTarget(it)} className="inline-flex items-center gap-1 hover:text-foreground"><ExternalLink className="h-3 w-3" />{it.target && it.target.kind !== 'session' ? `Open ${it.target.kind}` : 'Open'}</button>}
       </div>
     )
   }
@@ -5447,6 +5454,13 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     ) : (
       <div>
         {snippet(it)}
+        {/* live progress: what the agent is doing right now, refreshed by the poll (no terminal needed) */}
+        {it.state === 'running' && it.lastActivity && (
+          <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse" />
+            <span className="min-w-0 truncate italic">{it.lastActivity.summary}</span>
+          </div>
+        )}
         {attribution(it)}
       </div>
     )

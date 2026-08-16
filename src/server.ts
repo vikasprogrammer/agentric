@@ -2708,6 +2708,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       cursor: url.searchParams.get('cursor') || undefined,
       limit: Number(url.searchParams.get('limit')) || 40,
     });
+    // Live progress: for the RUNNING lines, attach the newest thing the agent just did (classified from
+    // the audit tail, with the un-audited `update` note as a fallback), so a viewer can watch a session
+    // advance without opening its terminal. Bounded to the running items on the page (a handful).
+    for (const it of page.items) if (it.state === 'running') it.lastActivity = latestActivity(os, it.runId);
     const now = new Date();
     const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     return sendJson(res, 200, { ...page, counts: os.feed.counts(viewer, dayStart) });
@@ -6411,6 +6415,23 @@ function runView(r: Run) {
 /** Parse a stored JSON column, degrading to a `{ raw }` wrapper rather than throwing on bad data. */
 function safeJson(s: string): Record<string, unknown> {
   try { const v = JSON.parse(s); return v && typeof v === 'object' ? v : { value: v }; } catch { return { raw: s }; }
+}
+/** The newest legible thing a run did — powers the feed's live "currently…" line on a running session.
+ *  Scans the audit tail newest-first for the first non-noise primitive (same classifier the activity
+ *  trail uses); falls back to the latest `update` note (the one primitive that isn't audited). Null when
+ *  nothing legible has happened yet. Bounded LIMIT so it's cheap to call per running item each poll. */
+function latestActivity(os: AgentOS, runId: string): { primitive: string; summary: string; ts: number } | null {
+  const rows = os.db
+    .prepare('SELECT ts, type, data FROM audit_events WHERE tenant = ? AND run_id = ? ORDER BY ts DESC, id DESC LIMIT 15')
+    .all<{ ts: number; type: string; data: string }>(os.tenant, runId);
+  for (const r of rows) {
+    const d = classifyActivity(r.type, safeJson(r.data));
+    if (d) return { primitive: d.primitive, summary: clipText(d.summary, 140), ts: r.ts };
+  }
+  const u = os.db
+    .prepare("SELECT created_at AS ts, body FROM messages WHERE session_id = ? AND type = 'update' ORDER BY created_at DESC LIMIT 1")
+    .get<{ ts: number; body: string }>(runId);
+  return u ? { primitive: 'update', summary: clipText(u.body, 140), ts: u.ts } : null;
 }
 /** Resolve the requested inbox scope from `?scope=`. Only owner/admin may see the `all` oversight view;
  *  a member is always pinned to `mine` (they can't see others' cards regardless, so this just keeps the

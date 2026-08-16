@@ -96,6 +96,20 @@ inbox is no longer a separate read path:
   projects an `aud_member` scope column (a `member`-audience card's target), and the outer non-admin
   scope ORs it with the session's `run_as`/`spawned_by` — exactly reproducing the rule in SQL.
 
+## Live progress + connected lines (v0.352.0)
+
+- **What a running session is doing right now.** The `/api/feed` handler enriches each `running` item
+  with `lastActivity` — the newest legible thing the agent did, from `latestActivity()`: it scans the
+  audit tail newest-first through the same `classifyActivity` the activity trail uses (first non-noise
+  primitive wins), falling back to the latest `update` note. The console shows it as a live one-liner
+  under the title, refreshed by the 4s poll — visibility without opening the terminal. On finish, the
+  run's `report_summary` is already the line.
+- **Every line connects to its object.** `FeedItem.target` (`feedTarget()`) decodes what a line is
+  *about* from its kind + run id: session/approval/question → the session; a folded message card → its
+  encoded `session_id` (`task:<id>` → the task, `goal:<id>` → the goal, a real id → the session). So a
+  "Task done" card now opens its **task** and names it (the card's event + the task title, e.g.
+  *"Task done — Write the API reference"*) instead of pointing at a dead run id.
+
 ## Not in this slice
 
 Retiring the `messages` read path entirely (it remains the write-ahead for notifier delivery) and any
