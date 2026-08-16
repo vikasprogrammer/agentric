@@ -22,6 +22,7 @@ import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
 import { ensureConcierge, ensureOperator, CONCIERGE_ID, OPERATOR_ID } from './concierge';
 import { sweepStrandedTasks } from './task-reconcile';
+import { WakeupQueue } from './wakeups';
 import {
   DEDUPE_TTL_MS,
   Headers as WHHeaders,
@@ -437,7 +438,11 @@ export class Automations {
     private readonly tm: TerminalManager,
   ) {
     this.db = os.db;
+    this.wakeups = new WakeupQueue(os, tm, os.db);
   }
+
+  /** The durable agent wake queue behind {@link pokeCaller} — enqueue + one deliverer, retried on tick. */
+  readonly wakeups: WakeupQueue;
 
   /** Best-effort sink DMed once when a task passes its due date (wired in the tenant registry). */
   private overdueNotifier?: (task: Task) => void;
@@ -570,99 +575,29 @@ export class Automations {
 
   /**
    * Wake a CALLER agent with a completion poke — the "really done" signal a delegate sends back when it
-   * finishes a `poke_on_done` hand-off. Three delivery paths, tried in order — deliver to a live pane
-   * before ever starting a claude, because the agent's sessions all share ONE workspace folder:
+   * finishes a `poke_on_done` hand-off.
    *
-   *  - **Live caller → inject** (the common interactive/resident case). The caller ended its turn and is
-   *    sitting IDLE at the prompt — it will NOT observe the delegate's completion on its own (the bug this
-   *    fixes: an interactive session had to be told "check that task status" by hand). So we type the poke
-   *    into its live pane (`injectToSession`, submit): an idle claude runs it immediately, a mid-turn
-   *    claude queues it to the next turn boundary — never a competing `--resume` on one conversation.
-   *  - **Cold transcript, but the AGENT is live elsewhere → inject into that sibling.** The caller's own
-   *    conversation exited, yet the same agent is mid-run under another transcript (a cron sweep, a
-   *    console run). Resuming would put a rival claude in its workspace, so the poke goes to the warm
-   *    pane instead — the message carries the task id, title and result, so it needs no prior context.
-   *  - **Nothing of this agent is live → resume** (a headless caller that exited at turn-end). Nothing to
-   *    type into, so we `--resume` `callerClaudeId` in a fresh `poke:` run with `message` as the next
-   *    turn, and the caller continues its OWN plan with full context.
+   * This is now a thin front door onto the {@link WakeupQueue}: the poke is RECORDED first, then delivered
+   * (synchronously, so it still lands in the same second it fires) down one priority order that lives in
+   * exactly one function — the caller's own live pane, else any live pane of that agent, else `--resume`
+   * the transcript in a fresh `poke:` run. Anything undeliverable stays queued for the scheduler to retry
+   * rather than being decided-and-forgotten here; see the module header of `edge/wakeups.ts` for the four
+   * bugs that inline decision produced.
    *
-   * Fires IMMEDIATELY (unlike schedule(), whose 1-min floor makes it a scheduler, not a wake). The delegate
-   * (task assignee) is always the actor, never the caller, so this can't self-wake. Audited `agent.poked`.
+   * The delegate (task assignee) is always the actor, never the caller, so this can't self-wake. Audited
+   * `agent.poked`.
    */
   pokeCaller(input: { callerAgent: string; callerClaudeId: string; runAs?: string; message: string; source: string; title?: string }): FireResult {
-    const agentId = input.callerAgent.startsWith('agent:') ? input.callerAgent.slice('agent:'.length) : input.callerAgent;
-    if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown caller agent: ${agentId}` };
-    if (!input.callerClaudeId) return { ok: false, reason: 'no caller transcript to resume' };
-    // Prefer delivering into the caller's OWN live session if it still has one bound to this transcript —
-    // an idle interactive/resident caller would otherwise never learn the delegate finished.
-    //
-    // Liveness is `reachable` (the pane), NOT the row's `status`. A caller that handed off work and then
-    // called `report` is stamped `done` with its claude still running — the common shape, since a delegate
-    // usually finishes minutes after the caller last reported. Filtering on `status = 'running'` here sent
-    // every one of those down the resume lane, starting a SECOND claude on a transcript the first was
-    // still holding. Newest row first: a transcript resumed before now spans several rows and only the
-    // latest can own the pane.
-    const liveSession = this.db
-      .prepare('SELECT id, tmux FROM term_sessions WHERE claude_session_id = ? ORDER BY created_at DESC')
-      .all<{ id: string; tmux: string }>(input.callerClaudeId)
-      .find((r) => this.tm.reachable(r.id));
-    if (liveSession) {
-      const injected = this.tm.injectToSession(liveSession.id, input.message, true, input.runAs ? `member:${input.runAs}` : 'system');
-      this.os.audit.append({
-        ts: Date.now(),
-        runId: liveSession.id,
-        tenant: this.os.tenant,
-        principal: input.runAs ? `member:${input.runAs}` : 'system',
-        type: 'agent.poked',
-        data: { caller: agentId, source: input.source, runAs: input.runAs ?? null, via: 'inject', ok: injected.ok },
-      });
-      // Keystrokes landed → the caller has (or will imminently have) the result. On the rare inject failure
-      // (a wedged TUI, an unreadable socket) fall through to a resume so the poke is never silently
-      // dropped — but kill the pane first, exactly as `chatSend` does: resuming a transcript that another
-      // claude still holds is worse than a late poke.
-      if (injected.ok) return { ok: true, sessionId: liveSession.id, tmux: liveSession.tmux };
-      this.tm.stopSession(liveSession.id, 'system');
-    }
-    // The caller's OWN transcript is cold — but liveness has a second axis the transcript lookup can't
-    // see: the caller AGENT may be working right now under a DIFFERENT transcript (its cron sweep, a
-    // console run, another hand-off). All of an agent's sessions run out of ONE workspace folder, so a
-    // `--resume` here puts a second claude in the same directory as a live one — the pile-up every other
-    // dispatch path already guards against (`dispatchTasks`, `dispatchTask({guard})`, chat continuation),
-    // and the poke was the only lane with no per-agent guard. Live on northwind 2026-08-16: task
-    // `tsk_f2d63c5f` closed while `check-resolve-tickets` had been running since 12:36 under transcript
-    // `a2182167`; the poke resumed the caller's 2-DAY-OLD transcript `83bc1aa7` into `ses_8e3da48b` and
-    // both panes ran the same agent's workspace at once.
-    // The poke message is self-contained (task id, title, delegate's note), so a warm sibling can act on
-    // it with no transcript context — delivering there beats both a rival claude and a dropped wake-up.
-    const sibling = this.db
-      .prepare('SELECT id, tmux FROM term_sessions WHERE agent = ? ORDER BY created_at DESC LIMIT 50')
-      .all<{ id: string; tmux: string }>(agentId)
-      .find((r) => this.tm.reachable(r.id));
-    if (sibling) {
-      const injected = this.tm.injectToSession(sibling.id, input.message, true, input.runAs ? `member:${input.runAs}` : 'system');
-      this.os.audit.append({
-        ts: Date.now(),
-        runId: sibling.id,
-        tenant: this.os.tenant,
-        principal: input.runAs ? `member:${input.runAs}` : 'system',
-        type: 'agent.poked',
-        data: { caller: agentId, source: input.source, runAs: input.runAs ?? null, via: 'inject-sibling', transcript: input.callerClaudeId, ok: injected.ok },
-      });
-      // Unlike the same-transcript lane above, a failed inject here must NOT kill the pane: that session
-      // is doing unrelated work for someone else. Fall through to the resume so the poke isn't dropped —
-      // a rare wedged-TUI pile-up is the lesser cost.
-      if (injected.ok) return { ok: true, sessionId: sibling.id, tmux: sibling.tmux };
-    }
-    const s = this.tm.createSession(agentId, input.title ?? `Poke ← ${input.source}`, input.message, `poke:${input.source}`, true, undefined, undefined, input.runAs, input.callerClaudeId);
-    this.os.audit.append({
-      ts: Date.now(),
-      runId: s.id,
-      tenant: this.os.tenant,
-      principal: input.runAs ? `member:${input.runAs}` : 'system',
-      type: 'agent.poked',
-      data: { caller: agentId, source: input.source, runAs: input.runAs ?? null, via: 'resume' },
-    });
-    return { ok: true, sessionId: s.id, tmux: s.tmux };
+    const cap = this.concurrencyCap();
+    const budget = cap > 0 ? Math.max(0, cap - this.tm.admissionSessionCount()) : Infinity;
+    const r = this.wakeups.enqueue(
+      { agent: input.callerAgent, transcript: input.callerClaudeId, runAs: input.runAs, message: input.message, source: input.source, title: input.title },
+      { budget },
+    );
+    if (r.ok) return { ok: true, sessionId: r.sessionId, tmux: r.tmux };
+    // A queued wake-up is not a failure — it is the durable half of the contract, and the tick will
+    // deliver it. Report it as such so a caller (or a test) can tell "held" from "rejected".
+    return { ok: false, reason: r.queued ? `queued: ${r.reason}` : r.reason };
   }
 
   update(id: string, patch: { name?: string; mode?: ExecMode; schedule?: string; filter?: string; task?: string; enabled?: boolean; runAs?: string | null; signingSecret?: string | null; threadPath?: string | null }): Automation | undefined {
@@ -1862,6 +1797,11 @@ export class Automations {
     if (deferred > 0) {
       this.os.audit.append({ ts: Date.now(), runId: '-', tenant: this.os.tenant, principal: 'scheduler', type: 'scheduler.deferred', data: { deferred, cap, running } });
     }
+    // Retry every wake-up that could not be delivered when it fired (a wedged pane, an agent that was
+    // busy under another transcript, the concurrency cap). Runs BEFORE the other sweeps: waking an agent
+    // that is already waiting on a result is cheaper than anything that spawns fresh work, and the resume
+    // lane debits the same budget.
+    running += this.wakeups.sweep(cap > 0 ? Math.max(0, cap - running) : Infinity);
     this.sweepOverdue(now);
     this.sweepStranded(now, cap > 0 ? Math.max(0, cap - running) : Infinity);
     this.sweepStuckGoals(now);

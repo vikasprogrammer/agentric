@@ -46,6 +46,7 @@ export const ID_PREFIX = {
   agentRevision: 'arev', // agent self-edit revisions
   policyRevision: 'prev', // policy revisions
   autoApproval: 'aappr', // auto-approval list rules
+  wakeup: 'wk', // queued agent wake-ups (edge/wakeups.ts)
 } as const;
 
 export type IdEntity = keyof typeof ID_PREFIX;

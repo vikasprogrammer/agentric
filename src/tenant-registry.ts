@@ -591,8 +591,12 @@ function maybeHoldDelegate(tm: TerminalManager, os: AgentOS, notice: TaskNotice)
  * state (done, or blocked and handed back) — resume the CALLER agent's transcript with the outcome, so a
  * fire-and-forget delegation wakes the caller instead of making it poll. No-op unless the task carries a
  * caller + its pinned claude id (only agent→agent hand-offs with poke opted in do). The delegate (assignee)
- * is the actor, so `maybePokeCaller` never wakes the caller for its own edits. Best-effort; the poke itself
- * is guarded (a still-live caller is skipped) inside {@link Automations.pokeCaller}.
+ * is the actor, so `maybePokeCaller` never wakes the caller for its own edits.
+ *
+ * This is a PRODUCER, nothing more: it hands the message to {@link Automations.pokeCaller} → the wake
+ * queue (`edge/wakeups.ts`), which owns the destination — the caller's own pane, another live pane of that
+ * agent, or a `--resume` — and retries anything it cannot deliver. Deciding that here is what produced
+ * four lane-choice bugs; don't reintroduce a liveness check on this side.
  */
 function maybePokeCaller(autos: Automations, os: AgentOS, notice: TaskNotice): void {
   if (notice.kind !== 'status') return;
