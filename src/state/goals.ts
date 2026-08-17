@@ -18,7 +18,13 @@ import { Goal, GoalCreateInput, GoalEvent, GoalEventTask, GoalProgress, GoalQuer
 
 /** How close a task NOTE has to sit to a status transition to be read as that transition's reason.
  *  `TaskStore.update` writes both rows inside one call, so in practice they share a millisecond; the
- *  window only tolerates a slow write, never an unrelated later comment. */
+ *  window only tolerates a slow write, never an unrelated later comment.
+ *
+ *  The lookup that uses this orders by the comment's OWN columns, never by a correlated expression over
+ *  the outer row (`ABS(c.created_at - e.created_at)`): older SQLite builds — including the one bundled with
+ *  the Node that CI runs — reject a correlated reference inside a subquery's ORDER BY with a bare
+ *  "no such column", while newer ones accept it. Inside a 2s window "newest in the window" and "closest to
+ *  the transition" are the same row anyway. */
 const NOTE_WINDOW_MS = 2_000;
 
 interface GoalRow {
@@ -150,8 +156,9 @@ export class GoalStore {
                 e.session_id AS session_id, t.id AS task_id, t.title AS task_title, t.status AS task_status,
                 (SELECT c.body FROM task_events c
                   WHERE c.task_id = e.task_id AND c.kind = 'comment' AND c.author = e.author
-                    AND c.created_at BETWEEN e.created_at - ${NOTE_WINDOW_MS} AND e.created_at + ${NOTE_WINDOW_MS}
-                  ORDER BY ABS(c.created_at - e.created_at) LIMIT 1) AS note
+                    AND c.created_at >= e.created_at - ${NOTE_WINDOW_MS}
+                    AND c.created_at <= e.created_at + ${NOTE_WINDOW_MS}
+                  ORDER BY c.created_at DESC, c.id DESC LIMIT 1) AS note
            FROM task_events e JOIN tasks t ON t.id = e.task_id
           WHERE t.goal_id = ? AND (e.kind = 'dispatch' OR (e.kind = 'status' AND e.body LIKE '%→%'))
           ORDER BY e.created_at ASC, e.id ASC`,
