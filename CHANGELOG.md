@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.356.3] — 2026-08-17
+### Fixed
+- **Reverted the pane-based submit verdict (v0.355.1, narrowed in v0.356.2); it cannot tell a delivered
+  message from a parked one.** A claude TUI renders a SUBMITTED message with the same `❯` prompt glyph —
+  and the same `[Pasted text #N]` chip — that an unsent one has, so a single capture cannot distinguish
+  them; and a mid-turn agent parks injected text on purpose until its turn boundary. Acting on that guess
+  stopped **two working runs** (`ses_987f7efc`, `ses_1171820b`) to `--resume` them. `injectText` now
+  reports keystroke delivery only, as it did before v0.355.1.
+  **What is KEPT is the part that actually fixed the original bug:** the settle before the submit `Enter`,
+  and a second Enter after a longer pause — the automated version of the human Enter that unstuck 8 parked
+  wake-ups. A silent late delivery is recoverable; killing a live run is not, so the verdict is gone until
+  it can be read from the transcript (where a submitted turn is unambiguous) rather than the screen.
+  `scripts/inject-submit-test.cjs` is now a real-tmux test of the mechanism (text + Enter reach the pane
+  and complete the line), and states plainly that `cat` in canonical mode cannot stand in for a TUI's
+  paste handling, instead of pretending to cover it.
+
 ## [0.356.2] — 2026-08-17
 ### Fixed
 - **The v0.355.1 submit check no longer kills a working run.** Verifying that injected text became a turn

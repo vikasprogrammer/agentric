@@ -4161,8 +4161,8 @@ export class TerminalManager {
    * session (there is no pane to type into).
    */
   injectToSession(sessionId: string, text: string, submit: boolean, by: string): { ok: boolean; error?: string } {
-    const row = this.db.prepare('SELECT id, tmux, status, run_as, spawned_by, busy_since, last_activity, created_at FROM term_sessions WHERE id = ?')
-      .get<{ id: string; tmux: string; status: string; run_as: string | null; spawned_by: string | null; busy_since: number | null; last_activity: number | null; created_at: number }>(sessionId);
+    const row = this.db.prepare('SELECT tmux, status, run_as, spawned_by FROM term_sessions WHERE id = ?')
+      .get<{ tmux: string; status: string; run_as: string | null; spawned_by: string | null }>(sessionId);
     if (!row) return { ok: false, error: 'unknown session' };
     const body = (text || '').replace(/\r?\n+/g, ' ').trim();
     if (!body) return { ok: false, error: 'nothing to send' };
@@ -4170,21 +4170,12 @@ export class TerminalManager {
     // "not live — open it first" while the pane is right there is the visible half of the poke-back bug.
     if (!this.reachable(sessionId)) return { ok: false, error: 'session is not live — open it first' };
     const space = this.spaceFor(row.run_as ?? row.spawned_by);
-    // `injectText` reports whether the agent GOT THE TURN, not whether tmux took the bytes — a large
-    // injection lands as a bracketed paste and an Enter fired in the same instant is swallowed, leaving
-    // the message parked in the composer, which the wake queue would then record as `delivered` and never
-    // retry (northwind 2026-08-17, 8 parked wake-ups).
-    //
-    // But that check is only meaningful when the agent was IDLE when we typed. A MID-TURN claude parks
-    // injected text in its composer ON PURPOSE and submits it at the next turn boundary — that is the
-    // documented contract of this method, and it looks identical to a failed submit from the outside. The
-    // first build verified unconditionally and paid for it within the hour: `ses_987f7efc` (fleet-janitor)
-    // was 3 minutes into a turn when a second wake-up arrived, the queued text read as "parked", and the
-    // same-transcript rule KILLED a working run to resume it. So we verify only when the row says no turn
-    // is in flight; while it is working, a queued message is a delivered message.
-    const working = this.isWorking(row, this.backend.aliveNames());
-    const ok = this.backend.injectText(space, row.tmux, body, submit, !working);
-    if (!ok) return { ok: false, error: 'the terminal never submitted it — still sitting in the composer' };
+    // `injectText` reports that the KEYSTROKES were delivered — deliberately not that a turn started. Two
+    // live incidents killed that ambition: a claude TUI renders a submitted message with the same `❯`
+    // glyph and paste chip as a parked one, and a mid-turn agent parks injected text on purpose, so a pane
+    // capture cannot tell delivered from parked. Guessing stopped two working runs. See session-backend.ts.
+    const ok = this.backend.injectText(space, row.tmux, body, submit);
+    if (!ok) return { ok: false, error: 'could not deliver keystrokes to the terminal' };
     // Submitted text starts a turn, so mark the session busy (the Stop-hook beacon clears it) — without
     // it a poke delivered into a warm pane leaves the console reading idle through the work it triggered.
     if (submit) {
