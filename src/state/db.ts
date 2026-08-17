@@ -659,6 +659,29 @@ function migrate(db: Db): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_attachments ON task_attachments(task_id, created_at);
 
+    -- Cached GitHub PR status for the pull requests a task references (src/edge/task-prs.ts). The LINKS
+    -- themselves are not stored — they're parsed out of the task's body/activity/Discussion on read, so
+    -- they work retroactively and can't drift from what was actually written. This table is a pure CACHE
+    -- of what GitHub says about each PR (every row is reconstructible with one API call), keyed by
+    -- '<owner>/<repo>#<number>' lowercased and shared across the tasks that mention the same PR.
+    CREATE TABLE IF NOT EXISTS github_prs (
+      id         TEXT PRIMARY KEY,      -- '<owner>/<repo>#<number>' lowercased
+      tenant     TEXT NOT NULL,
+      owner      TEXT NOT NULL,
+      repo       TEXT NOT NULL,
+      number     INTEGER NOT NULL,
+      url        TEXT NOT NULL,
+      state      TEXT,                  -- open | closed (GitHub's own; merged is the flag below)
+      draft      INTEGER,
+      merged     INTEGER,
+      title      TEXT,
+      author     TEXT,                  -- GitHub login that opened it
+      merged_at  INTEGER,
+      updated_at INTEGER,               -- GitHub's updated_at (epoch ms)
+      fetched_at INTEGER,               -- when WE last asked (drives the TTL)
+      error      TEXT                   -- last failure, e.g. '404' = this workspace's token can't see it
+    );
+
     -- Task dependencies: task_id is blocked by depends_on (both in this tenant). A task is READY to dispatch
     -- only when every depends_on is done/cancelled — the enforced-pipeline edge a strategist's plan sets.
     CREATE TABLE IF NOT EXISTS task_deps (

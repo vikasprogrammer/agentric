@@ -65,6 +65,7 @@ import { checkForUpdate, applyUpdate, restartService } from './edge/updater';
 import { checkDeps, checkDepUpdates, installDeps, updateNpmDep } from './edge/deps';
 import { CATALOG, redact } from './connectors/connectors';
 import { GithubIdentity } from './edge/github-identity';
+import { PrCache, taskPrRefs, prSummary, type PrToken } from './edge/task-prs';
 import { convertAppManifest, userInstallationStatus } from './connectors/github';
 import { redactHost, type HostProtocol, type HostPosture } from './hosts/hosts';
 import { listConnectedAccounts, deleteConnectedAccount, listToolkits, serviceUserId, initiateConnection, verifyComposioWebhook, parseComposioEvent } from './connectors/composio';
@@ -3585,6 +3586,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const taskDeliver = p.match(/^\/api\/tasks\/([\w-]+)\/deliver$/);
   const taskMention = p.match(/^\/api\/tasks\/mention\/([\w-]+)$/);
   const taskDispatch = p.match(/^\/api\/tasks\/([\w-]+)\/dispatch$/);
+  const taskPrs = p.match(/^\/api\/tasks\/([\w-]+)\/prs$/);
   const taskAttachments = p.match(/^\/api\/tasks\/([\w-]+)\/attachments$/);
   const taskAttachmentRaw = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)\/raw$/);
   const taskAttachment = p.match(/^\/api\/tasks\/[\w-]+\/attachments\/([\w-]+)$/);
@@ -3606,9 +3608,35 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       // preceded the current run are part of the task's story. Same tenant-wide read as the rest of the
       // detail payload; ATTACHING to any of those sessions is still gated by the terminal's own authz.
       runs: tm.taskRuns(found.task.id),
+      // The PRs this task's own text references, with any CACHED GitHub status — parsed, never declared
+      // (src/edge/task-prs.ts). Offline and cheap, so the sidebar paints the list immediately; the live
+      // open/merged/closed refresh is the separate GET …/prs the console calls straight after.
+      prs: new PrCache(os.db, os.tenant).hydrate(taskPrRefs(os.db, found.task.id, found.task)),
       discussion: tm.discussionTimeline(found.task.id), unread: tm.discussionUnread(found.task.id, me),
       choices: tm.taskMentionChoices(found.task.id),
     });
+  }
+  // The same PR list, but with the stale entries re-fetched from GitHub first (`?refresh=1` forces the
+  // lot). Tokens are tried member-first — a member's linked account can see repos the company App isn't
+  // installed on, and vice versa — and with neither configured this degrades to the parsed links alone.
+  if (taskPrs && method === 'GET') {
+    const task = os.tasks.get(taskPrs[1]);
+    if (!task) return sendJson(res, 404, { error: 'task not found' });
+    const cache = new PrCache(os.db, os.tenant);
+    const refs = taskPrRefs(os.db, task.id, task);
+    let prs = cache.hydrate(refs);
+    const stale = cache.stale(prs, url.searchParams.get('refresh') === '1');
+    if (stale.length) {
+      const gh = new GithubIdentity(os);
+      const tokens: PrToken[] = [];
+      const mine = await gh.ensureFresh(me.id).catch(() => undefined);
+      if (mine?.token && !gh.isExpired(mine)) tokens.push({ token: mine.token, kind: 'member' });
+      const bot = await gh.ensureBotToken().catch(() => undefined);
+      if (bot?.token) tokens.push({ token: bot.token, kind: 'bot' });
+      await cache.refresh(stale, tokens);
+      prs = cache.hydrate(refs);
+    }
+    return sendJson(res, 200, { prs, summary: prSummary(prs) });
   }
   // Resolve a non-owner-agent mention choice: 'answer' (quick out-of-band answer), 'session' (start a
   // governed session on the task), or 'dismiss'. Any member (like a task edit).

@@ -599,6 +599,32 @@ three); in the full-page room, picking a run swaps the **Session** tab to that r
 task can be read attempt by attempt. Reads are tenant-wide like the rest of the detail payload; *attaching*
 to any run is still gated by the terminal's own authz. Pinned by `scripts/task-runs-test.cjs`.
 
+### Pull requests — parsed out of the task, not attached to it
+
+The run history says how many **attempts** a task took; it never said what those attempts **shipped**. The
+missing answer — "which PRs came out of this, and did they land?" — was already written down: an agent that
+ships code pastes the PR URL into its closing note. Measured on the live northwind tenant before this
+shipped, **121 of 404 tasks** already carried a `github.com/<owner>/<repo>/pull/<n>` link (196 links in
+all), 94 of them in the activity log or Discussion and only 11 in the description.
+
+So there is **no `task_link_pr` tool and no new agent instruction**. `taskPrRefs`
+(`src/edge/task-prs.ts`) parses the task's own text — title, body, `task_events`, `task.chat` Discussion —
+dedupes by `<owner>/<repo>#<n>`, and keeps first-mention order. Consequences that a declared link
+wouldn't have: it works **retroactively** on every task ever filed, it can't drift from what was actually
+written, and there's no attach step for an agent to forget. What it deliberately does NOT do is guess: a
+bare `#12` is never a PR (agents write numbered lists and issue numbers), and `PR #12` resolves only when
+the task's URLs agree on exactly **one** repo — a link pointing at another project's PR is worse than no
+link.
+
+Status is the second half and strictly an enrichment. `GET /api/tasks/:id/prs` refreshes the stale entries
+(5-min TTL) via `GET /repos/:owner/:repo/pulls/:n`, trying the viewing member's linked token first, then
+the App's bot token, then anonymously (which answers for a public repo). Results cache in **`github_prs`**,
+a pure cache — every row is one API call away from being rebuilt — shared by every task that mentions the
+same PR. The detail payload carries the CACHED list so the sidebar paints instantly; the refresh is the
+separate call. `merged` is tracked apart from `closed` (GitHub reports a merged PR as closed, and rendering
+it that way reads as *abandoned*), and a PR with no status shows as a plain link, never a guessed state.
+Pinned by `scripts/task-pr-links-test.cjs`.
+
 > Web-only changes: `cd web && npm run build`, reload — no server restart. But Tasks needs new `/api/*`
 > routes, so a full `npm run build` + server bounce is required regardless (locally
 > `npm run build && launchctl kickstart -k gui/$(id -u)/com.agentos.northwind`).
