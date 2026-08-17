@@ -4611,6 +4611,10 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         // removed account leaves no orphaned secret. An 'apikey' account only REFERENCES a user-managed vault
         // key (apiKeyRef), and 'oauth' has none, so neither is touched.
         if (acct?.kind === 'token') os.secrets.delete(os.tenant, `runtime-token:${runtime}:${name}`, '*');
+        // An 'oauth' account's credential DIR is deliberately left on disk: it may still be in use by a
+        // session that is mid-run, and it holds that account's transcripts. It is reclaimed lazily instead —
+        // a guided login that targets the same dir archives the orphan aside (see RuntimeLoginManager.start),
+        // so removing an account never blocks re-adding it under the same name.
         os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'runtime.account.removed', data: { runtime, name } });
         return sendJson(res, 200, { ok: true });
       }

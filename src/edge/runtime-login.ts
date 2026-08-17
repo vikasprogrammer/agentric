@@ -154,10 +154,25 @@ export class RuntimeLoginManager {
 
     const spec = CODING_RUNTIMES[runtime];
     const dir = path.join(this.deps.accountsDir, runtime, clean.replace(/\s+/g, '-'));
-    // A dir that already holds a login would let the flow "succeed" instantly against someone else's
-    // credentials — the operator would never see the browser step and would register the wrong account.
+    // A dir that already holds a login must never be reused blind: the flow would "succeed" instantly
+    // against whoever signed in there, and the operator would register the wrong account without ever
+    // seeing the browser step. But WHOSE login it holds decides what to do about it:
+    //  · an account in the pool points at this dir → refuse, and name that account, since removing it (or
+    //    picking another name) is the fix. Reachable when a dir was added BY PATH under a different label.
+    //  · nothing points at it → it is an ORPHAN of an account the operator already removed, or of an
+    //    attempt that died after the token landed. Refusing there was a dead end: the console had just
+    //    deleted the account, so re-adding under the SAME name became impossible without ssh'ing to the
+    //    box to delete a directory — the exact class of "the easy path silently doesn't work" this surface
+    //    exists to remove. Move it aside instead and continue into a clean dir. Moved, never deleted: the
+    //    dir also holds the transcripts of every run made under that account.
     if (fs.existsSync(path.join(dir, spec.credentialEnv.configDirFile))) {
-      throw new Error(`${dir} already holds a login — remove it first, or add it as a credential dir by path`);
+      const owner = this.deps.accounts.list().find((a) => a.configDir && path.resolve(a.configDir) === path.resolve(dir));
+      if (owner) throw new Error(`${dir} is the credential dir of the "${owner.name}" account — remove that account first, or use another name`);
+      const aside = `${dir}.orphan-${Date.now()}`;
+      try { fs.renameSync(dir, aside); } catch (e) {
+        throw new Error(`${dir} already holds a login and could not be moved aside (${(e as Error).message}) — remove it on the box, or add it as a credential dir by path`);
+      }
+      this.deps.audit('runtime.account.login.orphan.archived', { runtime, name: clean, dir, movedTo: aside });
     }
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const id = 'lg_' + crypto.randomBytes(6).toString('hex');
