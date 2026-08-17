@@ -8,6 +8,30 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.364.0] — 2026-08-17
+### Added
+- **Per-endpoint timings — "which API is taking the most time", answered in the console.** Settings → System
+  → **Endpoint timings**, plus `GET /api/metrics/requests` (owner/admin) and a reset. Ranked by **total**
+  handler time, because that is what the question means: a 20 ms route called 10k times costs more than a
+  2 s route called once. Paths collapse to templates (`/api/sessions/:id/chain`) so an id-bearing route
+  can't unbound the table, and it is **in-memory only** — a per-request INSERT would add the very cost this
+  is meant to find, and would grow a table forever (the `audit_events` lesson).
+  - The load-bearing column is **stall**: event-loop lag observed when a request ARRIVED, kept strictly
+    separate from the route's own time and sampled independently of traffic. In the v0.362.0 incident a
+    blocking 20 s timer made `/health` — one string — measure **9.06 s**; a plain latency table would have
+    crowned `/health` the slowest endpoint and sent the next investigation into the wrong file. High stall
+    with low handler times everywhere means look for a timer, not an endpoint.
+
+### Fixed
+- **Memory was reported as ~98% used on a box with plenty free — on every platform.** Both the new sidebar
+  chip and the older Settings → System panel derived "used" from `os.freemem()`, which counts only pages
+  free *right now*; both kernels deliberately spend spare RAM on reclaimable cache. The Mac Mini read
+  `freemem` 0.08 GB of 24 GB (**98%**) while `memory_pressure` put availability at 59%; instawp would read
+  90% used where the kernel reports 46 of 62 GB *available* (26%). Now both read the kernel's own
+  availability estimate from one place (`availableBytes()` in `host-metrics.ts`): `MemAvailable` on Linux,
+  reclaimable `vm_stat` pages on macOS, cached 5s so open tabs can't exec per poll. The chip's tooltip
+  states the raw figure ("7.6 of 24 GB RAM available") rather than only a percentage.
+
 ## [0.363.0] — 2026-08-17
 ### Added
 - **The audit MIRROR is now bounded — it used to grow with a tenant's whole lifetime.** `audit_events` in

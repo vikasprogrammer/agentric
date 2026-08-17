@@ -167,10 +167,34 @@ export interface AgentInfo {
 /** Box pressure behind the whole tenant — see src/edge/host-metrics.ts. `cpu` is null on the first sample. */
 export interface HostMetrics {
   cpu: number | null
+  /** In-use percent, where "in use" = total minus the kernel's AVAILABLE (not `freemem`). */
   mem: number
+  availableMemMb: number
   load: number
   cores: number
   totalMemMb: number
+}
+
+/** One route's cost since collection started. `maxStallMs` is loop lag, NOT the route's own time. */
+export interface RouteStat {
+  route: string
+  count: number
+  totalMs: number
+  avgMs: number
+  p50Ms: number
+  p95Ms: number
+  maxMs: number
+  maxStallMs: number
+  errors: number
+}
+
+/** Per-endpoint timings + independent event-loop lag — see src/edge/request-metrics.ts. */
+export interface RequestMetricsSnapshot {
+  since: number
+  requests: number
+  routes: RouteStat[]
+  loop: { samples: number; maxMs: number; p95Ms: number; overOneSecond: number }
+  error?: string
 }
 
 export interface StateResp {
@@ -1607,6 +1631,10 @@ export const api = {
   state: () => call<StateResp>('GET', '/api/state'),
   /** Box CPU/RAM pressure for the sidebar chip. Cheap + DB-free; polled on a timer. */
   host: () => call<HostMetrics>('GET', '/api/host'),
+  /** Per-endpoint timings, ranked by total time, plus event-loop lag (owner/admin). */
+  requestMetrics: (limit = 40) => call<RequestMetricsSnapshot>('GET', `/api/metrics/requests?limit=${limit}`),
+  /** Start a fresh measurement window (owner/admin). */
+  resetRequestMetrics: () => call<{ ok?: boolean; error?: string }>('POST', '/api/metrics/requests/reset'),
   /** Self-update: check whether the checkout is behind origin (`force` re-runs `git fetch`, owner/admin). */
   checkUpdate: (force = false) => call<UpdateStatus>('GET', '/api/update' + (force ? '?force=1' : '')),
   /** Owner-only: pull + rebuild + restart. Resolves with the step log; the process bounces after. */
