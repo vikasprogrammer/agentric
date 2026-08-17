@@ -1598,6 +1598,41 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         return sendJson(res, 200, { ok: false, error: `no agent "${targetId}" — assign to one of: ${valid} (call list_agents to see the roster)` });
       }
     }
+    // A goal-plan run the requester chose to auto-run: the server force-stamps auto-dispatch on every task
+    // this session files, regardless of what the agent passed (its prompt never sets the flag). See
+    // Strategist.plan / TerminalManager.markPlanAutoDispatch.
+    const planAuto = tm.isPlanAutoDispatch(session);
+
+    // ── Self-dispatch refusal ──────────────────────────────────────────────────────────────────
+    // An agent filing an auto-dispatch task for ITSELF is not delegation — it is the agent ending its
+    // turn and immediately paying a full context reload to carry on doing what it was already doing.
+    // Measured on the instawp fleet over 7 days: 104 such tasks, 70 of them dispatched within 2 minutes
+    // of being filed, $1,330 of sessions that rebuilt a context their own caller was still holding.
+    //
+    // There is no defer here to preserve: `dueAt` is a soft deadline that dispatchable() never reads, so
+    // a self-assigned auto-dispatch task always runs ~now. Deferring a run of yourself is what the
+    // `schedule` tool is for, and a board item to pick up later is just autoDispatch:false.
+    //
+    // Refused at CREATE rather than at dispatch so the agent learns inside the turn that still has the
+    // context, and can simply continue. Exempt: a goal-plan run (`planAuto`), where the server stamps
+    // auto-dispatch on a deliberate multi-step plan drained in dependsOn order — a plan step for the
+    // planner itself is a structure the human opted into, not a turn boundary the agent invented.
+    const wantsAutoDispatch = b.autoDispatch === true || b.autoDispatch === 'true' || planAuto;
+    if (wantsAutoDispatch && !planAuto && assignee === `agent:${agent}`) {
+      os.audit.append({
+        ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`,
+        type: 'task.self_dispatch.refused', data: { title },
+      });
+      return sendJson(res, 200, {
+        ok: false,
+        error:
+          'you assigned this to yourself with autoDispatch — that would end your turn and respawn you ' +
+          'with an empty context to do work you can do right now. Just do it in this turn. If you need ' +
+          'it to run LATER, use `schedule`; if you want it on the board for someone to pick up, file it ' +
+          'with autoDispatch:false; if you need a DIFFERENT agent, set that agent as the assignee.',
+      });
+    }
+
     // Poke-back: an agent delegating to ANOTHER agent is woken when the delegate finishes (the MCP layer
     // defaults this ON for agent→agent hand-offs so the delegation loop closes itself). We stamp the
     // caller's agent id + pinned claude transcript so the task notifier can wake this session on
@@ -1611,10 +1646,6 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // task dispatch runs the unattended lane, so it wouldn't apply).
     const { tuning, error: tErr } = sanitizeRuntimeTuning(b);
     if (tErr) return sendJson(res, 200, { ok: false, error: tErr });
-    // A goal-plan run the requester chose to auto-run: the server force-stamps auto-dispatch on every task
-    // this session files, regardless of what the agent passed (its prompt never sets the flag). See
-    // Strategist.plan / TerminalManager.markPlanAutoDispatch.
-    const planAuto = tm.isPlanAutoDispatch(session);
     try {
       // owner defaults to the creating session's run-as member — HUMAN PASSTHROUGH: a task filed by an
       // agent acting as Alice dispatches (later) as Alice too, so accountability ladders to the person.
@@ -1628,7 +1659,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
         mode: b.mode === 'interactive' ? 'interactive' : 'headless',
         model: tuning.model,
         effort: tuning.effort,
-        autoDispatch: b.autoDispatch === true || b.autoDispatch === 'true' || planAuto,
+        autoDispatch: wantsAutoDispatch,
         goalId: typeof b.goalId === 'string' && b.goalId ? b.goalId : undefined,
         criteria: typeof b.criteria === 'string' && b.criteria ? b.criteria : undefined,
         dependsOn: Array.isArray(b.dependsOn) ? b.dependsOn.map(String) : undefined,
