@@ -56,6 +56,16 @@ const WARM_CONFIRM_MS = 12_000;
  *  for minutes; one still "busy" after this is wedged, and protecting it would mean never reclaiming
  *  its pane. */
 const MID_TURN_MAX_MS = 2 * 3600_000;
+/** How long the LAUNCH-TIME `busy_since` prediction may stand before we stop believing a turn started.
+ *  `createSession` stamps `busy_since = created_at` because a launch normally seeds a prompt — but that
+ *  is a PREDICTION, not evidence, and the runtime has plenty of ways to open without ever running a turn
+ *  (a resume that was handed no prompt, a rate-limited start, a trust dialog, a crash on boot). An
+ *  unconfirmed prediction used to ride the full {@link MID_TURN_MAX_MS} ceiling, so the console span
+ *  "working" for two hours on a session doing nothing. Real turns announce themselves fast — the
+ *  `UserPromptSubmit` hook fires BEFORE claude even processes the prompt, and the gate fires on the first
+ *  tool call (96% of fleet runs within 30s) — and either one PROMOTES `busy_since` off `created_at`
+ *  ({@link markTurnBusy}), which is what makes "unconfirmed" a decidable state rather than a guess. */
+const LAUNCH_TURN_GRACE_MS = 5 * 60_000;
 /** How long an idle INTERACTIVE session keeps its spawn-cap slot after its last turn ended. Long enough
  *  that a human thinking between turns never loses their slot to a scheduled spawn; short enough that a
  *  TUI someone walked away from stops blocking the scheduler. Only affects ADMISSION — the session stays
@@ -964,12 +974,18 @@ export class TerminalManager {
    *     past the ceiling (see {@link markTurnBusy}), so a genuinely long turn keeps its spinner while a
    *     wedged one — which emits nothing — ages out. The backstop for a run that produced no end signal
    *     at all, so it stops reading as "working" on its own instead of spinning forever.
+   *  6. **the turn was CONFIRMED, not merely predicted.** `busy_since === created_at` is the untouched
+   *     launch stamp: we assumed a turn would start and no turn signal has landed since. That assumption
+   *     is wrong whenever the runtime opens without running a turn, and it used to hold the spinner for
+   *     the full 2h ceiling. Give it {@link LAUNCH_TURN_GRACE_MS} — well past the ~30s in which a real
+   *     turn promotes the stamp — then read it for what it is: a launch that never became work.
    */
-  private isWorking(r: { id: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null }, alive: Set<string> | null): boolean {
+  private isWorking(r: { id: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null; created_at: number }, alive: Set<string> | null): boolean {
     if (r.busy_since == null) return false;
     if (r.status === 'stopped' || r.status === 'crashed') return false;
     if (r.last_activity != null && r.last_activity > r.busy_since) return false;
     if (r.busy_since < Date.now() - MID_TURN_MAX_MS) return false;
+    if (r.busy_since === r.created_at && r.busy_since < Date.now() - LAUNCH_TURN_GRACE_MS) return false;
     return this.launching.has(r.id) || !alive || alive.has(r.tmux);
   }
 
@@ -3277,6 +3293,14 @@ export class TerminalManager {
    * not restart the staleness window, and must certainly not move `last_activity` past `busy_since`,
    * which is how {@link isWorking} recognises a turn that has already ended.
    *
+   * The `OR busy_since = created_at` arm PROMOTES the launch-time prediction into an observed turn.
+   * `createSession` stamps `busy_since = created_at` on the assumption that the launch seeds a prompt, and
+   * that stamp is neither NULL nor stale — so it SHADOWED every signal of the first turn: `UserPromptSubmit`
+   * and the first 40 tool calls were all no-ops, and the row looked identical whether the runtime was
+   * working hard or had opened on an empty composer and never started. This arm is what makes those two
+   * distinguishable (see {@link isWorking} condition 6). It fires at most once per run — the promoted stamp
+   * is `now`, never again equal to `created_at` — so mid-turn idempotence is untouched.
+   *
    * The `OR busy_since < <stale floor>` arm is what turns the `MID_TURN_MAX_MS` ceiling from a dumb
    * timer into an honest wedged-turn test. A turn that is genuinely still running keeps producing tool
    * calls, so it re-stamps and never ages out; a turn that is wedged produces nothing, so its flag goes
@@ -3296,7 +3320,7 @@ export class TerminalManager {
     // the first tool call of the NEXT turn always reaches the DB however soon it arrives.
     if (opts.answered === false && now - (this.busyStamped.get(sessionId) ?? 0) < BUSY_STAMP_THROTTLE_MS) return;
     this.busyStamped.set(sessionId, now);
-    this.db.prepare('UPDATE term_sessions SET busy_since = ?, last_activity = ?, updated_at = ? WHERE id = ? AND (busy_since IS NULL OR busy_since < ?)')
+    this.db.prepare('UPDATE term_sessions SET busy_since = ?, last_activity = ?, updated_at = ? WHERE id = ? AND (busy_since IS NULL OR busy_since < ? OR busy_since = created_at)')
       .run(now, now, now, sessionId, now - MID_TURN_MAX_MS);
     if (opts.answered !== false) this.clearNotifications(sessionId);
   }

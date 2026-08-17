@@ -379,16 +379,31 @@ export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
 # NOTE: do NOT `exec` claude. When claude exits we fall back to a live shell so the tmux session
 # stays alive — otherwise the pane dies and ttyd would loop showing "Reconnecting".
 if [ "${RESUME:-}" = "1" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
-  # Reconnect to a stopped session: reopen the SAME conversation (no task re-seed — it's already
-  # in the transcript). If resume fails (e.g. claude never persisted a turn before it was stopped),
-  # fall back to a fresh session under the same id, seeded with the original task.
+  # Reconnect to a conversation that already exists. Whether $TASK is re-seeded turns on WHO asked,
+  # which is exactly what RESUMED_FROM_ENV distinguishes (the unattended lane above makes the same
+  # split — keep the two in step):
+  #   - RESUMED_FROM_ENV — a BROWSER REATTACH (attach.sh re-launched us off the persisted env). $TASK is
+  #     the ORIGINAL prompt, already in the transcript; re-seeding it would re-run the whole run. Open
+  #     the TUI and stop.
+  #   - otherwise — the SERVER launched this run and $TASK is a genuinely NEW prompt (a task re-dispatch
+  #     with mode:interactive, whose prompt is "you are RESUMING … continue and finish"). Dropping it
+  #     opened the TUI on the old transcript with an empty composer: no turn ever started, no
+  #     UserPromptSubmit, no Stop — so the row kept the `busy_since` stamped at launch and the console
+  #     read "working" on a session that would never do anything (2026-08-17, fleet-janitor).
+  # If resume fails (e.g. claude never persisted a turn before it was stopped), fall back to a fresh
+  # session under the same id, seeded either way — a lost transcript needs a prompt.
   # RESUME is checked BEFORE FORK_FROM on purpose: a forked session persists FORK_FROM in its launch
   # env, but a later reattach must resume THIS branch in place (RESUME=1), never re-fork the parent.
   notify_resumed
   dim "resuming claude session $CLAUDE_SESSION_ID …"
   echo
-  claude --resume "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" \
-    || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" "$TASK"
+  if [ -n "${RESUMED_FROM_ENV:-}" ]; then
+    claude --resume "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" \
+      || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
+  else
+    claude --resume "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"} \
+      || claude --session-id "$CLAUDE_SESSION_ID" "${COMMON_ARGS[@]}" ${TASK:+"$TASK"}
+  fi
 elif [ -n "${FORK_FROM:-}" ] && [ -n "${CLAUDE_SESSION_ID:-}" ]; then
   # FORK (first launch only): branch a NEW conversation ($CLAUDE_SESSION_ID) off an existing one
   # ($FORK_FROM). `--fork-session` copies the parent's history into OUR chosen new id and leaves the
