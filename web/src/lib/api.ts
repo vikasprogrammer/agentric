@@ -709,6 +709,26 @@ export interface TaskAttachment {
   uploadedBy: string
   createdAt: number
 }
+/** A pull request a task references. PARSED out of the task's body / activity log / Discussion (agents
+ *  already paste the URL when they ship), then enriched with GitHub's open/merged/closed status — see
+ *  src/edge/task-prs.ts. `state` absent = never fetched (no GitHub configured, or `error` says why). */
+export interface TaskPr {
+  owner: string
+  repo: string
+  number: number
+  url: string
+  source: 'body' | 'activity' | 'discussion'
+  firstSeenAt: number
+  state?: 'open' | 'closed' | 'merged'
+  draft?: boolean
+  title?: string
+  author?: string
+  mergedAt?: number
+  updatedAt?: number
+  fetchedAt?: number
+  error?: string
+}
+export interface TaskPrSummary { total: number; merged: number; open: number; closed: number; draft: number }
 /** One session that worked a task — a task's run history is one-to-many (retries, crashes, take-overs),
  *  where `Task.lastSessionId` only ever pointed at the newest. See TerminalManager.taskRuns. */
 export interface TaskRun {
@@ -1868,7 +1888,10 @@ export const api = {
   kbDelete: (id: string) => call<{ ok: boolean; error?: string }>('DELETE', `/api/kb/page/${id}`),
 
   tasks: (q = '', status = '') => call<{ tasks: Task[]; counts: Record<TaskStatus, number>; agents: string[]; discussions?: Record<string, TaskDiscussionSummary> }>('GET', `/api/tasks?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
-  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; children?: TaskChild[]; runs?: TaskRun[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
+  task: (id: string) => call<{ task?: Task; events?: TaskEvent[]; attachments?: TaskAttachment[]; dependents?: string[]; children?: TaskChild[]; runs?: TaskRun[]; prs?: TaskPr[]; discussion?: TaskTimelineEntry[]; unread?: number; choices?: { id: string; agentId: string; message: string }[]; error?: string }>('GET', `/api/tasks/${id}`),
+  /** The task's PRs with their status refreshed from GitHub (stale-only unless `refresh`). Separate from
+   *  the detail payload because it makes network calls — the detail's `prs` render instantly from cache. */
+  taskPrs: (id: string, refresh?: boolean) => call<{ prs?: TaskPr[]; summary?: TaskPrSummary; error?: string }>('GET', `/api/tasks/${id}/prs${refresh ? '?refresh=1' : ''}`),
   postTaskMessage: (id: string, body: string) => call<{ ok: boolean; entry?: TaskTimelineEntry; mentioned?: string[]; agents?: { agent: string; status: string }[]; delivery?: TaskDiscussionDelivery; error?: string }>('POST', `/api/tasks/${id}/messages`, { body }),
   // Route an ALREADY-POSTED discussion message into one live run — the human's answer when several were
   // live and the post came back `choose`. Posts nothing new.

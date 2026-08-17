@@ -331,6 +331,60 @@ export async function mintInstallationToken(
 }
 
 /**
+ * The slice of a pull request the Tasks board renders: is it open, merged or closed, and who/what is
+ * it. `state` is GitHub's own (`open`/`closed`); `merged` is the distinction GitHub only makes in a
+ * separate field — a merged PR is `closed` too, and conflating them would read as "abandoned".
+ */
+export interface PullRequestInfo {
+  state: 'open' | 'closed';
+  merged: boolean;
+  draft: boolean;
+  title: string;
+  author: string;
+  htmlUrl: string;
+  /** Epoch ms, when set by GitHub. */
+  mergedAt?: number;
+  updatedAt?: number;
+}
+
+/**
+ * Read one PR's status (`GET /repos/:owner/:repo/pulls/:number`). Works with any token that can see
+ * the repo — an installation (bot) token or a member's user token — and returns `{ error }` with the
+ * HTTP status in it on failure, so the caller can tell "this token can't see that repo" (404/403,
+ * worth trying another token) from a real outage.
+ */
+export async function pullRequest(
+  token: string | undefined,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<PullRequestInfo | { error: string }> {
+  try {
+    // No token → an anonymous call, which still answers for a PUBLIC repo (GitHub allows 60/h per IP).
+    // That's the difference between "status works out of the box on an open-source repo" and "nothing
+    // until you register a GitHub App", and a private repo just 404s the same way a wrong token does.
+    const res = await fetch(`${GH_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}`, {
+      headers: token ? { ...BASE_HEADERS, authorization: `Bearer ${token}` } : BASE_HEADERS,
+    });
+    if (!res.ok) return { error: `GET pulls/${number} → ${res.status}` };
+    const j = (await res.json().catch(() => ({}))) as any;
+    const state = j?.state === 'closed' ? 'closed' : 'open';
+    return {
+      state,
+      merged: !!j?.merged_at || j?.merged === true,
+      draft: j?.draft === true,
+      title: String(j?.title ?? ''),
+      author: String(j?.user?.login ?? ''),
+      htmlUrl: String(j?.html_url ?? `https://github.com/${owner}/${repo}/pull/${number}`),
+      mergedAt: j?.merged_at ? Date.parse(j.merged_at) : undefined,
+      updatedAt: j?.updated_at ? Date.parse(j.updated_at) : undefined,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : `GET pulls/${number} failed` };
+  }
+}
+
+/**
  * A tiny in-memory installation-token cache: mint once, reuse until ~5 min before expiry, so a burst
  * of session launches doesn't hammer the mint endpoint (nor exhaust GitHub's rate limit). Keyed by
  * installation id + the repo/permission narrowing, since those change the token's scope. Process-local

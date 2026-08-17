@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.367.0] — 2026-08-17
+### Added
+- **A task now shows the pull requests it produced, and whether they landed.** The run history said how
+  many attempts a task took but never what those attempts shipped — even though the answer was already
+  written down: an agent that ships code pastes the PR URL into its closing note (on the live northwind
+  tenant, **121 of 404 tasks** already carried one; 94 of them in the activity log or Discussion, only 11
+  in the description). So the links are **parsed, not attached** — no new agent tool, no new instruction,
+  and it works retroactively on every task ever filed. The task detail lists them under **Pull requests ·
+  N** with an open / draft / merged / closed chip, the PR title, and a refresh button. Status comes from
+  the GitHub API (`GET /api/tasks/:id/prs`, 5-minute cache in the new `github_prs` table), authenticated
+  with the viewing member's linked token, then the App's bot token, then anonymously — so a public repo
+  works with no GitHub setup at all, and with none of it the links still render. `merged` is tracked apart
+  from `closed`, since GitHub reports a merged PR as closed and showing it that way reads as abandoned;
+  a PR whose status can't be fetched shows as a plain link rather than a guessed state. The parser
+  refuses to guess in the other direction too: a bare `#12` is never a PR, and `PR #12` resolves only when
+  the task's own links agree on exactly one repo. Pinned by `scripts/task-pr-links-test.cjs`.
+
 ## [0.366.1] — 2026-08-17
 ### Fixed
 - **Leaving a room now returns you where you came from.** Opening a task from a goal's task list and

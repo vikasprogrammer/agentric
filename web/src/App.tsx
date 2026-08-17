@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
 import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, Ban, Copy as CopyIcon } from 'lucide-react'
-import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
+import { GitPullRequest, GitPullRequestClosed, GitMerge, Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button, buttonVariants } from '@/components/ui/button'
@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -9729,7 +9729,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   // Leaving the room returns you WHERE YOU CAME FROM — a task opened from a goal's task list goes back to
   // that goal, not to the board you were never on. Falls back to the board for a deep link (no trail).
   const closeTask = () => { setEditing(false); backTo('tasks').go() }
-  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; children: TaskChild[]; runs: TaskRun[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
+  const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; children: TaskChild[]; runs: TaskRun[]; prs: TaskPr[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // Which run from the task's history the room's Session tab is showing ('' = the live/last one).
@@ -9867,7 +9867,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) })
+    api.task(selId).then((r) => { if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], prs: r.prs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) })
   }, [selId, tasks, editing])
   useEffect(() => { setEditing(false); setConfirmDel(false); setRunSel('') }, [selId]) // fresh drawer per selection
 
@@ -9977,10 +9977,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     await api.patchTask(detail.task.id, { title: eTitle, body: eBody })
     setEditing(false); setBusy(false)
     await load()
-    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] })
+    const r = await api.task(detail.task.id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], prs: r.prs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] })
   }
   // Re-pull the open task's detail (events + attachments + dependency edges) after a mutation that doesn't move columns.
-  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
+  const refreshDetail = async (id: string) => { const r = await api.task(id); if (r.task) setDetail({ task: r.task, events: r.events ?? [], attachments: r.attachments ?? [], dependents: r.dependents ?? [], children: r.children ?? [], runs: r.runs ?? [], prs: r.prs ?? [], discussion: r.discussion ?? [], unread: r.unread ?? 0, choices: r.choices ?? [] }) }
 
   if (!tasks) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -10216,6 +10216,14 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             onOpen={opts?.onRun ?? ((id) => onOpen('aos-' + id, 'Task · ' + detail.task.title))}
           />
         )}
+
+        {/* What the runs actually SHIPPED. Sits under the run history because that's the reading order:
+            attempts, then the artifacts those attempts produced. */}
+        <TaskPullRequests
+          taskId={detail.task.id}
+          prs={detail.prs}
+          onRefreshed={(prs) => setDetail((d) => d && d.task.id === detail.task.id ? { ...d, prs } : d)}
+        />
         {hint && <div className="font-mono text-xs text-destructive">{hint}</div>}
 
         {opts?.withDiscussion !== false && (
@@ -11231,6 +11239,87 @@ function TaskRuns({ runs, selected, onOpen }: { runs: TaskRun[]; selected?: stri
       </div>
     </div>
   )
+}
+
+/**
+ * Pull requests section of the task detail — "did this task actually ship anything, and did it land?".
+ *
+ * The list arrives with the detail payload (parsed from what agents already wrote into the task, so it
+ * needs no attach step and works on tasks filed long before this existed) with whatever PR status was
+ * last cached. On mount we ask the server to refresh the stale ones from GitHub; the manual refresh
+ * button forces the lot. With GitHub unconfigured there's no status — the links still render, which is
+ * strictly better than the nothing that was here before.
+ */
+function TaskPullRequests({ taskId, prs, onRefreshed }: { taskId: string; prs: TaskPr[]; onRefreshed: (prs: TaskPr[]) => void }) {
+  const [busy, setBusy] = useState(false)
+  const asked = useRef('')
+
+  const load = async (force: boolean) => {
+    setBusy(true)
+    const r = await api.taskPrs(taskId, force)
+    if (r.prs) onRefreshed(r.prs)
+    setBusy(false)
+  }
+  // Once per task per mount — a second render of the same task shouldn't re-hit the GitHub API.
+  useEffect(() => {
+    if (!prs.length || asked.current === taskId) return
+    asked.current = taskId
+    void load(false)
+  }, [taskId, prs.length])
+
+  if (!prs.length) return null
+  const merged = prs.filter((p) => p.state === 'merged').length
+  const open = prs.filter((p) => p.state === 'open').length
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          Pull requests · {prs.length}
+          {(merged > 0 || open > 0) && <span className="ml-1.5 normal-case tracking-normal text-muted-foreground/70">{[merged ? `${merged} merged` : '', open ? `${open} open` : ''].filter(Boolean).join(' · ')}</span>}
+        </div>
+        <button title="Refresh from GitHub" disabled={busy} onClick={() => load(true)} className="text-muted-foreground hover:text-foreground disabled:opacity-50">
+          <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      <div className="space-y-1">
+        {prs.map((pr) => {
+          const s = prState(pr)
+          return (
+            <a
+              key={`${pr.owner}/${pr.repo}#${pr.number}`}
+              href={pr.url}
+              target="_blank"
+              rel="noreferrer"
+              title={pr.error ? `${pr.url}\n⚠ ${pr.error}` : `${pr.owner}/${pr.repo} · first mentioned in the ${pr.source === 'body' ? 'description' : pr.source}`}
+              className="flex items-center gap-2 rounded-md border bg-muted/20 px-2 py-1.5 no-underline transition-colors hover:bg-muted/50"
+            >
+              <s.Icon className={`h-3.5 w-3.5 shrink-0 ${s.cls}`} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5">
+                  <span className="font-mono text-xs font-medium text-foreground">#{pr.number}</span>
+                  <span className={`font-mono text-[10px] uppercase tracking-wide ${s.cls}`}>{s.label}</span>
+                  <span className="truncate text-[10px] text-muted-foreground">{pr.repo}</span>
+                </span>
+                {pr.title && <span className="block truncate text-[11px] text-muted-foreground">{pr.title}</span>}
+              </span>
+              <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
+            </a>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+/** Icon + colour + word for a PR's state. No status fetched yet (or the token can't see the repo) reads
+ *  as "link" rather than guessing — an unknown PR must never look merged. */
+function prState(pr: TaskPr): { Icon: LucideIcon; cls: string; label: string } {
+  if (pr.state === 'merged') return { Icon: GitMerge, cls: 'text-violet-500', label: 'merged' }
+  if (pr.state === 'closed') return { Icon: GitPullRequestClosed, cls: 'text-red-500', label: 'closed' }
+  if (pr.state === 'open') return pr.draft
+    ? { Icon: GitPullRequest, cls: 'text-muted-foreground', label: 'draft' }
+    : { Icon: GitPullRequest, cls: 'text-emerald-500', label: 'open' }
+  return { Icon: GitPullRequest, cls: 'text-muted-foreground/70', label: pr.error ? 'no access' : 'link' }
 }
 
 /** Attachments section of the task drawer: upload (button/drop), list with download, delete. */
