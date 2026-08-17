@@ -238,7 +238,57 @@ console.log('    are written at launch — so an already-running session needs a
   assert(seen(id).working === true, 'a tool call revives it — the ceiling measures ACTIVITY, not turn age');
 }
 
-console.log('\n\x1b[1m9) an unknown event is ignored, not a crash\x1b[0m');
+console.log('\n\x1b[1m9) the LAUNCH stamp is a prediction, and an unconfirmed one is not work\x1b[0m');
+console.log('   (createSession stamps busy_since = created_at because a launch normally seeds a prompt.');
+console.log('    instapods 2026-08-17: a task re-dispatch with mode:interactive resumed the transcript and');
+console.log('    the launcher dropped the prompt, so claude opened on an empty composer — no turn, no');
+console.log('    UserPromptSubmit, no Stop — and the console read "working" for the full 2h ceiling.)');
+{
+  // The launch stamp, minutes old and never confirmed by a single turn signal.
+  const t = Date.now() - 20 * 60_000;
+  const id = mk({ created_at: t, busy_since: t, last_activity: null });
+  assert(seen(id).working === false, 'a launch that never became a turn stops reading working');
+  assert(seen(id).alive === true && seen(id).status === 'running', 'the pane is untouched — this is a HONESTY fix, not a reaper');
+}
+{
+  // Same row, but inside the grace window: a run whose claude is still booting must keep its spinner.
+  const t = Date.now() - 30_000;
+  const id = mk({ created_at: t, busy_since: t, last_activity: null });
+  assert(seen(id).working === true, 'a launch 30s old is still believed — real turns promote within ~30s');
+}
+{
+  // PROMOTION. Without it the launch stamp SHADOWS the whole first turn: neither NULL nor stale, so
+  // UserPromptSubmit and every tool call were no-ops and a hard-working run looked byte-identical to a
+  // dead one. This is what makes "unconfirmed" decidable rather than a guess.
+  const t = Date.now() - 20 * 60_000;
+  const id = mk({ created_at: t, busy_since: t, last_activity: null });
+  tm.recordLifecycle(id, 'UserPromptSubmit');                 // ← a turn really did start
+  assert(row(id).busy_since > row(id).created_at, 'UserPromptSubmit promotes the launch stamp off created_at');
+  assert(seen(id).working === true, 'so a genuinely long first turn keeps its spinner past the grace window');
+  tm.markTurnIdle(id);
+  assert(seen(id).working === false, 'and still ends at turn-end');
+}
+{
+  // The gate promotes too — the universal heartbeat, for a session whose lifecycle hook predates the fix.
+  const t = Date.now() - 20 * 60_000;
+  const id = mk({ created_at: t, busy_since: t, last_activity: null });
+  tm.markTurnBusy(id, { answered: false });                   // ← the gate, on the first tool call
+  assert(row(id).busy_since > row(id).created_at, 'a tool call promotes it too');
+  assert(seen(id).working === true, 'a first turn doing real work is not mistaken for a dead launch');
+}
+{
+  // Promotion happens at most once per run: the promoted stamp is `now`, never again == created_at, so
+  // mid-turn idempotence (the 40th tool call must not restart the staleness window) is untouched.
+  const t = Date.now() - 20 * 60_000;
+  const id = mk({ created_at: t, busy_since: t, last_activity: null });
+  tm.markTurnBusy(id, { answered: false });
+  const promoted = row(id).busy_since;
+  tm.busyStamped.delete(id);                                  // defeat the hot-path throttle, not the SQL guard
+  tm.markTurnBusy(id, { answered: false });
+  assert(row(id).busy_since === promoted, 'a later tool call in the SAME turn does not re-stamp');
+}
+
+console.log('\n\x1b[1m10) an unknown event is ignored, not a crash\x1b[0m');
 {
   const id = mk();
   const before = row(id).busy_since;

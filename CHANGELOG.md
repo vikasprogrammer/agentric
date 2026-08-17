@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.355.2] — 2026-08-17
+### Fixed
+- **A task re-dispatched as `interactive` now actually gets its prompt.** `claude --resume` serves two
+  callers with opposite needs: a **browser reattach** (`attach.sh`, `RESUMED_FROM_ENV=1`), where `$TASK` is
+  the original prompt already sitting in the transcript and re-seeding it would re-run the whole run; and a
+  **server-driven** relaunch, where `$TASK` is a genuinely new prompt. The unattended lane in
+  `terminal/claude-launch.sh` had learned that split; the interactive lane dropped `$TASK`
+  unconditionally. So a task re-dispatch with `mode: interactive` resumed the transcript and opened the TUI
+  on an **empty composer** — the "you are RESUMING … continue and finish it" prompt was never delivered.
+  Found on instapods 2026-08-17 (`fleet-janitor`, `tsk_5aa0fd20887a2d79`): a healthy claude parked at `❯ `
+  behind a session the console insisted was working.
+- **A launch that never became a turn stops reading as "working".** `createSession` stamps
+  `busy_since = created_at` because a launch normally seeds a prompt — but that is a *prediction*, and the
+  stamp was neither `NULL` nor stale, so it **shadowed every signal of the first turn**: `UserPromptSubmit`
+  and the first 40 tool calls were all no-ops against it, and a row looked byte-identical whether the
+  runtime was working hard or had opened on an empty composer and never started. An unconfirmed prediction
+  therefore rode the full 2h `MID_TURN_MAX_MS` ceiling, which is the class of bug the case above surfaced —
+  and the same class a rate-limited or trust-dialog-hung start produces. `markTurnBusy` now **promotes** the
+  launch stamp on the first real turn signal (at most once per run, so mid-turn idempotence is untouched),
+  which makes "unconfirmed" a decidable state; `isWorking` gives an unpromoted stamp
+  `LAUNCH_TURN_GRACE_MS` (5 min — real turns promote within ~30s on 96% of fleet runs) and then stops
+  believing it. Honesty only: the pane is left alive and attachable.
+- Pinned by `scripts/resume-seed-test.cjs` (24 assertions; runs the real dispatch blocks lifted out of the
+  live launch script, both lanes, with `claude` stubbed) and 9 new assertions in
+  `scripts/turn-lifecycle-test.cjs`.
+
 ## [0.355.1] — 2026-08-17
 ### Fixed
 - **An injected message that never became a turn is no longer reported as delivered.**
