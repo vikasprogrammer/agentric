@@ -416,6 +416,29 @@ a queue whose failure mode is a silent row would be the original bug wearing a d
 
 Pinned by `scripts/wakeup-queue-test.cjs`.
 
+### 3.7 Who a `blocked` wake-up is FOR — `blockedOn`
+
+The poke fires on `blocked` as well as `done`, which is right whenever the caller can act: re-scope the
+work, route around the blocker, chase whoever owes it. It is waste when the blocker is a person. Twice on
+northwind 2026-08-17: `tsk_f81b27d7` ("Blocked on human approval for the merge only") woke `prod-monitor`,
+which answered *"Leaving this blocked. @engineer stopped in the right place — I am not merging it and
+neither should any agent"* and ended; `tsk_5aa0fd20` ("no deletions without founder sign-off") woke
+`agent-author` identically. Both agents were right, and neither could have been anything else — each wake
+was a `--resume` on a large transcript (~$8-10 a turn at that size) that moved nothing.
+
+So the delegate declares what it is waiting on: `task_update({ status:'blocked', blockedOn })`, one of
+`human` | `agent` | `external`. `human` skips the caller wake entirely — the owner already gets the
+"Task blocked — needs you" card + DM from `taskCard`, so nothing is lost — and audits
+`agent.poke.skipped` with `reason: 'blocked-on-human'`. `agent`/`external` wake the caller exactly as
+before, and an **unstated** blocker also keeps the old behaviour: this only ever narrows on an explicit
+declaration.
+
+Declared, never inferred. A heuristic over the note's prose would misroute precisely when the wording is
+unusual, and the delegate already knows which of the three it is. The flag is cleared whenever the task
+leaves `blocked`, so a stale "waiting on the founder" can't mute a later done-poke. Pinned by
+`scripts/blocked-routing-test.cjs`; the board shows it as a `waiting on …` chip, since the column header
+("Needs you") is only true for one of the three.
+
 ---
 
 ## 4. Agent-facing MCP tools — `src/memory/memory-mcp.ts`

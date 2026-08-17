@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.356.0] — 2026-08-17
+### Added
+- **A delegate can now say what it is blocked ON, and a human blocker no longer wakes the delegating
+  agent.** `task_update({ status:'blocked', blockedOn })` takes `human` | `agent` | `external`. The
+  completion poke fires on `blocked` as well as `done`, which is right when the caller can re-scope or
+  chase the blocker — and waste when only a person can act. Twice on the live fleet 2026-08-17:
+  `tsk_f81b27d7` ("Blocked on human approval for the merge only") woke `prod-monitor`, which replied
+  "Leaving this blocked — I am not merging it and neither should any agent" and ended; `tsk_5aa0fd20`
+  ("no deletions without founder sign-off") woke `agent-author` the same way. Each was a `--resume` on a
+  large transcript that moved nothing. Now `human` routes to the task **owner** alone — who already gets
+  the "Task blocked — needs you" card + DM, so nothing is lost — and audits `agent.poke.skipped`
+  (`reason: 'blocked-on-human'`); `agent`/`external` wake the caller as before; an **unstated** blocker
+  keeps the old behaviour, so this only narrows on an explicit declaration. Declared, never inferred from
+  the note's prose. The flag clears whenever the task leaves `blocked`, so it can't mute a later
+  done-poke. Board shows a `waiting on …` chip (the "Needs you" column header is only true for one of the
+  three). Pinned by `scripts/blocked-routing-test.cjs`; docs/tasks-plan.md §3.7.
+
 ## [0.355.2] — 2026-08-17
 ### Fixed
 - **A task re-dispatched as `interactive` now actually gets its prompt.** `claude --resume` serves two

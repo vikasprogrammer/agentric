@@ -620,12 +620,16 @@ export interface AgentProposalTrust {
 }
 
 export type TaskStatus = 'todo' | 'doing' | 'blocked' | 'done' | 'cancelled'
+/** What a blocked task waits on, declared by the delegate that blocked it. `human` also routes the
+ *  wake-up to the owner alone instead of resuming the agent that handed the work over. */
+export type TaskBlockedOn = 'human' | 'agent' | 'external'
 export interface Task {
   id: string
   tenant: string
   title: string
   body: string
   status: TaskStatus
+  blockedOn?: TaskBlockedOn
   priority: number
   labels: string[]
   assignee?: string

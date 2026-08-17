@@ -799,6 +799,11 @@ function migrate(db: Db): void {
     );
   `);
 
+  // What a `blocked` task waits on ('human' | 'agent' | 'external'), declared by the delegate that blocked
+  // it. Routes the wake-up: `human` cards the owner only, since waking the caller agent for a decision it
+  // cannot make just spends a resumed run. NULL on older rows = unstated = wake the caller, as before.
+  addColumn(db, 'tasks', 'blocked_on', 'TEXT');
+
   // Idempotent column additions for the inbox feed (older DBs won't have these).
   addColumn(db, 'messages', 'source', 'TEXT');        // provenance: member id | automation:<id>
   addColumn(db, 'messages', 'question_id', 'TEXT');   // links a 'question' message to its row

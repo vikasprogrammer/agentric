@@ -9505,6 +9505,14 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
             ? <Badge variant="secondary" className="gap-1 px-1.5 py-0 text-[10px]">{assigneeIcon(t.assignee, 'h-3 w-3')}{nameOf(t.assignee)}</Badge>
             : <span className="font-mono text-[10px] text-muted-foreground/60">unassigned</span>}
           {t.autoDispatch && <Badge variant="outline" className="px-1.5 py-0 text-[10px]">auto</Badge>}
+          {/* What a blocked task waits on, as its delegate declared it. The column header says "Needs you",
+              which is only true for `human` — this says which of the three it actually is, and `human` is
+              also the one that routed the alert to the owner instead of waking the delegating agent. */}
+          {t.status === 'blocked' && t.blockedOn && (
+            <Badge variant="outline" className={`px-1.5 py-0 text-[10px] ${t.blockedOn === 'human' ? 'border-amber-500/40 text-amber-600' : ''}`}>
+              waiting on {t.blockedOn}
+            </Badge>
+          )}
           {dm && <span className={`inline-flex items-center gap-0.5 rounded px-1 text-[10px] ${dm.overdue ? 'bg-red-500/15 text-red-600' : dm.soon ? 'text-amber-600' : ''}`}><Clock className="h-2.5 w-2.5" />{dm.label}</span>}
           {t.goalId && goalChip(t.goalId)}
           {t.labels.map((l) => <Badge key={l} variant="outline" className="px-1.5 py-0 text-[10px]">{l}</Badge>)}
