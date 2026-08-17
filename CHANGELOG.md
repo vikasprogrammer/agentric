@@ -8,6 +8,22 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.360.0] — 2026-08-17
+### Changed
+- **An agent can no longer auto-dispatch a task to itself.** `task_create({ assignee:'me',
+  autoDispatch:true })` is not delegation — it ends the agent's turn and immediately respawns it with an
+  empty context to do work the session it just left was still holding the context for. Measured on the
+  live instawp fleet over 7 days: **104 such tasks, 70 of them dispatched within 2 minutes of being
+  filed, $1,330** of sessions rebuilding a context their own caller already had. The route now refuses at
+  CREATE (so the agent learns inside the turn that can still act on it), writes nothing, and names the
+  three real alternatives: do it now, `schedule` it for genuinely later, or file it `autoDispatch:false`
+  for the board. Audited `task.self_dispatch.refused`, so the saving is measurable rather than asserted.
+  Nothing is given up — there was no deferral to preserve, because `dueAt` is a soft deadline that
+  `dispatchable()` never reads, so a self-assigned auto-dispatch task always ran ~now anyway.
+  Cross-agent hand-offs, self-assigned board items (`autoDispatch:false`), unassigned tasks and the
+  goal-plan lane (where the server deliberately stamps auto-dispatch on a multi-step plan) are all
+  untouched — each pinned by `scripts/self-dispatch-guard-test.cjs`, now in the governance gate.
+
 ## [0.359.0] — 2026-08-17
 ### Added
 - **`unless` — a webhook filter can now reject a *conjunction*.** v0.358.0 gave `filter` a `when` clause,
