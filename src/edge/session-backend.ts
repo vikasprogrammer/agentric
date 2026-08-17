@@ -91,6 +91,9 @@ const TMUX_GEOMETRY = ['-x', '203', '-y', '50'];
 const PASTE_SETTLE_MS = 350;
 /** Submit attempts before `injectText` admits the message never became a turn. */
 const SUBMIT_ATTEMPTS = 2;
+/** How long a tmux liveness poll may be reused before re-execing tmux — see {@link LocalSessionBackend.aliveNames}.
+ *  Invalidated eagerly on spawn/kill, so this bounds only how stale an UNCHANGED-by-us world may read. */
+const ALIVE_POLL_TTL_MS = 1_000;
 
 /** Block this thread for `ms`. The backend contract is synchronous, and the settle has to happen BETWEEN
  *  two tmux calls, so there is nowhere to await. Bounded by PASTE_SETTLE_MS × SUBMIT_ATTEMPTS (~1s). */
@@ -108,6 +111,9 @@ function sq(v: string): string {
  *  MCP_CONFIG/COMPANY_FILE — the session runs as the app uid, so it can read them. spec.files (the raw
  *  contents) is only consumed by the launcher backend, which writes them into the member's home. */
 export class LocalSessionBackend implements SessionBackend {
+  /** Last {@link aliveNames} answer + when it was taken — see the TTL note on that method. */
+  private alivePoll?: { at: number; names: Set<string> | null };
+
   constructor(private readonly tmuxSocket: string, private readonly onError: SpawnErrorSink) {}
 
   spawn(_space: string, spec: SpawnSpec): void {
@@ -125,6 +131,7 @@ export class LocalSessionBackend implements SessionBackend {
     const args = ['-u', '-S', this.tmuxSocket, 'new-session', '-d', '-s', spec.tmuxName, ...geometry, full];
     const child = spawn('tmux', args, { stdio: 'ignore' });
     child.on('error', (e) => this.onError(spec.sessionId, spec.agent, String(e)));
+    this.alivePoll = undefined; // a new pane is appearing — don't let a cached poll call it dead
     // Server-wide tmux tuning recommended for the claude TUI: allow-passthrough lets the agent's
     // progress/notification escapes reach the browser terminal instead of being swallowed; the
     // extended-keys pair lets tmux distinguish Shift+Enter from Enter so the newline shortcut works;
@@ -153,6 +160,7 @@ export class LocalSessionBackend implements SessionBackend {
 
   kill(_space: string, tmuxName: string): void {
     spawnSync('tmux', ['-S', this.tmuxSocket, 'kill-session', '-t', tmuxName], { stdio: 'ignore' });
+    this.alivePoll = undefined; // we just changed the world — the next reader must see it
   }
 
   /**
@@ -188,7 +196,31 @@ export class LocalSessionBackend implements SessionBackend {
     return true;
   }
 
+  /**
+   * The live tmux session names — the liveness primitive every reaper, guard and list endpoint reads.
+   *
+   * Memoized for {@link ALIVE_POLL_TTL_MS}, because the poll is a `spawnSync` and the process-wide cost is
+   * set by how OFTEN it's called, not by how long tmux takes. On the live fleet a single scheduler tick
+   * called it ~900 times (one per `task:` session row — see the per-row loop this TTL now absorbs in
+   * `Automations.dispatchTasks`): tmux itself answered in ~0ms each, but 900 fork+execs cost **7.3s of a
+   * 20s tick**, i.e. the server was blocked more than a third of all wall-clock. `/health` — a route that
+   * does nothing but read a version string — measured p50 0.6ms / max 9s against that.
+   *
+   * A TTL is safe where a fresh exec is not any more truthful: tmux liveness changes on its own schedule,
+   * every caller already treats the answer as a snapshot (a pane can die the instant after the poll
+   * returns), and every reap decision built on it uses minute-scale cutoffs. One second is far below the
+   * smallest of those and far above a tick's worth of repeat calls. `null` (poll couldn't run) is cached
+   * too — the fail-safe "reap nothing" answer must be as cheap as the happy path under fork pressure.
+   */
   aliveNames(): Set<string> | null {
+    const cached = this.alivePoll;
+    if (cached && Date.now() - cached.at < ALIVE_POLL_TTL_MS) return cached.names;
+    const names = this.pollAliveNames();
+    this.alivePoll = { at: Date.now(), names };
+    return names;
+  }
+
+  private pollAliveNames(): Set<string> | null {
     const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'list-sessions', '-F', '#S'], { encoding: 'utf8' });
     // Distinguish "couldn't run the poll" from "tmux answered, no sessions". A transient spawn
     // failure (EAGAIN/ENOMEM/EMFILE under fork/memory pressure) sets r.error; treat that as UNKNOWN

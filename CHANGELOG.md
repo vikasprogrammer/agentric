@@ -8,6 +8,38 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.362.0] — 2026-08-17
+### Fixed
+- **The scheduler tick froze the whole server for 7.3s out of every 20s — and the freeze grew with the
+  tenant's task history.** `Automations.dispatchTasks` built its per-agent pile-up guard by calling
+  `tm.reachable()` once per row of `spawned_by LIKE 'task:%' AND status IN ('running','done')`, and each
+  `reachable()` fork+exec'd `tmux list-sessions`. `done` rows are never deleted, so the loop only ever
+  grew: instawp reached **924 rows (918 long-finished) → ~900 tmux spawns per tick**. tmux itself answered
+  in ~0ms each; the cost was 900 fork+execs on a single-threaded server. Measured on the live box:
+  `GET /health` — a route that only reads a version string — ran p50 **0.6ms**, max **9.06s**, with 7.3s
+  stalls landing on every :00/:20/:40 boundary. Every governed effect (a gate check, a task write, an MCP
+  tool call, a console load) queued behind them, which is what "Agent OS is slow" actually was. Two
+  changes: `TerminalManager.busyTaskAgents()` answers the same question for the whole board in ONE query
+  and ONE liveness poll, and `LocalSessionBackend.aliveNames()` is now memoized for 1s (invalidated on
+  spawn/kill) so no other per-row caller can reintroduce the same shape. Pinned by
+  `scripts/tick-liveness-test.cjs`, which counts real tmux execs through a PATH shim.
+- **A leaked `ttyd` per in-process test run — 86 of them, 1604% CPU, load 92 on 12 cores.** A harness
+  following the documented recipe passes port `0` for an ephemeral port; the registry derives
+  `basePort + 1`, so ttyd was launched with **`-p 1`** — privileged, never bindable — and busy-looped
+  retrying instead of exiting, then outlived the test process and even its `rm -rf`'d scratch home (ttyd
+  teardown only ran via `TenantRegistry.stopAll()`, which is wired into `startServer` alone). `launchTtyd`
+  now refuses a port it cannot bind, honours `AOS_NO_TTYD=1`, and kills its child on process exit.
+
+### Added
+- **A process janitor** (`src/edge/process-janitor.ts`): every 5 min, reap `ttyd`/`tmux` processes bound to
+  a tmux socket that no longer exists on disk — provably unreachable, since nothing can connect to an
+  unlinked socket. Own-uid + own-command-shape only, never a socket a live runtime declares, and only
+  after two consecutive sightings past a 10-min grace. Audited `orphan.reaped` with the counts, so it
+  can't quietly paper over the next leak.
+- **CPU/RAM chip in the console sidebar**, under the tenant · version line (`56% cpu · 42% ram`,
+  colour-coded, load-per-core in the tooltip) via `GET /api/host`. The box that was 8x oversubscribed
+  looked perfectly healthy in the console; the product said nothing about the pressure underneath it.
+
 ## [0.361.0] — 2026-08-17
 ### Added
 - **`subagentOnly` on an agent manifest — a delegate that exists only to give a FRESH CONTEXT no longer

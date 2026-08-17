@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -975,6 +975,36 @@ function RailDot({ tone = 'bg-primary', title }: { tone?: string; title: string 
  * preview and, for the owner, an "Update & restart" button that pulls + rebuilds + bounces the box;
  * the panel then waits for `/health` to report the new version and reloads the console.
  */
+/**
+ * Box pressure next to the tenant name — `56% cpu · 42% ram`, colour-coded.
+ *
+ * Exists because the console used to look perfectly healthy on a box that was 8x oversubscribed: a leaked
+ * process pinned every core, and the only symptom anyone could see was that "Agent OS feels slow". CPU is
+ * true utilisation; the tooltip adds load-per-core, which is where a process leak actually shows up (many
+ * short-lived processes = modest CPU, enormous load).
+ */
+function HostChip() {
+  const [h, setHost] = useState<HostMetrics | null>(null)
+  useEffect(() => {
+    const poll = () => api.host().then(setHost).catch(() => {})
+    poll()
+    const t = setInterval(poll, 15_000)
+    return () => clearInterval(t)
+  }, [])
+  if (!h) return null
+  // Thresholds are about headroom, not beauty: amber where a spawn starts queueing, red where the event
+  // loop is already losing. Load is graded harder than CPU — >2 runnable per core is a pile-up, not load.
+  const tone = (v: number, warn: number, bad: number) => (v >= bad ? 'text-red-500' : v >= warn ? 'text-amber-500' : 'text-muted-foreground')
+  const cpuTone = h.load >= 2 ? 'text-red-500' : h.cpu == null ? 'text-muted-foreground' : tone(h.cpu, 75, 92)
+  return (
+    <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`${h.cores} cores · load ${h.load}/core · ${Math.round(h.totalMemMb / 1024)} GB RAM`}>
+      {h.cpu != null && <span className={cpuTone}>{h.cpu}% cpu</span>}
+      {h.cpu != null && ' · '}
+      <span className={tone(h.mem, 80, 93)}>{h.mem}% ram</span>
+    </div>
+  )
+}
+
 function UpdateNotice({ compact = false }: { compact?: boolean } = {}) {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [open, setOpen] = useState(false)
@@ -1613,6 +1643,7 @@ function Console({ me }: { me: Member }) {
             <div className="min-w-0">
               <div className="flex items-center gap-2 text-[15px] font-semibold">⚙️ Agentric</div>
               {state && <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`tenant${state.version ? ` · Agentric v${state.version}` : ''}`}>{state.tenantName || state.tenant}{state.version ? ` · v${state.version}` : ''}</div>}
+              <HostChip />
               <UpdateNotice />
             </div>
             <Button size="icon" variant="ghost" className="-mr-1 h-7 w-7 shrink-0 text-muted-foreground" title="collapse sidebar" onClick={() => setSidebarCollapsed(true)}>

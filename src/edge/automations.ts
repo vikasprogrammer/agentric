@@ -1942,16 +1942,12 @@ export class Automations {
     try {
       if (budget <= 0) return; // whole-box concurrency cap already reached — dispatch nothing this tick
       // Agents already running a task session (their `task:<id>` spawn still has a live claude) — skip this
-      // tick. Liveness is the PANE (`reachable`), not the row: a task run that called `report` and is still
-      // wrapping up holds the agent's workspace, and stacking a second session on it is the pile-up this
-      // guard exists to prevent. Bounded — the idle sweep's DONE-ORPHAN branch reaps exactly these panes,
-      // and a human forcing a dispatch passes `guard: false`.
-      const busy = new Set<string>();
-      for (const r of this.db
-        .prepare("SELECT id, agent FROM term_sessions WHERE spawned_by LIKE 'task:%' AND status IN ('running','done')")
-        .all<{ id: string; agent: string }>()) {
-        if (this.tm.reachable(r.id)) busy.add(r.agent);
-      }
+      // tick. Liveness is the PANE, not the row: a task run that called `report` and is still wrapping up
+      // holds the agent's workspace, and stacking a second session on it is the pile-up this guard exists
+      // to prevent. Bounded — the idle sweep's DONE-ORPHAN branch reaps exactly these panes, and a human
+      // forcing a dispatch passes `guard: false`. ONE batched poll (`busyTaskAgents`), never a per-row
+      // `reachable()`: that loop grew with the tenant's whole task history and froze the tick for seconds.
+      const busy = this.tm.busyTaskAgents();
       for (const t of this.os.tasks.dispatchable(this.os.tenant)) {
         if (budget <= 0) break; // hit the concurrency cap mid-drain — the rest retry next tick
         const agentId = t.assignee!.slice('agent:'.length);

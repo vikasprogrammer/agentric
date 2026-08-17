@@ -13,6 +13,8 @@ import * as nodeOs from 'node:os';
 import { AgentOS, loadAgentOS } from './kernel';
 import { VERSION } from './version';
 import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } from './tenant-registry';
+import { ProcessJanitor } from './edge/process-janitor';
+import { hostMetrics } from './edge/host-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
@@ -367,6 +369,24 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
     try { rt.tm.reapIdleSessions(); } catch { /* idle reaper (warm chat + unattended backstop) — never crash the sweep */ }
   }), 60_000);
   reaper.unref?.();
+  // Process janitor: reap ttyd/tmux left behind pointing at tmux sockets that no longer exist (see
+  // ProcessJanitor). Process-wide, not per-tenant — it scans the process table, not any DB. Audited onto
+  // the seed tenant with the counts, because a janitor that silently cleans up after a leak hides the leak.
+  const janitor = new ProcessJanitor(() => {
+    const live = new Set<string>();
+    registry.forEach((rt) => { if (rt.os.paths?.tmuxSocket) live.add(rt.os.paths.tmuxSocket); });
+    return live;
+  });
+  const janitorTimer = setInterval(() => {
+    try {
+      const r = janitor.sweep();
+      if (r.ttyd === 0 && r.tmux === 0) return;
+      const os = registry.default()?.os;
+      console.log(`  [janitor] reaped ${r.ttyd} orphaned ttyd + ${r.tmux} orphaned tmux (unreachable sockets)`);
+      if (os) os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'orphan.reaped', data: { ttyd: r.ttyd, tmux: r.tmux, pending: r.pending } });
+    } catch { /* never let the janitor crash the process */ }
+  }, 5 * 60_000);
+  janitorTimer.unref?.();
   // Memory upkeep + self-learning: hourly check per tenant; each is a no-op unless that tenant opted in.
   const lastMaint = new Map<string, number>();
   const lastDream = new Map<string, number>();
@@ -2279,6 +2299,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (p.startsWith('/api/') && !member) return sendJson(res, 401, { error: 'not authenticated' });
   const me = member as Member; // safe below: all /api handlers past here are guarded
 
+  // Host pressure for the sidebar chip (see host-metrics.ts). Deliberately tiny and DB-free: it is polled
+  // on a timer by every open console tab, and the whole point is to stay honest when the box is struggling.
+  if (method === 'GET' && p === '/api/host') return sendJson(res, 200, hostMetrics());
   if (method === 'GET' && p === '/api/state') {
     // Members see only the agents they're allowed to run; owner/admin see all.
     const agents = terminalAgents(os).filter((a) => os.team.canRun(me, a.id));

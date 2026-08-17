@@ -1974,6 +1974,36 @@ export class TerminalManager {
   }
 
   /**
+   * The agents whose `task:<id>` run still holds a live pane — the per-agent pile-up guard the scheduler
+   * consults before dispatching more board work. Same predicate as {@link reachable}, evaluated for the
+   * whole board in ONE query and ONE liveness poll.
+   *
+   * The batch shape is the point. The scheduler used to call `reachable()` per row over
+   * `spawned_by LIKE 'task:%' AND status IN ('running','done')` — a set that only ever GROWS, because a
+   * `done` row is never deleted. On the live fleet that reached 924 rows (918 of them long-finished), so
+   * every 20s tick fork+exec'd tmux ~900 times and blocked the single-threaded server for **7.3s** —
+   * a third of all wall-clock, on work whose answer was identical every time. Cost per completed task
+   * session was permanent and additive: the longer a tenant had been useful, the slower everything got.
+   * Keep this batched; a future caller wanting one agent should still come through here.
+   */
+  busyTaskAgents(): Set<string> {
+    const busy = new Set<string>();
+    const rows = this.db
+      .prepare("SELECT id, agent, tmux, status FROM term_sessions WHERE spawned_by LIKE 'task:%' AND status IN ('running','done')")
+      .all<{ id: string; agent: string; tmux: string; status: string }>();
+    if (!rows.length) return busy;
+    const alive = this.backend.aliveNames();
+    for (const r of rows) {
+      // `launching`: a scheduled run whose pane is imminent still owns the agent (mirrors `reachable`).
+      if (this.launching.has(r.id)) { busy.add(r.agent); continue; }
+      // No poll possible (launcher backend / failed poll) → trust the row, like `reachable` does.
+      if (!alive) { if (r.status === 'running') busy.add(r.agent); continue; }
+      if (alive.has(r.tmux)) busy.add(r.agent);
+    }
+    return busy;
+  }
+
+  /**
    * A session we just delivered into was stamped `done` by its own `report` but is demonstrably still
    * running — put the row back in step with reality so the console spins on `working` and the crash
    * sweep watches it again. Terminal states set by a human (`stopped`) or the sweep (`crashed`) are

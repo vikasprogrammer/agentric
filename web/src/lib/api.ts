@@ -164,6 +164,15 @@ export interface AgentInfo {
   /** Cosmetic per-agent icon: a built-in library id (a lucide name) or raw custom `<svg>` markup. */
   icon?: string
 }
+/** Box pressure behind the whole tenant — see src/edge/host-metrics.ts. `cpu` is null on the first sample. */
+export interface HostMetrics {
+  cpu: number | null
+  mem: number
+  load: number
+  cores: number
+  totalMemMb: number
+}
+
 export interface StateResp {
   tenant: string
   /** Human label for the tenant (branding); falls back to the tenant id server-side. */
@@ -1596,6 +1605,8 @@ export const api = {
   requestLink: (email: string) => call<{ ok: boolean }>('POST', '/api/auth/request-link', { email }),
 
   state: () => call<StateResp>('GET', '/api/state'),
+  /** Box CPU/RAM pressure for the sidebar chip. Cheap + DB-free; polled on a timer. */
+  host: () => call<HostMetrics>('GET', '/api/host'),
   /** Self-update: check whether the checkout is behind origin (`force` re-runs `git fetch`, owner/admin). */
   checkUpdate: (force = false) => call<UpdateStatus>('GET', '/api/update' + (force ? '?force=1' : '')),
   /** Owner-only: pull + rebuild + restart. Resolves with the step log; the process bounces after. */
