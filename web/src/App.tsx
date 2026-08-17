@@ -822,7 +822,7 @@ const FEEDBACK_URL = 'https://github.com/vikasprogrammer/agentric/issues'
 /** Minimal hash router — `#/<page>` with an optional detail segment (`#/sessions/<tmux>`) so a
  *  deep-linked view (an open terminal, later other pages' selections) survives a refresh and
  *  back/forward. The detail is everything after the first slash, URL-decoded. No dependency. */
-function useHashRoute(): { route: Route; detail: string; query: string; nav: (r: Route, detail?: string) => void; setQuery: (params: Record<string, string>) => void } {
+function useHashRoute(): { route: Route; detail: string; query: string; nav: (r: Route, detail?: string) => void; setQuery: (params: Record<string, string>) => void; backTo: (fallback: Route) => BackTarget } {
   const parse = () => {
     // Strip an optional `?query` BEFORE splitting route/detail, so page state carried in the query
     // (e.g. the sessions filters) never leaks into the route head and mis-routes to the fallback.
@@ -837,8 +837,31 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
     return { route, detail: rest ? decodeDetail(rest) : '', query }
   }
   const [state, setState] = useState(parse)
+  // Where you came FROM, most recent last. A full-page room (a task, a goal) is reachable from several
+  // places — the board, a goal's task list, the feed, an inbox card — so its "back" can't be a constant
+  // or it lies to everyone who didn't arrive from the obvious page. Capped; only the last few matter.
+  const trail = useRef<{ route: Route; detail: string }[]>([])
+  // Set by a `backTo(...).go()` so the navigation it performs is a POP, not another step forward.
+  const popping = useRef(false)
+  const cur = useRef(state)
+  cur.current = state
   useEffect(() => {
-    const on = () => setState(parse())
+    const on = () => {
+      const next = parse()
+      const from = cur.current
+      const pop = popping.current
+      popping.current = false
+      const last = trail.current[trail.current.length - 1]
+      if (last && last.route === next.route && last.detail === next.detail) {
+        // Arriving exactly where we came from is a step BACK — including the browser's own back button,
+        // which we get no other signal for. Pop it, or native back would leave the room behind us as the
+        // next "back" target and the two would bounce.
+        trail.current = trail.current.slice(0, -1)
+      } else if (!pop && (from.route !== next.route || from.detail !== next.detail)) {
+        trail.current = [...trail.current, { route: from.route, detail: from.detail }].slice(-12)
+      }
+      setState(next)
+    }
     window.addEventListener('hashchange', on)
     return () => window.removeEventListener('hashchange', on)
   }, [])
@@ -858,7 +881,43 @@ function useHashRoute(): { route: Route; detail: string; query: string; nav: (r:
     history.replaceState(null, '', window.location.pathname + window.location.search + '#' + hashFor(cur.route, cur.detail, qs))
     setState(parse())
   }
-  return { route: state.route, detail: state.detail, query: state.query, nav, setQuery }
+  /**
+   * Where a room's "back" should go: the most recent place in the trail that ISN'T this same room, else
+   * `fallback` (the room's own list page — right for a deep link or a fresh tab, where there is no trail).
+   *
+   * Entries in the same room are skipped by DETAIL ROOT, not by exact detail, so switching tabs inside a
+   * room (`#/tasks/<id>/description`) doesn't make "back" mean "the tab I was just on".
+   */
+  const backTo = (fallback: Route): BackTarget => {
+    const root = (d: string) => d.split('/')[0]
+    const here = state
+    const idx = trail.current.map((e) => !(e.route === here.route && root(e.detail) === root(here.detail))).lastIndexOf(true)
+    const from = idx === -1 ? undefined : trail.current[idx]
+    const target = from ?? { route: fallback, detail: '' }
+    const label = from?.detail ? ROUTE_BACK_LABELS[from.route] ?? ROUTE_TITLES[from.route] : ROUTE_TITLES[target.route]
+    return {
+      ...target,
+      label,
+      // Going back POPS the trail (and suppresses the push this navigation would otherwise make), so
+      // goal → task → back-to-goal leaves you at the goal with the task no longer behind you. Without
+      // that, the room you just left becomes the next "back" and the two rooms bounce forever.
+      go: () => {
+        if (idx !== -1) trail.current = trail.current.slice(0, idx)
+        popping.current = true
+        nav(target.route, target.detail || undefined)
+      },
+    }
+  }
+  return { route: state.route, detail: state.detail, query: state.query, nav, setQuery, backTo }
+}
+
+/** Where a room's back button points, what it should say, and the navigation itself (which pops the
+ *  trail — see `backTo`). */
+type BackTarget = { route: Route; detail: string; label: string; go: () => void }
+/** The singular label for a route you were INSIDE (a specific goal, task, agent…) — "Goal" reads as the
+ *  thing you're returning to, where "Goals" reads as the list you aren't. */
+const ROUTE_BACK_LABELS: Partial<Record<Route, string>> = {
+  goals: 'Goal', tasks: 'Task', sessions: 'Session', agents: 'Agent', kb: 'Page', artifacts: 'Library', apps: 'App',
 }
 
 /** Build an in-app hash href (`#/agents/<id>`) so a navigation element can be a real anchor —
@@ -1208,7 +1267,7 @@ function Console({ me }: { me: Member }) {
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const seenNotifyIds = useRef<Set<string> | null>(null)
   const dismissToast = (key: string) => setToasts((t) => t.filter((x) => x.key !== key))
-  const { route, detail, query: urlQuery, nav, setQuery: setUrlQuery } = useHashRoute()
+  const { route, detail, query: urlQuery, nav, setQuery: setUrlQuery, backTo } = useHashRoute()
   // The open terminal is a URL detail (`#/sessions/<tmux>`), not local state, so a refresh /
   // back-forward reopens the same session. Title is best-effort from the loaded list (falls back to
   // the tmux for a link opened before the sessions have loaded).
@@ -1761,8 +1820,8 @@ function Console({ me }: { me: Member }) {
           {route === 'profile' && <ProfilePage me={state?.me ?? me} prefs={prefs} onSavePrefs={savePrefs} onProfileChange={refreshState} />}
           {route === 'automations' && <AutomationsPage me={me} agents={state?.agents ?? []} sessions={sessions} serverTz={state?.serverTz} onOpen={openTerminal} nav={nav} agentFilter={detail} />}
           {route === 'feed' && <FeedPage me={me} members={members} sessions={sessions} nav={nav} onOpen={openTerminal} query={urlQuery} setQuery={setUrlQuery} />}
-          {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} />}
-          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} />}
+          {route === 'goals' && <GoalsPage me={me} goalId={detail} nav={nav} backTo={backTo} />}
+          {route === 'tasks' && <TasksPage me={me} agents={state?.agents ?? []} taskId={detail} onOpen={openTerminal} nav={nav} backTo={backTo} />}
           {route === 'memory' && <MemoryPage agents={state?.agents ?? []} me={me} />}
           {route === 'insights' && <DreamingSettings me={me} />}
           {route === 'kb' && <KnowledgeBasePage me={me} permalink={detail} nav={nav} />}
@@ -8623,7 +8682,7 @@ function GoalChat({ goalId, chat, onChanged, nav }: {
   )
 }
 
-function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void }) {
+function GoalsPage({ me, goalId, nav, backTo }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void; backTo: (fallback: Route) => BackTarget }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   const [goals, setGoals] = useState<Goal[] | null>(null)
@@ -8639,7 +8698,9 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   const roomTab: GoalTab = routeTab === 'description' || routeTab === 'activity' || routeTab === 'chat' ? routeTab : 'tasks'
   const openGoal = (id: string) => nav('goals', id)
   const openGoalTab = (id: string, tab: GoalTab) => nav('goals', tab === 'tasks' ? id : `${id}/${tab}`)
-  const closeGoal = () => { setEditing(false); nav('goals') }
+  // Same rule as the task room: back to wherever you opened this goal from (the feed, an inbox card, the
+  // goals list), not always the list.
+  const closeGoal = () => { setEditing(false); backTo('goals').go() }
   const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; runs: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null } | null>(null)
   // Elapsed clocks on live runs tick locally — the detail poll below only moves server truth.
   const [now, setNow] = useState(Date.now())
@@ -9092,7 +9153,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     return (
       <div className="flex h-[calc(100vh-5.5rem)] flex-col overflow-hidden rounded-lg border bg-background">
         <div className="flex items-center gap-3 border-b px-4 py-2.5">
-          <button onClick={closeGoal} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-4 w-4" />Goals</button>
+          <button onClick={closeGoal} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-4 w-4" />{backTo('goals').label}</button>
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <GoalStatusPill status={g.status} ready={ready} />
             <span className="truncate text-[15px] font-semibold">{g.title}</span>
@@ -9621,7 +9682,7 @@ function matchesQuickStatus(t: Task, s: QuickStatus): boolean {
   return true
 }
 
-function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void }) {
+function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; agents: AgentInfo[]; taskId: string; onOpen: (tmux: string, title: string) => void; nav: (r: Route, detail?: string) => void; backTo: (fallback: Route) => BackTarget }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
   // Goals to populate the task↔goal selector (and to resolve a task's goal title for its chip). Pull
@@ -9665,7 +9726,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   const roomTab: 'discussion' | 'description' | 'session' = routeTab === 'description' || routeTab === 'session' ? routeTab : 'discussion'
   const openTask = (id: string) => nav('tasks', id)
   const openTaskTab = (id: string, tab: 'discussion' | 'description' | 'session') => nav('tasks', tab === 'discussion' ? id : `${id}/${tab}`)
-  const closeTask = () => { setEditing(false); nav('tasks') }
+  // Leaving the room returns you WHERE YOU CAME FROM — a task opened from a goal's task list goes back to
+  // that goal, not to the board you were never on. Falls back to the board for a deep link (no trail).
+  const closeTask = () => { setEditing(false); backTo('tasks').go() }
   const [detail, setDetail] = useState<{ task: Task; events: TaskEvent[]; attachments: TaskAttachment[]; dependents: string[]; children: TaskChild[]; runs: TaskRun[]; discussion: TaskTimelineEntry[]; unread: number; choices: { id: string; agentId: string; message: string }[] } | null>(null)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
@@ -10225,7 +10288,9 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
     return (
       <div className="flex h-[calc(100vh-5.5rem)] flex-col overflow-hidden rounded-lg border bg-background">
         <div className="flex items-center gap-3 border-b px-4 py-2.5">
-          <button onClick={closeTask} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-4 w-4" />Tasks</button>
+          {/* Names its destination — "Goal" when you came from one, "Feed"/"Inbox" likewise — so the way
+              out is honest rather than always claiming the board. */}
+          <button onClick={closeTask} className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowLeft className="h-4 w-4" />{backTo('tasks').label}</button>
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <TaskStatusPill status={t.status} />
             <span className="truncate text-[15px] font-semibold">{t.title}</span>
