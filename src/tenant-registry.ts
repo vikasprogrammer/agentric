@@ -753,8 +753,29 @@ export async function notifySessionEvent(os: AgentOS, tm: Pick<TerminalManager, 
   os.audit.append({ ts: Date.now(), runId: notice.sessionId, tenant: os.tenant, principal: 'system', type: 'session.event.notified', data: { kind: notice.kind, agent: notice.agent, targets: targets.length, dms } });
 }
 
-/** Launch a ttyd bound to one tenant's tmux socket on `ttydPort`. (Moved verbatim from server.ts.) */
+/**
+ * Launch a ttyd bound to one tenant's tmux socket on `ttydPort`.
+ *
+ * Two refusals up front, both learned from a live box that accumulated **86 orphaned ttyd burning 1604%
+ * CPU** (load 92 on 12 cores, everything the fleet did came back seconds late):
+ *
+ *  - **An unusable port.** A test harness follows the documented recipe and passes port `0` for an
+ *    ephemeral port; `TenantRegistry` derives `basePort + 1`, so ttyd was handed **`-p 1`** — privileged,
+ *    never bindable — and spun retrying forever instead of exiting. A port it cannot bind is not a
+ *    degraded browser terminal, it is a busy-loop, so don't start one.
+ *  - **`AOS_NO_TTYD=1`.** An in-process test never wants a browser terminal; make saying so one env var
+ *    rather than a teardown everybody forgets.
+ *
+ * And the child is killed when THIS process exits. `TenantRegistry.stopAll()` already does that on a
+ * graceful shutdown, but it is only wired into `startServer` — a harness that builds a registry directly
+ * (or calls `process.exit`) skipped it, and ttyd outlived the run and even its `rm -rf`'d scratch home.
+ */
 export function launchTtyd(tmuxSocket: string, ttydPort: number, sessionDir: string): ChildProcess | null {
+  if (process.env.AOS_NO_TTYD === '1') return null;
+  if (!Number.isInteger(ttydPort) || ttydPort < 1024 || ttydPort > 65535) {
+    console.log(`  (ttyd not started — :${ttydPort} is not a bindable port; browser terminal disabled)`);
+    return null;
+  }
   try {
     const attach = path.resolve(__dirname, '../terminal/attach.sh');
     const child = spawn(
@@ -776,6 +797,10 @@ export function launchTtyd(tmuxSocket: string, ttydPort: number, sessionDir: str
       { stdio: 'ignore', env: { ...process.env, AOS_SESSION_DIR: sessionDir } },
     );
     child.on('error', () => console.log('  (ttyd failed to start — browser terminal disabled)'));
+    // Last-resort teardown: never let a ttyd outlive the process that owns it, whatever path exits.
+    const reap = () => { try { child.kill(); } catch { /* already gone */ } };
+    process.once('exit', reap);
+    child.once('exit', () => process.removeListener('exit', reap)); // don't leak a listener per relaunch
     return child;
   } catch {
     return null;

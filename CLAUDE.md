@@ -65,6 +65,13 @@ default-tenant DB** (config `tenant` = `northwind`), NOT an ephemeral `:memory:`
 demo/`AgentOS` with no `paths` is in-memory). A throwaway `loadAgentOS()` smoke test will therefore
 write test rows into the real DB. Always `export AGENT_OS_HOME=<scratch dir>` (and `rm -rf` it) before
 running such a script, or you will pollute live data.
+**⚠ Also `export AOS_NO_TTYD=1`:** a script that builds a `TenantRegistry`/`startServer` spawns a ttyd per
+tenant, and only `TenantRegistry.stopAll()` (wired into `startServer` alone) kills it — so a harness that
+ends, or calls `process.exit`, LEAKS one. On the instawp box 86 of them accumulated over ~2 weeks and pinned
+every core (1604% CPU, load 92 on 12 cores) because the ephemeral-port recipe above handed ttyd `-p 1`,
+which it cannot bind and retries forever. v0.362.0 refuses an unbindable port, kills the child on exit, and
+sweeps orphans every 5 min (`orphan.reaped`) — the env var is still the clean way to say "no browser
+terminal in a test". Leftovers show as `ttyd … attach.sh /tmp/aos-*-test-*/tmux.sock` in `ps`.
 
 **What a change needs to take effect (the long-running server holds old code in memory):**
 - **Server/API or store code (`src/server.ts`, `src/state/*`, `src/kernel.ts`, loopback routes like
