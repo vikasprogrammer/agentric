@@ -56,7 +56,7 @@ Per webhook automation (Automations → Edit, or `POST`/`PATCH /api/automations`
 
 | Field | What it does | Blank means |
 |---|---|---|
-| `filter` | Comma-separated event names; `prefix.*` matches a family | every event fires a run |
+| `filter` | Comma-separated event names; `prefix.*` matches a family. Optionally `… when <path> <op> <value> [and …]` over the payload — see below | every event fires a run |
 | `threadPath` | Dot path to the source's conversation id (`conversation.id`) | a run per accepted event |
 | `signingSecret` | Secret the source signs the body with | the URL key is the only credential |
 
@@ -66,6 +66,51 @@ behaviour — an existing hook keeps firing on everything, unsigned, with no con
 `signingSecret` is **write-only**: it is stripped in `automationView` and never sent to a client. The
 console sees only `signed: true|false`, so an empty field on edit means "leave it alone" and clearing it
 is an explicit action.
+
+## The `when` clause — filtering on the body
+
+An event name alone cannot express the single biggest source of waste on a live hook: **the echo.**
+The agent posts a note on a ticket; the source emits `convo.note.created`; the automation fires; a
+whole session spawns, reads the thread, discovers the note was its own, and exits. Every reply the
+agent writes buys a second session to un-decide it. Measured on instawp's FreeScout hook over one
+week: **93 of 177 runs (53%) did no work at all, and 79 of them were triggered by the agent's own
+note** — $224 spent to produce nothing.
+
+That decision is one field comparison, and it belongs at the ingress. A gate written into the agent's
+**prompt cannot help**, because it runs *after* the spawn it was supposed to prevent — it can shorten a
+session but never avoid one. So the filter grew a payload clause:
+
+```
+convo.created, convo.note.created  when state != deleted and threads.0.createdBy.type != user
+```
+
+    <events> when <path> <op> <value> [ and <path> <op> <value> ]…
+    op := ==   !=   ~ (contains)   !~ (does not contain)
+
+`and` is the only connective — no `or`, no parens, so there is no precedence to misread. Paths are the
+same dot paths `threadPath` uses (array indices included). Values may be quoted; comparison is
+case-insensitive, like the event half. A filter with no `when` parses to zero predicates, so **every
+existing automation is byte-for-byte unaffected**.
+
+### Two traps, both load-bearing
+
+**A missing path reads as `''`.** So `state != "deleted"` *passes* when there is no `state` field, and
+`source.type == "api"` *fails*. The asymmetry is deliberate: `!=` (drop the known-bad) degrades toward
+firing, `==` (fire only on the known-good) degrades toward silence. **Prefer `!=`** — a wrong path in an
+`==` clause matches nothing and silently drops every event.
+
+**Write the predicate from real traffic, not from the vendor's field names.** Measured while building
+this, across 40 live FreeScout deliveries: the obvious-looking `source.type != "api"` does *not*
+identify the echo — a conversation-level `source` says how the *conversation* started, not who posted
+the note that fired *this* event, and `api` appeared on the genuine tickets too. `state != "deleted"`
+was no safer: agents do real work on merged-away conversations. The author of the triggering message
+generally lives one level down, on the newest thread. Read a recent run's prompt (it carries the
+payload) before choosing a path.
+
+Because a mistake here is silent, the runtime **fails open**: a `when` clause that cannot be parsed is
+ignored and the delivery fires anyway, with a `filter-invalid` audit row naming the clause. Losing a
+real customer ticket costs far more than one extra session. Malformed clauses are refused at *save*
+time instead (`add`/`update` throw), which is the only place a typo is genuinely caught.
 
 ## Vendor neutrality
 
@@ -107,9 +152,13 @@ Two tables, both keyed by `(automation_id, …)`:
 ## Audit
 
 Every delivery appends `trigger.webhook` with an `outcome` of `fired` · `continued` · `filtered` ·
-`duplicate` · `bad-signature` · `refused`, plus the event name and (where relevant) the thread key and
-session. So "did that event reach an agent, and if not why not" is one audit query, which is what the
-old 429 could never tell you.
+`duplicate` · `bad-signature` · `refused` · `filter-invalid`, plus the event name and (where relevant)
+the thread key and session. So "did that event reach an agent, and if not why not" is one audit query,
+which is what the old 429 could never tell you.
+
+A `filtered` row carries `by: 'event' | 'payload'`, and a payload rejection names the exact `predicate`
+that rejected it — so a `when` clause that is quietly dropping more than you meant shows up as a count
+per predicate rather than as an agent that mysteriously stopped working.
 
 ## Setting one up
 

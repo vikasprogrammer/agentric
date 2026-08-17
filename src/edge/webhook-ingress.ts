@@ -88,9 +88,12 @@ export function resolveEvent(headers: Headers, query: URLSearchParams, payload: 
  *
  * An unidentifiable event ('' — see {@link resolveEvent}) passes ONLY a catch-all filter. Anything
  * else would be a guess, and guessing wrong here spawns a session per unrelated event.
+ *
+ * This is the EVENT half only. A filter may also carry a `when` clause over the payload — see
+ * {@link parseFilter} / {@link evaluateFilter}, which is what callers should use.
  */
 export function matchesFilter(filter: string | undefined, event: string): boolean {
-  const raw = (filter || '').trim();
+  const raw = parseFilter(filter).events;
   if (!raw || raw === '*') return true;
   const ev = event.trim().toLowerCase();
   if (!ev) return false;
@@ -99,6 +102,158 @@ export function matchesFilter(filter: string | undefined, event: string): boolea
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean)
     .some((pat) => (pat.endsWith('*') ? ev.startsWith(pat.slice(0, -1)) : ev === pat));
+}
+
+/* ────────────────────────────────────────────────────────────────────────────────
+ * Payload predicates — the `when` clause
+ *
+ * The event name alone cannot express the two things that actually waste money on a real
+ * source, because both are properties of the BODY, not of the event type:
+ *
+ *   - **the echo.** An agent posts a note on a ticket; the source emits `convo.note.created`;
+ *     the automation fires; a whole session spawns to discover the note was its own and exit.
+ *     Every note the agent writes buys a session to un-decide it. On instawp's FreeScout hook this
+ *     was 79 of 177 runs in a week — 45% of the agent's spawns.
+ *   - **the tombstone.** Events keep arriving for a conversation that was merged away or closed,
+ *     where there is nothing left to work.
+ *
+ * Both are one field comparison. Without one, the cheapest decision in the system ("this event
+ * is mine, ignore it") is made by a Claude session instead of by a filter — and a gate written
+ * into the agent's PROMPT cannot help, because it runs after the spawn it was meant to prevent.
+ *
+ * Grammar, deliberately small:
+ *
+ *     <events> when <path> <op> <value> [ and <path> <op> <value> ]…
+ *     op := ==   !=   ~ (contains)   !~ (does not contain)
+ *
+ * `and` is the only connective. Predicates ANDed with no `or` and no parens means there is no
+ * precedence to get wrong — the failure mode of a richer grammar is a filter that reads as if it
+ * drops something it doesn't. Values may be quoted (`"a b"`), and comparison is case-insensitive
+ * on strings, matching the event half.
+ *
+ * ⚠ **A missing path reads as ''.** So `state != "deleted"` PASSES when there is no `state` field,
+ * and `source.type == "api"` FAILS. That asymmetry is deliberate — the `!=` form (drop the known-bad)
+ * degrades toward firing, the `==` form (fire only on the known-good) degrades toward silence. Prefer
+ * `!=` for cost filters, and know that a typo'd path in a `==` predicate drops EVERY event. The
+ * rejecting predicate is named in the `trigger.webhook` audit row so that is greppable rather than
+ * mysterious, and {@link validateFilter} rejects malformed clauses at save time.
+ *
+ * ⚠ **Author the path against a real delivery, not against the vendor's field names.** Measured on 40
+ * live FreeScout deliveries while building this: the obvious-looking `source.type != "api"` does NOT
+ * identify the echo, because a conversation-level `source` describes how the CONVERSATION started, not
+ * who posted the note that fired this event — `api` appeared on both the echoes and the genuine
+ * tickets. Nor is `state != "deleted"` safe there: agents do real work on merged-away conversations.
+ * The author of the triggering message generally lives one level down, on the newest thread. A
+ * predicate written from the schema instead of from the traffic drops real work silently, which is a
+ * far worse failure than the spend it was meant to save.
+ * ──────────────────────────────────────────────────────────────────────────────── */
+
+export type PredicateOp = '==' | '!=' | '~' | '!~';
+
+export interface FilterPredicate {
+  path: string;
+  op: PredicateOp;
+  value: string;
+  /** The clause as written, for audit + error messages. */
+  source: string;
+}
+
+export interface ParsedFilter {
+  /** The event-name list, i.e. everything before `when`. */
+  events: string;
+  predicates: FilterPredicate[];
+  /** Clauses after `when` that are not a valid predicate. Non-empty ⇒ the filter is malformed. */
+  invalid: string[];
+}
+
+/** `path op value`, value optionally quoted. Paths are dot paths, incl. array indices (`threads.0.type`). */
+const PREDICATE_RE = /^([A-Za-z0-9_$][A-Za-z0-9_$.-]*)\s*(==|!=|!~|~)\s*(.*)$/;
+
+const unquote = (s: string): string => {
+  const t = s.trim();
+  if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) {
+    return t.slice(1, -1);
+  }
+  return t;
+};
+
+/**
+ * Split a filter into its event list and its `when` predicates. A filter with no `when` parses to
+ * zero predicates, so every existing automation keeps its exact behaviour.
+ */
+export function parseFilter(filter: string | undefined): ParsedFilter {
+  const raw = (filter || '').trim();
+  // A standalone `when` token, first occurrence. Event names are dotted tokens, so a bare `when`
+  // between whitespace is unambiguous.
+  const m = raw.match(/(^|[\s,])when([\s]|$)/i);
+  if (!m || m.index === undefined) return { events: raw, predicates: [], invalid: [] };
+
+  const events = raw.slice(0, m.index).trim().replace(/,\s*$/, '');
+  const clause = raw.slice(m.index + m[0].length).trim();
+
+  const predicates: FilterPredicate[] = [];
+  const invalid: string[] = [];
+  for (const part of clause.split(/\s+and\s+/i)) {
+    const s = part.trim();
+    if (!s) continue;
+    const pm = s.match(PREDICATE_RE);
+    const value = pm ? unquote(pm[3]) : '';
+    if (!pm || !value) { invalid.push(s); continue; }
+    predicates.push({ path: pm[1], op: pm[2] as PredicateOp, value, source: s });
+  }
+  return { events, predicates, invalid };
+}
+
+/** Evaluate one predicate against the parsed body. Comparison is case-insensitive, like the event half. */
+function testPredicate(p: FilterPredicate, payload: unknown): boolean {
+  const actual = readPath(payload, p.path).toLowerCase();
+  const want = p.value.toLowerCase();
+  switch (p.op) {
+    case '==': return actual === want;
+    case '!=': return actual !== want;
+    case '~': return actual.includes(want);
+    case '!~': return !actual.includes(want);
+  }
+}
+
+export type FilterVerdict =
+  | { ok: true }
+  | { ok: false; reason: 'event' }
+  | { ok: false; reason: 'payload'; predicate: string };
+
+/**
+ * The whole filter decision: the event list first, then every `when` predicate against the body.
+ *
+ * **A malformed predicate fires anyway.** This filter exists to save money, and the cost of losing a
+ * real customer ticket dwarfs the cost of one extra session — so a filter we cannot understand must
+ * never be the reason an event is dropped. {@link parseFilter}'s `invalid` list carries the offending
+ * clauses so the caller can audit them; {@link validateFilter} is what stops them being saved at all.
+ */
+export function evaluateFilter(filter: string | undefined, event: string, payload: unknown): FilterVerdict {
+  if (!matchesFilter(filter, event)) return { ok: false, reason: 'event' };
+  const { predicates } = parseFilter(filter);
+  for (const p of predicates) {
+    if (!testPredicate(p, payload)) return { ok: false, reason: 'payload', predicate: p.source };
+  }
+  return { ok: true };
+}
+
+/**
+ * Save-time validation: the error string for a filter that cannot be honoured, or '' when it is fine.
+ * Runtime fails OPEN on a bad predicate, so this is the only place a typo is actually caught — which
+ * is why it names the clause rather than just refusing.
+ */
+export function validateFilter(filter: string | undefined): string {
+  const { events, predicates, invalid } = parseFilter(filter);
+  if (invalid.length) {
+    return `filter: could not parse ${invalid.map((s) => JSON.stringify(s)).join(', ')} — expected \`path == value\` (ops: == != ~ !~), joined by \`and\``;
+  }
+  if (predicates.length && !events) {
+    // `when …` with nothing before it is almost certainly a mistake, and it silently means
+    // "every event, then these predicates" — legal, but worth making the operator write it.
+    return 'filter: a `when` clause needs an event list before it (use `*` for every event)';
+  }
+  return '';
 }
 
 /**

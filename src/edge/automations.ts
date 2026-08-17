@@ -28,9 +28,11 @@ import {
   Headers as WHHeaders,
   THREAD_TTL_MS,
   deliveryKey,
-  matchesFilter,
+  evaluateFilter,
+  parseFilter,
   resolveEvent,
   threadKey,
+  validateFilter,
   verifySignature,
 } from './webhook-ingress';
 
@@ -475,7 +477,9 @@ export class Automations {
       parseCron(schedule); // throws with a useful message on a bad expression
     } else if (input.type === 'webhook') {
       secret = randomBytes(24).toString('hex');
-      filter = (input.filter || '').trim(); // event list to match; '' = any event (the historical behaviour)
+      filter = (input.filter || '').trim(); // event list [+ `when` payload clause]; '' = any event (historical)
+      const bad = validateFilter(filter); // runtime fails open, so a typo is only ever caught here
+      if (bad) throw new Error(bad);
       // Event-driven runs are unattended by default. Webhook was the one trigger type that missed this,
       // so every hook-created automation quietly defaulted to an interactive TUI nothing would ever attach
       // to — and then blocked the next delivery, because an interactive pane never exits.
@@ -618,6 +622,10 @@ export class Automations {
         : a.type === 'composio'
           ? patch.filter.trim().toUpperCase()
           : patch.filter.trim();
+    if (a.type === 'webhook') {
+      const bad = validateFilter(nextFilter ?? undefined); // same save-time gate as add()
+      if (bad) throw new Error(bad);
+    }
     // `runAs`: undefined = leave as-is; a member id sets it; null/'' clears it (back to company identity).
     const nextRunAs = patch.runAs === undefined ? a.runAs ?? null : (patch.runAs || '').trim() || null;
     // Webhook-only, same undefined/null convention. Clearing `signingSecret` drops back to URL-key auth,
@@ -1037,8 +1045,14 @@ export class Automations {
     }
 
     const event = resolveEvent(headers, query, payload);
-    if (!matchesFilter(a.filter, event)) {
-      audit('filtered', { event });
+    // A malformed `when` clause fires anyway (evaluateFilter fails open) — but say so, or the filter
+    // looks like it is working while it silently isn't.
+    const badClauses = parseFilter(a.filter).invalid;
+    if (badClauses.length) audit('filter-invalid', { event, clauses: badClauses });
+    const verdict = evaluateFilter(a.filter, event, payload);
+    if (!verdict.ok) {
+      const why = verdict.reason === 'payload' ? { predicate: verdict.predicate } : {};
+      audit('filtered', { event, by: verdict.reason, ...why });
       return { status: 200, body: { ok: true, skipped: 'filter', event } };
     }
 

@@ -57,6 +57,52 @@ assert(wh.matchesFilter('CONVO.Created', 'convo.created') === true, 'case-insens
 assert(wh.matchesFilter('convo.created', '') === false, 'unidentifiable event fails a real filter');
 assert(wh.matchesFilter('', '') === true, 'unidentifiable event still passes a catch-all');
 
+// ── 2b. payload predicates (the `when` clause) ────────────────────────────────────
+// The defect: an event-name filter cannot express the thing that actually wastes money on a live
+// source — the agent's OWN note echoing back as a new event. On instawp's FreeScout hook that was
+// 79 of 177 runs in a week, each spawning a full session to conclude "that note was mine".
+// The payloads below are synthetic and only exercise the MECHANISM: which real field identifies an
+// echo is a per-source question that must be answered from real traffic (see webhook-ingress.ts).
+console.log('\npayload predicates');
+const ECHO = { state: 'published', source: { type: 'api' }, createdBy: { type: 'user' } };
+const HUMAN = { state: 'published', source: { type: 'email' }, createdBy: { type: 'customer' } };
+const HUSK = { state: 'deleted', source: { type: 'email' } };
+
+assert(wh.parseFilter('convo.created').predicates.length === 0, 'a filter with no `when` has no predicates');
+assert(wh.parseFilter('convo.created').events === 'convo.created', 'and keeps its event list verbatim');
+const pf = wh.parseFilter('convo.created, convo.note.created when state != deleted and source.type != "api"');
+assert(pf.events === 'convo.created, convo.note.created', 'the event list stops at `when`');
+assert(pf.predicates.length === 2, 'both clauses parse', JSON.stringify(pf.predicates));
+assert(pf.predicates[1].value === 'api', 'a quoted value is unquoted');
+assert(pf.invalid.length === 0, 'a well-formed clause reports nothing invalid');
+
+const ev = (filter, event, payload) => wh.evaluateFilter(filter, event, payload);
+const F = 'convo.created, convo.note.created when state != deleted and source.type != api';
+assert(ev(F, 'convo.note.created', HUMAN).ok === true, 'a real customer event still fires');
+assert(ev(F, 'convo.note.created', ECHO).ok === false, "the agent's own API-posted note is dropped");
+assert(ev(F, 'convo.note.created', ECHO).predicate.includes('source.type'), 'and the audit names the predicate that rejected it');
+assert(ev(F, 'convo.created', HUSK).ok === false, 'a deleted merge husk is dropped');
+assert(ev(F, 'customer.created', HUMAN).reason === 'event', 'the event half still runs first');
+// Case-insensitivity matches the event half.
+assert(ev('* when state != DELETED', 'x', { state: 'deleted' }).ok === false, 'comparison is case-insensitive');
+// Ops.
+assert(ev('* when subject ~ invoice', 'x', { subject: 'Your INVOICE is due' }).ok === true, '~ is a contains test');
+assert(ev('* when subject !~ invoice', 'x', { subject: 'Your invoice is due' }).ok === false, '!~ is its negation');
+// The documented asymmetry on a missing field — the reason `!=` is the recommended form.
+assert(ev('* when state != deleted', 'x', {}).ok === true, 'a missing path PASSES !=  (degrades toward firing)');
+assert(ev('* when state == published', 'x', {}).ok === false, 'a missing path FAILS == (degrades toward silence)');
+// Fail-open: a filter we cannot parse must never be the reason a real ticket is lost.
+const junk = wh.parseFilter('convo.created when ???');
+assert(junk.invalid.length === 1, 'an unparseable clause is reported');
+assert(ev('convo.created when ???', 'convo.created', {}).ok === true, 'and is IGNORED at runtime, not treated as a drop');
+// …because it is refused at save time instead.
+assert(wh.validateFilter('convo.created when ???') !== '', 'validateFilter rejects it');
+assert(wh.validateFilter('convo.created when state != deleted') === '', 'and accepts a good one');
+assert(wh.validateFilter('convo.created') === '', 'a plain event list is always valid');
+assert(wh.validateFilter('when state != deleted') !== '', 'a `when` with no event list is refused (write `*`)');
+// matchesFilter keeps its old contract, now over the event half only.
+assert(wh.matchesFilter('convo.created when state != deleted', 'convo.created') === true, 'matchesFilter ignores the when clause');
+
 // ── 3. delivery + thread keys ─────────────────────────────────────────────────────
 console.log('\ndelivery + thread keys');
 assert(wh.deliveryKey({}, Q('delivery=d1'), 'body') === 'd1', 'query delivery id');
@@ -167,6 +213,34 @@ assert(!!other.body.sessionId && !other.body.continued, 'an unrelated ticket doe
 live.delete(first.body.sessionId);
 const afterDeath = post({ conversation: { id: 7 }, note: 'later' }, { 'x-freescout-event': 'convo.note.created', 'x-freescout-delivery': 'd-5' });
 assert(!afterDeath.body.continued && !!afterDeath.body.sessionId, 'once its run is gone, a follow-up starts a fresh one');
+
+// the echo loop, end to end: the agent's own note must not buy a session to ignore itself
+const echoHook = autos.add({
+  agentId, name: 'Inbound (payload-filtered)', type: 'webhook',
+  filter: 'convo.created, convo.note.created when state != deleted and source.type != api',
+  threadPath: 'conversation.id', task: 'Work the ticket.',
+});
+const postEcho = (body, event, delivery) => autos.fireWebhook(echoHook.id, echoHook.secret, body,
+  { headers: { 'x-freescout-event': event, 'x-freescout-delivery': delivery }, query: Q(), rawBody: JSON.stringify(body) });
+
+const n0 = spawned.length;
+const ownNote = postEcho({ conversation: { id: 20 }, state: 'published', source: { type: 'api' } }, 'convo.note.created', 'e-1');
+assert(ownNote.status === 200 && ownNote.body.skipped === 'filter', "the agent's own note is acknowledged and dropped");
+assert(spawned.length === n0, 'and spawns NOTHING — the whole point of the change');
+const husk = postEcho({ conversation: { id: 21 }, state: 'deleted', source: { type: 'email' } }, 'convo.created', 'e-2');
+assert(husk.body.skipped === 'filter' && spawned.length === n0, 'a deleted merge husk spawns nothing either');
+const real = postEcho({ conversation: { id: 22 }, state: 'published', source: { type: 'email' } }, 'convo.created', 'e-3');
+assert(!!real.body.sessionId && spawned.length === n0 + 1, 'a genuine customer ticket still fires');
+
+// save-time validation is what keeps a typo out of the DB in the first place
+let refused = '';
+try { autos.add({ agentId, name: 'Bad', type: 'webhook', filter: 'convo.created when nonsense', task: 'x' }); }
+catch (e) { refused = String(e.message); }
+assert(refused.includes('could not parse'), 'add() refuses a malformed when clause', refused);
+let refusedUpdate = '';
+try { autos.update(echoHook.id, { filter: 'convo.created when ??' }); } catch (e) { refusedUpdate = String(e.message); }
+assert(refusedUpdate.includes('could not parse'), 'update() refuses one too');
+assert(autos.get(echoHook.id).filter.includes('source.type != api'), 'and the refused edit did not land');
 
 // an automation with no filter/secret/threadPath behaves exactly as it always did
 const legacy = autos.add({ agentId, name: 'Legacy', type: 'webhook', task: 'x' });
