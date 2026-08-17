@@ -103,6 +103,50 @@ assert(wh.validateFilter('when state != deleted') !== '', 'a `when` with no even
 // matchesFilter keeps its old contract, now over the event half only.
 assert(wh.matchesFilter('convo.created when state != deleted', 'convo.created') === true, 'matchesFilter ignores the when clause');
 
+// ── 2c. `unless` — rejecting a CONJUNCTION ────────────────────────────────────────
+// `when` can only negate one property at a time, and the thing you need to drop is usually a
+// conjunction. Measured on 100 classifiable FreeScout deliveries (one week, instawp), by the
+// TRIGGERING thread's type + source — note that neither half of the echo is safe alone:
+//
+//   thread type + source        exits  work     ← "work" = the run did something useful
+//   customer  api/customer          0    26     a customer submitting via the web form
+//   note      web/user              3    20     a human typing a note in the FreeScout UI
+//   customer  email/customer       10    10     inbound email
+//   note      api/user             15     0     ← THE ECHO: the agent's own note, posted via API
+//   message   api/user              3     0     ← same, on a message thread
+//
+// `source.type != api` alone would kill the 26 genuine customer tickets; `source.via != user` alone
+// would kill the 20 human notes. Only the PAIR identifies the agent talking to itself.
+console.log('\nunless (rejecting a conjunction)');
+const UNLESS = '* unless _embedded.threads.0.source.type == api and _embedded.threads.0.source.via == user';
+const deliv = (type, srcType, via) => ({ _embedded: { threads: [{ type, source: { type: srcType, via } }] } });
+
+assert(wh.parseFilter(UNLESS).reject.length === 2, 'both unless predicates parse');
+assert(wh.parseFilter(UNLESS).predicates.length === 0, 'and none of them land in the `when` list');
+assert(wh.evaluateFilter(UNLESS, 'x', deliv('note', 'api', 'user')).ok === false, 'the echo (note, api/user) is dropped');
+assert(wh.evaluateFilter(UNLESS, 'x', deliv('message', 'api', 'user')).ok === false, 'and the message-thread echo too');
+assert(wh.evaluateFilter(UNLESS, 'x', deliv('customer', 'api', 'customer')).ok === true, 'a customer over api STILL FIRES (half the conjunction is not enough)');
+assert(wh.evaluateFilter(UNLESS, 'x', deliv('note', 'web', 'user')).ok === true, 'a human typing a note STILL FIRES (the other half is not enough either)');
+assert(wh.evaluateFilter(UNLESS, 'x', deliv('customer', 'email', 'customer')).ok === true, 'inbound email still fires');
+assert(String(wh.evaluateFilter(UNLESS, 'x', deliv('note', 'api', 'user')).predicate).startsWith('unless '),
+  'the audit names the whole rejecting conjunction, not one half of it');
+// A missing path cannot make `unless` fire: '' never equals a real value, so the conjunction breaks.
+assert(wh.evaluateFilter(UNLESS, 'x', {}).ok === true, 'an unrecognised payload shape fires (unless degrades toward firing)');
+// when + unless compose, in either written order.
+const BOTH = 'convo.* when state != deleted unless source.type == api and source.via == user';
+assert(wh.parseFilter(BOTH).predicates.length === 1 && wh.parseFilter(BOTH).reject.length === 2, 'when and unless coexist');
+assert(wh.evaluateFilter(BOTH, 'convo.created', { state: 'deleted' }).ok === false, 'the when clause still rejects');
+assert(wh.evaluateFilter(BOTH, 'convo.created', { state: 'ok', source: { type: 'api', via: 'user' } }).ok === false, 'the unless clause still rejects');
+assert(wh.evaluateFilter(BOTH, 'convo.created', { state: 'ok', source: { type: 'web', via: 'user' } }).ok === true, 'and a delivery passing both fires');
+const REV = 'convo.* unless source.type == api and source.via == user when state != deleted';
+assert(wh.parseFilter(REV).predicates.length === 1 && wh.parseFilter(REV).reject.length === 2, 'order of the two clauses does not matter');
+assert(wh.parseFilter(REV).events === 'convo.*', 'and the event list still stops at the first keyword');
+// Malformed shapes are named rather than silently half-applied.
+assert(wh.validateFilter('* unless').includes('could not parse') || wh.validateFilter('* unless') !== '', 'an empty unless clause is refused');
+assert(wh.validateFilter('* when a == 1 when b == 2') !== '', 'a repeated keyword is refused, not silently overwritten');
+assert(wh.validateFilter(UNLESS) === '', 'the real instawp filter validates');
+assert(wh.validateFilter('unless a == b') !== '', 'unless with no event list is refused');
+
 // ── 3. delivery + thread keys ─────────────────────────────────────────────────────
 console.log('\ndelivery + thread keys');
 assert(wh.deliveryKey({}, Q('delivery=d1'), 'body') === 'd1', 'query delivery id');

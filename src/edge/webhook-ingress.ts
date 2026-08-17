@@ -123,13 +123,22 @@ export function matchesFilter(filter: string | undefined, event: string): boolea
  *
  * Grammar, deliberately small:
  *
- *     <events> when <path> <op> <value> [ and <path> <op> <value> ]…
+ *     <events> [ when <preds> ] [ unless <preds> ]
+ *     <preds> := <path> <op> <value> [ and <path> <op> <value> ]…
  *     op := ==   !=   ~ (contains)   !~ (does not contain)
  *
- * `and` is the only connective. Predicates ANDed with no `or` and no parens means there is no
- * precedence to get wrong — the failure mode of a richer grammar is a filter that reads as if it
- * drops something it doesn't. Values may be quoted (`"a b"`), and comparison is case-insensitive
- * on strings, matching the event half.
+ * `and` is the only connective inside a clause. Predicates ANDed with no `or` and no parens means
+ * there is no precedence to get wrong — the failure mode of a richer grammar is a filter that reads
+ * as if it drops something it doesn't. Values may be quoted (`"a b"`), and comparison is
+ * case-insensitive on strings, matching the event half.
+ *
+ * **`when` requires; `unless` rejects.** `when` fires only if EVERY predicate holds; `unless` drops
+ * only if EVERY predicate holds. The second form exists because the thing you actually need to drop
+ * is usually a CONJUNCTION of properties, and `when` alone can only negate one at a time. The real
+ * case: on FreeScout an echo is `thread.source.type == "api" AND thread.source.via == "user"` —
+ * neither half is safe on its own, because customers also arrive over `api` (26 genuine tickets in
+ * one week's sample) and humans also post `user` notes (20 more). Only the pair is the agent talking
+ * to itself, and `unless` is how you say that without inventing operator precedence.
  *
  * ⚠ **A missing path reads as ''.** So `state != "deleted"` PASSES when there is no `state` field,
  * and `source.type == "api"` FAILS. That asymmetry is deliberate — the `!=` form (drop the known-bad)
@@ -159,10 +168,13 @@ export interface FilterPredicate {
 }
 
 export interface ParsedFilter {
-  /** The event-name list, i.e. everything before `when`. */
+  /** The event-name list, i.e. everything before the first `when`/`unless`. */
   events: string;
+  /** `when` — every one must hold or the delivery is dropped. */
   predicates: FilterPredicate[];
-  /** Clauses after `when` that are not a valid predicate. Non-empty ⇒ the filter is malformed. */
+  /** `unless` — if every one holds, the delivery is dropped. Empty ⇒ nothing is rejected. */
+  reject: FilterPredicate[];
+  /** Clauses that are not a valid predicate. Non-empty ⇒ the filter is malformed. */
   invalid: string[];
 }
 
@@ -177,31 +189,51 @@ const unquote = (s: string): string => {
   return t;
 };
 
-/**
- * Split a filter into its event list and its `when` predicates. A filter with no `when` parses to
- * zero predicates, so every existing automation keeps its exact behaviour.
- */
-export function parseFilter(filter: string | undefined): ParsedFilter {
-  const raw = (filter || '').trim();
-  // A standalone `when` token, first occurrence. Event names are dotted tokens, so a bare `when`
-  // between whitespace is unambiguous.
-  const m = raw.match(/(^|[\s,])when([\s]|$)/i);
-  if (!m || m.index === undefined) return { events: raw, predicates: [], invalid: [] };
-
-  const events = raw.slice(0, m.index).trim().replace(/,\s*$/, '');
-  const clause = raw.slice(m.index + m[0].length).trim();
-
-  const predicates: FilterPredicate[] = [];
-  const invalid: string[] = [];
+/** Parse one `and`-joined predicate clause, pushing anything unparseable onto `invalid`. */
+function parseClause(clause: string, invalid: string[]): FilterPredicate[] {
+  const out: FilterPredicate[] = [];
   for (const part of clause.split(/\s+and\s+/i)) {
     const s = part.trim();
     if (!s) continue;
     const pm = s.match(PREDICATE_RE);
     const value = pm ? unquote(pm[3]) : '';
     if (!pm || !value) { invalid.push(s); continue; }
-    predicates.push({ path: pm[1], op: pm[2] as PredicateOp, value, source: s });
+    out.push({ path: pm[1], op: pm[2] as PredicateOp, value, source: s });
   }
-  return { events, predicates, invalid };
+  return out;
+}
+
+/**
+ * Split a filter into its event list, its `when` predicates and its `unless` predicates. A filter
+ * with neither keyword parses to zero of both, so every existing automation keeps its exact behaviour.
+ * Either keyword may come first, and each may appear once; a repeat is reported as invalid rather than
+ * silently overwriting the earlier one.
+ */
+export function parseFilter(filter: string | undefined): ParsedFilter {
+  const raw = (filter || '').trim();
+  // Standalone `when` / `unless` tokens. Event names are dotted tokens and predicate paths never
+  // stand alone, so a bare keyword between whitespace is unambiguous.
+  const kw = [...raw.matchAll(/(^|[\s,])(when|unless)(\s|$)/gi)];
+  if (!kw.length) return { events: raw, predicates: [], reject: [], invalid: [] };
+
+  const events = raw.slice(0, kw[0].index).trim().replace(/,\s*$/, '');
+  const invalid: string[] = [];
+  const sections: Record<string, string> = {};
+  kw.forEach((m, i) => {
+    const key = m[2].toLowerCase();
+    const from = m.index! + m[0].length;
+    const to = i + 1 < kw.length ? kw[i + 1].index! : raw.length;
+    const body = raw.slice(from, to).trim();
+    if (sections[key] !== undefined) { invalid.push(`${key} (repeated)`); return; }
+    sections[key] = body;
+  });
+
+  const predicates = sections.when !== undefined ? parseClause(sections.when, invalid) : [];
+  const reject = sections.unless !== undefined ? parseClause(sections.unless, invalid) : [];
+  // A keyword with nothing after it is a mistake worth naming — it would otherwise read as a
+  // clause that quietly does nothing (`when` ⇒ vacuously true) or drops everything (`unless`).
+  for (const [k, v] of Object.entries(sections)) if (!v.trim()) invalid.push(`${k} (empty clause)`);
+  return { events, predicates, reject, invalid };
 }
 
 /** Evaluate one predicate against the parsed body. Comparison is case-insensitive, like the event half. */
@@ -222,7 +254,8 @@ export type FilterVerdict =
   | { ok: false; reason: 'payload'; predicate: string };
 
 /**
- * The whole filter decision: the event list first, then every `when` predicate against the body.
+ * The whole filter decision: the event list, then `when` (all must hold), then `unless` (all holding
+ * is a rejection).
  *
  * **A malformed predicate fires anyway.** This filter exists to save money, and the cost of losing a
  * real customer ticket dwarfs the cost of one extra session — so a filter we cannot understand must
@@ -231,9 +264,14 @@ export type FilterVerdict =
  */
 export function evaluateFilter(filter: string | undefined, event: string, payload: unknown): FilterVerdict {
   if (!matchesFilter(filter, event)) return { ok: false, reason: 'event' };
-  const { predicates } = parseFilter(filter);
+  const { predicates, reject } = parseFilter(filter);
   for (const p of predicates) {
     if (!testPredicate(p, payload)) return { ok: false, reason: 'payload', predicate: p.source };
+  }
+  // `unless` rejects only on the FULL conjunction — one predicate holding is not enough, which is the
+  // whole reason this clause exists rather than another `when`.
+  if (reject.length && reject.every((p) => testPredicate(p, payload))) {
+    return { ok: false, reason: 'payload', predicate: 'unless ' + reject.map((p) => p.source).join(' and ') };
   }
   return { ok: true };
 }
@@ -244,14 +282,14 @@ export function evaluateFilter(filter: string | undefined, event: string, payloa
  * is why it names the clause rather than just refusing.
  */
 export function validateFilter(filter: string | undefined): string {
-  const { events, predicates, invalid } = parseFilter(filter);
+  const { events, predicates, reject, invalid } = parseFilter(filter);
   if (invalid.length) {
     return `filter: could not parse ${invalid.map((s) => JSON.stringify(s)).join(', ')} — expected \`path == value\` (ops: == != ~ !~), joined by \`and\``;
   }
-  if (predicates.length && !events) {
+  if ((predicates.length || reject.length) && !events) {
     // `when …` with nothing before it is almost certainly a mistake, and it silently means
     // "every event, then these predicates" — legal, but worth making the operator write it.
-    return 'filter: a `when` clause needs an event list before it (use `*` for every event)';
+    return 'filter: a `when`/`unless` clause needs an event list before it (use `*` for every event)';
   }
   return '';
 }

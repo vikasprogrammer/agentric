@@ -8,6 +8,27 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.359.0] — 2026-08-17
+### Added
+- **`unless` — a webhook filter can now reject a *conjunction*.** v0.358.0 gave `filter` a `when` clause,
+  but `when` can only negate one property at a time, and what you actually need to drop is usually a
+  combination. Measured on 100 classifiable FreeScout deliveries (one week, instawp), keyed by the
+  triggering thread's type + source: `customer api/customer` 0 exits / 26 real, `note web/user` 3 / 20,
+  `customer email/customer` 10 / 10, **`note api/user` 15 / 0**, **`message api/user` 3 / 0**. The echo is
+  the last two — the agent's own note posted over the API. `source.type != "api"` alone would have killed
+  26 genuine customer tickets; `source.via != "user"` alone would have killed 20 human notes. Only the
+  pair identifies the agent talking to itself. `unless <p> and <p>` says exactly that, without inventing
+  operator precedence: `when` requires every predicate, `unless` rejects only when every predicate holds.
+  Both clauses are optional, may appear in either order, and a filter with neither is unchanged.
+- A rejecting `unless` names the **whole conjunction** in the `filtered` audit row, not one half of it.
+### Documented
+- Two ways a payload predicate looks obviously right and is wrong, both hit while building this: the same
+  field name at conversation level vs. triggering-thread level means different things (`source.type` is
+  `api` for genuine customer submissions too), and `state != "deleted"` drops real work because agents
+  legitimately work merged-away conversations. Plus **shared identities**: instawp's agent posts through
+  the owner's FreeScout token, so `createdBy.id` is the owner's own user for both the echo and anything
+  the owner types by hand — filtering on it would have silenced the owner.
+
 ## [0.358.0] — 2026-08-17
 ### Added
 - **A webhook filter can now test the payload, not just the event name** — `filter` accepts an optional

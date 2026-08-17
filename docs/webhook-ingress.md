@@ -81,16 +81,37 @@ That decision is one field comparison, and it belongs at the ingress. A gate wri
 session but never avoid one. So the filter grew a payload clause:
 
 ```
-convo.created, convo.note.created  when state != deleted and threads.0.createdBy.type != user
+convo.created, convo.note.created  unless _embedded.threads.0.source.type == api and _embedded.threads.0.source.via == user
 ```
 
-    <events> when <path> <op> <value> [ and <path> <op> <value> ]…
+    <events> [ when <preds> ] [ unless <preds> ]
+    <preds> := <path> <op> <value> [ and <path> <op> <value> ]…
     op := ==   !=   ~ (contains)   !~ (does not contain)
 
-`and` is the only connective — no `or`, no parens, so there is no precedence to misread. Paths are the
-same dot paths `threadPath` uses (array indices included). Values may be quoted; comparison is
-case-insensitive, like the event half. A filter with no `when` parses to zero predicates, so **every
-existing automation is byte-for-byte unaffected**.
+**`when` requires, `unless` rejects.** `when` fires only if every predicate holds; `unless` drops only
+if every predicate holds. `and` is the only connective inside a clause — no `or`, no parens, so there is
+no precedence to misread. Paths are the same dot paths `threadPath` uses (array indices included).
+Values may be quoted; comparison is case-insensitive, like the event half. Either clause may come first,
+each may appear once, and a filter with neither parses to zero predicates — so **every existing
+automation is byte-for-byte unaffected**.
+
+### Why `unless` exists
+
+The thing you need to drop is almost always a **conjunction**, and `when` can only negate one property
+at a time. Measured on 100 classifiable FreeScout deliveries in one week on instawp, keyed by the
+*triggering thread's* type and source:
+
+| thread type + source | gate-exits | did real work | |
+|---|---|---|---|
+| `customer` `api/customer` | 0 | 26 | a customer submitting via the web form |
+| `note` `web/user` | 3 | 20 | a human typing a note in the UI |
+| `customer` `email/customer` | 10 | 10 | inbound email |
+| `note` `api/user` | 15 | 0 | **the echo** — the agent's own note, posted over the API |
+| `message` `api/user` | 3 | 0 | **the echo**, on a message thread |
+
+`source.type != "api"` alone would have killed the 26 genuine customer tickets. `source.via != "user"`
+alone would have killed the 20 human notes. **Only the pair is the agent talking to itself** — and
+saying that without `unless` would mean inventing operator precedence.
 
 ### Two traps, both load-bearing
 
@@ -99,13 +120,21 @@ existing automation is byte-for-byte unaffected**.
 firing, `==` (fire only on the known-good) degrades toward silence. **Prefer `!=`** — a wrong path in an
 `==` clause matches nothing and silently drops every event.
 
-**Write the predicate from real traffic, not from the vendor's field names.** Measured while building
-this, across 40 live FreeScout deliveries: the obvious-looking `source.type != "api"` does *not*
-identify the echo — a conversation-level `source` says how the *conversation* started, not who posted
-the note that fired *this* event, and `api` appeared on the genuine tickets too. `state != "deleted"`
-was no safer: agents do real work on merged-away conversations. The author of the triggering message
-generally lives one level down, on the newest thread. Read a recent run's prompt (it carries the
-payload) before choosing a path.
+**Write the predicate from real traffic, not from the vendor's field names.** Two live examples from
+building this, both of which looked obviously right and were wrong:
+
+- A **conversation-level** `source` says how the *conversation* started, not who posted the note that
+  fired *this* event — `api` appears on genuine customer tickets too. The field that matters is the
+  same name one level down, on the triggering thread (`_embedded.threads.0.source`). Same spelling,
+  different meaning, opposite conclusion.
+- `state != "deleted"` looks like free money and is not: agents do real work on merged-away
+  conversations (5 of 6 did-work deliveries in one sample were `state: deleted`).
+
+Also beware **shared identities**. On instawp the agent posts through the owner's FreeScout API token,
+so `createdBy.id` is `1` — *the owner's own user* — for both the agent's echo and any note the owner
+types by hand. Filtering on that id would have silenced the owner. It is what forced the predicate onto
+`source` (how it was posted) rather than `createdBy` (who posted it). Read a recent run's prompt — it
+carries the payload — before choosing a path.
 
 Because a mistake here is silent, the runtime **fails open**: a `when` clause that cannot be parsed is
 ignored and the delivery fires anyway, with a `filter-invalid` audit row naming the clause. Losing a
