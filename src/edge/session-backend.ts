@@ -98,28 +98,6 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-/**
- * Is `text` still sitting UNSUBMITTED in the pane's composer? Pure over a visible-screen capture, so it is
- * testable against real captures (`scripts/inject-submit-test.cjs`) instead of only in production.
- *
- * Two signals, both read off the prompt line (`❯ …`) rather than the pane at large — after a successful
- * submit the same text is echoed into the transcript above, so "the text appears somewhere" would report
- * every delivery as parked:
- *  - the TUI's paste chip, `[Pasted text #N]`, which is how a big injection renders while it waits; or
- *  - the head of the injected text itself, for a send small enough to be typed rather than pasted.
- */
-export function composerParked(visiblePane: string, text: string): boolean {
-  const head = (text || '').replace(/\s+/g, ' ').trim().slice(0, 24);
-  for (const line of visiblePane.split('\n')) {
-    const m = /^\s*[❯>»]\s+(\S.*)$/.exec(line);
-    if (!m) continue;
-    const composer = m[1];
-    if (/\[Pasted text #\d+\]/.test(composer)) return true;
-    if (head.length >= 8 && composer.replace(/\s+/g, ' ').includes(head)) return true;
-  }
-  return false;
-}
-
 /** POSIX single-quote a value for a `KEY='value'` shell assignment (handles embedded quotes). */
 function sq(v: string): string {
   return `'${v.replace(/'/g, `'\\''`)}'`;
@@ -180,23 +158,24 @@ export class LocalSessionBackend implements SessionBackend {
   /**
    * Type `text` into a live pane, optionally submitting it as a turn.
    *
-   * The return value means **the agent got the turn**, not "tmux accepted the bytes" — that distinction is
-   * the whole point of the verify loop below, and getting it wrong cost us a class of silent drop. An agent
-   * TUI collapses a large send into a bracketed PASTE (`[Pasted text #N]`), and a submit `Enter` fired in
-   * the same instant is swallowed by the still-assembling paste instead of submitting it. Both tmux calls
-   * still exit 0, so the old code returned `true` for a message that was sitting untouched in the composer.
-   * Live on northwind 2026-08-17: 8 wake-ups parked across two agents' input boxes — `check-resolve-tickets`
-   * showed `❯ [Pasted text #4][Pasted text #5][Pasted text #6]` with a healthy claude idle in front of it,
-   * while every one of those wake-ups was recorded `delivered` and never retried. A human pressing Enter
-   * minutes later submitted them all, which is exactly what the settle-then-Enter below does.
+   * The mechanism that matters is the SETTLE: an agent TUI collapses a large `send-keys -l` into a
+   * bracketed paste (`[Pasted text #N]`), and a submit `Enter` fired in the same instant is swallowed by
+   * the still-assembling paste, leaving the message unsent in the composer. northwind 2026-08-17: 8
+   * wake-ups parked across two agents' input boxes, each recorded `delivered` and never retried, until a
+   * human pressed Enter and all of them ran at once. Settling and then pressing Enter — twice, with a
+   * longer pause the second time — is what a human's late Enter does, and it is why this loop exists.
    *
-   * So: settle, Enter, then LOOK at the composer; retry once with a longer settle; report failure if the
-   * text is still parked. `false` propagates to `injectToSession` → the wake queue holds the message and
-   * retries it (and eventually falls back to `--resume`), which is the behaviour that makes it durable.
-   * Where the pane cannot be captured (the launcher backend's uid-private socket) the check is skipped and
-   * we keep the old optimistic `true` — unverifiable is not the same as failed.
+   * It does NOT try to confirm the outcome by reading the pane, and two live incidents say why. A claude
+   * TUI renders a SUBMITTED message with the same `❯` prompt glyph (and the same paste chip) that a parked
+   * one has, so a single capture cannot tell "still in the composer" from "sent and echoed above it"; and
+   * a MID-TURN agent parks injected text on purpose until its turn boundary, which is correct behaviour
+   * that looked identical to failure. Acting on that guess stopped two working runs (`ses_987f7efc`,
+   * `ses_1171820b`) to `--resume` them. A silent late delivery is recoverable; killing a live run is not,
+   * so this returns whether the KEYSTROKES were delivered and leaves the verdict to a signal that can
+   * actually carry it — see `docs/tasks-plan.md` §3.6 for the transcript-based check that should replace
+   * this comment.
    */
-  injectText(_space: string, tmuxName: string, text: string, submit: boolean, verify = true): boolean {
+  injectText(_space: string, tmuxName: string, text: string, submit: boolean, _verify = true): boolean {
     // `-l` = literal: send the bytes as typed, not as tmux key names (a path could contain `;`, `-`,
     // etc.). Submit is a SEPARATE send-keys with the `Enter` key name so it's interpreted as a return.
     const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, '-l', text], { stdio: 'ignore' });
@@ -205,23 +184,8 @@ export class LocalSessionBackend implements SessionBackend {
     for (let attempt = 1; attempt <= SUBMIT_ATTEMPTS; attempt++) {
       sleepSync(PASTE_SETTLE_MS * attempt);   // let the paste finish assembling before the Enter lands
       spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, 'Enter'], { stdio: 'ignore' });
-      // Mid-turn (`verify` false): the TUI holds the text until the turn boundary BY DESIGN, so a full
-      // composer proves nothing and calling it a failure gets a working run killed. The settle + Enter
-      // above still runs — it is what makes the paste land as a queued message rather than loose keys.
-      if (!verify) return true;
-      const visible = this.visiblePane(tmuxName);
-      if (visible === null) return true;                       // can't look — don't invent a failure
-      if (!composerParked(visible, text)) return true;         // composer is clear → the turn started
     }
-    return false;
-  }
-
-  /** The pane's VISIBLE screen (no scrollback) — the composer check must not match the same text sitting
-   *  in the transcript above it, which `-S -` would include. */
-  private visiblePane(tmuxName: string): string | null {
-    const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'capture-pane', '-p', '-J', '-t', tmuxName], { encoding: 'utf8' });
-    if (r.error || r.status !== 0) return null;
-    return r.stdout ?? '';
+    return true;
   }
 
   aliveNames(): Set<string> | null {
