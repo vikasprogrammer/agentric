@@ -16,8 +16,14 @@
  *   - a short typed message still on the prompt line reads as parked;
  *   - unrelated prompt content is not mistaken for our message.
  */
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
+const HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-inject-submit-test-'));
+process.env.AGENT_OS_HOME = HOME;
+process.env.AGENT_OS_TENANT = 'testco';
+delete process.env.AGENT_OS_SECRET_KEY;
 const { composerParked } = require(path.join(ROOT, 'dist/edge/session-backend.js'));
 
 let pass = 0, fail = 0;
@@ -71,5 +77,48 @@ console.log('\n\x1b[1m4) degenerate input never reports a false failure\x1b[0m')
   assert(composerParked('❯ x', 'hi') === false, 'a too-short head is not matched (no 2-char coincidences)');
 }
 
+// ── the caller policy: WHEN the check may be trusted ────────────────────────────────────────────────
+// Verifying unconditionally cost a working run within the hour of shipping: a MID-TURN claude parks
+// injected text in its composer on purpose and submits it at the next turn boundary — the documented
+// contract of injectToSession — and that is indistinguishable from a failed submit by looking at the
+// pane. northwind 2026-08-17: `ses_987f7efc` (fleet-janitor) was 3 minutes into a turn when a second
+// wake-up arrived; the queued text read as "parked" and the same-transcript rule killed the run to
+// resume it. So the composer check is only consulted when the row says no turn is in flight.
+const { loadAgentOS } = require(path.join(ROOT, 'dist/kernel.js'));
+const { TerminalManager } = require(path.join(ROOT, 'dist/terminal.js'));
+const aos = loadAgentOS();
+const tm = new TerminalManager(aos, 'http://127.0.0.1:0', path.join(HOME, 'tmux.sock'));
+const seen = [];
+tm.backend.aliveNames = () => new Set(['aos-ses_busy', 'aos-ses_idle']);
+tm.backend.injectText = (_s, tmux, text, submit, verify) => { seen.push({ tmux, verify }); return verify === false; };
+tm.backend.capturePane = () => '';
+tm.backend.hasClient = () => false;
+aos.agents.set('a', { id: 'a', name: 'A', runtime: 'claude-code', dir: HOME });
+
+const mk = (id, over) => {
+  const now = Date.now();
+  aos.db.prepare(`INSERT INTO term_sessions (id,agent,title,task,tmux,status,headless,resident,secret,created_at,updated_at,busy_since,last_activity)
+    VALUES (?,?,?,?,?,?,1,0,'s',?,?,?,?)`).run(id, 'a', 't', 'x', 'aos-' + id, 'running', now - 60_000, now, over.busy_since, over.last_activity);
+};
+mk('ses_busy', { busy_since: Date.now() - 30_000, last_activity: null });   // mid-turn
+mk('ses_idle', { busy_since: null, last_activity: Date.now() - 30_000 });   // sitting at the prompt
+
+console.log('\n\x1b[1m5) a MID-TURN agent is never called a failure\x1b[0m');
+{
+  const r = tm.injectToSession('ses_busy', 'result of the task you handed off', true, 'system');
+  const call = seen.find((c) => c.tmux === 'aos-ses_busy');
+  assert(call && call.verify === false, 'the composer check is skipped while a turn is in flight', call);
+  assert(r.ok === true, 'and a queued message counts as delivered — never kill a working run over it', r);
+}
+
+console.log('\n\x1b[1m6) an IDLE agent is still verified\x1b[0m');
+{
+  const r = tm.injectToSession('ses_idle', 'result of the task you handed off', true, 'system');
+  const call = seen.find((c) => c.tmux === 'aos-ses_idle');
+  assert(call && call.verify === true, 'nothing is running, so a full composer IS evidence of a failed submit', call);
+  assert(r.ok === false && /composer/.test(r.error || ''), 'and the failure propagates, so the wake queue holds it', r);
+}
+
 console.log(`\n${fail === 0 ? '\x1b[32m' : '\x1b[31m'}${pass} passed, ${fail} failed\x1b[0m`);
+try { fs.rmSync(HOME, { recursive: true, force: true }); } catch { /* best effort */ }
 process.exit(fail === 0 ? 0 : 1);
