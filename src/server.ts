@@ -1603,6 +1603,33 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Strategist.plan / TerminalManager.markPlanAutoDispatch.
     const planAuto = tm.isPlanAutoDispatch(session);
 
+    // ── Sub-agent-only delegates ───────────────────────────────────────────────────────────────
+    // A delegate whose only reason to exist separately is a FRESH CONTEXT (a reviewer, a critic, a
+    // second opinion) does not need a governed session to provide one — a sub-agent already has its own
+    // context, cannot see the caller's reasoning, and costs no launch/MCP boot/CLAUDE.md reload/pane.
+    // Live evidence: instawp's `code-reviewer` is documented in engineer's OWN prompt as
+    // `Agent(subagent_type: code-reviewer)` and still took 12 task hand-offs in 7 days → 8 sessions,
+    // $111, for reviews the sub-agent path performs for a fraction of it.
+    // Refused on the agent lane only; a human dispatching from the console is a considered act.
+    if (assignee && assignee.startsWith('agent:')) {
+      const target = os.agents.get(assignee.slice('agent:'.length));
+      if (target?.subagentOnly) {
+        os.audit.append({
+          ts: Date.now(), runId: session, tenant: os.tenant, principal: `agent:${agent}`,
+          type: 'task.subagent_only.refused', data: { title, assignee },
+        });
+        return sendJson(res, 200, {
+          ok: false,
+          error:
+            `"${target.id}" is reachable as a sub-agent, not as a task assignee — it exists to give you a ` +
+            `FRESH CONTEXT, which a sub-agent already provides without spawning a whole session. Use the ` +
+            `Agent tool with subagent_type: "${target.id}" and hand it what it needs to judge (the diff, ` +
+            `the PR number, the base ref). If you genuinely need work that outlives this turn, assign it ` +
+            `to an agent that runs its own sessions.`,
+        });
+      }
+    }
+
     // ── Self-dispatch refusal ──────────────────────────────────────────────────────────────────
     // An agent filing an auto-dispatch task for ITSELF is not delegation — it is the agent ending its
     // turn and immediately paying a full context reload to carry on doing what it was already doing.
@@ -4279,7 +4306,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       const runtimes = Object.values(CODING_RUNTIMES).map((r) => ({
         id: r.id, label: r.label, suggestedModels: r.suggestedModels, capabilities: r.capabilities,
       }));
-      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
+      return sendJson(res, 200, { agent: ag.id, runtime: ag.runtime, runtimes, description: ag.description, model: ag.model, effort: ag.effort, permissionMode: ag.permissionMode, verbosity: ag.verbosity, examplePrompts: ag.examplePrompts, shellSecrets: ag.shellSecrets, usableSubagents: ag.usableSubagents ?? [], spawnableAsSubagent: ag.spawnableAsSubagent !== false, subagentOnly: ag.subagentOnly === true, chatReachable: ag.chatReachable !== false, netMode: ag.netMode ?? 'open', category: ag.category, icon: ag.icon });
     }
     const b = await readBody(req);
     // Runtime change (owner/admin). Validate BEFORE the tuning, so the tuning is checked against the
@@ -4311,6 +4338,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // Consent to being spawned as a sub-agent (default true → drop the key; false → internal, never
     // materialised into anyone's `.claude/agents`, even an explicit list). Owner/admin-only, like netMode.
     const spawnableAsSubagent = 'spawnableAsSubagent' in b ? (b.spawnableAsSubagent === false ? false : undefined) : ag.spawnableAsSubagent;
+    // Reachable ONLY as a sub-agent, never as a task assignee (default false → drop the key). For a
+    // delegate whose separation buys only a fresh context; the agent lane refuses a task hand-off to it.
+    const subagentOnly = 'subagentOnly' in b ? (b.subagentOnly === true ? true : undefined) : ag.subagentOnly;
     // Reachable from the open chat router (Slack/Discord/ClickUp `/agentname`). Default true → drop the key;
     // false → excluded from the front door (still runnable via console/tasks/delegation). Owner/admin-only.
     const chatReachable = 'chatReachable' in b ? (b.chatReachable === false ? false : undefined) : ag.chatReachable;
@@ -4321,7 +4351,7 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const category = 'category' in b ? sanitizeCategory(b.category) : ag.category;
     const icon = 'icon' in b ? sanitizeIcon(b.icon) : ag.icon;
     const description = 'description' in b ? String(b.description ?? '').trim() : ag.description;
-    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
+    const next: AgentManifest = { ...ag, runtime, description, model: tuning.model, effort: tuning.effort, permissionMode: tuning.permissionMode, verbosity: tuning.verbosity, examplePrompts: prompts, shellSecrets, usableSubagents, spawnableAsSubagent, subagentOnly, chatReachable, netMode: netMode === 'open' ? undefined : netMode, category, icon };
     const { dir: _dir, ...onDisk } = next; // `dir` is set at load, not persisted
     fs.writeFileSync(path.join(ag.dir, 'agent.json'), JSON.stringify(onDisk, null, 2) + '\n');
     os.registerAgent(next);

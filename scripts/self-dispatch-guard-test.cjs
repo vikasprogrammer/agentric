@@ -109,7 +109,32 @@ const { createHttpServer } = require(path.join(ROOT, 'dist/server.js'));
     tm.isPlanAutoDispatch = () => false;
   }
 
-  console.log('\n\x1b[1m5) the refusal is audited\x1b[0m');
+  console.log('\n\x1b[1m5) subagentOnly — a fresh context does not need a whole session\x1b[0m');
+  {
+    // instawp's `code-reviewer` is documented in engineer's OWN prompt as Agent(subagent_type:
+    // code-reviewer) and STILL took 12 task hand-offs in 7 days → 8 governed sessions, $111, for reviews
+    // the sub-agent path does for a fraction of it. The flag closes the expensive path.
+    aos.agents.set('reviewer', { id: 'reviewer', name: 'Reviewer', runtime: 'claude-code', dir: HOME, subagentOnly: true });
+    const before = countTasks();
+    const r = await create({ title: 'review PR 12', assignee: 'agent:reviewer', autoDispatch: true });
+    assert(r.ok === false, 'a task hand-off to a subagent-only delegate is refused', r);
+    assert(countTasks() === before, 'and writes nothing');
+    assert(/subagent_type/.test(r.error || ''), 'the refusal names the cheap path it should have used', r.error);
+    assert(/reviewer/.test(r.error || ''), 'and names the delegate', r.error);
+
+    // It is about the DELEGATE, not the flag on the task: even a plain board item is refused, because
+    // the point is that this agent never runs its own session at all.
+    const r2 = await create({ title: 'review later', assignee: 'agent:reviewer' });
+    assert(r2.ok === false, 'refused without autoDispatch too — it never runs its own session', r2);
+
+    // Everyone else is unaffected.
+    const r3 = await create({ title: 'deploy', assignee: 'agent:infra-ops', autoDispatch: true });
+    assert(r3.ok === true, 'a normal delegate is untouched', r3);
+    const n = aos.db.prepare("SELECT count(*) n FROM audit_events WHERE type = 'task.subagent_only.refused'").get().n;
+    assert(n === 2, 'both refusals are audited', n);
+  }
+
+  console.log('\n\x1b[1m6) the refusal is audited\x1b[0m');
   {
     const n = aos.db.prepare("SELECT count(*) n FROM audit_events WHERE type = 'task.self_dispatch.refused'").get().n;
     assert(n >= 3, 'every refusal leaves a row, so the saving is measurable rather than asserted', n);

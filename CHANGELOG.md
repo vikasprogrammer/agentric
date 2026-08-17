@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.361.0] — 2026-08-17
+### Added
+- **`subagentOnly` on an agent manifest — a delegate that exists only to give a FRESH CONTEXT no longer
+  costs a whole governed session.** Some delegates are separate for a reason a sub-agent already
+  satisfies: a reviewer, a critic, a second opinion needs its own context and must not see the caller's
+  reasoning — and a sub-agent has exactly that, in-process, with no launch, MCP boot, CLAUDE.md reload or
+  tmux pane. Live evidence: instawp's `code-reviewer` is documented in engineer's *own* prompt as
+  `Agent(subagent_type: code-reviewer)` and **still took 12 task hand-offs in 7 days → 8 sessions, $111**,
+  for reviews the sub-agent path performs for a fraction of that. Setting `subagentOnly: true` makes the
+  agent lane (`POST /api/tasks/create`) refuse a task hand-off and name the cheap path instead; audited
+  `task.subagent_only.refused`. Readable/settable via `GET`/`PATCH /api/agents/:id`.
+- The flag is **deliberately narrow**, and the doc says when NOT to use it: not for a delegate that needs
+  its own credentials (a sub-agent runs under the caller's principal and budget), that runs long or on
+  shared infrastructure (it would hold the caller's turn open — instawp's `qa` averages 20 min
+  provisioning sandboxes and contending for a devX lock), that must outlive the caller's turn, or that
+  must observe work independently over time. Fresh context must be the *only* thing the split buys.
+- Human dispatch from the console is unaffected — a person choosing to run a session is a considered act,
+  not the reflex this guards.
+
 ## [0.360.0] — 2026-08-17
 ### Changed
 - **An agent can no longer auto-dispatch a task to itself.** `task_create({ assignee:'me',
