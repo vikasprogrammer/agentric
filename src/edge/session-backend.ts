@@ -45,7 +45,10 @@ export interface SessionBackend {
   /** Type `text` into a live session's pty (tmux send-keys), optionally pressing Enter to submit.
    *  Used to hand a running claude a reference (e.g. the path of a console-uploaded image). Returns
    *  false if the inject couldn't be delivered (no session, or backend can't reach the socket). */
-  injectText(space: string, tmuxName: string, text: string, submit: boolean): boolean;
+  /** Type into a live pane. `verify` (default true) asks the backend to CONFIRM the text became a turn
+   *  rather than parking in the composer; pass false when the session is mid-turn, where parking is the
+   *  correct behaviour and confirming it would report a working agent as failed. */
+  injectText(space: string, tmuxName: string, text: string, submit: boolean, verify?: boolean): boolean;
   /** Live tmux session names, or null when liveness can't be polled (→ rely on end signals). */
   aliveNames(): Set<string> | null;
   /** Per-session resident memory: tmux session name → summed RSS **in KiB** of that session's pane
@@ -193,7 +196,7 @@ export class LocalSessionBackend implements SessionBackend {
    * Where the pane cannot be captured (the launcher backend's uid-private socket) the check is skipped and
    * we keep the old optimistic `true` — unverifiable is not the same as failed.
    */
-  injectText(_space: string, tmuxName: string, text: string, submit: boolean): boolean {
+  injectText(_space: string, tmuxName: string, text: string, submit: boolean, verify = true): boolean {
     // `-l` = literal: send the bytes as typed, not as tmux key names (a path could contain `;`, `-`,
     // etc.). Submit is a SEPARATE send-keys with the `Enter` key name so it's interpreted as a return.
     const r = spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, '-l', text], { stdio: 'ignore' });
@@ -202,6 +205,10 @@ export class LocalSessionBackend implements SessionBackend {
     for (let attempt = 1; attempt <= SUBMIT_ATTEMPTS; attempt++) {
       sleepSync(PASTE_SETTLE_MS * attempt);   // let the paste finish assembling before the Enter lands
       spawnSync('tmux', ['-S', this.tmuxSocket, 'send-keys', '-t', tmuxName, 'Enter'], { stdio: 'ignore' });
+      // Mid-turn (`verify` false): the TUI holds the text until the turn boundary BY DESIGN, so a full
+      // composer proves nothing and calling it a failure gets a working run killed. The settle + Enter
+      // above still runs — it is what makes the paste land as a queued message rather than loose keys.
+      if (!verify) return true;
       const visible = this.visiblePane(tmuxName);
       if (visible === null) return true;                       // can't look — don't invent a failure
       if (!composerParked(visible, text)) return true;         // composer is clear → the turn started

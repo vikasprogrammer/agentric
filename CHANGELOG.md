@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.356.2] — 2026-08-17
+### Fixed
+- **The v0.355.1 submit check no longer kills a working run.** Verifying that injected text became a turn
+  is only meaningful when the agent was IDLE when we typed: a MID-TURN claude parks injected text in its
+  composer on purpose and submits it at the next turn boundary — the documented contract of
+  `injectToSession` — and from the outside that is indistinguishable from a failed submit. Within an hour
+  of shipping, `ses_987f7efc` (fleet-janitor) was 3 minutes into a turn when a second wake-up arrived; the
+  queued text read as "parked", `injectText` returned false, and the same-transcript rule stopped a
+  working run to `--resume` it (one occurrence, work continued on the same transcript). `injectToSession`
+  now asks `isWorking` first and passes `verify: false` while a turn is in flight, so a queued message
+  counts as delivered; the settle + Enter still run either way, since that is what makes the paste land as
+  a queued message rather than loose keys. Idle sessions are verified exactly as before. Pinned by two new
+  cases in `scripts/inject-submit-test.cjs`.
+
 ## [0.356.1] — 2026-08-17
 ### Fixed
 - **Removing a runtime account from the console made its name unusable again.** `DELETE
