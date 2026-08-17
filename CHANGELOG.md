@@ -8,6 +8,23 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.358.0] — 2026-08-17
+### Added
+- **A webhook filter can now test the payload, not just the event name** — `filter` accepts an optional
+  `when <path> <op> <value> [and …]` clause (`==` `!=` `~` `!~`, dot paths, quoted values,
+  case-insensitive). The defect it closes: an event-name filter cannot express the **echo**, which is the
+  dominant cost on a real hook. The agent posts a note on a ticket → the source emits
+  `convo.note.created` → the automation fires → a whole session spawns, reads the thread, finds the note
+  was *its own*, and exits. Measured on instawp's live FreeScout hook over 7 days: **93 of 177 runs (53%)
+  did no work at all**, **79 of them triggered by the agent's own note**, $224 spent to produce nothing.
+  A gate written into the agent's *prompt* cannot fix this — it runs after the spawn it was meant to
+  prevent, so it can shorten a session but never avoid one. The decision had to move to the ingress.
+  Existing automations parse to zero predicates and are unaffected.
+- `filtered` audit rows now carry `by: 'event' | 'payload'` and name the rejecting `predicate`, so an
+  over-eager clause reads as a count per predicate instead of an agent that mysteriously went quiet.
+  A malformed clause **fails open** (fires, plus a `filter-invalid` audit row) — losing a real customer
+  ticket costs far more than one extra session — and is refused at save time by `validateFilter` instead.
+
 ## [0.357.0] — 2026-08-17
 ### Changed
 - **A finished session's output is now a readable conversation, not a raw terminal dump.** The done-session
