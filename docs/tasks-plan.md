@@ -434,7 +434,14 @@ before, and an **unstated** blocker also keeps the old behaviour: this only ever
 declaration.
 
 Declared, never inferred. A heuristic over the note's prose would misroute precisely when the wording is
-unusual, and the delegate already knows which of the three it is. The flag is cleared whenever the task
+unusual, and the delegate already knows which of the three it is. And declared means REQUIRED: the field
+shipped optional, and the fleet's first afternoon with it produced four human blockers and zero
+declarations — including one from a session started after the deploy, so the field was in its tool list and
+simply went unused. An optional field on a tool agents call with minimal args is not a field. `POST
+/api/tasks/update` now refuses `status:'blocked'` without a blocker and returns the three choices; the MCP
+client sends an explicit `null` when the agent omitted it, so the refusal can be aimed at CURRENT clients
+only — an MCP process outlives a server upgrade, and refusing a pre-upgrade client would leave a running
+agent unable to block at all (`scripts/blocked-declaration-test.cjs`). The flag is cleared whenever the task
 leaves `blocked`, so a stale "waiting on the founder" can't mute a later done-poke. Pinned by
 `scripts/blocked-routing-test.cjs`; the board shows it as a `waiting on …` chip, since the column header
 ("Needs you") is only true for one of the three.

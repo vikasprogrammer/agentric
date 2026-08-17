@@ -3028,6 +3028,13 @@ async function taskUpdate(args: Record<string, unknown>): Promise<string> {
       criteria: args.criteria === null ? null : (args.criteria !== undefined ? String(args.criteria) : undefined),
       dependsOn: Array.isArray(args.dependsOn) ? args.dependsOn.map(String) : undefined,
       dueAt: parseDue(args.due),
+      // Sent as an explicit `null` when the agent blocks without declaring a blocker, so the server can
+      // tell "this client HAS the field and the agent skipped it" (→ ask for it) from "an older MCP
+      // process that predates the field" (→ absent, accept as before). An MCP server outlives a server
+      // upgrade, so that distinction is the difference between a forcing function and breaking live runs.
+      blockedOn: String(args.status ?? '') === 'blocked'
+        ? (args.blockedOn !== undefined ? String(args.blockedOn) : null)
+        : undefined,
     }),
   });
   const d = (await res.json()) as { ok?: boolean; task?: TaskLite; error?: string };

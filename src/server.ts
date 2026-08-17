@@ -1707,6 +1707,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     if (!agent) return sendJson(res, 404, { error: 'unknown session' });
     if (!sessionSecretOk(session)) return sendJson(res, 403, { error: 'bad session secret' });
     const id = String(b.id || '');
+    // Blocking without saying WHAT you are blocked on is refused rather than guessed. The wake-up routing
+    // hangs off this (a human blocker cards the owner instead of resuming the delegating agent), and the
+    // fleet's first day with the field shipped four human blockers and zero declarations — an optional
+    // field on a tool an agent calls with minimal args is not a field. Explicit `null` = a current client
+    // whose agent omitted it; `undefined` = an older MCP process that has no such field, accepted as
+    // before so a live session can always still block.
+    if (String(b.status || '') === 'blocked' && b.blockedOn === null) {
+      return sendJson(res, 200, {
+        ok: false,
+        error: 'Say what this is blocked on: call task_update again with blockedOn:"human" (only a person can decide or approve), "agent" (another agent owes you something) or "external" (a third party, build or vendor). It decides who gets woken — "human" alerts the task owner instead of resuming the agent that handed you this.',
+      });
+    }
     const task = os.tasks.update(id, {
       status: typeof b.status === 'string' ? (b.status as TaskStatus) : undefined,
       assignee: b.assignee === null ? null : (b.assignee === 'me' ? `agent:${agent}` : (typeof b.assignee === 'string' ? b.assignee : undefined)),
