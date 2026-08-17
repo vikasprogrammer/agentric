@@ -8,6 +8,25 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.355.1] — 2026-08-17
+### Fixed
+- **An injected message that never became a turn is no longer reported as delivered.**
+  `LocalSessionBackend.injectText` returned `true` whenever its two tmux calls exited 0 — but an agent TUI
+  collapses a large `send-keys` into a bracketed paste (`[Pasted text #N]`) and swallows a submit `Enter`
+  that arrives while the paste is still assembling. The message then sits untouched in the composer while
+  the caller is told it landed. Found on the live fleet 2026-08-17 while watching the new wake queue: **8
+  wake-ups parked across two agents' input boxes** (`check-resolve-tickets` showing
+  `❯ [Pasted text #4][Pasted text #5][Pasted text #6]` with a healthy idle claude in front of them), every
+  one recorded `delivered` and therefore never retried — a false ack that defeats the queue's durability
+  guarantee. `injectText` now settles before the Enter, LOOKS at the composer (`composerParked`, anchored
+  to the prompt line so the post-submit echo in the transcript isn't mistaken for parked text), retries
+  once with a longer settle, and returns **false** if the text is still sitting there. That failure
+  propagates through `injectToSession` to the wake queue, which holds the message, retries it, and falls
+  back to `--resume` — the behaviour it was built for. Where the pane can't be captured (the launcher
+  backend's uid-private socket) the check is skipped and the old optimistic `true` stands: unverifiable is
+  not the same as failed. Pinned by `scripts/inject-submit-test.cjs` against real captures from the
+  incident.
+
 ## [0.355.0] — 2026-08-16
 ### Changed
 - **Agent wake-ups are now a durable queue instead of a fire-time decision** (`src/edge/wakeups.ts`, new
