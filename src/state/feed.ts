@@ -53,6 +53,11 @@ export interface FeedItem {
   // for a RUNNING session: the newest thing the agent just did, so you can watch progress without
   // opening the terminal. Enriched by the route (classifyActivity over the audit tail); null otherwise.
   lastActivity?: { primitive: string; summary: string; ts: number } | null;
+  // hand-off chain grouping (enriched by the route via TerminalManager.threadsFor). `threadId` folds a
+  // conversation's runs; `parentThreadId` nests it under the caller that delegated it — so the feed can
+  // collapse a delegation burst under one root. Only set on session-backed items.
+  threadId?: string;
+  parentThreadId?: string;
 }
 
 /** Decode the object a feed line points at from its kind + run id. Session/approval/question lines are

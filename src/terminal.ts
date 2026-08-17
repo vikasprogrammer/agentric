@@ -1386,6 +1386,31 @@ export class TerminalManager {
   }
 
   /**
+   * Thread identity for a set of run ids — the feed's hook into the same hand-off chain the sessions list
+   * and chain rail use. `threadId` folds a conversation's runs (a poke/continuation shares one
+   * `claude_session_id`); `parentThreadId` is the caller conversation that delegated it (via `chainLinks`).
+   * A self-parent (a poke waking itself) is dropped to `undefined` so it reads as a root. Batched like the
+   * list path so it stays cheap on the feed poll.
+   */
+  threadsFor(runIds: string[]): Map<string, { threadId: string; parentThreadId?: string }> {
+    const out = new Map<string, { threadId: string; parentThreadId?: string }>();
+    const ids = [...new Set(runIds.filter(Boolean))];
+    if (!ids.length) return out;
+    const rows: SessionRow[] = [];
+    for (let i = 0; i < ids.length; i += 400) {
+      const page = ids.slice(i, i + 400);
+      rows.push(...this.db.prepare(`SELECT * FROM term_sessions WHERE id IN (${page.map(() => '?').join(',')})`).all<SessionRow>(...page));
+    }
+    const links = this.chainLinks(rows);
+    for (const r of rows) {
+      const threadId = r.claude_session_id ?? r.id;
+      const parent = links.get(r.id)?.parentThreadId;
+      out.set(r.id, { threadId, parentThreadId: parent && parent !== threadId ? parent : undefined });
+    }
+    return out;
+  }
+
+  /**
    * The HAND-OFF CHAIN a session belongs to — the tree the console's chain rail renders, and the answer
    * to "where is this piece of work right now?" that a flat session list can't give.
    *

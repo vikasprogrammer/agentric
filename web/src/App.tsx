@@ -5428,6 +5428,8 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
 
   const [openGoals, setOpenGoals] = useState<Set<string>>(new Set()) // goal sections start collapsed
   const [expanded, setExpanded] = useState<Set<string>>(new Set()) // which snippets are shown in full
+  const [openThreads, setOpenThreads] = useState<Set<string>>(new Set()) // which hand-off chains are expanded (default collapsed)
+  const toggleThread = (tid: string) => setOpenThreads((s) => { const n = new Set(s); n.has(tid) ? n.delete(tid) : n.add(tid); return n })
   const [limit, setLimit] = useState(40)
   const [page, setPage] = useState<FeedResponse | null>(null)
   const [progress, setProgress] = useState<Record<string, GoalProgress>>({})
@@ -5533,11 +5535,12 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     return <span>· {label}</span>
   }
 
-  const attribution = (it: FeedItem) => {
+  const attribution = (it: FeedItem, chain?: { count: number; open: boolean; onToggle: () => void }) => {
     const s = isSessionKind(it) ? sessionById.get(it.runId) : undefined
     return (
       <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-muted-foreground">
         {it.agent && <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 font-medium text-foreground/80"><Bot className="h-3 w-3" />{it.agent}</span>}
+        {chain && <button onClick={chain.onToggle} className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 font-medium text-primary hover:bg-primary/15">{chain.open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}{chain.count} delegated {chain.count === 1 ? 'run' : 'runs'}</button>}
         {/* the session's status word, exactly as the Sessions page renders it (same sessionState + tones) */}
         {s && <span className={statusTone(s, waiting.has(s.id))}>{statusLabel(s, waiting.has(s.id))}</span>}
         {it.runAs && <span className="inline-flex items-center gap-1">for <PrincipalTag id={it.runAs} members={members} /></span>}
@@ -5586,7 +5589,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     return null
   }
 
-  const line = (it: FeedItem) => {
+  const line = (it: FeedItem, chain?: { count: number; open: boolean; onToggle: () => void }) => {
     const isDecision = it.state === 'decision'
     const isQuestion = it.kind.startsWith('question')
     const s = isSessionKind(it) ? sessionById.get(it.runId) : undefined
@@ -5609,7 +5612,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
             <span className="min-w-0 truncate italic">{it.lastActivity.summary}</span>
           </div>
         )}
-        {attribution(it)}
+        {attribution(it, chain)}
       </div>
     )
     return (
@@ -5637,6 +5640,46 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     }
   }
   const allGoalsOpen = goalGroups.length > 0 && goalGroups.every((g) => openGoals.has(g.id))
+
+  // ── feed lens: fold the hand-off chain ──
+  // Session lines fold by conversation (threadId → newest run) and nest under the caller that delegated
+  // them (parentThreadId). Everything else — pending decisions, notifications — stays FLAT at top level, so
+  // collapsing a chain never hides something you need to act on. Roots + flat items interleave by time.
+  const byThread = new Map<string, FeedItem>()
+  const flatItems: FeedItem[] = []
+  const childrenOf = new Map<string, string[]>()
+  const rootThreads: string[] = []
+  if (lens === 'feed') {
+    for (const it of items) {
+      if (isSessionKind(it) && it.threadId) {
+        const cur = byThread.get(it.threadId)
+        if (!cur || it.ts > cur.ts) byThread.set(it.threadId, it)
+      } else flatItems.push(it)
+    }
+    for (const [tid, it] of byThread) {
+      if (it.parentThreadId && byThread.has(it.parentThreadId)) {
+        const arr = childrenOf.get(it.parentThreadId) ?? []
+        arr.push(tid); childrenOf.set(it.parentThreadId, arr)
+      } else rootThreads.push(tid)
+    }
+  }
+  const descCount = (tid: string): number => (childrenOf.get(tid) ?? []).reduce((n, k) => n + 1 + descCount(k), 0)
+  const feedEntries: ({ ts: number; item: FeedItem } | { ts: number; tid: string })[] = [
+    ...flatItems.map((it) => ({ ts: it.ts, item: it })),
+    ...rootThreads.map((tid) => ({ ts: byThread.get(tid)!.ts, tid })),
+  ].sort((a, b) => b.ts - a.ts)
+  const renderThread = (tid: string, depth: number): ReactNode => {
+    const it = byThread.get(tid)!
+    const kids = (childrenOf.get(tid) ?? []).slice().sort((a, b) => byThread.get(b)!.ts - byThread.get(a)!.ts)
+    const open = openThreads.has(tid)
+    const n = descCount(tid)
+    return (
+      <div key={tid} className={depth > 0 ? 'ml-3 border-l border-border/60 pl-3' : ''}>
+        {line(it, n > 0 ? { count: n, open, onToggle: () => toggleThread(tid) } : undefined)}
+        {open && kids.map((k) => renderThread(k, depth + 1))}
+      </div>
+    )
+  }
 
   return (
     <div className="mx-auto max-w-3xl">
@@ -5685,7 +5728,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
         </div>
       ) : lens === 'feed' ? (
         <>
-          {items.map(line)}
+          {feedEntries.map((e) => 'tid' in e ? renderThread(e.tid, 0) : line(e.item))}
           {page.nextCursor && (
             <div className="pt-2 text-center">
               <Button size="sm" variant="ghost" className="text-xs text-muted-foreground" onClick={() => setLimit((l) => l + 40)}>Load more</Button>
@@ -5712,7 +5755,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
                     <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">{g.items.length}</Badge>
                   </span>
                 </summary>
-                <div className="border-t border-border bg-background px-4 pt-3">{g.items.map(line)}</div>
+                <div className="border-t border-border bg-background px-4 pt-3">{g.items.map((it) => line(it))}</div>
               </details>
             )
           })}

@@ -8,7 +8,17 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
-## [0.364.0] — 2026-08-17
+## [0.365.0] — 2026-08-17
+### Added
+- **The feed is now hierarchical — it folds the hand-off chain.** Session lines no longer sprawl: runs of
+  one conversation collapse to a single line (by `threadId`), and a delegated run nests under the caller
+  that spawned it (`parentThreadId`) — the same chain the sessions list and chain rail already derive,
+  now mapped onto the feed. A root line with delegated work shows a **"N delegated runs"** toggle and is
+  **collapsed by default**, so a delegation burst reads as one entry you can expand. Crucially the fold
+  applies to **session lines only** — pending approvals/questions and notifications stay flat at top
+  level, so collapsing a chain never hides something that needs you. Thread identity is enriched onto
+  session-backed feed items in the `/api/feed` handler via the new `TerminalManager.threadsFor` (reuses
+  `chainLinks`; `FeedItem.threadId`/`parentThreadId`). See `docs/feed-plan.md`.
 ### Added
 - **Per-endpoint timings — "which API is taking the most time", answered in the console.** Settings → System
   → **Endpoint timings**, plus `GET /api/metrics/requests` (owner/admin) and a reset. Ranked by **total**

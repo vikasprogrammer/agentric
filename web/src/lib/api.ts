@@ -1607,6 +1607,9 @@ export interface FeedItem {
   target: { kind: 'session' | 'task' | 'goal' | 'artifact'; id: string } | null
   /** For a running session: the newest thing the agent just did (audit-derived), so you can watch progress. */
   lastActivity?: { primitive: string; summary: string; ts: number } | null
+  /** Hand-off chain grouping — folds a conversation's runs and nests a delegated run under its caller. */
+  threadId?: string
+  parentThreadId?: string
 }
 export interface FeedCounts { needsYou: number; running: number; doneToday: number }
 export interface FeedResponse { items: FeedItem[]; nextCursor: string | null; counts: FeedCounts }
