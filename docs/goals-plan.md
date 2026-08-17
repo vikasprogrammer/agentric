@@ -273,6 +273,57 @@ activating goals.
 - **Insights** — the goals tile splits *ready to close* / *no work planned* / *no progress in 7+ days*,
   and the "unstick" list excludes finished goals.
 
+## Slice 5 — the goal ROOM: plan → run → watch → talk, without leaving the goal (shipped, v0.366.0)
+
+Slices 1–4 made a goal plannable and closable, but *operating* one meant a tour of the console: file the
+plan from the goal, then go to the Tasks board to dispatch each task, then to Sessions to watch it, then
+back to the goal to see whether the bar moved. And the goal's own Activity tab — the one place that should
+tell you what happened — held only its status flips: on the live instapods tenant, a goal with 7 tasks
+being planned, dispatched, blocked and finished under it showed **two** events (`→draft`, `draft→active`)
+and read as dead.
+
+Four moves, no new primitive and no new storage:
+
+- **Run the work from the goal.** Each linked task row carries its own run control, driven by
+  **`Automations.canDispatch(id, {guard})`** — the guard cascade extracted out of `dispatchTask` as a
+  *pure* predicate, so the console asks the exact question the dispatcher enforces instead of re-deriving
+  it (the two could only drift). Every refusal carries a **code** (`unassigned` · `deps` · `closed` ·
+  `attempts` · `live` · `pool`), because the codes are different next actions for the person on the row.
+  `GET /api/goals/:id` returns a `runs` map: `{can, reason, code, attempts, live}` per task, with
+  `guard:false` (a human pressing the button un-parks a `blocked` task — that IS the un-park) *and* the
+  member's own `canRun`, so nobody is offered a button that could only 403. The attempt-ceiling **park**
+  stays on `dispatchTask`: asking must not mutate.
+- **Watch it there too.** **`TerminalManager.liveTaskRuns(taskIds)`** answers per-task liveness in ONE
+  query + ONE tmux poll (the `busyTaskAgents` lesson — a per-row `reachable()` on a 5s refresh would
+  fork+exec tmux forever for an identical answer). A live row shows a spinning elapsed clock that links
+  into the session; it is never offered a second dispatch, which is the pile-up the guard would refuse.
+  **"Run all ready · N"** dispatches everything currently dispatchable, sequentially, behind a two-step
+  confirm that names N first — the fleet's worst cost surprises were fan-outs nobody counted.
+- **The goal's activity tells the work's story.** **`GoalStore.timeline(goalId)`** merges `goal_events`
+  with the *milestones* of every linked task — filed / started / blocked / done / cancelled / reopened —
+  **derived at read time**, not copied on write: nothing can drift, and every goal that predates this
+  code gets its whole history retroactively (which is what the empty tab actually needed). Deliberately
+  narrow: comments, assignments, due-date edits, the overdue mark and the stranded marker stay on the
+  task. The one thing that rides along is the **note attached to a blocked/done transition** — the
+  *reason*, which is what a goal reader came for. `withEvents` (so console **and** agent `goal_get`) now
+  returns the merged timeline; `events()` still gives the goal's own rows.
+- **A chat inside the goal.** A fourth tab: one **warm conversation with the strategist** about this goal
+  (`POST /api/goals/:id/chat` → `Strategist.discuss`, a **resident** session with provenance `goal:<id>`,
+  run-as the member). The same provenance a plan run carries — the discriminator is `resident`, so the
+  vocabulary stays "a session under a goal is `goal:<id>`" instead of minting a prefix every decoder has
+  to learn. Follow-ups deliver into the same transcript via `chatSend`, so context accumulates like a
+  Slack thread; `fresh:true` opens a new one when a conversation wedges. The conversation contract lives
+  in the **prompt**, not the persona: the persona's "never dispatch work" is right for an unattended plan
+  run and wrong when a human is in the room asking, and a prompt can override it without rewriting a file
+  already provisioned (and possibly hand-edited) on every live tenant. Owner/admin, like every goal
+  mutation — this chat can file and dispatch real work, and it reaches it through the same governed tools.
+
+Also here: **a headless dispatch no longer navigates away** (Tasks board *and* goal room). A headless run
+works to completion and exits — there is nothing to drive — so opening its terminal yanked you off the
+board you were working; an interactive dispatch, which exists to be driven, still opens. Pinned by
+`scripts/goal-room-test.cjs` (59 assertions: the timeline merge + what it excludes, `canDispatch`'s codes
+and purity, the ceiling park, batched liveness vs `reachable`, the room payload, and the chat binding).
+
 ## Out of scope (both slices)
 
 - ~~**Agent-authored strategy with real authority.** Humans own goals + acceptance criteria; agents `goal_list`/

@@ -821,6 +821,24 @@ export interface Task {
   updatedBy: string;
 }
 
+/**
+ * Why a task can't be dispatched right now (`Automations.canDispatch`). A code, not just prose, because a
+ * surface reacts differently per case: `unassigned` needs an assignee picker, `live` needs an attach link,
+ * `deps` is a wait not a fault, and `closed` means don't offer a run control at all.
+ */
+export type TaskDispatchBlock =
+  | 'missing' | 'closed' | 'blocked' | 'unassigned' | 'unknown-agent' | 'live' | 'pool' | 'attempts' | 'deps';
+
+/** Per-task run state for a surface that offers dispatch (the goal room's task list). `live` is a run whose
+ *  pane is still up — the case where the right control is "attach", not "run again". */
+export interface TaskRunState {
+  can: boolean; // this member can dispatch it right now
+  reason?: string; // why not, when `can` is false
+  code?: TaskDispatchBlock;
+  attempts: number;
+  live?: { sessionId: string; agent: string; since: number };
+}
+
 export interface TaskEvent {
   id: string;
   taskId: string;
@@ -1003,10 +1021,28 @@ export interface GoalEvent {
   id: string;
   goalId: string;
   // `ready` = every linked task finished; the derived completion signal, and the once-guard for its notice.
-  kind: 'status' | 'comment' | 'edit' | 'link' | 'ready';
+  // `task` = a MILESTONE on a task linked to this goal (filed / started / blocked / done / cancelled),
+  //          derived at read time from `task_events` — never a stored `goal_events` row. See
+  //          {@link GoalStore.timeline}: the work under a goal is most of the goal's story, and a copy
+  //          written at mutation time would both duplicate state and miss every task that moved before
+  //          the feature existed.
+  kind: 'status' | 'comment' | 'edit' | 'link' | 'ready' | 'task';
   body?: string;
   author: string; // member id | 'agent:<id>' | 'system'
   createdAt: number;
+  /** Set only on `kind: 'task'` — which linked task moved, and how. */
+  task?: GoalEventTask;
+}
+
+/** The task a `kind: 'task'` timeline entry is about. `verb` is the milestone, normalised from the task's
+ *  own event (a `dispatch` row and a `→doing` transition both mean "work started"). */
+export interface GoalEventTask {
+  id: string;
+  title: string;
+  status: TaskStatus; // the task's status NOW (the entry says what it did THEN)
+  verb: 'filed' | 'started' | 'blocked' | 'done' | 'cancelled' | 'reopened';
+  /** The session the milestone happened in, when the task event carried one — the way into the run. */
+  sessionId?: string;
 }
 
 export interface GoalCreateInput {

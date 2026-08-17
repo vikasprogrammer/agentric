@@ -8,6 +8,41 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.366.0] — 2026-08-17
+### Added
+- **The goal room: plan it, run it, watch it and talk about it without leaving the goal.** Operating a goal
+  used to mean a tour of the console — file the plan on the goal, dispatch each task on the Tasks board,
+  watch it on Sessions, come back to see whether the bar moved.
+  - **Run any linked task from the goal's task list.** Each row carries its own control, driven by the new
+    **`Automations.canDispatch`** — the guard cascade extracted out of `dispatchTask` as a *pure* predicate,
+    so the console asks exactly the question the dispatcher enforces rather than re-deriving it. Refusals
+    carry a **code** (`unassigned` · `deps` · `closed` · `attempts` · `live` · `pool`), each a different next
+    action for the person on the row, and the member's own `canRun` is folded in so nobody is offered a
+    button that could only 403. `GET /api/goals/:id` now returns a per-task `runs` map. The attempt-ceiling
+    park stays on `dispatchTask` — asking must not mutate.
+  - **A live run shows itself on the row** — a ticking elapsed clock that links into the session, never a
+    second dispatch button (that's the pile-up the guard refuses). Liveness for the whole task set is one
+    query + one tmux poll (`TerminalManager.liveTaskRuns`), not a per-row `reachable()` on a 5s refresh.
+  - **"Run all ready · N"** starts the whole dispatchable front of a plan, sequentially, behind a two-step
+    confirm that names N before anything fires — dependencies still gate themselves server-side.
+  - **A goal's Activity tab now tells the work's story.** `GoalStore.timeline` merges the goal's own events
+    with the **milestones** of its linked tasks (filed / started / blocked / done / cancelled / reopened),
+    derived at read time — so nothing can drift out of sync and every existing goal gets its history
+    retroactively. A live goal with 7 tasks under it used to show two status flips and read as dead. The
+    note attached to a blocked/done transition rides along as the entry's reason; task comments,
+    assignments, due-date edits and the overdue/stranded markers stay on the task. Agent `goal_get` sees
+    the same merged timeline.
+  - **A chat inside the goal** — one warm conversation with the strategist about this goal (`POST
+    /api/goals/:id/chat`, a resident session with provenance `goal:<id>`, run-as you). Ask what's missing,
+    or tell it to file / run / re-prioritise / drop work; it acts through the same governed tools, and the
+    Tasks tab next to it reflects what it did. Follow-ups continue the same transcript, so context
+    accumulates. Owner/admin, like every other goal action.
+### Changed
+- **Dispatching a headless task no longer navigates you to its terminal** (Tasks board and goal room). A
+  headless run works to completion and exits — there is nothing to drive — so opening it pulled you off the
+  board you were working; an interactive dispatch, which exists to be driven, still opens. The card's live
+  tape and the run history are how you follow background work.
+
 ## [0.365.0] — 2026-08-17
 ### Added
 - **The feed is now hierarchical — it folds the hand-off chain.** Session lines no longer sprawl: runs of

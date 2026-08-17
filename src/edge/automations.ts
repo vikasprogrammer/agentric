@@ -16,7 +16,7 @@ import { Strategist } from './strategist';
 import { AgentOS } from '../kernel';
 import { Db } from '../state/db';
 import { TerminalManager } from '../terminal';
-import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskTimelineEntry } from '../types';
+import { CodingRuntimeId, isCodingRuntime, Task, TaskDiscussionDelivery, TaskDispatchBlock, TaskTimelineEntry } from '../types';
 import { chooseAgent, RouterCandidate } from './router';
 import { classifyIntent, SOCIAL_REPLY } from './intent';
 import { answerAsk } from './ask';
@@ -710,6 +710,52 @@ export class Automations {
 
   // ── tasks ────────────────────────────────────────────────────────────────────────
   /**
+   * Can this task be dispatched right now, and if not, why — the pre-flight {@link dispatchTask} runs
+   * before it spawns anything, exposed so a SURFACE can answer the same question without firing.
+   *
+   * The console needs the reason, not just a boolean: "assign an agent first", "waiting on 2 blockers" and
+   * "a session is already working this task" are three different next actions for the person looking at
+   * the row. Re-deriving those rules in the UI would guarantee they drift from the ones the server
+   * enforces, so there is exactly one cascade and both callers read it.
+   *
+   * Pure — no writes, safe to call per row on every render. `guard` mirrors dispatchTask: `true` is the
+   * scheduler's cautious mode (respects a deliberate `blocked` park, the one-live-run pile-up rule, and a
+   * dry runtime pool), `false` is a human forcing it from the console.
+   */
+  canDispatch(id: string, opts: { guard?: boolean } = {}): { ok: boolean; reason?: string; code?: TaskDispatchBlock } {
+    const guard = opts.guard ?? true;
+    const no = (code: TaskDispatchBlock, reason: string) => ({ ok: false as const, code, reason });
+    const t = this.os.tasks.get(id);
+    if (!t) return no('missing', 'task not found');
+    if (t.status === 'done' || t.status === 'cancelled') return no('closed', `task is ${t.status}`);
+    // `blocked` means someone parked this deliberately. The tick never selects it (dispatchable() is
+    // todo-only), but every DIRECT path — task_dispatch, task_wait's polling kick, an app dispatch —
+    // used to sail past, re-spawning work a human or a caller had just stopped. A human forcing it from
+    // the console (guard:false) is still allowed: that IS the un-park.
+    if (guard && t.status === 'blocked') return no('blocked', 'task is blocked — unblock it before dispatching');
+    const agentId = (t.assignee || '').startsWith('agent:') ? t.assignee!.slice('agent:'.length) : '';
+    if (!agentId) return no('unassigned', 'task has no agent assignee');
+    if (!this.os.agents.has(agentId)) return no('unknown-agent', `unknown agent: ${agentId}`);
+    if (guard && t.lastSessionId && this.tm.reachable(t.lastSessionId)) {
+      return no('live', 'a session is already working this task');
+    }
+    // Defer a guarded (scheduler-driven) dispatch when the agent's runtime pool is exhausted — retried next
+    // tick, fires once an account resets. Attempts are NOT incremented, so deferral costs no retry budget.
+    // A direct console/task_dispatch (guard:false) is never deferred.
+    if (guard) {
+      const dry = this.runtimePoolExhausted(agentId);
+      if (dry) return no('pool', `all ${dry.runtime} accounts limited${dry.until ? ` until ${new Date(dry.until).toISOString()}` : ''}`);
+    }
+    if (t.attempts >= TASK_MAX_ATTEMPTS) return no('attempts', `attempt ceiling reached (${TASK_MAX_ATTEMPTS})`);
+    // Pipeline gate: never spawn a task whose dependencies aren't finished. dispatchable() already
+    // excludes these from the tick; this guards the direct paths (console dispatch / task_dispatch /
+    // task_wait). The task stays todo and becomes dispatchable once its blockers reach done/cancelled.
+    const unmet = this.os.tasks.unmetDeps(id);
+    if (unmet.length) return no('deps', `waiting on ${unmet.length} unfinished ${unmet.length === 1 ? 'dependency' : 'dependencies'} (${unmet.join(', ')})`);
+    return { ok: true };
+  }
+
+  /**
    * Dispatch a task: spawn a governed headless session that works it to completion. Provenance is
    * `task:<id>` (visible to the task owner + owner/admin); the session runs AS the task `owner` (run_as —
    * human passthrough, so budget/approvals ladder to the accountable person), or the company identity when
@@ -720,36 +766,19 @@ export class Automations {
    */
   dispatchTask(id: string, opts: { guard?: boolean; by?: string } = {}): FireResult {
     const guard = opts.guard ?? true;
-    const t = this.os.tasks.get(id);
-    if (!t) return { ok: false, reason: 'task not found' };
-    if (t.status === 'done' || t.status === 'cancelled') return { ok: false, reason: `task is ${t.status}` };
-    // `blocked` means someone parked this deliberately. The tick never selects it (dispatchable() is
-    // todo-only), but every DIRECT path — task_dispatch, task_wait's polling kick, an app dispatch —
-    // used to sail past, re-spawning work a human or a caller had just stopped. A human forcing it from
-    // the console (guard:false) is still allowed: that IS the un-park.
-    if (guard && t.status === 'blocked') return { ok: false, reason: 'task is blocked — unblock it before dispatching' };
-    const agentId = (t.assignee || '').startsWith('agent:') ? t.assignee!.slice('agent:'.length) : '';
-    if (!agentId) return { ok: false, reason: 'task has no agent assignee' };
-    if (!this.os.agents.has(agentId)) return { ok: false, reason: `unknown agent: ${agentId}` };
-    if (guard && t.lastSessionId && this.tm.reachable(t.lastSessionId)) {
-      return { ok: false, reason: 'a session is already working this task' };
+    const pre = this.canDispatch(id, { guard });
+    if (!pre.ok) {
+      // The attempt ceiling is the one refusal that CHANGES state: a task that keeps failing gets parked
+      // `blocked` so it can't spin forever. canDispatch stays a pure predicate (the console calls it on
+      // every render), so the parking lives here, on the path that actually tried.
+      if (pre.code === 'attempts') {
+        const t = this.os.tasks.get(id);
+        if (t) this.os.tasks.update(id, { status: 'blocked', note: `auto-dispatch gave up after ${t.attempts} attempts`, by: 'system' });
+      }
+      return { ok: false, reason: pre.reason ?? 'cannot dispatch' };
     }
-    // Defer a guarded (scheduler-driven) dispatch when the agent's runtime pool is exhausted — retried next
-    // tick, fires once an account resets. Attempts are NOT incremented (see below), so deferral costs no
-    // retry budget. A direct console/task_dispatch (guard:false) is never deferred.
-    if (guard) {
-      const dry = this.runtimePoolExhausted(agentId);
-      if (dry) return { ok: false, reason: `all ${dry.runtime} accounts limited${dry.until ? ` until ${new Date(dry.until).toISOString()}` : ''}` };
-    }
-    if (t.attempts >= TASK_MAX_ATTEMPTS) {
-      this.os.tasks.update(id, { status: 'blocked', note: `auto-dispatch gave up after ${t.attempts} attempts`, by: 'system' });
-      return { ok: false, reason: `attempt ceiling reached (${TASK_MAX_ATTEMPTS})` };
-    }
-    // Pipeline gate: never spawn a task whose dependencies aren't finished. dispatchable() already
-    // excludes these from the tick; this guards the direct paths (console dispatch / task_dispatch /
-    // task_wait). The task stays todo and becomes dispatchable once its blockers reach done/cancelled.
-    const unmet = this.os.tasks.unmetDeps(id);
-    if (unmet.length) return { ok: false, reason: `waiting on ${unmet.length} unfinished ${unmet.length === 1 ? 'dependency' : 'dependencies'} (${unmet.join(', ')})` };
+    const t = this.os.tasks.get(id)!;
+    const agentId = t.assignee!.slice('agent:'.length);
     // A headless task with acceptance criteria runs under a `/goal` convergence condition (when the
     // installed claude supports it); interactive tasks keep the plain prompt (a human drives those).
     const goalMode = t.mode !== 'interactive' && !!t.criteria && claudeSupportsGoal();

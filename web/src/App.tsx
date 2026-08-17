@@ -15,7 +15,7 @@ import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
-import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter } from '@/lib/api'
+import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
 import { ConnectorsPage, GithubMineCard } from '@/connectors'
@@ -8404,7 +8404,33 @@ function GoalProgressBar({ p, className = '' }: { p?: GoalProgress; className?: 
   )
 }
 
-type GoalTab = 'tasks' | 'description' | 'activity'
+type GoalTab = 'tasks' | 'description' | 'activity' | 'chat'
+
+/** Why a linked task has no Run button, compressed to fit a row (the full sentence is the `title=`).
+ *  Codes, not prose matching, so the label can't drift from the server's refusal. */
+function shortRunBlock(run: TaskRunState): string {
+  switch (run.code) {
+    case 'deps': return 'waiting'
+    case 'unassigned': return 'unassigned'
+    case 'unknown-agent': return 'agent missing'
+    case 'attempts': return `gave up · ${run.attempts} tries`
+    case 'pool': return 'accounts limited'
+    case 'live': return 'running'
+    case 'blocked': return 'blocked'
+    default: return 'not yours to run' // no code = the member isn't assigned to that agent
+  }
+}
+
+/** The goal-timeline verb, as a word + tone. A goal's activity is mostly its tasks moving, so these read
+ *  as sentences ("engineer · started") rather than as a status dump. */
+const GOAL_TASK_VERB: Record<NonNullable<GoalEvent['task']>['verb'], { label: string; tone: string }> = {
+  filed: { label: 'filed', tone: 'text-muted-foreground' },
+  started: { label: 'started', tone: 'text-emerald-600' },
+  blocked: { label: 'blocked', tone: 'text-amber-600' },
+  done: { label: 'done', tone: 'text-emerald-600' },
+  cancelled: { label: 'cancelled', tone: 'text-muted-foreground' },
+  reopened: { label: 'reopened', tone: 'text-sky-600' },
+}
 
 /** Owner/admin review queue for agent-proposed edits to THIS goal (goal_update, middle-band / demoted
  *  lane). Non-admins get a 403 → renders nothing. Approving applies the field delta via GoalStore.update
@@ -8460,6 +8486,143 @@ function GoalUpdateProposalsCard({ goalId, members, onResolved }: { goalId: stri
   )
 }
 
+/**
+ * The goal room's CHAT — one warm conversation with the strategist, about THIS goal.
+ *
+ * The gap it closes: a goal page could show you the work and let you press buttons on it, but the questions
+ * people actually have in front of a goal ("why is this stalled?", "what's missing to hit the target?",
+ * "file a task for X and run it") are conversation, not form-filling. The strategist already has the goal's
+ * tools, so this is a place to talk to it instead of a terminal to drive.
+ *
+ * It is the SAME conversation every time you come back (server-side: the newest resident session under this
+ * goal), so context accumulates the way a Slack thread does. Turns render through the shared
+ * ChatBubble/ActivityCard, so a tool call the strategist makes — filing a task, dispatching one — shows up
+ * inline as an activity line, and the Tasks tab next to it reflects it on the next refresh.
+ */
+function GoalChat({ goalId, chat, onChanged, nav }: {
+  goalId: string
+  chat?: GoalChatState | null
+  onChanged: () => void
+  nav: (r: Route, detail?: string) => void
+}) {
+  const [sid, setSid] = useState(chat?.sessionId ?? '')
+  const [convo, setConvo] = useState<ChatTurn[]>([])
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  // The turn we just sent, shown immediately: a runtime takes seconds to write its first transcript line,
+  // and without the echo the room looks like it swallowed the message.
+  const [pending, setPending] = useState('')
+  // Turn tracking: the reply count when we sent + when we sent it, so "still working" can be told apart
+  // from "the run ended without answering" instead of spinning a thinking dot forever.
+  const [awaitBase, setAwaitBase] = useState(0)
+  const [sentAt, setSentAt] = useState<number | null>(null)
+  // Set by "new": the next message opens a FRESH conversation instead of continuing the stored one.
+  const [wantFresh, setWantFresh] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Server truth wins on refresh, but never while the person has deliberately started a new conversation
+  // (`wantFresh`) — nor may it un-set a session we just started, since the detail poll can be mid-flight.
+  useEffect(() => {
+    if (wantFresh) return
+    if (chat?.sessionId && chat.sessionId !== sid) { setSid(chat.sessionId); setConvo([]) }
+  }, [chat?.sessionId, wantFresh])
+
+  const replies = convo.filter((t) => t.kind === 'assistant').length
+  const awaiting = sentAt !== null && replies <= awaitBase
+  // A reply that never came: nothing new after 2 minutes AND the server no longer reports a turn in flight.
+  const stalled = awaiting && !chat?.working && Date.now() - (sentAt ?? 0) > 120_000
+  const thinking = (awaiting || !!pending) && !stalled
+
+  // Poll the transcript — fast while a reply is outstanding (that gap IS the perceived latency), calm
+  // otherwise. Same adaptive cadence as the Chat page.
+  useEffect(() => {
+    if (!sid) return
+    let stop = false
+    const tick = async () => {
+      const r = await api.conversation(sid)
+      if (stop || r.error) return
+      setConvo(r.turns || [])
+      // Drop the local echo once the transcript carries the turn itself.
+      if ((r.turns || []).some((t) => t.kind === 'user')) setPending('')
+    }
+    tick()
+    const iv = setInterval(tick, thinking ? 1500 : 4000)
+    return () => { stop = true; clearInterval(iv) }
+  }, [sid, thinking])
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }) }, [convo.length, pending])
+
+  const send = async () => {
+    const text = draft.trim()
+    if (!text) return
+    setBusy(true); setErr('')
+    setAwaitBase(replies); setSentAt(Date.now())
+    setPending(text)
+    const r = await api.goalChat(goalId, text, wantFresh)
+    setBusy(false)
+    if (!r.ok) {
+      setPending(''); setSentAt(null)
+      // 'busy' is not a failure — the previous turn is still generating. Keep the draft so the person can
+      // resend rather than retyping it.
+      return setErr(r.status === 'busy' ? 'The strategist is still working on your last message — send again in a moment.' : (r.error || 'Could not send that.'))
+    }
+    setDraft(''); setWantFresh(false)
+    if (r.sessionId && r.sessionId !== sid) { setSid(r.sessionId); setConvo([]) }
+    onChanged() // the chat may have filed/dispatched work — pull the goal's tasks + progress again
+  }
+  const onKey = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2 text-[11px] text-muted-foreground">
+        <Bot className="h-3.5 w-3.5" />
+        <span>strategist{chat?.working ? ' · working…' : chat?.alive ? ' · ready' : ''}</span>
+        <span className="ml-auto flex items-center gap-2">
+          {sid && (
+            <a href={navHref('sessions', 'aos-' + sid)} onClick={onNavClick(() => nav('sessions', 'aos-' + sid))} className="inline-flex items-center gap-1 no-underline hover:text-foreground hover:underline">
+              session<ExternalLink className="h-2.5 w-2.5" />
+            </a>
+          )}
+          {sid && (
+            <button className="hover:text-foreground" title="Start a fresh conversation (the current one is kept, just no longer continued)" onClick={() => { setSid(''); setConvo([]); setErr(''); setPending(''); setSentAt(null); setWantFresh(true) }}>
+              new
+            </button>
+          )}
+        </span>
+      </div>
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+        {!sid && !pending && (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+            <MessageSquare className="h-6 w-6 opacity-40" />
+            <span>Talk to the strategist about this goal — ask what’s missing, or tell it what to file, run or drop.</span>
+          </div>
+        )}
+        {convo.map((t, i) => t.kind === 'activity' ? <ActivityCard key={i} turn={t} /> : <ChatBubble key={i} turn={t} />)}
+        {pending && <ChatBubble turn={{ kind: 'user', text: pending, ts: Date.now() }} />}
+        {stalled
+          ? <div className="pl-1 text-xs text-muted-foreground">No reply came back. Send again, or <a href={navHref('sessions', 'aos-' + sid)} onClick={onNavClick(() => nav('sessions', 'aos-' + sid))} className="font-medium text-primary no-underline hover:underline">open the session</a> to see what happened.</div>
+          : thinking ? <div className="pl-9 text-xs text-muted-foreground animate-pulse">thinking…</div> : null}
+      </div>
+      <div className="shrink-0 border-t p-3">
+        <div className="flex items-end gap-2">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={onKey}
+            placeholder="Ask about this goal, or tell the strategist what to do…"
+            className="max-h-40 min-h-[44px] resize-none text-sm"
+            rows={2}
+          />
+          <Button size="icon" disabled={busy || !draft.trim()} onClick={() => void send()}><Send className="h-4 w-4" /></Button>
+        </div>
+        {err && <p className="mt-1 text-xs text-destructive">{err}</p>}
+      </div>
+    </div>
+  )
+}
+
 function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: Route, detail?: string) => void }) {
   const [members, setMembers] = useState<Member[]>([])
   useEffect(() => { api.team().then((r) => setMembers(r.members ?? [])).catch(() => {}) }, [])
@@ -8473,11 +8636,16 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   // permalink. Same scheme as the task room, which this page's detail view mirrors.
   const [routeGoalId, routeTab] = (goalId || '').split('/')
   const selId = routeGoalId || null
-  const roomTab: GoalTab = routeTab === 'description' || routeTab === 'activity' ? routeTab : 'tasks'
+  const roomTab: GoalTab = routeTab === 'description' || routeTab === 'activity' || routeTab === 'chat' ? routeTab : 'tasks'
   const openGoal = (id: string) => nav('goals', id)
   const openGoalTab = (id: string, tab: GoalTab) => nav('goals', tab === 'tasks' ? id : `${id}/${tab}`)
   const closeGoal = () => { setEditing(false); nav('goals') }
-  const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; progress?: GoalProgress } | null>(null)
+  const [detail, setDetail] = useState<{ goal: Goal; events: GoalEvent[]; tasks: Task[]; runs: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null } | null>(null)
+  // Elapsed clocks on live runs tick locally — the detail poll below only moves server truth.
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
+  const [runHint, setRunHint] = useState('') // dispatch feedback, kept out of the goal-level `hint`
+  const [confirmRunAll, setConfirmRunAll] = useState(false)
   const [busy, setBusy] = useState(false)
   const [hint, setHint] = useState('')
   // create form
@@ -8537,9 +8705,9 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
   useEffect(() => {
     if (!selId) { setDetail(null); return }
     if (editing) return // don't overwrite an in-progress edit on a background refresh
-    api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) })
+    api.goal(selId).then((r) => { if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], runs: r.runs ?? {}, progress: r.progress, chat: r.chat ?? null }) })
   }, [selId, goals, editing])
-  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setPlanAuto(false); setSigningOff(false); setOutcome('') }, [selId]) // fresh drawer per selection
+  useEffect(() => { setEditing(false); setConfirmDel(false); setPlanNote(''); setPlanSession(''); setShowPlan(false); setPlanGuidance(''); setPlanMax(''); setPlanAuto(false); setSigningOff(false); setOutcome(''); setRunHint(''); setConfirmRunAll(false) }, [selId]) // fresh drawer per selection
 
   const visible = goals ?? []
   // Goals finished in fact but still open — the banner's subject. Derived from the list in view (the
@@ -8591,7 +8759,48 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
     await load()
     await refreshDetail(detail.goal.id)
   }
-  const refreshDetail = async (id: string) => { const r = await api.goal(id); if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], progress: r.progress }) }
+  const refreshDetail = async (id: string) => { const r = await api.goal(id); if (r.goal) setDetail({ goal: r.goal, events: r.events ?? [], tasks: r.tasks ?? [], runs: r.runs ?? {}, progress: r.progress, chat: r.chat ?? null }) }
+
+  // ── running the work, from the goal ──────────────────────────────────────────
+  // Dispatch a linked task without leaving the goal. The row is only offered a Run button when the SERVER
+  // said it can run (detail.runs[id].can), so this is the confirm-and-report half; the refusal text on a
+  // disabled row comes from the same pre-flight the dispatcher itself uses.
+  //
+  // It never navigates away, in either mode. A dispatched task is background work — the point of running it
+  // from the goal is to stay on the goal and watch the row light up — and for a headless run there is
+  // nothing to drive anyway: it works to completion and exits. The live pill that replaces the button is
+  // the way in for anyone who does want to watch.
+  const runTask = async (t: Task) => {
+    setBusy(true); setRunHint('')
+    const r = await api.dispatchTask(t.id)
+    setBusy(false)
+    if (!r.ok) return setRunHint('⚠ ' + (r.error || 'could not dispatch'))
+    setRunHint(`Running · ${t.title}${t.mode === 'interactive' ? ' (interactive — attach from the row)' : ''}`)
+    await refreshDetail(detail?.goal.id ?? t.goalId ?? '')
+    await load() // the goal's progress bar moves with the task's status
+  }
+  /** Every task the server says this member can dispatch right now — what "Run all ready" fires. */
+  const runnable = (): Task[] => (detail?.tasks ?? []).filter((t) => detail?.runs[t.id]?.can)
+  // Sequential on purpose: each dispatch is a paid session, and firing them in order lets the server's
+  // per-agent pile-up guard refuse a second run of the same agent instead of racing it. Dependency order is
+  // already enforced server-side (a dependent isn't `can` until its blockers finish), so a plan started
+  // here walks itself.
+  const runAll = async () => {
+    const list = runnable()
+    setConfirmRunAll(false)
+    if (!list.length) return
+    setBusy(true); setRunHint(`Dispatching ${list.length} task${list.length === 1 ? '' : 's'}…`)
+    let ok = 0
+    const failed: string[] = []
+    for (const t of list) {
+      const r = await api.dispatchTask(t.id)
+      if (r.ok) ok++; else failed.push(`${t.title}: ${r.error || 'refused'}`)
+    }
+    setBusy(false)
+    setRunHint(`Dispatched ${ok}/${list.length}${failed.length ? ` · ${failed.join(' · ')}` : ''}`)
+    if (detail) await refreshDetail(detail.goal.id)
+    await load()
+  }
 
   if (!goals) return <div className="text-sm text-muted-foreground">Loading…</div>
 
@@ -8698,6 +8907,19 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
         <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Linked tasks{detail.tasks.length ? ` · ${detail.tasks.length}` : ''}</span>
         <div className="flex items-center gap-2">
           {detail.progress && detail.progress.total > 0 && <span className="text-[11px] text-muted-foreground">{detail.progress.percent}% · {detail.progress.done}/{detail.progress.total} done</span>}
+          {/* Start the whole ready front of the plan. Two-step by design: each task is a paid session, so
+              the count is named before anything fires (the fleet's worst cost surprises came from fan-outs
+              nobody counted first). */}
+          {runnable().length > 1 && (
+            confirmRunAll
+              ? <span className="inline-flex items-center gap-1.5">
+                  <Button size="sm" className="h-7" disabled={busy} onClick={runAll}><Play className="mr-1 h-3.5 w-3.5" />Run {runnable().length} now</Button>
+                  <Button size="sm" variant="ghost" className="h-7" onClick={() => setConfirmRunAll(false)}>Cancel</Button>
+                </span>
+              : <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setRunHint(''); setConfirmRunAll(true) }}>
+                  <Play className="mr-1 h-3.5 w-3.5" />Run all ready · {runnable().length}
+                </Button>
+          )}
           {isAdmin && (detail.goal.status === 'active' || detail.goal.status === 'draft') && !showPlan && (
             <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setPlanNote(''); setHint(''); setShowPlan(true) }}>
               <Wand2 className="mr-1 h-3.5 w-3.5" />Plan this goal
@@ -8705,6 +8927,7 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
           )}
         </div>
       </div>
+      {runHint && <div className="mb-2 rounded-md border bg-muted/30 px-2.5 py-1.5 text-xs text-muted-foreground">{runHint}</div>}
       {/* Pre-plan steering — shape what the strategist files before it runs. */}
       {isAdmin && showPlan && (detail.goal.status === 'active' || detail.goal.status === 'draft') && (
         <div className="mb-2 space-y-2 rounded-md border bg-muted/20 p-2.5">
@@ -8761,38 +8984,97 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
           // Dependency gating — resolve each blocker from this goal's own tasks (no extra fetch).
           // A dep is *unmet* only if its blocker is present here AND not yet done/cancelled.
           const unmet = (t.dependsOn ?? []).filter((id) => { const b = detail.tasks.find((x) => x.id === id); return b && b.status !== 'done' && b.status !== 'cancelled' }).length
+          // The row's RUN control, straight from the server's pre-flight (detail.runs). Three shapes, and
+          // which one you get is the whole point of running work from here:
+          //   live  → a session is up: show it ticking, click through to watch (never a second dispatch).
+          //   can   → a button. `attempts > 0` makes it a retry, so the label says which attempt is next.
+          //   else  → the refusal in muted text (waiting on blockers, unassigned, closed, attempt ceiling).
+          // A done/cancelled task gets nothing — there is no work to start.
+          const run = detail.runs[t.id]
+          const live = run?.live
+          const closed = t.status === 'done' || t.status === 'cancelled'
           return (
-            <a
-              key={t.id}
-              href={navHref('tasks', t.id)}
-              onClick={onNavClick(() => nav('tasks', t.id))}
-              className="flex items-center gap-2 rounded-md border bg-muted/20 px-2.5 py-2 text-[13px] no-underline hover:bg-muted"
-            >
-              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] capitalize ${taskStatusTone(t.status)}`}>{t.status}</span>
-              <span className={`min-w-0 flex-1 truncate text-foreground ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
-              {unmet > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmet}</span>}
-            </a>
+            // The whole row still opens the task (it did before the Run control arrived); the button and the
+            // links inside it stop the click so pressing Run doesn't also navigate away from the goal.
+            <div key={t.id} onClick={() => nav('tasks', t.id)} className="cursor-pointer rounded-md border bg-muted/20 hover:bg-muted/40">
+              <div className="flex items-center gap-2 px-2.5 py-2 text-[13px]">
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] capitalize ${taskStatusTone(t.status)}`}>{t.status}</span>
+                <a
+                  href={navHref('tasks', t.id)}
+                  onClick={(e) => { e.stopPropagation(); onNavClick(() => nav('tasks', t.id))(e) }}
+                  className={`min-w-0 flex-1 truncate text-foreground no-underline hover:underline ${t.status === 'cancelled' ? 'line-through opacity-60' : ''}`}
+                >{t.title}</a>
+                {unmet > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] text-amber-600" title="Waiting on unfinished blocker tasks">⏳ waiting on {unmet}</span>}
+                {live ? (
+                  <a
+                    href={navHref('sessions', 'aos-' + live.sessionId)}
+                    onClick={(e) => { e.stopPropagation(); onNavClick(() => nav('sessions', 'aos-' + live.sessionId))(e) }}
+                    title={`${live.agent} is working this task — open the session`}
+                    className="inline-flex shrink-0 items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] text-emerald-700 no-underline hover:border-emerald-500/70 dark:text-emerald-400"
+                  >
+                    <LoaderCircle className="h-3 w-3 animate-spin" />
+                    <span className="tabular-nums">{fmtElapsed(now - live.since)}</span>
+                    <ExternalLink className="h-2.5 w-2.5" />
+                  </a>
+                ) : run?.can ? (
+                  <Button size="sm" variant="outline" className="h-6 shrink-0 px-2 text-[11px]" disabled={busy} onClick={(e) => { e.stopPropagation(); void runTask(t) }} title={`Dispatch ${t.assignee?.slice('agent:'.length)} in the background${t.mode === 'interactive' ? ' (interactive — attachable)' : ''}`}>
+                    <Play className="mr-1 h-3 w-3" />{run.attempts > 0 ? `Run again · ${run.attempts + 1}` : 'Run'}
+                  </Button>
+                ) : !closed && run?.reason ? (
+                  <span className="shrink-0 truncate text-[10px] text-muted-foreground" title={run.reason}>{shortRunBlock(run)}</span>
+                ) : null}
+              </div>
+            </div>
           )
         })}
       </div>
     </div>
   )
 
-  /** Activity tab — the append-only timeline plus the comment box that writes to it. */
+  /** Activity tab — the goal's timeline (its own events MERGED with the milestones of the work under it,
+   *  server-derived) plus the comment box that writes to it. A `task` entry names the task, what it did and
+   *  who did it, and links both the task and the run it happened in — so "why did this goal stop moving?"
+   *  is answerable here instead of by opening every task. */
   const activityTab = () => detail && (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4">
         {detail.events.length === 0 && <div className="text-xs text-muted-foreground">No activity yet.</div>}
-        {detail.events.slice().reverse().map((e) => (
-          <div key={e.id} className="rounded-md border bg-muted/20 p-2">
-            <div className="flex items-center justify-between gap-2">
-              <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>
-              <span className="text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+        {detail.events.slice().reverse().map((e) => {
+          const v = e.task ? GOAL_TASK_VERB[e.task.verb] : null
+          return (
+            <div key={e.id} className="rounded-md border bg-muted/20 p-2">
+              <div className="flex items-center justify-between gap-2">
+                {e.task && v
+                  ? <span className="inline-flex min-w-0 items-center gap-1.5">
+                      <ListChecks className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      <span className={`shrink-0 text-[10px] font-medium uppercase tracking-wide ${v.tone}`}>{v.label}</span>
+                    </span>
+                  : <Badge variant="outline" className="px-1.5 py-0 text-[10px] capitalize">{e.kind}</Badge>}
+                <span className="shrink-0 text-[10px] text-muted-foreground">{new Date(e.createdAt).toLocaleString()}</span>
+              </div>
+              {e.task && (
+                <a
+                  href={navHref('tasks', e.task.id)}
+                  onClick={onNavClick(() => nav('tasks', e.task!.id))}
+                  className="mt-1 block break-words text-xs leading-relaxed text-foreground no-underline hover:underline"
+                >{e.task.title}</a>
+              )}
+              {/* A task's closing note is the reason, but an agent's `report` note can run to a page — clamped
+                  here so one verbose close can't bury the rest of the timeline. The task itself has it in full. */}
+              {e.body && <div className={`mt-1 break-words text-xs leading-relaxed text-foreground ${e.task ? 'line-clamp-4' : ''}`} title={e.task ? e.body : undefined}>{e.body}</div>}
+              <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span>{nameOf(e.author)}</span>
+                {e.task?.sessionId && (
+                  <a
+                    href={navHref('sessions', 'aos-' + e.task.sessionId)}
+                    onClick={onNavClick(() => nav('sessions', 'aos-' + e.task!.sessionId!))}
+                    className="inline-flex items-center gap-0.5 no-underline hover:text-foreground hover:underline"
+                  >session<ExternalLink className="h-2.5 w-2.5" /></a>
+                )}
+              </div>
             </div>
-            {e.body && <div className="mt-1 break-words text-xs leading-relaxed text-foreground">{e.body}</div>}
-            <div className="mt-0.5 text-[10px] text-muted-foreground">{nameOf(e.author)}</div>
-          </div>
-        ))}
+          )
+        })}
       </div>
       <div className="shrink-0 border-t p-3">
         <CommentBox onSubmit={async (text) => { await api.commentGoal(detail.goal.id, text); await refreshDetail(detail.goal.id) }} />
@@ -8834,14 +9116,20 @@ function GoalsPage({ me, goalId, nav }: { me: Member; goalId: string; nav: (r: R
               </div>
             ) : (
               <>
-                {/* Scrolls rather than clips: at phone widths three tabs don't fit the column. */}
+                {/* Scrolls rather than clips: at phone widths four tabs don't fit the column. */}
                 <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b px-2">
                   {tabBtn('tasks', <><ListChecks className="h-3.5 w-3.5" />Tasks{detail.tasks.length > 0 && <span className="ml-0.5 text-[11px] opacity-70">{detail.tasks.length}</span>}</>)}
                   {tabBtn('description', <><FileText className="h-3.5 w-3.5" />Description</>)}
                   {tabBtn('activity', <><HistoryIcon className="h-3.5 w-3.5" />Activity</>)}
+                  {/* Chat can file and dispatch this goal's work, so it's offered on the same terms as every
+                      other goal action: owner/admin. A member sees three tabs. */}
+                  {isAdmin && tabBtn('chat', <><MessageSquare className="h-3.5 w-3.5" />Chat{detail.chat?.working ? <LoaderCircle className="ml-0.5 h-3 w-3 animate-spin text-emerald-600" /> : null}</>)}
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden">
                   {roomTab === 'tasks' && tasksTab()}
+                  {roomTab === 'chat' && (isAdmin
+                    ? <GoalChat goalId={g.id} chat={detail.chat} onChanged={() => { void refreshDetail(g.id); void load() }} nav={nav} />
+                    : <div className="p-4 text-sm text-muted-foreground">Owner or admin required.</div>)}
                   {roomTab === 'description' && (
                     <div className="h-full overflow-y-auto p-4">
                       {g.body
@@ -9598,13 +9886,18 @@ function TasksPage({ me, agents, taskId, onOpen, nav }: { me: Member; agents: Ag
   // Re-link or complete a task and the goal's derived progress moves with it, so refresh the goal
   // list too — otherwise the "part of goal" banner keeps showing the pre-edit bar.
   const patch = async (id: string, b: Parameters<typeof api.patchTask>[1]) => { setBusy(true); await api.patchTask(id, b); await load(); if (b.goalId !== undefined || b.status) await loadGoals(); setBusy(false) }
+  // Dispatch a task. A HEADLESS run is background work — it drives itself to completion and exits — so
+  // opening the terminal on it yanks you out of the board you were working to watch a pane you can't
+  // usefully drive; the card's own live tape (and the run history) is how you follow it. An INTERACTIVE
+  // run is the opposite: it exists to be driven, so it still opens on dispatch.
   const dispatch = async (t: Task) => {
     setBusy(true); setHint('')
     const r = await api.dispatchTask(t.id)
     setBusy(false)
     if (!r.ok) return setHint('⚠ ' + (r.error || 'could not dispatch'))
     await load()
-    if (r.sessionId) onOpen('aos-' + r.sessionId, 'Task · ' + t.title)
+    if (r.sessionId && t.mode === 'interactive') onOpen('aos-' + r.sessionId, 'Task · ' + t.title)
+    else if (r.sessionId) setHint(`Running in the background · ${t.title}`)
   }
   const remove = async (id: string) => { setBusy(true); await api.deleteTask(id); closeTask(); setConfirmDel(false); await load(); setBusy(false) }
   const onDropTo = async (status: TaskStatus) => {

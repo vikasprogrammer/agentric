@@ -74,6 +74,77 @@ export class Strategist {
     return { spawned: true, sessionId: session.id };
   }
 
+  /**
+   * Open a CONVERSATION about a goal — the goal room's chat. Same agent, same governance, different shape:
+   * a **resident** interactive run (warm between turns, so a follow-up is instant) that the human keeps
+   * talking to, rather than a headless plan run that files and exits.
+   *
+   * Why the strategist and not a fresh persona: it already holds the goal→task method, and the thing a
+   * person actually wants to do in a goal room — "why is this stalled?", "file a task for X", "run step 3
+   * now", "drop step 5" — is exactly its subject. It reaches the work through the same governed tools
+   * (`task_create`/`task_dispatch`/`task_update`), so a chat can't do anything a plan run couldn't.
+   *
+   * The conversation contract lives in this PROMPT, not the persona: the persona says "you never dispatch
+   * work", which is right for an unattended plan run and wrong here (a human is in the room asking), and a
+   * prompt is the one place that can override it without rewriting a file already provisioned — and
+   * possibly hand-edited — on every live tenant.
+   */
+  async discuss(goalId: string, by: string, runAs: string | undefined, message: string, who?: string): Promise<PlanResult> {
+    const goal = this.os.goals.get(goalId);
+    if (!goal) return { spawned: false, reason: 'goal not found' };
+    this.ensureAgent();
+    const prompt = this.buildChat(goal, this.os.tasks.tasksForGoal(goalId), message, who);
+    const session = this.tm.createSession(
+      AGENT_ID, `Goal chat — ${goal.title}`, prompt, `goal:${goalId}`,
+      false /* not headless: an attachable run the human drives */, undefined, undefined, runAs,
+      undefined, true /* resident: keep the runtime warm between turns */,
+    );
+    this.os.audit.append({
+      ts: Date.now(), runId: session.id, tenant: this.os.tenant, principal: by,
+      type: 'goal.chat.started', data: { goalId, title: goal.title, sessionId: session.id },
+    });
+    return { spawned: true, sessionId: session.id };
+  }
+
+  /** The chat opener: who you're talking to, the goal + its work as it stands, and the rules of THIS
+   *  conversation (act when asked, keep replies short, never close the goal yourself). */
+  private buildChat(goal: Goal, existing: Task[], message: string, who?: string): string {
+    const prog = this.os.goals.progress(goal.id);
+    const taskLines = existing.length
+      ? existing.map((t) => `  - [${t.status}] ${t.id} — ${t.title}${t.assignee ? ` (→ ${t.assignee})` : ''}`).join('\n')
+      : '  (none yet)';
+    return [
+      `You are in the GOAL ROOM for goal ${goal.id}, talking with ${who || 'a member of the company'} in the`,
+      'Agentric console. This is a CONVERSATION, not a plan run: they can see the goal, its tasks and their',
+      'statuses on screen next to this chat, and they will ask you about them and tell you what to do.',
+      '',
+      `GOAL ${goal.id}: ${goal.title}`,
+      ...(goal.target ? [`Target: ${goal.target}`] : []),
+      ...(goal.body ? ['', goal.body] : []),
+      '',
+      `Progress: ${prog.percent}% (${prog.done}/${prog.counted} linked tasks done, ${prog.total} filed).`,
+      'Tasks linked to this goal:',
+      taskLines,
+      '',
+      'How to work in this room:',
+      `- **Ground every answer in state.** goal_get "${goal.id}" and task_get/task_list before you explain`,
+      "  why something is stalled or what's left — the list above ages the moment work moves.",
+      '- **Act when asked.** Your CLAUDE.md tells you to shape work and never run it; that rule is about',
+      '  unattended planning. Here a human is asking, so when they say run/stop/re-prioritise/drop it, DO it:',
+      `  task_create({ goalId: "${goal.id}", … }) to file, task_dispatch to run one now, task_update to`,
+      '  change status/assignee/priority. Then say what you did in one line.',
+      '- **Confirm before anything wide.** Dispatching several tasks at once, or cancelling work someone',
+      '  else filed, gets one short "want me to?" first — each run costs real money.',
+      '- **Strategy stays theirs.** Never mark this goal achieved/abandoned and never activate a goal;',
+      '  propose (goal_propose) and let them decide.',
+      '- **Talk like a colleague.** A few sentences or a short list. No preamble, no sign-off, no essay.',
+      '  Do NOT call report — this is a conversation, and each of your turns IS the reply they read.',
+      '',
+      `${who || 'They'} said:`,
+      message,
+    ].join('\n');
+  }
+
   /** The opening prompt: the goal, its current progress, and the tasks already linked (so a re-run only
    *  fills gaps). The full method lives in the agent's CLAUDE.md. */
   private buildTask(goal: Goal, existing: Task[], steer?: PlanSteer): string {
