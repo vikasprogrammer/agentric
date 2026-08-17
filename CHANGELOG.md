@@ -8,6 +8,18 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.356.1] — 2026-08-17
+### Fixed
+- **Removing a runtime account from the console made its name unusable again.** `DELETE
+  /api/runtime-accounts/…` drops the row but (rightly) leaves the credential dir on disk, so the next
+  guided login for the same name hit the "already holds a login" guard and there was no way out of the
+  console — the operator had to ssh to the box and delete a directory. Hit live on instawp re-adding its
+  `instawp` claude account. The guard now distinguishes the two cases: a dir an account in the pool still
+  points at is refused **by that account's name** (removing it, or choosing another name, is the fix),
+  while an **orphaned** dir — no account references it — is moved aside to `<dir>.orphan-<ts>` and the
+  login continues into a clean dir. Moved, never deleted: the dir also holds the transcripts of the runs
+  made under that account. Audited `runtime.account.login.orphan.archived`.
+
 ## [0.356.0] — 2026-08-17
 ### Added
 - **A delegate can now say what it is blocked ON, and a human blocker no longer wakes the delegating

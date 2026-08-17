@@ -139,10 +139,30 @@ const boom = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } 
 assert(/already exists/.test(boom(() => m.start('claude-code', 'overflow-1'))), 'a name already in the pool is refused');
 assert(/letters, numbers/.test(boom(() => m.start('claude-code', '../escape'))), 'a name that would escape the accounts dir is refused');
 assert(/required/.test(boom(() => m.start('claude-code', '   '))), 'an empty name is refused');
-fs.mkdirSync(path.join(accountsDir, 'claude-code', 'squatted'), { recursive: true });
-writeLogin('squatted');
-assert(/already holds a login/.test(boom(() => m.start('claude-code', 'squatted'))),
-  'a dir that already holds someone else\'s login is refused (it would "succeed" instantly against the wrong account)');
+// A dir an account in the pool POINTS AT is refused by name — reusing it would "succeed" instantly
+// against that account's credentials without the operator ever seeing the browser step.
+fs.mkdirSync(path.join(accountsDir, 'claude-code', 'in-use'), { recursive: true });
+writeLogin('in-use');
+aos.runtimeAccounts.add({ runtime: 'claude-code', name: 'by-path', kind: 'oauth', configDir: path.join(accountsDir, 'claude-code', 'in-use') });
+assert(/"by-path" account/.test(boom(() => m.start('claude-code', 'in-use'))),
+  'a dir another account already uses is refused, naming that account', boom(() => m.start('claude-code', 'in-use')));
+assert(fs.existsSync(credFile('in-use')), 'and that account\'s credentials are left exactly where they are');
+
+// An ORPHANED login — a dir left behind by an account the operator already removed — must NOT wedge the
+// name forever (that dead end could only be cleared by ssh'ing to the box). It is moved aside, not deleted:
+// the dir still holds the transcripts of the runs made under it.
+fs.mkdirSync(path.join(accountsDir, 'claude-code', 'orphan'), { recursive: true });
+writeLogin('orphan');
+pane = THEME;
+const orphanStart = m.start('claude-code', 'orphan');
+assert(orphanStart.phase === 'starting', 'an orphaned credential dir does not block a fresh login under the same name', JSON.stringify(orphanStart));
+assert(!fs.existsSync(credFile('orphan')), 'the new dir is clean — the old login cannot complete this flow instantly');
+const archived = fs.readdirSync(path.join(accountsDir, 'claude-code')).filter((d) => d.startsWith('orphan.orphan-'));
+assert(archived.length === 1 && fs.existsSync(path.join(accountsDir, 'claude-code', archived[0], '.credentials.json')),
+  'the orphan is archived beside it, never deleted', JSON.stringify(archived));
+assert(audits.some((a) => a.type === 'runtime.account.login.orphan.archived'), 'and the move is audited');
+m.cancel(orphanStart.id);
+
 assert(m.supported('codex').ok === false, 'a runtime whose login flow has not been walked is not offered');
 assert(m.supported('claude-code').ok === true, 'claude-code is offered');
 
