@@ -8,6 +8,32 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.363.0] — 2026-08-17
+### Added
+- **The audit MIRROR is now bounded — it used to grow with a tenant's whole lifetime.** `audit_events` in
+  SQLite is a queryable copy; `JsonlAuditSink` is the append-only system of record (verified on the live
+  box: 4498 per-run files, 211 MB, full payloads). The copy had no age or size bound, so on instawp it
+  reached **337k rows / 195 MB of a 336 MB DB in 45 days** at ~3 MB/day, entirely open-ended. Two bounds,
+  neither of which touches the JSONL:
+  - **Retention** (`Settings.auditRetentionDays`, default **90 days**, `0` = keep everything) swept hourly
+    per tenant, deleted oldest-first in ≤20k-row batches so one pass can't hold the write lock, audited
+    `audit.mirror.pruned`. Owner-settable via `PUT /api/settings/audit-retention` (applies immediately;
+    API-only for now, no console field yet). Deletes free pages for reuse rather than shrinking the file —
+    these DBs are `auto_vacuum=0` and a full `VACUUM` would lock a live server through a 300 MB rewrite —
+    so the promise is a plateau, not a shrink.
+  - **A per-row cap**: long string leaves are clipped to 2 KB in the mirror only, marked `…[clipped — full
+    value in the audit JSONL]`. Keys, structure and non-string types are preserved exactly, because every
+    reader indexes into `data` by name. `gate.attempt` averaged 966 bytes but reached **120 KB** for one
+    row; 4014 such rows held 30 MB.
+
+### Fixed
+- **`audit_events` had no index on `type` or `ts` alone**, only `(run_id, type, ts)` — useless to the many
+  callers that ask "when did this type last happen" / "how many since T" with no run: the digest, alert
+  staleness, dreaming's watermark, measurement, the Audit page's type filter. Each was a full scan of the
+  largest table in the DB, on a timer, inside the single-threaded event loop. Added `(type, ts)` and `(ts)`.
+  Measured on a copy of the live 336 MB DB, warm cache: a type+window count **12 ms → 0.4 ms**, a
+  time-window type scan 2 ms → 0.07 ms, `DISTINCT type` 56 ms → 22 ms; +15 MB of index, 0.5 s to build.
+
 ## [0.362.0] — 2026-08-17
 ### Fixed
 - **The scheduler tick froze the whole server for 7.3s out of every 20s — and the freeze grew with the
