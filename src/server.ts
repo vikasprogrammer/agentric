@@ -73,7 +73,7 @@ import { briefFor, describeBrief } from './governance/briefer';
 import { PRESET_SOURCES, browseRepo, fetchSkill, searchSkillsh } from './governance/skill-registry';
 import { extractSkillsFromZip } from './governance/skill-zip';
 import { parseBundle } from './governance/bundle-import';
-import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, GoalStatus, riskClassForLevel } from './types';
+import { isCodingRuntime, CODING_RUNTIMES, RuntimeId, AgentManifest, AppManifest, ApprovalRequest, Branding, EmbeddingsConfig, ENV_NAME, IDENTITY_PROVIDERS, IdentityProvider, isValidAppSlug, Member, MemoryConfig, MemoryMaintenance, MemoryPreload, MemoryRanking, MemoryType, Role, Run, sanitizeAgentProposalTrust, sanitizeAppDomains, sanitizeBranding, sanitizeCategory, sanitizeExamplePrompts, sanitizeIcon, runtimeTuningPatch, sanitizeRuntimeTuning, sanitizeShellSecrets, sanitizeUsableSubagents, TaskStatus, TaskBlockedOn, TASK_BLOCKED_ON, TaskRunState, GoalStatus, riskClassForLevel } from './types';
 import { AgentConfigSnapshot } from './state/agent-revisions';
 import { FeedFilter } from './state/feed';
 import { computeAgentStats, computeAgentStat } from './state/agent-stats';
@@ -3773,6 +3773,32 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   const goalId = p.match(/^\/api\/goals\/([\w-]+)$/);
   const goalComment = p.match(/^\/api\/goals\/([\w-]+)\/comment$/);
   const goalPlan = p.match(/^\/api\/goals\/([\w-]+)\/plan$/);
+  const goalChat = p.match(/^\/api\/goals\/([\w-]+)\/chat$/);
+  // "Discuss this goal" — the goal room's chat. One WARM conversation per goal with the strategist: the
+  // first message spawns a resident session under this goal, every later message is delivered into that
+  // same transcript (so it keeps the context of everything already discussed). `fresh:true` starts a new
+  // conversation instead — the escape hatch from a wedged one. Owner/admin, like every other goal action,
+  // because this chat can file and dispatch the goal's work.
+  if (goalChat && method === 'POST') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const goal = os.goals.get(goalChat[1]);
+    if (!goal) return sendJson(res, 404, { error: 'goal not found' });
+    const cb = await readBody(req);
+    const message = String(cb.message || '').trim();
+    if (!message) return sendJson(res, 400, { error: 'message is required' });
+    const fresh = cb.fresh === true || cb.fresh === 'true';
+    const existing = fresh ? undefined : tm.goalChatSession(goal.id);
+    if (existing) {
+      const sent = tm.chatSend(existing.sessionId, message, me.id);
+      if (sent === 'sent') return sendJson(res, 200, { ok: true, sessionId: existing.sessionId });
+      if (sent === 'busy') return sendJson(res, 409, { ok: false, status: 'busy', error: 'the strategist is still working on your last message — resend in a moment' });
+      // 'error' = the row can't take a message and can't be relaunched (a crashed/stopped conversation).
+      // Falling through to a NEW conversation is the only non-dead-end: refusing here would leave the room
+      // permanently mute with no way for the person to recover it.
+    }
+    const r = await new Strategist(os, tm).discuss(goal.id, me.email, me.id, message, me.name || me.email);
+    return sendJson(res, r.spawned ? 200 : 409, r.spawned ? { ok: true, sessionId: r.sessionId, started: true } : { ok: false, error: r.reason });
+  }
   // "Plan this goal" — spawn the strategist (a governed headless agent) to turn the goal into a reviewable
   // task plan linked to it. File-only: it files tasks, a human dispatches. Owner/admin, like goal edits.
   if (goalPlan && method === 'POST') {
@@ -3816,7 +3842,29 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
   if (goalId && method === 'GET') {
     const found = os.goals.withEvents(goalId[1]);
     if (!found) return sendJson(res, 404, { error: 'goal not found' });
-    return sendJson(res, 200, { ...found, tasks: os.tasks.tasksForGoal(found.goal.id), progress: os.goals.progress(found.goal.id) });
+    const tasks = os.tasks.tasksForGoal(found.goal.id);
+    // Per-task RUN state, so the goal room can offer "run this" on the row without re-deriving the
+    // dispatcher's rules client-side (and drifting from them). `guard:false` is the mode a human pressing
+    // the button would actually use — it un-parks a `blocked` task, which is the point of pressing it —
+    // but a live run still hides the control: two sessions on one task is the pile-up nobody wants, and
+    // the right control there is "attach", which `live` supplies.
+    const live = tm.liveTaskRuns(tasks.map((t) => t.id));
+    const runs: Record<string, TaskRunState> = {};
+    for (const t of tasks) {
+      const agentId = (t.assignee || '').startsWith('agent:') ? t.assignee!.slice('agent:'.length) : '';
+      const pre = autos.canDispatch(t.id, { guard: false });
+      // Runnable-by-THIS-member is part of the answer: a member not assigned to the agent would get a 403
+      // from the dispatch route, so the row shouldn't offer them a button that can only fail.
+      const allowed = !!agentId && os.team.canRun(me, agentId);
+      runs[t.id] = {
+        can: pre.ok && allowed && !live[t.id],
+        reason: !pre.ok ? pre.reason : live[t.id] ? 'a session is already working this task' : allowed ? undefined : `you are not assigned to run "${agentId}"`,
+        code: !pre.ok ? pre.code : live[t.id] ? 'live' : undefined,
+        attempts: t.attempts,
+        live: live[t.id],
+      };
+    }
+    return sendJson(res, 200, { ...found, tasks, runs, progress: os.goals.progress(found.goal.id), chat: tm.goalChatSession(found.goal.id) ?? null });
   }
   if (method === 'POST' && p === '/api/goals') {
     if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });

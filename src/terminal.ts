@@ -2029,6 +2029,58 @@ export class TerminalManager {
   }
 
   /**
+   * The still-live run for each of `taskIds` — one query and ONE liveness poll for the whole set, keyed by
+   * task id. The batch shape is the point (same lesson as {@link busyTaskAgents}): the goal room asks this
+   * about every task under a goal on a 5s refresh, and a per-row `reachable()` would fork+exec tmux once
+   * per task, forever, for an answer that is identical across the set.
+   *
+   * "Live" is `reachable`'s predicate on the task's CURRENT run (`last_session_id`) — the same one the
+   * dispatch pile-up guard uses, so what the console shows as running is exactly what the server would
+   * refuse to double-dispatch.
+   */
+  liveTaskRuns(taskIds: string[]): Record<string, { sessionId: string; agent: string; since: number }> {
+    const out: Record<string, { sessionId: string; agent: string; since: number }> = {};
+    const ids = taskIds.filter(Boolean);
+    if (!ids.length) return out;
+    const rows = this.db
+      .prepare(`SELECT t.id AS task_id, s.id AS id, s.agent AS agent, s.tmux AS tmux, s.status AS status,
+                       s.created_at AS created_at
+                  FROM tasks t JOIN term_sessions s ON s.id = t.last_session_id
+                 WHERE t.id IN (${ids.map(() => '?').join(',')})`)
+      .all<{ task_id: string; id: string; agent: string; tmux: string; status: string; created_at: number }>(...ids);
+    if (!rows.length) return out;
+    const alive = this.backend.aliveNames();
+    for (const r of rows) {
+      const live = this.launching.has(r.id) // scheduled; its pane is imminent (mirrors `reachable`)
+        || (r.status !== 'stopped' && r.status !== 'crashed'
+          && (alive ? alive.has(r.tmux) : r.status === 'running')); // no poll possible → trust the row
+      if (live) out[r.task_id] = { sessionId: r.id, agent: r.agent, since: r.created_at };
+    }
+    return out;
+  }
+
+  /**
+   * The goal room's CHAT conversation for `goalId` — the newest resident run spawned under this goal.
+   *
+   * Provenance `goal:<id>` is already what a plan run carries, so the discriminator is `resident`: a plan
+   * run is a headless one-shot that files tasks and exits, while the chat is a warm conversation a person
+   * keeps talking to. That keeps one provenance vocabulary (a session under a goal is `goal:<id>`, full
+   * stop) instead of minting a second prefix every decoder would have to learn.
+   */
+  goalChatSession(goalId: string): { sessionId: string; agent: string; alive: boolean; working: boolean; createdAt: number } | undefined {
+    const r = this.db
+      .prepare(`SELECT id, agent, tmux, status, busy_since, last_activity, created_at FROM term_sessions
+                 WHERE spawned_by = ? AND resident = 1 AND archived_at IS NULL
+                 ORDER BY created_at DESC LIMIT 1`)
+      .get<{ id: string; agent: string; tmux: string; status: string; busy_since: number | null; last_activity: number | null; created_at: number }>(`goal:${goalId}`);
+    if (!r) return undefined;
+    return {
+      sessionId: r.id, agent: r.agent, alive: this.reachable(r.id),
+      working: this.isWorking(r, this.backend.aliveNames()), createdAt: r.created_at,
+    };
+  }
+
+  /**
    * A session we just delivered into was stamped `done` by its own `report` but is demonstrably still
    * running — put the row back in step with reality so the console spins on `working` and the crash
    * sweep watches it again. Terminal states set by a human (`stopped`) or the sweep (`crashed`) are

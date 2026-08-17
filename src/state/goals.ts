@@ -14,7 +14,18 @@
  */
 import { newId } from '../id';
 import { Db } from './db';
-import { Goal, GoalCreateInput, GoalEvent, GoalProgress, GoalQuery, GoalStatus, GoalUpdateInput, TaskStatus } from '../types';
+import { Goal, GoalCreateInput, GoalEvent, GoalEventTask, GoalProgress, GoalQuery, GoalStatus, GoalUpdateInput, TaskStatus } from '../types';
+
+/** How close a task NOTE has to sit to a status transition to be read as that transition's reason.
+ *  `TaskStore.update` writes both rows inside one call, so in practice they share a millisecond; the
+ *  window only tolerates a slow write, never an unrelated later comment.
+ *
+ *  The lookup that uses this orders by the comment's OWN columns, never by a correlated expression over
+ *  the outer row (`ABS(c.created_at - e.created_at)`): older SQLite builds — including the one bundled with
+ *  the Node that CI runs — reject a correlated reference inside a subquery's ORDER BY with a bare
+ *  "no such column", while newer ones accept it. Inside a 2s window "newest in the window" and "closest to
+ *  the transition" are the same row anyway. */
+const NOTE_WINDOW_MS = 2_000;
 
 interface GoalRow {
   id: string; tenant: string; title: string; body: string; status: string;
@@ -24,6 +35,32 @@ interface GoalRow {
 }
 interface EventRow {
   id: string; goal_id: string; kind: string; body: string | null; author: string; created_at: number;
+}
+/** One linked-task event joined to its task — the raw shape {@link GoalStore.timeline} derives from. */
+interface TaskEventRow {
+  id: string; kind: string; body: string | null; author: string; created_at: number;
+  session_id: string | null; task_id: string; task_title: string; task_status: string; note: string | null;
+}
+
+/**
+ * Normalise a task event to the goal timeline's verb, or null when it isn't a milestone.
+ *
+ * Two paths mean "work started" and only one of them is a status row: `markDispatched` moves the task to
+ * `doing` with a bare UPDATE + a `dispatch` event (no status row), while a human dragging the card writes
+ * `todo→doing`. Both collapse to `started`. Everything else with an arrow in its body maps by destination;
+ * a status row WITHOUT one (a due-date change, the overdue mark, a stranded-run marker) is not a milestone.
+ */
+function milestoneVerb(kind: string, body: string | null): GoalEventTask['verb'] | null {
+  if (kind === 'dispatch') return 'started';
+  const to = /→(\w+)$/.exec(body ?? '')?.[1];
+  switch (to) {
+    case 'todo': return body?.startsWith('→') ? 'filed' : 'reopened'; // '→todo' = created; 'done→todo' = reopened
+    case 'doing': return 'started';
+    case 'blocked': return 'blocked';
+    case 'done': return 'done';
+    case 'cancelled': return 'cancelled';
+    default: return null;
+  }
 }
 
 const STATUSES: readonly GoalStatus[] = ['draft', 'active', 'achieved', 'abandoned'];
@@ -78,15 +115,75 @@ export class GoalStore {
     return r ? toGoal(r) : undefined;
   }
 
-  /** A goal + its full activity timeline (oldest first). */
+  /** A goal + its full activity timeline (oldest first) — {@link timeline}, so the goal's own history and
+   *  the milestones of the work under it read as ONE story. */
   withEvents(id: string): { goal: Goal; events: GoalEvent[] } | undefined {
     const goal = this.get(id);
     if (!goal) return undefined;
-    const events = this.db
+    return { goal, events: this.timeline(id) };
+  }
+
+  /** Just the goal's OWN events (no task milestones) — the raw `goal_events` rows. */
+  events(id: string): GoalEvent[] {
+    return this.db
       .prepare('SELECT * FROM goal_events WHERE goal_id = ? ORDER BY created_at ASC, id ASC')
       .all<EventRow>(id)
       .map(toEvent);
-    return { goal, events };
+  }
+
+  /**
+   * The goal's activity timeline: its own `goal_events` MERGED with the milestones of every task linked to
+   * it, oldest first.
+   *
+   * A goal whose only stored events are "→draft" and "draft→active" reads as dead even while eight tasks
+   * are being planned, dispatched, blocked and finished underneath it — the work IS the goal's story, and
+   * it was all one table away. Task milestones are therefore DERIVED here, not copied into `goal_events`
+   * on write: nothing can drift out of sync, and a goal that predates this code gets its whole history
+   * retroactively (which is what an empty Activity tab on a busy goal actually needed).
+   *
+   * "Milestone" is deliberately narrow — filed / started / blocked / done / cancelled / reopened, plus a
+   * dispatch (a run starting). Comments, assignments, attachments, dependency edits and due-date changes
+   * stay on the task where they belong; a goal timeline that mirrored the whole board would be unreadable.
+   * The exception is the NOTE that came with a blocked/done transition (same author, same instant): that
+   * note is the *reason*, which is the one thing a person reading the goal wants, so it rides along as the
+   * entry's body.
+   */
+  timeline(id: string): GoalEvent[] {
+    const own = this.events(id);
+    const rows = this.db
+      .prepare(
+        `SELECT e.id AS id, e.kind AS kind, e.body AS body, e.author AS author, e.created_at AS created_at,
+                e.session_id AS session_id, t.id AS task_id, t.title AS task_title, t.status AS task_status,
+                (SELECT c.body FROM task_events c
+                  WHERE c.task_id = e.task_id AND c.kind = 'comment' AND c.author = e.author
+                    AND c.created_at >= e.created_at - ${NOTE_WINDOW_MS}
+                    AND c.created_at <= e.created_at + ${NOTE_WINDOW_MS}
+                  ORDER BY c.created_at DESC, c.id DESC LIMIT 1) AS note
+           FROM task_events e JOIN tasks t ON t.id = e.task_id
+          WHERE t.goal_id = ? AND (e.kind = 'dispatch' OR (e.kind = 'status' AND e.body LIKE '%→%'))
+          ORDER BY e.created_at ASC, e.id ASC`,
+      )
+      .all<TaskEventRow>(id);
+    const derived: GoalEvent[] = [];
+    for (const r of rows) {
+      const verb = milestoneVerb(r.kind, r.body);
+      if (!verb) continue; // a non-milestone status row (due date, overdue mark, stranded marker)
+      derived.push({
+        id: `task:${r.id}`, // namespaced so it can't collide with a goal_events id in a React key
+        goalId: id,
+        kind: 'task',
+        // The reason, when the mover left one. Only for the states where "why" is the point — a `filed`
+        // or `started` entry with a stray note attached would just repeat the task title.
+        body: (verb === 'blocked' || verb === 'done' || verb === 'cancelled') && r.note ? r.note : undefined,
+        author: r.author,
+        createdAt: r.created_at,
+        task: {
+          id: r.task_id, title: r.task_title, status: r.task_status as TaskStatus, verb,
+          sessionId: r.session_id ?? undefined,
+        },
+      });
+    }
+    return [...own, ...derived].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
 
   /**
@@ -313,6 +410,7 @@ function toGoal(r: GoalRow): Goal {
   };
 }
 
+/** A stored `goal_events` row → the shared {@link GoalEvent} shape (no `task`; that's timeline-derived). */
 function toEvent(r: EventRow): GoalEvent {
   return {
     id: r.id, goalId: r.goal_id, kind: r.kind as GoalEvent['kind'], body: r.body ?? undefined,

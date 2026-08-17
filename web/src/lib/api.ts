@@ -780,9 +780,39 @@ export interface Goal {
 export interface GoalEvent {
   id: string
   goalId: string
-  kind: 'status' | 'comment' | 'edit' | 'link'
+  /** `ready` = all linked work finished. `task` = a milestone on a task under this goal, derived server-side
+   *  from the task's own events (see GoalStore.timeline) — the work IS most of a goal's activity. */
+  kind: 'status' | 'comment' | 'edit' | 'link' | 'ready' | 'task'
   body?: string
   author: string
+  createdAt: number
+  task?: GoalEventTask
+}
+/** Which linked task moved, and how — set only on a `kind: 'task'` timeline entry. */
+export interface GoalEventTask {
+  id: string
+  title: string
+  status: TaskStatus
+  verb: 'filed' | 'started' | 'blocked' | 'done' | 'cancelled' | 'reopened'
+  sessionId?: string
+}
+/** Why a task can't be dispatched right now — mirrors `TaskDispatchBlock` in src/types.ts. */
+export type TaskDispatchBlock =
+  | 'missing' | 'closed' | 'blocked' | 'unassigned' | 'unknown-agent' | 'live' | 'pool' | 'attempts' | 'deps'
+/** Per-task run state for the goal room's task list: can I run it, why not, and is a run live now. */
+export interface TaskRunState {
+  can: boolean
+  reason?: string
+  code?: TaskDispatchBlock
+  attempts: number
+  live?: { sessionId: string; agent: string; since: number }
+}
+/** The goal room's warm chat conversation with the strategist (null until the first message). */
+export interface GoalChatState {
+  sessionId: string
+  agent: string
+  alive: boolean
+  working: boolean
   createdAt: number
 }
 export type GoalCounts = Record<GoalStatus, number>
@@ -1875,7 +1905,11 @@ export const api = {
 
   goals: (q = '', status = '') => call<{ goals: Goal[]; counts: GoalCounts; progress: Record<string, GoalProgress>; autoPlan?: boolean }>('GET', `/api/goals?q=${encodeURIComponent(q)}${status ? `&status=${status}` : ''}`),
   setAutoPlanGoals: (on: boolean) => call<{ ok: boolean; autoPlan?: boolean; error?: string }>('POST', '/api/goals/autoplan', { on }),
-  goal: (id: string) => call<{ goal?: Goal; events?: GoalEvent[]; tasks?: Task[]; progress?: GoalProgress; error?: string }>('GET', `/api/goals/${id}`),
+  goal: (id: string) => call<{ goal?: Goal; events?: GoalEvent[]; tasks?: Task[]; runs?: Record<string, TaskRunState>; progress?: GoalProgress; chat?: GoalChatState | null; error?: string }>('GET', `/api/goals/${id}`),
+  /** Send a message into the goal's chat — starts the conversation on the first call, continues the same
+   *  warm one after that. `fresh` abandons a wedged conversation and opens a new one. 409 = still working. */
+  goalChat: (id: string, message: string, fresh = false) =>
+    call<{ ok: boolean; sessionId?: string; started?: boolean; status?: 'busy'; error?: string }>('POST', `/api/goals/${id}/chat`, { message, fresh }),
   addGoal: (b: AddGoalReq) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', '/api/goals', b),
   patchGoal: (id: string, b: { title?: string; body?: string; status?: GoalStatus; target?: string | null; owner?: string | null; parentId?: string | null; labels?: string[]; dueAt?: number | null; note?: string }) => call<{ ok: boolean; goal?: Goal; error?: string }>('PATCH', `/api/goals/${id}`, b),
   commentGoal: (id: string, body: string) => call<{ ok: boolean; goal?: Goal; error?: string }>('POST', `/api/goals/${id}/comment`, { body }),
