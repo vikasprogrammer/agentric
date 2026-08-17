@@ -14,8 +14,9 @@ import { AgentOS, loadAgentOS } from './kernel';
 import { VERSION } from './version';
 import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } from './tenant-registry';
 import { ProcessJanitor } from './edge/process-janitor';
-import { hostMetrics } from './edge/host-metrics';
+import { hostMetrics, availableBytes } from './edge/host-metrics';
 import { pruneAuditMirror } from './governance/audit';
+import { requestMetrics } from './edge/request-metrics';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
@@ -98,7 +99,10 @@ async function systemMetrics(tm: TerminalManager): Promise<Record<string, unknow
   const cpuUsage = totalDelta > 0 ? Math.max(0, Math.min(1, 1 - idleDelta / totalDelta)) : 0;
   const cpus = nodeOs.cpus();
   const total = nodeOs.totalmem();
-  const free = nodeOs.freemem();
+  // `availableBytes()`, not `nodeOs.freemem()`: both kernels keep truly-free memory near zero on purpose
+  // (reclaimable cache), so freemem read this box at 98% used while the kernel put availability at 59%.
+  // One source of truth with the sidebar chip — see host-metrics.ts.
+  const free = Math.min(total, availableBytes());
   const mem = process.memoryUsage();
   return {
     mem: { total, free, used: total - free, usedPct: total > 0 ? (total - free) / total : 0 },
@@ -278,6 +282,16 @@ let currentRegistry: TenantRegistry | undefined;
 export function createHttpServer(registry: TenantRegistry): http.Server {
   currentRegistry = registry;
   const server = http.createServer((req, res) => {
+    // Per-request timing (see request-metrics.ts). Recorded on `finish` — the point the response is fully
+    // written — and paired with the event-loop lag observed at ARRIVAL, so a route that was merely queued
+    // behind a blocking timer isn't mistaken for a slow route. One counter update, no I/O, no DB write.
+    const startedNs = process.hrtime.bigint();
+    const arrivalStall = requestMetrics.currentStallMs();
+    res.once('finish', () => {
+      const ms = Number(process.hrtime.bigint() - startedNs) / 1e6;
+      const pathname = (req.url || '/').split('?')[0];
+      requestMetrics.observe(req.method || 'GET', pathname, res.statusCode, ms, arrivalStall);
+    });
     // Superadmin control plane — host-independent (bearer-gated), so it sits before tenant routing.
     if ((req.url || '').split('?')[0].startsWith('/api/admin/')) {
       handleControl(registry, req, res).catch((err) => sendJson(res, 500, { error: err instanceof Error ? err.message : String(err) }));
@@ -362,6 +376,9 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   const baseDir = path.resolve(__dirname, '..');
   const registry = new TenantRegistry(baseDir, port);
   registry.bootAll();
+  // Event-loop lag sampler. Always on: it is two numbers per tick, and its whole value is being already
+  // running when someone asks "why is everything slow" — the question that took an ssh session last time.
+  requestMetrics.start();
 
   // Shared, process-wide upkeep timers — each fans out across every tenant runtime.
   // Idle GC (A5): reclaim idle members' uids/ttyds. No-op under the local backend, so always-on is safe.
@@ -4482,6 +4499,21 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const sessionMetrics = os.settings.setSessionMetrics(String(b?.value ?? ''), me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.sessionMetrics.updated', data: { value: sessionMetrics } });
     return sendJson(res, 200, { ok: true, sessionMetrics });
+  }
+
+  // ── request timings: which endpoint costs the most, and whether it's the endpoint's fault ──
+  // Ordered by TOTAL handler time (a cheap route called constantly outranks a slow one called once).
+  // `loop` is event-loop lag sampled independently of traffic: high lag with low handler times means the
+  // blocking work is a timer/sweep, not a route. Process-wide, in-memory, resets on restart.
+  if (method === 'GET' && p === '/api/metrics/requests') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 40));
+    return sendJson(res, 200, requestMetrics.snapshot(limit));
+  }
+  if (method === 'POST' && p === '/api/metrics/requests/reset') {
+    if (!isAdmin(me)) return sendJson(res, 403, { error: 'owner or admin required' });
+    requestMetrics.reset();
+    return sendJson(res, 200, { ok: true });
   }
 
   // ── audit MIRROR retention (days). Bounds the queryable copy only; the JSONL system-of-record is never

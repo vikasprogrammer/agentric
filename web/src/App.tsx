@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type KeyboardEvent as ReactKeyboardEvent, type ChangeEvent as ReactChangeEvent } from 'react'
-import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge } from 'lucide-react'
+import { Inbox as InboxIcon, TerminalSquare, Play, Plus, Check, X, Square, Rocket, Plug, Trash2, Users, User, LogOut, Copy, Zap, Brain, Building2, ChevronDown, SlidersHorizontal, Pencil, FileText, HelpCircle, CheckCircle2, XCircle, Clock, Send, LayoutGrid, List, ArrowLeft, Bot, FolderTree, Folder, File as FileIcon, FileCode, Save, ChevronRight, Sparkles, Package, Image as ImageIcon, Film, Download, Search, BookText, BookOpen, History as HistoryIcon, ScrollText, Bell, AlertTriangle, Activity, Lightbulb, Moon, Upload, FolderPlus, ListChecks, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, RefreshCw, ThumbsUp, ThumbsDown, Target, ExternalLink, Paperclip, KeyRound, Blocks, FilePlus, Maximize2, Minimize2, Filter, Share2, Lock, Gauge, Timer } from 'lucide-react'
 // The session-status glyph set (see STATE_META) — one icon per state, plus the chain rail's verdict icons.
 import { LoaderCircle, CircleSmall, CircleStop, CircleCheck, CircleX, CircleSlash, Circle, CircleDot, Ban, Copy as CopyIcon } from 'lucide-react'
 import { Wrench, Code2, Bug, MessageSquare, Mail, Megaphone, PenTool, Database, Server, Cloud, Shield, Calendar, LineChart, BarChart3, DollarSign, ShoppingCart, Headphones, Cog, Compass, Flag, Heart, Star, Globe, GitBranch, Palette, Camera, Music, Feather, Wand2, Boxes, Terminal, Webhook, CalendarClock, Hash, Cpu, MoreHorizontal, Power, PowerOff, Pin, PinOff, type LucideIcon } from 'lucide-react'
@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -997,7 +997,7 @@ function HostChip() {
   const tone = (v: number, warn: number, bad: number) => (v >= bad ? 'text-red-500' : v >= warn ? 'text-amber-500' : 'text-muted-foreground')
   const cpuTone = h.load >= 2 ? 'text-red-500' : h.cpu == null ? 'text-muted-foreground' : tone(h.cpu, 75, 92)
   return (
-    <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`${h.cores} cores · load ${h.load}/core · ${Math.round(h.totalMemMb / 1024)} GB RAM`}>
+    <div className="mt-0.5 truncate text-[11px] text-muted-foreground" title={`${h.cores} cores · load ${h.load}/core · ${(h.availableMemMb / 1024).toFixed(1)} of ${Math.round(h.totalMemMb / 1024)} GB RAM available`}>
       {h.cpu != null && <span className={cpuTone}>{h.cpu}% cpu</span>}
       {h.cpu != null && ' · '}
       <span className={tone(h.mem, 80, 93)}>{h.mem}% ram</span>
@@ -14726,6 +14726,7 @@ function SystemSettings({ state, me }: { state: StateResp | null; me: Member }) 
       <SoftwarePanel me={me} />
       <NativeDepsPanel me={me} />
       <HostResourcesPanel />
+      <EndpointTimingsPanel />
       <StopAllPanel />
       <Card>
         <CardContent className="space-y-4 p-4">
@@ -15055,6 +15056,86 @@ function HostResourcesPanel() {
                 </div>
               ))}
             </dl>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/**
+ * Settings → System → Endpoint timings. Which API call costs the most, ranked by TOTAL time — because a
+ * 20 ms route called 10k times costs more than a 2 s route called once.
+ *
+ * The `stall` column is the load-bearing one. It is event-loop lag observed when a request ARRIVED, not
+ * time the route spent working. During the incident this was built after, a blocking 20 s timer made
+ * `/health` — which reads one string — measure 9 s from outside; a table without this column would have
+ * pointed the investigation at the wrong file. High stall with low handler times across every route means
+ * the problem is a timer or sweep, not an endpoint.
+ */
+function EndpointTimingsPanel() {
+  const [snap, setSnap] = useState<RequestMetricsSnapshot | null>(null)
+  const [err, setErr] = useState('')
+  const load = () => api.requestMetrics(25).then((v) => { if (v.error) setErr(v.error); else { setErr(''); setSnap(v) } }).catch(() => setErr('Could not read request metrics.'))
+  useEffect(() => {
+    load()
+    const t = setInterval(load, 10_000)
+    return () => clearInterval(t)
+  }, [])
+  const ms = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`)
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold"><Timer className="h-4 w-4" /> Endpoint timings</div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Ranked by total time spent since {snap ? new Date(snap.since).toLocaleString() : 'startup'}. In-memory only — resets on restart.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" className="shrink-0" onClick={async () => { await api.resetRequestMetrics(); load() }}>Reset</Button>
+        </div>
+        {err ? <p className="text-sm text-muted-foreground">{err}</p>
+          : !snap ? <p className="text-sm text-muted-foreground">Reading…</p>
+          : (
+          <>
+            {/* Loop lag first: it decides whether any row below is even the route's own fault. */}
+            <div className={`rounded-md border p-2 text-xs ${snap.loop.overOneSecond > 0 ? 'border-red-500/40 text-red-500' : 'text-muted-foreground'}`}>
+              Event loop: p95 lag {ms(snap.loop.p95Ms)}, worst {ms(snap.loop.maxMs)}
+              {snap.loop.overOneSecond > 0
+                ? ` — blocked over 1s ${snap.loop.overOneSecond}× . Every route below was queued behind it; look for a timer, not an endpoint.`
+                : ' — healthy, so the handler times below are the routes\' own cost.'}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-muted-foreground">
+                  <tr className="text-left">
+                    <th className="py-1 pr-3 font-medium">route</th>
+                    <th className="py-1 pr-3 text-right font-medium">calls</th>
+                    <th className="py-1 pr-3 text-right font-medium">total</th>
+                    <th className="py-1 pr-3 text-right font-medium">avg</th>
+                    <th className="py-1 pr-3 text-right font-medium">p95</th>
+                    <th className="py-1 pr-3 text-right font-medium">max</th>
+                    <th className="py-1 pr-3 text-right font-medium" title="event-loop lag when a request to this route arrived — NOT the route's own cost">stall</th>
+                    <th className="py-1 text-right font-medium">errors</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {snap.routes.map((r) => (
+                    <tr key={r.route} className="border-t">
+                      <td className="py-1 pr-3 font-mono">{r.route}</td>
+                      <td className="py-1 pr-3 text-right">{r.count.toLocaleString()}</td>
+                      <td className="py-1 pr-3 text-right font-medium">{ms(r.totalMs)}</td>
+                      <td className="py-1 pr-3 text-right">{r.avgMs < 1 ? '<1ms' : ms(r.avgMs)}</td>
+                      <td className="py-1 pr-3 text-right">≤{ms(r.p95Ms)}</td>
+                      <td className={`py-1 pr-3 text-right ${r.maxMs >= 1000 ? 'text-amber-500' : ''}`}>{ms(r.maxMs)}</td>
+                      <td className={`py-1 pr-3 text-right ${r.maxStallMs >= 1000 ? 'text-red-500' : 'text-muted-foreground'}`}>{r.maxStallMs ? ms(r.maxStallMs) : '—'}</td>
+                      <td className={`py-1 text-right ${r.errors ? 'text-amber-500' : 'text-muted-foreground'}`}>{r.errors || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </>
         )}
       </CardContent>
