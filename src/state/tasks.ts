@@ -20,13 +20,14 @@ import { newId } from '../id';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Db } from './db';
-import { Task, TaskAttachment, TaskCreateInput, TaskEvent, TaskQuery, TaskStatus, TaskUpdateInput } from '../types';
+import { TASK_BLOCKED_ON, Task, TaskAttachment, TaskCreateInput, TaskEvent, TaskQuery, TaskStatus, TaskUpdateInput } from '../types';
 
 interface TaskRow {
   id: string; tenant: string; title: string; body: string; status: string; priority: number;
   labels: string; assignee: string | null; owner: string | null; parent_id: string | null;
   mode: string; model: string | null; effort: string | null; auto_dispatch: number; goal_id: string | null; criteria: string | null;
   caller_agent: string | null; caller_claude_id: string | null; poke_on_done: number;
+  blocked_on: string | null;
   due_at: number | null; attempts: number; last_session_id: string | null;
   created_by: string; created_at: number; updated_at: number; updated_by: string;
   rank?: number;
@@ -202,6 +203,16 @@ export class TaskStore {
       sets.push('status = ?'); vals.push(input.status);
       statusChange = `${t.status}→${input.status}`;
       this.addEvent(id, 'status', statusChange, input.by);
+    }
+    // `blocked_on` travels with the blocked state and only with it: an explicit value is kept when the task
+    // is (or is becoming) blocked, and any move OFF blocked clears it, so a stale "waiting on the founder"
+    // can never outlive the wait and misroute a later wake-up.
+    const nextStatus = input.status && STATUSES.includes(input.status) ? input.status : t.status;
+    if (nextStatus !== 'blocked') {
+      if (t.blockedOn) { sets.push('blocked_on = ?'); vals.push(null); }
+    } else if (input.blockedOn !== undefined) {
+      const v = input.blockedOn && (TASK_BLOCKED_ON as readonly string[]).includes(input.blockedOn) ? input.blockedOn : null;
+      if (v !== (t.blockedOn ?? null)) { sets.push('blocked_on = ?'); vals.push(v); }
     }
     let reassigned = false;
     if (input.assignee !== undefined && (input.assignee ?? null) !== (t.assignee ?? null)) {
@@ -566,6 +577,7 @@ function toFtsQuery(query?: string): string {
 function toTask(r: TaskRow): Task {
   return {
     id: r.id, tenant: r.tenant, title: r.title, body: r.body, status: r.status as TaskStatus,
+    blockedOn: (TASK_BLOCKED_ON as readonly string[]).includes(r.blocked_on ?? '') ? (r.blocked_on as Task['blockedOn']) : undefined,
     priority: r.priority, labels: JSON.parse(r.labels) as string[], assignee: r.assignee ?? undefined,
     owner: r.owner ?? undefined, parentId: r.parent_id ?? undefined,
     mode: r.mode === 'interactive' ? 'interactive' : 'headless',

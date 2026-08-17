@@ -795,6 +795,8 @@ export interface Task {
   title: string;
   body: string;
   status: TaskStatus;
+  /** Only meaningful while `status === 'blocked'` — see {@link TaskBlockedOn}. Absent = unstated. */
+  blockedOn?: TaskBlockedOn;
   priority: number; // 0 urgent … 3 low
   labels: string[];
   assignee?: string; // member id | 'agent:<id>'
@@ -931,6 +933,22 @@ export interface TaskCreateInput {
   createdBy: string; // member id | 'agent:<id>'
 }
 
+/**
+ * What a `blocked` task is waiting on — declared by the delegate that blocked it, never inferred from its
+ * note. It decides WHO gets woken: `human` routes the wake-up to the task's owner alone (the inbox card +
+ * DM they already get), because waking the caller AGENT for a decision only a person can make just spends
+ * a resumed run restating that it is blocked. `agent`/`external` keep the caller wake — there the caller
+ * can actually re-scope, route around, or chase the blocker.
+ *
+ * Measured on northwind 2026-08-17 before this existed: `tsk_f81b27d7` ("blocked on human approval for the
+ * merge") woke prod-monitor, which replied "Leaving this blocked — I am not merging it and neither should
+ * any agent" and ended; `tsk_5aa0fd20` ("no deletions without founder sign-off") woke agent-author the same
+ * way. Both correct, both a wasted resume on a large transcript.
+ */
+export type TaskBlockedOn = 'human' | 'agent' | 'external';
+
+export const TASK_BLOCKED_ON: readonly TaskBlockedOn[] = ['human', 'agent', 'external'];
+
 export interface TaskUpdateInput {
   title?: string;
   body?: string;
@@ -943,6 +961,7 @@ export interface TaskUpdateInput {
   criteria?: string | null; // set/clear (null) the acceptance condition
   dependsOn?: string[]; // replace the dependency set (task ids this task is blocked by); [] clears it
   dueAt?: number | null; // epoch ms soft deadline; null clears it
+  blockedOn?: TaskBlockedOn | null; // with status:'blocked' — what it waits on; null clears it
   note?: string; // free-text comment → appended as a task_event
   by: string; // author (member id | 'agent:<id>')
 }

@@ -1041,6 +1041,11 @@ const TOOLS = [
       'Update a task: change its `status`, leave a `note` (appended to the activity timeline), reassign it, ' +
       'reprioritise, or set/extend its `due` date. This is how you CLOSE YOUR LOOP — when you finish work dispatched to you, call ' +
       'task_update({ id, status:"done", note:"<what you did>" }); if you\'re stuck, status:"blocked" with why. ' +
+      'When you block, ALWAYS say what you are waiting on with `blockedOn`: "human" (a person must decide or ' +
+      'approve — the owner is notified and the agent that handed you the task is NOT woken, because it cannot ' +
+      'make that decision either), "agent" (another agent owes you something), or "external" (a third party, a ' +
+      'build, a vendor). Getting this right is the difference between one notification to the right person and a ' +
+      'wasted agent run. ' +
       'A note without a status change is just a comment others will see.',
     inputSchema: {
       type: 'object',
@@ -1048,6 +1053,15 @@ const TOOLS = [
       properties: {
         id: { type: 'string', description: 'The task id.' },
         status: { type: 'string', enum: ['todo', 'doing', 'blocked', 'done', 'cancelled'], description: 'New status.' },
+        blockedOn: {
+          type: 'string',
+          enum: ['human', 'agent', 'external'],
+          description:
+            'With status:"blocked" — what the work is waiting on. "human": only a person can decide/approve ' +
+            '(routes the alert to the task owner and skips waking the delegating agent). "agent": another agent ' +
+            'owes you something. "external": a third party, build or vendor. Cleared automatically when the task ' +
+            'leaves blocked.',
+        },
         note: { type: 'string', description: 'A comment / progress note appended to the timeline.' },
         assignee: { type: 'string', description: 'Reassign: "agent:<id>", a member id, "me", or null to unassign.' },
         priority: { type: 'number', minimum: 0, maximum: 3, description: '0 urgent … 3 low.' },

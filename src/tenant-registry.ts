@@ -286,14 +286,7 @@ export class TenantRegistry {
     // Task lifecycle → Inbox: a create/assign/status change lands an audience-addressed inbox card for
     // the right human (assignee/owner) — routed via resolveRecipients — and DMs them. Fires for EVERY
     // mutation path (console, agent MCP, dispatcher) because the sink lives on the store, not the routes.
-    os.tasks.setNotifier((notice) => {
-      void notifyTaskEvent(os, tm, slack, discord, consoleOrigin, notice);
-      // Async poke-back: a delegate that closed a `poke_on_done` hand-off resumes the CALLER agent's
-      // transcript with the outcome, so a fire-and-forget delegation wakes the caller (no polling).
-      maybePokeCaller(autos, os, notice);
-      // A HOLD/cancel has to reach the agent DOING the work, not just the task row.
-      maybeHoldDelegate(tm, os, notice);
-    });
+    wireTaskNotices(os, tm, autos, slack, discord, consoleOrigin);
     // Goal lifecycle → Inbox. Same sink shape as Tasks, one rung up the ladder: a goal whose work all
     // finished (the tick's completion sweep) or that someone closed reaches the human accountable for it.
     // Until this was wired the store's notifier had no consumer, so goal state changed silently.
@@ -501,6 +494,32 @@ function taskCard(n: TaskNotice): { audience: Audience; title: string; event: st
 }
 
 /**
+ * Wire the Tasks store's single notifier to its three sinks. Exported (rather than inlined in the tenant
+ * build) so a test can drive the REAL fan-out — which sink fires for which transition is the behaviour
+ * worth pinning, and it is invisible if the wiring only exists inside the registry closure.
+ *
+ * Order matters only in that the inbox card is written first: it is the durable record a human reads, and
+ * the two agent-facing sinks may spawn or interrupt runs.
+ */
+export function wireTaskNotices(
+  os: AgentOS,
+  tm: TerminalManager,
+  autos: Automations,
+  slack: Pick<SlackSocket, 'dmUser' | 'userIdForEmail'>,
+  discord: Pick<DiscordSocket, 'dmUser'>,
+  consoleOrigin: string,
+): void {
+  os.tasks.setNotifier((notice) => {
+    void notifyTaskEvent(os, tm, slack, discord, consoleOrigin, notice);
+    // Async poke-back: a delegate that closed a `poke_on_done` hand-off wakes the CALLER agent with the
+    // outcome, so a fire-and-forget delegation never has to poll.
+    maybePokeCaller(autos, os, notice);
+    // A HOLD/cancel has to reach the agent DOING the work, not just the task row.
+    maybeHoldDelegate(tm, os, notice);
+  });
+}
+
+/**
  * Task lifecycle → Inbox. Writes an audience-addressed inbox card for the human a task change concerns
  * (assignee/owner) and DMs them on their linked chat account. The card is written SYNCHRONOUSLY (before
  * the awaited DM) so it's durable even if the process exits right after; the DM is best-effort. Skips
@@ -607,6 +626,21 @@ function maybePokeCaller(autos: Automations, os: AgentOS, notice: TaskNotice): v
   // (a manager blocking work it just delegated) would otherwise wake ITSELF with news it authored. 14 of
   // these self-pokes across the fleet in 30 days, each one a spurious session. The actor decides.
   if (notice.by === t.callerAgent) return;
+  // A delegate blocked on a HUMAN decision has nothing for the caller AGENT to do. The owner is already
+  // told (taskCard → "Task blocked — needs you" + DM), so waking the caller on top of that only spends a
+  // resumed run restating the block. Measured twice on northwind 2026-08-17: `tsk_f81b27d7` ("blocked on
+  // human approval for the merge") woke prod-monitor, which answered "Leaving this blocked — I am not
+  // merging it and neither should any agent"; `tsk_5aa0fd20` ("no deletions without founder sign-off")
+  // woke agent-author identically. `agent`/`external` still wake the caller — there it can re-scope, route
+  // around, or chase the blocker — and an UNSTATED blocker keeps the old behaviour, so this only ever
+  // narrows on an explicit declaration.
+  if (t.status === 'blocked' && t.blockedOn === 'human') {
+    os.audit.append({
+      ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'agent.poke.skipped',
+      data: { caller: t.callerAgent, source: t.id, reason: 'blocked-on-human', owner: t.owner ?? null },
+    });
+    return;
+  }
   const delegate = t.assignee?.startsWith('agent:') ? t.assignee.slice('agent:'.length) : (t.assignee ?? 'the delegate');
   const note = os.tasks.latestNote(t.id) || '(no note left)';
   const goal = t.criteria ? ` — goal "${t.criteria}"` : '';
