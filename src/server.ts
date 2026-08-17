@@ -15,6 +15,7 @@ import { VERSION } from './version';
 import { TenantRegistry, TenantRuntime, notifyLoginLink, notifyInsightAlert } from './tenant-registry';
 import { ProcessJanitor } from './edge/process-janitor';
 import { hostMetrics } from './edge/host-metrics';
+import { pruneAuditMirror } from './governance/audit';
 import { pendingAlerts } from './edge/alerts';
 import { exampleCapabilities } from './capabilities/examples';
 import { evaluate } from './observability/evaluation';
@@ -392,6 +393,17 @@ export function startServer(port = Number(process.env.PORT) || 3010): http.Serve
   const lastDream = new Map<string, number>();
   const upkeep = setInterval(() => registry.forEach((rt) => {
     const { os } = rt;
+    // Audit MIRROR retention. The JSONL sink keeps every event forever; this bounds the queryable copy so
+    // the DB plateaus instead of growing with tenant lifetime (instawp: ~3 MB/day → 195 MB of a 336 MB DB
+    // in 45 days). Batched inside pruneAuditMirror so one pass can't hold the write lock; a backlog just
+    // drains over the next few hours. Audited — a sweep that silently deletes rows is not auditable.
+    try {
+      const days = os.settings.auditRetentionDays();
+      const dropped = pruneAuditMirror(os.db, days);
+      if (dropped > 0) {
+        os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: 'system', type: 'audit.mirror.pruned', data: { rows: dropped, keepDays: days } });
+      }
+    } catch { /* never let retention crash upkeep */ }
     const m = os.settings.memoryConfig()?.maintenance;
     if (m && (m.pruneAfterDays || m.dedupeThreshold != null)) {
       const everyMs = (m.everyHours && m.everyHours > 0 ? m.everyHours : 24) * 3_600_000;
@@ -2323,6 +2335,9 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
       operatingNotes: AGENT_OS_OPERATING_NOTES,
       // Workspace-wide sessions-list display preference (cost / tokens / both). Read once on app load.
       sessionMetrics: os.settings.sessionMetrics(),
+      // Days of the audit MIRROR kept (0 = all). Surfaced so Settings → System can show the window that
+      // bounds the queryable copy; the JSONL system-of-record is unaffected by it.
+      auditRetentionDays: os.settings.auditRetentionDays(),
     });
   }
 
@@ -4467,6 +4482,18 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     const sessionMetrics = os.settings.setSessionMetrics(String(b?.value ?? ''), me.email);
     os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.sessionMetrics.updated', data: { value: sessionMetrics } });
     return sendJson(res, 200, { ok: true, sessionMetrics });
+  }
+
+  // ── audit MIRROR retention (days). Bounds the queryable copy only; the JSONL system-of-record is never
+  // touched, which is what makes a retention window safe to offer at all. 0 = keep everything. ──
+  if (method === 'PUT' && p === '/api/settings/audit-retention') {
+    if (me.role !== 'owner') return sendJson(res, 403, { error: 'owner required' });
+    const b = await readBody(req) as { days?: unknown };
+    const days = os.settings.setAuditRetentionDays(Number(b?.days), me.email);
+    os.audit.append({ ts: Date.now(), runId: '-', tenant: os.tenant, principal: me.email, type: 'settings.auditRetention.updated', data: { keepDays: days } });
+    // Apply immediately (batched) so an operator lowering the window sees it take effect, not next hour.
+    const dropped = pruneAuditMirror(os.db, days);
+    return sendJson(res, 200, { ok: true, auditRetentionDays: days, pruned: dropped });
   }
 
   // ── whole-box concurrency cap (docs/concurrency-cap-plan.md Phase 1) ──

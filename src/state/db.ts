@@ -1134,6 +1134,15 @@ function migrate(db: Db): void {
   db.exec('CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_questions_status ON questions(status, created_at)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_last_session ON tasks(last_session_id)');
+
+  // audit_events by TYPE. The existing index is (run_id, type, ts) — useless to the many callers that ask
+  // "when did this type last happen" / "how many since T" WITHOUT a run: the digest, the alert staleness
+  // checks, dreaming's watermark, measurement, the Audit page's type filter. Those were full scans of the
+  // largest table in the DB (337k rows / 195 MB on the live fleet; `SELECT DISTINCT type` measured 147ms
+  // with a warm cache), and every one of them runs on a timer inside the single-threaded event loop.
+  // Also serves the retention sweep, which deletes by `ts` alone.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_type_ts ON audit_events(type, ts)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_events(ts)');
 }
 
 /** Add a column only if it isn't already present (SQLite has no ADD COLUMN IF NOT EXISTS). */

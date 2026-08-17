@@ -39,6 +39,9 @@ const MEMORY_SWITCH_KEY = 'memory_backend_switched_at'; // ts the active externa
 const RUNTIME_DEFAULTS_KEY = 'runtime_defaults'; // workspace-wide model/effort/permission fallback (JSON RuntimeTuning)
 const SUBAGENT_DEFAULT_KEY = 'subagent_default'; // fleet-wide sub-agent posture: 'all' (default) | 'none'
 const SESSION_METRICS_KEY = 'session_metrics'; // sessions-list money column: 'cost' | 'tokens' | 'both'
+const AUDIT_RETENTION_KEY = 'audit_retention_days'; // days of audit_events MIRROR to keep (0 = keep all)
+/** Default mirror window. Covers every read window the product has (longest: Insights' 30 days) with margin. */
+export const AUDIT_RETENTION_DEFAULT_DAYS = 90;
 const AGENT_PROPOSAL_TRUST_KEY = 'agent_proposal_trust'; // cross-agent edit tiers keyed on proposer maturity (JSON AgentProposalTrust)
 
 /** What the sessions list shows in its money column: dollar cost, token total, or both. */
@@ -582,6 +585,29 @@ export class SettingsStore {
     const v: SessionMetrics = value === 'cost' || value === 'tokens' ? value : 'both';
     this.set(SESSION_METRICS_KEY, v, by);
     return v;
+  }
+
+  // ── Audit mirror retention ───────────────────────────────────────────────────────
+  // How many days of the QUERYABLE audit_events mirror to keep. The JSONL sink keeps every event forever
+  // (that is the system of record), so this bounds a cache, not the audit trail. Default 90 days: long
+  // enough for every window the product actually reads (Insights/measurement work in 7-30 day windows,
+  // the digest in days) and short enough that the table plateaus instead of growing with tenant lifetime.
+  // `0` = keep everything, the behaviour before this setting existed.
+
+  /** Days of audit mirror to retain; 90 when unset, 0 when explicitly disabled. */
+  auditRetentionDays(): number {
+    const raw = this.getRow(AUDIT_RETENTION_KEY)?.value;
+    if (raw == null || raw.trim() === '') return AUDIT_RETENTION_DEFAULT_DAYS;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return AUDIT_RETENTION_DEFAULT_DAYS;
+    return Math.floor(n);
+  }
+
+  /** Persist the audit-mirror retention window. Negative/garbage falls back to the default; 0 = keep all. */
+  setAuditRetentionDays(value: number, by?: string): number {
+    const n = Number.isFinite(value) && value >= 0 ? Math.floor(value) : AUDIT_RETENTION_DEFAULT_DAYS;
+    this.set(AUDIT_RETENTION_KEY, String(n), by);
+    return n;
   }
 
   // ── UI branding ──────────────────────────────────────────────────────────────────
