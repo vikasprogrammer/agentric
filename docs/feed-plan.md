@@ -110,6 +110,23 @@ inbox is no longer a separate read path:
   "Task done" card now opens its **task** and names it (the card's event + the task title, e.g.
   *"Task done — Write the API reference"*) instead of pointing at a dead run id.
 
+## Hierarchical feed — folding the hand-off chain (v0.365.0)
+
+The Feed lens groups session lines by the delegation chain instead of listing every run flat:
+
+- **Fold a conversation** — runs sharing a `threadId` (`claude_session_id`, i.e. pokes/continuations)
+  collapse to their newest line.
+- **Nest a delegation** — a run whose `parentThreadId` is present nests under the caller conversation
+  that spawned it. A root with descendants shows a **"N delegated runs"** toggle, collapsed by default.
+- **Decisions stay flat** — only session lines fold. Pending approvals/questions and notifications remain
+  top-level, so collapsing a chain never hides an action item.
+
+Thread identity is enriched onto session-backed items in the `/api/feed` handler via
+`TerminalManager.threadsFor(runIds)` — a thin public wrapper over the existing `chainLinks` (session →
+its task → the task's `caller_claude_id`), so the feed and the sessions list/chain rail derive the tree
+the same way. The client builds the forest from `threadId`/`parentThreadId` and renders it indented; the
+grouping is within the loaded page (like the sessions list).
+
 ## Not in this slice
 
 Retiring the `messages` read path entirely (it remains the write-ahead for notifier delivery) and any

@@ -2841,6 +2841,13 @@ async function handle(os: AgentOS, tm: TerminalManager, autos: Automations, req:
     // the audit tail, with the un-audited `update` note as a fallback), so a viewer can watch a session
     // advance without opening its terminal. Bounded to the running items on the page (a handful).
     for (const it of page.items) if (it.state === 'running') it.lastActivity = latestActivity(os, it.runId);
+    // Hand-off chain: stamp thread identity on session-backed items so the console can collapse a
+    // delegation burst under its root (same threadId/parentThreadId the sessions list + chain rail use).
+    const threads = tm.threadsFor(page.items.filter((it) => it.target?.kind === 'session').map((it) => it.target!.id));
+    for (const it of page.items) {
+      const th = it.target?.kind === 'session' ? threads.get(it.target.id) : undefined;
+      if (th) { it.threadId = th.threadId; it.parentThreadId = th.parentThreadId; }
+    }
     const now = new Date();
     const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     return sendJson(res, 200, { ...page, counts: os.feed.counts(viewer, dayStart) });
