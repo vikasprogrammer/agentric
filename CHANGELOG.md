@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.356.4] — 2026-08-17
+### Changed
+- **`blockedOn` is now required when an agent blocks a task.** It shipped optional in 0.356.0, and the
+  fleet's first afternoon with it produced four human blockers and **zero** declarations ("Blocked on
+  human approval for the merge only", "no deletions without founder sign-off", "blocked only on the
+  founder's merge decision", "blocked only on merge approval") — including one from a session started
+  after the deploy, so the field was in its tool list and simply went unused. An optional field on a tool
+  agents call with minimal args is not a field, and the wake-up routing it feeds stays inert. `POST
+  /api/tasks/update` now refuses `status:'blocked'` without a blocker and returns the three choices with
+  what each one does. The refusal is aimed only at CURRENT clients: the MCP tool sends an explicit `null`
+  when the agent omitted the field, while an older MCP process (which outlives a server upgrade and has
+  never heard of it) sends no key and is accepted exactly as before — refusing that would leave a live
+  agent unable to block at all. Pinned by `scripts/blocked-declaration-test.cjs`.
+
 ## [0.356.3] — 2026-08-17
 ### Fixed
 - **Reverted the pane-based submit verdict (v0.355.1, narrowed in v0.356.2); it cannot tell a delivered
