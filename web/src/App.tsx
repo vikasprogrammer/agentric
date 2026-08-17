@@ -2798,7 +2798,6 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
   // Chrome-less popout of THIS pane in a fresh browser tab — a real anchor so ⌘/middle-click work too.
   const popoutHref = session?.tmux || (!session && tmux) ? '#/term/' + encodeDetail(session?.tmux || tmux) : undefined
   const [err, setErr] = useState('')
-  const [transcript, setTranscript] = useState<string | null>(null)
   // "Take over" state: claiming an unattended run doesn't relaunch it (the pane is already a live TUI) —
   // we just want to hide the overlay button and stay attached. `overrideAttach` hides the button
   // immediately (the `session` prop's `claimedBy` only reflects on the next poll); `nonce` re-runs the
@@ -2828,7 +2827,7 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     setTakingOver(false)
     if (!r.ok) { setErr(r.error || 'could not take over this run'); return }
     // Claimed — the live pane keeps streaming; just hide the button and (re)attach to it cleanly.
-    setTranscript(null); setOverrideAttach(true); setNonce((n) => n + 1)
+    setOverrideAttach(true); setNonce((n) => n + 1)
   }
   // "Reload" (Operations menu): restart the agent process in place — the server kills the pane and leaves
   // the session resurrectable, then bumping `nonce` remounts the terminal so it re-attaches and attach.sh
@@ -2837,20 +2836,15 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
   const reload = async (rotate = false): Promise<{ ok: boolean; error?: string; account?: string; note?: string }> => {
     if (!session?.id) return { ok: false, error: 'no session' }
     const r = await api.reloadSession(session.id, rotate)
-    if (r.ok) { setTranscript(null); setNonce((n) => n + 1) }
+    if (r.ok) { setNonce((n) => n + 1) }
     return r
   }
   useEffect(() => {
     let alive = true
-    setWsUrl(''); setErr(''); setTranscript(null)
-    if (session?.id && ended) {
-      api.sessionTranscript(session.id).then((r) => {
-        if (!alive) return
-        if (r.text != null) setTranscript(r.text.replace(/\x1b\[[0-9;]*m/g, '')) // strip any stray ANSI color
-        else setErr(r.error || 'no transcript for this session')
-      })
-      return () => { alive = false }
-    }
+    setWsUrl(''); setErr('')
+    // A finished run has no live pane — <EndedSession> renders its (structured) transcript itself, so we
+    // don't set up a WebSocket for it.
+    if (ended) return
     // Our own <Xterm> speaks ttyd's WebSocket protocol directly, so we need the WS endpoint, not the old
     // iframe page URL. ttyd serves it at <base>/ws — the attach URL is <base>/?arg=…, so swap `/?`→`/ws?`.
     if (!session?.id) { setWsUrl(`/terminal/ws?arg=${encodeURIComponent(tmux)}`); return }
@@ -2861,18 +2855,9 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
     })
     return () => { alive = false }
   }, [session?.id, tmux, ended, nonce])
-  if (transcript != null) return (
-    <div className="flex min-h-0 flex-1 flex-col bg-black">
-      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-neutral-800 px-3 py-1.5 text-xs text-neutral-500">
-        <span>Session ended · transcript (read-only)</span>
-      </div>
-      <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs leading-relaxed text-neutral-300">{transcript || '(no output captured)'}</pre>
-    </div>
-  )
-  // No transcript for a finished run (an older session whose pane log was never written, or one whose
-  // log has since been cleaned up). We still know what the run REPORTED — fall back to that rather than
-  // a bare error, so the pane answers "what came of it" even when it can't answer "what happened".
-  if (ended && err && session) return <RunReport session={session} note={err} />
+  // A finished/crashed run is read-only — show its conversation timeline (falling back to the raw pane
+  // log, then to the reported outcome) rather than attaching to a dead terminal.
+  if (ended && session) return <EndedSession session={session} />
   if (err) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-red-400">⚠ {err}</div>
   if (!wsUrl) return <div className="flex flex-1 items-center justify-center bg-black text-sm text-neutral-500">opening terminal…</div>
   return (
@@ -2891,6 +2876,93 @@ function TerminalFrame({ session, tmux, onActivity, ops, standalone }: { session
         popoutHref={standalone ? undefined : popoutHref}>
         <Xterm key={nonce} wsUrl={wsUrl} fontSize={fontSize} copyOnSelect />
       </ImageDropZone>
+    </div>
+  )
+}
+
+/**
+ * Read-only view of a FINISHED run. A dead session has no live pane, so the old view dumped the raw tmux
+ * capture into a <pre> — which meant terminal soup: box-drawing chars, the live-TUI prompt line, "bypass
+ * permissions", cost footer and "Tip: run Claude locally" chrome, none of it meaningful after the fact.
+ * Instead we render the SAME friendly conversation timeline the Chat view uses (`/conversation` →
+ * user/assistant bubbles + activity cards) — wrapped markdown, normal DOM scrolling, no chrome. A "Raw"
+ * toggle still exposes the exact terminal output on demand (and is the automatic fallback for a headless
+ * run that only tee'd a pane log, with no structured transcript). When neither exists, we show what the
+ * run REPORTED via {@link RunReport}, so the pane always answers "what came of it".
+ */
+function EndedSession({ session }: { session: Session }) {
+  type Phase = 'loading' | 'timeline' | 'raw-only' | 'report'
+  const [phase, setPhase] = useState<Phase>('loading')
+  const [turns, setTurns] = useState<ChatTurn[]>([])
+  const [transcript, setTranscript] = useState<string | null>(null)
+  const [rawLoading, setRawLoading] = useState(false)
+  const [note, setNote] = useState('no transcript')
+  const [raw, setRaw] = useState(false)
+
+  // Normalize a raw pane log for the <pre> fallback: drop ANSI colour and CR so wrapping is predictable.
+  const clean = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').replace(/\r/g, '')
+
+  useEffect(() => {
+    let alive = true
+    setPhase('loading'); setTurns([]); setTranscript(null); setRaw(false); setNote('no transcript')
+    ;(async () => {
+      // Prefer the structured conversation (the friendly timeline).
+      const c = await api.conversation(session.id)
+      if (!alive) return
+      if (c.found && c.turns.length) { setTurns(c.turns); setPhase('timeline'); return }
+      // No structured transcript (an older or headless run that only tee'd session-<id>.log) → the raw
+      // pane log is all we have; show it directly.
+      const t = await api.sessionTranscript(session.id)
+      if (!alive) return
+      if (t.text != null) { setTranscript(clean(t.text)); setRaw(true); setPhase('raw-only') }
+      else { setNote(t.error || 'no transcript'); setPhase('report') }
+    })()
+    return () => { alive = false }
+  }, [session.id])
+
+  // Lazy-load the raw pane log the first time the reader flips the toggle (the timeline path never fetched it).
+  const showRaw = async () => {
+    setRaw(true)
+    if (transcript != null || rawLoading) return
+    setRawLoading(true)
+    const t = await api.sessionTranscript(session.id)
+    setRawLoading(false)
+    setTranscript(t.text != null ? clean(t.text) : '(no raw terminal output was captured for this run)')
+  }
+
+  if (phase === 'loading')
+    return <div className="flex min-h-0 flex-1 items-center justify-center bg-background text-sm text-muted-foreground"><RefreshCw className="mr-2 h-4 w-4 animate-spin" /> loading transcript…</div>
+  if (phase === 'report') return <RunReport session={session} note={note} />
+
+  const canToggle = phase === 'timeline' // a raw-only run has nothing friendlier to switch back to
+  const showingRaw = raw || phase === 'raw-only'
+  return (
+    <div className="flex min-h-0 flex-1 flex-col bg-background">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
+        <span>Session ended · read-only{showingRaw && phase === 'timeline' ? ' · raw terminal' : ''}</span>
+        {canToggle && (
+          <button
+            onClick={() => (showingRaw ? setRaw(false) : void showRaw())}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 font-medium hover:bg-muted hover:text-foreground"
+            title={showingRaw ? 'Back to the readable timeline' : 'Show the exact terminal output'}
+          >
+            <Terminal className="h-3 w-3" /> {showingRaw ? 'Timeline' : 'Raw'}
+          </button>
+        )}
+      </div>
+      {showingRaw ? (
+        rawLoading
+          ? <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground"><RefreshCw className="mr-2 h-4 w-4 animate-spin" /> loading raw output…</div>
+          : <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-xs leading-relaxed text-foreground">{transcript || '(no output captured)'}</pre>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 md:px-6">
+          <div className="mx-auto max-w-3xl space-y-3">
+            {turns.map((t, i) =>
+              t.kind === 'activity' ? <ActivityCard key={i} turn={t} /> : <ChatBubble key={i} turn={t} />,
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
