@@ -8,6 +8,19 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.357.0] — 2026-08-17
+### Changed
+- **A finished session's output is now a readable conversation, not a raw terminal dump.** The done-session
+  pane used to render the raw tmux/TUI capture (`/api/sessions/:id/transcript`) into a `<pre>`, so a
+  read-only run showed terminal soup: box-drawing chars, the live claude prompt line, `bypass permissions`,
+  the cost footer and the `Tip: Run Claude Code locally` chrome — none of it meaningful after the fact, on
+  black, unwrapped, barely scrollable. `EndedSession` now renders the SAME structured timeline the Chat
+  view uses (`/api/sessions/:id/conversation` → user/assistant markdown bubbles + friendly activity cards
+  with inline artifact/KB/app deliverables), on the app's own surface with ordinary wrapped-DOM scrolling.
+  A **"Raw" toggle** still exposes the exact terminal output on demand, and is the automatic fallback for a
+  headless run that only tee'd a pane log with no structured transcript; when neither exists the pane falls
+  back to the reported outcome via `RunReport`, so it always answers "what came of it".
+
 ## [0.356.4] — 2026-08-17
 ### Changed
 - **`blockedOn` is now required when an agent blocks a task.** It shipped optional in 0.356.0, and the
