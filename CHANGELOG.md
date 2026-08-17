@@ -8,6 +8,16 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.366.1] — 2026-08-17
+### Fixed
+- **Leaving a room now returns you where you came from.** Opening a task from a goal's task list and
+  pressing back dropped you on the Tasks board — a page you were never on — losing the goal you were
+  working. The task and goal rooms' back buttons follow a short in-app trail instead of a hardcoded list
+  page, and **name their destination** ("Goal", "Feed", "Inbox"). Going back *pops* the trail, and a
+  destination that equals the last entry is treated as a pop too — that's the only signal the browser's
+  own back button gives — so the two rooms can't bounce between each other. A deep link with no trail
+  still falls back to the list.
+
 ## [0.366.0] — 2026-08-17
 ### Added
 - **The goal room: plan it, run it, watch it and talk about it without leaving the goal.** Operating a goal
