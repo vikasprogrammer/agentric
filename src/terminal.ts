@@ -4146,8 +4146,12 @@ export class TerminalManager {
     // "not live — open it first" while the pane is right there is the visible half of the poke-back bug.
     if (!this.reachable(sessionId)) return { ok: false, error: 'session is not live — open it first' };
     const space = this.spaceFor(row.run_as ?? row.spawned_by);
+    // `injectText` returns whether the agent GOT THE TURN, not whether tmux took the bytes: a large
+    // injection lands as a bracketed paste and an Enter fired in the same instant is swallowed, leaving
+    // the message parked in the composer. Treating that as delivered is a silent drop — the wake queue
+    // marks the row `delivered` and never retries it (northwind 2026-08-17, 8 parked wake-ups).
     const ok = this.backend.injectText(space, row.tmux, body, submit);
-    if (!ok) return { ok: false, error: 'could not deliver keystrokes to the terminal' };
+    if (!ok) return { ok: false, error: 'the terminal never submitted it — still sitting in the composer' };
     // Submitted text starts a turn, so mark the session busy (the Stop-hook beacon clears it) — without
     // it a poke delivered into a warm pane leaves the console reading idle through the work it triggered.
     if (submit) {
