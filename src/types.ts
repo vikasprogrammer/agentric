@@ -1385,6 +1385,26 @@ export interface AgentManifest extends RuntimeTuning {
    *  opt-out is absolute — a hard "don't spawn me"). Use for governance-sensitive personas (trust &
    *  safety, a destructive migrator) you don't want silently run under someone else's identity/budget. */
   spawnableAsSubagent?: boolean;
+  /** The inverse of {@link spawnableAsSubagent}: this agent is reachable ONLY as a sub-agent, never as a
+   *  task assignee. Default `false` (both paths open).
+   *
+   *  For a delegate whose only reason to be separate is a FRESH CONTEXT — a reviewer, a second opinion, a
+   *  critic — a whole governed session is the expensive way to buy that. A sub-agent already gives the
+   *  isolation (its own context, capped toolset, no sight of the caller's reasoning) in-process, without
+   *  a launch, an MCP boot, a CLAUDE.md reload or a tmux pane. Measured on the live instawp fleet: the
+   *  `code-reviewer` agent was documented in engineer's own prompt as a sub-agent AND still received 12
+   *  task hand-offs in 7 days, which spawned 8 governed sessions costing **$111** to do what the
+   *  sub-agent path does for a fraction of that.
+   *
+   *  Set `true` only when a fresh context is the ONLY thing the separation buys. It is the wrong flag for
+   *  a delegate that needs its own CREDENTIALS (a sub-agent runs under the caller's principal and budget),
+   *  that runs LONG or on shared infrastructure (it would hold the caller's turn open — instawp's `qa`
+   *  averages 20 minutes provisioning sandboxes and contending for a devX lock), that must survive the
+   *  caller's turn, or that must observe the work INDEPENDENTLY over time rather than answer one question.
+   *
+   *  Enforced on the agent lane only (`POST /api/tasks/create`): a human deliberately dispatching a
+   *  session from the console is a considered act, not the reflex this guards. */
+  subagentOnly?: boolean;
   /** Whether this agent is reachable from the OPEN chat router — a `/agent-os <id>` / `/<id>` message on
    *  Slack, Discord, or a ClickUp task comment. Default `true`. Set `false` to keep the agent OFF the
    *  external front door (excluded from `routeChat` + the addressable-agent help list), so a comment can't
