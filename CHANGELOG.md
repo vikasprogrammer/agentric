@@ -8,6 +8,37 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.371.0]
+### Changed
+- **The terse brief was rewritten, measured head-to-head, and reverted — and the benchmark grew the
+  statistics that make that call possible.** The obvious fix for the previous finding (72% of the
+  brief's words tell the model NOT to compress) was written: a named delete-list of filler words and
+  constructions in place of "prefer a sentence to a paragraph", one worked verbose/terse example, the
+  carve-outs compressed to hard lists rather than paragraphs of reassurance — 63% of words instructing
+  brevity, 555 tokens instead of 660, every guarantee still pinned by `scripts/verbosity-test.cjs`.
+  Head-to-head against the shipped text over a shared control (504 calls, claude-sonnet-5, 6 reps,
+  $15): old `-4.8%` minimal / `-0.4%` production, new `-4.0%` / `-9.6%`, **every 95% CI spanning
+  zero**, and the rewrite shorter on 5/14 prompts against the old text's 9/14. Neither text is
+  distinguishable from no brief at all, so the rewrite was reverted rather than shipped on a prior.
+  The open question is no longer which wording — two very different texts both land inside the noise —
+  but whether an appended system prompt is the right lever; the note on `TERSE_OUTPUT_BRIEF` says to
+  measure a different mechanism next, not a third rewording.
+### Added
+- **`--brief <label>=<file>`, repeatable** — candidate briefs share ONE control arm, so comparing two
+  rewrites costs 1+N arms instead of 2N and both are scored against the same baseline sample.
+### Fixed
+- **The benchmark now refuses to declare a winner inside its own noise.** It reports a bootstrap 95%
+  CI and the median alongside the mean, a sign test, and a `VERDICT` line that says outright when the
+  interval spans zero. This was not academic: the first two runs (2 reps) were read as findings, and
+  re-analysis showed the CONTROL arm alone — same prompts, same system prompt, nothing changed —
+  drifted 21–28% between them, so nothing below ~25% had been resolvable. Per-call narration length
+  carries a **~20–23% coefficient of variation** whatever is in the prompt; an effect above ~10% would
+  have shown at 6 reps and did not.
+- **The noise floor is a coefficient of variation, not `(max - min) / mean`.** Range grows with sample
+  size, so the range-based floor read 22% at 2 reps and 60% at 6 on the same harness — implying more
+  data made the noise worse. CV is stable across rep counts (15.8% → 22.9%), which is the only way a
+  floor is comparable between runs.
+
 ## [0.370.4] — 2026-08-18
 ### Fixed
 - **Folded notification/update lines get a real icon + label, not the raw kind.** A `message.update`

@@ -39,6 +39,27 @@
 // Re-run the benchmark before changing the text below, and again after. Do not quote a saving from
 // `verbositySavings` alone.
 //
+// A REWRITE WAS TRIED AND REJECTED (v0.371.0). The obvious fix for the 72/28 ratio was written — a
+// named delete-list of filler words and constructions instead of "prefer a sentence to a paragraph",
+// one worked verbose/terse example, the carve-outs compressed to hard lists rather than paragraphs of
+// reassurance, 63% of words instructing brevity, 555 tokens instead of 660. Head-to-head against this
+// text over a shared control (504 calls, claude-sonnet-5, 6 reps, $15):
+//
+//     old brief  minimal -4.8% [-15.8, +5.2]   production -0.4% [-11.1, +9.0]
+//     new brief  minimal -4.0% [-15.7, +5.4]   production -9.6% [-22.2, +0.1]
+//
+// Every interval spans zero, so neither text is distinguishable from no brief at all, and the rewrite
+// trended WORSE in production (shorter on 5/14 prompts against the old text's 9/14). It was reverted
+// rather than shipped on a prior. What the run does establish is the size of the effect it can rule
+// out: per-call narration length has a ~20-23% coefficient of variation whatever you put in the
+// prompt, so an effect above ~10% would have shown at this power and did not.
+//
+// So the open question is no longer "which wording" — two quite different texts both land inside the
+// noise. It is whether an APPENDED SYSTEM PROMPT is the right lever at all. The next thing worth
+// measuring is a different mechanism (per-turn reinforcement through the gate hook's
+// `additionalContext`, which is the only channel that reaches the model mid-turn), not a third
+// rewording. Do not spend another rewrite without that.
+//
 // The carve-out has a failure mode of its own, and it showed up live: a terse `engineer` run answered a
 // console question at essay length, and the owner had to reply "explain to me in 1 liner". Nothing was
 // broken — the answer landed in the exempt lane, and "write them in full, ordinary prose" reads as a

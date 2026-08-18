@@ -74,7 +74,7 @@ const ROOT = path.join(__dirname, '..');
 // ---------------------------------------------------------------------------- args
 
 function parseArgs(argv) {
-  const out = { model: 'claude-haiku-4-5', reps: 2, company: null, only: null, outFile: null };
+  const out = { model: 'claude-haiku-4-5', reps: 2, company: null, only: null, outFile: null, briefs: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--model') out.model = argv[++i];
@@ -82,6 +82,13 @@ function parseArgs(argv) {
     else if (a === '--company') out.company = argv[++i];
     else if (a === '--only') out.only = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
     else if (a === '--out') out.outFile = argv[++i];
+    // `--brief <label>=<file>`, repeatable. Candidate briefs share ONE control arm, so comparing two
+    // rewrites costs 1 + N arms rather than 2N — and they are compared against the same control
+    // sample, which is the only way to tell two candidates apart without re-paying for the baseline.
+    else if (a === '--brief') {
+      const [label, file] = argv[++i].split('=');
+      out.briefs.push({ label, file });
+    }
     else if (a === '--help' || a === '-h') out.help = true;
   }
   return out;
@@ -167,61 +174,141 @@ function complete(text, mustMention) {
 // ---------------------------------------------------------------------------- reporting
 
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+const median = (xs) => {
+  if (!xs.length) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
 const pct = (from, to) => (from > 0 ? ((from - to) / from) * 100 : 0);
 const fmtPct = (n) => `${n >= 0 ? '' : ''}${n.toFixed(1)}%`;
 
-/**
- * Report one condition. Paired throughout: the headline is the mean of the PER-PROMPT reductions, not
- * the reduction of the pooled means — pooling would let one long prompt dominate the result.
- */
-function report(condition, rows) {
-  const byPrompt = new Map();
-  for (const r of rows) {
-    if (!byPrompt.has(r.promptId)) byPrompt.set(r.promptId, { normal: [], terse: [] });
-    byPrompt.get(r.promptId)[r.arm].push(r);
-  }
+// Deterministic PRNG so a re-analysis of the same rows gives the same interval. Seeded LCG; the
+// benchmark must never depend on wall-clock or unseeded randomness or two people reading the same
+// results file get two different verdicts.
+function lcg(seed) {
+  let s = seed >>> 0;
+  return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
+}
 
+/**
+ * Bootstrap 95% CI for the mean of the per-prompt reductions.
+ *
+ * This exists because the first two runs of this benchmark were read as if a headline number meant
+ * something, and it did not: with 2 reps the CONTROL arm alone — same prompts, same system prompt,
+ * nothing changed between runs — drifted 21–28% (max 73%). An effect smaller than that is unresolvable,
+ * so the report must say so rather than print a number that invites a decision.
+ */
+function bootstrapCI(values, iterations = 4000) {
+  if (values.length < 2) return [NaN, NaN];
+  const rand = lcg(0x5eed);
+  const means = [];
+  for (let i = 0; i < iterations; i++) {
+    let sum = 0;
+    for (let j = 0; j < values.length; j++) sum += values[Math.floor(rand() * values.length)];
+    means.push(sum / values.length);
+  }
+  means.sort((a, b) => a - b);
+  return [means[Math.floor(iterations * 0.025)], means[Math.floor(iterations * 0.975)]];
+}
+
+/**
+ * Report one condition, comparing every candidate brief against the SAME control sample.
+ *
+ * Paired throughout: the headline is the mean of the PER-PROMPT reductions, not the reduction of the
+ * pooled means — pooling would let one long prompt dominate. Every number is reported next to the
+ * noise floor and a bootstrap CI, because the first two runs of this benchmark were read as findings
+ * and were not: at 2 reps the control arm alone drifted 21-28% between runs.
+ */
+function report(condition, rows, treatments) {
   console.log(`\n${'='.repeat(96)}`);
   console.log(`CONDITION: ${condition}`);
   console.log('='.repeat(96));
-  console.log(
-    'prompt'.padEnd(26) + 'normal'.padStart(9) + 'terse'.padStart(9) + 'reduction'.padStart(12) +
-    '  completeness (normal → terse)',
-  );
+
+  const promptIds = [...new Set(rows.map((r) => r.promptId))];
+  const cell = (p, arm) => rows.filter((r) => r.promptId === p && r.arm === arm);
+  const toks = (rs) => rs.map((r) => r.narrationTokens);
+
+  // The noise floor, measured from this run's own data: how far two reps of the SAME cell sit apart.
+  // Same prompt, same arm, same system prompt, nothing changed. Reported FIRST so it is read first —
+  // any headline smaller than this is not a finding.
+  const spreads = [];
+  for (const p of promptIds) {
+    for (const arm of ['normal', ...treatments.map((t) => t.label)]) {
+      const t = toks(cell(p, arm));
+      if (t.length < 2) continue;
+      const m = mean(t);
+      // Coefficient of variation, NOT (max - min)/mean. Range grows with the sample size, so a
+      // range-based floor rises as you add reps — it read 22% at 2 reps and 60% at 6 on the same
+      // harness, implying more data made the noise worse. CV is stable across rep counts, which is
+      // the whole point of a floor you compare runs against.
+      if (m > 0) {
+        const sd = Math.sqrt(t.reduce((a, x) => a + (x - m) ** 2, 0) / (t.length - 1));
+        spreads.push((sd / m) * 100);
+      }
+    }
+  }
+  const noiseFloor = mean(spreads);
+  console.log(`noise floor (same-cell rep spread): ${fmtPct(noiseFloor)} — nothing below this is a finding\n`);
+
+  const header = 'prompt'.padEnd(24) + 'normal'.padStart(8) + treatments.map((t) => t.label.padStart(10)).join('') + '   completeness';
+  console.log(header);
   console.log('-'.repeat(96));
 
-  const reductions = [];
-  let nOk = 0, nTot = 0, tOk = 0, tTot = 0;
-  let normalCost = 0, terseCost = 0;
+  const reductions = new Map(treatments.map((t) => [t.label, []]));
+  const complete = new Map([['normal', [0, 0]], ...treatments.map((t) => [t.label, [0, 0]])]);
+  const spend = new Map([['normal', 0], ...treatments.map((t) => [t.label, 0])]);
 
-  for (const [id, arms] of byPrompt) {
-    const nTok = mean(arms.normal.map((r) => r.narrationTokens));
-    const tTok = mean(arms.terse.map((r) => r.narrationTokens));
-    if (!arms.normal.length || !arms.terse.length) continue;
-    const red = pct(nTok, tTok);
-    reductions.push(red);
-    for (const r of arms.normal) { nTot++; if (r.complete) nOk++; normalCost += r.costUsd; }
-    for (const r of arms.terse) { tTot++; if (r.complete) tOk++; terseCost += r.costUsd; }
-    const nC = `${arms.normal.filter((r) => r.complete).length}/${arms.normal.length}`;
-    const tC = `${arms.terse.filter((r) => r.complete).length}/${arms.terse.length}`;
-    const flag = arms.terse.some((r) => !r.complete) && arms.normal.every((r) => r.complete) ? '  <-- terse dropped required facts' : '';
+  for (const p of promptIds) {
+    const n = cell(p, 'normal');
+    if (!n.length) continue;
+    const nTok = mean(toks(n));
+    const cells = [];
+    for (const t of treatments) {
+      const c = cell(p, t.label);
+      if (!c.length) { cells.push('—'); continue; }
+      const red = pct(nTok, mean(toks(c)));
+      reductions.get(t.label).push(red);
+      cells.push(`${Math.round(mean(toks(c)))}`);
+    }
+    for (const [label, rs] of [['normal', n], ...treatments.map((t) => [t.label, cell(p, t.label)])]) {
+      const cur = complete.get(label);
+      complete.set(label, [cur[0] + rs.filter((r) => r.complete).length, cur[1] + rs.length]);
+      spend.set(label, spend.get(label) + rs.reduce((a, r) => a + r.costUsd, 0));
+    }
     console.log(
-      id.padEnd(26) + String(Math.round(nTok)).padStart(9) + String(Math.round(tTok)).padStart(9) +
-      fmtPct(red).padStart(12) + `  ${nC} → ${tC}${flag}`,
+      p.padEnd(24) + String(Math.round(nTok)).padStart(8) + cells.map((c) => String(c).padStart(10)).join('') +
+      `   ${complete.get('normal') ? '' : ''}${n.filter((r) => r.complete).length}/${n.length}` +
+      treatments.map((t) => { const c = cell(p, t.label); return ` ${c.filter((r) => r.complete).length}/${c.length}`; }).join(''),
     );
   }
 
   console.log('-'.repeat(96));
-  const headline = mean(reductions);
-  const wins = reductions.filter((r) => r > 0).length;
-  console.log(`mean per-prompt narration reduction : ${fmtPct(headline)}   (terse shorter on ${wins}/${reductions.length} prompts)`);
-  console.log(`completeness                        : normal ${nOk}/${nTot}, terse ${tOk}/${tTot}`);
-  console.log(`spend this condition                : normal $${normalCost.toFixed(4)}, terse $${terseCost.toFixed(4)}`);
-  if (tTot && tOk / tTot < nOk / Math.max(1, nTot)) {
-    console.log('WARNING: terse answered LESS completely than normal. A reduction bought by dropping');
-    console.log('         required facts is degradation, not saving — do not quote the headline alone.');
+  const summaries = [];
+  for (const t of treatments) {
+    const red = reductions.get(t.label);
+    if (!red.length) continue;
+    const [lo, hi] = bootstrapCI(red);
+    const wins = red.filter((r) => r > 0).length;
+    const resolvable = Number.isFinite(lo) && (lo > 0 || hi < 0);
+    const [cOk, cTot] = complete.get(t.label);
+    const [nOk, nTot] = complete.get('normal');
+    console.log(`\n  ${t.label}`);
+    console.log(`    mean reduction   ${fmtPct(mean(red)).padStart(8)}   95% CI [${fmtPct(lo)}, ${fmtPct(hi)}]`);
+    console.log(`    median reduction ${fmtPct(median(red)).padStart(8)}   (prefer the median when they disagree — outliers)`);
+    console.log(`    sign test        terse shorter on ${wins}/${red.length} prompts (coin flip = ${(red.length / 2).toFixed(1)})`);
+    console.log(`    completeness     ${cOk}/${cTot}  (control ${nOk}/${nTot})`);
+    console.log(`    spend            $${spend.get(t.label).toFixed(4)}  (control $${spend.get('normal').toFixed(4)})`);
+    console.log(
+      resolvable
+        ? `    VERDICT: CI excludes zero — a real effect, direction ${mean(red) > 0 ? 'SHORTER' : 'LONGER'}.`
+        : '    VERDICT: CI SPANS ZERO — this run cannot tell it from the control. Do not ship on it.',
+    );
+    if (cTot && nTot && cOk / cTot < nOk / nTot)
+      console.log('    WARNING: answered LESS completely than the control — a reduction bought by dropping');
+    summaries.push({ condition, label: t.label, mean: mean(red), median: median(red), ci: [lo, hi], resolvable, noiseFloor });
   }
-  return { condition, headline, wins, total: reductions.length, normalComplete: nOk / Math.max(1, nTot), terseComplete: tOk / Math.max(1, tTot) };
+  return summaries;
 }
 
 // ---------------------------------------------------------------------------- main
@@ -233,7 +320,12 @@ function main() {
     return;
   }
 
-  const brief = loadBrief();
+  // Candidate briefs. With no --brief the shipped one is measured, labelled `terse` — the original
+  // behaviour. With --brief each candidate becomes its own arm sharing the one control.
+  const candidates = args.briefs.length
+    ? args.briefs.map((b) => ({ label: b.label, text: fs.readFileSync(b.file, 'utf8') }))
+    : [{ label: 'terse', text: loadBrief() }];
+
   const spec = JSON.parse(fs.readFileSync(path.join(__dirname, 'verbosity-prompts.json'), 'utf8'));
   let prompts = spec.prompts;
   if (args.only) prompts = prompts.filter((p) => args.only.includes(p.id));
@@ -242,44 +334,53 @@ function main() {
     process.exit(1);
   }
 
-  // Scratch dir with no CLAUDE.md — a project memory file would load into BOTH arms and add thousands
+  // Scratch dir with no CLAUDE.md — a project memory file would load into EVERY arm and add thousands
   // of tokens of instructions that are not the thing under test.
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-vbench-'));
 
-  // The system prompts, written once and reused so the provider can cache the prefix.
+  // Written once per (condition, arm) and reused, so the provider can cache the prefix.
   const conditions = [];
-  const minimalNormal = ''; // no --append-system-prompt-file at all: the CLI's own default, untouched
-  const minimalTerse = path.join(work, 'minimal-terse.md');
-  fs.writeFileSync(minimalTerse, brief);
-  conditions.push({ name: 'minimal', normal: null, terse: minimalTerse });
+  const armFiles = (base) => {
+    const files = { normal: null };
+    for (const c of candidates) {
+      const f = path.join(work, `${base}-${c.label}.md`);
+      fs.writeFileSync(f, base === 'minimal' ? c.text : `${companyBase}\n\n${c.text}`);
+      files[c.label] = f;
+    }
+    return files;
+  };
+
+  let companyBase = '';
+  conditions.push({ name: 'minimal', files: armFiles('minimal') });
 
   if (args.company) {
     const company = fs.readFileSync(args.company, 'utf8');
-    // The live file already ENDS with the brief when the tenant default is terse. Strip it so the
-    // control arm is genuinely untreated, then rebuild the treatment arm from the shipped text.
+    // The live file already ENDS with a terse brief when the tenant default is terse. Strip it so the
+    // control arm is genuinely untreated, then rebuild each treatment arm from its candidate text.
     const idx = company.indexOf('# Output style — terse');
-    const base = (idx === -1 ? company : company.slice(0, idx)).trimEnd();
+    companyBase = (idx === -1 ? company : company.slice(0, idx)).trimEnd();
+    const files = armFiles('prod');
     const prodNormal = path.join(work, 'prod-normal.md');
-    const prodTerse = path.join(work, 'prod-terse.md');
-    fs.writeFileSync(prodNormal, base);
-    fs.writeFileSync(prodTerse, `${base}\n\n${brief}`);
-    conditions.push({ name: 'production', normal: prodNormal, terse: prodTerse });
+    fs.writeFileSync(prodNormal, companyBase);
+    files.normal = prodNormal;
+    conditions.push({ name: 'production', files });
     console.log(`production condition: ${args.company}`);
-    console.log(`  base system prompt ${base.length.toLocaleString()} chars (~${Math.round(base.length / 4).toLocaleString()} tokens)` +
-      `, brief adds ${brief.length.toLocaleString()} chars (~${Math.round(brief.length / 4).toLocaleString()} tokens)`);
+    console.log(`  base system prompt ${companyBase.length.toLocaleString()} chars (~${Math.round(companyBase.length / 4).toLocaleString()} tokens)`);
   }
 
-  const calls = prompts.length * 2 * conditions.length * args.reps;
-  console.log(`\nmodel ${args.model} | ${prompts.length} prompts | ${conditions.length} condition(s) | ${args.reps} rep(s) | ${calls} calls`);
-  console.log(`brief under test: ${brief.length} chars (from dist/)\n`);
+  const arms = ['normal', ...candidates.map((c) => c.label)];
+  const calls = prompts.length * arms.length * conditions.length * args.reps;
+  console.log(`\nmodel ${args.model} | ${prompts.length} prompts | ${arms.length} arms (${arms.join(', ')}) | ${conditions.length} condition(s) | ${args.reps} rep(s) | ${calls} calls`);
+  for (const c of candidates) console.log(`  candidate ${c.label}: ${c.text.length} chars (~${Math.round(c.text.length / 4)} tokens)`);
+  console.log();
 
   const rows = [];
   let done = 0, spend = 0, failures = 0;
   for (const cond of conditions) {
     for (const p of prompts) {
-      for (const arm of ['normal', 'terse']) {
+      for (const arm of arms) {
         for (let rep = 0; rep < args.reps; rep++) {
-          const res = runOne({ model: args.model, prompt: p.prompt, systemFile: cond[arm], cwd: work });
+          const res = runOne({ model: args.model, prompt: p.prompt, systemFile: cond.files[arm], cwd: work });
           done++;
           if (res.error) {
             failures++;
@@ -295,31 +396,33 @@ function main() {
             complete: c.ok, missing: c.missing, text: res.text,
           });
           process.stdout.write(
-            `  [${done}/${calls}] ${cond.name}/${p.id}/${arm} ` +
-            `${String(res.narrationTokens).padStart(5)} tok${c.ok ? '' : ` INCOMPLETE (missing ${c.missing.join(', ')})`}` +
-            `  $${spend.toFixed(3)}\n`,
+            `  [${done}/${calls}] ${cond.name}/${p.id}/${arm} ${String(res.narrationTokens).padStart(5)} tok` +
+            `${c.ok ? '' : ` INCOMPLETE (missing ${c.missing.join(', ')})`}  $${spend.toFixed(3)}\n`,
           );
         }
       }
     }
   }
 
-  const summaries = [];
-  for (const cond of conditions) summaries.push(report(cond.name, rows.filter((r) => r.condition === cond.name)));
+  const treatments = candidates.map((c) => ({ label: c.label }));
+  const all = [];
+  for (const cond of conditions) all.push(...report(cond.name, rows.filter((r) => r.condition === cond.name), treatments));
 
-  if (summaries.length === 2) {
-    const [min, prod] = summaries;
+  const minimal = all.filter((s) => s.condition === 'minimal');
+  const production = all.filter((s) => s.condition === 'production');
+  if (minimal.length && production.length) {
     console.log(`\n${'='.repeat(96)}`);
-    console.log('DILUTION — what the same brief is worth in a bare prompt vs behind the real company context');
+    console.log('DILUTION — the same brief in a bare prompt vs behind the real company context');
     console.log('='.repeat(96));
-    console.log(`  minimal    ${fmtPct(min.headline)}`);
-    console.log(`  production ${fmtPct(prod.headline)}`);
-    console.log(`  the gap is what position and surrounding context cost the brief: ${fmtPct(min.headline - prod.headline)} of reduction lost.`);
+    for (const m of minimal) {
+      const p = production.find((x) => x.label === m.label);
+      if (p) console.log(`  ${m.label.padEnd(12)} minimal ${fmtPct(m.mean).padStart(8)}   production ${fmtPct(p.mean).padStart(8)}   lost ${fmtPct(m.mean - p.mean)}`);
+    }
   }
 
   console.log(`\ntotal spend $${spend.toFixed(4)}${failures ? ` | ${failures} call(s) failed and were dropped` : ''}`);
   if (args.outFile) {
-    fs.writeFileSync(args.outFile, JSON.stringify({ model: args.model, reps: args.reps, briefChars: brief.length, rows }, null, 2));
+    fs.writeFileSync(args.outFile, JSON.stringify({ model: args.model, reps: args.reps, candidates: candidates.map((c) => ({ label: c.label, chars: c.text.length })), rows }, null, 2));
     console.log(`raw results → ${args.outFile}`);
   }
   console.log(`scratch dir (system prompts used): ${work}`);
