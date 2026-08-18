@@ -7,6 +7,17 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+
+## [0.369.1] — 2026-08-18
+### Fixed
+- **The feed's live activity line no longer reads a bare capability id like `shell.exec`.** Two classifier
+  fixes in `session-activity.ts`: a `gate.decision` now uses its **brief headline** ("Run: npm test",
+  "Reach 203.0.113.5 (ssh)") as the summary — the human one-liner was already computed and audited, just
+  ignored (fallback to a friendly capability label like "Ran a shell command" for old rows without a
+  brief). And a **successful** `action.result` is now treated as noise (it's the redundant paired half of
+  the gate decision, which already names the action), so the newest-event scan lands on the command, not
+  a second "shell.exec" line; a **failed** `action.result` still surfaces its error. Fixes both the feed's
+  "currently…" line and the session activity trail. Pinned by `scripts/activity-classify-test.cjs`.
 ### Documented
 - **`docs/insights-revisit.md` Step 5 gains its top-ranked candidate: "agent shape"** — a card naming
   delegates that do not need to be agents. Carries the measured case (instawp, 7 days: $8,640 of
