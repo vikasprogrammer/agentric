@@ -5454,7 +5454,27 @@ function feedGlyph(it: FeedItem, s: Session | undefined): ReactNode {
     const Icon = v === 'none' ? CircleDashed : m.icon
     return <span className="inline-flex shrink-0" title={v === 'none' ? 'done — no report' : m.label}><Icon className={`h-4 w-4 ${m.tone}`} /></span>
   }
-  return <RoleIcon role={feedItemRole(it)} label={it.kind} className="h-4 w-4" />
+  // folded notification/update cards get their own marker (a note, a bell, …), not a generic muted dot
+  const info = INFO_GLYPH[it.kind]
+  if (info) { const Icon = info.icon; return <span className="inline-flex shrink-0" title={info.label}><Icon className="h-4 w-4 text-muted-foreground/70" aria-label={info.label} /></span> }
+  return <RoleIcon role={feedItemRole(it)} label={friendlyKind(it.kind)} className="h-4 w-4" />
+}
+
+/** Icon + human label for a folded message card, so a line reads "Progress update" — not the raw
+ *  internal kind ("message.update") that used to leak into the glyph's tooltip / aria-label. */
+const INFO_GLYPH: Record<string, { icon: LucideIcon; label: string }> = {
+  'message.update': { icon: MessageSquare, label: 'Progress update' },
+  'message.notification': { icon: Bell, label: 'Notification' },
+  'message.task': { icon: ListChecks, label: 'Task update' },
+  'message.artifact': { icon: Package, label: 'Published' },
+}
+
+/** A human name for a feed line's kind — for the status glyph's label where the raw dotted id would leak. */
+function friendlyKind(kind: string): string {
+  if (kind.startsWith('approval')) return 'Approval'
+  if (kind.startsWith('question')) return 'Question'
+  if (kind.startsWith('session')) return 'Session'
+  return INFO_GLYPH[kind]?.label ?? kind
 }
 
 /** A one-word origin hint from a session's provenance prefix (spawned_by). */
