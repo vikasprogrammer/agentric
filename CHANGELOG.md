@@ -8,6 +8,14 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.370.2] — 2026-08-18
+### Fixed
+- **No more blank line after the live-activity dot.** The running-session "currently…" line sometimes
+  rendered a blinking green dot with nothing after it — the newest classified event had an empty summary.
+  `latestActivity` now skips empty-summary events and keeps scanning for the newest one that actually says
+  something (and the console guards the render on a non-empty summary too).
+- **More breathing room between feed items** (a touch more vertical spacing per line).
+
 ## [0.370.1] — 2026-08-18
 ### Fixed
 - **The feed no longer lists a delegated task twice.** A delegated run appears nested in its hand-off

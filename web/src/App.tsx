@@ -5664,11 +5664,12 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
     ) : (
       <div>
         {snippet(it)}
-        {/* live progress: what the agent is doing right now, refreshed by the poll (no terminal needed) */}
-        {it.state === 'running' && it.lastActivity && (
+        {/* live progress: what the agent is doing right now, refreshed by the poll (no terminal needed).
+            Only render when there's an actual summary — otherwise the dot dangles with nothing after it. */}
+        {it.state === 'running' && it.lastActivity?.summary?.trim() && (
           <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 motion-safe:animate-pulse" />
-            <span className="min-w-0 truncate italic">{it.lastActivity.summary}</span>
+            <span className="min-w-0 truncate italic">{it.lastActivity.summary.trim()}</span>
           </div>
         )}
         {attribution(it, chain)}
@@ -5682,7 +5683,7 @@ function FeedPage({ me, members, sessions, nav, onOpen, query, setQuery }: { me:
           </span>
           <span className="w-px flex-1 bg-border" />
         </div>
-        <div className="min-w-0 flex-1 pb-4">{body}</div>
+        <div className="min-w-0 flex-1 pb-6">{body}</div>
       </div>
     )
   }
