@@ -7,6 +7,18 @@ Every PR that bumps `package.json` moves its entries from **Unreleased** into a
 new version heading in the same commit.
 
 ## [Unreleased]
+### Documented
+- **`docs/insights-revisit.md` Step 5 gains its top-ranked candidate: "agent shape"** — a card naming
+  delegates that do not need to be agents. Carries the measured case (instawp, 7 days: $8,640 of
+  agent→agent spend vs $1,027 human-started; 815 tasks filed by agents, 3 by humans; one line-question
+  → 19 sessions, $600), the skill / sub-agent / agent tier table, and the six signals the OS already
+  stores to compute it. Records the two things that make it hard: three agents hand-classified from
+  real data were **all wrong on the first pass** (`qa` looked like ceremony but averages 20.6 min
+  provisioning sandboxes; `apidocs-bot` owns a webhook; `code-reviewer` needed a sub-agent, not a
+  skill), and the gate audit **cannot** classify read-vs-write (8,573 of 9,139 decisions are
+  `shell.exec`). Explicitly not-to-be-built: a one-click "fold agent → skill" button — same reasoning
+  as Step 2's refusal to put buttons on the runtime-death card, plus the destination tier is usually
+  sub-agent, and a fold isn't done until every *caller's* prompt stops delegating.
 
 ## [0.369.0] — 2026-08-18
 ### Added
