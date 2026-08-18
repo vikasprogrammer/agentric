@@ -69,6 +69,22 @@ export function clipText(v: unknown, n = 140): string {
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
 }
 
+/** A human label for a capability id, used as a fallback when a gate.decision carries no brief headline
+ *  (older audit rows). Known ids get a verb; an unmapped id is shown as-is (already dotted + legible). */
+function friendlyCapability(cap: string): string {
+  const map: Record<string, string> = {
+    'shell.exec': 'Ran a shell command',
+    'file.write': 'Wrote a file',
+    'file.delete': 'Deleted a file',
+    'email.send': 'Sent an email',
+    'connector.call': 'Used a connector',
+    'connector.connect': 'Connected a service',
+    'http.request': 'Made an HTTP request',
+    'net.connect': 'Opened a network connection',
+  };
+  return map[cap] ?? cap;
+}
+
 /** A KB target keyed by `section/slug` — the route resolves the page's current rev / existence. */
 const kbTarget = (data: Record<string, unknown>): ActivityTarget | undefined => {
   const section = str(data.section), slug = str(data.slug);
@@ -98,11 +114,17 @@ export function classifyActivity(type: string, data: Record<string, unknown>): A
     case 'gate.decision': {
       const cap = str(data.capability) || 'action';
       const d = data.decision as { effect?: string } | undefined;
-      return { category: 'action', primitive: cap, summary: cap, effect: normEffect(str(d?.effect)) };
+      // Prefer the brief's human headline ("Run: npm test", "Reach 203.0.113.5 (ssh)") over the raw
+      // capability id — the capability alone ("shell.exec") tells a human almost nothing about what ran.
+      const headline = str((data.brief as { headline?: string } | undefined)?.headline);
+      return { category: 'action', primitive: cap, summary: headline || friendlyCapability(cap), effect: normEffect(str(d?.effect)) };
     }
     case 'action.result': {
-      const cap = str(data.capability) || 'action';
-      return { category: 'action', primitive: cap, summary: cap, effect: data.ok === false ? 'error' : 'allow' };
+      // The paired completion of a gate.decision (which already names the action). A SUCCESS is redundant
+      // noise — drop it so the trail/feed shows the command, not a second "shell.exec" line. Surface only
+      // failures, where the error is the news.
+      if (data.ok === false) return { category: 'action', primitive: str(data.capability) || 'action', summary: clipText(data.error, 110) || 'failed', effect: 'error' };
+      return null;
     }
     case 'gate.email.blocked':
       return { category: 'action', primitive: str(data.capability) || 'email.send', summary: clipText(data.reason, 100), effect: 'deny' };
