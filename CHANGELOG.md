@@ -8,6 +8,20 @@ new version heading in the same commit.
 
 ## [Unreleased]
 
+## [0.373.0]
+### Added
+- **The `/v2` agent-first console is now wired to live data.** The mock fleet is gone: the rail loads
+  the real roster from `/api/state`, each agent's status dot is derived from its live sessions
+  (`running` / `waiting on you` / `idle`), and Overview shows real 7-day stats + recent sessions from
+  `/api/sessions`. The per-agent tabs lazy-load on open and cache: Automations (`/api/automations`,
+  filtered to the agent), Memory (`/api/memory`), Insights (the agent's real maturity/gate track record
+  from `/api/agents/:id/stats`, framed per-agent), and Settings (live model/effort/verbosity +
+  CLAUDE.md from `/api/agents/:id/{config,claude}`, read-only this cut). Not signed in → a sign-in
+  prompt back to `/`; empty/loading/error states throughout. Reads only for now — send, run, and edit
+  link back to the classic console; those become native in the next increment. The classic app at `/`
+  is still untouched, and v2 reuses the shared typed client (`web/src/lib/api.ts`) rather than
+  duplicating it.
+
 ## [0.372.0]
 ### Added
 - **A new agent-first console at `/v2`, isolated from the classic app.** A minimal, x.ai-style
