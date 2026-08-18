@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
-import { api, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
+import { api, isDraftTask, EFFORTS, PERMISSION_MODES, type PermissionMode, type StateResp, type HostMetrics, type RequestMetricsSnapshot, type AgentInfo, type Session, type Msg, type Member, type Role, type TeamResp, type AgentAccess, type MemberIdentity, type IdentityProvider, IDENTITY_PROVIDERS, type Automation, type Task, type TaskEvent, type TaskAttachment, type TaskChild, type TaskRun, type TaskPr, type TaskTimelineEntry, type TaskDiscussionSummary, type TaskDiscussionDelivery, type TaskStatus, type AddTaskReq, type Goal, type GoalEvent, type GoalStatus, type GoalCounts, type GoalProgress, type AddGoalReq, type MemoryRecord, type MemoryHealth, type MemoryBackend, type MemorySettings, type MemorySettingsReq, type OllamaStatus, type KbPage, type KbRevision, type AgentRevision, type AgentStats, type AgentProposalTrust, type Recommendation, type DigestConfig, type DigestModel, type DreamingState, type Measurement, type Insights, type ImprovementTile, type MemoryCleanupPlan, type KbTidyPlan, type TaskReconcilePlan, type LibraryTidyPlan, type SessionTidyPlan, type StuckGoal, type TroubledAutomation, type PolicyDocument, type PolicyRule, type PolicyOutcome, type PolicyOp, type PolicyProposal, type PolicyRevision, type AutomationProposal, type AgentUpdateProposal, type GoalUpdateProposal, type DirListing, type FileEntry, type FileContent, type Artifact, type AppInfo, type AppFile, type AppCapabilities, type SkillSummary, type SkillsResp, type CatalogSkill, type CatalogAgent, type SkillSource, type RemoteSkill, type SkillshHit, type SkillRequest, type SecretRequest, type IntegrationsResp, type SlackStatus, type DiscordStatus, type TelegramStatus, type AuditEvent, type Effort, type RuntimeTuning, type RuntimeTuningPatch, type Verbosity, type VerbositySavings, type Concurrency, type RuntimeAccount, type RuntimeAccountKind, type RuntimeAccountsResp, type RuntimeLogin, type SecretMeta, type UpdateStatus, type UpdateApplyResult, type ActivityEvent, type ActivitySummaryRow, type SystemMetrics, type DepsReport, type DepStatus, type DepsInstallResult, type ChatTurn, type ChatArtifactRef, type ChatKbRef, type ChatAppRef, type RouterPreviewResp, type RouterCard, type SessionChain, type ChainNode, type ChainPending } from '@/lib/api'
 import { type Branding, type PublicBranding, type NotificationPrefs, DEFAULT_NOTIFICATION_PREFS, type PromptShortcut, type SessionMetrics, type Brief, type AutoApproval, type FeedItem, type FeedResponse, type FeedFilter, type TaskRunState, type GoalChatState } from '@/lib/api'
 import { applyAccent, applyFavicon, faviconDataUri, readableOn } from '@/lib/branding'
 import { ENTITY_ID_SRC, entityHref, isEntityId } from '@/lib/entity-links'
@@ -9970,6 +9970,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
     if (!t || !id || t.status === status) return
     await patch(id, { status })
   }
+  // A DRAFT is a task nobody has acted on yet — no dispatch attempt, no session ever linked. It's the
+  // state a task filed for later refinement sits in, and the state in which its author may still bin it
+  // without an admin (the server enforces the same rule; this only decides what we OFFER).
+  const draftNow = detail ? isDraftTask(detail.task, detail.runs.length) : false
+  const mineNow = !!detail && (detail.task.createdBy === me.id || detail.task.owner === me.id)
+  const canDelete = isAdmin || (draftNow && mineNow)
   const startEdit = () => { if (!detail) return; setETitle(detail.task.title); setEBody(detail.task.body); setEditing(true) }
   const saveEdit = async () => {
     if (!detail) return
@@ -10067,14 +10073,14 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
   // (default true) inlines the Discussion; the room renders the Discussion as its own main column instead,
   // so it passes `withDiscussion:false` here. `onRun`/`selectedRun` let the room route a click in the run
   // history to its own Session tab instead of the terminal drawer. Guards on `detail` being loaded.
-  const detailBody = (opts?: { withDiscussion?: boolean; selectedRun?: string; onRun?: (id: string) => void }) => {
+  const detailBody = (opts?: { withDiscussion?: boolean; selectedRun?: string; onRun?: (id: string) => void; editInline?: boolean }) => {
     if (!detail) return null
     const live = liveOf(detail.task)
     // In the narrow room sidebar (withDiscussion:false) stack fields single-column — a viewport-based
     // `sm:grid-cols-2` would otherwise cram two selects into ~320px and overlap; the wider inline/Focus
     // panel keeps two columns.
     const fieldGrid = opts?.withDiscussion !== false ? 'grid grid-cols-1 gap-2 sm:grid-cols-2' : 'grid grid-cols-1 gap-3'
-    return editing ? (
+    return editing && opts?.editInline !== false ? (
       <div className="space-y-3">
         <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
         <Field label="Details (markdown)"><Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} rows={10} className="font-mono text-xs" /></Field>
@@ -10085,7 +10091,10 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
       </div>
     ) : (
       <div className="space-y-3.5">
-        <div className="font-mono text-xs text-muted-foreground">{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</div>
+        <div className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+          <span>{detail.task.id}{detail.task.owner ? ` · as ${nameOf(detail.task.owner)}` : ''}</span>
+          {draftNow && <Badge variant="outline" className="px-1.5 py-0 font-sans text-[10px]" title="never dispatched — no session has worked this yet, so it's still yours to edit or delete">draft</Badge>}
+        </div>
 
         {/* "This task is part of a goal" banner — the goal's title, status and derived progress, as one
             click-through into the goal's detail page. The Goal field below still RE-LINKS the task; this
@@ -10247,14 +10256,14 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
         />
 
 
-        {isAdmin && (
+        {canDelete && (
           confirmDel
             ? <div className="flex items-center gap-2">
                 <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => remove(detail.task.id)}>Confirm delete</Button>
                 <Button size="sm" variant="ghost" onClick={() => setConfirmDel(false)}>Cancel</Button>
               </div>
             : <Button size="sm" variant="ghost" className="w-full text-destructive" onClick={() => setConfirmDel(true)}>
-                <Trash2 className="mr-1 h-3.5 w-3.5" />Delete task
+                <Trash2 className="mr-1 h-3.5 w-3.5" />Delete {draftNow && !isAdmin ? 'draft' : 'task'}
               </Button>
         )}
       </div>
@@ -10302,6 +10311,12 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <TaskStatusPill status={t.status} />
             <span className="truncate text-[15px] font-semibold">{t.title}</span>
+            {draftNow && <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]" title="never dispatched — no session has worked this yet">draft</Badge>}
+            <button
+              title="Edit title & description"
+              onClick={() => { startEdit(); openTaskTab(t.id, 'description') }}
+              className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            ><Pencil className="h-3.5 w-3.5" /></button>
             <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{t.id}</span>
           </div>
           {parts.length > 0 && <span className="hidden items-center gap-1.5 text-[11px] text-muted-foreground sm:flex"><DiscussionAvatars participants={parts} members={members} />{parts.filter((p) => p !== 'system').length} in discussion</span>}
@@ -10343,11 +10358,37 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
                   <div className="min-h-0 flex-1"><TaskDiscussion pinned taskId={t.id} entries={detail.discussion} unread={detail.unread} me={me} members={members} agents={agents} liveRuns={detail.runs.filter((r) => r.alive && !r.archived)} onChange={() => refreshDetail(t.id)} /></div>
                 </div>
               )}
+              {/* The room's Description tab EDITS in place. It used to be read-only markdown whose only
+                  affordance ("Add one") flipped the 320px sidebar into an edit form — so a task filed as
+                  a rough draft could not be fleshed out where you were reading it. The editor lives here,
+                  in the wide column, and the sidebar stays on its fields (`editInline:false` below). */}
               {activeTab === 'description' && (
-                <div className="h-full overflow-y-auto p-4">
-                  {t.body
-                    ? <div className="break-words text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{t.body}</ReactMarkdown></div>
-                    : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description. <button className="text-primary underline" onClick={() => setEditing(true)}>Add one</button></div>}
+                <div className="flex h-full flex-col overflow-hidden p-4">
+                  {editing ? (
+                    <div className="flex min-h-0 flex-1 flex-col gap-3">
+                      <Field label="Title"><Input value={eTitle} onChange={(e) => setETitle(e.target.value)} className="font-medium" /></Field>
+                      <div className="flex min-h-0 flex-1 flex-col">
+                        <div className="mb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Details (markdown)</div>
+                        <Textarea value={eBody} onChange={(e) => setEBody(e.target.value)} className="min-h-0 flex-1 resize-none font-mono text-xs" placeholder="What needs doing, and what done looks like…" />
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button size="sm" disabled={busy || !eTitle.trim()} onClick={saveEdit}><Save className="mr-1 h-3.5 w-3.5" />Save</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+                        <span className="text-[11px] text-muted-foreground">{draftNow ? 'Still a draft — nothing has run for it yet.' : 'This task has already been worked; edits show in its activity log.'}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex min-h-0 flex-1 flex-col">
+                      <div className="mb-2 flex shrink-0 items-center justify-end">
+                        <Button size="sm" variant="outline" className="h-7" onClick={startEdit}><Pencil className="mr-1 h-3.5 w-3.5" />Edit</Button>
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-y-auto">
+                        {t.body
+                          ? <div className="break-words text-sm [&_pre]:whitespace-pre-wrap [&_pre]:break-words"><ReactMarkdown remarkPlugins={[remarkGfm, remarkWikiLinks]} components={mdComponents}>{t.body}</ReactMarkdown></div>
+                          : <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground"><FileText className="h-6 w-6 opacity-40" />No description. <button className="text-primary underline" onClick={startEdit}>Add one</button></div>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               {activeTab === 'session' && sessTmux && (
@@ -10360,7 +10401,7 @@ function TasksPage({ me, agents, taskId, onOpen, nav, backTo }: { me: Member; ag
             </div>
           </div>
           <div className={`overflow-y-auto bg-muted/20 p-4 ${roomSide ? '' : 'lg:hidden'}`}>
-            {detailBody({ withDiscussion: false, selectedRun: runSel || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
+            {detailBody({ withDiscussion: false, editInline: false, selectedRun: runSel || undefined, onRun: (id) => { setRunSel(id); openTaskTab(t.id, 'session') } })}
           </div>
         </div>
       </div>

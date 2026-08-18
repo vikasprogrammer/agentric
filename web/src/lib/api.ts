@@ -728,6 +728,13 @@ export interface TaskPr {
   fetchedAt?: number
   error?: string
 }
+/** Is a task still a DRAFT — filed but never acted on (no dispatch attempt, no session ever linked)?
+ *  Mirrors `isDraftTask` in src/types.ts, which is what the server enforces; this copy only decides what
+ *  the console OFFERS. A draft is its author's to edit or delete without an admin; the moment a session
+ *  touches it, it stops being one — permanently. */
+export function isDraftTask(task: { attempts: number; lastSessionId?: string }, runCount: number): boolean {
+  return task.attempts === 0 && !task.lastSessionId && runCount === 0
+}
 export interface TaskPrSummary { total: number; merged: number; open: number; closed: number; draft: number }
 /** One session that worked a task — a task's run history is one-to-many (retries, crashes, take-overs),
  *  where `Task.lastSessionId` only ever pointed at the newest. See TerminalManager.taskRuns. */

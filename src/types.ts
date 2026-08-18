@@ -822,6 +822,19 @@ export interface Task {
 }
 
 /**
+ * Is this task still a **draft** — filed, but never acted on? True only when nothing has ever run for it:
+ * no dispatch attempt, no `lastSessionId`, and no session linked to it (`runCount`, from
+ * `TerminalManager.taskRuns`). A draft is just a note its author wrote — there is no run history to
+ * erase, no cost attributed to it, and nobody downstream waiting on it — which is what lets its AUTHOR
+ * delete it without an admin, and what the console labels so the looser rule reads as deliberate rather
+ * than as a hole in the delete gate. The moment a session touches the task it stops being a draft,
+ * permanently: a re-dispatch bumps `attempts` and the run stays in `taskRuns` even when archived.
+ */
+export function isDraftTask(task: Pick<Task, 'attempts' | 'lastSessionId'>, runCount: number): boolean {
+  return task.attempts === 0 && !task.lastSessionId && runCount === 0;
+}
+
+/**
  * Why a task can't be dispatched right now (`Automations.canDispatch`). A code, not just prose, because a
  * surface reacts differently per case: `unassigned` needs an assignee picker, `live` needs an attach link,
  * `deps` is a wait not a fault, and `closed` means don't offer a run control at all.
