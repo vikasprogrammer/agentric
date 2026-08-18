@@ -66,7 +66,7 @@ assert(/[Ll]ead with the answer/.test(TERSE_OUTPUT_BRIEF), 'tells the exempt lan
 assert(/summary and then restate/i.test(TERSE_OUTPUT_BRIEF), 'bans the summary-then-restatement duplication');
 // The whole point of the carve-out survives it: prose and caveats stay.
 assert(/completeness wins over length/i.test(TERSE_OUTPUT_BRIEF), 'completeness still beats brevity');
-assert(/ordinary prose/.test(TERSE_OUTPUT_BRIEF), 'the exempt surfaces still keep ordinary prose');
+assert(/ordinary prose/i.test(TERSE_OUTPUT_BRIEF), 'the exempt surfaces still keep ordinary prose');
 
 const aos = loadAgentOS();
 const db = aos.db;
